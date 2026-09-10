@@ -228,9 +228,12 @@ class HermesProvider(FixtureProvider):
         root = self.data_dir / 'bots' / bot_id
         for name in ('home', 'workspace', 'browser', 'tmp'):
             (root / name).mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Homebrew manages one Mac installation, so its trust must have one scope.
+        shared_config = self.data_dir / 'shared'
+        shared_config.mkdir(exist_ok=True, mode=0o700)
         # No login, GitHub, cloud, shell, or desktop credentials enter the worker.
         env = {k: os.environ[k] for k in ('PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY') if k in os.environ}
-        env.update(HOME=str(root / 'home'), HERMES_HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), PYTHONPATH=str(self.hermes_root), PYTHONUNBUFFERED='1', COCONUT_BROWSER_PROFILE=str(root / 'browser'), HERMES_DISABLE_TELEMETRY='1')
+        env.update(HOME=str(root / 'home'), HERMES_HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), PYTHONPATH=str(self.hermes_root), PYTHONUNBUFFERED='1', COCONUT_BROWSER_PROFILE=str(root / 'browser'), HERMES_DISABLE_TELEMETRY='1', HOMEBREW_XDG_CONFIG_HOME=str(shared_config))
         return env, root / 'workspace'
 
     def start_task(self, task, bot, history, emit):

@@ -672,6 +672,8 @@ def main():
                         'Do not expose internal reasoning or raw logs. Finish independent work before asking a question. '
                         'Use the native message_agent tool to send useful requests and results. Use the exact contact ID as target. Do not send acknowledgements. '
                         'The Coconut relay connects isolated Hermes profiles on this same Mac. '
+                        'Homebrew packages and its Homebrew-only configuration are shared across Coconut bots on this Mac. '
+                        'Use the inherited HOMEBREW_XDG_CONFIG_HOME for package trust; do not replace HOME or share other configuration. '
                         'Share explicit task context only. Do not copy private memory or credentials between bots. '
                         'A queued message is not a reply. Never claim success without a tool result. ')
         instructions += CONVERSATION_INSTRUCTIONS

@@ -63,6 +63,8 @@ Advanced native jobs that Coconut cannot preserve do not execute through its dis
 Each bot has a separate native home, session, workspace, and browser-profile directory.
 These paths organize data; they do not restrict a full-access process from reading other paths.
 Browser tools must use the intended profile. Shared desktop control needs serialized ownership.
+
+Homebrew packages and trust share one scope across Coconut bots. Workers set `HOMEBREW_XDG_CONFIG_HOME` to `<data-dir>/shared`. Homebrew owns `shared/homebrew/trust.json` and its write lock. Bot homes, Hermes profiles, browser profiles, and other tool settings remain separate. Do not set a shared `HOME` or `XDG_CONFIG_HOME`. Existing trust grants need an explicit move to this scope; Coconut does not merge private trust files automatically.
 Coconut does not provide an operating system sandbox or universal desktop lock.
 
 Hermes `message_agent` produces native relay envelopes.

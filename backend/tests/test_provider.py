@@ -174,6 +174,28 @@ class ProviderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             provider.environment('../../outside')
 
+    def test_homebrew_trust_is_shared_without_sharing_bot_settings(self):
+        provider = HermesProvider(self.root)
+        with patch.dict(os.environ, {'XDG_CONFIG_HOME': '/private/settings',
+                                     'HOMEBREW_XDG_CONFIG_HOME': '/private/brew',
+                                     'HOMEBREW_NO_REQUIRE_TAP_TRUST': '1'}, clear=True):
+            first, _ = provider.environment(self.bot['id'])
+            second, _ = provider.environment(str(uuid4()))
+        first_config = Path(first['HOMEBREW_XDG_CONFIG_HOME']) / 'homebrew'
+        first_config.mkdir()
+        trust = {'trustedformulae': ['example/tools/tool']}
+        (first_config / 'trust.json').write_text(json.dumps(trust))
+        second_file = Path(second['HOMEBREW_XDG_CONFIG_HOME']) / 'homebrew' / 'trust.json'
+        self.assertEqual(json.loads(second_file.read_text()), trust)
+        self.assertTrue(second_file.is_relative_to(self.root.resolve()))
+        self.assertEqual(first_config.parent.stat().st_mode & 0o777, 0o700)
+        self.assertNotEqual(first['HOME'], second['HOME'])
+        self.assertNotEqual(first['HERMES_HOME'], second['HERMES_HOME'])
+        for environment in (first, second):
+            self.assertNotIn('XDG_CONFIG_HOME', environment)
+            self.assertNotIn('HOMEBREW_NO_REQUIRE_TAP_TRUST', environment)
+            self.assertFalse((Path(environment['HOME']) / '.homebrew' / 'trust.json').exists())
+
     def test_custom_endpoint_never_receives_ambient_provider_key(self):
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'private'}, clear=True):
             with self.assertRaisesRegex(ValueError, 'credential binding'):
