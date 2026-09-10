@@ -15,7 +15,7 @@ struct ApprovalSettingsView: View {
                     Section {
                         Toggle("Use default", isOn: Binding(get: { bot?.approvalOverride == nil }, set: { value in
                             save(value ? nil : settings.defaults)
-                        }))
+                        })).tint(BoardStyle.green)
                     } footer: { Text("Default: \(settings.label(for: settings.defaults))") }
                 }
                 if botId == nil || bot?.approvalOverride != nil {

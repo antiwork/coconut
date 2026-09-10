@@ -34,6 +34,7 @@ struct BotSettingsView: View {
                 }
                 Section {
                     Toggle("Notifications", isOn: Binding(get: { self.draft?.notifications ?? true }, set: { self.draft?.notifications = $0 }))
+                        .tint(BoardStyle.green)
                 } footer: { Text("Get notified when this bot needs a decision, finishes work, or fails.") }
                 Section("Routines") {
                     ForEach(store.routines.filter { $0.botId == botId }) { routine in
@@ -151,7 +152,7 @@ private struct RoutineEditorView: View {
                 TextField("Weekdays at 8am", text: $schedule)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .accessibilityIdentifier("routine-schedule")
-                Toggle("Enabled", isOn: $enabled).accessibilityIdentifier("routine-enabled")
+                Toggle("Enabled", isOn: $enabled).tint(BoardStyle.green).accessibilityIdentifier("routine-enabled")
             } header: { Text("Schedule") } footer: {
                 Text("Use a Hermes schedule, such as ‘weekdays at 8am’, ‘every 30m’, or a cron expression. Times follow this bot’s Hermes time zone.")
             }
