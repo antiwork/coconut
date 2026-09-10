@@ -204,19 +204,29 @@ private struct CoconutShell: View {
                 }
             }
             context.stroke(outline, with: .color(.black.opacity(0.28)), style: StrokeStyle(lineWidth: 1.4, lineJoin: .round))
-            for i in 0..<9 {
-                let angle = Double(i) * .pi * 2 / 9 + 0.12
+            for i in 0..<(6 + Int(seed % 4)) {
+                let angle = noise(i + 500) * .pi * 2
+                let length = 1.3 + noise(i + 600) * 2
+                let lean = (noise(i + 700) - 0.5) * 1.2
                 let root = point(angle)
                 var fiber = Path()
-                fiber.move(to: CGPoint(x: root.x * 0.96 + 2, y: root.y * 0.96 + 2))
-                fiber.addQuadCurve(to: CGPoint(x: root.x + cos(angle + 0.4) * 6, y: root.y + sin(angle + 0.4) * 6),
-                                   control: CGPoint(x: root.x + cos(angle) * 4, y: root.y + sin(angle) * 2))
-                context.stroke(fiber, with: .color(Color(hex: color)), style: StrokeStyle(lineWidth: 1.2, lineCap: .round))
+                fiber.move(to: CGPoint(x: root.x * 0.985 + 0.75, y: root.y * 0.985 + 0.75))
+                fiber.addQuadCurve(to: CGPoint(x: root.x + cos(angle + lean) * length, y: root.y + sin(angle + lean) * length),
+                                   control: CGPoint(x: root.x + cos(angle) * length * 0.55, y: root.y + sin(angle) * length * 0.55))
+                context.stroke(fiber, with: .color(Color(hex: color).opacity(0.85)),
+                               style: StrokeStyle(lineWidth: 0.65 + noise(i + 800) * 0.35, lineCap: .round))
             }
         }
     }
 
-    private func noise(_ index: Int) -> Double { Double(characterSeed("\(seed)/\(index)") % 1000) / 1000 }
+    private func noise(_ index: Int) -> Double {
+        // Mix neighboring seeds and indices so fibers do not form regular rows.
+        var value = seed &+ UInt64(index) &* 0x9E3779B97F4A7C15
+        value = (value ^ (value >> 30)) &* 0xBF58476D1CE4E5B9
+        value = (value ^ (value >> 27)) &* 0x94D049BB133111EB
+        value ^= value >> 31
+        return Double(value >> 11) / 9_007_199_254_740_992
+    }
 
     private func point(_ angle: Double) -> CGPoint {
         let x = cos(angle), y = sin(angle)
