@@ -1,0 +1,97 @@
+# Hermes integration
+
+Each Coconut bot maps to one native Hermes profile. Coconut's adapter runs outside the upstream source checkout.
+The installer pins and verifies the upstream revision before accepting updates.
+
+The tested revision is `b2aa855b626ff8688eb34b95c60ee8b6a4af3679`.
+Its primary interfaces are [AIAgent](https://github.com/NousResearch/hermes-agent/blob/b2aa855b626ff8688eb34b95c60ee8b6a4af3679/run_agent.py),
+[native profiles](https://hermes-agent.nousresearch.com/docs/user-guide/profiles/),
+[native memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory/),
+[approvals](https://hermes-agent.nousresearch.com/docs/user-guide/security/), and
+[cron jobs](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron/).
+
+## Worker
+
+The worker uses native context files, `SOUL.md`, memory, tool configuration, and skill discovery.
+It resumes native `SessionDB` history across tasks and follows Hermes compression continuations.
+Existing Coconut conversations enter native history through a one-time import.
+See [continuous conversations](conversation-continuity.md) for restart and retrieval behavior.
+The installed Hermes runtime resolves model credentials and effort. Model keys never enter phone API responses.
+The default model comes from the active native profile, not an app constant.
+
+Coconut registers tool middleware through `PluginContext.register_middleware` and `TOOL_EXECUTION_MIDDLEWARE`.
+The middleware persists tool intent and completion through the parent service.
+Native approval callbacks create durable Inbox cards. Context keeps the original decision pending.
+The adapter uses a runtime hook for inherited approval configuration. It changes no upstream source files.
+
+Coconut adds these tools:
+
+- `coconut_ask` supplies model-generated questions and choices.
+- `coconut_propose_file` supplies exact file proposals and persistent artifact cards.
+- `coconut_create_bot` creates a bot from a verified direct human request.
+- `coconut_delete_bot` deletes another bot from a verified direct human request.
+
+Native memory replaces the former custom preference tool.
+A one-time import preserves existing preferences and notes in native memory files.
+Subsequent Hermes edits remain authoritative.
+
+## Native bot messages
+
+Each native conversation has the canonical `Bot Chat` title and managed Bot Mode metadata.
+Hermes injects its own `message_agent` tool and composes its native relay envelopes.
+Coconut registers peer contacts through `tools.bot_relay.write_remote_roster`.
+Each bot retains its separate `HERMES_HOME` directory.
+These standalone profile homes communicate through the native relay transport on the same Mac.
+
+Hermes defines the relay as file transport that a client must deliver.
+The Mac adapter claims envelopes and commits a delivery task with its tool receipt in one SQLite transaction.
+A local intent journal links the native envelope to that receipt across process crashes.
+Recovery revalidates the target and reuses the original envelope ID.
+An ambiguous envelope remains unresolved; the adapter does not invent a successful delivery or repeat it blindly.
+A pending recipient does not block the sender or independent work.
+The adapter writes the recipient result through native `write_reply` and schedules the sender continuation once.
+
+The iPhone receives sender, recipient, and task IDs as structured data.
+It renders compact exchange rows and a shared, read-only transcript between the same two bots.
+That view spans tasks and creates no agent or Hermes session.
+Each bot retains its own work updates in its normal conversation.
+
+The Mac adapter still owns durable dispatch and recovery.
+It uses `AIAgent.run_conversation` and native `SessionDB`; it does not run the native TUI gateway as its service.
+The gateway probe works, but its event replay is process-local and live deliveries bind to session leases.
+Replacing the adapter requires equivalent restart recovery first.
+Coconut changes no Hermes source files.
+
+## Routines
+
+Native cron APIs create, edit, pause, resume, delete, claim, and finish jobs in each profile.
+Coconut runs supported prompt jobs as conversation tasks while the phone is closed.
+Native cron state determines recurrence and repeat limits.
+Completion uses the pinned [native outcome and schedule helpers](https://github.com/NousResearch/hermes-agent/blob/b2aa855b626ff8688eb34b95c60ee8b6a4af3679/cron/jobs.py).
+Coconut records the completion owner in the same native write as the outcome.
+This lets a retry confirm completion without advancing the schedule twice.
+The compatibility check verifies these interfaces before accepting an update.
+Jobs with scripts, monitors, skills, delivery targets, or execution overrides require native Hermes execution.
+The app displays that limitation instead of discarding the unsupported settings.
+
+## Recovery and limits
+
+A pending decision survives a backend restart. Other bots can finish before the user answers it.
+The continuation receives completed tool receipts and the recorded answer.
+Unknown tool results stop the task for inspection. Coconut never blindly repeats an uncertain native action.
+
+Full access gives native tools the Mac account's authority. Separate profiles are not security sandboxes.
+Coconut does not automatically export arbitrary native output files as artifact cards.
+The adapter currently supplies text attachments to Hermes; binary inspection is not complete.
+
+## Checks
+
+`python3 scripts/hermes.py check` verifies the pristine source, required APIs, tool registration, and native model settings.
+The contract probe blocks network access and uses disposable native settings.
+Mac mini updates run this check before activating the new backend.
+
+From the development Mac, run `python3 scripts/test_native_profiles.py` for the native profile and restart milestone.
+Run `python3 scripts/test_hermes_live.py` for bot creation, delegation, deletion, and restart.
+These checks use real model requests in temporary profiles. They leave existing bot conversations untouched.
+Run `python3 scripts/test_native_relay.py` for busy delivery, pending decisions, context, approval, and restart.
+Local backend tests use API doubles and do not replace the real Hermes checks.

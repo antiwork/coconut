@@ -1,0 +1,83 @@
+# Architecture
+
+The SwiftUI app consumes a versioned HTTPS API. It never parses Hermes CLI output.
+The Mac service owns coordination and runs separate Hermes worker processes.
+A future execution provider can move work to another host without changing bot, task, decision, or artifact IDs.
+
+## Ownership
+
+| Data | Owner |
+| --- | --- |
+| Bot identity | Stable UUID mapped to one Hermes profile |
+| Name and optional label | Native `profile.yaml` |
+| Description and instructions | Native `SOUL.md` |
+| Chat preferences and memory | Native `memories/USER.md` and `memories/MEMORY.md` |
+| Working conversation, compression, and searchable history | Native profile `state.db` |
+| Model, effort, tool settings | Native `config.yaml` |
+| Global and per-bot access | Native `approvals.mode` |
+| Schedules and cron state | Native `cron/jobs.json` |
+| Avatar, pinning, notification preference | Coconut presentation data |
+| Pairing, transcript replay, Inbox, routing | Coconut SQLite database |
+| Tool and dispatch receipts | Coconut coordination data |
+
+Coconut retains small projections for phone display. Native files own behavior.
+Inbox threads group decisions. They do not restrict a bot's recall of its own conversation.
+Workers resume native history and compression continuations. The phone never displays those internal boundaries.
+Model and access defaults resolve from the active native default profile.
+Each bot can inherit these values or store an override in its own native configuration.
+
+## Native integration
+
+Coconut installs no files into the Hermes source checkout.
+The worker loads `AIAgent`, native CLI tool configuration, profile context, memory, and skill discovery.
+A runtime plugin registers middleware through Hermes's plugin API.
+The middleware records tool intent and result through the parent service.
+Coconut adapts native approvals through the gateway callback and resolves profile inheritance during each approval check.
+
+Native `off`, `smart`, and `manual` modes retain their Hermes meaning.
+Full access is the one-time initial default. Later launches preserve the configured mode.
+Switching modes affects subsequent actions. It cannot undo an action already executing.
+
+## Decisions and recovery
+
+The service persists each question or approval before stopping its worker and publishing an event.
+Other bots continue. Context requests produce linked answers while preserving the decision.
+After an answer, the service starts a continuation with the recorded choice and prior completed tool receipts.
+A completed tool result can satisfy its matching replay call once. New turns use new receipt generations.
+
+Native tool execution is not a transaction with SQLite.
+If a process dies between an effect and its completion receipt, Coconut marks the task failed for inspection.
+It does not promise exactly-once execution for arbitrary shell commands or external services.
+Native bot deliveries commit their task and receipt together.
+A local journal recovers a native envelope when the service loses its response.
+The explicit Coconut file executor reconciles output identity and content before retrying.
+
+Routines use native jobs and native execution claims.
+A small receipt bridges a native claim to its Coconut task and reuses the same claim after a restart.
+An interrupted, unconfirmed claim produces a visible error. It does not dispatch again automatically.
+Native claim fences protect routine tool calls against an owner change.
+Advanced native jobs that Coconut cannot preserve do not execute through its dispatcher.
+
+## Isolation and routing
+
+Each bot has a separate native home, session, workspace, and browser-profile directory.
+These paths organize data; they do not restrict a full-access process from reading other paths.
+Browser tools must use the intended profile. Shared desktop control needs serialized ownership.
+Coconut does not provide an operating system sandbox or universal desktop lock.
+
+Hermes `message_agent` produces native relay envelopes.
+The Mac adapter routes these envelopes with stable IDs and durable delivery receipts.
+A delivery confirms queuing, not completion. Exchanges limit automatic messages and propagate cancellation.
+Native profile data is not copied into peer messages automatically.
+
+## Transport and future providers
+
+The local Mac provider uses HTTPS over Tailscale, certificate pinning, one-time pairing, and device tokens.
+The app retains a cursor and replays ordered events after reconnecting.
+The host continues while the phone is disconnected or suspended.
+
+Provider operations cover task start, continuation, context, structured events, cancellation, and artifact retrieval through the host API.
+The host owns scheduling and pending decisions. Cloud workers can implement the same operations later.
+The mini encrypts notification previews and sends them through Coconut's shared Cloudflare Worker.
+The iPhone decrypts previews locally. The relay owns the app's Apple credentials and requires verified app registration.
+Agent execution and conversation storage stay on the user's Mac. Secure cloud artifacts remain a future service.

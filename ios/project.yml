@@ -1,0 +1,134 @@
+name: Coconut
+packages:
+  MarkdownUI:
+    url: https://github.com/gonzalezreal/swift-markdown-ui
+    exactVersion: 2.4.1
+options:
+  bundleIdPrefix: dev.local
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+targets:
+  Coconut:
+    type: application
+    platform: iOS
+    dependencies:
+      - package: MarkdownUI
+      - target: CoconutNotificationService
+        embed: true
+    sources:
+      - Coconut
+      - PushShared
+      - ../scripts/push-envelope.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gumroad.coconut
+        PRODUCT_NAME: Coconut
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Coconut
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Coconut connects to your Mac to receive agent messages and answer decisions.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_ENTITLEMENTS: Coconut/Coconut.entitlements
+        APS_ENVIRONMENT: development
+      configs:
+        Release:
+          APS_ENVIRONMENT: production
+    info:
+      path: Coconut/Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CoconutPushEnvironment: $(APS_ENVIRONMENT)
+        CoconutPushKeychainGroup: $(AppIdentifierPrefix)com.gumroad.coconut.push
+        CoconutPushRelayURL: "https://coconut-push.gumroad.workers.dev"
+        ITSAppUsesNonExemptEncryption: false
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSCameraUsageDescription: Coconut uses the camera only when you scan a setup code from your Mac.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            "100.64.0.0/10":
+              NSExceptionAllowsInsecureHTTPLoads: true
+        UIApplicationSupportsIndirectInputEvents: true
+        NSBonjourServices:
+          - _coconut._tcp
+  CoconutNotificationService:
+    type: app-extension
+    platform: iOS
+    sources:
+      - CoconutNotificationService
+      - PushShared
+      - ../scripts/push-envelope.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gumroad.coconut.notification-service
+        PRODUCT_NAME: CoconutNotificationService
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_ENTITLEMENTS: CoconutNotificationService/CoconutNotificationService.entitlements
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+    info:
+      path: CoconutNotificationService/Info.plist
+      properties:
+        CFBundleDisplayName: Coconut Notifications
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CoconutPushKeychainGroup: $(AppIdentifierPrefix)com.gumroad.coconut.push
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.usernotifications.service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).NotificationService
+  CoconutTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - CoconutTests
+    dependencies:
+      - target: Coconut
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gumroad.coconut.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+  CoconutUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - CoconutUITests
+    dependencies:
+      - target: Coconut
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gumroad.coconut.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Coconut
+        TARGETED_DEVICE_FAMILY: "1,2"
+schemes:
+  Coconut:
+    build:
+      targets:
+        Coconut: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - name: CoconutTests
+        - name: CoconutUITests

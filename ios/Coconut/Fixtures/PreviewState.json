@@ -1,0 +1,343 @@
+{
+  "artifacts": [
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000002",
+      "created_at": "2026-09-08T11:16:00Z",
+      "id": "00000000-0000-4000-8000-000000000041",
+      "kind": "file",
+      "preview": "The Mac keeps working while the phone is closed. Notifications tell you when a bot finishes or needs a decision.",
+      "status": "ready",
+      "task_id": "00000000-0000-4000-8000-000000000022",
+      "title": "Local delivery notes.md"
+    }
+  ],
+  "bots": [
+    {
+      "archived": false,
+      "avatar": "hammer.fill",
+      "color": "DA7756",
+      "created_at": "2026-09-07T12:00:00Z",
+      "id": "00000000-0000-4000-8000-000000000001",
+      "instructions": "Keep progress brief. Prepare local changes. Ask before actions outside the working directory.",
+      "last_message": "The patch is ready. One decision needs you.",
+      "name": "Forge",
+      "pinned": false,
+      "role": "Code & pull requests",
+      "session_id": "00000000-0000-4000-8000-000000000011",
+      "status": "needs_you",
+      "unread_count": 1,
+      "model_override": null,
+      "effective_model": {
+        "model": "preview-standard",
+        "provider": "preview",
+        "reasoning_effort": "medium"
+      }
+    },
+    {
+      "archived": false,
+      "avatar": "binoculars.fill",
+      "color": "6B8F71",
+      "created_at": "2026-09-07T12:00:00Z",
+      "id": "00000000-0000-4000-8000-000000000002",
+      "instructions": "Check primary sources. Keep a short report with links. Continue independent work when another bot waits.",
+      "last_message": "The comparison is ready. Checking the remaining sources.",
+      "name": "Scout",
+      "pinned": false,
+      "role": "Research & checks",
+      "session_id": "00000000-0000-4000-8000-000000000012",
+      "status": "working",
+      "unread_count": 0,
+      "model_override": null,
+      "effective_model": {
+        "model": "preview-standard",
+        "provider": "preview",
+        "reasoning_effort": "medium"
+      }
+    }
+  ],
+  "cursor": 0,
+  "decisions": [
+    {
+      "action_type": "create_file",
+      "bot_id": "00000000-0000-4000-8000-000000000001",
+      "consequences": "Creates the local file you choose. No remote repository changes.",
+      "created_at": "2026-09-08T11:42:00Z",
+      "explanation": "The patch reuses the same action ID after a connection failure. Six focused checks pass.",
+      "id": "00000000-0000-4000-8000-000000000031",
+      "options": [
+        {
+          "action": {
+            "content": "--- a/retry.py\n+++ b/retry.py\n@@ -8,1 +8,1 @@\n-    execute(action, new_id())\n+    execute(action, action.id)\n",
+            "filename": "retry-fix.patch",
+            "type": "create_file"
+          },
+          "answer": "approve",
+          "explanation": "Save the small patch for direct review.",
+          "id": "00000000-0000-4000-8000-000000000061",
+          "label": "Patch only"
+        },
+        {
+          "action": {
+            "content": "# Retry fix\n\nReuse the original action ID after a connection failure. Six focused checks pass.\n\n--- a/retry.py\n+++ b/retry.py\n@@ -8,1 +8,1 @@\n-    execute(action, new_id())\n+    execute(action, action.id)\n",
+            "filename": "retry-fix-notes.md",
+            "type": "create_file"
+          },
+          "answer": "approve",
+          "explanation": "Save a Markdown file with the patch and its check results.",
+          "id": "00000000-0000-4000-8000-000000000062",
+          "label": "Patch with notes"
+        }
+      ],
+      "proposal_preview": "--- a/retry.py\n+++ b/retry.py\n@@ -8,1 +8,1 @@\n-    execute(action, new_id())\n+    execute(action, action.id)\n",
+      "recommended": "approve",
+      "recommended_option_id": "00000000-0000-4000-8000-000000000061",
+      "resource": "Forge workspace",
+      "revision": 1,
+      "status": "pending",
+      "task_id": "00000000-0000-4000-8000-000000000021",
+      "title": "Save the retry fix?",
+      "urgency": "normal"
+    }
+  ],
+  "messages": [
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000001",
+      "created_at": "2026-09-08T11:29:00Z",
+      "id": "8278B888-222E-4D21-BBC5-B9477B4F4C99",
+      "kind": "text",
+      "role": "user",
+      "streaming": false,
+      "task_id": "00000000-0000-4000-8000-000000000021",
+      "text": "Check why a retry can run the same action twice. Prepare a small fix.",
+      "thread_id": "00000000-0000-4000-8000-000000000021"
+    },
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000001",
+      "created_at": "2026-09-08T11:33:00Z",
+      "id": "448F60B8-635B-47C6-B852-2CB7B18FCB23",
+      "kind": "text",
+      "role": "assistant",
+      "streaming": false,
+      "task_id": "00000000-0000-4000-8000-000000000021",
+      "text": "I found where the retry creates a new action ID. I am checking the fix.",
+      "thread_id": "00000000-0000-4000-8000-000000000021"
+    },
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000001",
+      "created_at": "2026-09-08T11:34:00Z",
+      "id": "8E51AA19-5332-461D-AE50-7D5353439DA1",
+      "kind": "activity",
+      "role": "assistant",
+      "streaming": false,
+      "task_id": "00000000-0000-4000-8000-000000000021",
+      "text": "Read 3 files \u00b7 Compared the retry paths",
+      "thread_id": "00000000-0000-4000-8000-000000000021"
+    },
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000001",
+      "created_at": "2026-09-08T11:40:00Z",
+      "id": "77A25D8F-0717-44F8-968E-EFD179C65537",
+      "kind": "activity",
+      "role": "assistant",
+      "streaming": false,
+      "task_id": "00000000-0000-4000-8000-000000000021",
+      "text": "Ran 6 focused checks \u00b7 All passed",
+      "thread_id": "00000000-0000-4000-8000-000000000021"
+    },
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000001",
+      "created_at": "2026-09-08T11:42:00Z",
+      "id": "AA481D9A-5889-475B-83B7-DB6C2862EA25",
+      "kind": "text",
+      "role": "assistant",
+      "streaming": false,
+      "task_id": "00000000-0000-4000-8000-000000000021",
+      "text": "The patch is ready. One decision needs you.",
+      "thread_id": "00000000-0000-4000-8000-000000000021"
+    },
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000001",
+      "created_at": "2026-09-08T11:42:00Z",
+      "decision_id": "00000000-0000-4000-8000-000000000031",
+      "id": "D64DA9B1-8B44-41A2-BECB-FCB5271B5D67",
+      "kind": "decision",
+      "role": "assistant",
+      "streaming": false,
+      "task_id": "00000000-0000-4000-8000-000000000021",
+      "text": "",
+      "thread_id": "00000000-0000-4000-8000-000000000021"
+    },
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000002",
+      "created_at": "2026-09-08T10:52:00Z",
+      "id": "B3EC6261-7AFF-4294-ABF2-5B82C772AF08",
+      "kind": "text",
+      "role": "user",
+      "streaming": false,
+      "task_id": "00000000-0000-4000-8000-000000000022",
+      "text": "Compare local delivery options. Keep it brief.",
+      "thread_id": "00000000-0000-4000-8000-000000000022"
+    },
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000002",
+      "created_at": "2026-09-08T11:09:00Z",
+      "id": "ABE2EAA7-A021-4DAF-B742-F6584BD509AE",
+      "kind": "activity",
+      "role": "assistant",
+      "streaming": false,
+      "task_id": "00000000-0000-4000-8000-000000000022",
+      "text": "Checked 4 primary sources",
+      "thread_id": "00000000-0000-4000-8000-000000000022"
+    },
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000002",
+      "created_at": "2026-09-08T11:15:00Z",
+      "id": "212AF5EE-1938-49A2-92AC-32FFA83984B4",
+      "kind": "text",
+      "role": "assistant",
+      "streaming": false,
+      "task_id": "00000000-0000-4000-8000-000000000022",
+      "text": "The comparison is ready. Local networking fits the first milestone.",
+      "thread_id": "00000000-0000-4000-8000-000000000022"
+    },
+    {
+      "artifact_id": "00000000-0000-4000-8000-000000000041",
+      "bot_id": "00000000-0000-4000-8000-000000000002",
+      "created_at": "2026-09-08T11:16:00Z",
+      "id": "7E687FA1-6049-4E2C-8F8D-D532B6BCD1CD",
+      "kind": "artifact",
+      "role": "assistant",
+      "streaming": false,
+      "task_id": "00000000-0000-4000-8000-000000000022",
+      "text": "",
+      "thread_id": "00000000-0000-4000-8000-000000000022"
+    },
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000002",
+      "created_at": "2026-09-08T11:48:00Z",
+      "id": "A28794C7-53B0-4859-BC1B-626BF157E719",
+      "kind": "text",
+      "role": "user",
+      "streaming": false,
+      "task_id": "00000000-0000-4000-8000-000000000023",
+      "text": "Check the remaining sources while Forge waits.",
+      "thread_id": "00000000-0000-4000-8000-000000000023"
+    },
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000002",
+      "created_at": "2026-09-08T11:52:00Z",
+      "id": "FB0DCD39-CD4C-4B6D-B54D-6714BAA51CFB",
+      "kind": "text",
+      "role": "assistant",
+      "streaming": false,
+      "task_id": "00000000-0000-4000-8000-000000000023",
+      "text": "I am checking background limits and reconnect behavior.",
+      "thread_id": "00000000-0000-4000-8000-000000000023"
+    },
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000002",
+      "created_at": "2026-09-08T11:58:00Z",
+      "id": "0A56B4A0-54C7-4055-804A-AC0DDA5CCD56",
+      "kind": "activity",
+      "role": "assistant",
+      "streaming": false,
+      "task_id": "00000000-0000-4000-8000-000000000023",
+      "text": "Checking 2 remaining sources",
+      "thread_id": "00000000-0000-4000-8000-000000000023"
+    }
+  ],
+  "model": "preview-standard",
+  "model_configured": true,
+  "provider": "preview",
+  "server_time": "2026-09-08T12:00:00Z",
+  "tasks": [
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000001",
+      "created_at": "2026-09-08T11:29:00Z",
+      "id": "00000000-0000-4000-8000-000000000021",
+      "session_id": "00000000-0000-4000-8000-000000000011",
+      "status": "needs_you",
+      "summary": "Waiting for approval to save the patch.",
+      "thread_id": "00000000-0000-4000-8000-000000000021",
+      "title": "Prevent duplicate retries",
+      "updated_at": "2026-09-08T11:42:00Z"
+    },
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000002",
+      "created_at": "2026-09-08T10:52:00Z",
+      "id": "00000000-0000-4000-8000-000000000022",
+      "session_id": "00000000-0000-4000-8000-000000000012",
+      "status": "completed",
+      "summary": "The comparison is ready to review.",
+      "thread_id": "00000000-0000-4000-8000-000000000022",
+      "title": "Compare local delivery",
+      "updated_at": "2026-09-08T11:16:00Z"
+    },
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000002",
+      "created_at": "2026-09-08T11:48:00Z",
+      "id": "00000000-0000-4000-8000-000000000023",
+      "session_id": "00000000-0000-4000-8000-000000000012",
+      "status": "working",
+      "summary": "Checking two remaining sources.",
+      "thread_id": "00000000-0000-4000-8000-000000000023",
+      "title": "Verify background limits",
+      "updated_at": "2026-09-08T11:58:00Z"
+    }
+  ],
+  "model_catalog": {
+    "default": {
+      "model": "preview-standard",
+      "provider": "preview",
+      "base_url": null,
+      "reasoning_effort": "medium"
+    },
+    "models": [
+      {
+        "id": "preview-standard",
+        "name": "Preview Standard",
+        "provider": "preview",
+        "base_url": null,
+        "reasoning_efforts": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      {
+        "id": "preview-focused",
+        "name": "Preview Focused",
+        "provider": "preview",
+        "base_url": null,
+        "reasoning_efforts": [
+          "low",
+          "high"
+        ],
+        "default_reasoning_effort": "high"
+      }
+    ],
+    "model_source": "Explicit preview fixture",
+    "default_source": "Explicit preview fixture"
+  },
+  "approvals": {
+    "default": "off",
+    "modes": [
+      {
+        "id": "off",
+        "label": "Full access",
+        "description": "Hermes skips approval prompts."
+      },
+      {
+        "id": "smart",
+        "label": "Auto",
+        "description": "Hermes reviews flagged actions."
+      },
+      {
+        "id": "manual",
+        "label": "Ask for flagged actions",
+        "description": "Hermes asks before flagged actions."
+      }
+    ]
+  }
+}

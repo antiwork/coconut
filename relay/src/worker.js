@@ -1,0 +1,47 @@
+import { createHash } from 'node:crypto';
+export { PushDevice } from './device.js';
+
+export default {
+  async fetch(request, env) {
+    const path = new URL(request.url).pathname;
+    if (path === '/health' && request.method === 'GET') return Response.json({ ok: true, version: 1 });
+    try {
+      if (Number(request.headers.get('content-length') || 0) > 24000) return new Response(null, { status: 413 });
+      const chunks = [];
+      let size = 0;
+      if (request.body) {
+        const reader = request.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.length;
+          if (size > 24000) { await reader.cancel(); return new Response(null, { status: 413 }); }
+          chunks.push(Buffer.from(value));
+        }
+      }
+      const text = Buffer.concat(chunks).toString('utf8');
+      if (request.method === 'POST' && ['/v1/challenge', '/v1/register'].includes(path)) {
+        const rate = await env.REGISTRATION_LIMIT.limit({ key: request.headers.get('cf-connecting-ip') || 'unknown' });
+        if (!rate.success) return new Response(null, { status: 429, headers: { 'Retry-After': '60' } });
+        const input = JSON.parse(text);
+        if (typeof input.key_id !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(input.key_id)) {
+          return new Response(null, { status: 400 });
+        }
+        const id = createHash('sha256').update(input.key_id).digest('hex');
+        return env.DEVICES.get(env.DEVICES.idFromName(id)).fetch(new Request(request.url, {
+          method: request.method, headers: { 'content-type': 'application/json', 'x-route-id': id }, body: text,
+        }));
+      }
+      const match = /^\/v1\/routes\/([a-f0-9]{64})(\/send)?$/.exec(path);
+      if (match && ((match[2] && request.method === 'POST') || (!match[2] && request.method === 'DELETE'))) {
+        if (!/^Bearer [a-f0-9]{64}$/.test(request.headers.get('authorization') || '')) return new Response(null, { status: 401 });
+        const rate = await env.DELIVERY_LIMIT.limit({ key: request.headers.get('cf-connecting-ip') || 'unknown' });
+        if (!rate.success) return new Response(null, { status: 429 });
+        return env.DEVICES.get(env.DEVICES.idFromName(match[1])).fetch(new Request(request.url, {
+          method: request.method, headers: request.headers, body: text || undefined,
+        }));
+      }
+      return new Response(null, { status: 404 });
+    } catch { return new Response(null, { status: 400 }); }
+  },
+};

@@ -1,0 +1,164 @@
+"""Persist native tool receipts and human decisions across worker restarts."""
+from __future__ import annotations
+
+import json
+from uuid import uuid4
+
+
+class NativeExecution:
+    def _has_uncertain_receipt(self, task_id, turn_id):
+        return any(record['task_id'] == task_id and record.get('turn_id') == turn_id
+                   and record['state'] == 'executing' for record in self._all('native_receipts'))
+
+    def native_relay_delivery(self, task_id, payload):
+        with self.transaction():
+            return self._store_native_relay_delivery(task_id, payload)
+
+    def _store_native_relay_delivery(self, task_id, payload):
+        from .service import ServiceError, now
+        record = self._get('native_receipts', payload['native_call_id'])
+        action = record['action']
+        arguments = action['arguments']
+        if record['task_id'] != task_id or action['name'] != 'message_agent':
+            raise ServiceError(409, 'The relay receipt does not match this task.')
+        target = str(arguments.get('target', '')).lstrip('@').split('@')[0]
+        if target != payload['target_bot_id'] or arguments.get('message') != payload['text']:
+            raise ServiceError(409, 'The relay envelope does not match this tool call.')
+        if record['state'] == 'completed':
+            return json.loads(record['result'])
+        if record['state'] != 'executing':
+            raise ServiceError(409, 'This tool cannot deliver a message.')
+        receipt = self._store_bot_message(task_id, payload)
+        receipt = {key: value for key, value in receipt.items() if isinstance(value, str)}
+        receipt['delivery_id'] = payload['native_envelope_id']
+        record.update(state='completed', result=json.dumps(receipt, sort_keys=True), completed_at=now())
+        self._put('native_receipts', record)
+        return receipt
+
+    def recover_native_relays(self):
+        if not hasattr(self.provider, 'native_settings'):
+            return
+        for record in self._all('native_receipts'):
+            if record['state'] != 'executing' or record['action']['name'] != 'message_agent':
+                continue
+            task = self._get('tasks', record['task_id'])
+            if task['status'] != 'working':
+                continue
+            bot = self._get('bots', task['bot_id'])
+            payload = self.provider.native_settings('relay_recover', [bot], bot_id=bot['id'], call_id=record['id'])
+            if payload:
+                from .service import ServiceError
+                try:
+                    self._store_native_relay_delivery(task['id'], payload)
+                except ServiceError:
+                    continue
+
+    def native_event(self, task_id, kind, payload, context_id=None):
+        from .service import ServiceError, YieldForDecision, now, digest, encoded
+        with self.transaction():
+            task = self._get('tasks', task_id)
+            context = self._get('contexts', context_id) if context_id else None
+            active = context['status'] == 'working' and context['task_id'] == task_id if context else task['status'] == 'working'
+            if not active or self._task_paused(task):
+                raise ServiceError(409, 'This task cannot execute a tool now.')
+            if kind == 'native_call':
+                action = {'name': payload['name'], 'arguments': payload['arguments']}
+                record = dict(id=str(uuid4()), task_id=task_id, turn_id=context_id or task.get('_native_turn_id'), action=action, action_hash=digest(encoded(action)),
+                              state='executing', created_at=now())
+                self._put('native_receipts', record)
+                return {'status': 'recorded', 'id': record['id']}
+            if kind == 'native_result':
+                record = self._get('native_receipts', payload['id'])
+                if record['task_id'] == task_id and record['state'] == 'completed' and record['result'] == payload['result']:
+                    return {'status': 'recorded'}
+                if record['task_id'] != task_id or record['state'] != 'executing':
+                    raise ServiceError(409, 'The tool receipt does not match this task.')
+                record.update(state='completed', result=payload['result'], completed_at=now())
+                self._put('native_receipts', record)
+                for decision in self._all('decisions'):
+                    if decision['task_id'] == task_id and decision['status'] == 'approved' and decision.get('_action_hash') == record['action_hash']:
+                        try:
+                            result = json.loads(payload['result']) if isinstance(payload['result'], str) else payload['result']
+                        except (ValueError, TypeError):
+                            result = {}
+                        failed = isinstance(result, dict) and (bool(result.get('error')) or result.get('success') is False or result.get('is_error') is True or result.get('exit_code', 0) not in (0, None))
+                        decision.update(status='failed' if failed else 'executed', outcome='Hermes could not complete this action.' if failed else 'Hermes returned the result of this action.')
+                        self._put('decisions', decision)
+                        self._event('decision.updated', self._public(decision), task['bot_id'], task_id)
+                return {'status': 'recorded'}
+            action = payload.get('action', {})
+            approval = kind == 'native_approval'
+            if approval:
+                record = self._get('native_receipts', payload['receipt_id'])
+                if record['task_id'] != task_id or record['state'] != 'executing':
+                    raise ServiceError(409, 'The approval does not match this tool call.')
+                action = record['action']
+                record['state'] = 'awaiting_approval'
+                self._put('native_receipts', record)
+                options = [dict(id='once', label='Allow once', answer='approve', explanation=''), dict(id='deny', label='Do not run', answer='reject', explanation='')]
+            else:
+                if payload.get('receipt_id'):
+                    record = self._get('native_receipts', payload['receipt_id'])
+                    if record['task_id'] != task_id or record['state'] != 'executing':
+                        raise ServiceError(409, 'The question does not match this tool call.')
+                    record['state'] = 'awaiting_answer'
+                    self._put('native_receipts', record)
+                    action = record['action']
+                options = payload.get('options', [])
+                if (not isinstance(options, list) or not 1 <= len(options) <= 8
+                        or any(not isinstance(o, dict) or any(not isinstance(o.get(k), str) or not o[k].strip() or len(o[k]) > limit for k, limit in (('id', 80), ('label', 300))) for o in options)
+                        or len({o['id'] for o in options}) != len(options)):
+                    raise ServiceError(400, 'Supply one to eight distinct choices.')
+                options = [dict(id=o['id'], label=o['label'], answer='approve', explanation='') for o in options]
+                for field in ('recommended_option_id', 'predicted_option_id'):
+                    if payload.get(field) is not None and payload[field] not in {o['id'] for o in options}:
+                        raise ServiceError(400, 'Recommendations must refer to a current choice.')
+            decision = dict(id=str(uuid4()), bot_id=task['bot_id'], task_id=task_id,
+                            title=str(payload.get('title', 'Allow this action?'))[:160],
+                            explanation=str(payload.get('explanation', ''))[:2000],
+                            action_type='native_approval' if approval else 'question',
+                            resource=str(payload.get('resource', ''))[:4000], consequences='', recommended='approve',
+                            options=options, recommended_option_id=payload.get('recommended_option_id'),
+                            status='pending', urgency='normal', created_at=now(), decided_at=None, decided_by=None,
+                            decided_by_name=None, correction=None, outcome=None, revision=1,
+                            _action=action, _action_hash=digest(encoded(action)), _native=True,
+                            _predicted_option_id=payload.get('predicted_option_id'), _receipt_id=payload.get('receipt_id'), _answers=[])
+            self._put('decisions', decision)
+            task.update(status='needs_you', summary=decision['title'])
+            self._put('tasks', task)
+            self._message(task['bot_id'], decision['title'], task_id=task_id, kind='decision', decision_id=decision['id'])
+            self._event('decision.created', self._public(decision), task['bot_id'], task_id)
+            self._refresh_bot(task['bot_id'])
+        raise YieldForDecision('The native decision is durable.')
+
+    def answer_native(self, decision, task, data, device):
+        from .service import ServiceError, now, decision_correction
+        if self._task_paused(task):
+            raise ServiceError(409, 'Restore the bot before answering.')
+        option_id = data.get('option_id')
+        option = next((item for item in decision['options'] if item['id'] == option_id), None)
+        choice = option['answer'] if option else data.get('choice')
+        if choice not in ('approve', 'reject', 'modify') or (choice == 'approve' and not option):
+            raise ServiceError(400, 'Choose one of the current options.')
+        correction = decision_correction(data)
+        if choice == 'modify' and not correction.strip():
+            raise ServiceError(400, 'Describe the change.')
+        decision.update(status={'approve': 'approved', 'reject': 'rejected', 'modify': 'modified'}[choice],
+                        selected_option_id=option_id, selected_option_label=option['label'] if option else None,
+                        correction=correction, decided_at=now(), decided_by=device, decided_by_name=self._actor_name(device),
+                        outcome='Answer recorded. Hermes will continue.')
+        decision['_answers'].append(dict(choice=choice, option_id=option_id, correction=correction,
+                                          predicted_option_id=decision.get('_predicted_option_id'), decided_by=device))
+        self._put('decisions', decision)
+        if decision['action_type'] == 'question' and decision.get('_receipt_id'):
+            record = self._get('native_receipts', decision['_receipt_id'])
+            record.update(state='completed', result=json.dumps({'response': decision.get('selected_option_label') or correction or 'The person declined.'}))
+            self._put('native_receipts', record)
+        task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
+        if correction.strip():
+            self._record_decision_correction(task, decision, correction)
+        self._put('tasks', task)
+        self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
+        self._event('task.updated', self._public(task), task['bot_id'], task['id'])
+        self._refresh_bot(task['bot_id'])
+        return self._public(decision)

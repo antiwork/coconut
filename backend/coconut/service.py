@@ -1,0 +1,2148 @@
+"""Durable local coordinator. Providers propose actions; this service enforces them."""
+from __future__ import annotations
+
+import base64
+import contextlib
+import fcntl
+import hashlib
+import hmac
+import json
+import os
+from pathlib import Path
+import secrets
+import sqlite3
+import threading
+import time
+import unicodedata
+from datetime import datetime, timezone
+from typing import Any
+from uuid import UUID, uuid4, uuid5
+
+from .pr_tracking import GitHubPRTracker, PRTrackingError, parse_pr_url
+from .routines import validate_schedule, next_run
+from .profiles import HermesProfiles, ProfileError, profile_id
+
+
+class ServiceError(Exception):
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
+class YieldForDecision(RuntimeError):
+    """Stop the provider after the service commits its proposed action."""
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def uid() -> str:
+    return str(uuid4())
+
+
+def encoded(value: Any) -> str:
+    return json.dumps(value, separators=(',', ':'), sort_keys=True)
+
+
+def digest(value: str | bytes) -> str:
+    return hashlib.sha256(value.encode() if isinstance(value, str) else value).hexdigest()
+
+
+def require_text(data: dict, key: str, maximum: int | None = 10000) -> str:
+    value = data.get(key)
+    if not isinstance(value, str) or not value.strip() or (maximum is not None and len(value) > maximum):
+        bound = f'between 1 and {maximum} characters' if maximum is not None else 'nonempty text'
+        raise ServiceError(400, f'{key} must contain {bound}.')
+    return value.strip()
+
+
+def decision_correction(data: dict) -> str:
+    value = data.get('correction')
+    if value is None:
+        return ''
+    if not isinstance(value, str) or len(value) > 10000:
+        raise ServiceError(400, 'Corrections must contain at most 10000 characters.')
+    return value
+
+
+from .native_execution import NativeExecution
+
+
+from .routine_coordinator import NativeRoutines
+from .approval_updates import ApprovalUpdates
+
+
+class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
+    ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused'}
+    TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
+    EXCHANGE_LIMIT = 8
+    ACTIONS = {'create_file'}
+
+    def __init__(self, data_dir: str | Path, provider: Any, *, start_workers: bool = True, pr_tracker: Any = None):
+        self.root = Path(data_dir).expanduser().resolve()
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.root, 0o700)
+        self.process_lock = open(self.root / 'service.lock', 'a')
+        try:
+            fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            self.process_lock.close()
+            raise ServiceError(409, 'Another Coconut service already owns this data directory.')
+        self.files = self.root / 'artifacts'
+        self.files.mkdir(exist_ok=True, mode=0o700)
+        self.provider = provider
+        self.profiles = HermesProfiles(self.root)
+        self.pr_tracker = pr_tracker if pr_tracker is not None else GitHubPRTracker()
+        self.lock = threading.RLock()
+        self.model_settings_lock = threading.Lock()
+        self.changed = threading.Condition(self.lock)
+        self.db = sqlite3.connect(self.root / 'coconut.sqlite3', check_same_thread=False, isolation_level=None)
+        os.chmod(self.root / 'coconut.sqlite3', 0o600)
+        self.db.execute('PRAGMA journal_mode=WAL')
+        self.db.execute('PRAGMA synchronous=FULL')
+        for table in self.TABLES:
+            self.db.execute(f'CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
+        self.db.executescript('''
+        CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, bot_id TEXT, task_id TEXT, data TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS requests (key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS pairing (hash TEXT PRIMARY KEY, expires REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS pair_attempts (created REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS exchanges (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS routine_occurrences (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS contexts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS bot_creation_receipts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS bot_deletion_receipts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS native_receipts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS receipts (decision_id TEXT PRIMARY KEY, state TEXT NOT NULL, artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL, detail TEXT NOT NULL);
+        ''')
+        self._request_device_id = None
+        self.stopping = threading.Event()
+        self.running: dict[str, threading.Thread] = {}
+        self.bot_locks: dict[str, threading.Lock] = {}
+        self.context_threads: dict[str, threading.Thread] = {}
+        self.dispatcher: threading.Thread | None = None
+        self.pr_poller: threading.Thread | None = None
+        from .push import PushDelivery
+        self.push = PushDelivery(self)
+        if hasattr(self.provider, 'migrate_model_default'):
+            self.provider.migrate_model_default(self._setting('model'), self._setting('base_url'))
+        elif hasattr(self.provider, 'configure') and self._setting('model'):
+            self.provider.configure(model=self._setting('model'), base_url=self._setting('base_url') or None)
+        try:
+            with self.transaction():
+                self._migrate_threads()
+                self._migrate_bot_exchanges()
+                self._recover()
+        except BaseException:
+            self.db.close()
+            fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_UN)
+            self.process_lock.close()
+            raise
+        if hasattr(self.provider, 'native_settings'):
+            self.provider.native_settings('migrate', [b for b in self._all('bots') if not b.get('_deleted')])
+        with self.transaction():
+            for bot in self._all('bots'):
+                bot.pop('memory', None)
+                bot.pop('preferences', None)
+                bot.setdefault('notifications', True)
+                self._put('bots', bot)
+            self.db.execute('DROP TABLE IF EXISTS policies')
+            self.db.execute('DROP TABLE IF EXISTS preference_receipts')
+        if start_workers:
+            self.start()
+        if hasattr(self.provider, 'subscribe_model_catalog'):
+            self.provider.subscribe_model_catalog(self._catalog_changed)
+
+    def _catalog_changed(self):
+        with self.lock:
+            if self.stopping.is_set():
+                return
+            with self.transaction():
+                self._event('model_catalog.updated', {})
+
+    @contextlib.contextmanager
+    def transaction(self):
+        with self.lock:
+            self.db.execute('BEGIN IMMEDIATE')
+            self._profile_pending = {}
+            try:
+                yield
+                self.db.execute('COMMIT')
+                self.changed.notify_all()
+            except BaseException:
+                self._profile_pending = {}
+                self.db.execute('ROLLBACK')
+                raise
+            pending, self._profile_pending = self._profile_pending, {}
+            for bot in pending.values():
+                try:
+                    self.profiles.sync(bot)
+                except (ProfileError, OSError) as error:
+                    raise ServiceError(503, 'The bot settings were saved, but its Hermes profile could not sync.') from error
+
+    def _all(self, table: str) -> list[dict]:
+        return [json.loads(row[0]) for row in self.db.execute(f'SELECT data FROM {table} ORDER BY rowid')]
+
+    def _get(self, table: str, object_id: str) -> dict:
+        row = self.db.execute(f'SELECT data FROM {table} WHERE id=?', (object_id,)).fetchone()
+        if not row:
+            raise ServiceError(404, f'{table[:-1].capitalize()} was not found.')
+        return json.loads(row[0])
+
+    def _put(self, table: str, obj: dict):
+        self.db.execute(f'INSERT INTO {table}(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data', (obj['id'], encoded(obj)))
+
+    def _event(self, event_type: str, data: dict, bot_id: str | None = None, task_id: str | None = None):
+        self.db.execute('INSERT INTO events(type,bot_id,task_id,data,created_at) VALUES (?,?,?,?,?)', (event_type, bot_id, task_id, encoded(data), now()))
+        self.push.record(event_type, data, bot_id, task_id)
+
+    def _message(self, bot_id: str, text: str, *, task_id: str | None = None, role: str = 'assistant', kind: str = 'text', decision_id: str | None = None, artifact_id: str | None = None, streaming: bool = False, sender_bot_id: str | None = None, recipient_bot_ids: list[str] | None = None, human_authored: bool = False) -> dict:
+        task = self._get('tasks', task_id) if task_id else None
+        thread_id = task['thread_id'] if task else None
+        display_bot_id = (task['bot_id'] if task.get('source_bot_id') else task['conversation_bot_id']) if task else bot_id
+        if sender_bot_id is None and task and role != 'user':
+            sender_bot_id = task['bot_id']
+        recipients = recipient_bot_ids if recipient_bot_ids is not None else ([task['bot_id']] if task and role == 'user' else [])
+        if sender_bot_id and recipients and kind == 'text':
+            kind = 'bot_exchange'
+            display_bot_id = sender_bot_id
+        message = dict(id=uid(), bot_id=display_bot_id, task_id=task_id, thread_id=thread_id, sender_bot_id=sender_bot_id, recipient_bot_ids=recipients, role=role, kind=kind, text=text, decision_id=decision_id, artifact_id=artifact_id, created_at=now(), streaming=streaming)
+        if human_authored and self._request_device_id is not None:
+            message.update(_human_device_id=self._request_device_id, _human_source_kind='chat')
+        self._put('messages', message)
+        bot = self._get('bots', display_bot_id)
+        bot['last_message'] = text[:160]
+        if role == 'assistant':
+            bot['unread_count'] += 1
+        self._put('bots', bot)
+        self._event('message.created', self._public(message), display_bot_id, task_id)
+        return message
+
+    def _sync_profile(self, bot: dict):
+        if self.db.in_transaction:
+            self._profile_pending[bot['id']] = dict(bot)
+            return
+        try:
+            self.profiles.sync(bot)
+        except ProfileError as error:
+            raise ServiceError(409, str(error)) from error
+        except OSError as error:
+            raise ServiceError(503, 'The bot settings were saved, but its Hermes profile could not sync.') from error
+
+
+    def _human_source(self, task: dict, source_id: str, binding: dict, purpose: str) -> dict:
+        if source_id not in binding.get('_preference_source_ids', []):
+            raise ServiceError(409, f'This turn cannot use that message to {purpose}.')
+        source = self._get('messages', source_id)
+        if (not source.get('_human_device_id') or source.get('_human_source_kind') != 'chat'
+                or source.get('role') != 'user' or source.get('kind') != 'text'
+                or source.get('sender_bot_id') is not None
+                or source.get('thread_id') != task['thread_id']
+                or task['bot_id'] not in source.get('recipient_bot_ids', [])):
+            raise ServiceError(403, f'To {purpose}, use a direct human message addressed to this bot.')
+        return source
+
+    def _bot_creation_input(self, task: dict) -> dict:
+        sources, receipts = [], []
+        for source_id in task.get('_preference_source_ids', []):
+            try:
+                source = self._human_source(task, source_id, task, 'create bots')
+            except ServiceError:
+                continue
+            sources.append({'id': source['id'], 'text': source['text']})
+        source_ids = {source['id'] for source in sources}
+        for record in self._all('bot_creation_receipts'):
+            if record['source_message_id'] in source_ids:
+                bot = self._get('bots', record['receipt']['bot_id'])
+                if not bot.get('_deleted'):
+                    # A committed bot may still need its profile after an interrupted sync.
+                    self._sync_profile(bot)
+                    receipts.append(record['receipt'] | {'status': 'duplicate'})
+        return {'_bot_creation_sources': sources, '_bot_creation_receipts': receipts}
+
+    def _create_bot_from_chat(self, task_id: str, payload: dict) -> dict:
+        if not isinstance(payload, dict) or set(payload) != {'source_message_id', 'name', 'role', 'instructions'}:
+            raise ServiceError(400, 'Send only source_message_id, name, role, and instructions to create a bot.')
+        source_id = require_text(payload, 'source_message_id', 100)
+        name = require_text(payload, 'name', 80)
+        role = require_text(payload, 'role', 160)
+        instructions = payload['instructions']
+        if not isinstance(instructions, str) or len(instructions) > 20000:
+            raise ServiceError(400, 'instructions must contain at most 20000 characters.')
+        normalized_name = ' '.join(unicodedata.normalize('NFKC', name).casefold().split())
+        receipt_id = digest(encoded([source_id, normalized_name]))
+        fingerprint = digest(encoded([normalized_name, role, instructions]))
+        with self.transaction():
+            task = self._get('tasks', task_id)
+            if self.stopping.is_set() or task['status'] != 'working':
+                raise ServiceError(409, 'This task is no longer working and cannot create a bot.')
+            if self._task_paused(task) or self._get('exchanges', task['exchange_id']).get('cancelled'):
+                raise ServiceError(409, 'Restore this bot before creating a bot.')
+            source = self._human_source(task, source_id, task, 'create bots')
+            previous = self.db.execute('SELECT data FROM bot_creation_receipts WHERE id=?', (receipt_id,)).fetchone()
+            if previous:
+                record = json.loads(previous[0])
+                if record['fingerprint'] != fingerprint:
+                    raise ServiceError(409, 'This message already created that bot with different settings. Send a new request.')
+                bot = self._get('bots', record['receipt']['bot_id'])
+                if bot.get('_deleted'):
+                    raise ServiceError(409, 'That bot was deleted. Send a new human request to create another bot.')
+                self._sync_profile(bot)
+                return record['receipt'] | {'status': 'duplicate'}
+            if sum(record['source_message_id'] == source_id for record in self._all('bot_creation_receipts')) >= self.EXCHANGE_LIMIT:
+                raise ServiceError(409, 'This message created eight bots. Send a new human request to create more.')
+            audit = {'source_message_id': source_id, 'source_task_id': task_id, 'created_by': source['_human_device_id']}
+            bot = self._create_bot({'name': name, 'role': role, 'instructions': instructions}, audit=audit)
+            receipt = dict(status='created', bot_id=bot['id'], profile_id=bot['profile_id'], session_id=bot['session_id'], name=bot['name'], role=bot['role'], source_message_id=source_id)
+            self._put('bot_creation_receipts', dict(id=receipt_id, fingerprint=fingerprint, source_message_id=source_id, source_task_id=task_id, source_bot_id=task['bot_id'], created_by=source['_human_device_id'], created_at=now(), receipt=receipt))
+            return receipt
+
+    def _bot_deletion_input(self, task: dict) -> dict:
+        sources = []
+        for source_id in task.get('_preference_source_ids', []):
+            try:
+                source = self._human_source(task, source_id, task, 'delete bots')
+            except ServiceError:
+                continue
+            sources.append({'id': source['id'], 'text': source['text']})
+        source_ids = {source['id'] for source in sources}
+        return {'_bot_deletion_sources': sources,
+                '_bot_deletion_receipts': [record['receipt'] for record in self._all('bot_deletion_receipts')
+                                            if record['source_message_id'] in source_ids],
+                '_deletable_bots': [{'id': bot['id'], 'name': bot['name'], 'role': bot['role'], 'archived': bot['archived']}
+                                    for bot in self._all('bots') if not bot.get('_deleted')
+                                    and bot['id'] not in (task['bot_id'], task['conversation_bot_id'])]}
+
+    def _delete_bot_from_chat(self, task_id: str, payload: dict) -> dict:
+        if not isinstance(payload, dict) or set(payload) != {'source_message_id', 'target_bot_id', 'expected_name'}:
+            raise ServiceError(400, 'Send only source_message_id, target_bot_id, and expected_name to delete a bot.')
+        source_id = require_text(payload, 'source_message_id', 100)
+        target_id = require_text(payload, 'target_bot_id', 100)
+        name = require_text(payload, 'expected_name', 160)
+        receipt_id = digest(encoded([source_id, target_id]))
+        callbacks = []
+        with self.transaction():
+            task = self._get('tasks', task_id)
+            if self.stopping.is_set() or task['status'] != 'working' or self._task_paused(task):
+                raise ServiceError(409, 'This task cannot delete a bot now.')
+            if self._get('exchanges', task['exchange_id']).get('cancelled'):
+                raise ServiceError(409, 'This exchange was cancelled.')
+            source = self._human_source(task, source_id, task, 'delete bots')
+            if target_id in (task['bot_id'], task['conversation_bot_id']):
+                raise ServiceError(409, 'Use another conversation to delete this bot. A bot cannot delete itself.')
+            bot = self._get('bots', target_id)
+            if bot['name'] != name:
+                raise ServiceError(409, 'The target bot changed its name. Refresh before requesting deletion.')
+            row = self.db.execute('SELECT data FROM bot_deletion_receipts WHERE id=?', (receipt_id,)).fetchone()
+            if row:
+                receipt = json.loads(row[0])['receipt']
+                if receipt['name'] != name:
+                    raise ServiceError(409, 'Retry the exact deletion request.')
+                receipt = receipt | {'status': 'duplicate'}
+                callbacks.append(lambda: self._finish_bot_deletion(target_id))
+            else:
+                if sum(record['source_message_id'] == source_id for record in self._all('bot_deletion_receipts')) >= self.EXCHANGE_LIMIT:
+                    raise ServiceError(409, 'This message deleted eight bots. Send a new request to delete more.')
+                audit = {'source_message_id': source_id, 'source_task_id': task_id, 'deleted_by': source['_human_device_id']}
+                if task_id in self._bot_deletion_scope(target_id):
+                    raise ServiceError(409, 'Request deletion in a separate task. This task depends on that bot.')
+                self._delete_bot(bot, callbacks, audit=audit)
+                receipt = dict(status='deleted', bot_id=target_id, profile_id=bot['profile_id'], name=name,
+                               source_message_id=source_id, cancelled_task_ids=bot.get('_delete_task_ids', []))
+                self._put('bot_deletion_receipts', dict(id=receipt_id, source_message_id=source_id,
+                          source_task_id=task_id, source_bot_id=task['bot_id'], deleted_by=source['_human_device_id'],
+                          created_at=now(), receipt=receipt))
+        for callback in callbacks:
+            callback()
+        return receipt
+
+
+
+
+
+
+    def _refresh_bot(self, bot_id: str):
+        bot = self._get('bots', bot_id)
+        tasks = [t for t in self._all('tasks') if t['bot_id'] == bot_id]
+        states = {t['status'] for t in tasks if t['status'] in ('working', 'needs_you', 'scheduled')}
+        if tasks and tasks[-1]['status'] == 'failed':
+            states.add('failed')
+        bot['status'] = next((s for s in ('needs_you', 'working', 'scheduled', 'failed') if s in states), 'idle')
+        self._put('bots', bot)
+        self._event('bot.updated', self._public(bot), bot_id)
+
+    @staticmethod
+    def _public(obj: dict) -> dict:
+        return {key: value for key, value in obj.items() if not key.startswith('_')}
+
+    def pairing_code(self, lifetime: int = 300) -> str:
+        code = ''.join(secrets.choice('0123456789') for _ in range(10))
+        with self.transaction():
+            self.db.execute('DELETE FROM pairing WHERE expires < ? OR used=1', (time.time(),))
+            self.db.execute('INSERT INTO pairing(hash,expires) VALUES (?,?)', (digest(code), time.time() + lifetime))
+        return code
+
+    create_pairing_code = pairing_code
+
+    def pair(self, data: dict) -> dict:
+        # Failed attempts commit, so retries cannot bypass the rate limit.
+        with self.transaction():
+            stamp = time.time()
+            self.db.execute('DELETE FROM pair_attempts WHERE created < ?', (stamp - 60,))
+            attempts = self.db.execute('SELECT COUNT(*) FROM pair_attempts').fetchone()[0]
+            self.db.execute('INSERT INTO pair_attempts(created) VALUES (?)', (stamp,))
+            row = self.db.execute('SELECT expires,used FROM pairing WHERE hash=?', (digest(str(data.get('code', ''))),)).fetchone()
+            if attempts >= 5:
+                result = ServiceError(429, 'Too many pairing attempts. Wait one minute.')
+            elif not row or row[0] < stamp or row[1]:
+                result = ServiceError(401, 'The pairing code is invalid or expired.')
+            else:
+                name = str(data.get('device_name', 'iPhone'))[:80]
+                device_id, token = uid(), secrets.token_urlsafe(32)
+                self.db.execute('UPDATE pairing SET used=1 WHERE hash=?', (digest(str(data['code'])),))
+                self.db.execute('INSERT INTO devices VALUES (?,?,?,?)', (device_id, name, digest(token), now()))
+                self._event('device.paired', {'device_id': device_id})
+                result = {'token': token, 'device_id': device_id}
+        if isinstance(result, ServiceError):
+            raise result
+        return result
+
+    def authenticate(self, token: str) -> str:
+        with self.lock:
+            row = self.db.execute('SELECT id FROM devices WHERE token_hash=?', (digest(token),)).fetchone()
+        if not row:
+            raise ServiceError(401, 'Pair this phone with the Mac to continue.')
+        return row[0]
+
+    def _model_catalog(self) -> dict | None:
+        if not hasattr(self.provider, 'model_catalog'):
+            return None
+        return self.provider.model_catalog()
+
+    def _validation_model_catalog(self) -> dict | None:
+        try:
+            return self.provider.validation_model_catalog() if hasattr(self.provider, 'validation_model_catalog') else self._model_catalog()
+        except ValueError as error:
+            raise ServiceError(503, str(error)) from None
+
+    def _bot_view(self, bot: dict, catalog: dict | None) -> dict:
+        result = self._public(bot)
+        if catalog is not None:
+            try:
+                route = self.provider.resolve_model(bot, catalog)
+                result['effective_model'] = {key: route.get(key) for key in ('model', 'provider', 'reasoning_effort')}
+            except ValueError as error:
+                result.update(effective_model=None, model_error=str(error))
+        return result
+
+    def _model_override(self, value: Any, catalog: dict | None) -> dict | None:
+        if value is None:
+            return None
+        if catalog is None:
+            raise ServiceError(400, 'Model overrides require a configured Hermes catalog.')
+        if (not isinstance(value, dict) or set(value) - {'model', 'provider', 'reasoning_effort'}
+                or not all(isinstance(value.get(key), str) and value[key].strip() for key in ('model', 'provider'))
+                or (value.get('reasoning_effort') is not None and not isinstance(value['reasoning_effort'], str))):
+            raise ServiceError(400, 'Choose a model, provider, and optional effort from the Hermes catalog.')
+        selection = {key: value.get(key) for key in ('model', 'provider', 'reasoning_effort')}
+        try:
+            self.provider.resolve_model({'model_override': selection}, catalog)
+        except ValueError as error:
+            raise ServiceError(400, str(error)) from None
+        return selection
+
+    def snapshot(self) -> dict:
+        self.refresh_native_routines()
+        catalog = self._model_catalog()
+        with self.lock:
+            stored_bots = [bot for bot in self._all('bots') if not bot.get('_deleted')]
+        if hasattr(self.provider, 'observe_bots'):
+            observed = self.provider.observe_bots(stored_bots)
+        else:
+            observed = {bot['id']: dict(bot, instructions=self.profiles.read_instructions(bot)) for bot in stored_bots}
+        with self.transaction():
+            bots = [self._bot_view(dict(b, **{key: value for key, value in observed.get(b['id'], {}).items() if key in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'model_override', '_native_effective_model', '_model_error')}), catalog) for b in self._all('bots') if not b.get('_deleted')]
+            visible = {b['id'] for b in bots}
+            visible_task_ids = {task['id'] for task in self._all('tasks') if task['bot_id'] in visible and task['conversation_bot_id'] in visible}
+            state = {'bots': bots}
+            for table in self.TABLES[1:]:
+                state[table] = [self._public(o) for o in self._all(table) if o['bot_id'] in visible and o.get('conversation_bot_id', o['bot_id']) in visible and not o.get('_deleted') and not o.get('_hidden') and (table not in ('decisions', 'artifacts') or not o.get('task_id') or o['task_id'] in visible_task_ids)]
+            state.update(cursor=self._cursor(), server_time=now(), provider=getattr(self.provider, 'name', 'unknown'), push_configured=self.push.configured)
+            if catalog is not None:
+                default = catalog.get('default', {})
+                state.update(model_catalog=catalog, model=default.get('model') or '', base_url=default.get('base_url') or '', model_configured=bool(catalog.get('default_configured', False)))
+            else:
+                state.update(model=self._setting('model', getattr(self.provider, 'model', '') or ''), base_url=self._setting('base_url', getattr(self.provider, 'base_url', '') or ''), model_configured=bool(getattr(self.provider, 'ready', False)))
+            if hasattr(self.provider, 'native_settings'):
+                state['approvals'] = self.provider.native_settings()['approvals']
+            return state
+
+    def _cursor(self) -> int:
+        return self.db.execute('SELECT COALESCE(MAX(seq),0) FROM events').fetchone()[0]
+
+    def events(self, after: int, wait: float = 0) -> dict:
+        if after < 0:
+            raise ServiceError(400, 'The event cursor must be zero or greater.')
+        deadline = time.monotonic() + min(max(wait, 0), 25)
+        with self.changed:
+            while self._cursor() <= after and not self.stopping.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.changed.wait(remaining)
+            rows = self.db.execute('SELECT seq,type,bot_id,task_id,data,created_at FROM events WHERE seq>? ORDER BY seq LIMIT 500', (after,)).fetchall()
+            result = [dict(seq=r[0], type=r[1], bot_id=r[2], task_id=r[3], data=json.loads(r[4]), created_at=r[5]) for r in rows]
+            return dict(events=result, cursor=result[-1]['seq'] if result else max(after, self._cursor()), server_time=now())
+
+    def _setting(self, key: str, default: Any = None) -> Any:
+        row = self.db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+        return json.loads(row[0]) if row else default
+
+    def mutate(self, method: str, path: str, data: dict, key: str, device_id: str = 'local') -> dict:
+        try:
+            UUID(key)
+        except (ValueError, TypeError, AttributeError):
+            raise ServiceError(400, 'Supply a UUID in Idempotency-Key.')
+        fingerprint = digest(encoded([device_id, method, path, data]))
+        if method == 'PUT' and path == '/v1/settings/approvals' and hasattr(self.provider, 'native_settings'):
+            return self.mutate_approval_default(data, key, fingerprint)
+        if method == 'PUT' and path == '/v1/settings/model' and hasattr(self.provider, 'set_model_default'):
+            return self._mutate_model_default(data, key, fingerprint)
+        parts = path.strip('/').split('/')
+        if method == 'PATCH' and len(parts) == 3 and parts[:2] == ['v1', 'bots'] and isinstance(data, dict):
+            return self._mutate_native_bot(parts[2], data, key, fingerprint, device_id)
+        catalog = self._model_catalog() if path == '/v1/settings/model' or (isinstance(data, dict) and ('model_override' in data or path == '/v1/bots')) else None
+        callbacks = []
+        with self.transaction():
+            previous = self.db.execute('SELECT fingerprint,response FROM requests WHERE key=?', (key,)).fetchone()
+            if previous:
+                if not hmac.compare_digest(previous[0], fingerprint):
+                    raise ServiceError(409, 'This idempotency key belongs to a different request.')
+                response = json.loads(previous[1])
+                if method == 'POST' and path == '/v1/bots':
+                    bot = self._get('bots', response['id'])
+                    if bot.get('_deleted'):
+                        raise ServiceError(409, 'That bot was deleted. Send a new request to create another bot.')
+                    self._sync_profile(bot)
+                if method == 'DELETE' and len(parts) == 3 and parts[:2] == ['v1', 'bots']:
+                    callbacks.append(lambda: self._finish_bot_deletion(parts[2]))
+            else:
+                self._request_device_id = device_id
+                self._request_model_catalog = catalog
+                try:
+                    if hasattr(self.provider, 'native_settings') and ((len(parts) == 4 and parts[1] == 'bots' and parts[3] == 'routines') or (len(parts) >= 3 and parts[1] == 'routines')):
+                        response = self.mutate_native_routine(method, parts, data, key)
+                    else:
+                        response = self._write(method, parts, data, device_id, callbacks)
+                finally:
+                    self._request_device_id = None
+                    self._request_model_catalog = None
+                self.db.execute('INSERT INTO requests VALUES (?,?,?)', (key, fingerprint, encoded(response)))
+        for callback in callbacks:
+            callback()
+        return response
+
+    @staticmethod
+    def _model_result(catalog: dict) -> dict:
+        default = catalog['default']
+        return dict(model_catalog=catalog, model=default.get('model') or '', base_url=default.get('base_url') or '', model_configured=bool(catalog.get('default_configured', False)))
+
+    def _finish_model_update(self, key: str, catalog: dict | None, *, error: str | None = None, intent: dict | None = None) -> dict:
+        response = {'_model_error': error} if error else ({} if intent and intent.get('bot_id') else self._model_result(catalog))
+        observed = None
+        if not error and intent and intent.get('bot_id'):
+            with self.lock:
+                bot = self._get('bots', intent['bot_id'])
+            observed = self.provider.observe_bot(bot) if hasattr(self.provider, 'observe_bot') else dict(bot, instructions=self.profiles.read_instructions(bot))
+        with self.transaction():
+            if not error and intent and intent.get('bot_id'):
+                self._request_model_catalog = catalog
+                self._request_device_id = intent['device_id']
+                try:
+                    response = self._write('PATCH', ['v1', 'bots', intent['bot_id']], intent['data'], intent['device_id'], [])
+                    response = self._bot_view(dict(response, **{field: value for field, value in observed.items() if field in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'model_override', '_native_effective_model', '_model_error')}), catalog)
+                finally:
+                    self._request_model_catalog = None
+                    self._request_device_id = None
+            self.db.execute('UPDATE requests SET response=? WHERE key=?', (encoded(response), key))
+            if error:
+                self._event('settings.update_unconfirmed', {'request_id': key})
+            elif not intent or not intent.get('bot_id'):
+                default = catalog['default']
+                self._event('settings.updated', {field: default.get(field) for field in ('model', 'provider', 'reasoning_effort')})
+        return response
+
+    def _reconcile_model_updates(self, catalog: dict | None) -> None:
+        with self.lock:
+            pending = []
+            for key, value in self.db.execute("SELECT key,response FROM requests WHERE response LIKE '%\"_model_pending\"%'"):
+                response = json.loads(value)
+                if isinstance(response, dict) and set(response) == {'_model_pending'}:
+                    pending.append((key, response['_model_pending']))
+        for key, intent in pending:
+            if intent.get('bot_id'):
+                try:
+                    with self.lock:
+                        bot = self._get('bots', intent['bot_id'])
+                    observed = self.provider.observe_bot(bot) if hasattr(self.provider, 'observe_bot') else dict(bot, instructions=self.profiles.read_instructions(bot))
+                    actual = {field: observed.get(field) for field in intent['expected']}
+                    matches = not bot.get('_deleted') and actual == intent['expected']
+                except (ValueError, ServiceError):
+                    matches = False
+            else:
+                actual = {field: catalog['default'].get(field) for field in ('model', 'provider', 'reasoning_effort')} if catalog else None
+                matches = actual == intent['expected']
+            message = None if matches else 'The Mac could not confirm that settings change. Check the current Hermes settings before trying again.'
+            self._finish_model_update(key, catalog, error=message, intent=intent)
+
+    def _previous_model_response(self, key: str, fingerprint: str) -> dict | None:
+        with self.lock:
+            previous = self.db.execute('SELECT fingerprint,response FROM requests WHERE key=?', (key,)).fetchone()
+        if not previous:
+            return None
+        if not hmac.compare_digest(previous[0], fingerprint):
+            raise ServiceError(409, 'This idempotency key belongs to a different request.')
+        response = json.loads(previous[1])
+        if response.get('_model_error'):
+            raise ServiceError(409, response['_model_error'])
+        return response
+
+    def _mutate_native_bot(self, bot_id: str, data: dict, key: str, fingerprint: str, device: str) -> dict:
+        with self.model_settings_lock:
+            catalog = self._validation_model_catalog() if data.get('model_override') is not None else self._model_catalog()
+            self._reconcile_model_updates(catalog)
+            previous = self._previous_model_response(key, fingerprint)
+            if previous is not None:
+                return previous
+            with self.lock:
+                bot = self._get('bots', bot_id)
+            if bot.get('_deleted'):
+                raise ServiceError(404, 'This bot was deleted.')
+            if 'profile_id' in data and data['profile_id'] != bot['profile_id']:
+                raise ServiceError(409, 'A bot keeps its original Hermes profile ID.')
+            for field in ('instructions', 'memory'):
+                if field in data and (not isinstance(data[field], str) or len(data[field]) > 20000):
+                    raise ServiceError(400, f'{field} must contain at most 20000 characters.')
+            for field in ('name', 'avatar', 'color'):
+                if field in data:
+                    require_text(data, field, 160)
+            if 'role' in data and (not isinstance(data['role'], str) or len(data['role']) > 160):
+                raise ServiceError(400, 'The label must contain at most 160 characters.')
+            if 'approval_override' in data and data['approval_override'] not in (None, 'off', 'smart', 'manual'):
+                raise ServiceError(400, 'Choose an approval mode from Hermes settings.')
+            for field in ('archived', 'pinned', 'notifications'):
+                if field in data and not isinstance(data[field], bool):
+                    raise ServiceError(400, f'{field} must be true or false.')
+            expected = {}
+            if 'model_override' in data:
+                expected['model_override'] = self._model_override(data['model_override'], catalog)
+            if 'instructions' in data:
+                expected['instructions'] = data['instructions']
+            expected.update({field: data[field] for field in ('name', 'role', 'approval_override') if field in data})
+            intent = dict(bot_id=bot_id, expected=expected, data=data, device_id=device)
+            with self.transaction():
+                self.db.execute('INSERT INTO requests VALUES (?,?,?)', (key, fingerprint, encoded({'_model_pending': intent})))
+                self._event('bot.settings_pending', {'request_id': key, 'fields': sorted(data)}, bot_id)
+            try:
+                if 'model_override' in expected:
+                    if hasattr(self.provider, 'set_bot_model'):
+                        self.provider.set_bot_model(bot, expected['model_override'])
+                if hasattr(self.provider, 'set_bot_settings'):
+                    self.provider.set_bot_settings(bot, {field: expected[field] for field in ('name', 'role', 'approval_override') if field in expected})
+                if 'instructions' in expected:
+                    self.profiles.write_instructions(bot, expected['instructions'])
+            except Exception:
+                raise ServiceError(503, 'The Mac could not confirm the profile change. Retry with the same request key.') from None
+            return self._finish_model_update(key, catalog, intent=intent)
+
+    def _mutate_model_default(self, data: dict, key: str, fingerprint: str) -> dict:
+        with self.model_settings_lock:
+            catalog = self._validation_model_catalog()
+            self._reconcile_model_updates(catalog)
+            previous = self._previous_model_response(key, fingerprint)
+            if previous is not None:
+                return previous
+            selection = self._model_override(data, catalog)
+            expected = dict(selection)
+            with self.transaction():
+                self.db.execute('INSERT INTO requests VALUES (?,?,?)', (key, fingerprint, encoded({'_model_pending': {'expected': expected}})))
+                self._event('settings.pending', {'request_id': key, 'fields': sorted(selection)})
+            try:
+                catalog = self.provider.set_model_default(selection)
+            except Exception:
+                # Keep the durable intent. A retry observes the native result first.
+                raise ServiceError(503, 'The Mac could not confirm the model change. Retry with the same request key.') from None
+            return self._finish_model_update(key, catalog)
+
+    def _create_bot(self, data: dict, *, audit: dict | None = None) -> dict:
+        if data.get('model_override') is not None:
+            raise ServiceError(400, 'Create the bot, then choose its model in bot settings.')
+        if not isinstance(data.get('pinned', False), bool):
+            raise ServiceError(400, 'pinned must be true or false.')
+        for field in ('instructions', 'memory'):
+            if not isinstance(data.get(field, ''), str) or len(data.get(field, '')) > 20000:
+                raise ServiceError(400, f'{field} must contain at most 20000 characters.')
+        bot = dict(id=uid(), session_id=uid(), name=require_text(data, 'name', 80), role=str(data.get('role', ''))[:160], avatar=str(data.get('avatar', 'person.crop.circle'))[:80], color=str(data.get('color', '#CC5A35'))[:20], instructions=data.get('instructions', ''), notifications=True, status='idle', last_message='', unread_count=0, archived=False, pinned=data.get('pinned', False), created_at=now())
+        bot['profile_id'] = profile_id(bot)
+        bot['model_override'] = None
+        self._sync_profile(bot)
+        self._put('bots', bot)
+        self._event('bot.created', bot | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
+        return bot
+
+    def _bot_deletion_scope(self, bot_id: str) -> set[str]:
+        tasks = self._all('tasks')
+        affected = {task['id'] for task in tasks if bot_id in (task['bot_id'], task['conversation_bot_id'])}
+        while True:
+            expanded = affected | {task['id'] for task in tasks if task.get('source_task_id') in affected}
+            if expanded == affected:
+                return affected
+            affected = expanded
+
+    def _delete_bot(self, bot: dict, callbacks: list, *, audit: dict | None = None):
+        if not bot.get('_deleted'):
+            affected = self._bot_deletion_scope(bot['id'])
+            cancelled = []
+            for task_id in sorted(affected):
+                task = self._get('tasks', task_id)
+                if task.pop('_return_pending', None) is not None:
+                    self._put('tasks', task)
+                if task['status'] in self.ACTIVE:
+                    cancelled.append(task_id)
+                    self._cancel_one(task, [])
+            for routine in self._all('routines'):
+                if routine['bot_id'] == bot['id'] and routine['enabled']:
+                    routine.update(enabled=False, next_run_at=None, updated_at=now())
+                    self._put('routines', routine)
+                    self._event('routine.updated', self._public(routine), bot['id'])
+            bot.update(_deleted=True, archived=True, _delete_task_ids=cancelled)
+            self._put('bots', bot)
+            self._event('bot.deleted', {'id': bot['id']} | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
+        callbacks.append(lambda: self._finish_bot_deletion(bot['id']))
+
+    def _finish_bot_deletion(self, bot_id: str):
+        with self.lock:
+            bot = self._get('bots', bot_id)
+            if not bot.get('_deleted'):
+                raise ServiceError(409, 'This bot has no recorded deletion.')
+            bot_lock = self.bot_locks.setdefault(bot_id, threading.Lock())
+        # Cancellation waits outside the database lock so worker receipts can finish.
+        errors = []
+        for task_id in bot.get('_delete_task_ids', []):
+            try:
+                self.provider.cancel_task(task_id)
+            except Exception as error:
+                errors.append(error)
+        try:
+            # A worker can still be preparing its profile before its process starts.
+            if not bot_lock.acquire(timeout=5):
+                raise TimeoutError('The deleted bot is still stopping.')
+            try:
+                self.profiles.sync(bot)
+                if hasattr(self.provider, 'native_settings'):
+                    for routine in self._all('routines'):
+                        if routine['bot_id'] == bot_id and routine.get('_native_id'):
+                            self.provider.native_settings('routine_update', [bot], bot_id=bot_id, native_id=routine['_native_id'], changes={'enabled': False})
+            finally:
+                bot_lock.release()
+        except Exception as error:
+            errors.append(error)
+        if errors:
+            raise ServiceError(503, 'Deletion was recorded, but cleanup is unconfirmed. Retry the exact request.') from errors[0]
+
+    def _write(self, method: str, parts: list[str], data: dict, device: str, callbacks: list) -> dict:
+        if not isinstance(data, dict) or not parts or parts[0] != 'v1':
+            raise ServiceError(400, 'Send a JSON object to a v1 route.')
+        if parts == ['v1', 'device', 'push']:
+            if method == 'PUT':
+                return self.push.registration(device, data)
+            if method == 'DELETE':
+                return self.push.unregister(device)
+        if parts == ['v1', 'bots', 'restart'] and method == 'POST':
+            epoch = uid()
+            self.db.execute('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                            ('conversation_epoch', encoded(epoch)))
+            result = dict(ok=True, requested_at=now(), starts_after_current_work=True)
+            self._event('bots.restarted', result | {'requested_by': device})
+            return result
+        if parts == ['v1', 'bots'] and method == 'POST':
+            return self._bot_view(self._create_bot(data), self._request_model_catalog)
+        if len(parts) >= 3 and parts[1] == 'bots':
+            bot = self._get('bots', parts[2])
+            if bot.get('_deleted'):
+                raise ServiceError(404, 'This bot was deleted.')
+            if len(parts) == 3 and method == 'PATCH':
+                if 'model_override' in data:
+                    bot['model_override'] = self._model_override(data['model_override'], self._request_model_catalog)
+                if 'profile_id' in data and data['profile_id'] != bot['profile_id']:
+                    raise ServiceError(409, 'A bot keeps its original Hermes profile ID.')
+                for field in ('name', 'role', 'avatar', 'color', 'instructions'):
+                    if field in data:
+                        if field in ('instructions', 'role'):
+                            if not isinstance(data[field], str) or len(data[field]) > 20000:
+                                raise ServiceError(400, f'{field} must contain at most 20000 characters.')
+                            bot[field] = data[field]
+                        else:
+                            bot[field] = require_text(data, field, 160)
+                for field in ('archived', 'pinned', 'notifications'):
+                    if field in data:
+                        if not isinstance(data[field], bool):
+                            raise ServiceError(400, f'{field} must be true or false.')
+                        bot[field] = data[field]
+                self._sync_profile(bot)
+                self._put('bots', bot)
+                self._event('bot.updated', bot, bot['id'])
+                return self._bot_view(bot, self._request_model_catalog)
+            if len(parts) == 3 and method == 'DELETE':
+                self._delete_bot(bot, callbacks, audit={'deleted_by': device})
+                return {'ok': True}
+            if parts[3:] == ['read'] and method == 'POST':
+                bot['unread_count'] = 0
+                self._put('bots', bot)
+                self._event('bot.read', {'id': bot['id']}, bot['id'])
+                return {'ok': True}
+            if parts[3:] == ['routines'] and method == 'POST':
+                return self._create_routine(bot, data)
+            if parts[3:] == ['messages'] and method == 'POST':
+                return self._send(bot, data)
+        if len(parts) >= 3 and parts[1] == 'routines':
+            return self._write_routine(method, parts, data)
+        if len(parts) == 4 and parts[1] == 'tasks' and parts[3] == 'replies' and method == 'POST':
+            return self._reply(self._get('tasks', parts[2]), data)
+        if len(parts) == 4 and parts[1] == 'tasks' and parts[3] == 'cancel' and method == 'POST':
+            task = self._get('tasks', parts[2])
+            self._cancel(task, callbacks)
+            return self._public(task)
+        if len(parts) == 4 and parts[1] == 'decisions' and method == 'POST':
+            decision = self._get('decisions', parts[2])
+            task = self._get('tasks', decision['task_id'])
+            if decision['status'] != 'pending' or task['status'] == 'cancelled':
+                raise ServiceError(409, 'This decision is no longer pending.')
+            if parts[3] == 'context':
+                question = require_text(data, 'question', 4000)
+                return self._request_context(decision, task, question, [])
+            if parts[3] == 'answer':
+                if decision.get('_native'):
+                    return self.answer_native(decision, task, data, device)
+                return self._answer(decision, task, data, device)
+        if parts == ['v1', 'settings', 'approvals'] and method == 'PUT':
+            if not hasattr(self.provider, 'native_settings'):
+                raise ServiceError(503, 'Hermes is not available.')
+            if data.get('mode') not in ('off', 'smart', 'manual'):
+                raise ServiceError(400, 'Choose an approval mode from Hermes settings.')
+            result = self.provider.native_settings('set_default_approval', mode=data['mode'])
+            self._event('settings.updated', {'approvals': result})
+            return result
+        if parts == ['v1', 'settings', 'model'] and method == 'PUT':
+            model = require_text(data, 'model', 200)
+            base_url = data.get('base_url', self._setting('base_url', getattr(self.provider, 'base_url', '') or ''))
+            if not isinstance(base_url, str) or (base_url and not base_url.startswith(('http://', 'https://'))):
+                raise ServiceError(400, 'Use an HTTP or HTTPS endpoint, or an empty string to clear it.')
+            for k, v in (('model', model), ('base_url', base_url)):
+                self.db.execute('INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', (k, encoded(v)))
+            self._event('settings.updated', {'model': model})
+            if hasattr(self.provider, 'configure'):
+                callbacks.append(lambda: self.provider.configure(model=model, base_url=base_url or None))
+            return {'model': model, 'base_url': base_url, 'model_configured': bool(getattr(self.provider, 'ready', False))}
+        if parts == ['v1', 'attachments'] and method == 'POST':
+            return self._attachment(data)
+        raise ServiceError(404, 'This route was not found.')
+
+    @staticmethod
+    def _utc_string(value: datetime) -> str:
+        return value.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+    def _routine_fields(self, data: dict, previous: dict | None = None) -> dict:
+        result = dict(previous or {})
+        for field in ('name', 'prompt', 'cron', 'timezone'):
+            if field in data:
+                result[field] = require_text(data, field, 20000 if field == 'prompt' else 160)
+        result.setdefault('enabled', True)
+        if 'enabled' in data:
+            if not isinstance(data['enabled'], bool):
+                raise ServiceError(400, 'enabled must be true or false.')
+            result['enabled'] = data['enabled']
+        for field in ('name', 'prompt', 'cron', 'timezone'):
+            if not result.get(field):
+                raise ServiceError(400, f'{field} is required.')
+        try:
+            validate_schedule(result['cron'], result['timezone'])
+            next_time = next_run(result['cron'], result['timezone'], datetime.now(timezone.utc))
+        except ValueError as error:
+            raise ServiceError(400, str(error)) from error
+        schedule_changed = previous is None or any(result.get(key) != previous.get(key) for key in ('cron', 'timezone', 'enabled'))
+        if schedule_changed:
+            result['next_run_at'] = self._utc_string(next_time) if result['enabled'] else None
+        result['updated_at'] = now()
+        return result
+
+    def _create_routine(self, bot: dict, data: dict) -> dict:
+        if bot['archived'] or bot.get('_deleted'):
+            raise ServiceError(409, 'Restore this bot before adding a routine.')
+        routine = self._routine_fields(data)
+        routine.update(id=uid(), bot_id=bot['id'], last_run_at=None, last_task_id=None, created_at=now())
+        self._put('routines', routine)
+        self._event('routine.created', routine, bot['id'])
+        return routine
+
+    def _write_routine(self, method: str, parts: list[str], data: dict) -> dict:
+        routine = self._get('routines', parts[2])
+        bot = self._get('bots', routine['bot_id'])
+        if routine.get('_deleted') or bot.get('_deleted'):
+            raise ServiceError(404, 'This routine was removed.')
+        if len(parts) == 3 and method == 'PATCH':
+            routine = self._routine_fields(data, routine)
+            self._put('routines', routine)
+            self._event('routine.updated', self._public(routine), bot['id'])
+            return self._public(routine)
+        if len(parts) == 3 and method == 'DELETE':
+            routine.update(enabled=False, next_run_at=None, _deleted=True, updated_at=now())
+            self._put('routines', routine)
+            self._event('routine.deleted', {'id': routine['id']}, bot['id'])
+            return {'ok': True}
+        if parts[3:] == ['run'] and method == 'POST':
+            if bot['archived']:
+                raise ServiceError(409, 'Restore the bot before running this routine.')
+            active = self._active_routine_task(routine['id'])
+            if active:
+                return self._public(active)
+            current = datetime.now(timezone.utc)
+            return self._queue_routine(routine, current, current, manual=True)
+        raise ServiceError(404, 'This routine route was not found.')
+
+    def _active_routine_task(self, routine_id: str) -> dict | None:
+        tasks = self._all('tasks')
+        related = {task['id'] for task in tasks if task.get('routine_id') == routine_id}
+        while True:
+            expanded = related | {task['id'] for task in tasks if task.get('source_task_id') in related}
+            if expanded == related:
+                break
+            related = expanded
+        return next((task for task in tasks if task['id'] in related and (task['status'] in self.ACTIVE or task.get('_return_pending'))), None)
+
+    def _queue_routine(self, routine: dict, scheduled: datetime, current: datetime, *, manual: bool = False) -> dict:
+        occurrence_id = uid() if manual else str(uuid5(UUID(routine['id']), self._utc_string(scheduled)))
+        previous = self.db.execute('SELECT data FROM routine_occurrences WHERE id=?', (occurrence_id,)).fetchone()
+        if previous:
+            return self._public(self._get('tasks', json.loads(previous[0])['task_id']))
+        bot = self._get('bots', routine['bot_id'])
+        task = self._send(bot, {'text': routine['prompt'], 'mode': 'queue'}, human_authored=False)
+        task = self._get('tasks', task['id'])
+        task.update(routine_id=routine['id'], routine_occurrence_id=occurrence_id)
+        self._put('tasks', task)
+        occurrence = dict(id=occurrence_id, routine_id=routine['id'], task_id=task['id'], scheduled_at=self._utc_string(scheduled), started_at=self._utc_string(current), manual=manual)
+        self._put('routine_occurrences', occurrence)
+        routine.update(last_run_at=self._utc_string(current), last_task_id=task['id'], updated_at=now())
+        if not manual:
+            routine['next_run_at'] = self._utc_string(next_run(routine['cron'], routine['timezone'], current))
+        self._put('routines', routine)
+        self._message(bot['id'], f'Routine: {routine["name"]}', task_id=task['id'], role='system', kind='activity')
+        self._event('routine.triggered', {'routine_id': routine['id'], 'occurrence_id': occurrence_id, 'task_id': task['id'], 'scheduled_at': occurrence['scheduled_at'], 'manual': manual}, bot['id'], task['id'])
+        self._event('routine.updated', self._public(routine), bot['id'], task['id'])
+        self._event('task.updated', self._public(task), bot['id'], task['id'])
+        return self._public(task)
+
+    def tick_routines(self, current: datetime | None = None):
+        if hasattr(self.provider, 'native_settings'):
+            return self.tick_native_routines()
+        current = current or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            raise ValueError('Routine ticks require an aware time.')
+        with self.transaction():
+            for routine in self._all('routines'):
+                if self.stopping.is_set() or routine.get('_deleted') or not routine['enabled'] or not routine.get('next_run_at'):
+                    continue
+                scheduled = datetime.fromisoformat(routine['next_run_at'].replace('Z', '+00:00'))
+                bot = self._get('bots', routine['bot_id'])
+                if scheduled > current or bot['archived'] or bot.get('_deleted') or self._active_routine_task(routine['id']):
+                    continue
+                self._queue_routine(routine, scheduled, current)
+
+    def _deliver_bot_message(self, source_task_id: str, payload: dict, *, returning: bool = False, record_message: bool = True) -> dict:
+        with self.transaction():
+            return self._store_bot_message(source_task_id, payload, returning=returning, record_message=record_message)
+
+    def _store_bot_message(self, source_task_id: str, payload: dict, *, returning: bool = False, record_message: bool = True) -> dict:
+        target_id = require_text(payload, 'target_bot_id', 100)
+        text = require_text(payload, 'text', None if returning else 20000)
+        native_id = payload.get('native_envelope_id')
+        if native_id is not None and (not isinstance(native_id, str) or len(native_id) != 32 or any(c not in '0123456789abcdef' for c in native_id)):
+            raise ServiceError(400, 'The native envelope ID is invalid.')
+        delivery_id = digest(encoded([source_task_id, native_id])) if native_id else digest(encoded([source_task_id, target_id, text]))
+        source = self._get('tasks', source_task_id)
+        existing = self.db.execute('SELECT data FROM deliveries WHERE id=?', (delivery_id,)).fetchone()
+        if existing:
+            receipt = json.loads(existing[0])['receipt']
+            return receipt | {'status': 'duplicate' if receipt['task_id'] else receipt['status']}
+        exchange = self._get('exchanges', source['exchange_id'])
+        if self.stopping.is_set() or exchange.get('cancelled') or source['status'] == 'cancelled':
+            return {'task_id': None, 'target_bot_id': target_id, 'thread_id': source['thread_id'], 'status': 'cancelled'}
+        if source['status'] != 'working' and not (returning and source['status'] in ('completed', 'failed')):
+            raise YieldForDecision('This task cannot send bot messages.')
+        self._recipient_ids([target_id])
+        if target_id == source['bot_id']:
+            raise ServiceError(400, 'Choose another bot for this message.')
+        origin = self._get('bots', source['conversation_bot_id'])
+        if origin['archived'] or origin.get('_deleted'):
+            raise ServiceError(409, 'The originating conversation is unavailable.')
+        if exchange['deliveries'] >= self.EXCHANGE_LIMIT:
+            if not exchange['paused']:
+                exchange['paused'] = True
+                self._put('exchanges', exchange)
+                self._message(source['bot_id'], 'Bot messages paused after eight deliveries. Send a reply to continue.', task_id=source['id'], role='system', kind='activity')
+                self._event('exchange.paused', {'exchange_id': exchange['id'], 'deliveries': exchange['deliveries'], 'limit': self.EXCHANGE_LIMIT}, origin['id'], source['id'])
+            receipt = {'task_id': None, 'target_bot_id': target_id, 'thread_id': source['thread_id'], 'status': 'limit_reached'}
+        else:
+            target = self._get('bots', target_id)
+            task = self._send(target, {'text': text, 'mode': 'queue'}, thread_id=source['thread_id'], parent_task_id=source['id'], conversation_bot_id=origin['id'], exchange_id=source['exchange_id'], source_task=source, record_message=False, text_limit=None if returning else 20000)
+            task = self._get('tasks', task['id'])
+            sender = self._get('bots', source['bot_id'])
+            task['_bot_messages'] = [{'sender_bot_id': sender['id'], 'sender_name': sender['name'], 'text': text, 'result_status': payload.get('result_status')}]
+            task['_is_return'] = returning or target_id == source.get('source_bot_id')
+            if native_id:
+                task['_native_relay'] = {'sender_bot_id': source['bot_id'], 'envelope_id': native_id}
+            self._put('tasks', task)
+            returned_message = next((m for m in reversed(self._all('messages'))
+                                     if returning and m.get('task_id') == source['id']
+                                     and m.get('sender_bot_id') == sender['id'] and m['kind'] == 'text'
+                                     and m['text'] == text), None)
+            if returned_message:
+                returned_message['exchange_recipient_bot_ids'] = [target_id]
+                self._put('messages', returned_message)
+                self._event('message.updated', self._public(returned_message), sender['id'], source['id'])
+            elif record_message:
+                self._message(origin['id'], text, task_id=task['id'], sender_bot_id=sender['id'], recipient_bot_ids=[target_id])
+            exchange['deliveries'] += 1
+            self._put('exchanges', exchange)
+            receipt = {'task_id': task['id'], 'target_bot_id': target_id, 'thread_id': task['thread_id'], 'status': 'paused' if task['status'] == 'paused' else 'queued'}
+            self._event('bot_message.delivered', {'source_task_id': source['id'], 'source_bot_id': sender['id'], 'target_bot_id': target_id, 'task_id': task['id'], 'thread_id': task['thread_id'], 'conversation_bot_id': origin['id'], 'exchange_id': exchange['id'], 'deliveries': exchange['deliveries'], 'limit': self.EXCHANGE_LIMIT, 'is_return': task['_is_return']}, origin['id'], task['id'])
+        self._put('deliveries', dict(id=delivery_id, source_task_id=source['id'], target_bot_id=target_id, text=text, receipt=receipt, created_at=now()))
+        return receipt
+
+    def _prepare_return(self, task: dict, text: str, result_status: str):
+        if result_status == 'failed':
+            self._hold_failed_followup(task)
+        if task.get('_native_relay'):
+            task['_native_reply_pending'] = dict(task['_native_relay'], text=text, failed=result_status == 'failed')
+        if not task.get('source_bot_id') or task.get('_is_return'):
+            return
+        already_sent = any(delivery['source_task_id'] == task['id'] and delivery['target_bot_id'] == task['source_bot_id'] and delivery['receipt']['task_id'] for delivery in self._all('deliveries'))
+        if not already_sent:
+            task['_return_pending'] = {'target_bot_id': task['source_bot_id'], 'text': text, 'result_status': result_status}
+
+    def _hold_failed_followup(self, task):
+        if not task.get('_steering') or task.get('_blocked_followup'):
+            return
+        messages = [m for m in self._all('messages') if m['task_id'] == task['id']
+                    and m['role'] == 'user' and m['kind'] == 'text' and not m.get('decision_id')]
+        pending = messages[-len(task['_steering']):]
+        task['_blocked_followup'] = dict(message_ids=[m['id'] for m in pending],
+            source_ids=[m['id'] for m in pending if m.get('_human_device_id')],
+            attachment_ids=list(task.get('_attachment_ids', [])))
+        task['steering_status'] = 'blocked'
+        task['summary'] += ' Your follow-up is saved. Reply to continue.'
+
+    def _drain_returns(self):
+        with self.lock:
+            native_replies = [(task['id'], task['_native_reply_pending']) for task in self._all('tasks') if task.get('_native_reply_pending')]
+        for task_id, reply in native_replies:
+            sender = self._get('bots', reply['sender_bot_id'])
+            if not sender.get('_deleted') and hasattr(self.provider, 'native_settings'):
+                try:
+                    self.provider.native_settings('relay_reply', [sender], bot_id=sender['id'],
+                                                  envelope_id=reply['envelope_id'], text=reply['text'], failed=reply['failed'])
+                except (OSError, ValueError, RuntimeError):
+                    continue
+            with self.transaction():
+                task = self._get('tasks', task_id)
+                task.pop('_native_reply_pending', None)
+                self._put('tasks', task)
+        with self.lock:
+            returns = [task['id'] for task in self._all('tasks') if task.get('_return_pending')]
+        for task_id in returns:
+            with self.transaction():
+                task = self._get('tasks', task_id)
+                payload = task.get('_return_pending')
+                if not payload:
+                    continue
+                recipients = [self._get('bots', identity) for identity in {payload['target_bot_id'], task['conversation_bot_id']}]
+                cancelled = task['status'] == 'cancelled' or self._get('exchanges', task['exchange_id']).get('cancelled')
+                if not cancelled and not any(bot.get('_deleted') for bot in recipients) and any(bot['archived'] for bot in recipients):
+                    continue
+                try:
+                    self._store_bot_message(task_id, payload, returning=True)
+                except ServiceError as error:
+                    self._message(task['bot_id'], f'The result could not return to its sender: {error}', task_id=task_id, role='system', kind='activity')
+                task.pop('_return_pending', None)
+                self._put('tasks', task)
+
+    def _new_exchange(self) -> str:
+        exchange_id = uid()
+        self._put('exchanges', dict(id=exchange_id, deliveries=0, paused=False, created_at=now()))
+        return exchange_id
+
+    def _recipient_ids(self, values: Any) -> list[str]:
+        if not isinstance(values, list) or len(values) > 20 or any(not isinstance(value, str) for value in values):
+            raise ServiceError(400, 'recipient_bot_ids must contain at most 20 bot IDs.')
+        recipients = list(dict.fromkeys(values))
+        for recipient_id in recipients:
+            bot = self._get('bots', recipient_id)
+            if bot.get('_deleted') or bot['archived']:
+                raise ServiceError(409, 'Choose bots that are active and not archived.')
+        return recipients
+
+    def _send(self, bot: dict, data: dict, *, thread_id: str | None = None, parent_task_id: str | None = None, conversation_bot_id: str | None = None, exchange_id: str | None = None, source_task: dict | None = None, record_message: bool = True, human_authored: bool = True, text_limit: int | None = 20000) -> dict:
+        text = require_text(data, 'text', text_limit)
+        mode = data.get('mode', 'queue')
+        if mode not in ('steer', 'queue'):
+            raise ServiceError(400, 'Choose steer or queue.')
+        if bot['archived'] or bot.get('_deleted'):
+            raise ServiceError(409, 'Restore this bot before sending work.')
+        conversation_bot_id = conversation_bot_id or bot['id']
+        origin = self._get('bots', conversation_bot_id)
+        if origin['archived'] or origin.get('_deleted'):
+            raise ServiceError(409, 'Restore this conversation before sending work.')
+        recipients = self._recipient_ids(data.get('recipient_bot_ids', []))
+        if recipients:
+            if mode != 'queue':
+                raise ServiceError(400, 'Mentioned bots receive queued work. Use queue mode.')
+            return self._dispatch_user(origin, data, recipients, thread_id=thread_id, parent_task_id=parent_task_id)
+        attachments = self._validate_attachments(conversation_bot_id, data.get('attachment_ids', []))
+        if mode == 'steer':
+            if not data.get('task_id'):
+                raise ServiceError(400, 'Choose an active task to steer.')
+            task = self._get('tasks', data['task_id'])
+            owner = task['bot_id'] if task.get('source_bot_id') else task['conversation_bot_id']
+            if owner != conversation_bot_id or task['status'] not in ('working', 'needs_you'):
+                raise ServiceError(409, 'Choose an active task from this conversation.')
+            if task['status'] == 'needs_you':
+                decisions = [decision for decision in self._all('decisions') if decision['task_id'] == task['id'] and decision['status'] == 'pending']
+                if len(decisions) != 1:
+                    raise ServiceError(409, 'Choose a pending decision before asking for context.')
+                self._request_context(decisions[0], task, text, attachments)
+                return self._public(task) | {'reply_status': 'context_requested'}
+            return self._steer_task(task, text, attachments, conversation_bot_id, human_authored=human_authored)
+        scheduled = data.get('scheduled_at')
+        if scheduled:
+            try:
+                parsed = datetime.fromisoformat(scheduled.replace('Z', '+00:00'))
+                if parsed.tzinfo is None:
+                    raise ValueError()
+            except (ValueError, AttributeError):
+                raise ServiceError(400, 'scheduled_at must contain an ISO 8601 date with a time zone.')
+        task_id = uid()
+        blocked = None
+        if record_message and human_authored:
+            blocked = next((prior for prior in reversed(self._all('tasks'))
+                if prior['bot_id'] == bot['id'] and prior['status'] == 'failed' and prior.get('_blocked_followup')
+                and (prior['id'] == parent_task_id if parent_task_id else
+                     (prior['bot_id'] if prior.get('source_bot_id') else prior['conversation_bot_id']) == conversation_bot_id)
+                and (thread_id is None or prior['thread_id'] == thread_id)), None)
+            if blocked:
+                thread_id, parent_task_id = blocked['thread_id'], blocked['id']
+        status = 'scheduled' if scheduled else 'queued'
+        task = dict(id=task_id, thread_id=thread_id or task_id, parent_task_id=parent_task_id, bot_id=bot['id'], conversation_bot_id=conversation_bot_id, session_id=bot['session_id'], source_bot_id=source_task['bot_id'] if source_task else None, source_task_id=source_task['id'] if source_task else None, exchange_id=exchange_id or self._new_exchange(), exchange_depth=source_task.get('exchange_depth', 0) + 1 if source_task else 0, title=text[:72], status=status, summary='Waiting for its scheduled time.' if scheduled else 'Queued', created_at=now(), updated_at=now(), scheduled_at=scheduled, _attachment_ids=attachments)
+        if self._task_paused(task):
+            task['status'] = 'paused'
+        if blocked:
+            pending = blocked.pop('_blocked_followup')
+            task['_shared_message_ids'] = pending['message_ids']
+            task['_preference_source_ids'] = pending['source_ids']
+            task['_attachment_ids'] = list(dict.fromkeys(pending['attachment_ids'] + attachments))
+            blocked.update(_steering=[], steering_status='continued', _continued_task_id=task_id,
+                           summary=blocked['summary'].removesuffix(' Your follow-up is saved. Reply to continue.'))
+            self._put('tasks', blocked)
+            self._event('task.updated', self._public(blocked), blocked['conversation_bot_id'], blocked['id'])
+        self._put('tasks', task)
+        if record_message:
+            message = self._message(bot['id'], text, task_id=task['id'], role='user', human_authored=human_authored)
+            task.setdefault('_preference_source_ids', [])
+            if message.get('_human_device_id'):
+                task['_preference_source_ids'].append(message['id'])
+            self._record_attachments(conversation_bot_id, task, attachments)
+            self._put('tasks', task)
+        self._event('task.created', self._public(task), conversation_bot_id, task['id'])
+        self._refresh_bot(bot['id'])
+        return self._public(task)
+
+    def _steer_task(self, task, text, attachments, conversation_bot_id, human_authored=True):
+        message = self._message(task['bot_id'], text, task_id=task['id'], role='user', human_authored=human_authored)
+        task.setdefault('_preference_source_ids', [])
+        if message.get('_human_device_id'):
+            task['_preference_source_ids'].append(message['id'])
+        self._record_attachments(conversation_bot_id, task, attachments)
+        task.setdefault('_steering', []).append(text)
+        task.update(updated_at=now(), steering_status='next_safe_turn', exchange_id=self._new_exchange(), exchange_depth=0)
+        self._put('tasks', task)
+        self._message(task['bot_id'], 'Your follow-up applies at the next safe turn.', task_id=task['id'], role='system', kind='activity')
+        self._event('task.steered', self._public(task), conversation_bot_id, task['id'])
+        return self._public(task)
+
+    def _dispatch_user(self, origin: dict, data: dict, recipients: list[str], *, thread_id: str | None, parent_task_id: str | None) -> dict:
+        text = require_text(data, 'text', 20000)
+        attachments = self._validate_attachments(origin['id'], data.get('attachment_ids', []))
+        thread_id, exchange_id = thread_id or uid(), self._new_exchange()
+        dispatched = []
+        for recipient_id in recipients:
+            recipient = self._get('bots', recipient_id)
+            task = self._send(recipient, dict(text=text, mode='queue', scheduled_at=data.get('scheduled_at'), attachment_ids=attachments), thread_id=thread_id, parent_task_id=parent_task_id, conversation_bot_id=origin['id'], exchange_id=exchange_id, record_message=False)
+            dispatched.append(task)
+        first = self._get('tasks', dispatched[0]['id'])
+        message = self._message(origin['id'], text, task_id=first['id'], role='user', recipient_bot_ids=recipients, human_authored=True)
+        for dispatched_task in dispatched:
+            stored_task = self._get('tasks', dispatched_task['id'])
+            stored_task['_shared_message_ids'] = [message['id']]
+            stored_task['_preference_source_ids'] = [message['id']] if message.get('_human_device_id') else []
+            self._put('tasks', stored_task)
+        first = self._get('tasks', first['id'])
+        self._record_attachments(origin['id'], first, attachments, recipient_bot_ids=recipients)
+        self._put('tasks', first)
+        self._event('bots.addressed', {'recipient_bot_ids': recipients, 'task_ids': [t['id'] for t in dispatched], 'thread_id': thread_id}, origin['id'], first['id'])
+        return dispatched[0] | {'dispatched_task_ids': [t['id'] for t in dispatched]}
+
+
+    def _task_paused(self, task: dict) -> bool:
+        for identity in {task['bot_id'], task['conversation_bot_id']}:
+            bot = self._get('bots', identity)
+            if bot['archived'] or bot.get('_deleted'):
+                return True
+        return False
+
+    def _validate_attachments(self, bot_id: str, artifact_ids: Any) -> list[str]:
+        if not isinstance(artifact_ids, list) or len(artifact_ids) > 20 or any(not isinstance(a, str) for a in artifact_ids):
+            raise ServiceError(400, 'attachment_ids must contain at most 20 artifact IDs.')
+        for artifact_id in artifact_ids:
+            attachment = self._get('artifacts', artifact_id)
+            if attachment['bot_id'] != bot_id or not attachment.get('_attachment'):
+                raise ServiceError(400, 'This attachment does not belong to this bot.')
+        return list(dict.fromkeys(artifact_ids))
+
+    def _request_context(self, decision: dict, task: dict, question: str, attachments: list[str]) -> dict:
+        message = self._message(task['bot_id'], question, task_id=task['id'], role='user', decision_id=decision['id'], human_authored=True)
+        context_attachments = list(dict.fromkeys(task.get('_turn_attachment_ids', task.get('_attachment_ids', [])) + attachments))
+        self._record_attachments(task['bot_id'], task, attachments)
+        self._put('tasks', task)
+        context = dict(id=uid(), bot_id=task['bot_id'], task_id=task['id'], decision_id=decision['id'], question=question, status='queued', _preference_source_ids=[message['id']] if message.get('_human_device_id') else [])
+        context['_attachment_ids'] = context_attachments
+        context['_conversation_epoch'] = task.get('_conversation_epoch', self._setting('conversation_epoch'))
+        self._put('contexts', context)
+        self._event('context.queued', {'id': context['id'], 'decision_id': decision['id']}, task['bot_id'], task['id'])
+        return self._public(message)
+
+    def _reply(self, task: dict, data: dict) -> dict:
+        text = require_text(data, 'text', 20000)
+        bot = self._get('bots', task['bot_id'])
+        if bot.get('_deleted') or bot['archived']:
+            raise ServiceError(409, 'Restore this bot before replying.')
+        origin = self._get('bots', task['conversation_bot_id'])
+        if origin['archived'] or origin.get('_deleted'):
+            raise ServiceError(409, 'Restore this conversation before replying.')
+        recipients = self._recipient_ids(data.get('recipient_bot_ids', []))
+        if recipients:
+            if data.get('decision_id'):
+                raise ServiceError(400, 'Ask decision context or address bots in separate replies.')
+            return self._dispatch_user(origin, data, recipients, thread_id=task['thread_id'], parent_task_id=task['id']) | {'reply_status': 'queued_recipients'}
+        attachments = self._validate_attachments(origin['id'], data.get('attachment_ids', []))
+        thread_tasks = {t['id'] for t in self._all('tasks') if t['thread_id'] == task['thread_id']}
+        pending = [d for d in self._all('decisions') if d['task_id'] in thread_tasks and d['status'] == 'pending']
+        if data.get('decision_id'):
+            decision = self._get('decisions', data['decision_id'])
+            if decision['task_id'] not in thread_tasks or decision['status'] != 'pending':
+                raise ServiceError(409, 'Choose a pending decision from this thread.')
+            pending_task = self._get('tasks', decision['task_id'])
+            self._request_context(decision, pending_task, text, attachments)
+            result = self._public(pending_task)
+            result['reply_status'] = 'context_requested'
+            return result
+        if pending:
+            raise ServiceError(409, 'Choose the pending decision to ask for context. The decision will remain open.')
+        if task['status'] == 'working':
+            result = self._steer_task(task, text, attachments, origin['id'])
+            result['reply_status'] = 'next_safe_turn'
+            return result
+        if task['status'] in ('queued', 'paused', 'scheduled'):
+            message = self._message(bot['id'], text, task_id=task['id'], role='user', human_authored=True)
+            if '_turn_message_ids' in task:
+                task.setdefault('_steering', []).append(text)
+            task.setdefault('_preference_source_ids', [])
+            if message.get('_human_device_id'):
+                task['_preference_source_ids'].append(message['id'])
+            self._record_attachments(bot['id'], task, attachments)
+            task.update(updated_at=now(), summary='Your reply is queued with this task.', exchange_id=self._new_exchange(), exchange_depth=0)
+            if task['status'] == 'paused' and not self._task_paused(task):
+                task['status'] = 'queued'
+            self._put('tasks', task)
+            self._event('task.updated', self._public(task), bot['id'], task['id'])
+            return self._public(task) | {'reply_status': 'queued'}
+        if task['status'] == 'needs_you':
+            raise ServiceError(409, 'Refresh this thread before replying.')
+        result = self._send(bot, dict(text=text, mode='queue', attachment_ids=attachments), thread_id=task['thread_id'], parent_task_id=task['id'], conversation_bot_id=task['conversation_bot_id'])
+        return result | {'reply_status': 'queued_continuation'}
+
+    def _record_attachments(self, bot_id: str, task: dict, artifact_ids: list[str], *, recipient_bot_ids: list[str] | None = None):
+        task['_attachment_ids'] = list(dict.fromkeys(task.get('_attachment_ids', []) + artifact_ids))
+        for artifact_id in artifact_ids:
+            artifact = self._get('artifacts', artifact_id)
+            if artifact['task_id'] is None:
+                artifact['task_id'] = task['id']
+                self._put('artifacts', artifact)
+                self._event('artifact.updated', self._public(artifact), bot_id, task['id'])
+            self._message(bot_id, artifact['title'], task_id=task['id'], role='user', kind='artifact', artifact_id=artifact_id, recipient_bot_ids=recipient_bot_ids)
+
+    def _cancel(self, task: dict, callbacks: list):
+        exchange = self._get('exchanges', task['exchange_id'])
+        exchange['cancelled'] = True
+        self._put('exchanges', exchange)
+        related = {t['id'] for t in self._all('tasks') if t.get('exchange_id') == task.get('exchange_id')} | {task['id']}
+        while True:
+            expanded = related | {t['id'] for t in self._all('tasks') if t.get('source_task_id') in related}
+            if expanded == related:
+                break
+            related = expanded
+        self._cancel_one(task, callbacks)
+        for task_id in related - {task['id']}:
+            self._cancel_one(self._get('tasks', task_id), callbacks)
+
+    def _cancel_one(self, task: dict, callbacks: list):
+        if task['status'] not in self.ACTIVE:
+            return
+        task.pop('_return_pending', None)
+        task.update(status='cancelled', summary='Cancelled. An action already executing may have finished.', updated_at=now())
+        self._put('tasks', task)
+        for decision in self._all('decisions'):
+            if decision['task_id'] == task['id'] and decision['status'] in ('pending', 'approved'):
+                decision.update(status='rejected', decided_at=now(), decided_by='cancellation', decided_by_name='Task cancellation', outcome='Task cancelled.')
+                self._put('decisions', decision)
+                self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
+        for context in self._all('contexts'):
+            if context['task_id'] == task['id'] and context['status'] in ('queued', 'working'):
+                context['status'] = 'cancelled'
+                self._put('contexts', context)
+                self._event('context.cancelled', {'id': context['id'], 'decision_id': context['decision_id']}, task['bot_id'], task['id'])
+        self._event('task.cancelled', self._public(task), task['bot_id'], task['id'])
+        self._message(task['bot_id'], task['summary'], task_id=task['id'], role='system', kind='activity')
+        self._refresh_bot(task['bot_id'])
+        callbacks.append(lambda: self.provider.cancel_task(task['id']))
+
+    def _validate_action(self, decision: dict):
+        action = decision.get('_action', {})
+        if action.get('type') != 'create_file' or decision.get('action_type') != action.get('type'):
+            raise ServiceError(409, 'This action is unavailable in v1. Ask the bot to prepare a local file.')
+        filename = action.get('filename', '')
+        if not isinstance(filename, str) or not filename or filename in ('.', '..') or Path(filename).name != filename or len(filename) > 160:
+            raise ServiceError(400, 'The proposed file name is invalid.')
+        content = action.get('content')
+        if not isinstance(content, str) or len(content.encode()) > 4 * 1024 * 1024:
+            raise ServiceError(400, 'The proposed file must contain at most 4 MB of text.')
+        if digest(encoded(action)) != decision.get('_action_hash'):
+            raise ServiceError(409, 'The proposed action changed. Request a new decision.')
+        if self.files.is_symlink() or self.files.resolve().parent != self.root:
+            raise ServiceError(409, 'The artifact directory changed. Check the Mac before approval.')
+
+    def _decision_options(self, payload: dict, decision: dict) -> list[dict]:
+        raw_options = payload.get('options', [])
+        if not isinstance(raw_options, list) or len(raw_options) > 8:
+            raise ServiceError(400, 'A decision can contain at most eight choices.')
+        options = []
+        seen = set()
+        for raw in raw_options:
+            if not isinstance(raw, dict):
+                raise ServiceError(400, 'Each choice must contain an ID, label, explanation, and answer.')
+            option_id = require_text(raw, 'id', 80)
+            if option_id in seen:
+                raise ServiceError(400, 'Each choice must have a different ID.')
+            seen.add(option_id)
+            answer = raw.get('answer')
+            if answer not in ('approve', 'reject', 'modify'):
+                raise ServiceError(400, 'Each choice must approve, reject, or request a modification.')
+            option = dict(id=option_id, label=require_text(raw, 'label', 120), explanation=require_text(raw, 'explanation', 2000), answer=answer)
+            if answer == 'approve':
+                action = raw.get('action', decision['_action'])
+                if not isinstance(action, dict) or set(action) != {'type', 'filename', 'content'}:
+                    raise ServiceError(400, 'An approval choice must contain an exact file action.')
+                self._validate_action(decision | {'_action': action, '_action_hash': digest(encoded(action))})
+                option['action'] = action
+            elif raw.get('action') is not None:
+                raise ServiceError(400, 'Only an approval choice can contain an action.')
+            if answer == 'modify':
+                option['modification'] = require_text(raw, 'modification', 10000)
+            elif raw.get('modification') is not None:
+                raise ServiceError(400, 'Only a modification choice can contain correction text.')
+            options.append(option)
+        return options
+
+    def _select_option(self, decision: dict, option_id: str) -> dict:
+        options = decision.get('options', [])
+        if digest(encoded(options)) != decision.get('_options_hash'):
+            raise ServiceError(409, 'The decision choices changed. Request a new proposal.')
+        option = next((option for option in options if option['id'] == option_id), None)
+        if not option:
+            raise ServiceError(400, 'Choose an option from this decision.')
+        if option['answer'] == 'approve':
+            action = option['action']
+            decision.update(_action=action, _action_hash=digest(encoded(action)), proposal_preview=action['content'], proposal_hash=digest(encoded(action)), resource=action['filename'])
+            self._validate_action(decision)
+        decision.update(selected_option_id=option['id'], selected_option_label=option['label'])
+        return option
+
+    def _actor_name(self, actor_id: str) -> str:
+        labels = {'workflow_permission': 'Workflow permission', 'cancellation': 'Task cancellation', 'local': 'This Mac'}
+        if actor_id in labels:
+            return labels[actor_id]
+        device = self.db.execute('SELECT name FROM devices WHERE id=?', (actor_id,)).fetchone()
+        return device[0].strip() if device and device[0].strip() else 'Paired device'
+
+    def _record_decision_correction(self, task, decision, text, human_authored=True):
+        message = self._message(task['bot_id'], text, task_id=task['id'], role='user',
+                                decision_id=decision['id'], human_authored=human_authored)
+        if message.get('_human_device_id'):
+            task.setdefault('_preference_source_ids', []).append(message['id'])
+            task.setdefault('_turn_preference_source_ids', []).append(message['id'])
+
+    def _answer(self, decision: dict, task: dict, data: dict, device: str) -> dict:
+        if not isinstance(data.get('revision'), int) or isinstance(data['revision'], bool) or data['revision'] != decision['revision']:
+            raise ServiceError(409, 'This decision changed. Refresh it before answering.')
+        if data.get('option') is not None:
+            raise ServiceError(400, 'Send the choice ID as option_id.')
+        choice = data.get('choice')
+        correction = decision_correction(data) or None
+        option = None
+        option_id = data.get('option_id')
+        if option_id is not None:
+            if not isinstance(option_id, str):
+                raise ServiceError(400, 'option_id must contain a choice ID.')
+            option = self._select_option(decision, option_id)
+            if choice is not None and choice != option['answer']:
+                raise ServiceError(400, 'The answer does not match the selected choice.')
+            choice = option['answer']
+            if choice == 'modify':
+                correction = correction or option['modification']
+        elif choice == 'approve' and decision.get('options'):
+            raise ServiceError(400, 'Select a file choice before approval.')
+        if choice not in ('approve', 'reject', 'modify'):
+            raise ServiceError(400, 'Choose approve, reject, modify, or a decision option.')
+        if choice == 'modify' and not correction:
+            raise ServiceError(400, 'Describe the change before modifying this decision.')
+        if choice == 'approve':
+            if self._task_paused(task):
+                raise ServiceError(409, 'Restore the bot before approving this action.')
+            self._validate_action(decision)
+        actor_name = self._actor_name(device)
+        response_record = dict(choice=choice, option_id=option_id, option_label=option['label'] if option else None, correction=correction, decided_by=device, decided_by_name=actor_name, decided_at=now(), prediction=decision.get('_prediction'), predicted_option_id=decision.get('_predicted_option_id'), revision=decision['revision'], action_hash=decision['_action_hash'], original_action_hash=digest(encoded(decision.get('_proposal_action', decision['_action']))))
+        decision.setdefault('_answers', []).append(response_record)
+        decision.update(decided_at=response_record['decided_at'], decided_by=device, decided_by_name=actor_name, correction=correction, selected_option_id=option_id, selected_option_label=option['label'] if option else None)
+        if choice == 'modify':
+            decision.update(status='modified', outcome='Changes requested. The bot will prepare a new decision.')
+            task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
+            self._record_decision_correction(task, decision, correction, human_authored=bool(data.get('correction')))
+        elif choice == 'reject':
+            decision.update(status='rejected', outcome='Rejected. No file was created.')
+            if task.get('_steering'):
+                task.update(status='queued', summary='Applying your follow-up at the next safe turn.', updated_at=now())
+                self._advance_input(task)
+            else:
+                task.update(status='completed', summary='The proposed action was rejected.', updated_at=now())
+                self._prepare_return(task, 'The proposed action was rejected. No file was created.', 'rejected')
+        else:
+            decision.update(status='approved', outcome='Approved. The service will recheck the selected file before execution.')
+            task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
+        self._put('decisions', decision)
+        self._put('tasks', task)
+        self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
+        self._event('decision.answered', response_record, task['bot_id'], task['id'])
+        self._event('task.updated', self._public(task), task['bot_id'], task['id'])
+        self._refresh_bot(task['bot_id'])
+        return self._public(decision)
+
+    def _attachment(self, data: dict) -> dict:
+        bot = self._get('bots', require_text(data, 'bot_id', 100))
+        filename = require_text(data, 'filename', 160)
+        if Path(filename).name != filename or filename in ('.', '..'):
+            raise ServiceError(400, 'The attachment file name is invalid.')
+        try:
+            content = base64.b64decode(data.get('content_base64', ''), validate=True)
+        except (ValueError, TypeError):
+            raise ServiceError(400, 'The attachment must use base64 encoding.')
+        if not content or len(content) > 4 * 1024 * 1024:
+            raise ServiceError(413, 'Attachments must contain between 1 byte and 4 MB.')
+        artifact_id = uid()
+        # Store uploaded bytes in SQLite with the request, avoiding orphan files on retries.
+        artifact = dict(id=artifact_id, bot_id=bot['id'], task_id=None, title=filename, kind='file', status='attached', preview=f'{len(content):,} bytes', url=None, created_at=now(), _attachment=True, _content_base64=base64.b64encode(content).decode())
+        self._put('artifacts', artifact)
+        self._event('artifact.created', self._public(artifact), bot['id'])
+        return self._public(artifact)
+
+    def artifact_content(self, artifact_id: str) -> tuple[bytes, str]:
+        with self.lock:
+            artifact = self._get('artifacts', artifact_id)
+            bot = self._get('bots', artifact['bot_id'])
+            if bot.get('_deleted'):
+                raise ServiceError(404, 'This artifact was removed.')
+            if '_content_base64' in artifact:
+                return base64.b64decode(artifact['_content_base64']), artifact['title']
+            path = self.files / artifact_id
+            if path.is_symlink() or not path.is_file():
+                raise ServiceError(404, 'The artifact file is unavailable on the Mac.')
+            content = path.read_bytes()
+            if digest(content) != artifact.get('_content_hash'):
+                raise ServiceError(409, 'This artifact changed on the Mac.')
+            return content, artifact['title']
+
+    def learning(self) -> dict:
+        groups: dict[tuple, dict] = {}
+        with self.lock:
+            for decision in self._all('decisions'):
+                task = self._get('tasks', decision['task_id'])
+                key = (task['bot_id'], decision['action_type'])
+                for answer in decision.get('_answers', []):
+                    prediction = answer.get('prediction')
+                    predicted_option = answer.get('predicted_option_id')
+                    if decision.get('options'):
+                        if not predicted_option:
+                            continue
+                        agrees = answer.get('option_id') == predicted_option and not answer['correction']
+                    else:
+                        if prediction not in ('approve', 'reject'):
+                            continue
+                        agrees = answer['choice'] == prediction and not answer['correction']
+                    group = groups.setdefault(key, dict(bot_id=key[0], action_type=key[1], total=0, agreed=0))
+                    group['total'] += 1
+                    group['agreed'] += int(agrees)
+            for group in groups.values():
+                group['agreement'] = group['agreed'] / group['total']
+            return {'groups': list(groups.values())}
+
+    def start(self):
+        if self.dispatcher:
+            return
+        self.dispatcher = threading.Thread(target=self._dispatch, name='coconut-dispatch', daemon=True)
+        self.dispatcher.start()
+        self.pr_poller = threading.Thread(target=self._poll_pull_requests, name='coconut-pr-poll', daemon=True)
+        self.pr_poller.start()
+        self.push.start()
+
+    def _register_pr_artifact(self, task_id: str, payload: dict):
+        try:
+            owner, repo, number = parse_pr_url(payload.get('url'))
+        except PRTrackingError as error:
+            raise ServiceError(400, str(error)) from error
+        url = f'https://github.com/{owner}/{repo}/pull/{number}'
+        with self.lock:
+            task = self._get('tasks', task_id)
+            if task['status'] != 'working' or self.stopping.is_set():
+                raise YieldForDecision('This task no longer accepts provider output.')
+            existing = next((a for a in self._all('artifacts') if a['task_id'] == task_id and a['kind'] == 'pr' and a['url'] == url), None)
+            if existing:
+                return self._public(existing)
+        # GitHub reads must not hold the service lock or delay other bots.
+        observation = self.pr_tracker.observe(url)
+        if not observation.observed:
+            raise ServiceError(502, observation.detail)
+        with self.transaction():
+            task = self._get('tasks', task_id)
+            if task['status'] != 'working' or self.stopping.is_set():
+                raise YieldForDecision('This task no longer accepts provider output.')
+            existing = next((a for a in self._all('artifacts') if a['task_id'] == task_id and a['kind'] == 'pr' and a['url'] == url), None)
+            if existing:
+                return self._public(existing)
+            artifact = dict(id=uid(), bot_id=task['bot_id'], task_id=task_id, title=(observation.title or 'Pull request')[:200], kind='pr', status=observation.state, preview=observation.detail, url=url, created_at=now(), checked_at=observation.checked_at, observed_at=observation.checked_at, head_sha=observation.head_sha, refresh_error=None)
+            self._put('artifacts', artifact)
+            self._message(task['bot_id'], artifact['title'], task_id=task_id, kind='artifact', artifact_id=artifact['id'])
+            self._event('artifact.created', artifact, task['bot_id'], task_id)
+            self._refresh_bot(task['bot_id'])
+            return self._public(artifact)
+
+    def _poll_pull_requests(self):
+        while not self.stopping.is_set():
+            self.refresh_pull_requests()
+            self.stopping.wait(60)
+
+    def refresh_pull_requests(self):
+        with self.lock:
+            if self.stopping.is_set():
+                return
+            artifacts = [a for a in self._all('artifacts') if a['kind'] == 'pr' and a['status'] != 'merged' and not self._get('bots', a['bot_id']).get('_deleted')]
+        for artifact in artifacts:
+            if self.stopping.is_set():
+                return
+            observation = self.pr_tracker.observe(artifact['url'])
+            with self.lock:
+                if self.stopping.is_set():
+                    return
+                with self.transaction():
+                    current = self._get('artifacts', artifact['id'])
+                    if current['url'] != artifact['url'] or self._get('bots', current['bot_id']).get('_deleted'):
+                        continue
+                    current['checked_at'] = observation.checked_at
+                    if observation.observed:
+                        current.update(status=observation.state, title=(observation.title or current['title'])[:200], preview=observation.detail, head_sha=observation.head_sha, observed_at=observation.checked_at, refresh_error=None)
+                    else:
+                        current.update(refresh_error=observation.detail, preview=observation.detail)
+                    self._put('artifacts', current)
+                    self._event('artifact.updated', self._public(current), current['bot_id'], current['task_id'])
+
+    def _dispatch(self):
+        next_routine_tick = 0.0
+        while not self.stopping.is_set():
+            if time.monotonic() >= next_routine_tick:
+                self.tick_routines()
+                next_routine_tick = time.monotonic() + 1
+            self._drain_returns()
+            with self.changed:
+                self.running = {k: v for k, v in self.running.items() if v.is_alive()}
+                self.context_threads = {k: v for k, v in self.context_threads.items() if v.is_alive()}
+                for context in self._all('contexts'):
+                    if (context['status'] == 'queued' and context['id'] not in self.context_threads
+                            and not self._task_paused(self._get('tasks', context['task_id']))):
+                        self._start_context(context['id'])
+                active_bots = {self._get('tasks', task_id)['bot_id'] for task_id in self.running}
+                for task in self._all('tasks'):
+                    bot = self._get('bots', task['bot_id'])
+                    if bot['archived'] or bot.get('_deleted'):
+                        continue
+                    if task['status'] not in ('queued', 'scheduled') or task['bot_id'] in active_bots:
+                        continue
+                    if task.get('scheduled_at') and datetime.fromisoformat(task['scheduled_at'].replace('Z', '+00:00')).timestamp() > time.time():
+                        continue
+                    if self._task_paused(task):
+                        continue
+                    worker = threading.Thread(target=self._run_task, args=(task['id'],), daemon=True, name=f'task-{task["id"][:8]}')
+                    self.running[task['id']] = worker
+                    active_bots.add(task['bot_id'])
+                    worker.start()
+                self.changed.wait(.2)
+
+    def _history(self, bot_id: str) -> list[dict]:
+        # Threads organize Inbox decisions. They never restrict a bot's own recall.
+        return [self._public(message) for message in self._all('messages')
+                if not message.get('_hidden') and not message.get('_deleted')
+                and (message.get('sender_bot_id') == bot_id or bot_id in message.get('recipient_bot_ids', []))]
+
+    @staticmethod
+    def _advance_input(task):
+        task['_native_turn_id'] = uid()
+        if task.get('_turn_message_ids'):
+            task['_input_after_message_id'] = task['_turn_message_ids'][-1]
+        task.pop('_turn_message_ids', None)
+        task.pop('_turn_attachment_ids', None)
+        task.pop('_conversation_epoch', None)
+        task.pop('_resume_decision', None)
+        task['_preference_source_ids'] = [source_id for source_id in task.get('_preference_source_ids', [])
+                                          if source_id not in task.get('_turn_preference_source_ids', [])]
+
+    def _run_task(self, task_id: str):
+        with self.lock:
+            task = self._get('tasks', task_id)
+            bot_lock = self.bot_locks.setdefault(task['bot_id'], threading.Lock())
+        with bot_lock:
+            try:
+                with self.transaction():
+                    task = self._get('tasks', task_id)
+                    if task['status'] not in ('queued', 'scheduled') or self.stopping.is_set():
+                        return
+                    bot = self._get('bots', task['bot_id'])
+                    if bot.get('_deleted') or bot['archived']:
+                        return
+                    if self._task_paused(task):
+                        return
+                    if self._has_uncertain_receipt(task_id, task.get('_native_turn_id')):
+                        task.update(status='failed', summary='A previous tool has no receipt. Check its result before starting new work.')
+                        self._prepare_return(task, 'Task failed: ' + task['summary'], 'failed')
+                        self._put('tasks', task)
+                        self._event('task.updated', self._public(task), bot['id'], task_id)
+                        self._refresh_bot(bot['id'])
+                        return
+                    task.setdefault('_native_turn_id', uid())
+                    task.setdefault('_conversation_epoch', self._setting('conversation_epoch'))
+                    if '_turn_message_ids' not in task:
+                        messages = [m for m in self._history(bot['id']) if (m['task_id'] == task_id or m['id'] in task.get('_shared_message_ids', []))
+                                    and m['role'] == 'user' and m['kind'] == 'text' and not m.get('decision_id')]
+                        after = task.get('_input_after_message_id')
+                        if after:
+                            boundary = next((i for i, m in enumerate(messages) if m['id'] == after), -1)
+                            messages = messages[boundary + 1:]
+                        task.update(_turn_message_ids=[m['id'] for m in messages], _turn_started_at=now(),
+                                    _steering=[], _turn_preference_source_ids=list(task.get('_preference_source_ids', [])))
+                    task.setdefault('_turn_attachment_ids', list(task.get('_attachment_ids', [])))
+                    task.pop('error_code', None)
+                    task.update(status='working', summary='Working', updated_at=now())
+                    self._put('tasks', task)
+                    self._event('task.updated', self._public(task), bot['id'], task_id)
+                    self._refresh_bot(bot['id'])
+                    decision = self._get('decisions', task['_resume_decision']) if task.get('_resume_decision') else None
+                if decision and decision['status'] == 'approved' and not decision.get('_native'):
+                    self._execute_decision(decision['id'])
+                    with self.lock:
+                        decision = self._get('decisions', decision['id'])
+                with self.lock:
+                    task = self._get('tasks', task_id)
+                    if task['status'] != 'working' or self.stopping.is_set():
+                        return
+                    history = self._history(bot['id'])
+                provider_task = self._public(task)
+                provider_task['_turn_message_ids'] = task['_turn_message_ids']
+                provider_task['_conversation_epoch'] = task['_conversation_epoch']
+                if task.get('_native_job'):
+                    provider_task['_native_job'] = task['_native_job']
+                provider_task['_native_receipts'] = [r for r in self._all('native_receipts') if r['task_id'] == task_id and r.get('turn_id') == task.get('_native_turn_id') and r['state'] == 'completed']
+                with self.lock:
+                    bot = self._get('bots', task['bot_id'])
+                    provider_task.update(self._bot_creation_input(task))
+                    provider_task.update(self._bot_deletion_input(task))
+                    provider_task['attachments'] = [self._public(self._get('artifacts', a)) | {'content_base64': self._get('artifacts', a).get('_content_base64')} for a in task['_turn_attachment_ids']]
+                    provider_task['_available_bots'] = [{'id': b['id'], 'name': b['name'], 'role': b['role']} for b in self._all('bots') if b['id'] != bot['id'] and not b['archived'] and not b.get('_deleted')]
+                    provider_task['_bot_messages'] = task.get('_bot_messages', [])
+                    provider_task['_is_return'] = bool(task.get('_is_return'))
+                    provider_task['_outgoing_bot_messages'] = [{'target_bot_id': delivery['target_bot_id'], 'text': delivery['text'], 'task_id': delivery['receipt']['task_id'], 'status': delivery['receipt']['status']} for delivery in self._all('deliveries') if delivery['source_task_id'] == task['id']]
+                    exchange = self._get('exchanges', task['exchange_id'])
+                    provider_task['_handoff_budget_remaining'] = max(0, self.EXCHANGE_LIMIT - exchange['deliveries'])
+                emit = lambda kind, payload: self.emit(task_id, kind, payload)
+                if decision:
+                    self.provider.resume_task(provider_task, self._public(bot), history, self._public(decision) | {'action': decision.get('_action')}, emit)
+                else:
+                    self.provider.start_task(provider_task, self._public(bot), history, emit)
+                with self.lock:
+                    current = self._get('tasks', task_id)
+                if current['status'] == 'working':
+                    self.emit(task_id, 'completed', {'summary': 'Ready to review.'})
+            except YieldForDecision:
+                pass
+            except Exception as error:
+                if not self.stopping.is_set():
+                    summary = f'Work stopped: {str(error)[:240]}'
+                    with self.transaction():
+                        current = self._get('tasks', task_id)
+                        if current.get('_resume_decision'):
+                            failed_decision = self._get('decisions', current['_resume_decision'])
+                            if failed_decision['status'] == 'approved':
+                                failed_decision.update(status='failed', outcome=summary)
+                                self._put('decisions', failed_decision)
+                                self._event('decision.updated', self._public(failed_decision), current['bot_id'], task_id)
+                    if current['status'] == 'working':
+                        self.emit(task_id, 'failed', {'summary': summary})
+            finally:
+                if not self.stopping.is_set():
+                    with self.transaction():
+                        for message in self._all('messages'):
+                            if message['task_id'] == task_id and message['streaming']:
+                                message['streaming'] = False
+                                self._put('messages', message)
+                                self._event('message.updated', message, message['bot_id'], task_id)
+                        self._refresh_bot(task['bot_id'])
+
+    def emit(self, task_id: str, kind: str, payload: dict):
+        if kind in ('native_call', 'native_result', 'native_approval', 'native_question'):
+            return self.native_event(task_id, kind, payload)
+        if kind == 'bot_delete':
+            return self._delete_bot_from_chat(task_id, payload)
+        if kind == 'bot_create':
+            return self._create_bot_from_chat(task_id, payload)
+        if kind == 'native_bot_message':
+            return self.native_relay_delivery(task_id, payload)
+        if kind == 'bot_message':
+            return self._deliver_bot_message(task_id, payload)
+        if kind == 'artifact' and payload.get('kind') == 'pr':
+            return self._register_pr_artifact(task_id, payload)
+        pending = False
+        with self.transaction():
+            task = self._get('tasks', task_id)
+            if task['status'] != 'working' or self.stopping.is_set():
+                raise YieldForDecision('This task no longer accepts provider output.')
+            bot_id = task['bot_id']
+            if kind == 'text_delta':
+                text = str(payload.get('text', payload.get('delta', '')))
+                previous = next((m for m in reversed(self._all('messages')) if m['task_id'] == task_id and m['streaming']), None)
+                if previous:
+                    previous['text'] += text
+                    self._put('messages', previous)
+                    bot = self._get('bots', task['conversation_bot_id'])
+                    bot['last_message'] = previous['text'][:160]
+                    self._put('bots', bot)
+                    self._event('message.updated', previous, bot_id, task_id)
+                else:
+                    self._message(bot_id, text, task_id=task_id, streaming=True)
+            elif kind == 'activity':
+                self._message(bot_id, str(payload.get('text', payload.get('summary', 'Working')))[:500], task_id=task_id, kind='activity')
+            elif kind == 'decision':
+                action = payload.get('action', {})
+                decision = dict(id=uid(), bot_id=bot_id, task_id=task_id, title=str(payload.get('title', 'Review proposed action'))[:160], explanation=str(payload.get('explanation', ''))[:2000], action_type=str(payload.get('action_type', action.get('type', 'unknown'))), resource=str(payload.get('resource', action.get('filename', ''))), consequences=str(payload.get('consequences', 'Creates a file on the Mac.'))[:2000], recommended=payload.get('recommended', 'approve'), options=[], status='pending', urgency=payload.get('urgency', 'normal'), created_at=now(), decided_at=None, decided_by=None, decided_by_name=None, correction=None, outcome=None, revision=1, _action=action, _action_hash=digest(encoded(action)), _prediction=payload.get('predicted_choice', payload.get('prediction')), _answers=[])
+                if decision['_prediction'] not in ('approve', 'reject'):
+                    decision['_prediction'] = None
+                prior_id = task.get('_resume_decision')
+                if prior_id:
+                    prior = self._get('decisions', prior_id)
+                    if prior['status'] == 'modified':
+                        decision['replaces_decision_id'] = prior_id
+                        prior['replaced_by_decision_id'] = decision['id']
+                        prior['outcome'] = 'The bot prepared a new proposal with your requested changes.'
+                        self._put('decisions', prior)
+                        self._event('decision.updated', self._public(prior), bot_id, task_id)
+                self._validate_action(decision)
+                decision.update(proposal_preview=action['content'], proposal_hash=digest(encoded(action)), _proposal_action=action)
+                options = self._decision_options(payload, decision)
+                option_ids = {option['id'] for option in options}
+                recommended_id = payload.get('recommended_option_id')
+                predicted_id = payload.get('predicted_option_id')
+                if recommended_id is not None and recommended_id not in option_ids:
+                    raise ServiceError(400, 'The recommended choice must belong to this decision.')
+                if predicted_id is not None and predicted_id not in option_ids:
+                    raise ServiceError(400, 'The predicted choice must belong to this decision.')
+                decision.update(options=options, _options_hash=digest(encoded(options)), recommended_option_id=recommended_id, _predicted_option_id=predicted_id, selected_option_id=None, selected_option_label=None)
+                task.update(status='needs_you', summary=decision['title'], updated_at=now())
+                self._put('decisions', decision)
+                self._put('tasks', task)
+                self._event('decision.created', self._public(decision), bot_id, task_id)
+                self._message(bot_id, decision['title'], task_id=task_id, kind='decision', decision_id=decision['id'])
+                self._event('task.updated', self._public(task), bot_id, task_id)
+                pending = True
+            elif kind == 'artifact':
+                if payload.get('kind', 'task') != 'task':
+                    raise ServiceError(409, 'Providers must request approval before creating a file.')
+                artifact = dict(id=uid(), bot_id=bot_id, task_id=task_id, title=str(payload.get('title', task['title']))[:200], kind='task', status='completed', preview=str(payload.get('preview', ''))[:4000], url=None, created_at=now())
+                self._put('artifacts', artifact)
+                self._message(bot_id, artifact['title'], task_id=task_id, kind='artifact', artifact_id=artifact['id'])
+                self._event('artifact.created', artifact, bot_id, task_id)
+            elif kind in ('completed', 'failed'):
+                error_code = payload.get('error_code')
+                known_errors = set()
+                known_errors.update({'bot_creation_invalid_request', 'bot_creation_rejected', 'bot_creation_receipt_unconfirmed'})
+                if kind == 'failed' and error_code in known_errors:
+                    task['error_code'] = error_code
+                has_followup = kind == 'completed' and bool(task.get('_steering'))
+                task.update(status='queued' if has_followup else kind, summary='Applying your follow-up at the next safe turn.' if has_followup else str(payload.get('summary', payload.get('text', 'Ready to review.' if kind == 'completed' else 'Work failed.')))[:500], updated_at=now())
+                if kind == 'completed':
+                    for decision in self._all('decisions'):
+                        if decision['task_id'] == task_id and decision.get('action_type') == 'question' and decision['status'] == 'approved':
+                            decision.update(status='executed', outcome='Hermes continued with your answer.')
+                            self._put('decisions', decision)
+                            self._event('decision.updated', self._public(decision), bot_id, task_id)
+                if has_followup:
+                    self._advance_input(task)
+                else:
+                    task['_preference_source_ids'] = []
+                    results = [message for message in reversed(self._all('messages')) if message['task_id'] == task_id and message.get('sender_bot_id') == task['bot_id'] and message['kind'] in ('text', 'artifact') and not message.get('recipient_bot_ids')]
+                    result = next((message for message in results if message['kind'] == 'text'), results[0] if results else None)
+                    result_text = result['text'] if result and kind == 'completed' else task['summary']
+                    if result and result['kind'] == 'artifact' and kind == 'completed':
+                        artifact = self._get('artifacts', result['artifact_id'])
+                        result_text = artifact['preview'] if artifact['kind'] == 'task' else f'{artifact["title"]}: {artifact["status"]}'
+                    if kind == 'failed':
+                        result_text = 'Task failed: ' + result_text
+                    self._prepare_return(task, result_text, kind)
+                self._put('tasks', task)
+                self._event('task.updated', self._public(task), bot_id, task_id)
+                generic_completion = kind == 'completed' and task['summary'].strip().rstrip('.!').casefold() in {'ready to review', 'done', 'complete', 'completed', 'task complete', 'task completed', 'work complete', 'work completed'}
+                if generic_completion:
+                    turn_started_at = task.get('_turn_started_at', task['created_at'])
+                    result = next((message for message in reversed(self._all('messages')) if message['task_id'] == task_id and message['role'] == 'assistant' and message['kind'] in ('text', 'artifact') and message['created_at'] >= turn_started_at and message['text'].strip()), None)
+                    if result:
+                        bot = self._get('bots', task['bot_id'] if task.get('source_bot_id') else task['conversation_bot_id'])
+                        bot['last_message'] = result['text'][:160]
+                        self._put('bots', bot)
+                    else:
+                        self._message(bot_id, task['summary'], task_id=task_id, kind='activity')
+                else:
+                    self._message(bot_id, task['summary'], task_id=task_id, kind='activity' if kind == 'failed' else 'text')
+            else:
+                raise ServiceError(400, f'Unknown provider event: {kind}')
+            self._refresh_bot(bot_id)
+        if pending:
+            raise YieldForDecision('The service persisted the decision.')
+
+    def _execute_decision(self, decision_id: str):
+        with self.transaction():
+            decision = self._get('decisions', decision_id)
+            task = self._get('tasks', decision['task_id'])
+            if task['status'] != 'working' or decision['status'] != 'approved':
+                return
+            if self._task_paused(task):
+                decision.update(status='pending', outcome='Permissions changed before execution. Review this action.', revision=decision['revision'] + 1)
+                task.update(status='needs_you', summary='Permissions changed. Review the pending action.')
+                self._put('decisions', decision)
+                self._put('tasks', task)
+                self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
+                self._event('task.updated', self._public(task), task['bot_id'], task['id'])
+                return
+            self._validate_action(decision)
+            receipt = self.db.execute('SELECT state,artifact_id,content_hash FROM receipts WHERE decision_id=?', (decision_id,)).fetchone()
+            if receipt and receipt[0] == 'completed':
+                self._complete_receipt(decision, receipt[1], receipt[2])
+                return
+            artifact_id = receipt[1] if receipt else uid()
+            content_hash = digest(decision['_action']['content'])
+            self.db.execute('INSERT INTO receipts VALUES (?,?,?,?,?) ON CONFLICT(decision_id) DO NOTHING', (decision_id, 'executing', artifact_id, content_hash, 'Local file creation'))
+            self._event('execution.started', {'decision_id': decision_id, 'artifact_id': artifact_id, 'option_id': decision.get('selected_option_id')}, task['bot_id'], task['id'])
+        # Revalidate at the execution boundary. Bot lifecycle changes share this lock.
+        with self.lock:
+            with self.transaction():
+                decision = self._get('decisions', decision_id)
+                task = self._get('tasks', decision['task_id'])
+                if task['status'] != 'working' or self._task_paused(task):
+                    self.db.execute('DELETE FROM receipts WHERE decision_id=?', (decision_id,))
+                    if task['status'] != 'cancelled':
+                        decision.update(status='pending', outcome='Permissions changed before execution.', revision=decision['revision'] + 1)
+                        task.update(status='needs_you')
+                        self._put('decisions', decision)
+                        self._put('tasks', task)
+                        self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
+                        self._event('task.updated', self._public(task), task['bot_id'], task['id'])
+                    return
+                self._validate_action(decision)
+            path = self.files / artifact_id
+            if path.exists() or path.is_symlink():
+                if path.is_symlink() or digest(path.read_bytes()) != content_hash:
+                    raise ServiceError(409, 'The execution receipt does not match its file. Inspect the Mac before retrying.')
+            else:
+                descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+                with os.fdopen(descriptor, 'wb') as output:
+                    output.write(decision['_action']['content'].encode())
+                    output.flush()
+                    os.fsync(output.fileno())
+                directory = os.open(self.files, os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            with self.transaction():
+                self._complete_receipt(decision, artifact_id, content_hash)
+
+    def _complete_receipt(self, decision: dict, artifact_id: str, content_hash: str):
+        existing = self.db.execute('SELECT data FROM artifacts WHERE id=?', (artifact_id,)).fetchone()
+        if not existing:
+            action = decision['_action']
+            artifact = dict(id=artifact_id, bot_id=decision['bot_id'], task_id=decision['task_id'], title=action['filename'], kind='file', status='ready', preview=action['content'][:4000], url=None, created_at=now(), _content_hash=content_hash)
+            self._put('artifacts', artifact)
+            self._message(decision['bot_id'], artifact['title'], task_id=decision['task_id'], kind='artifact', artifact_id=artifact_id)
+            self._event('artifact.created', self._public(artifact), decision['bot_id'], decision['task_id'])
+        decision.update(status='executed', outcome='The file is ready to review.', artifact_id=artifact_id)
+        self._put('decisions', decision)
+        self.db.execute('UPDATE receipts SET state=? WHERE decision_id=?', ('completed', decision['id']))
+        self._event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
+        self._event('execution.completed', {'decision_id': decision['id'], 'artifact_id': artifact_id}, decision['bot_id'], decision['task_id'])
+
+    def _migrate_threads(self):
+        for bot in self._all('bots'):
+            bot.setdefault('pinned', False)
+            bot.setdefault('model_override', None)
+            bot['profile_id'] = profile_id(bot)
+            self._sync_profile(bot)
+            self._put('bots', bot)
+        tasks = self._all('tasks')
+        for task in tasks:
+            task.pop('workflow', None)
+            task.pop('_permission_ancestors', None)
+            if task['status'] == 'paused' and not self._task_paused(task):
+                task['status'] = 'queued'
+            self._put('tasks', task)
+        changed = False
+        for task in tasks:
+            if not task.get('thread_id') or 'conversation_bot_id' not in task or 'exchange_id' not in task:
+                task.setdefault('thread_id', task['id'])
+                task.setdefault('conversation_bot_id', task['bot_id'])
+                if 'exchange_id' not in task:
+                    task['exchange_id'] = self._new_exchange()
+                task.setdefault('exchange_depth', 0)
+                task.setdefault('source_bot_id', None)
+                task.setdefault('source_task_id', None)
+                self._put('tasks', task)
+                changed = True
+        threads = {task['id']: task['thread_id'] for task in tasks}
+        task_map = {task['id']: task for task in tasks}
+        for message in self._all('messages'):
+            thread_id = threads.get(message.get('task_id'))
+            if 'thread_id' not in message or message['thread_id'] != thread_id or 'sender_bot_id' not in message or 'recipient_bot_ids' not in message:
+                message['thread_id'] = thread_id
+                task = task_map.get(message.get('task_id'))
+                message.setdefault('sender_bot_id', task['bot_id'] if task and message['role'] != 'user' else None)
+                message.setdefault('recipient_bot_ids', [task['bot_id']] if task and message['role'] == 'user' else [])
+                self._put('messages', message)
+                changed = True
+        if changed:
+            self._event('threads.migrated', {})
+
+    def _migrate_bot_exchanges(self):
+        """Reclassify stored messages without changing native conversation history."""
+        tasks = {task['id']: task for task in self._all('tasks')}
+        messages = self._all('messages')
+        changed = False
+        for message in messages:
+            task = tasks.get(message.get('task_id'), {})
+            before = dict(message)
+            if message.get('sender_bot_id') and message.get('recipient_bot_ids') and message['kind'] == 'text':
+                message['kind'] = 'bot_exchange'
+            if message['kind'] == 'bot_exchange':
+                message['bot_id'] = message['sender_bot_id']
+            elif task.get('source_bot_id') and message['role'] != 'user':
+                message['bot_id'] = task['bot_id']
+            if message != before:
+                self._put('messages', message)
+                changed = True
+        for delivery in self._all('deliveries'):
+            task = tasks.get(delivery['receipt'].get('task_id'))
+            source = tasks.get(delivery['source_task_id'])
+            if not task or not source:
+                continue
+            if any(m.get('task_id') == task['id'] and m['kind'] == 'bot_exchange'
+                   and m.get('sender_bot_id') == source['bot_id'] for m in messages):
+                continue
+            result = next((m for m in reversed(messages) if m.get('task_id') == source['id']
+                           and m['kind'] == 'text' and m.get('sender_bot_id') == source['bot_id']
+                           and m['text'] == delivery['text']), None)
+            if result:
+                if result.get('exchange_recipient_bot_ids') != [task['bot_id']]:
+                    result['exchange_recipient_bot_ids'] = [task['bot_id']]
+                    self._put('messages', result)
+                    changed = True
+                continue
+            message = dict(id=str(uuid5(UUID(source['id']), delivery['id'])), bot_id=source['bot_id'],
+                           task_id=task['id'], thread_id=task['thread_id'], sender_bot_id=source['bot_id'],
+                           recipient_bot_ids=[task['bot_id']], role='assistant', kind='bot_exchange',
+                           text=delivery['text'], created_at=delivery['created_at'], streaming=False,
+                           decision_id=None, artifact_id=None)
+            self._put('messages', message)
+            messages.append(message)
+            changed = True
+        if changed:
+            self._event('transcript.updated', {})
+
+    def _recover(self):
+        self.recover_native_relays()
+        for context in self._all('contexts'):
+            if context['status'] == 'working' and not self._block_uncertain_context(context):
+                context['status'] = 'queued'
+                self._put('contexts', context)
+        for task in self._all('tasks'):
+            if task['status'] == 'working':
+                uncertain = self._has_uncertain_receipt(task['id'], task.get('_native_turn_id'))
+                task.update(status='failed' if uncertain else 'queued', summary='A tool stopped without a receipt. Check its result before starting new work.' if uncertain else 'Resuming after the Mac service restarted.', updated_at=now())
+                if uncertain:
+                    self._prepare_return(task, 'Task failed: ' + task['summary'], 'failed')
+                self._put('tasks', task)
+                self._event('task.recovered', self._public(task), task['bot_id'], task['id'])
+        for message in self._all('messages'):
+            if message['streaming']:
+                message['streaming'] = False
+                self._put('messages', message)
+                self._event('message.updated', self._public(message), message['bot_id'], message['task_id'])
+        for decision_id, state, artifact_id, content_hash in self.db.execute('SELECT decision_id,state,artifact_id,content_hash FROM receipts').fetchall():
+            if state != 'executing':
+                continue
+            decision = self._get('decisions', decision_id)
+            path = self.files / artifact_id
+            if path.is_file() and not path.is_symlink() and digest(path.read_bytes()) == content_hash:
+                self._complete_receipt(decision, artifact_id, content_hash)
+            elif path.exists() or path.is_symlink() or decision.get('_action', {}).get('type') != 'create_file':
+                decision.update(status='failed', outcome='Execution is uncertain. Inspect the Mac. The service will not repeat this action.')
+                task = self._get('tasks', decision['task_id'])
+                task.update(status='failed', summary=decision['outcome'])
+                self._prepare_return(task, 'Task failed: ' + task['summary'], 'failed')
+                self._put('decisions', decision)
+                self._put('tasks', task)
+                self.db.execute('UPDATE receipts SET state=? WHERE decision_id=?', ('uncertain', decision_id))
+                self._event('execution.uncertain', self._public(decision), task['bot_id'], task['id'])
+            # An absent private file can safely retry with O_EXCL and the same ID.
+        for bot in self._all('bots'):
+            self._refresh_bot(bot['id'])
+
+    def _block_uncertain_context(self, context):
+        if not self._has_uncertain_receipt(context['task_id'], context['id']):
+            return False
+        context.update(status='failed', error_code='tool_result_unknown')
+        self._put('contexts', context)
+        self._message(context['bot_id'],
+                      'A tool stopped without a result. Check its result on the Mac before trying again. The decision remains available.',
+                      task_id=context['task_id'], decision_id=context['decision_id'])
+        self._event('context.failed', {key: context[key] for key in ('id', 'decision_id', 'status', 'error_code')},
+                    context['bot_id'], context['task_id'])
+        return True
+
+    def _start_context(self, context_id: str):
+        def run():
+            with self.lock:
+                context = self._get('contexts', context_id)
+                task = self._get('tasks', context['task_id'])
+                bot = self._get('bots', task['bot_id'])
+                bot_lock = self.bot_locks.setdefault(bot['id'], threading.Lock())
+            with bot_lock:
+                with self.transaction():
+                    context = self._get('contexts', context_id)
+                    task = self._get('tasks', context['task_id'])
+                    bot = self._get('bots', task['bot_id'])
+                    if context['status'] != 'queued' or task['status'] == 'cancelled' or self._task_paused(task) or self.stopping.is_set():
+                        return
+                    if self._block_uncertain_context(context):
+                        return
+                    context['status'] = 'working'
+                    self._put('contexts', context)
+                    history = self._history(bot['id'])
+                    decision = self._get('decisions', context['decision_id'])
+                    provider_task = self._public(task)
+                    provider_task['_conversation_epoch'] = context.get('_conversation_epoch', task.get('_conversation_epoch', self._setting('conversation_epoch')))
+                    if task.get('_native_job'):
+                        provider_task['_native_job'] = task['_native_job']
+                    provider_task['_native_receipts'] = [r for r in self._all('native_receipts') if r['task_id'] == task['id'] and r.get('turn_id') == context_id and r['state'] == 'completed']
+                    provider_task['pending_decision'] = self._public(decision) | {'action': decision.get('_action')}
+                    provider_task['attachments'] = [self._public(self._get('artifacts', a)) | {'content_base64': self._get('artifacts', a).get('_content_base64')} for a in context.get('_attachment_ids', task.get('_turn_attachment_ids', []))]
+                chunks = []
+                context_failure = {}
+                def emit(kind, payload):
+                    if kind in ('native_call', 'native_result'):
+                        return self.native_event(task['id'], kind, payload, context_id=context_id)
+                    if kind == 'failed':
+                        context_failure.update(summary=str(payload.get('summary', 'The context request failed.'))[:500], error_code=str(payload.get('error_code', 'context_failed'))[:80])
+                        return
+                    if kind not in ('text_delta', 'activity', 'completed'):
+                        raise ServiceError(409, 'Context requests cannot propose or execute actions.')
+                    text = str(payload.get('text', payload.get('summary', '')))
+                    if kind != 'activity' and text:
+                        chunks.append(text)
+                try:
+                    self.provider.answer_context(provider_task, self._public(bot), history, context['question'], emit)
+                    answer = context_failure.get('summary') or ''.join(chunks).strip('\r\n') or 'No further context was returned. The decision remains available.'
+                    status = 'failed' if context_failure else 'completed'
+                except Exception:
+                    answer = 'The context request failed. The decision remains available.'
+                    status = 'failed'
+                if self.stopping.is_set():
+                    return
+                with self.transaction():
+                    context = self._get('contexts', context_id)
+                    if context['status'] == 'cancelled' or self._get('tasks', task['id'])['status'] == 'cancelled':
+                        return
+                    context['status'] = status
+                    if context_failure:
+                        context['error_code'] = context_failure['error_code']
+                    self._put('contexts', context)
+                    self._message(bot['id'], answer, task_id=task['id'], decision_id=context['decision_id'])
+                    self._event('context.completed' if status == 'completed' else 'context.failed', {'id': context_id, 'decision_id': context['decision_id'], 'status': status, 'error_code': context.get('error_code')}, bot['id'], task['id'])
+        thread = threading.Thread(target=run, daemon=True, name='decision-context')
+        self.context_threads[context_id] = thread
+        thread.start()
+
+    def close(self):
+        self.stopping.set()
+        if hasattr(self.provider, 'subscribe_model_catalog'):
+            self.provider.subscribe_model_catalog(None)
+        with self.changed:
+            self.changed.notify_all()
+        if self.dispatcher:
+            self.dispatcher.join(timeout=2)
+        if self.pr_poller:
+            self.pr_poller.join(timeout=2)
+        self.push.close()
+        with self.lock:
+            context_task_ids = {c['task_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
+        for task_id in set(self.running) | context_task_ids:
+            self.provider.cancel_task(task_id)
+        for thread in list(self.running.values()) + list(self.context_threads.values()):
+            thread.join(timeout=3)
+        # A provider must honor cancellation before its connection can close.
+        if not any(thread.is_alive() for thread in list(self.running.values()) + list(self.context_threads.values())):
+            with self.lock:
+                self.db.close()
+                fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_UN)
+                self.process_lock.close()

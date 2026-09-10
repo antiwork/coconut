@@ -1,0 +1,936 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		016486051559722E16B22C2C /* PairingSetupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04694F80EDA1ECAEDE50022C /* PairingSetupTests.swift */; };
+		02913C91F4994541DB0A1D2D /* BotSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCBA7E17655BED561202EC41 /* BotSettingsView.swift */; };
+		02A168DBF5C0F612F9B97558 /* MessageReplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C477A5B7A98B02989D56026 /* MessageReplay.swift */; };
+		04C381BBFC669860445B0445 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92F9D270338BED68C35CC516 /* Models.swift */; };
+		0545AB11DA641A8F94B7C860 /* MacEncryptedNotification.json in Resources */ = {isa = PBXBuildFile; fileRef = D06723F2DD7E138C71DBE073 /* MacEncryptedNotification.json */; };
+		0E115E85F7147FB4EAF1109E /* push-envelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = F448A74041D874CA655251FF /* push-envelope.swift */; };
+		10C16BD73DAEB79E40A83E4B /* ConversationLayoutFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43039CE9E1348253B7673A90 /* ConversationLayoutFlowTests.swift */; };
+		162DBDC6EC96A90E4269536F /* PushRelayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A60CFE7EAB28FA54EB0D2203 /* PushRelayClient.swift */; };
+		18C9E3DF4617AA05EF424413 /* StateSyncFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B267FBB35C435F1325F73EE /* StateSyncFlowTests.swift */; };
+		1AB47BE7DA5C7A26A9CF1BB5 /* ConversationLayoutMessages.json in Resources */ = {isa = PBXBuildFile; fileRef = 26119085DA97B96779F9E35B /* ConversationLayoutMessages.json */; };
+		1EB1F802466DF19388CE712C /* BotMentionsFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 400471E8AAF347FBC8EA7EBE /* BotMentionsFlowTests.swift */; };
+		21BBC9280B22012EA2E56285 /* ModelSettingsFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 188778025113967153727FCD /* ModelSettingsFlowTests.swift */; };
+		2203E9B6441CCE3DE1D82FA9 /* BotExchangeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84292AC71716E6E3438006BC /* BotExchangeView.swift */; };
+		26418D4226589A02C99AF807 /* PushNotifications.swift in Sources */ = {isa = PBXBuildFile; fileRef = 314EA7AAB131B25EAEEE8971 /* PushNotifications.swift */; };
+		286E1291C725E9334164C467 /* InboxPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84A0F7AB9F72DD714064B409 /* InboxPresentation.swift */; };
+		2F9037AC6BD00EE689BBC91A /* PairingScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E55B585FD3DDC0CF935CC3E /* PairingScannerView.swift */; };
+		312E4CE64E3C0963A0812615 /* PreviewState.json in Resources */ = {isa = PBXBuildFile; fileRef = DC18213B09F82C2500E4D504 /* PreviewState.json */; };
+		39B3A0FE631ECEBD97FB4E54 /* BotExchangeFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2417619FA30AF5EAF2B0BC /* BotExchangeFlowTests.swift */; };
+		40F39421A4C40643F7F46927 /* MessageText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 766B7FAF417AC083D750B041 /* MessageText.swift */; };
+		5468B7E2F3EE3D36F92A6692 /* InboxPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 006EED726F87508904580908 /* InboxPresentationTests.swift */; };
+		592EEBD97D8F3769D5B1A192 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 68629CEC6C869677D8EA1CE0 /* Assets.xcassets */; };
+		59A5FEA8B9602BD807D70889 /* CoconutNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D077096B1D7594B096B3D215 /* CoconutNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		59CFA44816F4310DB9EBBEFE /* PreviewStateFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F7D0F8D88BFF0F00891F0D9 /* PreviewStateFixture.swift */; };
+		5E923EBC6DA285BCD7E2D60B /* MessageReplayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4BD35F28442F5CDDF9B0E66 /* MessageReplayTests.swift */; };
+		62A94C16202D5232CFFE7B67 /* ApprovalSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2580B8702C72C82BDCCF6F55 /* ApprovalSettingsView.swift */; };
+		64865C19321DEF33DCA68A84 /* ConnectionFailureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E16911D28AA51ED1EC38B15 /* ConnectionFailureTests.swift */; };
+		66389348A9BC6B14AB2F82EB /* push-envelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = F448A74041D874CA655251FF /* push-envelope.swift */; };
+		6AE463B9C42518E3B9E01C8A /* PushEnvelopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9161A48CE88624483A69EAB7 /* PushEnvelopeTests.swift */; };
+		6B14984B239B5DFF88839F92 /* ModelSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10DFD4C7D86BB227502C3FFF /* ModelSettingsView.swift */; };
+		6E47FB1A60D0E8881BA987B0 /* Cards.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC5588CE8E93B2033A90C4CE /* Cards.swift */; };
+		7598EEF49724BFBC425C9C14 /* ModelSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13E2BAC2B32852FEC7770DD3 /* ModelSettingsTests.swift */; };
+		76046FD4D9906425ACF64954 /* PhysicalPairingFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7366950475F7C318199BF52 /* PhysicalPairingFlowTests.swift */; };
+		77599D8DBF501C8105E0D7CB /* HomeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4244E5068C8ECED6C1D1E124 /* HomeViews.swift */; };
+		7E6BE2B190E6D5186E0DDE7A /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86E50B95FC8F9D964C273561 /* ConversationView.swift */; };
+		86259EBC5A39AEE162388FD2 /* NotificationKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66C75106310254DAF919E136 /* NotificationKeys.swift */; };
+		8629F31D5BE1BFC518C066E4 /* BotMentionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D24A4DC92A5C15DAD46F2D3 /* BotMentionsTests.swift */; };
+		93D8D55FE5A94348416B8153 /* PairingSetup.swift in Sources */ = {isa = PBXBuildFile; fileRef = F148539DFD85BF3879FA031A /* PairingSetup.swift */; };
+		99BD0D4F77E494CF715A751E /* TranscriptPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = C77D5CDAA72E7F4867D4E5DA /* TranscriptPresentation.swift */; };
+		9B159D58013A3CFAD8D1C2C7 /* NotificationKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66C75106310254DAF919E136 /* NotificationKeys.swift */; };
+		A2AC71138B768B73D69EEDF2 /* NotificationTargetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4082B88183ED948A9EC36930 /* NotificationTargetTests.swift */; };
+		A7CFCB73B2FE06224655F73F /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = F85BED295D4BCB7E12AA75B6 /* APIClient.swift */; };
+		A8D88A0A316D41AA4F4C8E37 /* TranscriptPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9841C0E34ADB4C5B376B9844 /* TranscriptPresentationTests.swift */; };
+		A8E1E20FB19C388ACD17CA87 /* CoconutApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC13C2194F02562B923FE8C8 /* CoconutApp.swift */; };
+		B15ACAFBE7184FB08FD744E8 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = BC59E1DD5B09E3520ADF36FE /* MarkdownUI */; };
+		C9F269B7D9790F8BB589E0BF /* NativeDecisionFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8ED43A5BCDAE960B89DFA65F /* NativeDecisionFlowTests.swift */; };
+		CA614F81435252679031DB1E /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08638DC7DBFF79E2F881694 /* Theme.swift */; };
+		CD7FC75ABAC6876E70EFE907 /* BotExchangeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D7EAE47898978A1E16BCA48 /* BotExchangeTests.swift */; };
+		CF2134EE2AC9BDD89514BF51 /* NotificationFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2D8BD1F0E75656ABA3C23B6 /* NotificationFlowTests.swift */; };
+		D35610C887D087022D940EB6 /* BotMentions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8BC9EE960764592EBC7C381 /* BotMentions.swift */; };
+		DFEBABEA6463487DEAFD1A92 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50F92806249627421617701A /* NotificationService.swift */; };
+		F44E98A6DDB9163438280BAD /* SettingsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5C532B556E6AC4611DC4B3F /* SettingsViews.swift */; };
+		FA3273EAC8CD61785B0DA57F /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC0BF5B02794FB407103AA4C /* AppStore.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		1C5B57ABF76780B05DE9A6BE /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 14A53FDB2FE6BBE109F7B977 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7F2F5A68FD83C168A0C2DF7F;
+			remoteInfo = Coconut;
+		};
+		216AF484EA7C309C3DEBACC3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 14A53FDB2FE6BBE109F7B977 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7BCB11B2D6BED2E788C53C6C;
+			remoteInfo = CoconutNotificationService;
+		};
+		740EDA8836275DA76A7E1B2B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 14A53FDB2FE6BBE109F7B977 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7F2F5A68FD83C168A0C2DF7F;
+			remoteInfo = Coconut;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		00936FF29C17CC448F7C0F5F /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				59A5FEA8B9602BD807D70889 /* CoconutNotificationService.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		006EED726F87508904580908 /* InboxPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxPresentationTests.swift; sourceTree = "<group>"; };
+		04694F80EDA1ECAEDE50022C /* PairingSetupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingSetupTests.swift; sourceTree = "<group>"; };
+		0F7D0F8D88BFF0F00891F0D9 /* PreviewStateFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewStateFixture.swift; sourceTree = "<group>"; };
+		10DFD4C7D86BB227502C3FFF /* ModelSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSettingsView.swift; sourceTree = "<group>"; };
+		13E2BAC2B32852FEC7770DD3 /* ModelSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSettingsTests.swift; sourceTree = "<group>"; };
+		188778025113967153727FCD /* ModelSettingsFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSettingsFlowTests.swift; sourceTree = "<group>"; };
+		1B267FBB35C435F1325F73EE /* StateSyncFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateSyncFlowTests.swift; sourceTree = "<group>"; };
+		2580B8702C72C82BDCCF6F55 /* ApprovalSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalSettingsView.swift; sourceTree = "<group>"; };
+		26119085DA97B96779F9E35B /* ConversationLayoutMessages.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = ConversationLayoutMessages.json; sourceTree = "<group>"; };
+		2D7EAE47898978A1E16BCA48 /* BotExchangeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotExchangeTests.swift; sourceTree = "<group>"; };
+		314EA7AAB131B25EAEEE8971 /* PushNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushNotifications.swift; sourceTree = "<group>"; };
+		334802006423A1C089C7730D /* Coconut.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Coconut.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3E75185FFA8CEFCE940FFDE7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		400471E8AAF347FBC8EA7EBE /* BotMentionsFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotMentionsFlowTests.swift; sourceTree = "<group>"; };
+		4082B88183ED948A9EC36930 /* NotificationTargetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationTargetTests.swift; sourceTree = "<group>"; };
+		4244E5068C8ECED6C1D1E124 /* HomeViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeViews.swift; sourceTree = "<group>"; };
+		43039CE9E1348253B7673A90 /* ConversationLayoutFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationLayoutFlowTests.swift; sourceTree = "<group>"; };
+		4D24A4DC92A5C15DAD46F2D3 /* BotMentionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotMentionsTests.swift; sourceTree = "<group>"; };
+		4E55B585FD3DDC0CF935CC3E /* PairingScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingScannerView.swift; sourceTree = "<group>"; };
+		50F92806249627421617701A /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
+		586494351E1065DE47797BB2 /* CoconutNotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CoconutNotificationService.entitlements; sourceTree = "<group>"; };
+		5E16911D28AA51ED1EC38B15 /* ConnectionFailureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionFailureTests.swift; sourceTree = "<group>"; };
+		66C75106310254DAF919E136 /* NotificationKeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationKeys.swift; sourceTree = "<group>"; };
+		68629CEC6C869677D8EA1CE0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		766B7FAF417AC083D750B041 /* MessageText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageText.swift; sourceTree = "<group>"; };
+		7C477A5B7A98B02989D56026 /* MessageReplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageReplay.swift; sourceTree = "<group>"; };
+		84292AC71716E6E3438006BC /* BotExchangeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotExchangeView.swift; sourceTree = "<group>"; };
+		84A0F7AB9F72DD714064B409 /* InboxPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxPresentation.swift; sourceTree = "<group>"; };
+		86E50B95FC8F9D964C273561 /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
+		8ED43A5BCDAE960B89DFA65F /* NativeDecisionFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeDecisionFlowTests.swift; sourceTree = "<group>"; };
+		9161A48CE88624483A69EAB7 /* PushEnvelopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushEnvelopeTests.swift; sourceTree = "<group>"; };
+		92F9D270338BED68C35CC516 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		9841C0E34ADB4C5B376B9844 /* TranscriptPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptPresentationTests.swift; sourceTree = "<group>"; };
+		A556ECDD8DF1498D43C52661 /* CoconutTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CoconutTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A60CFE7EAB28FA54EB0D2203 /* PushRelayClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushRelayClient.swift; sourceTree = "<group>"; };
+		AB2417619FA30AF5EAF2B0BC /* BotExchangeFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotExchangeFlowTests.swift; sourceTree = "<group>"; };
+		AC13C2194F02562B923FE8C8 /* CoconutApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoconutApp.swift; sourceTree = "<group>"; };
+		B08638DC7DBFF79E2F881694 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		B4BD35F28442F5CDDF9B0E66 /* MessageReplayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageReplayTests.swift; sourceTree = "<group>"; };
+		B5C532B556E6AC4611DC4B3F /* SettingsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViews.swift; sourceTree = "<group>"; };
+		B8BC9EE960764592EBC7C381 /* BotMentions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotMentions.swift; sourceTree = "<group>"; };
+		BCBA7E17655BED561202EC41 /* BotSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotSettingsView.swift; sourceTree = "<group>"; };
+		C77D5CDAA72E7F4867D4E5DA /* TranscriptPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptPresentation.swift; sourceTree = "<group>"; };
+		D06723F2DD7E138C71DBE073 /* MacEncryptedNotification.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = MacEncryptedNotification.json; sourceTree = "<group>"; };
+		D077096B1D7594B096B3D215 /* CoconutNotificationService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = CoconutNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		D1BBB7948089F113C0343188 /* CoconutUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CoconutUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DC18213B09F82C2500E4D504 /* PreviewState.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = PreviewState.json; sourceTree = "<group>"; };
+		E7366950475F7C318199BF52 /* PhysicalPairingFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalPairingFlowTests.swift; sourceTree = "<group>"; };
+		EC0BF5B02794FB407103AA4C /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
+		F10A7B1CED0436FAEEF28D16 /* Coconut.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Coconut.entitlements; sourceTree = "<group>"; };
+		F148539DFD85BF3879FA031A /* PairingSetup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingSetup.swift; sourceTree = "<group>"; };
+		F2D8BD1F0E75656ABA3C23B6 /* NotificationFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationFlowTests.swift; sourceTree = "<group>"; };
+		F448A74041D874CA655251FF /* push-envelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "push-envelope.swift"; sourceTree = "<group>"; };
+		F85BED295D4BCB7E12AA75B6 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		FC5588CE8E93B2033A90C4CE /* Cards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Cards.swift; sourceTree = "<group>"; };
+		FCABC9E056D35D74FCE1B244 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		DA752B5EB4C459E04258F123 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B15ACAFBE7184FB08FD744E8 /* MarkdownUI in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		29FF252F09526C2FE0D71E4A /* Fixtures */ = {
+			isa = PBXGroup;
+			children = (
+				26119085DA97B96779F9E35B /* ConversationLayoutMessages.json */,
+			);
+			path = Fixtures;
+			sourceTree = "<group>";
+		};
+		57750E36CC233593392D3829 /* Fixtures */ = {
+			isa = PBXGroup;
+			children = (
+				D06723F2DD7E138C71DBE073 /* MacEncryptedNotification.json */,
+			);
+			path = Fixtures;
+			sourceTree = "<group>";
+		};
+		74CA6B36E2FFCA2EB3CE0D87 /* CoconutNotificationService */ = {
+			isa = PBXGroup;
+			children = (
+				586494351E1065DE47797BB2 /* CoconutNotificationService.entitlements */,
+				3E75185FFA8CEFCE940FFDE7 /* Info.plist */,
+				50F92806249627421617701A /* NotificationService.swift */,
+			);
+			path = CoconutNotificationService;
+			sourceTree = "<group>";
+		};
+		79D61644561DEB1BD945F02F = {
+			isa = PBXGroup;
+			children = (
+				A946F02C983D8DB412F22B38 /* Coconut */,
+				74CA6B36E2FFCA2EB3CE0D87 /* CoconutNotificationService */,
+				9B96AE525DEF57A6410B8A34 /* CoconutTests */,
+				D29F1FE8882C293B783F4D2F /* CoconutUITests */,
+				FEA5F677D443CAFA8878E197 /* PushShared */,
+				F36EA4B08F4909AB877AFF5F /* scripts */,
+				D2BBE0315B3DB7706F3A979E /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		9B96AE525DEF57A6410B8A34 /* CoconutTests */ = {
+			isa = PBXGroup;
+			children = (
+				2D7EAE47898978A1E16BCA48 /* BotExchangeTests.swift */,
+				4D24A4DC92A5C15DAD46F2D3 /* BotMentionsTests.swift */,
+				5E16911D28AA51ED1EC38B15 /* ConnectionFailureTests.swift */,
+				006EED726F87508904580908 /* InboxPresentationTests.swift */,
+				B4BD35F28442F5CDDF9B0E66 /* MessageReplayTests.swift */,
+				13E2BAC2B32852FEC7770DD3 /* ModelSettingsTests.swift */,
+				4082B88183ED948A9EC36930 /* NotificationTargetTests.swift */,
+				04694F80EDA1ECAEDE50022C /* PairingSetupTests.swift */,
+				9161A48CE88624483A69EAB7 /* PushEnvelopeTests.swift */,
+				9841C0E34ADB4C5B376B9844 /* TranscriptPresentationTests.swift */,
+				57750E36CC233593392D3829 /* Fixtures */,
+			);
+			path = CoconutTests;
+			sourceTree = "<group>";
+		};
+		A946F02C983D8DB412F22B38 /* Coconut */ = {
+			isa = PBXGroup;
+			children = (
+				F85BED295D4BCB7E12AA75B6 /* APIClient.swift */,
+				2580B8702C72C82BDCCF6F55 /* ApprovalSettingsView.swift */,
+				EC0BF5B02794FB407103AA4C /* AppStore.swift */,
+				68629CEC6C869677D8EA1CE0 /* Assets.xcassets */,
+				84292AC71716E6E3438006BC /* BotExchangeView.swift */,
+				B8BC9EE960764592EBC7C381 /* BotMentions.swift */,
+				BCBA7E17655BED561202EC41 /* BotSettingsView.swift */,
+				FC5588CE8E93B2033A90C4CE /* Cards.swift */,
+				F10A7B1CED0436FAEEF28D16 /* Coconut.entitlements */,
+				AC13C2194F02562B923FE8C8 /* CoconutApp.swift */,
+				86E50B95FC8F9D964C273561 /* ConversationView.swift */,
+				4244E5068C8ECED6C1D1E124 /* HomeViews.swift */,
+				84A0F7AB9F72DD714064B409 /* InboxPresentation.swift */,
+				FCABC9E056D35D74FCE1B244 /* Info.plist */,
+				7C477A5B7A98B02989D56026 /* MessageReplay.swift */,
+				766B7FAF417AC083D750B041 /* MessageText.swift */,
+				92F9D270338BED68C35CC516 /* Models.swift */,
+				10DFD4C7D86BB227502C3FFF /* ModelSettingsView.swift */,
+				4E55B585FD3DDC0CF935CC3E /* PairingScannerView.swift */,
+				F148539DFD85BF3879FA031A /* PairingSetup.swift */,
+				0F7D0F8D88BFF0F00891F0D9 /* PreviewStateFixture.swift */,
+				314EA7AAB131B25EAEEE8971 /* PushNotifications.swift */,
+				A60CFE7EAB28FA54EB0D2203 /* PushRelayClient.swift */,
+				B5C532B556E6AC4611DC4B3F /* SettingsViews.swift */,
+				B08638DC7DBFF79E2F881694 /* Theme.swift */,
+				C77D5CDAA72E7F4867D4E5DA /* TranscriptPresentation.swift */,
+				E00A3930B311A6DEBB91222A /* Fixtures */,
+			);
+			path = Coconut;
+			sourceTree = "<group>";
+		};
+		D29F1FE8882C293B783F4D2F /* CoconutUITests */ = {
+			isa = PBXGroup;
+			children = (
+				AB2417619FA30AF5EAF2B0BC /* BotExchangeFlowTests.swift */,
+				400471E8AAF347FBC8EA7EBE /* BotMentionsFlowTests.swift */,
+				43039CE9E1348253B7673A90 /* ConversationLayoutFlowTests.swift */,
+				188778025113967153727FCD /* ModelSettingsFlowTests.swift */,
+				8ED43A5BCDAE960B89DFA65F /* NativeDecisionFlowTests.swift */,
+				F2D8BD1F0E75656ABA3C23B6 /* NotificationFlowTests.swift */,
+				E7366950475F7C318199BF52 /* PhysicalPairingFlowTests.swift */,
+				1B267FBB35C435F1325F73EE /* StateSyncFlowTests.swift */,
+				29FF252F09526C2FE0D71E4A /* Fixtures */,
+			);
+			path = CoconutUITests;
+			sourceTree = "<group>";
+		};
+		D2BBE0315B3DB7706F3A979E /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				334802006423A1C089C7730D /* Coconut.app */,
+				D077096B1D7594B096B3D215 /* CoconutNotificationService.appex */,
+				A556ECDD8DF1498D43C52661 /* CoconutTests.xctest */,
+				D1BBB7948089F113C0343188 /* CoconutUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		E00A3930B311A6DEBB91222A /* Fixtures */ = {
+			isa = PBXGroup;
+			children = (
+				DC18213B09F82C2500E4D504 /* PreviewState.json */,
+			);
+			path = Fixtures;
+			sourceTree = "<group>";
+		};
+		F36EA4B08F4909AB877AFF5F /* scripts */ = {
+			isa = PBXGroup;
+			children = (
+				F448A74041D874CA655251FF /* push-envelope.swift */,
+			);
+			name = scripts;
+			path = ../scripts;
+			sourceTree = "<group>";
+		};
+		FEA5F677D443CAFA8878E197 /* PushShared */ = {
+			isa = PBXGroup;
+			children = (
+				66C75106310254DAF919E136 /* NotificationKeys.swift */,
+			);
+			path = PushShared;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		7AE693619F5460E3FEF996C4 /* CoconutTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C2E1D32C0C08BB912C436567 /* Build configuration list for PBXNativeTarget "CoconutTests" */;
+			buildPhases = (
+				F8F0B66AABF6C85E19767208 /* Sources */,
+				6BC6CC3D7F2D80B1EE4D57EB /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C76BF98E253D9A42873D5DFE /* PBXTargetDependency */,
+			);
+			name = CoconutTests;
+			packageProductDependencies = (
+			);
+			productName = CoconutTests;
+			productReference = A556ECDD8DF1498D43C52661 /* CoconutTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		7BCB11B2D6BED2E788C53C6C /* CoconutNotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B6640743BA4EB312570D9BFB /* Build configuration list for PBXNativeTarget "CoconutNotificationService" */;
+			buildPhases = (
+				859734A7AE4E740C40EC7D67 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CoconutNotificationService;
+			packageProductDependencies = (
+			);
+			productName = CoconutNotificationService;
+			productReference = D077096B1D7594B096B3D215 /* CoconutNotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		7F2F5A68FD83C168A0C2DF7F /* Coconut */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 81C0C0D492CDA7BD96B486A2 /* Build configuration list for PBXNativeTarget "Coconut" */;
+			buildPhases = (
+				8160746891B97B2B48494717 /* Sources */,
+				2D55664C2FB63C7E805DFE96 /* Resources */,
+				DA752B5EB4C459E04258F123 /* Frameworks */,
+				00936FF29C17CC448F7C0F5F /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1698D5E442CEA62C1A30AE80 /* PBXTargetDependency */,
+			);
+			name = Coconut;
+			packageProductDependencies = (
+				BC59E1DD5B09E3520ADF36FE /* MarkdownUI */,
+			);
+			productName = Coconut;
+			productReference = 334802006423A1C089C7730D /* Coconut.app */;
+			productType = "com.apple.product-type.application";
+		};
+		C374E2559992E75C45F981FE /* CoconutUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FB4C62B1B437C9BF2A859F78 /* Build configuration list for PBXNativeTarget "CoconutUITests" */;
+			buildPhases = (
+				A5017A58435D9EB66613B16F /* Sources */,
+				77DF990DA3103490A2ABA0DB /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BD9B5010E8303A8B3777C914 /* PBXTargetDependency */,
+			);
+			name = CoconutUITests;
+			packageProductDependencies = (
+			);
+			productName = CoconutUITests;
+			productReference = D1BBB7948089F113C0343188 /* CoconutUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		14A53FDB2FE6BBE109F7B977 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					7AE693619F5460E3FEF996C4 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					7BCB11B2D6BED2E788C53C6C = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					7F2F5A68FD83C168A0C2DF7F = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					C374E2559992E75C45F981FE = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+						TestTargetID = 7F2F5A68FD83C168A0C2DF7F;
+					};
+				};
+			};
+			buildConfigurationList = 7F641116F9FF2C5A10CE6866 /* Build configuration list for PBXProject "Coconut" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 79D61644561DEB1BD945F02F;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				6375FCEB3923150FCF54FACB /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = D2BBE0315B3DB7706F3A979E /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				7F2F5A68FD83C168A0C2DF7F /* Coconut */,
+				7BCB11B2D6BED2E788C53C6C /* CoconutNotificationService */,
+				7AE693619F5460E3FEF996C4 /* CoconutTests */,
+				C374E2559992E75C45F981FE /* CoconutUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		2D55664C2FB63C7E805DFE96 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				592EEBD97D8F3769D5B1A192 /* Assets.xcassets in Resources */,
+				312E4CE64E3C0963A0812615 /* PreviewState.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6BC6CC3D7F2D80B1EE4D57EB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0545AB11DA641A8F94B7C860 /* MacEncryptedNotification.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		77DF990DA3103490A2ABA0DB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1AB47BE7DA5C7A26A9CF1BB5 /* ConversationLayoutMessages.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		8160746891B97B2B48494717 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A7CFCB73B2FE06224655F73F /* APIClient.swift in Sources */,
+				FA3273EAC8CD61785B0DA57F /* AppStore.swift in Sources */,
+				62A94C16202D5232CFFE7B67 /* ApprovalSettingsView.swift in Sources */,
+				2203E9B6441CCE3DE1D82FA9 /* BotExchangeView.swift in Sources */,
+				D35610C887D087022D940EB6 /* BotMentions.swift in Sources */,
+				02913C91F4994541DB0A1D2D /* BotSettingsView.swift in Sources */,
+				6E47FB1A60D0E8881BA987B0 /* Cards.swift in Sources */,
+				A8E1E20FB19C388ACD17CA87 /* CoconutApp.swift in Sources */,
+				7E6BE2B190E6D5186E0DDE7A /* ConversationView.swift in Sources */,
+				77599D8DBF501C8105E0D7CB /* HomeViews.swift in Sources */,
+				286E1291C725E9334164C467 /* InboxPresentation.swift in Sources */,
+				02A168DBF5C0F612F9B97558 /* MessageReplay.swift in Sources */,
+				40F39421A4C40643F7F46927 /* MessageText.swift in Sources */,
+				6B14984B239B5DFF88839F92 /* ModelSettingsView.swift in Sources */,
+				04C381BBFC669860445B0445 /* Models.swift in Sources */,
+				86259EBC5A39AEE162388FD2 /* NotificationKeys.swift in Sources */,
+				2F9037AC6BD00EE689BBC91A /* PairingScannerView.swift in Sources */,
+				93D8D55FE5A94348416B8153 /* PairingSetup.swift in Sources */,
+				59CFA44816F4310DB9EBBEFE /* PreviewStateFixture.swift in Sources */,
+				26418D4226589A02C99AF807 /* PushNotifications.swift in Sources */,
+				162DBDC6EC96A90E4269536F /* PushRelayClient.swift in Sources */,
+				F44E98A6DDB9163438280BAD /* SettingsViews.swift in Sources */,
+				CA614F81435252679031DB1E /* Theme.swift in Sources */,
+				99BD0D4F77E494CF715A751E /* TranscriptPresentation.swift in Sources */,
+				66389348A9BC6B14AB2F82EB /* push-envelope.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		859734A7AE4E740C40EC7D67 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9B159D58013A3CFAD8D1C2C7 /* NotificationKeys.swift in Sources */,
+				DFEBABEA6463487DEAFD1A92 /* NotificationService.swift in Sources */,
+				0E115E85F7147FB4EAF1109E /* push-envelope.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A5017A58435D9EB66613B16F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				39B3A0FE631ECEBD97FB4E54 /* BotExchangeFlowTests.swift in Sources */,
+				1EB1F802466DF19388CE712C /* BotMentionsFlowTests.swift in Sources */,
+				10C16BD73DAEB79E40A83E4B /* ConversationLayoutFlowTests.swift in Sources */,
+				21BBC9280B22012EA2E56285 /* ModelSettingsFlowTests.swift in Sources */,
+				C9F269B7D9790F8BB589E0BF /* NativeDecisionFlowTests.swift in Sources */,
+				CF2134EE2AC9BDD89514BF51 /* NotificationFlowTests.swift in Sources */,
+				76046FD4D9906425ACF64954 /* PhysicalPairingFlowTests.swift in Sources */,
+				18C9E3DF4617AA05EF424413 /* StateSyncFlowTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F8F0B66AABF6C85E19767208 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CD7FC75ABAC6876E70EFE907 /* BotExchangeTests.swift in Sources */,
+				8629F31D5BE1BFC518C066E4 /* BotMentionsTests.swift in Sources */,
+				64865C19321DEF33DCA68A84 /* ConnectionFailureTests.swift in Sources */,
+				5468B7E2F3EE3D36F92A6692 /* InboxPresentationTests.swift in Sources */,
+				5E923EBC6DA285BCD7E2D60B /* MessageReplayTests.swift in Sources */,
+				7598EEF49724BFBC425C9C14 /* ModelSettingsTests.swift in Sources */,
+				A2AC71138B768B73D69EEDF2 /* NotificationTargetTests.swift in Sources */,
+				016486051559722E16B22C2C /* PairingSetupTests.swift in Sources */,
+				6AE463B9C42518E3B9E01C8A /* PushEnvelopeTests.swift in Sources */,
+				A8D88A0A316D41AA4F4C8E37 /* TranscriptPresentationTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		1698D5E442CEA62C1A30AE80 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7BCB11B2D6BED2E788C53C6C /* CoconutNotificationService */;
+			targetProxy = 216AF484EA7C309C3DEBACC3 /* PBXContainerItemProxy */;
+		};
+		BD9B5010E8303A8B3777C914 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7F2F5A68FD83C168A0C2DF7F /* Coconut */;
+			targetProxy = 1C5B57ABF76780B05DE9A6BE /* PBXContainerItemProxy */;
+		};
+		C76BF98E253D9A42873D5DFE /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7F2F5A68FD83C168A0C2DF7F /* Coconut */;
+			targetProxy = 740EDA8836275DA76A7E1B2B /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		107EED4406F490BF892EAB0D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = development;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Coconut/Coconut.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Coconut/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Coconut;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Coconut connects to your Mac to receive agent messages and answer decisions.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gumroad.coconut;
+				PRODUCT_NAME = Coconut;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		19AFC2C5E19489A762A97640 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		1FA72408B905D9518464BCE6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		3B69F5FD0BA5F29A3D4C1ADB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = CoconutNotificationService/CoconutNotificationService.entitlements;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CoconutNotificationService/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.gumroad.coconut.notification-service";
+				PRODUCT_NAME = CoconutNotificationService;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		6E2DB54B3136286056D120FE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.gumroad.coconut.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Coconut;
+			};
+			name = Release;
+		};
+		867C6ECE7719F7C6360E9F6D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = CoconutNotificationService/CoconutNotificationService.entitlements;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CoconutNotificationService/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.gumroad.coconut.notification-service";
+				PRODUCT_NAME = CoconutNotificationService;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		8B654C5BE435146D88D310E0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = production;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Coconut/Coconut.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Coconut/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Coconut;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Coconut connects to your Mac to receive agent messages and answer decisions.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.gumroad.coconut;
+				PRODUCT_NAME = Coconut;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		910E42C5FCD620D6CEE9383D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.gumroad.coconut.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Coconut;
+			};
+			name = Debug;
+		};
+		A1072EF530A892AC8A4FAA97 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.gumroad.coconut.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Coconut.app/Coconut";
+			};
+			name = Debug;
+		};
+		A6D8D6289BFFBCC4806EBE0B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.gumroad.coconut.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Coconut.app/Coconut";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		7F641116F9FF2C5A10CE6866 /* Build configuration list for PBXProject "Coconut" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				19AFC2C5E19489A762A97640 /* Debug */,
+				1FA72408B905D9518464BCE6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		81C0C0D492CDA7BD96B486A2 /* Build configuration list for PBXNativeTarget "Coconut" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				107EED4406F490BF892EAB0D /* Debug */,
+				8B654C5BE435146D88D310E0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		B6640743BA4EB312570D9BFB /* Build configuration list for PBXNativeTarget "CoconutNotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				867C6ECE7719F7C6360E9F6D /* Debug */,
+				3B69F5FD0BA5F29A3D4C1ADB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C2E1D32C0C08BB912C436567 /* Build configuration list for PBXNativeTarget "CoconutTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1072EF530A892AC8A4FAA97 /* Debug */,
+				A6D8D6289BFFBCC4806EBE0B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		FB4C62B1B437C9BF2A859F78 /* Build configuration list for PBXNativeTarget "CoconutUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				910E42C5FCD620D6CEE9383D /* Debug */,
+				6E2DB54B3136286056D120FE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		6375FCEB3923150FCF54FACB /* XCRemoteSwiftPackageReference "swift-markdown-ui" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/gonzalezreal/swift-markdown-ui";
+			requirement = {
+				kind = exactVersion;
+				version = 2.4.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		BC59E1DD5B09E3520ADF36FE /* MarkdownUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6375FCEB3923150FCF54FACB /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
+			productName = MarkdownUI;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 14A53FDB2FE6BBE109F7B977 /* Project object */;
+}

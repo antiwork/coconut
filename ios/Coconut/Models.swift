@@ -1,0 +1,398 @@
+import Foundation
+
+struct Bot: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var sessionId: String
+    var name: String
+    var role: String
+    var avatar: String
+    var color: String
+    var instructions: String
+    var status: String
+    var lastMessage: String
+    var unreadCount: Int
+    var archived: Bool
+    var createdAt: String
+    var memory: String? = nil
+    var pinned: Bool = false
+    var preferences: [BotPreference] = []
+    var modelOverride: ModelOverride? = nil
+    var effectiveModel: ModelOverride? = nil
+    var notifications: Bool = true
+    var approvalOverride: String? = nil
+    var effectiveApproval: String? = nil
+    var modelError: String? = nil
+}
+
+struct BotPreference: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var text: String
+    var sourceMessageId: String
+    var sourceText: String
+    var createdAt: String
+    var updatedAt: String
+}
+
+struct BotPatch: Encodable {
+    var name: String?
+    var role: String?
+    var avatar: String?
+    var color: String?
+    var instructions: String?
+    var notifications: Bool?
+
+    init(updated: Bot, original: Bot) {
+        name = updated.name != original.name ? updated.name : nil
+        role = updated.role != original.role ? updated.role : nil
+        avatar = updated.avatar != original.avatar ? updated.avatar : nil
+        color = updated.color != original.color ? updated.color : nil
+        instructions = updated.instructions != original.instructions ? updated.instructions : nil
+        notifications = updated.notifications != original.notifications ? updated.notifications : nil
+    }
+
+    var isEmpty: Bool {
+        name == nil && role == nil && avatar == nil && color == nil && instructions == nil && notifications == nil
+    }
+
+    func apply(to bot: inout Bot) {
+        if let name { bot.name = name }
+        if let role { bot.role = role }
+        if let avatar { bot.avatar = avatar }
+        if let color { bot.color = color }
+        if let instructions { bot.instructions = instructions }
+        if let notifications { bot.notifications = notifications }
+    }
+}
+
+extension Bot {
+    enum CodingKeys: String, CodingKey {
+        case id, sessionId, name, role, avatar, color, instructions, status
+        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        sessionId = try values.decode(String.self, forKey: .sessionId)
+        name = try values.decode(String.self, forKey: .name)
+        role = try values.decode(String.self, forKey: .role)
+        avatar = try values.decode(String.self, forKey: .avatar)
+        color = try values.decode(String.self, forKey: .color)
+        instructions = try values.decode(String.self, forKey: .instructions)
+        status = try values.decode(String.self, forKey: .status)
+        lastMessage = try values.decode(String.self, forKey: .lastMessage)
+        unreadCount = try values.decode(Int.self, forKey: .unreadCount)
+        archived = try values.decode(Bool.self, forKey: .archived)
+        createdAt = try values.decode(String.self, forKey: .createdAt)
+        memory = try values.decodeIfPresent(String.self, forKey: .memory)
+        pinned = try values.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+        preferences = try values.decodeIfPresent([BotPreference].self, forKey: .preferences) ?? []
+        modelOverride = try values.decodeIfPresent(ModelOverride.self, forKey: .modelOverride)
+        effectiveModel = try values.decodeIfPresent(ModelOverride.self, forKey: .effectiveModel)
+        notifications = try values.decodeIfPresent(Bool.self, forKey: .notifications) ?? true
+        approvalOverride = try values.decodeIfPresent(String.self, forKey: .approvalOverride)
+        effectiveApproval = try values.decodeIfPresent(String.self, forKey: .effectiveApproval)
+        modelError = try values.decodeIfPresent(String.self, forKey: .modelError)
+    }
+}
+
+struct ModelOverride: Codable, Equatable, Sendable {
+    var model: String
+    var provider: String
+    var reasoningEffort: String?
+
+    enum CodingKeys: String, CodingKey { case model, provider, reasoningEffort }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(model, forKey: .model)
+        try values.encode(provider, forKey: .provider)
+        try values.encode(reasoningEffort, forKey: .reasoningEffort)
+    }
+
+    var selectionKey: String { provider + "\u{1f}" + model }
+}
+
+struct ModelDefaults: Codable, Equatable, Sendable {
+    var model: String
+    var provider: String
+    var baseUrl: String?
+    var reasoningEffort: String?
+    var supported: Bool? = nil
+    var unavailableReason: String? = nil
+
+    var selection: ModelOverride { ModelOverride(model: model, provider: provider, reasoningEffort: reasoningEffort) }
+}
+
+struct ModelCatalogEntry: Codable, Equatable, Sendable {
+    var id: String
+    var name: String
+    var provider: String
+    var baseUrl: String?
+    var reasoningEfforts: [String]
+    var defaultReasoningEffort: String? = nil
+
+    var selectionKey: String { provider + "\u{1f}" + id }
+}
+
+struct ModelCatalog: Codable, Equatable, Sendable {
+    var defaults: ModelDefaults
+    var models: [ModelCatalogEntry]
+    var modelSource: String?
+    var defaultSource: String?
+    var loading: Bool? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case defaults = "default"
+        case models, modelSource, defaultSource, loading
+    }
+
+    func entry(for selection: ModelOverride) -> ModelCatalogEntry? {
+        models.first { $0.id == selection.model && $0.provider == selection.provider }
+    }
+
+    func contains(_ selection: ModelOverride) -> Bool {
+        guard let entry = entry(for: selection) else { return false }
+        return selection.reasoningEffort.map(entry.reasoningEfforts.contains) ?? true
+    }
+
+    func name(for selection: ModelOverride) -> String {
+        entry(for: selection)?.name ?? selection.model
+    }
+
+    func resolved(_ selection: ModelOverride) -> ModelOverride {
+        var result = selection
+        result.reasoningEffort = selection.reasoningEffort ?? entry(for: selection)?.defaultReasoningEffort
+        return result
+    }
+}
+
+struct BotModelRequest: Encodable {
+    let modelOverride: ModelOverride?
+
+    enum CodingKeys: String, CodingKey { case modelOverride }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(modelOverride, forKey: .modelOverride)
+    }
+}
+
+struct AgentTask: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var botId: String
+    var sessionId: String
+    var title: String
+    var status: String
+    var summary: String
+    var createdAt: String
+    var updatedAt: String
+    var scheduledAt: String?
+    var threadId: String
+    var conversationBotId: String? = nil
+    var sourceBotId: String? = nil
+
+    var chatBotId: String { sourceBotId != nil ? botId : (conversationBotId ?? botId) }
+    var isActive: Bool { ["working", "running", "queued", "waiting", "needs_you", "scheduled", "cancelling"].contains(status) }
+}
+
+struct Message: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var botId: String
+    var taskId: String?
+    var role: String
+    var kind: String
+    var text: String
+    var decisionId: String?
+    var artifactId: String?
+    var createdAt: String
+    var streaming: Bool
+    var threadId: String? = nil
+    var senderBotId: String? = nil
+    var recipientBotIds: [String]? = nil
+    var exchangeRecipientBotIds: [String]? = nil
+}
+
+struct Decision: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var botId: String
+    var taskId: String
+    var title: String
+    var explanation: String
+    var actionType: String
+    var resource: String
+    var consequences: String
+    var recommended: String
+    var options: [DecisionOption]
+    var status: String
+    var urgency: String
+    var createdAt: String
+    var decidedAt: String?
+    var decidedBy: String?
+    var correction: String?
+    var outcome: String?
+    var revision: Int
+    var proposalPreview: String? = nil
+    var proposalHash: String? = nil
+    var decidedByName: String? = nil
+    var recommendedOptionId: String? = nil
+    var selectedOptionId: String? = nil
+    var selectedOptionLabel: String? = nil
+    var replacesDecisionId: String? = nil
+    var replacedByDecisionId: String? = nil
+
+    var isPending: Bool { status == "pending" }
+}
+
+struct DecisionOption: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var label: String
+    var explanation: String
+    var answer: String
+    var action: ProposedFileAction?
+    var modification: String?
+}
+
+struct ProposedFileAction: Codable, Equatable, Sendable {
+    var type: String
+    var filename: String
+    var content: String
+}
+
+struct Artifact: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var botId: String
+    var taskId: String?
+    var title: String
+    var kind: String
+    var status: String
+    var preview: String
+    var url: String?
+    var createdAt: String
+    var checkedAt: String? = nil
+    var observedAt: String? = nil
+    var headSha: String? = nil
+    var refreshError: String? = nil
+}
+
+
+
+struct Routine: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var botId: String
+    var name: String
+    var prompt: String
+    var cron: String
+    var timezone: String
+    var enabled: Bool
+    var nextRunAt: String?
+    var lastRunAt: String?
+    var lastTaskId: String?
+    var createdAt: String
+    var updatedAt: String
+    var error: String? = nil
+    var scheduleLabel: String { enabled ? cron : "Paused · " + cron }
+}
+
+struct LearningGroup: Codable, Identifiable, Equatable, Sendable {
+    var botId: String
+    var actionType: String
+    var total: Int
+    var agreed: Int
+    var agreement: Double
+    var suggestion: String?
+    var id: String { botId + ":" + actionType }
+}
+
+struct StateSnapshot: Codable, Sendable {
+    var bots: [Bot]
+    var tasks: [AgentTask]
+    var messages: [Message]
+    var decisions: [Decision]
+    var artifacts: [Artifact]
+    var cursor: Int
+    var serverTime: String
+    var provider: String
+    var model: String
+    var modelConfigured: Bool
+    var baseUrl: String? = nil
+    var routines: [Routine]? = nil
+    var modelCatalog: ModelCatalog? = nil
+    var approvals: ApprovalSettings? = nil
+    var pushConfigured: Bool? = nil
+}
+
+struct ServerEvent: Decodable, Sendable {
+    let seq: Int
+    let type: String
+    let botId: String?
+    let taskId: String?
+    let createdAt: String
+    let message: Message?
+
+    private enum CodingKeys: String, CodingKey { case seq, type, botId, taskId, createdAt, data }
+    private struct Visibility: Decodable { let _hidden: Bool?; let _deleted: Bool? }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        seq = try values.decode(Int.self, forKey: .seq)
+        type = try values.decode(String.self, forKey: .type)
+        botId = try values.decodeIfPresent(String.self, forKey: .botId)
+        taskId = try values.decodeIfPresent(String.self, forKey: .taskId)
+        createdAt = try values.decode(String.self, forKey: .createdAt)
+        let visibility = try? values.decode(Visibility.self, forKey: .data)
+        if type == "message.updated", visibility?._hidden != true, visibility?._deleted != true {
+            message = try? values.decode(Message.self, forKey: .data)
+        } else { message = nil }
+    }
+}
+
+struct EventPage: Decodable, Sendable {
+    let events: [ServerEvent]
+    let cursor: Int
+    let serverTime: String
+}
+
+enum ConnectionState: String, Sendable {
+    case unconfigured, connecting, connected, disconnected, preview
+}
+
+enum APIJSON {
+    static func encoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.outputFormatting = [.sortedKeys]
+        return encoder
+    }
+
+    static func decoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return decoder
+    }
+
+    static func encode<T: Encodable>(_ value: T) throws -> Data { try encoder().encode(value) }
+}
+
+extension String {
+    var apiDate: Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: self) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: self)
+    }
+}
+
+struct ApprovalMode: Codable, Identifiable, Sendable {
+    let id: String
+    let label: String
+    let description: String
+}
+
+struct ApprovalSettings: Codable, Sendable {
+    let defaults: String
+    let modes: [ApprovalMode]
+    enum CodingKeys: String, CodingKey { case defaults = "default", modes }
+    func label(for value: String?) -> String { modes.first { $0.id == value }?.label ?? "Hermes default" }
+}

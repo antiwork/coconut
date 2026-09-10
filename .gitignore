@@ -1,0 +1,34 @@
+# Local state and verification output
+.runtime/
+.build/
+evidence/
+.DS_Store
+*.log
+*.sqlite3*
+
+# Dependencies and generated caches
+node_modules/
+.wrangler/
+DerivedData/
+__pycache__/
+*.py[cod]
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+*.p8
+*.pem
+*.key
+*.crt
+*.p12
+*.mobileprovision
+
+# Xcode user state and build products
+xcuserdata/
+*.xcuserstate
+*.xcarchive/
+*.xcresult/
+*.ipa

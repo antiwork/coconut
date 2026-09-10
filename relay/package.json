@@ -1,0 +1,21 @@
+{
+  "name": "coconut-push-relay",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/worker.js && node --check src/device.js && node --check src/apns.js && node --check src/attest.js",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "cbor": "10.0.11",
+    "node-app-attest": "1.0.1"
+  },
+  "devDependencies": {
+    "miniflare": "5.20260908.0-alpha",
+    "wrangler": "4.130.0"
+  },
+  "overrides": {
+    "sharp": "0.35.4"
+  }
+}

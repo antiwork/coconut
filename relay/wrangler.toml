@@ -1,0 +1,32 @@
+name = "coconut-push"
+account_id = "7c48de80b2886bfac114048cdb29febb"
+main = "src/worker.js"
+compatibility_date = "2026-09-10"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[vars]
+APP_BUNDLE_ID = "com.gumroad.coconut"
+APPLE_TEAM_ID = "66LJACJ2U7"
+ALLOW_DEVELOPMENT_ATTESTATION = "true"
+
+[[durable_objects.bindings]]
+name = "DEVICES"
+class_name = "PushDevice"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PushDevice"]
+
+[[ratelimits]]
+name = "REGISTRATION_LIMIT"
+namespace_id = "1"
+simple = { limit = 30, period = 60 }
+
+[[ratelimits]]
+name = "DELIVERY_LIMIT"
+namespace_id = "2"
+simple = { limit = 120, period = 60 }
+
+[observability]
+enabled = false

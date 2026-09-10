@@ -1,0 +1,175 @@
+import AVFoundation
+import SwiftUI
+import VisionKit
+
+struct PairingScannerView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var ready = false
+    @State private var cameraDenied = false
+    @State private var error: String?
+    let onPayload: (String) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if ready {
+                    SetupQRScanner { payload in
+                        onPayload(payload)
+                        dismiss()
+                    } onFailure: {
+                        ready = false
+                        error = "The camera cannot scan right now. Paste the setup details instead."
+                    }
+                    .ignoresSafeArea(edges: .bottom)
+                    .safeAreaInset(edge: .bottom) {
+                        Text("Scan the setup code shown on your Mac.")
+                            .font(.subheadline).padding().frame(maxWidth: .infinity).background(.regularMaterial)
+                    }
+                } else if let error {
+                    ContentUnavailableView {
+                        Label("Camera unavailable", systemImage: "camera")
+                    } description: {
+                        Text(error)
+                    } actions: {
+                        if cameraDenied {
+                            Button("Open Settings") {
+                                guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+                                UIApplication.shared.open(url)
+                            }
+                        }
+                        Button("Close") { dismiss() }
+                    }
+                } else {
+                    ProgressView("Opening camera…")
+                }
+            }
+            .navigationTitle("Scan setup code").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            }
+            .task {
+                guard DataScannerViewController.isSupported else {
+                    error = "This device cannot scan setup codes. Paste the setup details instead."
+                    return
+                }
+                let allowed: Bool
+                switch AVCaptureDevice.authorizationStatus(for: .video) {
+                case .authorized: allowed = true
+                case .notDetermined: allowed = await AVCaptureDevice.requestAccess(for: .video)
+                default: allowed = false
+                }
+                guard !Task.isCancelled else { return }
+                cameraDenied = !allowed
+                if allowed && DataScannerViewController.isAvailable {
+                    ready = true
+                } else {
+                    error = allowed ? "The camera cannot scan right now. Paste the setup details instead."
+                        : "Allow camera access in Settings to scan, or paste the setup details instead."
+                }
+            }
+        }
+    }
+}
+
+private struct SetupQRScanner: UIViewControllerRepresentable {
+    let onPayload: (String) -> Void
+    let onFailure: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPayload: onPayload, onFailure: onFailure) }
+
+    func makeUIViewController(context: Context) -> DataScannerViewController {
+        let controller = DataScannerViewController(recognizedDataTypes: [.barcode(symbologies: [.qr])],
+            qualityLevel: .balanced, recognizesMultipleItems: false, isHighFrameRateTrackingEnabled: false,
+            isPinchToZoomEnabled: true, isGuidanceEnabled: true, isHighlightingEnabled: true)
+        controller.delegate = context.coordinator
+        let coordinator = context.coordinator
+        Task { @MainActor [weak controller] in
+            guard let controller, !coordinator.finished else { return }
+            do { try controller.startScanning() }
+            catch { coordinator.fail(controller) }
+        }
+        return controller
+    }
+
+    func updateUIViewController(_ controller: DataScannerViewController, context: Context) {}
+
+    static func dismantleUIViewController(_ controller: DataScannerViewController, coordinator: Coordinator) {
+        coordinator.finished = true
+        controller.stopScanning()
+    }
+
+    @MainActor final class Coordinator: NSObject, DataScannerViewControllerDelegate {
+        var finished = false
+        private let onPayload: (String) -> Void
+        private let onFailure: () -> Void
+
+        init(onPayload: @escaping (String) -> Void, onFailure: @escaping () -> Void) {
+            self.onPayload = onPayload
+            self.onFailure = onFailure
+        }
+
+        func dataScanner(_ scanner: DataScannerViewController, didAdd addedItems: [RecognizedItem], allItems: [RecognizedItem]) {
+            for item in addedItems { receive(item, scanner: scanner) }
+        }
+
+        func dataScanner(_ scanner: DataScannerViewController, didTapOn item: RecognizedItem) {
+            receive(item, scanner: scanner)
+        }
+
+        func dataScanner(_ scanner: DataScannerViewController, becameUnavailableWithError error: DataScannerViewController.ScanningUnavailable) {
+            fail(scanner)
+        }
+
+        func fail(_ scanner: DataScannerViewController) {
+            guard !finished else { return }
+            finished = true
+            scanner.stopScanning()
+            onFailure()
+        }
+
+        private func receive(_ item: RecognizedItem, scanner: DataScannerViewController) {
+            guard !finished, case .barcode(let barcode) = item, let payload = barcode.payloadStringValue else { return }
+            finished = true
+            scanner.stopScanning()
+            onPayload(payload)
+        }
+    }
+}
+
+struct PastePairingSetupView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var payload = ""
+    @State private var error: String?
+    let importPayload: (String) throws -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextEditor(text: $payload)
+                        .font(.caption.monospaced()).frame(minHeight: 180)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+                        .accessibilityLabel("Setup details").accessibilityIdentifier("pairing-setup-payload")
+                } footer: {
+                    Text("Copy the setup details from your Mac. Coconut shows the address before you pair.")
+                }
+                if let error { Section { Text(error).foregroundStyle(.red).font(.footnote) } }
+                Section {
+                    Button("Use setup details") {
+                        do {
+                            try importPayload(payload)
+                            payload = ""
+                            dismiss()
+                        } catch { self.error = error.localizedDescription }
+                    }
+                    .disabled(payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("use-pairing-setup")
+                }
+            }
+            .navigationTitle("Paste setup details").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            }
+        }
+    }
+}

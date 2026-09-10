@@ -1,0 +1,234 @@
+"""Versioned HTTP API with bearer authentication and optional pinned TLS."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import os
+from pathlib import Path
+import secrets
+import signal
+import socket
+import sqlite3
+import ssl
+import sys
+import time
+from urllib.parse import parse_qs, unquote, urlsplit
+
+from .service import Service, ServiceError, digest
+
+
+class APIServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+    tls_handshake_timeout = 5
+
+    def __init__(self, address, service: Service, *, tls_context: ssl.SSLContext | None = None):
+        if ':' in address[0]:
+            self.address_family = socket.AF_INET6
+        self.tls_context = tls_context
+        super().__init__(address, Handler)
+        self.service = service
+
+    def process_request_thread(self, request, client_address):
+        if self.tls_context is not None:
+            try:
+                # Each worker owns its handshake. A silent peer cannot block acceptance.
+                request = self.tls_context.wrap_socket(request, server_side=True, do_handshake_on_connect=False)
+                request.settimeout(self.tls_handshake_timeout)
+                request.do_handshake()
+            except OSError:
+                self.shutdown_request(request)
+                return
+        request.settimeout(35)
+        super().process_request_thread(request, client_address)
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = 'Coconut/1'
+
+    def log_message(self, format, *args):
+        # Paths can contain private IDs. Keep the default access log quiet.
+        pass
+
+    def do_GET(self):
+        self._handle('GET')
+
+    def do_POST(self):
+        self._handle('POST')
+
+    def do_PATCH(self):
+        self._handle('PATCH')
+
+    def do_PUT(self):
+        self._handle('PUT')
+
+    def do_DELETE(self):
+        self._handle('DELETE')
+
+    def _json(self, status, value):
+        content = json.dumps(value, separators=(',', ':')).encode()
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(content)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _body(self):
+        if self.headers.get('Transfer-Encoding'):
+            raise ServiceError(400, 'Use Content-Length for request bodies.')
+        try:
+            size = int(self.headers.get('Content-Length', '0'))
+        except ValueError:
+            raise ServiceError(400, 'The request size is invalid.')
+        if size < 0 or size > 6 * 1024 * 1024:
+            raise ServiceError(413, 'The request is too large.')
+        if size and self.headers.get_content_type() != 'application/json':
+            raise ServiceError(415, 'Send the request as application/json.')
+        try:
+            value = json.loads(self.rfile.read(size)) if size else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise ServiceError(400, 'The request does not contain valid JSON.')
+        if not isinstance(value, dict):
+            raise ServiceError(400, 'Send a JSON object.')
+        return value
+
+    def _handle(self, method):
+        self.connection.settimeout(35)
+        try:
+            url = urlsplit(self.path)
+            service = self.server.service
+            if method == 'GET' and url.path == '/health':
+                self._json(200, {'ok': True, 'api_version': 1})
+                return
+            if method == 'POST' and url.path == '/v1/pair':
+                self._json(200, service.pair(self._body()))
+                return
+            authorization = self.headers.get('Authorization', '')
+            if not authorization.startswith('Bearer '):
+                raise ServiceError(401, 'Pair this phone with the Mac to continue.')
+            device = service.authenticate(authorization[7:])
+            if method == 'GET':
+                if url.path == '/v1/state':
+                    self._json(200, service.snapshot())
+                elif url.path == '/v1/push/config':
+                    self._json(200, service.push.relay.configuration())
+                elif url.path == '/v1/events':
+                    query = parse_qs(url.query)
+                    try:
+                        after = int(query.get('after', ['0'])[0])
+                        wait = float(query.get('wait', ['0'])[0])
+                    except ValueError:
+                        raise ServiceError(400, 'after and wait must contain numbers.')
+                    self._json(200, service.events(after, wait))
+                elif url.path == '/v1/learning':
+                    self._json(200, service.learning())
+                elif url.path.startswith('/v1/artifacts/') and url.path.endswith('/content'):
+                    parts = url.path.strip('/').split('/')
+                    if len(parts) != 4:
+                        raise ServiceError(404, 'This artifact was not found.')
+                    content, filename = service.artifact_content(parts[2])
+                    safe_filename = ''.join(c for c in filename if c.isascii() and c.isalnum() or c in '._- ')[:160] or 'artifact'
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/octet-stream')
+                    self.send_header('Content-Disposition', f'attachment; filename="{safe_filename}"')
+                    self.send_header('Content-Length', str(len(content)))
+                    self.send_header('Cache-Control', 'no-store')
+                    self.send_header('X-Content-Type-Options', 'nosniff')
+                    self.end_headers()
+                    self.wfile.write(content)
+                else:
+                    raise ServiceError(404, 'This route was not found.')
+                return
+            response = service.mutate(method, url.path, self._body(), self.headers.get('Idempotency-Key', ''), device)
+            self._json(200, response)
+        except ServiceError as error:
+            self._json(error.status, {'error': str(error)})
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            pass
+        except Exception:
+            self._json(500, {'error': 'The Mac could not finish this request. Try again with the same request key.'})
+
+
+def create_pairing_code(data_dir: str | Path, lifetime: int = 300) -> str:
+    """Admin-only operation. It does not recover tasks in another service process."""
+    path = Path(data_dir).expanduser() / 'coconut.sqlite3'
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path.parent, 0o700)
+    code = ''.join(secrets.choice('0123456789') for _ in range(10))
+    with sqlite3.connect(path, timeout=10) as connection:
+        os.chmod(path, 0o600)
+        connection.execute('CREATE TABLE IF NOT EXISTS pairing (hash TEXT PRIMARY KEY, expires REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0)')
+        connection.execute('DELETE FROM pairing WHERE expires < ? OR used=1', (time.time(),))
+        connection.execute('INSERT INTO pairing(hash,expires) VALUES (?,?)', (digest(code), time.time() + lifetime))
+    return code
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description='Run Coconut on this Mac.')
+    parser.add_argument('--data-dir', type=Path, required=True)
+    parser.add_argument('--host', default='127.0.0.1')
+    parser.add_argument('--port', type=int, default=8960)
+    parser.add_argument('--provider', choices=('fixture', 'hermes'), default='fixture')
+    parser.add_argument('--cert', type=Path)
+    parser.add_argument('--key', type=Path)
+    parser.add_argument('--pair', action='store_true')
+    parser.add_argument('--hermes-python', type=Path)
+    args = parser.parse_args(argv)
+    if args.pair:
+        try:
+            print(create_pairing_code(args.data_dir))
+        except ServiceError as error:
+            parser.error(str(error))
+        return
+    if bool(args.cert) != bool(args.key):
+        parser.error('Supply both --cert and --key.')
+    if args.host not in ('127.0.0.1', '::1', 'localhost') and not args.cert:
+        parser.error('TLS is required for access outside this Mac. Supply --cert and --key.')
+    from .providers import FixtureProvider, HermesProvider
+    if args.provider == 'fixture':
+        provider = FixtureProvider(args.data_dir)
+    else:
+        provider = HermesProvider(args.data_dir, **({'python': str(args.hermes_python)} if args.hermes_python else {}))
+    try:
+        service = Service(args.data_dir, provider, start_workers=False)
+    except ServiceError as error:
+        parser.error(str(error))
+    server = None
+    try:
+        context = None
+        if args.cert:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context.load_cert_chain(args.cert, args.key)
+        server = APIServer((args.host, args.port), service, tls_context=context)
+    except OSError as error:
+        if server:
+            server.server_close()
+        service.close()
+        parser.error(f'The service could not listen: {error}')
+    (service.root / 'process.json').write_text(json.dumps({
+        'pid': os.getpid(), 'data_dir': str(service.root),
+        'project': str(Path(__file__).resolve().parents[2]),
+    }))
+    service.start()
+    print(f'Coconut is listening on {args.host}:{args.port}. Provider: {args.provider}.', flush=True)
+    if args.provider == 'fixture':
+        print('Fixture mode uses scripted responses. It does not execute Hermes.', flush=True)
+    def stop(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, stop)
+    try:
+        server.serve_forever(poll_interval=.2)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        service.close()
+
+
+if __name__ == '__main__':
+    main()
