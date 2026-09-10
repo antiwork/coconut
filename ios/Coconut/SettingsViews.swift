@@ -400,9 +400,9 @@ struct BotAppearancePicker: View {
         Section("Color") {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 44))], spacing: 8) {
                 ForEach(CoconutColor.palette, id: \.hex) { choice in
-                    let selected = color.trimmingCharacters(in: CharacterSet.alphanumerics.inverted).uppercased() == choice.hex
+                    let selected = CoconutColor.displayHex(color) == CoconutColor.displayHex(choice.hex)
                     Button { color = choice.hex } label: {
-                        Circle().fill(Color(hex: choice.hex)).frame(width: 28, height: 28)
+                        Circle().fill(Color(hex: CoconutColor.displayHex(choice.hex))).frame(width: 28, height: 28)
                             .padding(5).overlay(Circle().stroke(selected ? BoardStyle.ink : .clear, lineWidth: 1.5))
                             .frame(width: 44, height: 44)
                     }

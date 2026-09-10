@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--simulator', required=True)
     parser.add_argument('--result', type=Path, required=True)
     parser.add_argument('--exchange', action='store_true')
+    parser.add_argument('--instant-send', action='store_true')
     parser.add_argument('--transcript', type=Path, default=ROOT/'ios/CoconutUITests/Fixtures/ConversationLayoutMessages.json')
     args = parser.parse_args()
     state = json.loads((ROOT/'ios/Coconut/Fixtures/PreviewState.json').read_text())
@@ -52,6 +53,10 @@ def main():
     events = []
     sends = 0
     streaming = threading.Event()
+    release_send = threading.Event()
+    send_keys = []
+    rejected_keys = set()
+    responses = {}
 
     def publish(kind, row):
         state['cursor'] += 1
@@ -89,9 +94,9 @@ def main():
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_): pass
-        def respond(self, value):
+        def respond(self, value, status=200):
             body = json.dumps(value).encode()
-            self.send_response(200)
+            self.send_response(status)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
@@ -114,12 +119,32 @@ def main():
                     publish('message.updated', row)
                     publish('task.updated', task)
                 self.respond(dict(ok=True))
+            elif self.path == '/test/release-send':
+                release_send.set()
+                self.respond(dict(ok=True))
             elif self.path.endswith('/messages'):
+                key = self.headers.get('Idempotency-Key')
+                if args.instant_send:
+                    send_keys.append(key)
+                    if body['text'] == 'Immediate message.':
+                        release_send.wait(20)
+                    if body['text'] == 'Retry this message.' and key not in rejected_keys:
+                        rejected_keys.add(key)
+                        self.respond(dict(error='Temporary test failure.'), status=503)
+                        return
+                    if body['text'] == 'Rejected message.':
+                        self.respond(dict(error='The selected task has finished.'), status=409)
+                        return
+                    if key in responses:
+                        self.respond(responses[key])
+                        return
                 with changed:
                     sends += 1
                     task['status'] = 'working'
                     publish('task.updated', task)
                     row = message('user', body['text'])
+                    row['client_request_id'] = key
+                    responses[key] = dict(task)
                     state['messages'].append(row)
                     publish('message.created', row)
                 threading.Thread(target=reply, args=(sends,), daemon=True).start()
@@ -130,6 +155,9 @@ def main():
         def do_DELETE(self): self.respond(dict(registered=False, configured=False))
         def do_GET(self):
             url = urlsplit(self.path)
+            if url.path == '/test/send-status':
+                self.respond(dict(keys=send_keys, sends=sends))
+                return
             with changed:
                 if url.path == '/v1/events':
                     after = int(parse_qs(url.query).get('after', ['0'])[0])
@@ -160,7 +188,7 @@ def main():
             runfile.write_bytes(plistlib.dumps(document))
             command = ['xcodebuild', 'test-without-building', '-xctestrun', str(runfile),
                             '-destination', 'platform=iOS Simulator,id='+args.simulator,
-                            '-only-testing:CoconutUITests/' + ('BotExchangeFlowTests' if args.exchange else 'ConversationLayoutFlowTests'), '-parallel-testing-enabled', 'NO',
+                            '-only-testing:CoconutUITests/' + ('BotExchangeFlowTests' if args.exchange else 'InstantSendFlowTests' if args.instant_send else 'ConversationLayoutFlowTests'), '-parallel-testing-enabled', 'NO',
                             '-resultBundlePath', str(args.result)]
             with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as process:
                 for line in process.stdout:
@@ -171,6 +199,7 @@ def main():
             if result: raise SystemExit(result)
     finally:
         streaming.set()
+        release_send.set()
         server.shutdown()
         server.server_close()
 

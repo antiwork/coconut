@@ -71,6 +71,19 @@ struct CoconutColor {
         Self(name: "Purple", hex: "9272B3"), Self(name: "Pink", hex: "BF759B"),
         Self(name: "Cream", hex: "D6C6A2"), Self(name: "Gray", hex: "858680")
     ]
+
+    private static let displayPalette = [
+            "A85F32": "CE7A3C", "C76552": "F56B5D", "B5913F": "F2BB3F",
+            "64866A": "3ECF8E", "448A89": "24C8B5", "6087B0": "4395F7",
+            "9272B3": "A06AF4", "BF759B": "EE66B5", "D6C6A2": "F1E3BE",
+            "858680": "A3AAA8"
+    ]
+
+    // Stored palette values keep their identity when the visual palette changes.
+    static func displayHex(_ value: String) -> String {
+        let hex = value.trimmingCharacters(in: CharacterSet.alphanumerics.inverted).uppercased()
+        return displayPalette[hex] ?? hex
+    }
 }
 
 // Swift's Hasher changes between launches. Character details must not.
@@ -104,7 +117,7 @@ struct BotAvatar: View {
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !motionEnabled || !isThinking)) { timeline in
-            CoconutFigure(shape: CoconutShape.resolve(symbol, identity: identity), color: color, size: size,
+            CoconutFigure(shape: CoconutShape.resolve(symbol, identity: identity), color: CoconutColor.displayHex(color), size: size,
                           seed: seed, time: timeline.date.timeIntervalSinceReferenceDate,
                           thinking: thinkingAmount, eyelid: blinking ? 0.08 : 1)
         }

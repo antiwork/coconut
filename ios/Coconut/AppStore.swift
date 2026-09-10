@@ -9,6 +9,7 @@ final class AppStore {
     var bots: [Bot] = []
     var tasks: [AgentTask] = []
     var messages: [Message] = []
+    var outgoingMessages: [OutgoingMessage] = []
     var decisions: [Decision] = []
     var artifacts: [Artifact] = []
     var approvals: ApprovalSettings?
@@ -53,7 +54,9 @@ final class AppStore {
     var pendingDecisions: [Decision] { decisions.filter(\.isPending) }
     var activeTasks: [AgentTask] { tasks.filter(\.isActive) }
     func isBotActive(_ bot: Bot) -> Bool {
-        guard !bot.archived && (isDemo || connection == .connected) else { return false }
+        guard !bot.archived else { return false }
+        if outgoingMessages.contains(where: { $0.expectsResponse && $0.executorIds.contains(bot.id) }) { return true }
+        guard isDemo || connection == .connected else { return false }
         // A pending decision can mask independent work in the bot's aggregate status.
         return ["working", "running"].contains(bot.status)
             || tasks.contains { $0.botId == bot.id && ["working", "running"].contains($0.status) }
@@ -94,6 +97,9 @@ final class AppStore {
             serverURL = configuration.serverURL
             fingerprint = configuration.fingerprint
             connection = .disconnected
+            if let cache: OutgoingCache = ProtectedCache.read("outgoing.json"), cache.deviceId == configuration.deviceId {
+                outgoingMessages = cache.messages.map(\.afterRestart)
+            }
             if let cache: SnapshotCache = ProtectedCache.read("snapshot.json") {
                 apply(cache.snapshot, persist: false)
                 lastSync = cache.syncedAt
@@ -173,6 +179,8 @@ final class AppStore {
             try PairingToken.save(response.token)
             let configuration = PairingConfiguration(serverURL: address, fingerprint: pin, deviceId: response.deviceId)
             try ProtectedCache.write(configuration, name: "pairing.json")
+            outgoingMessages = []
+            ProtectedCache.remove("outgoing.json")
             pairing = configuration
             pairCode = ""
             cursor = 0
@@ -224,6 +232,8 @@ final class AppStore {
         syncIssue = nil
         client = nil
         uncertainWriteKeys = [:]
+        outgoingMessages = []
+        ProtectedCache.remove("outgoing.json")
         pairing = nil
         PairingToken.delete()
         ProtectedCache.remove("pairing.json")
@@ -402,10 +412,72 @@ final class AppStore {
                                     decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false, threadId: target.threadId))
             return true
         }
-        let result: AgentTask? = await write("bots/\(bot.id)/messages", payload: MessageRequest(text: text, mode: selectedMode,
+        let request = MessageRequest(text: text, mode: selectedMode,
             taskId: selectedMode == "steer" ? currentTask?.id : nil, scheduledAt: scheduledAt,
-            attachmentIds: attachments, recipientBotIds: recipientBotIds), as: AgentTask.self)
-        return result != nil
+            attachmentIds: attachments, recipientBotIds: recipientBotIds)
+        let outgoing = OutgoingMessage(id: UUID().uuidString, botId: bot.id,
+            executorIds: recipientBotIds.isEmpty ? [selectedMode == "steer" ? currentTask!.botId : bot.id] : recipientBotIds,
+            request: request, createdAt: Self.now, status: .sending)
+        outgoingMessages.append(outgoing)
+        do { try saveOutgoing() }
+        catch {
+            outgoingMessages.removeAll { $0.id == outgoing.id }
+            report(error)
+            return false
+        }
+        await deliverOutgoing(outgoing.id)
+        // The draft is saved locally even when the Mac has not confirmed it yet.
+        return true
+    }
+
+    func retryOutgoing(_ id: String) async {
+        guard let index = outgoingMessages.firstIndex(where: { $0.id == id && $0.status == .failed }) else { return }
+        outgoingMessages[index].status = .sending
+        await deliverOutgoing(id)
+    }
+
+    private func deliverOutgoing(_ id: String) async {
+        guard let outgoing = outgoingMessages.first(where: { $0.id == id }) else { return }
+        let result: AgentTask? = await write("bots/\(outgoing.botId)/messages", payload: outgoing.request,
+            as: AgentTask.self, quiet: true, idempotencyKey: id, onFailure: { failure in
+                guard let index = self.outgoingMessages.firstIndex(where: { $0.id == id }),
+                      let serviceError = failure as? ServiceError,
+                      case .response(let status, let reason) = serviceError,
+                      (400..<500).contains(status), ![408, 429].contains(status) else { return }
+                self.outgoingMessages[index].status = .rejected
+                self.outgoingMessages[index].failureReason = reason
+            })
+        if let index = outgoingMessages.firstIndex(where: { $0.id == id }) {
+            if outgoingMessages[index].status != .rejected {
+                outgoingMessages[index].status = result == nil ? .failed : .accepted
+            }
+            try? saveOutgoing()
+        }
+    }
+
+    func replaceRejected(_ outgoing: OutgoingMessage, text: String) async {
+        guard outgoingMessages.contains(where: { $0.id == outgoing.id && $0.status == .rejected }),
+              let bot = bots.first(where: { $0.id == outgoing.botId }) else { return }
+        outgoingMessages.removeAll { $0.id == outgoing.id }
+        let saved = await send(bot: bot, text: text, mode: "queue", attachments: outgoing.request.attachmentIds,
+                              scheduledAt: outgoing.request.scheduledAt, recipientBotIds: outgoing.request.recipientBotIds)
+        if !saved { outgoingMessages.append(outgoing); try? saveOutgoing() }
+    }
+
+    private func saveOutgoing() throws {
+        guard let pairing else { return }
+        try ProtectedCache.write(OutgoingCache(deviceId: pairing.deviceId, messages: outgoingMessages), name: "outgoing.json")
+    }
+
+    func conversationMessages(for botId: String) -> [Message] {
+        let confirmed = messages.filter { $0.botId == botId || ($0.isBotExchange && $0.exchangeBotIds.contains(botId)) }
+        let confirmedRequests = Set(confirmed.compactMap(\.clientRequestId))
+        return (confirmed.map { message in
+            var displayed = message
+            if let requestId = message.clientRequestId { displayed.id = "outgoing-" + requestId }
+            return displayed
+        } + outgoingMessages.filter { $0.botId == botId && !confirmedRequests.contains($0.id) }.map(\.message))
+            .sorted { $0.createdAt < $1.createdAt }
     }
 
     @discardableResult
@@ -660,7 +732,7 @@ final class AppStore {
         return result?.ok == true
     }
 
-    private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false) async -> Response? {
+    private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, idempotencyKey: String? = nil, onFailure: ((Error) -> Void)? = nil) async -> Response? {
         guard let pairing, let token = PairingToken.read() else {
             if !quiet { error = "Pair with your Mac in Settings to continue." }
             return nil
@@ -674,8 +746,8 @@ final class AppStore {
             let body = try APIJSON.encode(payload)
             let requestSignature = method + " " + path + " " + SHA256.hash(data: body).description
             signature = requestSignature
-            let key = uncertainWriteKeys[requestSignature] ?? UUID().uuidString
-            uncertainWriteKeys[requestSignature] = key
+            let key = idempotencyKey ?? uncertainWriteKeys[requestSignature] ?? UUID().uuidString
+            if idempotencyKey == nil { uncertainWriteKeys[requestSignature] = key }
             let result: Response = try await client.request(path, method: method, body: body, idempotencyKey: key)
             uncertainWriteKeys.removeValue(forKey: requestSignature)
             if !quiet { error = nil }
@@ -686,11 +758,15 @@ final class AppStore {
             }
             return result
         } catch {
+            onFailure?(error)
             if let signature, let serviceError = error as? ServiceError,
                case .response(let status, _) = serviceError, (400..<500).contains(status) {
                 uncertainWriteKeys.removeValue(forKey: signature)
             }
-            if quiet { recordSyncFailure(error) }
+            if quiet {
+                // An HTTP error confirms reachability even when the action fails.
+                if let serviceError = error as? ServiceError, case .response = serviceError {} else { recordSyncFailure(error) }
+            }
             else {
                 report(error)
                 if error is URLError { recordSyncFailure(error) }
@@ -766,6 +842,11 @@ final class AppStore {
     }
 
     private func apply(_ snapshot: StateSnapshot, persist: Bool) {
+        let confirmed = Set(snapshot.messages.compactMap(\.clientRequestId))
+        if outgoingMessages.contains(where: { confirmed.contains($0.id) }) {
+            outgoingMessages.removeAll { confirmed.contains($0.id) }
+            try? saveOutgoing()
+        }
         if bots != snapshot.bots { bots = snapshot.bots }
         if tasks != snapshot.tasks { tasks = snapshot.tasks }
         if messages != snapshot.messages { messages = snapshot.messages }
@@ -892,7 +973,29 @@ private struct InstructionsRequest: Encodable { let instructions: String }
 private struct PreferenceRequest: Encodable { let text: String }
 private struct RoutineRequest: Encodable { let name: String; let prompt: String; let cron: String; let timezone: String; let enabled: Bool }
 private struct ArchiveRequest: Encodable { let archived: Bool }
-private struct MessageRequest: Encodable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String] }
+struct MessageRequest: Codable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String] }
+struct OutgoingMessage: Codable, Identifiable {
+    enum Status: String, Codable { case sending, accepted, failed, rejected }
+    let id: String
+    let botId: String
+    let executorIds: [String]
+    let request: MessageRequest
+    let createdAt: String
+    var status: Status
+    var failureReason: String? = nil
+    var expectsResponse: Bool { [.sending, .accepted].contains(status) && request.scheduledAt == nil }
+    var afterRestart: Self {
+        var restored = self
+        if [.sending, .accepted].contains(status) { restored.status = .failed }
+        return restored
+    }
+    var message: Message {
+        Message(id: "outgoing-" + id, botId: botId, taskId: request.taskId, role: "user", kind: "text", text: request.text,
+                decisionId: nil, artifactId: nil, createdAt: createdAt, streaming: false,
+                recipientBotIds: request.recipientBotIds, clientRequestId: id)
+    }
+}
+private struct OutgoingCache: Codable { let deviceId: String; let messages: [OutgoingMessage] }
 private struct AnswerRequest: Encodable { let choice: String; let revision: Int; let correction: String?; let optionId: String? }
 private struct ReplyRequest: Encodable { let text: String; let attachmentIds: [String]; let decisionId: String?; let recipientBotIds: [String] }
 private struct ContextRequest: Encodable { let question: String }

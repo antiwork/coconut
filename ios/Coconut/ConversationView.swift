@@ -12,16 +12,19 @@ struct ConversationView: View {
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
     private var messages: [Message] {
-        TranscriptPresentation.visibleMessages(store.messages.filter {
-            $0.botId == botId || ($0.isBotExchange && $0.exchangeBotIds.contains(botId))
-        }.sorted { $0.createdAt < $1.createdAt }, artifacts: store.artifacts)
+        TranscriptPresentation.visibleMessages(store.conversationMessages(for: botId), artifacts: store.artifacts)
     }
     private var waitingForResponse: [AgentTask] {
         guard store.connection == .connected || store.isDemo else { return [] }
         return store.tasks.filter { task in
-            task.chatBotId == botId && ["working", "running"].contains(task.status)
+            task.chatBotId == botId && ["queued", "working", "running"].contains(task.status)
                 && !messages.contains { $0.taskId == task.id && $0.streaming && !$0.text.isEmpty }
         }
+    }
+    private var waitingBotIds: [String] {
+        var seen = Set<String>()
+        let pending = store.outgoingMessages.filter { $0.botId == botId && $0.expectsResponse }.flatMap(\.executorIds)
+        return (waitingForResponse.map(\.botId) + pending).filter { seen.insert($0).inserted }
     }
     private var activeTask: AgentTask? {
         store.tasks.last { $0.chatBotId == botId && ["working", "running"].contains($0.status) }
@@ -65,8 +68,8 @@ struct ConversationView: View {
                             }) { decision in
                                 DecisionCard(decision: decision).id(decision.id)
                             }
-                            ForEach(waitingForResponse) { task in
-                                BotWorkingIndicator(botId: task.botId)
+                            ForEach(waitingBotIds, id: \.self) { id in
+                                BotWorkingIndicator(botId: id)
                             }
                             Color.clear.frame(height: 1).id("conversation-bottom")
                         }
@@ -84,7 +87,7 @@ struct ConversationView: View {
                     .onScrollGeometryChange(for: CGSize.self) { $0.containerSize } action: { _, _ in
                         if nearBottom && focusDecisionId == nil { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
-                    .onChange(of: waitingForResponse.map(\.id)) { _, _ in
+                    .onChange(of: waitingBotIds) { _, _ in
                         if nearBottom { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onChange(of: messages.last?.id) { _, _ in
@@ -233,6 +236,7 @@ struct TranscriptMessageRow: View {
 
 struct MessageBubble: View {
     @Environment(AppStore.self) private var store
+    @State private var editingOutgoing: OutgoingMessage?
     let message: Message
     var scrollToDecision: (String) -> Void = { _ in }
     private var isUser: Bool { message.role == "user" }
@@ -251,6 +255,20 @@ struct MessageBubble: View {
                 }
                 MessageText(text: displayText, linkColor: isUser ? BoardStyle.userBubbleLink : .blue)
                     .accessibilityIdentifier("message-text-\(message.id)")
+                if let requestId = message.clientRequestId,
+                   let outgoing = store.outgoingMessages.first(where: { $0.id == requestId }) {
+                    if outgoing.status == .failed {
+                        Button("Not confirmed. Retry", systemImage: "arrow.clockwise") {
+                            Task { await store.retryOutgoing(requestId) }
+                        }
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(minHeight: 44).accessibilityIdentifier("retry-message-\(requestId)")
+                    } else if outgoing.status == .rejected {
+                        Button("Not sent. Edit", systemImage: "pencil") { editingOutgoing = outgoing }
+                            .font(.caption).foregroundStyle(.secondary)
+                            .frame(minHeight: 44).accessibilityIdentifier("edit-message-\(requestId)")
+                    }
+                }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
@@ -260,6 +278,37 @@ struct MessageBubble: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(isUser ? "You" : store.bots.first { $0.id == (message.senderBotId ?? message.botId) }?.name ?? "Deleted bot")")
         .accessibilityValue(message.streaming ? "Response is streaming" : "")
+        .sheet(item: $editingOutgoing) { RejectedMessageEditor(outgoing: $0) }
+    }
+}
+
+private struct RejectedMessageEditor: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let outgoing: OutgoingMessage
+    @State private var text: String
+
+    init(outgoing: OutgoingMessage) {
+        self.outgoing = outgoing
+        _text = State(initialValue: outgoing.request.text)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if let reason = outgoing.failureReason { Text(reason).foregroundStyle(.secondary) }
+                TextEditor(text: $text).frame(minHeight: 140).accessibilityIdentifier("edit-outgoing-input")
+                Button("Send as new message") {
+                    let corrected = text
+                    Task { await store.replaceRejected(outgoing, text: corrected) }
+                    dismiss()
+                }
+                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("resend-edited-message")
+            }
+            .navigationTitle("Edit message").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }
     }
 }
 
@@ -272,7 +321,7 @@ private struct BotWorkingIndicator: View {
     var body: some View {
         HStack(spacing: 8) {
             if let bot {
-                BotAvatar(bot: bot, size: 38, isThinking: store.isBotActive(bot))
+                BotAvatar(bot: bot, size: 38, isThinking: true)
                     .overlay(alignment: .bottomTrailing) {
                         if reduceMotion { BotActivityDot(bot: bot).padding(38 * 0.12) }
                     }
@@ -315,7 +364,6 @@ struct ConversationComposer: View {
     let task: AgentTask?
     @State private var text = ""
     @State private var mode = "steer"
-    @State private var sending = false
     @State private var importing = false
     @State private var attachments: [Artifact] = []
     @State private var uploading = false
@@ -394,9 +442,9 @@ struct ConversationComposer: View {
                     .padding(.vertical, 12)
                     .focused($focused)
                     .accessibilityIdentifier("message-input")
-                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending {
+                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Button(action: send) {
-                    Image(systemName: sending ? "ellipsis" : scheduling ? "clock.fill" : "arrow.up")
+                    Image(systemName: scheduling ? "clock.fill" : "arrow.up")
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(canSend ? BoardStyle.controlLabel : .secondary)
                         .frame(width: 34, height: 34)
@@ -435,29 +483,29 @@ struct ConversationComposer: View {
         }
     }
 
-    private var canSend: Bool { connected && !sending && !uploading && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var canSend: Bool { connected && !uploading && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     private func send() {
+        guard canSend else { return }
         let submittedText = text
-        let submittedAttachments = attachments.map(\.id)
+        let submittedArtifacts = attachments
+        let submittedAttachments = submittedArtifacts.map(\.id)
         let submittedScheduling = scheduling
         let submittedDate = scheduledAt
         let submittedTaskId = task?.id
         let submittedRecipients = recipients.map(\.id)
         let submittedMentions = mentions
         let submittedMode = scheduling || task == nil || !submittedRecipients.isEmpty ? "queue" : mode
-        sending = true
+        text = ""; mentions = []; selection = nil; attachments = []; scheduling = false
         Task {
             let success = await store.send(bot: bot, text: submittedText, mode: submittedMode, taskId: submittedTaskId,
                                            attachments: submittedAttachments,
                                            scheduledAt: submittedScheduling ? ISO8601DateFormatter().string(from: submittedDate) : nil,
                                            recipientBotIds: submittedRecipients)
-            if success {
-                if text == submittedText && mentions == submittedMentions { text = ""; mentions = []; selection = nil }
-                attachments.removeAll { submittedAttachments.contains($0.id) }
-                if scheduling == submittedScheduling && scheduledAt == submittedDate { scheduling = false }
+            if !success && text.isEmpty {
+                text = submittedText; mentions = submittedMentions; attachments = submittedArtifacts
+                scheduling = submittedScheduling; scheduledAt = submittedDate
             }
-            sending = false
         }
     }
 }

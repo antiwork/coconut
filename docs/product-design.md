@@ -7,6 +7,13 @@ Resolved decisions leave Inbox. Results and history remain in bot conversations.
 
 Long-press a bot to pin, unpin, or archive it. Pins persist on the Mac. Search finds bots by name, role, or message text.
 
+The home bar has separate circular controls for settings, search, and bot creation. Keep space between each control.
+
+Sending immediately clears the composer, displays the message, and animates the bot while delivery starts. Keep the composer available for another draft.
+Save outgoing messages on the phone until the Mac confirms them. Match confirmations by request ID, never by text.
+Show an inline retry control when delivery is unconfirmed. A retry keeps the same request ID to prevent duplicate work.
+If the Mac rejects a message, preserve its reason and offer editing before sending a new request.
+
 Each compact Inbox row shows the bot, age, decision title, and one preview line. Inbox has one list and no filters.
 Group pending decisions by thread. Place urgent decisions first, then older decisions.
 

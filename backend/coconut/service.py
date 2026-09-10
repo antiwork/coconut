@@ -120,6 +120,7 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
         CREATE TABLE IF NOT EXISTS receipts (decision_id TEXT PRIMARY KEY, state TEXT NOT NULL, artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL, detail TEXT NOT NULL);
         ''')
         self._request_device_id = None
+        self._request_key = None
         self.stopping = threading.Event()
         self.running: dict[str, threading.Thread] = {}
         self.bot_locks: dict[str, threading.Lock] = {}
@@ -215,6 +216,8 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
             message['exchange_recipient_bot_ids'] = [task['source_bot_id']]
         if human_authored and self._request_device_id is not None:
             message.update(_human_device_id=self._request_device_id, _human_source_kind='chat')
+            if role == 'user' and kind == 'text' and self._request_key:
+                message['client_request_id'] = self._request_key
         self._put('messages', message)
         bot = self._get('bots', display_bot_id)
         bot['last_message'] = text[:160]
@@ -534,6 +537,7 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
                     callbacks.append(lambda: self._finish_bot_deletion(parts[2]))
             else:
                 self._request_device_id = device_id
+                self._request_key = key
                 self._request_model_catalog = catalog
                 try:
                     if hasattr(self.provider, 'native_settings') and ((len(parts) == 4 and parts[1] == 'bots' and parts[3] == 'routines') or (len(parts) >= 3 and parts[1] == 'routines')):
@@ -542,6 +546,7 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
                         response = self._write(method, parts, data, device_id, callbacks)
                 finally:
                     self._request_device_id = None
+                    self._request_key = None
                     self._request_model_catalog = None
                 self.db.execute('INSERT INTO requests VALUES (?,?,?)', (key, fingerprint, encoded(response)))
         for callback in callbacks:

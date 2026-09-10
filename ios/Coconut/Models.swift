@@ -211,6 +211,7 @@ struct Message: Codable, Identifiable, Equatable, Sendable {
     var senderBotId: String? = nil
     var recipientBotIds: [String]? = nil
     var exchangeRecipientBotIds: [String]? = nil
+    var clientRequestId: String? = nil
 }
 
 struct Decision: Codable, Identifiable, Equatable, Sendable {

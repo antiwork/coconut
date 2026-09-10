@@ -45,43 +45,52 @@ struct CoconutHome: View {
     @State private var path = NavigationPath()
     @FocusState private var searchFocused: Bool
 
+    private var homeBar: some View {
+        HStack(spacing: 8) {
+            Button { settingsOpen = true } label: {
+                Image(systemName: "person.fill")
+                    .font(.system(size: 19, weight: .medium)).foregroundStyle(.secondary)
+                    .frame(width: 38, height: 38)
+                    .background(BoardStyle.ink.opacity(0.09), in: Circle())
+                    .frame(width: 44, height: 44)
+            }.accessibilityLabel("App settings").accessibilityIdentifier("app-settings")
+            Spacer(minLength: 16)
+            Button { searchOpen = true; searchFocused = true } label: {
+                Image(systemName: "magnifyingglass").font(.system(size: 22, weight: .regular))
+                    .frame(width: 44, height: 44)
+            }.accessibilityLabel("Search conversations").accessibilityIdentifier("search-conversations")
+            Button { createOpen = true } label: {
+                Image(systemName: "plus").font(.system(size: 25, weight: .light))
+                    .frame(width: 44, height: 44)
+            }.accessibilityLabel("Create bot").accessibilityIdentifier("create-bot")
+        }
+        .buttonStyle(HomeCircleStyle())
+        .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 14)
+        .background(BoardStyle.paper)
+    }
+
     var body: some View {
         NavigationStack(path: $path) {
             HomeLaunchView(searchText: searchText)
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
+                .toolbar(path.isEmpty ? .hidden : .visible, for: .navigationBar)
                 .safeAreaInset(edge: .top, spacing: 0) {
-                    if searchOpen {
-                        HStack(spacing: 10) {
-                            Image(systemName: "magnifyingglass").font(.system(size: 17)).foregroundStyle(.secondary)
-                            TextField("Search conversations", text: $searchText)
-                                .focused($searchFocused).textInputAutocapitalization(.never)
-                                .autocorrectionDisabled().accessibilityIdentifier("home-search-input")
-                            Button { searchFocused = false; searchOpen = false; searchText = "" } label: {
-                                Image(systemName: "xmark.circle.fill").font(.system(size: 17)).foregroundStyle(.secondary).frame(width: 44, height: 44)
-                            }.accessibilityLabel("Close search").accessibilityIdentifier("close-search")
+                    VStack(spacing: 0) {
+                        homeBar
+                        if searchOpen {
+                            HStack(spacing: 10) {
+                                Image(systemName: "magnifyingglass").font(.system(size: 17)).foregroundStyle(.secondary)
+                                TextField("Search conversations", text: $searchText)
+                                    .focused($searchFocused).textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled().accessibilityIdentifier("home-search-input")
+                                Button { searchFocused = false; searchOpen = false; searchText = "" } label: {
+                                    Image(systemName: "xmark.circle.fill").font(.system(size: 17)).foregroundStyle(.secondary).frame(width: 44, height: 44)
+                                }.accessibilityLabel("Close search").accessibilityIdentifier("close-search")
+                            }
+                            .padding(.leading, 24).padding(.trailing, 12)
+                            .background(BoardStyle.paper)
                         }
-                        .padding(.leading, 24).padding(.trailing, 12)
-                        .background(BoardStyle.paper)
-                    }
-                }
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button { settingsOpen = true } label: {
-                            Image(systemName: "gearshape")
-                                .font(.system(size: 22, weight: .light)).foregroundStyle(.secondary)
-                                .frame(width: 44, height: 44)
-                        }
-                        .accessibilityLabel("App settings")
-                        .accessibilityIdentifier("app-settings")
-                    }
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        Button { searchOpen = true; searchFocused = true } label: {
-                            Image(systemName: "magnifyingglass").font(.system(size: 17)).frame(width: 44, height: 44)
-                        }.accessibilityLabel("Search conversations").accessibilityIdentifier("search-conversations")
-                        Button { createOpen = true } label: {
-                            Image(systemName: "plus").font(.system(size: 20)).frame(width: 44, height: 44)
-                        }.accessibilityLabel("Create bot").accessibilityIdentifier("create-bot")
                     }
                 }
                 .navigationDestination(for: HomeDestination.self) { destination in
@@ -191,5 +200,15 @@ struct CompactAgeLabel: View {
         if age < 3600 { return "\(Int(age / 60)) min" }
         if age < 86400 { return "\(Int(age / 3600)) hr" }
         return date.formatted(.dateTime.month(.abbreviated).day())
+    }
+}
+
+private struct HomeCircleStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(BoardStyle.ink)
+            .background(BoardStyle.surface.opacity(0.45), in: Circle())
+            .overlay(Circle().stroke(BoardStyle.line, lineWidth: 0.8))
+            .opacity(configuration.isPressed ? 0.55 : 1)
     }
 }

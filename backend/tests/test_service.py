@@ -137,6 +137,36 @@ class ServiceTests(unittest.TestCase):
             self.service.mutate('POST', '/v1/bots', {'name': 'Ada'}, key, 'another-phone')
         self.assertEqual(len(self.service.snapshot()['bots']), 1)
 
+    def test_message_request_id_survives_retry_and_restart(self):
+        bot = self.bot()
+        path = f'/v1/bots/{bot["id"]}/messages'
+        key = str(uuid4())
+        data = dict(text='Keep this message once.', mode='queue')
+        task = self.write('POST', path, data, key)
+        self.assertEqual(task, self.write('POST', path, data, key))
+        self.service.close()
+        self.service = Service(self.temp.name, ControlledProvider(), start_workers=False)
+        self.assertEqual(task, self.write('POST', path, data, key))
+        messages = [m for m in self.service.snapshot()['messages'] if m.get('client_request_id') == key]
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]['text'], data['text'])
+        # Identical text with another key is a separate, intentional message.
+        other = str(uuid4())
+        self.write('POST', path, data, other)
+        self.assertEqual(len([m for m in self.service.snapshot()['messages'] if m.get('client_request_id') == other]), 1)
+        self.assertIsNone(self.service._request_key)
+
+    def test_mentioned_message_keeps_request_id_only_on_human_text(self):
+        first, second = self.bot(), self.bot('Second')
+        key = str(uuid4())
+        task = self.write('POST', f'/v1/bots/{first["id"]}/messages',
+                          dict(text='Check this.', mode='queue', recipient_bot_ids=[second['id']]), key)
+        with self.service.transaction():
+            self.service._message(second['id'], 'A reply.', task_id=task['id'])
+        messages = self.service.snapshot()['messages']
+        self.assertEqual(len([m for m in messages if m.get('client_request_id') == key]), 1)
+        self.assertNotIn('client_request_id', messages[-1])
+
     def test_single_process_owns_recovery(self):
         with self.assertRaises(ServiceError):
             Service(self.temp.name, ControlledProvider())
