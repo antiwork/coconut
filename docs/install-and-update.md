@@ -49,6 +49,11 @@ FileVault or a restart can require login before this service becomes available.
 
 This command starts with a new database. It does not copy the development Mac's conversations or profiles.
 
+Coconut automatically gives every bot the same Homebrew configuration path, including bots created after setup.
+No shell changes or onboarding step are required. Hermes profiles and other tool settings remain separate.
+New installations start with Homebrew’s default trust. Your approved package list is not bundled or copied to another person’s installation.
+Existing trust lists require an explicit import; Coconut never merges private profile settings automatically.
+
 ## Hermes in Terminal
 
 The runtime stays inside `~/Coconut`. To expose its terminal command, run this once on the mini:
