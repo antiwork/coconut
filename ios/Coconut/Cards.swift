@@ -163,7 +163,7 @@ struct DecisionCard: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let replacement = decision.replacedByDecisionId {
-                NavigationLink(value: TaskThreadRoute(taskId: decision.taskId, decisionId: replacement)) {
+                NavigationLink(value: ConversationRoute(botId: store.conversationBotId(for: decision), decisionId: replacement)) {
                     Label("View revised proposal", systemImage: "arrow.turn.down.right")
                         .font(.caption.weight(.medium)).frame(minHeight: 44)
                 }

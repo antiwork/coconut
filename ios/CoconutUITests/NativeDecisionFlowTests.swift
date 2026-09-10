@@ -108,7 +108,8 @@ final class NativeDecisionFlowTests: XCTestCase {
         let subject = app.staticTexts["inbox-subject-00000000-0000-4000-8000-000000000021"]
         XCTAssertTrue(subject.waitForExistence(timeout: 5))
         subject.tap()
-        XCTAssertTrue(app.navigationBars["Task"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.navigationBars["Task"].exists)
 
         let menuId = "decision-menu-00000000-0000-4000-8000-000000000031"
         for identifier in [menuId, "decision-option-00000000-0000-4000-8000-000000000061", "decision-option-00000000-0000-4000-8000-000000000062"] {
@@ -171,14 +172,15 @@ final class NativeDecisionFlowTests: XCTestCase {
 
         let thread = app.staticTexts["inbox-subject-00000000-0000-4000-8000-000000000021"]
         XCTAssertTrue(thread.waitForExistence(timeout: 10))
-        capture("Task inbox")
+        capture("Decision inbox")
         thread.tap()
-        print("Task accessibility hierarchy:\n\(app.debugDescription)")
-        XCTAssertTrue(app.navigationBars["Task"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.navigationBars["Task"].exists)
         XCTAssertFalse(app.staticTexts["The comparison is ready. Local networking fits the first milestone."].exists,
-                       "The thread must exclude another task's messages.")
+                       "The conversation must exclude another bot's messages.")
 
         let menu = app.buttons["decision-menu-00000000-0000-4000-8000-000000000031"]
+        XCTAssertTrue(menu.isHittable, "Inbox must anchor directly to the decision card.")
         reveal(menu, in: app)
         XCTAssertTrue(menu.exists && menu.isHittable)
         menu.tap()
@@ -200,7 +202,8 @@ final class NativeDecisionFlowTests: XCTestCase {
         question.tap()
         question.typeText("Does this publish any changes?")
         app.buttons["submit-decision-context"].tap()
-        XCTAssertTrue(app.navigationBars["Task"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.navigationBars["Task"].exists)
 
         let option = app.buttons["decision-option-00000000-0000-4000-8000-000000000062"]
         XCTAssertTrue(option.waitForExistence(timeout: 5), "Asking a question must keep the exact pending options.")

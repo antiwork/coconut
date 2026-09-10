@@ -59,9 +59,11 @@ Typing `@` opens a compact bot picker. Selected recipients remain visible above 
 
 The service routes mentions by stable bot IDs. Duplicate names require a picker selection. Editing or removing a mention updates its recipients.
 
-An addressed thread reply keeps its pending decisions. It requests another bot's work without answering the original proposal.
+Mentioning a bot keeps pending decisions open. It requests work without answering the proposal.
 
-Internal messages show their source and recipient. Replies from another bot show its name. That bot's conversation links to the shared task.
+Both bots show their exchange as a collapsed row. Tapping either row opens the same read-only exchange. Incoming messages never change the open conversation.
+
+There is no Task screen. Inbox items and notifications open the conversation that contains the decision card and its context.
 
 A compact label names the executor before steering or stopping work. Shared conversation ownership does not change execution or permission ownership.
 

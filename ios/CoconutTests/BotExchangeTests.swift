@@ -44,10 +44,44 @@ final class BotExchangeTests: XCTestCase {
         XCTAssertFalse(wrongConversation)
     }
 
+    @MainActor
+    func testDecisionDestinationFollowsTheConversationThatReceivesItsContext() throws {
+        let store = AppStore(demo: true)
+        var decision = try XCTUnwrap(store.decisions.first)
+        var task = try XCTUnwrap(store.tasks.first)
+        task.botId = "executor"
+        task.conversationBotId = "origin"
+        task.sourceBotId = nil
+        decision.taskId = task.id
+        decision.botId = task.botId
+        store.tasks = [task]
+        XCTAssertEqual(store.conversationBotId(for: decision), "origin")
+        task.sourceBotId = "origin"
+        store.tasks = [task]
+        XCTAssertEqual(store.conversationBotId(for: decision), "executor")
+        store.tasks = []
+        XCTAssertEqual(store.conversationBotId(for: decision), "executor")
+    }
+
     private func message(_ id: String, from sender: String, to recipient: String?, kind: String = "bot_exchange") -> Message {
         Message(id: id, botId: sender, role: "assistant", kind: kind, text: "Body \(id)",
                 createdAt: "2026-09-10T12:00:00Z", streaming: false,
                 senderBotId: sender, recipientBotIds: recipient.map { [$0] } ?? [])
+    }
+
+    func testReturnedNativeReplyStaysCollapsedInBothConversations() {
+        let request = message("request", from: "a", to: "b")
+        var reply = message("reply", from: "b", to: nil, kind: "text")
+        reply.exchangeRecipientBotIds = ["a"]
+        reply.streaming = true
+        let own = message("own", from: "b", to: nil, kind: "text")
+        for botId in ["a", "b"] {
+            let rows = TranscriptEntry.grouped([request, reply, own], botId: botId)
+            XCTAssertEqual(rows.filter(\.isExchange).count, 1)
+            XCTAssertEqual(rows.first?.messages.map(\.id), ["request", "reply"])
+            XCTAssertFalse(rows.contains { !$0.isExchange && $0.message.id == reply.id })
+            XCTAssertEqual(rows.filter { !$0.isExchange }.map(\.id), botId == "b" ? ["own"] : [])
+        }
     }
 
     func testBothDirectionsGroupWithoutAbsorbingWorkUpdatesOrOtherBots() {

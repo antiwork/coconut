@@ -68,7 +68,7 @@ final class BotMentionsFlowTests: XCTestCase {
     }
 
     @MainActor
-    func testThreadMentionPreservesPendingDecision() throws {
+    func testInboxConversationMentionPreservesPendingDecision() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
@@ -77,7 +77,7 @@ final class BotMentionsFlowTests: XCTestCase {
         XCTAssertTrue(inbox.waitForExistence(timeout: 10))
         inbox.tap()
         app.staticTexts["inbox-subject-00000000-0000-4000-8000-000000000021"].tap()
-        let input = app.descendants(matching: .any).matching(identifier: "thread-reply-input").firstMatch
+        let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         let option = app.buttons["decision-option-00000000-0000-4000-8000-000000000061"]
         for _ in 0..<5 where !option.isHittable { app.swipeUp() }
@@ -88,7 +88,7 @@ final class BotMentionsFlowTests: XCTestCase {
         XCTAssertTrue(scout.waitForExistence(timeout: 5))
         scout.tap()
         input.typeText("Please check this decision.")
-        app.buttons["send-thread-reply"].tap()
+        app.buttons["send-message"].tap()
         XCTAssertTrue(app.buttons["message-sender-\(scoutId)"].firstMatch.waitForExistence(timeout: 5))
         for _ in 0..<7 where !option.isHittable { app.swipeDown() }
         XCTAssertTrue(option.exists && option.isEnabled, "Mentioning another bot must preserve the exact pending choices.")

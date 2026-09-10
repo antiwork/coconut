@@ -14,7 +14,7 @@ struct TranscriptEntry: Identifiable {
     static func grouped(_ messages: [Message], botId: String? = nil) -> [TranscriptEntry] {
         var entries: [TranscriptEntry] = []
         for message in messages {
-            if message.kind != "bot_exchange" && (botId == nil || message.botId == botId) {
+            if !message.isBotExchange && (botId == nil || message.botId == botId) {
                 entries.append(TranscriptEntry(messages: [message]))
             }
             guard message.isBotExchange else { continue }

@@ -2,7 +2,7 @@ import XCTest
 
 final class BotExchangeFlowTests: XCTestCase {
     @MainActor
-    func testExchangeOpensFromEitherBotWithMarkdownAndNoComposer() throws {
+    func testExchangeOpensFromEitherBotWithMarkdownAndNoComposer() async throws {
         guard let url = ProcessInfo.processInfo.environment["COCONUT_LAYOUT_TEST_URL"] else {
             throw XCTSkip("Run scripts/test_conversation_layout.py with --exchange.")
         }
@@ -31,8 +31,20 @@ final class BotExchangeFlowTests: XCTestCase {
         forge.tap()
         XCTAssertTrue(row.waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["My own work stays here."].exists)
-        row.tap()
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "The check passed")).firstMatch.exists)
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "let answer = 42")).firstMatch.exists)
+        var request = URLRequest(url: URL(string: url + "/test/exchange")!)
+        request.httpMethod = "POST"
+        _ = try await URLSession.shared.data(for: request)
+        let updated = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "bot-exchange-", "3 messages with")).firstMatch
+        XCTAssertTrue(updated.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["bot-settings"].label.contains("Forge"))
+        XCTAssertFalse(app.navigationBars["Task"].exists)
+        XCTAssertFalse(app.staticTexts["A new peer reply."].exists)
+        updated.tap()
         assertExchange(app)
+        XCTAssertTrue(app.staticTexts["A new peer reply."].exists)
+        capture(app, "Recipient exchange after a live reply")
     }
 
     @MainActor

@@ -7,6 +7,7 @@ struct ConversationView: View {
     var focusDecisionId: String? = nil
     @State private var stopOpen = false
     @State private var taskToStop: AgentTask? = nil
+    @State private var didFocusDecision = false
     @State private var nearBottom = true
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
@@ -59,7 +60,7 @@ struct ConversationView: View {
                                     .id(message.kind == "decision" ? (message.decisionId ?? entry.id) : entry.id)
                             }
                             ForEach(store.decisions.filter { decision in
-                                decision.botId == botId
+                                store.conversationBotId(for: decision) == botId
                                     && !messages.contains { $0.kind == "decision" && $0.decisionId == decision.id }
                             }) { decision in
                                 DecisionCard(decision: decision).id(decision.id)
@@ -92,9 +93,13 @@ struct ConversationView: View {
                         if nearBottom { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .background(BoardStyle.paper)
-                    .task {
-                        await store.markRead(bot)
-                        if let focusDecisionId { proxy.scrollTo(focusDecisionId, anchor: .top) }
+                    .task { await store.markRead(bot) }
+                    .task(id: store.decisions.contains { $0.id == focusDecisionId }) {
+                        guard let focusDecisionId, !didFocusDecision,
+                              store.decisions.contains(where: { $0.id == focusDecisionId }) else { return }
+                        nearBottom = false
+                        proxy.scrollTo(focusDecisionId, anchor: .top)
+                        didFocusDecision = true
                     }
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -221,261 +226,6 @@ struct TranscriptMessageRow: View {
     }
 }
 
-struct TaskThreadView: View {
-    @Environment(AppStore.self) private var store
-    let taskId: String
-    var focusDecisionId: String? = nil
-    @State private var nearBottom = false
-
-    private var rootTask: AgentTask? { store.tasks.first { $0.id == taskId } }
-    private var threadId: String { rootTask?.threadId ?? taskId }
-    private var latestTask: AgentTask? {
-        store.threadTasks(threadId).max { $0.createdAt < $1.createdAt } ?? rootTask
-    }
-    private var activeTask: AgentTask? {
-        let tasks = store.threadTasks(threadId).sorted { $0.createdAt < $1.createdAt }
-        return tasks.last { ["working", "running"].contains($0.status) } ?? tasks.last(where: \.isActive)
-    }
-    private var replyTask: AgentTask? { activeTask ?? latestTask }
-    private var bot: Bot? { store.bots.first { $0.id == replyTask?.botId } }
-    private var conversationBot: Bot? {
-        store.bots.first { $0.id == (rootTask?.conversationBotId ?? rootTask?.botId) }
-    }
-    private var messages: [Message] {
-        TranscriptPresentation.visibleMessages(store.threadMessages(threadId), artifacts: store.artifacts)
-    }
-    private var waitingForResponse: [AgentTask] {
-        guard store.connection == .connected || store.isDemo else { return [] }
-        return store.threadTasks(threadId).filter { task in
-            ["working", "running"].contains(task.status)
-                && !messages.contains { $0.taskId == task.id && $0.streaming && !$0.text.isEmpty }
-        }
-    }
-    private var decisions: [Decision] { store.threadDecisions(threadId) }
-    private var subject: String {
-        (decisions.first { $0.id == focusDecisionId } ?? decisions.first(where: \.isPending) ?? decisions.first)?.title
-            ?? rootTask?.title ?? "Task"
-    }
-
-    var body: some View {
-        Group {
-            if rootTask != nil, let replyTask, let bot {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 10) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(subject).font(.headline).lineLimit(3)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                HStack {
-                                    let origin = conversationBot ?? bot
-                                    NavigationLink(value: ConversationRoute(botId: origin.id)) {
-                                        HStack(spacing: 9) {
-                                            BotAvatar(symbol: origin.avatar, color: origin.color, size: 26)
-                                            Text(origin.name).font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
-                                        }.frame(minHeight: 44)
-                                    }.buttonStyle(.plain)
-                                    Spacer()
-                                    StatusLabel(status: replyTask.status)
-                                }
-                            }.padding(.bottom, 6)
-                            if let error = store.error {
-                                ErrorBanner(message: error) { store.error = nil }
-                            }
-                            ForEach(messages) { message in
-                                TranscriptMessageRow(message: message) { id in proxy.scrollTo(id, anchor: .top) }
-                                    .id(message.kind == "decision" ? (message.decisionId ?? message.id) : message.id)
-                            }
-                            ForEach(decisions.filter { decision in !messages.contains { $0.kind == "decision" && $0.decisionId == decision.id } }) { decision in
-                                DecisionCard(decision: decision).id(decision.id)
-                            }
-                            ForEach(waitingForResponse) { task in
-                                BotWorkingIndicator(botId: task.botId)
-                            }
-                            Color.clear.frame(height: 1).id("thread-bottom")
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 12)
-                        .padding(.bottom, 14)
-                    }
-                    .scrollDismissesKeyboard(.interactively)
-                    .onScrollGeometryChange(for: Bool.self) { geometry in
-                        geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 100
-                    } action: { _, value in nearBottom = value }
-                    .onChange(of: messages.last?.id) { _, _ in
-                        if nearBottom { proxy.scrollTo("thread-bottom", anchor: .bottom) }
-                    }
-                    .onChange(of: messages.last(where: { $0.role == "user" })?.id) { _, messageId in
-                        guard messageId != nil else { return }
-                        nearBottom = true
-                        proxy.scrollTo("thread-bottom", anchor: .bottom)
-                    }
-                    .onChange(of: messages.last?.text) { _, _ in
-                        if nearBottom { proxy.scrollTo("thread-bottom", anchor: .bottom) }
-                    }
-                    .task {
-                        await store.markRead(conversationBot ?? bot)
-                        if let focusDecisionId { proxy.scrollTo(focusDecisionId, anchor: .top) }
-                    }
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        ThreadReplyComposer(conversationBot: conversationBot ?? bot, task: replyTask, pending: decisions.filter(\.isPending)) {
-                            proxy.scrollTo("thread-bottom", anchor: .bottom)
-                        }
-                    }
-                }
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Menu {
-                            NavigationLink("Open \((conversationBot ?? bot).name)", value: ConversationRoute(botId: (conversationBot ?? bot).id))
-                            if let activeTask {
-                                Button("Stop \(store.bots.first { $0.id == activeTask.botId }?.name ?? "Bot")'s task", systemImage: "stop.circle", role: .destructive) {
-                                    Task { await store.cancel(activeTask) }
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis").frame(width: 44, height: 44)
-                        }.accessibilityLabel("Task options")
-                    }
-                }
-            } else {
-                QuietEmptyState(symbol: "tray", title: "Task unavailable", message: "Reconnect to your Mac to load this thread.")
-            }
-        }
-        .navigationTitle("Task")
-        .navigationBarTitleDisplayMode(.inline)
-        .background(BoardStyle.paper)
-    }
-}
-
-struct ThreadReplyComposer: View {
-    @Environment(AppStore.self) private var store
-    let conversationBot: Bot
-    let task: AgentTask
-    let pending: [Decision]
-    let onSent: () -> Void
-    @State private var text = ""
-    @State private var sending = false
-    @State private var importing = false
-    @State private var uploading = false
-    @State private var attachments: [Artifact] = []
-    @State private var contextDecisionId = ""
-    @State private var mentions: [SelectedBotMention] = []
-    @State private var selection: TextSelection?
-    @FocusState private var replyFocused: Bool
-
-    private var connected: Bool { store.hasPairing || store.isDemo }
-    private var recipients: [SelectedBotMention] { BotMentions.recipients(in: text, selected: mentions, bots: store.bots) }
-    private var selectedDecisionId: String? {
-        if pending.count == 1 { return pending.first?.id }
-        return pending.contains { $0.id == contextDecisionId } ? contextDecisionId : nil
-    }
-    private var targetName: String {
-        let targetId = pending.first { $0.id == selectedDecisionId }?.botId ?? task.botId
-        return store.bots.first { $0.id == targetId }?.name ?? "Bot"
-    }
-    private var workingBotName: String { store.bots.first { $0.id == task.botId }?.name ?? "Bot" }
-    private var targetTask: AgentTask? {
-        guard recipients.isEmpty, let selectedDecisionId else { return task }
-        guard let decision = pending.first(where: { $0.id == selectedDecisionId }) else { return nil }
-        return store.tasks.first { $0.id == decision.taskId }
-    }
-    private var canSend: Bool {
-        connected && !sending && !uploading && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && targetTask != nil && (!recipients.isEmpty || pending.count < 2 || selectedDecisionId != nil)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            BotMentionControls(text: $text, selection: $selection, selected: $mentions, bots: store.bots, focused: replyFocused) { replyFocused = true }
-            if pending.count > 1 && recipients.isEmpty {
-                Menu {
-                    Picker("Decision to discuss", selection: $contextDecisionId) {
-                        Text("Choose a decision").tag("")
-                        ForEach(pending) { decision in Text(decision.title).tag(decision.id) }
-                    }
-                } label: {
-                    Label(pending.first(where: { $0.id == contextDecisionId })?.title ?? "Choose a decision to discuss", systemImage: "bubble.left")
-                        .font(.caption).frame(minHeight: 44)
-                }
-            }
-            if !attachments.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack {
-                        ForEach(attachments) { artifact in
-                            Button { attachments.removeAll { $0.id == artifact.id } } label: {
-                                Label(artifact.title, systemImage: "xmark.circle.fill")
-                                    .font(.caption).padding(9).frame(minHeight: 44).background(BoardStyle.surface, in: Capsule())
-                            }.accessibilityLabel("Remove attachment \(artifact.title)")
-                        }
-                    }
-                }
-            }
-            HStack(alignment: .bottom, spacing: 4) {
-                Button { importing = true } label: {
-                    Image(systemName: uploading ? "hourglass" : "plus")
-                        .font(.system(size: 22)).foregroundStyle(.secondary).frame(width: 44, height: 44)
-                }.disabled(!connected || uploading).accessibilityLabel("Attach file")
-                HStack(alignment: .bottom, spacing: 4) {
-                TextField(connected ? (pending.isEmpty ? "Reply to \(targetName)" : "Ask about this decision…") : "Reconnect to reply", text: $text, selection: $selection, axis: .vertical)
-                    .font(.body).lineLimit(1...5).padding(.vertical, 12)
-                    .focused($replyFocused)
-                    .accessibilityIdentifier("thread-reply-input")
-                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending {
-                Button {
-                    guard let submittedTask = targetTask else { return }
-                    let submittedText = text
-                    let submittedAttachments = attachments.map(\.id)
-                    let submittedDecisionId = recipients.isEmpty ? selectedDecisionId : nil
-                    let submittedRecipients = recipients.map(\.id)
-                    let submittedMentions = mentions
-                    sending = true
-                    Task {
-                        let success = await store.reply(task: submittedTask, text: submittedText,
-                                                       attachments: submittedAttachments, decisionId: submittedDecisionId,
-                                                       recipientBotIds: submittedRecipients)
-                        sending = false
-                        if success {
-                            if text == submittedText && mentions == submittedMentions { text = ""; mentions = []; selection = nil }
-                            attachments.removeAll { submittedAttachments.contains($0.id) }
-                            if text.isEmpty && attachments.isEmpty { replyFocused = false }
-                            onSent()
-                        }
-                    }
-                } label: {
-                    Image(systemName: sending ? "ellipsis" : "arrow.up")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(canSend ? BoardStyle.controlLabel : .secondary)
-                        .frame(width: 34, height: 34)
-                        .background(canSend ? BoardStyle.control : BoardStyle.ink.opacity(0.07), in: Circle())
-                        .frame(width: 44, height: 44)
-                }.disabled(!canSend).accessibilityLabel("Send task reply").accessibilityIdentifier("send-thread-reply")
-                } else if ["working", "running"].contains(task.status), connected {
-                    Button { Task { await store.cancel(task) } } label: {
-                        Image(systemName: "stop.fill").font(.system(size: 14))
-                            .foregroundStyle(.secondary).frame(width: 44, height: 44)
-                    }.accessibilityLabel("Stop \(workingBotName)'s task").accessibilityIdentifier("stop-thread-task")
-                }
-                }
-            }
-                .padding(.horizontal, 4)
-                .background(BoardStyle.surface.opacity(0.45), in: RoundedRectangle(cornerRadius: 24))
-                .overlay(RoundedRectangle(cornerRadius: 24).stroke(BoardStyle.line))
-        }
-        .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 8)
-        .background(BoardStyle.paper)
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
-            switch result {
-            case .success(let url):
-                Task {
-                    uploading = true
-                    if let artifact = await store.uploadAttachment(bot: conversationBot, url: url) { attachments.append(artifact) }
-                    uploading = false
-                }
-            case .failure(let error): store.error = error.localizedDescription
-            }
-        }
-    }
-}
-
 struct MessageBubble: View {
     @Environment(AppStore.self) private var store
     let message: Message
@@ -494,12 +244,12 @@ struct MessageBubble: View {
                             .frame(minHeight: 44)
                     }.buttonStyle(.plain)
                 }
-                MessageText(text: displayText)
+                MessageText(text: displayText, linkColor: isUser ? BoardStyle.userBubbleLink : .blue)
                     .accessibilityIdentifier("message-text-\(message.id)")
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
-            .background(isUser ? BoardStyle.ink.opacity(0.09) : BoardStyle.surface, in: RoundedRectangle(cornerRadius: 22))
+            .background(isUser ? BoardStyle.userBubble : BoardStyle.surface, in: RoundedRectangle(cornerRadius: 22))
             if !isUser { Spacer(minLength: 18) }
         }
         .accessibilityElement(children: .contain)

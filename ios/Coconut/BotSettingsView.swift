@@ -164,8 +164,8 @@ private struct RoutineEditorView: View {
                     Button("Run now", systemImage: "play") {
                         Task { _ = await store.runRoutine(current) }
                     }.disabled(saving || current.error != nil).accessibilityIdentifier("run-routine")
-                    if let taskId = current.lastTaskId {
-                        NavigationLink("View last task", value: TaskThreadRoute(taskId: taskId))
+                    if current.lastTaskId != nil {
+                        NavigationLink("Open conversation", value: ConversationRoute(botId: botId))
                     }
                     Button("Delete routine", role: .destructive) { deleteOpen = true }
                 }

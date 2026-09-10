@@ -4,13 +4,14 @@ import MarkdownUI
 /// Keep message formatting separate from delivery and conversation state.
 struct MessageText: View {
     let text: String
+    var linkColor: Color = .blue
 
     var body: some View {
         Markdown(text.trimmingCharacters(in: .newlines))
             .font(.body)
             .markdownTheme(.coconutMessage)
             .textSelection(.enabled)
-            .tint(.blue)
+            .tint(linkColor)
             .accessibilityElement(children: .combine)
     }
 }

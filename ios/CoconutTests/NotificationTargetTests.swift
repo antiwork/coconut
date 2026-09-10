@@ -13,10 +13,13 @@ final class NotificationTargetTests: XCTestCase {
         XCTAssertEqual(target.botId, bot)
         XCTAssertEqual(target.taskId, task)
         XCTAssertEqual(target.decisionId, decision)
+        XCTAssertEqual(target.conversationRoute, ConversationRoute(botId: bot, decisionId: decision))
     }
 
     func testCompletionAllowsNoDecision() throws {
-        XCTAssertNil(try XCTUnwrap(NotificationTarget(userInfo: payload())).decisionId)
+        let target = try XCTUnwrap(NotificationTarget(userInfo: payload()))
+        XCTAssertNil(target.decisionId)
+        XCTAssertEqual(target.conversationRoute, ConversationRoute(botId: bot))
     }
 
     func testRejectsUnknownSchemaAndMalformedIdentifiers() {

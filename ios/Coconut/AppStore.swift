@@ -55,23 +55,8 @@ final class AppStore {
     func isBotActive(_ bot: Bot) -> Bool {
         !bot.archived && ["working", "running"].contains(bot.status) && (isDemo || connection == .connected)
     }
-    func threadTasks(_ threadId: String) -> [AgentTask] {
-        tasks.filter { $0.threadId == threadId }.sorted { $0.createdAt < $1.createdAt }
-    }
-
-    func threadMessages(_ threadId: String) -> [Message] {
-        let taskIds = Set(threadTasks(threadId).map(\.id))
-        return messages.filter { $0.threadId == threadId || ($0.taskId.map(taskIds.contains) ?? false) }
-    }
-
-    func threadDecisions(_ threadId: String) -> [Decision] {
-        let taskIds = Set(threadTasks(threadId).map(\.id))
-        return decisions.filter { taskIds.contains($0.taskId) }
-    }
-
-    func threadArtifacts(_ threadId: String) -> [Artifact] {
-        let taskIds = Set(threadTasks(threadId).map(\.id))
-        return artifacts.filter { $0.taskId.map(taskIds.contains) ?? false }
+    func conversationBotId(for decision: Decision) -> String {
+        tasks.first { $0.id == decision.taskId }?.chatBotId ?? decision.botId
     }
 
     func decisionActor(_ decision: Decision) -> String {

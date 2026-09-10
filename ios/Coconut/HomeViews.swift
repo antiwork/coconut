@@ -282,16 +282,8 @@ struct DecisionInboxView: View {
                     .accessibilityIdentifier("inbox-empty")
             }
             ForEach(threads) { thread in
-                Group {
-                    if store.tasks.contains(where: { $0.id == thread.decision.taskId }) {
-                        NavigationLink(value: TaskThreadRoute(taskId: thread.decision.taskId, decisionId: thread.decision.id)) {
-                            InboxThreadRow(thread: thread)
-                        }
-                    } else {
-                        NavigationLink(value: ConversationRoute(botId: thread.decision.botId, decisionId: thread.decision.id)) {
-                            InboxThreadRow(thread: thread)
-                        }
-                    }
+                NavigationLink(value: ConversationRoute(botId: store.conversationBotId(for: thread.decision), decisionId: thread.decision.id)) {
+                    InboxThreadRow(thread: thread)
                 }
                 .accessibilityIdentifier("inbox-thread-\(thread.id)")
                 .listRowBackground(Color.clear)

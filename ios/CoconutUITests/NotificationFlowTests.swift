@@ -2,12 +2,12 @@ import XCTest
 
 final class NotificationFlowTests: XCTestCase {
     @MainActor
-    func testNotificationOpensTaskFromConversation() throws {
+    func testNotificationOpensConversationFromConversation() throws {
         try checkNotification(terminate: false)
     }
 
     @MainActor
-    func testNotificationOpensTaskAfterTermination() throws {
+    func testNotificationOpensConversationAfterTermination() throws {
         try checkNotification(terminate: true)
     }
 
@@ -40,6 +40,8 @@ final class NotificationFlowTests: XCTestCase {
             "The notification must show its bot name.")
         notification.tap()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-        XCTAssertTrue(app.navigationBars["Task"].waitForExistence(timeout: 10), "The notification must replace the previous conversation with its task.")
+        XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["bot-settings"].label.contains(title))
+        XCTAssertFalse(app.navigationBars["Task"].exists)
     }
 }

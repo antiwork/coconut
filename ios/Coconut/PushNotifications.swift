@@ -39,6 +39,8 @@ struct NotificationTarget: Equatable, Sendable {
     let taskId: String
     let decisionId: String?
 
+    var conversationRoute: ConversationRoute { ConversationRoute(botId: botId, decisionId: decisionId) }
+
     init?(userInfo: [AnyHashable: Any]) {
         let decoded = try? NotificationKeys.content(from: userInfo)
         guard userInfo["coconut_encrypted"] == nil || decoded != nil else { return nil }
@@ -111,6 +113,10 @@ final class CoconutAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             didReceive response: UNNotificationResponse,
                                             withCompletionHandler completionHandler: @escaping @Sendable () -> Void) {
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else {
+            completionHandler()
+            return
+        }
         let target = NotificationTarget(userInfo: response.notification.request.content.userInfo)
         // UIKit updates its scene when this callback finishes. Complete on the main thread.
         Task { @MainActor in

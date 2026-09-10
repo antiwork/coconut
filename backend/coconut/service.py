@@ -211,6 +211,8 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
             kind = 'bot_exchange'
             display_bot_id = sender_bot_id
         message = dict(id=uid(), bot_id=display_bot_id, task_id=task_id, thread_id=thread_id, sender_bot_id=sender_bot_id, recipient_bot_ids=recipients, role=role, kind=kind, text=text, decision_id=decision_id, artifact_id=artifact_id, created_at=now(), streaming=streaming)
+        if task and task.get('source_bot_id') and not task.get('_is_return') and role == 'assistant' and kind == 'text' and not decision_id:
+            message['exchange_recipient_bot_ids'] = [task['source_bot_id']]
         if human_authored and self._request_device_id is not None:
             message.update(_human_device_id=self._request_device_id, _human_source_kind='chat')
         self._put('messages', message)
@@ -1972,6 +1974,8 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
         for message in messages:
             task = tasks.get(message.get('task_id'), {})
             before = dict(message)
+            if task.get('source_bot_id') and not task.get('_is_return') and message['role'] == 'assistant' and message['kind'] == 'text' and not message.get('decision_id'):
+                message.setdefault('exchange_recipient_bot_ids', [task['source_bot_id']])
             if message.get('sender_bot_id') and message.get('recipient_bot_ids') and message['kind'] == 'text':
                 message['kind'] = 'bot_exchange'
             if message['kind'] == 'bot_exchange':

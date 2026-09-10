@@ -179,7 +179,7 @@ class PushDelivery:
             bodies = {'decision': 'A bot needs your decision.', 'completed': 'A bot finished its task.', 'failed': 'A bot could not finish its task.'}
             payload = {'aps': {'alert': {'title': 'Coconut', 'body': bodies[job['kind']]}, 'sound': 'default',
                                'thread-id': task.get('thread_id', task['id'])},
-                       'coconut': {'version': 1, 'device_id': job['device_id'], 'bot_id': conversation['id'],
+                       'coconut': {'version': 1, 'device_id': job['device_id'], 'bot_id': task['bot_id'] if task.get('source_bot_id') else conversation['id'],
                                    'task_id': task['id'], 'decision_id': job['decision_id'], 'kind': job['kind']}}
             collapse = hashlib.sha256(task['id'].encode()).hexdigest()
             if route:

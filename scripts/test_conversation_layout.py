@@ -46,7 +46,7 @@ def main():
         outward = message('assistant', '**Check the report.**\n\n- Keep the useful findings.\n- Return a short answer.')
         outward.update(kind='bot_exchange', sender_bot_id=bot['id'], recipient_bot_ids=[peer['id']], created_at='2026-09-10T10:00:00Z')
         inward = message('assistant', '## Result\n\nThe check **passed**.\n\n```swift\nlet answer = 42\n```\n\n[Open reference](https://example.com)')
-        inward.update(kind='bot_exchange', bot_id=peer['id'], sender_bot_id=peer['id'], recipient_bot_ids=[bot['id']], created_at='2026-09-10T10:00:01Z')
+        inward.update(kind='text', bot_id=peer['id'], sender_bot_id=peer['id'], recipient_bot_ids=[], exchange_recipient_bot_ids=[bot['id']], created_at='2026-09-10T10:00:01Z')
         state['messages'] = [own, outward, inward]
     changed = threading.Condition()
     events = []
@@ -103,6 +103,17 @@ def main():
             body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))) or b'{}')
             if self.path == '/v1/pair':
                 self.respond(dict(token='layout-fixture-only', device_id=str(uuid4())))
+            elif args.exchange and self.path == '/test/exchange':
+                with changed:
+                    row = message('assistant', 'A new peer reply.')
+                    row.update(bot_id=peer['id'], sender_bot_id=peer['id'], recipient_bot_ids=[],
+                               exchange_recipient_bot_ids=[bot['id']], created_at='2026-09-10T10:00:02Z', streaming=True)
+                    state['messages'].append(row)
+                    publish('message.created', row)
+                    row['streaming'] = False
+                    publish('message.updated', row)
+                    publish('task.updated', task)
+                self.respond(dict(ok=True))
             elif self.path.endswith('/messages'):
                 with changed:
                     sends += 1

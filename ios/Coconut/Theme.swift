@@ -3,6 +3,8 @@ import SwiftUI
 enum BoardStyle {
     static let paper = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.065, alpha: 1) : .systemBackground })
     static let surface = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.13, alpha: 1) : UIColor(white: 0.955, alpha: 1) })
+    static let userBubble = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.36, alpha: 1) : UIColor(white: 0.86, alpha: 1) })
+    static let userBubbleLink = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.75, green: 0.87, blue: 1, alpha: 1) : UIColor(red: 0, green: 0.31, blue: 0.68, alpha: 1) })
     static let ink = Color.primary
     static let accent = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.99, green: 0.52, blue: 0.36, alpha: 1) : UIColor(red: 0.72, green: 0.27, blue: 0.14, alpha: 1) })
     static let green = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.56, green: 0.75, blue: 0.60, alpha: 1) : UIColor(red: 0.27, green: 0.43, blue: 0.32, alpha: 1) })

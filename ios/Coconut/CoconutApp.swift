@@ -28,11 +28,6 @@ struct ConversationRoute: Hashable {
     var decisionId: String? = nil
 }
 
-struct TaskThreadRoute: Hashable {
-    let taskId: String
-    var decisionId: String? = nil
-}
-
 struct BotSettingsRoute: Hashable {
     let botId: String
 }
@@ -103,16 +98,12 @@ struct CoconutHome: View {
                 .navigationDestination(for: BotExchangeRoute.self) { route in
                     BotExchangeView(route: route)
                 }
-                .navigationDestination(for: TaskThreadRoute.self) { route in
-                    TaskThreadView(taskId: route.taskId, focusDecisionId: route.decisionId)
-                }
                 .navigationDestination(for: BotSettingsRoute.self) { route in
                     BotSettingsView(botId: route.botId)
                 }
                 .sheet(isPresented: $settingsOpen) { AppSettingsView() }
                 .sheet(isPresented: $createOpen) { BotEditorView() }
                 .onChange(of: PushNotifications.shared.target) { _, _ in openNotification() }
-                .onChange(of: store.lastSync) { _, _ in openNotification() }
                 .onAppear { openNotification() }
                 .background(BoardStyle.paper)
                 .overlay(alignment: .top) {
@@ -129,16 +120,9 @@ struct CoconutHome: View {
             PushNotifications.shared.target = nil
             return
         }
-        guard store.tasks.contains(where: { $0.id == target.taskId }) else {
-            if store.connection == .connected {
-                store.error = "This task is no longer available."
-                PushNotifications.shared.target = nil
-            }
-            return
-        }
         settingsOpen = false; createOpen = false
         path = NavigationPath()
-        path.append(TaskThreadRoute(taskId: target.taskId, decisionId: target.decisionId))
+        path.append(target.conversationRoute)
         PushNotifications.shared.target = nil
     }
 

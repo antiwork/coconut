@@ -79,6 +79,31 @@ class PushTests(unittest.TestCase):
         self.assertFalse(self.flush())
         self.assertEqual(len(self.transport.calls), 1)
 
+    def test_delegated_decision_links_to_the_bot_with_the_card(self):
+        origin = self.write('POST', '/v1/bots', {'name': 'Origin'})
+        task = self.run_task('Write report')
+        decision = self.service.snapshot()['decisions'][0]
+        with self.service.transaction():
+            current = self.service._get('tasks', task['id'])
+            current['conversation_bot_id'] = origin['id']
+            current['source_bot_id'] = origin['id']
+            self.service._put('tasks', current)
+        self.assertTrue(self.flush())
+        target = self.transport.calls[0][2]['coconut']
+        self.assertEqual(target['bot_id'], decision['bot_id'])
+        self.assertEqual(target['decision_id'], decision['id'])
+
+    def test_mentioned_bot_decision_links_to_its_original_conversation(self):
+        origin = self.write('POST', '/v1/bots', {'name': 'Origin'})
+        task = self.write('POST', f'/v1/bots/{origin["id"]}/messages',
+            dict(text='Write report', mode='queue', recipient_bot_ids=[self.bot['id']]))
+        self.service._run_task(task['id'])
+        decision = self.service.snapshot()['decisions'][0]
+        self.assertTrue(self.flush())
+        target = self.transport.calls[0][2]['coconut']
+        self.assertEqual(target['bot_id'], origin['id'])
+        self.assertEqual(target['decision_id'], decision['id'])
+
     def test_answered_decision_is_discarded_before_delivery(self):
         self.run_task('Write report')
         decision = self.service.snapshot()['decisions'][0]
