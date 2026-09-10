@@ -74,8 +74,7 @@ struct HomeLaunchView: View {
             ForEach(pinned) { bot in
                 NavigationLink(value: ConversationRoute(botId: bot.id)) {
                     VStack(spacing: 9) {
-                        BotAvatar(symbol: bot.avatar, color: bot.color, size: 76)
-                            .overlay(alignment: .bottomTrailing) { BotActivityDot(bot: bot) }
+                        LiveBotAvatar(bot: bot, size: 76)
                         HStack(spacing: 5) {
                             Text(bot.name).font(.subheadline).foregroundStyle(.secondary)
                                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
@@ -191,8 +190,7 @@ struct BotContactRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            BotAvatar(symbol: bot.avatar, color: bot.color, size: 46)
-                .overlay(alignment: .bottomTrailing) { BotActivityDot(bot: bot) }
+            LiveBotAvatar(bot: bot, size: 46)
             VStack(alignment: .leading, spacing: 5) {
                 if dynamicTypeSize.isAccessibilitySize {
                     name
@@ -307,7 +305,7 @@ struct InboxThreadRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            if let bot { BotAvatar(symbol: bot.avatar, color: bot.color, size: 34) }
+            if let bot { BotAvatar(bot: bot, size: 34) }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(bot?.name ?? "Bot").font(.subheadline.weight(.semibold))

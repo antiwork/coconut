@@ -688,7 +688,9 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
         for field in ('instructions', 'memory'):
             if not isinstance(data.get(field, ''), str) or len(data.get(field, '')) > 20000:
                 raise ServiceError(400, f'{field} must contain at most 20000 characters.')
-        bot = dict(id=uid(), session_id=uid(), name=require_text(data, 'name', 80), role=str(data.get('role', ''))[:160], avatar=str(data.get('avatar', 'person.crop.circle'))[:80], color=str(data.get('color', '#CC5A35'))[:20], instructions=data.get('instructions', ''), notifications=True, status='idle', last_message='', unread_count=0, archived=False, pinned=data.get('pinned', False), created_at=now())
+        avatar = secrets.choice(('round', 'oval', 'wide', 'square', 'pointed', 'bean'))
+        color = secrets.choice(('A85F32', 'C76552', 'B5913F', '64866A', '448A89', '6087B0', '9272B3', 'BF759B', 'D6C6A2', '858680'))
+        bot = dict(id=uid(), session_id=uid(), name=require_text(data, 'name', 80), role=str(data.get('role', ''))[:160], avatar=str(data.get('avatar', f'coconut.{avatar}'))[:80], color=str(data.get('color', color))[:20], instructions=data.get('instructions', ''), notifications=True, status='idle', last_message='', unread_count=0, archived=False, pinned=data.get('pinned', False), created_at=now())
         bot['profile_id'] = profile_id(bot)
         bot['model_override'] = None
         self._sync_profile(bot)

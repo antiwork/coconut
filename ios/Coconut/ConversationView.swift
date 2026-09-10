@@ -81,6 +81,12 @@ struct ConversationView: View {
                     } action: { _, value in
                         nearBottom = value
                     }
+                    .onScrollGeometryChange(for: CGSize.self) { $0.containerSize } action: { _, _ in
+                        if nearBottom && focusDecisionId == nil { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                    }
+                    .onChange(of: waitingForResponse.map(\.id)) { _, _ in
+                        if nearBottom { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                    }
                     .onChange(of: messages.last?.id) { _, _ in
                         if nearBottom { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
@@ -109,8 +115,7 @@ struct ConversationView: View {
                     ToolbarItem(placement: .principal) {
                         NavigationLink(value: BotSettingsRoute(botId: bot.id)) {
                         HStack(spacing: 10) {
-                            BotAvatar(symbol: bot.avatar, color: bot.color, size: 34)
-                                .overlay(alignment: .bottomTrailing) { BotActivityDot(bot: bot) }
+                            LiveBotAvatar(bot: bot, size: 34)
                             Text(bot.name).font(.subheadline.weight(.semibold))
                         }.frame(minHeight: 44).contentShape(Rectangle())
                         }
@@ -158,7 +163,7 @@ struct ConversationView: View {
             }
             if messages.isEmpty {
                 VStack(spacing: 10) {
-                    BotAvatar(symbol: bot.avatar, color: bot.color, size: 68)
+                    BotAvatar(bot: bot, size: 68)
                     Text("Meet \(bot.name)").font(.title2.weight(.semibold))
                     Text(bot.role).font(.subheadline).foregroundStyle(.secondary)
                     Text("Give \(bot.name) a task. You can leave while the work continues.")
@@ -192,7 +197,7 @@ struct TranscriptMessageRow: View {
             HStack(spacing: 6) {
                 NavigationLink(value: ConversationRoute(botId: sender.id)) {
                     HStack(spacing: 5) {
-                        BotAvatar(symbol: sender.avatar, color: sender.color, size: 18)
+                        BotAvatar(bot: sender, size: 18)
                         Text(sender.name)
                     }.frame(minHeight: 44)
                 }.buttonStyle(.plain).accessibilityIdentifier("message-sender-\(sender.id)")
@@ -260,13 +265,18 @@ struct MessageBubble: View {
 
 private struct BotWorkingIndicator: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let botId: String
     private var bot: Bot? { store.bots.first { $0.id == botId } }
 
     var body: some View {
         HStack(spacing: 8) {
-            if let bot { BotAvatar(symbol: bot.avatar, color: bot.color, size: 26) }
-            ProgressView().controlSize(.mini).tint(.secondary)
+            if let bot {
+                BotAvatar(bot: bot, size: 38, isThinking: store.isBotActive(bot))
+                    .overlay(alignment: .bottomTrailing) {
+                        if reduceMotion { BotActivityDot(bot: bot).padding(38 * 0.12) }
+                    }
+            }
         }
         .frame(minHeight: 44).padding(.horizontal, 10)
         .accessibilityElement(children: .ignore)

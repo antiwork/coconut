@@ -20,6 +20,20 @@ class BotCreationTests(unittest.TestCase):
         self.bot = self.write('POST', '/v1/bots', {'name': 'Ada', 'memory': 'Private source memory', 'instructions': 'Private source instructions'})
         self.peer = self.write('POST', '/v1/bots', {'name': 'Lin'})
 
+    def test_generated_character_survives_retry_restart_and_customization(self):
+        key = str(uuid4())
+        created = self.write('POST', '/v1/bots', {'name': 'Character'}, key=key)
+        self.assertIn(created['avatar'], {'coconut.' + shape for shape in
+                                         ('round', 'oval', 'wide', 'square', 'pointed', 'bean')})
+        self.assertRegex(created['color'], r'^[0-9A-F]{6}$')
+        self.assertEqual(self.write('POST', '/v1/bots', {'name': 'Character'}, key=key), created)
+        self.restart()
+        self.assertEqual(self.service._get('bots', created['id'])['avatar'], created['avatar'])
+        self.write('PATCH', f"/v1/bots/{created['id']}", {'avatar': 'coconut.wide', 'color': '9272B3'})
+        self.restart()
+        saved = self.service._get('bots', created['id'])
+        self.assertEqual((saved['avatar'], saved['color']), ('coconut.wide', '9272B3'))
+
     def tearDown(self):
         self.service.close()
         self.temp.cleanup()

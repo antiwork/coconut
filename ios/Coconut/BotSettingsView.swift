@@ -16,7 +16,7 @@ struct BotSettingsView: View {
             if let draft {
                 Section {
                     Button { appearanceOpen = true } label: {
-                        BotAvatar(symbol: draft.avatar, color: draft.color, size: 86)
+                        BotAvatar(bot: draft, size: 86)
                             .frame(maxWidth: .infinity).padding(.vertical, 20)
                     }
                     .buttonStyle(.plain).listRowBackground(Color.clear)
@@ -81,10 +81,10 @@ struct BotSettingsView: View {
         }
         .sheet(isPresented: $appearanceOpen) {
             NavigationStack {
-                Form { BotAppearancePicker(avatar: field(\.avatar), color: field(\.color)) }
+                Form { BotAppearancePicker(avatar: field(\.avatar), color: field(\.color), identity: botId) }
                     .navigationTitle("Character").navigationBarTitleDisplayMode(.inline)
                     .toolbar { Button("Done") { appearanceOpen = false } }
-            }.presentationDetents([.medium])
+            }.presentationDetents([.large])
         }
         .sheet(isPresented: $routineOpen) { NavigationStack { RoutineEditorView(botId: botId) } }
         .confirmationDialog("Delete \(draft?.name ?? "bot")?", isPresented: $deleteOpen, titleVisibility: .visible) {

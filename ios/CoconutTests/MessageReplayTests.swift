@@ -83,6 +83,31 @@ final class MessageReplayTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testPendingDecisionDoesNotHideIndependentWork() throws {
+        let store = AppStore(demo: false)
+        let fixture = try PreviewStateFixture.load()
+        var bot = fixture.bots[0]
+        bot.status = "needs_you"
+        var task = fixture.tasks[0]
+        task.botId = bot.id
+        task.status = "working"
+        store.tasks = [task]
+        store.connection = .connected
+        XCTAssertTrue(store.isBotActive(bot))
+        store.connection = .disconnected
+        XCTAssertFalse(store.isBotActive(bot))
+        store.connection = .connected
+        bot.archived = true
+        XCTAssertFalse(store.isBotActive(bot))
+        bot.archived = false
+        store.tasks[0].status = "waiting"
+        XCTAssertFalse(store.isBotActive(bot))
+        store.tasks[0].status = "working"
+        store.tasks[0].botId = "another-bot"
+        XCTAssertFalse(store.isBotActive(bot))
+    }
+
     private func event(_ seq: Int, _ message: Message, type: String = "message.updated") throws -> [String: Any] {
         ["seq": seq, "type": type, "bot_id": message.botId, "task_id": message.taskId ?? "task",
          "created_at": message.createdAt, "data": try JSONSerialization.jsonObject(with: APIJSON.encode(message))]

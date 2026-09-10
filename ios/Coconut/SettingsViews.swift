@@ -274,8 +274,8 @@ struct BotEditorView: View {
     @State private var name = ""
     @State private var role = ""
     @State private var instructions = ""
-    @State private var avatar = "sparkle"
-    @State private var color = "687D69"
+    @State private var avatar = CoconutShape.allCases.randomElement()!.avatar
+    @State private var color = CoconutColor.palette.randomElement()!.hex
     @State private var saving = false
     @State private var deleteOpen = false
     @State private var originalBot: Bot?
@@ -286,7 +286,7 @@ struct BotEditorView: View {
         NavigationStack {
             Form {
                 Section {
-                    Button { appearanceOpen = true } label: { BotAvatar(symbol: avatar, color: color, size: 86).frame(maxWidth: .infinity) }.buttonStyle(.plain)
+                    Button { appearanceOpen = true } label: { BotAvatar(symbol: avatar, color: color, size: 86, identity: bot?.id ?? "").frame(maxWidth: .infinity) }.buttonStyle(.plain).accessibilityLabel("Change character")
                         .padding(.vertical, 14).listRowBackground(Color.clear)
                     TextField("Name", text: $name).textContentType(.name)
                         .accessibilityIdentifier("bot-name")
@@ -315,9 +315,9 @@ struct BotEditorView: View {
             }
             .sheet(isPresented: $appearanceOpen) {
                 NavigationStack {
-                    Form { BotAppearancePicker(avatar: $avatar, color: $color) }
+                    Form { BotAppearancePicker(avatar: $avatar, color: $color, identity: bot?.id ?? "") }
                         .navigationTitle("Character").toolbar { Button("Done") { appearanceOpen = false } }
-                }.presentationDetents([.medium])
+                }.presentationDetents([.large])
             }
             .onAppear {
                 guard !loaded else { return }
@@ -373,48 +373,48 @@ struct BotEditorView: View {
 struct BotAppearancePicker: View {
     @Binding var avatar: String
     @Binding var color: String
-    private let symbols = ["sparkle", "hammer.fill", "binoculars.fill", "pencil.and.outline", "curlybraces", "leaf.fill", "paperplane.fill", "tray.full.fill"]
-    private let colors = ["AA6044", "687D69", "647A97", "8C7594", "9D864C", "777771"]
-    private let colorNames = ["Copper", "Green", "Blue", "Purple", "Gold", "Gray"]
+    var identity = ""
+    private var shape: CoconutShape { CoconutShape.resolve(avatar, identity: identity) }
 
     var body: some View {
-        VStack(spacing: 14) {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 48))], spacing: 10) {
-                ForEach(symbols, id: \.self) { symbol in
-                    Button { avatar = symbol } label: {
-                        Image(systemName: symbol).font(.system(size: 24))
-                            .frame(width: 48, height: 48)
-                            .background(avatar == symbol ? Color(hex: color).opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 14))
-                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(avatar == symbol ? Color(hex: color) : .clear))
+        Section {
+            BotAvatar(symbol: avatar, color: color, size: 120, identity: identity)
+                .frame(maxWidth: .infinity).padding(.vertical, 12)
+        }.listRowBackground(Color.clear)
+        Section("Shape") {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 72))], spacing: 12) {
+                ForEach(CoconutShape.allCases, id: \.rawValue) { choice in
+                    Button { avatar = choice.avatar } label: {
+                        BotAvatar(symbol: choice.avatar, color: color, size: 56, identity: identity, animated: false)
+                            .padding(6)
+                            .background(shape == choice ? BoardStyle.ink.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 16))
+                            .overlay(RoundedRectangle(cornerRadius: 16).stroke(shape == choice ? BoardStyle.ink : .clear, lineWidth: 1.5))
                     }
-                    .buttonStyle(HomePressStyle()).foregroundStyle(Color(hex: color))
-                    .accessibilityLabel(symbol.replacingOccurrences(of: ".", with: " "))
-                    .accessibilityIdentifier("bot-avatar-\(symbol)")
-                    .accessibilityAddTraits(avatar == symbol ? .isSelected : [])
+                    .buttonStyle(HomePressStyle())
+                    .accessibilityLabel(choice.label)
+                    .accessibilityIdentifier("bot-avatar-\(choice.avatar)")
+                    .accessibilityAddTraits(shape == choice ? .isSelected : [])
                 }
-            }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 44))], spacing: 4) {
-                ForEach(Array(colors.enumerated()), id: \.element) { index, choice in
-                    Button { color = choice } label: {
-                        Circle().fill(Color(hex: choice)).frame(width: 25, height: 25)
-                            .padding(5).overlay(Circle().stroke(color == choice ? Color(hex: choice) : .clear, lineWidth: 1.5))
+            }.padding(.vertical, 8)
+        }
+        Section("Color") {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 44))], spacing: 8) {
+                ForEach(CoconutColor.palette, id: \.hex) { choice in
+                    let selected = color.trimmingCharacters(in: CharacterSet.alphanumerics.inverted).uppercased() == choice.hex
+                    Button { color = choice.hex } label: {
+                        Circle().fill(Color(hex: choice.hex)).frame(width: 28, height: 28)
+                            .padding(5).overlay(Circle().stroke(selected ? BoardStyle.ink : .clear, lineWidth: 1.5))
                             .frame(width: 44, height: 44)
                     }
                     .buttonStyle(HomePressStyle())
-                    .accessibilityLabel("\(colorNames[index]) avatar")
-                    .accessibilityIdentifier("bot-color-\(choice)")
-                    .accessibilityAddTraits(color == choice ? .isSelected : [])
+                    .accessibilityLabel("\(choice.name) avatar")
+                    .accessibilityIdentifier("bot-color-\(choice.hex)")
+                    .accessibilityAddTraits(selected ? .isSelected : [])
                 }
-            }
-        }.padding(.vertical, 10)
+            }.padding(.vertical, 8)
+        }
     }
 }
-
-
-
-
-
-
 
 struct LearningView: View {
     @Environment(AppStore.self) private var store

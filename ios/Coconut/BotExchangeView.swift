@@ -52,7 +52,7 @@ struct BotExchangeRow: View {
         NavigationLink(value: BotExchangeRoute(botIds: message.exchangeBotIds, messageId: message.id)) {
             HStack(spacing: 5) {
                 Text(prefix)
-                if let peer { BotAvatar(symbol: peer.avatar, color: peer.color, size: 17) }
+                if let peer { BotAvatar(bot: peer, size: 17) }
                 Text(peer?.name ?? "Deleted bot").lineLimit(1)
                 Image(systemName: "chevron.right").font(.caption2)
             }
@@ -84,7 +84,7 @@ struct BotExchangeView: View {
                         VStack(alignment: .leading, spacing: 5) {
                             HStack(spacing: 6) {
                                 if let bot = store.bots.first(where: { $0.id == message.senderBotId }) {
-                                    BotAvatar(symbol: bot.avatar, color: bot.color, size: 20)
+                                    BotAvatar(bot: bot, size: 20)
                                     Text(bot.name)
                                 } else { Text("Deleted bot") }
                                 Spacer()
@@ -128,7 +128,7 @@ struct BotExchangeView: View {
                 HStack(spacing: 8) {
                     ForEach(route.botIds, id: \.self) { id in
                         if let bot = store.bots.first(where: { $0.id == id }) {
-                            BotAvatar(symbol: bot.avatar, color: bot.color, size: 30)
+                            BotAvatar(bot: bot, size: 30)
                         }
                     }
                 }.accessibilityLabel(route.botIds.map { id in store.bots.first { $0.id == id }?.name ?? "Deleted bot" }.joined(separator: " and "))

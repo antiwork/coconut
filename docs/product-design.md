@@ -28,7 +28,9 @@ The bot conversation includes its task history. Inbox opens the same stored mess
 
 Show each answer once. Use cards for distinct outputs or decisions. Task completion alone does not create a card.
 
-While a bot prepares a reply, show its small avatar and a progress indicator. Hide generic progress prose and duplicate completion summaries.
+While a bot prepares a reply, animate its coconut character. Hide generic progress prose and duplicate completion summaries.
+
+Characters use six shell shapes and ten colors. New bots receive a generated character. Users can change its shape and color in bot settings. Idle characters share one pose and blink at separate intervals. Working characters move in pinned tiles, contact rows, and conversations. Reduce Motion keeps the character still and preserves the green activity dot. The native SwiftUI drawing follows the app icon’s rough coconut style. The supplied Grok Bot recording and [Bloub](https://github.com/jeremy-prt/bloub) inform motion; Coconut does not include Bloub code.
 Record permission changes in the audit history. Do not add routine settings notices to chat.
 
 Keep specific tool activity expandable. Preserve errors, cancellation, decisions, files, links, and receipts. Presentation filters do not delete stored history.

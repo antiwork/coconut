@@ -24,29 +24,6 @@ extension Color {
     }
 }
 
-struct BotAvatar: View {
-    let symbol: String
-    let color: String
-    var size: CGFloat = 52
-
-    var body: some View {
-        Image(systemName: symbol)
-            .font(.system(size: size * 0.42, weight: .semibold))
-            .foregroundStyle(symbolColor)
-            .frame(width: size, height: size)
-            .background(Color(hex: color), in: Circle())
-            .accessibilityHidden(true)
-    }
-
-    private var symbolColor: Color {
-        let value = UInt64(color.trimmingCharacters(in: CharacterSet.alphanumerics.inverted), radix: 16) ?? 0x75867B
-        let red = Double((value >> 16) & 255) / 255
-        let green = Double((value >> 8) & 255) / 255
-        let blue = Double(value & 255) / 255
-        return red * 0.2126 + green * 0.7152 + blue * 0.0722 > 0.65 ? .black : .white
-    }
-}
-
 struct StatusLabel: View {
     let status: String
     var compact = false

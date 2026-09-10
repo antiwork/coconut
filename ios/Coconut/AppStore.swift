@@ -53,7 +53,10 @@ final class AppStore {
     var pendingDecisions: [Decision] { decisions.filter(\.isPending) }
     var activeTasks: [AgentTask] { tasks.filter(\.isActive) }
     func isBotActive(_ bot: Bot) -> Bool {
-        !bot.archived && ["working", "running"].contains(bot.status) && (isDemo || connection == .connected)
+        guard !bot.archived && (isDemo || connection == .connected) else { return false }
+        // A pending decision can mask independent work in the bot's aggregate status.
+        return ["working", "running"].contains(bot.status)
+            || tasks.contains { $0.botId == bot.id && ["working", "running"].contains($0.status) }
     }
     func conversationBotId(for decision: Decision) -> String {
         tasks.first { $0.id == decision.taskId }?.chatBotId ?? decision.botId

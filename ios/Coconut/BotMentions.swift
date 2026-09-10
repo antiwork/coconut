@@ -134,7 +134,7 @@ struct BotMentionPicker: View {
                     ForEach(bots) { bot in
                         Button { select(bot) } label: {
                             HStack(spacing: 12) {
-                                BotAvatar(symbol: bot.avatar, color: bot.color, size: 30)
+                                BotAvatar(bot: bot, size: 30)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(bot.name).font(.body).lineLimit(1)
                                     if bots.filter({ $0.name.lowercased() == bot.name.lowercased() }).count > 1 {
