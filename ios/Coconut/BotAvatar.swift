@@ -2,14 +2,62 @@ import SwiftUI
 
 // Appearance stays in the bot's existing avatar and color fields.
 enum CoconutShape: String, CaseIterable {
-    case round, oval, wide, square, pointed, bean
+    case round, oval, square, wide, triangle, hexagon, bean, pointed
 
     var avatar: String { "coconut.\(rawValue)" }
-    var label: String { rawValue.capitalized }
+    var label: String {
+        switch self {
+        case .round: "Circle"
+        case .oval: "Pebble"
+        case .square: "Squircle"
+        case .wide: "Capsule"
+        case .triangle: "Triangle"
+        case .hexagon: "Hexagon"
+        case .bean: "Cloud"
+        case .pointed: "Droplet"
+        }
+    }
 
     static func resolve(_ avatar: String, identity: String) -> Self {
-        allCases.first { $0.avatar == avatar }
-            ?? allCases[Int(characterSeed(identity.isEmpty ? avatar : identity) % UInt64(allCases.count))]
+        // Keep earlier generated assignments stable when the picker gains shapes.
+        let original: [Self] = [.round, .oval, .wide, .square, .pointed, .bean]
+        return allCases.first { $0.avatar == avatar }
+            ?? original[Int(characterSeed(identity.isEmpty ? avatar : identity) % UInt64(original.count))]
+    }
+
+    var outline: Path { Self.outlines[self]! }
+
+    // Narrow silhouettes need space for the full range of gaze and mouth poses.
+    var facePlacement: (scale: CGFloat, x: CGFloat, y: CGFloat) {
+        switch self {
+        case .pointed: (0.85, -3, 8)
+        case .triangle: (0.9, -2, 4)
+        case .wide: (0.92, 0, 2.5)
+        case .bean: (0.94, 0, 2)
+        default: (1, 0, 0)
+        }
+    }
+
+    // Bloub's 64 radial samples and closed Catmull-Rom curves, at Coconut's scale.
+    // Copyright (c) 2026 Jérémy Perret. See Resources/Bloub-LICENSE.txt.
+    private static let outlines: [Self: Path] = BotShapeProfiles.radii.mapValues { radii in
+        let points = radii.enumerated().map { index, radius in
+            let angle = Double(index) / Double(radii.count) * .pi * 2
+            return CGPoint(x: 50 + 37 * radius * cos(angle), y: 51 + 37 * radius * sin(angle))
+        }
+        return Path { path in
+            path.move(to: points[0])
+            for i in points.indices {
+                let p0 = points[(i - 1 + points.count) % points.count]
+                let p1 = points[i]
+                let p2 = points[(i + 1) % points.count]
+                let p3 = points[(i + 2) % points.count]
+                path.addCurve(to: p2,
+                              control1: CGPoint(x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6),
+                              control2: CGPoint(x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6))
+            }
+            path.closeSubpath()
+        }
     }
 }
 
@@ -116,7 +164,7 @@ private struct CoconutFigure: View, Animatable {
         let expression = CoconutExpression.sample(time: time, seed: seed, thinking: thinking)
         ZStack {
             CoconutShell(shape: shape, color: color, seed: seed)
-            CoconutFace(color: color, eyelid: eyelid, expression: expression)
+            CoconutFace(shape: shape, color: color, eyelid: eyelid, expression: expression)
         }
         .frame(width: size, height: size)
         .rotationEffect(.degrees(expression.roll))
@@ -178,7 +226,7 @@ private struct CoconutShell: View {
         Canvas { context, size in
             let unit = min(size.width, size.height)
             context.scaleBy(x: unit / 100, y: unit / 100)
-            let outline = shellPath()
+            let outline = shape.outline
             context.fill(outline, with: .color(Color(hex: color)))
             var grain = context
             grain.clip(to: outline)
@@ -216,32 +264,10 @@ private struct CoconutShell: View {
         return Double(value >> 11) / 9_007_199_254_740_992
     }
 
-    private func point(_ angle: Double) -> CGPoint {
-        let x = cos(angle), y = sin(angle)
-        let wobble = 1 + 0.018 * sin(angle * 7 + 1) + 0.012 * cos(angle * 11)
-        let radius: Double = 37 * wobble
-        switch shape {
-        case .round: return CGPoint(x: 50 + radius * x, y: 51 + radius * y)
-        case .oval: return CGPoint(x: 50 + radius * x * 0.84, y: 51 + radius * y * 1.08)
-        case .wide: return CGPoint(x: 50 + radius * x * 1.1, y: 53 + radius * y * 0.8)
-        case .square:
-            let r = radius / pow(pow(abs(x), 3.6) + pow(abs(y), 3.6), 1 / 3.6)
-            return CGPoint(x: 50 + r * x * 0.91, y: 51 + r * y * 0.91)
-        case .pointed: return CGPoint(x: 50 + radius * x * (0.88 + y * 0.19), y: 50 + radius * y * 1.06)
-        case .bean: return CGPoint(x: 50 + radius * x * (0.97 + 0.1 * sin(angle * 2)), y: 51 + radius * y * 0.92)
-        }
-    }
-
-    private func shellPath() -> Path {
-        Path { path in
-            path.move(to: point(0))
-            for i in 1...128 { path.addLine(to: point(Double(i) / 128 * .pi * 2)) }
-            path.closeSubpath()
-        }
-    }
 }
 
 private struct CoconutFace: View {
+    let shape: CoconutShape
     let color: String
     let eyelid: Double
     let expression: CoconutExpression
@@ -255,6 +281,10 @@ private struct CoconutFace: View {
     var body: some View {
         Canvas { context, size in
             context.scaleBy(x: size.width / 100, y: size.height / 100)
+            let placement = shape.facePlacement
+            context.translateBy(x: 50 * (1 - placement.scale) + placement.x,
+                                y: 50 * (1 - placement.scale) + placement.y)
+            context.scaleBy(x: placement.scale, y: placement.scale)
             let yaw = expression.yaw
             let pitch = expression.pitch
             let faceX = 50 + yaw * 13
