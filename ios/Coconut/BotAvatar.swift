@@ -113,16 +113,59 @@ private struct CoconutFigure: View, Animatable {
     }
 
     var body: some View {
-        let phase = time * .pi / 2.8 + Double(seed % 1000) / 1000 * .pi * 2
-        let turn = sin(phase) * thinking
+        let expression = CoconutExpression.sample(time: time, seed: seed, thinking: thinking)
         ZStack {
             CoconutShell(shape: shape, color: color, seed: seed)
-            CoconutFace(color: color, eyelid: eyelid,
-                        lookX: turn * 0.065, lookY: -thinking * (0.025 + 0.035 * cos(phase * 2)))
+            CoconutFace(color: color, eyelid: eyelid, expression: expression)
         }
         .frame(width: size, height: size)
-        .rotationEffect(.degrees(turn * 4))
-        .scaleEffect(x: 1 + 0.025 * thinking * sin(phase * 2), y: 1 - 0.025 * thinking * sin(phase * 2))
+        .rotationEffect(.degrees(expression.roll))
+    }
+}
+
+// Every idle bot shares this three-quarter pose. Thinking changes expression,
+// then holds it long enough to read at contact-row size.
+struct CoconutExpression: Equatable {
+    var yaw = 0.8
+    var pitch = -0.35
+    var leftEye = 1.0
+    var rightEye = 1.0
+    var eyeTilt = -20.0
+    var mouthWidth = 15.0
+    var smile = 4.5
+    var mouthOpen = 0.0
+    var roll = -3.0
+
+    static let resting = Self()
+    private static let thoughts = [
+        Self(yaw: 0.65, pitch: -0.8, leftEye: 1.05, rightEye: 0.85, eyeTilt: -24, mouthWidth: 11, smile: 1, mouthOpen: 0, roll: -5),
+        Self(yaw: -0.55, pitch: 0.35, leftEye: 0.55, rightEye: 0.9, eyeTilt: 10, mouthWidth: 14, smile: -1, mouthOpen: 0, roll: 3),
+        Self(yaw: -0.15, pitch: -0.65, leftEye: 1.2, rightEye: 1.15, eyeTilt: -5, mouthWidth: 6, smile: 0, mouthOpen: 5, roll: 1),
+        Self(yaw: 0.85, pitch: -0.15, leftEye: 0.7, rightEye: 0.32, eyeTilt: -24, mouthWidth: 12, smile: 2, mouthOpen: 0, roll: -4),
+        Self(yaw: 0.1, pitch: 0.15, leftEye: 0.95, rightEye: 1.05, eyeTilt: 5, mouthWidth: 17, smile: 6, mouthOpen: 0, roll: 2),
+        Self(yaw: 0.6, pitch: -0.7, leftEye: 0.75, rightEye: 1.05, eyeTilt: -18, mouthWidth: 9, smile: 0, mouthOpen: 2.5, roll: -2),
+        resting
+    ]
+
+    static func sample(time: Double, seed: UInt64, thinking: Double) -> Self {
+        guard thinking > 0 else { return resting }
+        let duration = 1.8
+        let cycle = duration * Double(thoughts.count)
+        let phase = (time + Double(seed % 1000) / 97).truncatingRemainder(dividingBy: cycle)
+        let position = (phase + cycle).truncatingRemainder(dividingBy: cycle) / duration
+        let index = Int(position)
+        let transition = min(1, max(0, (position - Double(index) - 0.6) / 0.4))
+        let eased = transition * transition * (3 - 2 * transition)
+        let expression = thoughts[index].mixed(with: thoughts[(index + 1) % thoughts.count], amount: eased)
+        return resting.mixed(with: expression, amount: min(1, thinking))
+    }
+
+    private func mixed(with other: Self, amount: Double) -> Self {
+        func mix(_ a: Double, _ b: Double) -> Double { a + (b - a) * amount }
+        return Self(yaw: mix(yaw, other.yaw), pitch: mix(pitch, other.pitch),
+                    leftEye: mix(leftEye, other.leftEye), rightEye: mix(rightEye, other.rightEye),
+                    eyeTilt: mix(eyeTilt, other.eyeTilt), mouthWidth: mix(mouthWidth, other.mouthWidth),
+                    smile: mix(smile, other.smile), mouthOpen: mix(mouthOpen, other.mouthOpen), roll: mix(roll, other.roll))
     }
 }
 
@@ -203,8 +246,7 @@ private struct CoconutShell: View {
 private struct CoconutFace: View {
     let color: String
     let eyelid: Double
-    let lookX: Double
-    let lookY: Double
+    let expression: CoconutExpression
 
     private var ink: Color {
         let value = UInt64(color.trimmingCharacters(in: CharacterSet.alphanumerics.inverted), radix: 16) ?? 0
@@ -215,18 +257,35 @@ private struct CoconutFace: View {
     var body: some View {
         Canvas { context, size in
             context.scaleBy(x: size.width / 100, y: size.height / 100)
-            context.translateBy(x: lookX * 100, y: lookY * 100)
-            for x in [39.0, 60.0] {
+            let yaw = expression.yaw
+            let pitch = expression.pitch
+            let faceX = 50 + yaw * 13
+            let faceY = 43 + pitch * 12
+            for side in [-1.0, 1.0] {
+                let farSide = max(0, side * yaw)
+                let openness = (side < 0 ? expression.leftEye : expression.rightEye) * eyelid
+                let width = 7.2 * (1 - farSide * 0.22)
+                let height = 12.4 * openness * (1 - farSide * 0.12)
                 var eye = context
-                eye.translateBy(x: x, y: 45)
-                eye.rotate(by: .degrees(13))
-                let rect = CGRect(x: -3.6, y: -6.2 * eyelid, width: 7.2, height: 12.4 * eyelid)
-                eye.fill(Path(ellipseIn: rect), with: .color(ink))
+                eye.translateBy(x: faceX + side * 10 * (1 - abs(yaw) * 0.18),
+                                y: faceY - side * yaw * 1.8)
+                eye.rotate(by: .degrees(expression.eyeTilt))
+                eye.fill(Path(ellipseIn: CGRect(x: -width / 2, y: -height / 2, width: width, height: height)), with: .color(ink))
             }
-            var smile = Path()
-            smile.move(to: CGPoint(x: 41, y: 61))
-            smile.addQuadCurve(to: CGPoint(x: 59, y: 62), control: CGPoint(x: 49, y: 68))
-            context.stroke(smile, with: .color(ink), style: StrokeStyle(lineWidth: 3.1, lineCap: .round))
+            var mouth = context
+            mouth.translateBy(x: faceX, y: 57 + pitch * 7)
+            mouth.rotate(by: .degrees(-yaw * 9))
+            let halfWidth = expression.mouthWidth / 2
+            var lip = Path()
+            lip.move(to: CGPoint(x: -halfWidth, y: 0))
+            lip.addQuadCurve(to: CGPoint(x: halfWidth, y: 0), control: CGPoint(x: 0, y: expression.smile + expression.mouthOpen))
+            if expression.mouthOpen > 0.05 {
+                lip.addQuadCurve(to: CGPoint(x: -halfWidth, y: 0),
+                                 control: CGPoint(x: 0, y: expression.smile - expression.mouthOpen))
+                lip.closeSubpath()
+                mouth.fill(lip, with: .color(ink))
+            }
+            mouth.stroke(lip, with: .color(ink), style: StrokeStyle(lineWidth: 2.7, lineCap: .round, lineJoin: .round))
         }
     }
 }
