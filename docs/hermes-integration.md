@@ -111,3 +111,17 @@ Run `python3 scripts/test_hermes_live.py` for bot creation, delegation, deletion
 These checks use real model requests in temporary profiles. They leave existing bot conversations untouched.
 Run `python3 scripts/test_native_relay.py` for busy delivery, pending decisions, context, approval, and restart.
 Local backend tests use API doubles and do not replace the real Hermes checks.
+
+## MCP connections
+
+Settings → Connections reads `mcp_servers` from the root Hermes configuration.
+Changing the active Terminal profile does not change shared connections.
+The app supports HTTPS servers with optional Bearer authentication.
+Hermes stores tokens in the profile's `.env` and keeps variable references in `config.yaml`.
+The app receives connection metadata and tool names, never saved tokens or headers.
+Use Hermes on the Mac for other transports or advanced authentication.
+
+Bot workers inherit shared MCP connections between turns. A bot's native entry overrides a shared entry with the same name.
+Native Hermes code handles discovery, validation, connection testing, and tool execution.
+When configuration changes, the worker refreshes MCP connections without stopping native terminal processes.
+The installer includes Hermes's locked `mcp` extra for existing and new installations.

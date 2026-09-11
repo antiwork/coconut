@@ -39,6 +39,12 @@ struct AppSettingsView: View {
                     }
                 }
                 Section {
+                    NavigationLink { MCPSettingsView() } label: {
+                        SettingsNavigationLabel(title: "Connections", subtitle: "MCP servers · \(store.mcpServers.count)")
+                    }
+                    .accessibilityIdentifier("mcp-settings")
+                }
+                Section {
                     NotificationSettingsRow()
                 }
                 Section("Bots") {

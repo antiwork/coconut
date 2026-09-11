@@ -320,6 +320,7 @@ struct StateSnapshot: Codable, Sendable {
     var routines: [Routine]? = nil
     var modelCatalog: ModelCatalog? = nil
     var approvals: ApprovalSettings? = nil
+    var mcpServers: [MCPServer]? = nil
     var pushConfigured: Bool? = nil
 }
 
@@ -396,4 +397,26 @@ struct ApprovalSettings: Codable, Sendable {
     let modes: [ApprovalMode]
     enum CodingKeys: String, CodingKey { case defaults = "default", modes }
     func label(for value: String?) -> String { modes.first { $0.id == value }?.label ?? "Hermes default" }
+}
+
+struct MCPServer: Codable, Identifiable, Equatable, Sendable {
+    let id: String
+    let url: String
+    let transport: String
+    let hasToken: Bool
+    let editable: Bool
+}
+
+struct MCPResponse: Decodable, Sendable {
+    let ok: Bool
+    let servers: [MCPServer]
+    let tools: [String]
+    var error: String?
+}
+
+struct MCPRequest: Encodable {
+    let action: String
+    let name: String
+    var url: String? = nil
+    var token: String? = nil
 }

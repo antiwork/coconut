@@ -492,7 +492,9 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
             else:
                 state.update(model=self._setting('model', getattr(self.provider, 'model', '') or ''), base_url=self._setting('base_url', getattr(self.provider, 'base_url', '') or ''), model_configured=bool(getattr(self.provider, 'ready', False)))
             if hasattr(self.provider, 'native_settings'):
-                state['approvals'] = self.provider.native_settings()['approvals']
+                native = self.provider.native_settings()
+                state['approvals'] = native['approvals']
+                state['mcp_servers'] = native.get('mcp_servers', [])
             return state
 
     def _cursor(self) -> int:
@@ -867,6 +869,15 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
                 if decision.get('_native'):
                     return self.answer_native(decision, task, data, device)
                 return self._answer(decision, task, data, device)
+        if parts == ['v1', 'settings', 'mcp'] and method == 'POST':
+            if not hasattr(self.provider, 'native_settings'):
+                raise ServiceError(503, 'Hermes is not available.')
+            try:
+                result = self.provider.native_settings('mcp', **{key: data[key] for key in ('action', 'name', 'url', 'token') if key in data})
+            except ValueError:
+                raise ServiceError(400, 'Check the MCP name, HTTPS address, and authentication.') from None
+            self._event('settings.updated', {})
+            return result
         if parts == ['v1', 'settings', 'approvals'] and method == 'PUT':
             if not hasattr(self.provider, 'native_settings'):
                 raise ServiceError(503, 'Hermes is not available.')

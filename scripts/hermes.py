@@ -251,13 +251,13 @@ def install(revision: str) -> None:
         raise SystemExit("The source lacks its license or dependency lock. Installation stopped.")
     print("Installing project-local Python 3.11 and Hermes dependencies.", flush=True)
     run([uv, "python", "install", "3.11", "--no-bin"], env=env)
-    run([uv, "sync", "--frozen", "--no-dev", "--extra", "anthropic",
+    run([uv, "sync", "--frozen", "--no-dev", "--extra", "anthropic", "--extra", "mcp",
          "--python", "3.11"], cwd=SOURCE, env=env)
     MANIFEST.write_text(json.dumps({
         "repository": REPOSITORY, "commit": revision,
         "installed_at": datetime.now(timezone.utc).isoformat(),
         "python": str(PYTHON.relative_to(ROOT)), "source": str(SOURCE.relative_to(ROOT)),
-        "extras": ["anthropic"], "dependency_lock": "upstream uv.lock",
+        "extras": ["anthropic", "mcp"], "dependency_lock": "upstream uv.lock",
     }, indent=2) + "\n")
     MANIFEST.chmod(0o600)
     check()

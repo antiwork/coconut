@@ -625,9 +625,16 @@ def run_turn(request, emit, request_receipt):
         merge_runtime_config(os.environ['HERMES_HOME'])
         from terminal_setup import configure_terminal
         configure_terminal(os.environ['HERMES_HOME'])
+        mcp_names = []
+        if os.environ.get('COCONUT_DEFAULT_HOME'):
+            from native_mcp import refresh_inheritance
+            mcp_names = refresh_inheritance(os.environ['COCONUT_DEFAULT_HOME'])
         from tools.skills_sync import sync_skills
         sync_skills(quiet=True)
         from run_agent import AIAgent
+        if mcp_names:
+            from tools.mcp_tool_discovery import discover_mcp_tools
+            discover_mcp_tools(allowed_mcp_names=mcp_names)
         from hermes_state import SessionDB
         from tools.registry import registry
         from toolsets import create_custom_toolset
@@ -797,7 +804,7 @@ def run_turn(request, emit, request_receipt):
         relay.install(conversation)
         bridge.relay = relay
         agent = AIAgent(model=request['model'], **config, reasoning_config=reasoning_configuration(request.get('reasoning_effort')),
-                        enabled_toolsets=list(dict.fromkeys(toolsets + ['coconut'])), disabled_toolsets=disabled, quiet_mode=True,
+                        enabled_toolsets=list(dict.fromkeys(toolsets + mcp_names + ['coconut'])), disabled_toolsets=disabled, quiet_mode=True,
                         ephemeral_system_prompt=instructions, session_id=conversation.session_id, session_db=conversation.db,
                         platform='coconut', gateway_session_key=request['task']['id'], clarify_callback=bridge.clarify,
                         skip_context_files=False, load_soul_identity=True, skip_memory=False, skip_background_review=False,

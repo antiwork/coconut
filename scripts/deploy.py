@@ -349,7 +349,7 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
 
     def prepare(self, root, address, package):
         installed = root / '.runtime/hermes/install.json'
-        if not installed.is_file():
+        if not installed.is_file() or "mcp" not in json.loads(installed.read_text()).get("extras", []):
             self.command([sys.executable, str(root / 'scripts/hermes.py'), 'install', '--revision', package.revision], root, 'Hermes installation')
         self.command([self.python(root), str(root / 'scripts/hermes.py'), 'check'], root, 'Hermes import check')
         self.command([self.python(root), str(root / 'scripts/push.py'), '--rebuild'], root, 'Notification encryption build')

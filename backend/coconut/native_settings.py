@@ -58,6 +58,18 @@ def worker(request, default_home):
     from model_catalog import _contained
     op = request['native_operation']
     homes = {identity: _contained(home, request['data_root']) for identity, home in request.get('homes', {}).items()}
+    if op == 'mcp':
+        from native_mcp import manage
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from agent.secret_scope import load_env_file, set_secret_scope, reset_secret_scope
+        root = Path(request.get('settings_root', default_home))
+        token = set_hermes_home_override(str(root))
+        scope = set_secret_scope(load_env_file(root / '.env'))
+        try:
+            return manage(request, root)
+        finally:
+            reset_secret_scope(scope)
+            reset_hermes_home_override(token)
     if op == 'relay_recover':
         from native_relay import recover_delivery
         return recover_delivery(homes[request['bot_id']], request['call_id'])
@@ -101,8 +113,9 @@ def worker(request, default_home):
             _write(marker, '{"version":1}\n', home)
         return {'ok': True}
     if op == 'read':
+        from native_mcp import public_servers
         return {'profiles': {identity: profile_state(home, default_home) for identity, home in homes.items()},
-                'approvals': approval_state(default_home)}
+                'approvals': approval_state(default_home), 'mcp_servers': public_servers(Path(request.get('settings_root', default_home)))}
     if op == 'set_default_approval':
         value = request['mode']
         validate_mode(value)

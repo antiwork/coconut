@@ -25,6 +25,7 @@ final class AppStore {
     var model = ""
     var modelBaseURL = ""
     var modelConfigured = false
+    var mcpServers: [MCPServer] = []
     var modelCatalog: ModelCatalog?
     var provider = ""
     var pushConfigured = false
@@ -657,6 +658,12 @@ final class AppStore {
         return response != nil
     }
 
+    func updateMCP(_ request: MCPRequest) async -> MCPResponse? {
+        let result: MCPResponse? = await write("settings/mcp", payload: request, as: MCPResponse.self)
+        if let result { mcpServers = result.servers }
+        return result
+    }
+
     func setApproval(_ value: String?, botId: String? = nil) async {
         if isDemo {
             if let botId, let index = bots.firstIndex(where: { $0.id == botId }) {
@@ -860,6 +867,7 @@ final class AppStore {
         if decisions != snapshot.decisions { decisions = snapshot.decisions }
         if artifacts != snapshot.artifacts { artifacts = snapshot.artifacts }
         approvals = snapshot.approvals
+        mcpServers = snapshot.mcpServers ?? []
         if routines != snapshot.routines ?? [] { routines = snapshot.routines ?? [] }
         cursor = snapshot.cursor
         provider = snapshot.provider

@@ -16,6 +16,12 @@ def require_keywords(function, names):
 
 
 def verify_contract():
+    import mcp
+    from hermes_cli.mcp_config import _probe_single_server, _save_bearer_auth_token
+    from tools.mcp_tool_config import _load_mcp_config
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    require_keywords(_probe_single_server, ['name', 'config', 'connect_timeout'])
+    require_keywords(_save_bearer_auth_token, ['name', 'token'])
     from run_agent import AIAgent
     from hermes_state import SessionDB
     from tools.registry import registry
