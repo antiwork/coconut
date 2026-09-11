@@ -188,6 +188,36 @@ class HermesProvider(FixtureProvider):
         return self.catalog._call('native', native_operation=operation,
                                   homes={bot['id']: str(self.catalog._profile_home(bot['id'])) for bot in bots}, **payload)
 
+    def process_completions(self, bot, processes):
+        import select
+        with self._lock:
+            lock = self._bot_locks.setdefault(bot['id'], threading.Lock())
+        if not lock.acquire(blocking=False):
+            return []
+        try:
+            request = dict(operation='process_completions', bot=bot, processes=processes)
+            with self._lock:
+                if self._closed:
+                    return []
+                process = self._runtimes.get(bot['id'])
+            if process is not None and process.poll() is None:
+                self._send(process, request)
+                if not select.select([process.stdout], [], [], 10)[0]:
+                    raise RuntimeError('Hermes did not return its process status.')
+                frame = json.loads(process.stdout.readline(MAX_EVENT_CHARACTERS + 1))
+                if frame.get('type') != 'process_completions':
+                    raise RuntimeError('Hermes returned an invalid process status.')
+                if frame['data'].get('error'):
+                    raise RuntimeError(frame['data']['error'])
+                return frame['data']['results']
+            env, cwd = self.environment(bot['id'])
+            result = subprocess.run([self.python, str(Path(__file__).with_name('native_processes.py'))],
+                                    input=json.dumps(request), text=True, capture_output=True,
+                                    cwd=cwd, env=env, timeout=15, check=True)
+            return json.loads(result.stdout)
+        finally:
+            lock.release()
+
     def set_bot_settings(self, bot, changes):
         return self.native_settings('update_profile', [bot], bot_id=bot['id'], changes=changes)
 
@@ -300,6 +330,8 @@ class HermesProvider(FixtureProvider):
                 if len(line) > MAX_EVENT_CHARACTERS:
                     raise RuntimeError('Hermes returned an oversized event.')
                 event = json.loads(line)
+                if event.get('type') == 'process_completions':
+                    continue  # A timed-out status request can finish before this turn.
                 if event.get('type') == 'turn_end':
                     reusable = event.get('data', {}).get('reusable') is True
                     if deferred is not None:

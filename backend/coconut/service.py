@@ -66,6 +66,7 @@ def decision_correction(data: dict) -> str:
     return value
 
 
+from .background_processes import BackgroundProcesses
 from .native_execution import NativeExecution
 
 
@@ -76,7 +77,7 @@ from .approval_updates import ApprovalUpdates
 from .service_restart import ServiceRestart
 
 
-class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
+class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     EXCHANGE_LIMIT = 8
@@ -133,6 +134,7 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
         self.context_threads: dict[str, threading.Thread] = {}
         self.dispatcher: threading.Thread | None = None
         self.pr_poller: threading.Thread | None = None
+        self.process_poller: threading.Thread | None = None
         from .push import PushDelivery
         self.push = PushDelivery(self)
         if hasattr(self.provider, 'migrate_model_default'):
@@ -143,6 +145,7 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
             with self.transaction():
                 self._migrate_threads()
                 self._migrate_bot_exchanges()
+                self._migrate_process_deliveries()
                 self._recover()
         except BaseException:
             self.db.close()
@@ -1008,7 +1011,10 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
         native_id = payload.get('native_envelope_id')
         if native_id is not None and (not isinstance(native_id, str) or len(native_id) != 32 or any(c not in '0123456789abcdef' for c in native_id)):
             raise ServiceError(400, 'The native envelope ID is invalid.')
-        delivery_id = digest(encoded([source_task_id, native_id])) if native_id else digest(encoded([source_task_id, target_id, text]))
+        delivery_key = [source_task_id, target_id, text]
+        if returning and payload.get('return_id'):
+            delivery_key.append(payload['return_id'])
+        delivery_id = digest(encoded([source_task_id, native_id])) if native_id else digest(encoded(delivery_key))
         source = self._get('tasks', source_task_id)
         existing = self.db.execute('SELECT data FROM deliveries WHERE id=?', (delivery_id,)).fetchone()
         if existing:
@@ -1080,17 +1086,24 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
         dependency_id = task.get('_resolved_dependency_id')
         if dependency_id:
             assignment['_waiting_on'] = [identity for identity in assignment.get('_waiting_on', []) if identity != dependency_id]
-        waiting = result_status in ('completed', 'rejected') and bool(assignment.get('_waiting_on'))
+        waiting = result_status in ('completed', 'rejected') and (bool(assignment.get('_waiting_on')) or self._background_pending(assignment['id'], finishing_task_id=task['id']))
         if assignment['id'] == task['id']:
             if waiting:
-                task.update(status='waiting', summary='Waiting for a bot reply.')
+                task.update(status='waiting', summary='Waiting for a result.')
             else:
                 self._prepare_return(task, text, result_status)
             return
         # The continuation keeps the original assignment and its return address.
         # A reply can queue while that assignment still has a running turn.
         self._prepare_return(task, text, result_status)
-        if assignment['status'] == 'waiting' or (result_status == 'failed' and assignment['status'] != 'cancelled'):
+        if waiting and self._background_pending(task['id'], finishing_task_id=task['id']):
+            task.update(status='waiting', summary='Waiting for a result.')
+            if assignment['status'] == 'completed':
+                assignment['status'] = 'waiting'
+        if task.get('_background_completion'):
+            for key in ('_background_return_after', '_background_return_id'):
+                assignment[key] = task[key]
+        if assignment['status'] == 'waiting' or (task.get('_background_completion') and assignment['status'] == 'completed') or (result_status == 'failed' and assignment['status'] != 'cancelled'):
             if not waiting:
                 assignment.update(status='completed' if result_status == 'rejected' else result_status,
                                   summary=task['summary'], updated_at=now(), _result_task_id=task['id'])
@@ -1106,9 +1119,10 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
         if not task.get('source_bot_id') or task.get('_is_return'):
             return
         turn_ids = {t['id'] for t in self._all('tasks') if t['id'] == task['id'] or t.get('_assignment_task_id') == task['id']}
-        already_sent = any(delivery['source_task_id'] in turn_ids and delivery['target_bot_id'] == task['source_bot_id'] and delivery['receipt']['task_id'] for delivery in self._all('deliveries'))
+        already_sent = any(delivery['source_task_id'] in turn_ids and delivery['target_bot_id'] == task['source_bot_id'] and delivery['created_at'] >= task.get('_background_return_after', '') and delivery['receipt']['task_id'] for delivery in self._all('deliveries'))
         if not already_sent:
-            task['_return_pending'] = {'target_bot_id': task['source_bot_id'], 'text': text, 'result_status': result_status}
+            task['_return_pending'] = {'target_bot_id': task['source_bot_id'], 'text': text, 'result_status': result_status,
+                                       'return_id': task.get('_background_return_id')}
 
     def _continuation_blocked(self, task: dict) -> bool:
         assignment_id = task.get('_assignment_task_id', task['id'])
@@ -1618,6 +1632,8 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
         self.dispatcher.start()
         self.pr_poller = threading.Thread(target=self._poll_pull_requests, name='coconut-pr-poll', daemon=True)
         self.pr_poller.start()
+        self.process_poller = threading.Thread(target=self._poll_processes, name='coconut-process-poll', daemon=True)
+        self.process_poller.start()
         self.push.start()
 
     def _register_pr_artifact(self, task_id: str, payload: dict):
@@ -1729,6 +1745,7 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
         task.pop('_turn_attachment_ids', None)
         task.pop('_conversation_epoch', None)
         task.pop('_resume_decision', None)
+        task.pop('_background_completion', None)
         task['_preference_source_ids'] = [source_id for source_id in task.get('_preference_source_ids', [])
                                           if source_id not in task.get('_turn_preference_source_ids', [])]
 
@@ -1791,6 +1808,8 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
                 provider_task = self._public(task)
                 provider_task['_turn_message_ids'] = task['_turn_message_ids']
                 provider_task['_conversation_epoch'] = task['_conversation_epoch']
+                if task.get('_background_completion'):
+                    provider_task['_background_completion'] = task['_background_completion']
                 if task.get('_native_job'):
                     provider_task['_native_job'] = task['_native_job']
                 provider_task['_native_receipts'] = [r for r in self._all('native_receipts') if r['task_id'] == task_id and r.get('turn_id') == task.get('_native_turn_id') and r['state'] == 'completed']
@@ -2254,6 +2273,8 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
             self.dispatcher.join(timeout=2)
         if self.pr_poller:
             self.pr_poller.join(timeout=2)
+        if self.process_poller:
+            self.process_poller.join(timeout=20)
         self.push.close()
         with self.lock:
             context_task_ids = {c['task_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}

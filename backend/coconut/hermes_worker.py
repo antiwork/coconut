@@ -465,6 +465,11 @@ def conversation_input(request):
         else:
             prompt = '\n\n'.join(message['text'] for message in current)
             history = history[:index]
+        if request['task'].get('_background_completion'):
+            followup = '\nNew message from the person:\n' + prompt if current else ''
+            prompt = ('Continue your existing work from these Hermes process results. Do not repeat the completed command. '
+                      'Verify the result and continue any remaining work.\n'
+                      + '\n\n'.join(request['task']['_background_completion']) + followup)
     receipts = request['task'].get('_native_receipts', [])
     if receipts:
         prompt += '\nCompleted native tools for this task. Use these results. Do not repeat their effects:\n'
@@ -596,6 +601,13 @@ def main():
     install_approval_inheritance(os.environ['COCONUT_DEFAULT_HOME'])
     while True:
         request = requests.get()
+        if request['operation'] == 'process_completions':
+            from native_processes import completions
+            try:
+                emit('process_completions', {'results': completions(request)})
+            except Exception:
+                emit('process_completions', {'results': [], 'error': 'Could not read native process results.'})
+            continue
         code = run_turn(request, emit, request_receipt)
         emit('turn_end', {'reusable': code == 0})
         if code:
@@ -748,6 +760,8 @@ def run_turn(request, emit, request_receipt):
                         'For unattended GitHub login, explain native gh --insecure-storage and get consent to owner-only, unencrypted token storage. '
                         'After consent, use gh auth login --web --git-protocol https --skip-ssh-key --insecure-storage in this profile. '
                         'Keep the device login process alive while the person authorizes it. Never show or request the token in chat. '
+                        'Use terminal notify=true for background work that must return a result. '
+                        'Coconut resumes this task when Hermes reports completion. Use notify=false for persistent servers. '
                         'Verify gh api user from this bot\'s terminal before reporting GitHub connected. '
                         'Share explicit task context only. Do not copy private memory or credentials between bots. '
                         'A queued message is not a reply. Never claim success without a tool result. ')

@@ -73,7 +73,11 @@ class NativeExecution:
                     return {'status': 'recorded'}
                 if record['task_id'] != task_id or record['state'] != 'executing':
                     raise ServiceError(409, 'The tool receipt does not match this task.')
+                self._record_consumed_processes(record, payload)
                 record.update(state='completed', result=payload['result'], completed_at=now())
+                from .background_processes import subscription
+                if subscription(record):
+                    record['_process_registered'] = True
                 self._put('native_receipts', record)
                 for decision in self._all('decisions'):
                     if decision['task_id'] == task_id and decision['status'] == 'approved' and decision.get('_action_hash') == record['action_hash']:

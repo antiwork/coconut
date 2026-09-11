@@ -71,6 +71,14 @@ def verify_contract():
     require_keywords(registry.dispatch, {'name', 'args'})
     require_keywords(registry.deregister, {'name'})
     require_keywords(process_registry.kill_process, {'session_id', 'source', 'consume_output'})
+    require_keywords(process_registry.drain_notifications, {'owns_event', 'skip_poll_observed'})
+    require_keywords(process_registry.get, {'session_id'})
+    require_keywords(process_registry.poll, {'session_id'})
+    require_keywords(process_registry.is_completion_consumed, {'session_id'})
+    from tools.process_registry_notifications import format_process_notification
+    from gateway.session_context import set_session_vars, clear_session_vars
+    require_keywords(set_session_vars, {'session_id', 'session_key'})
+    assert callable(clear_session_vars) and callable(format_process_notification)
     if not callable(process_registry.recover_from_checkpoint) or not callable(process_registry.list_sessions):
         raise ValueError('Hermes removed native background process cleanup.')
     require_keywords(create_custom_toolset, {'name', 'description', 'tools'})

@@ -55,7 +55,13 @@ class NativeBridge:
             try:
                 relay = getattr(self, 'relay', None)
                 result = relay.deliver(args, next_call, record['id']) if name == 'message_agent' and relay else next_call(args)
-                confirmed = self.receipt('native_result', dict(id=record['id'], result=result))
+                consumed = []
+                if name in ('process', 'process_manage') and args.get('session_id'):
+                    from tools.process_registry import process_registry
+                    process = process_registry.get(args['session_id'])
+                    if process and process_registry.is_completion_consumed(process.id):
+                        consumed.append(process.id)
+                confirmed = self.receipt('native_result', dict(id=record['id'], result=result, consumed_process_ids=consumed))
                 if confirmed.get('status') != 'recorded':
                     # End the worker before the native middleware can swallow this failure.
                     import os
