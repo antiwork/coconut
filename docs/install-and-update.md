@@ -70,6 +70,32 @@ Run `hermes --coconut-bots` to list the app's bot profiles.
 To open a bot directly, stop Coconut first, then run `hermes --coconut-bot Ada`.
 The launcher holds the service lock while Terminal uses that bot. Restart Coconut after closing that Terminal session.
 
+## GitHub access for a bot
+
+Each bot uses its own GitHub CLI configuration. A login in your normal Mac Terminal does not configure the bot.
+The macOS login Keychain can be unavailable when Coconut runs unattended.
+GitHub CLI supports native file storage for this case. It stores the token unencrypted with owner-only file permissions.
+Use this option only if you accept that storage method. Coconut does not copy tokens between bots.
+
+From a bot's terminal, run:
+
+```sh
+gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key --insecure-storage
+```
+
+Open the device authorization URL on your phone and enter the displayed code. Keep the login process running until authorization finishes.
+Then verify access from the same bot's terminal:
+
+```sh
+gh api user --jq .login
+```
+
+To run these commands from the Mac's normal Terminal, first run `hermes --coconut-bots` to find the bot's profile ID.
+From the Coconut folder, prefix each `gh` command with `GH_CONFIG_DIR="$PWD/.runtime/host/bots/PROFILE_ID/home/.config/gh"`.
+Replace `PROFILE_ID` with that bot's ID. Do not change the shell's `HOME` or paste a token into chat.
+File storage remains available when the login Keychain locks. Reauthorize if GitHub expires or revokes the token.
+See [GitHub CLI authentication](https://cli.github.com/manual/gh_auth_login).
+
 ## Pair the iPhone
 
 Install the signed iPhone app before pairing. See [the iPhone setup](iphone-install.md).

@@ -695,6 +695,11 @@ def main():
                         'To reload the Coconut service, use coconut_restart_service, then finish your reply. '
                         'The service restarts once after active turns finish. Do not create launchctl jobs or restart the parent from terminal. '
                         'Use the inherited HOMEBREW_XDG_CONFIG_HOME for package trust; do not replace HOME or share other configuration. '
+                        'GitHub CLI uses this bot\'s private HOME. A saved account name alone does not prove authentication works. '
+                        'For unattended GitHub login, explain native gh --insecure-storage and get consent to owner-only, unencrypted token storage. '
+                        'After consent, use gh auth login --web --git-protocol https --skip-ssh-key --insecure-storage in this profile. '
+                        'Keep the device login process alive while the person authorizes it. Never show or request the token in chat. '
+                        'Verify gh api user from this bot\'s terminal before reporting GitHub connected. '
                         'Share explicit task context only. Do not copy private memory or credentials between bots. '
                         'A queued message is not a reply. Never claim success without a tool result. ')
         instructions += CONVERSATION_INSTRUCTIONS
