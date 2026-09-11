@@ -74,7 +74,7 @@ from .approval_updates import ApprovalUpdates
 
 
 class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
-    ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused'}
+    ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     EXCHANGE_LIMIT = 8
     ACTIONS = {'create_file'}
@@ -731,6 +731,24 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
             bot.update(_deleted=True, archived=True, _delete_task_ids=cancelled)
             self._put('bots', bot)
             self._event('bot.deleted', {'id': bot['id']} | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
+            for task_id in affected:
+                task = self._get('tasks', task_id)
+                owner_id = task.get('_reply_to_task_id')
+                if not owner_id or owner_id in affected:
+                    continue
+                owner = self._get('tasks', owner_id)
+                if task_id not in owner.get('_waiting_on', []):
+                    continue
+                text = f'{bot["name"]} was deleted. Its dependency work cannot continue.'
+                task['_dependency_cancelled'] = True
+                self._prepare_return(task, text, 'failed')
+                task['_return_pending'] = dict(target_bot_id=owner['bot_id'], text=text, result_status='failed')
+                self._put('tasks', task)
+                recipients = [self._get('bots', identity) for identity in {owner['bot_id'], task['conversation_bot_id']}]
+                if not any(recipient['archived'] or recipient.get('_deleted') for recipient in recipients):
+                    self._store_bot_message(task_id, task['_return_pending'], returning=True)
+                    task.pop('_return_pending', None)
+                    self._put('tasks', task)
         callbacks.append(lambda: self._finish_bot_deletion(bot['id']))
 
     def _finish_bot_deletion(self, bot_id: str):
@@ -931,7 +949,8 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
             if expanded == related:
                 break
             related = expanded
-        return next((task for task in tasks if task['id'] in related and (task['status'] in self.ACTIVE or task.get('_return_pending'))), None)
+        active = [task for task in tasks if task['id'] in related and (task['status'] in self.ACTIVE or task.get('_return_pending'))]
+        return next((task for task in active if task['status'] != 'waiting'), active[0] if active else None)
 
     def _queue_routine(self, routine: dict, scheduled: datetime, current: datetime, *, manual: bool = False) -> dict:
         occurrence_id = uid() if manual else str(uuid5(UUID(routine['id']), self._utc_string(scheduled)))
@@ -988,9 +1007,10 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
             receipt = json.loads(existing[0])['receipt']
             return receipt | {'status': 'duplicate' if receipt['task_id'] else receipt['status']}
         exchange = self._get('exchanges', source['exchange_id'])
-        if self.stopping.is_set() or exchange.get('cancelled') or source['status'] == 'cancelled':
+        cancellation_result = returning and source.get('_dependency_cancelled')
+        if self.stopping.is_set() or exchange.get('cancelled') or (source['status'] == 'cancelled' and not cancellation_result):
             return {'task_id': None, 'target_bot_id': target_id, 'thread_id': source['thread_id'], 'status': 'cancelled'}
-        if source['status'] != 'working' and not (returning and source['status'] in ('completed', 'failed')):
+        if source['status'] != 'working' and not (returning and source['status'] in ('completed', 'failed')) and not cancellation_result:
             raise YieldForDecision('This task cannot send bot messages.')
         self._recipient_ids([target_id])
         if target_id == source['bot_id']:
@@ -998,7 +1018,8 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
         origin = self._get('bots', source['conversation_bot_id'])
         if origin['archived'] or origin.get('_deleted'):
             raise ServiceError(409, 'The originating conversation is unavailable.')
-        if exchange['deliveries'] >= self.EXCHANGE_LIMIT:
+        # A recorded result must reach its owner even when new requests exhaust the budget.
+        if exchange['deliveries'] >= self.EXCHANGE_LIMIT and not returning:
             if not exchange['paused']:
                 exchange['paused'] = True
                 self._put('exchanges', exchange)
@@ -1011,12 +1032,22 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
             task = self._get('tasks', task['id'])
             sender = self._get('bots', source['bot_id'])
             task['_bot_messages'] = [{'sender_bot_id': sender['id'], 'sender_name': sender['name'], 'text': text, 'result_status': payload.get('result_status')}]
-            task['_is_return'] = returning or target_id == source.get('source_bot_id')
+            assignment = self._assignment(source)
+            task['_is_return'] = returning or target_id == assignment.get('source_bot_id')
+            owner_id = assignment.get('_reply_to_task_id') or assignment.get('source_task_id')
+            if target_id == assignment.get('source_bot_id') and owner_id:
+                owner = self._assignment(self._get('tasks', owner_id))
+                task.update(_is_return=True, _assignment_task_id=owner['id'],
+                            _resolved_dependency_id=assignment['id'])
+            elif not task['_is_return']:
+                task['_reply_to_task_id'] = assignment['id']
+                assignment['_waiting_on'] = list(dict.fromkeys([*assignment.get('_waiting_on', []), task['id']]))
+                self._put('tasks', assignment)
             if native_id:
                 task['_native_relay'] = {'sender_bot_id': source['bot_id'], 'envelope_id': native_id}
             self._put('tasks', task)
             returned_message = next((m for m in reversed(self._all('messages'))
-                                     if returning and m.get('task_id') == source['id']
+                                     if returning and m.get('task_id') == source.get('_result_task_id', source['id'])
                                      and m.get('sender_bot_id') == sender['id'] and m['kind'] == 'text'
                                      and m['text'] == text), None)
             if returned_message:
@@ -1025,12 +1056,39 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
                 self._event('message.updated', self._public(returned_message), sender['id'], source['id'])
             elif record_message:
                 self._message(origin['id'], text, task_id=task['id'], sender_bot_id=sender['id'], recipient_bot_ids=[target_id])
-            exchange['deliveries'] += 1
+            if not returning:
+                exchange['deliveries'] += 1
             self._put('exchanges', exchange)
             receipt = {'task_id': task['id'], 'target_bot_id': target_id, 'thread_id': task['thread_id'], 'status': 'paused' if task['status'] == 'paused' else 'queued'}
             self._event('bot_message.delivered', {'source_task_id': source['id'], 'source_bot_id': sender['id'], 'target_bot_id': target_id, 'task_id': task['id'], 'thread_id': task['thread_id'], 'conversation_bot_id': origin['id'], 'exchange_id': exchange['id'], 'deliveries': exchange['deliveries'], 'limit': self.EXCHANGE_LIMIT, 'is_return': task['_is_return']}, origin['id'], task['id'])
         self._put('deliveries', dict(id=delivery_id, source_task_id=source['id'], target_bot_id=target_id, text=text, receipt=receipt, created_at=now()))
         return receipt
+
+    def _assignment(self, task: dict) -> dict:
+        return self._get('tasks', task['_assignment_task_id']) if task.get('_assignment_task_id') else task
+
+    def _finish_assignment_turn(self, task: dict, text: str, result_status: str):
+        assignment = self._assignment(task)
+        dependency_id = task.get('_resolved_dependency_id')
+        if dependency_id:
+            assignment['_waiting_on'] = [identity for identity in assignment.get('_waiting_on', []) if identity != dependency_id]
+        waiting = result_status in ('completed', 'rejected') and bool(assignment.get('_waiting_on'))
+        if assignment['id'] == task['id']:
+            if waiting:
+                task.update(status='waiting', summary='Waiting for a bot reply.')
+            else:
+                self._prepare_return(task, text, result_status)
+            return
+        # The continuation keeps the original assignment and its return address.
+        # A reply can queue while that assignment still has a running turn.
+        self._prepare_return(task, text, result_status)
+        if assignment['status'] == 'waiting' or (result_status == 'failed' and assignment['status'] != 'cancelled'):
+            if not waiting:
+                assignment.update(status='completed' if result_status == 'rejected' else result_status,
+                                  summary=task['summary'], updated_at=now(), _result_task_id=task['id'])
+                self._prepare_return(assignment, text, result_status)
+        self._put('tasks', assignment)
+        self._event('task.updated', self._public(assignment), assignment['bot_id'], assignment['id'])
 
     def _prepare_return(self, task: dict, text: str, result_status: str):
         if result_status == 'failed':
@@ -1039,9 +1097,15 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
             task['_native_reply_pending'] = dict(task['_native_relay'], text=text, failed=result_status == 'failed')
         if not task.get('source_bot_id') or task.get('_is_return'):
             return
-        already_sent = any(delivery['source_task_id'] == task['id'] and delivery['target_bot_id'] == task['source_bot_id'] and delivery['receipt']['task_id'] for delivery in self._all('deliveries'))
+        turn_ids = {t['id'] for t in self._all('tasks') if t['id'] == task['id'] or t.get('_assignment_task_id') == task['id']}
+        already_sent = any(delivery['source_task_id'] in turn_ids and delivery['target_bot_id'] == task['source_bot_id'] and delivery['receipt']['task_id'] for delivery in self._all('deliveries'))
         if not already_sent:
             task['_return_pending'] = {'target_bot_id': task['source_bot_id'], 'text': text, 'result_status': result_status}
+
+    def _continuation_blocked(self, task: dict) -> bool:
+        assignment_id = task.get('_assignment_task_id', task['id'])
+        return any(turn['id'] != task['id'] and turn.get('_assignment_task_id', turn['id']) == assignment_id
+                   and turn['status'] in ('needs_you', 'paused') for turn in self._all('tasks'))
 
     def _hold_failed_followup(self, task):
         if not task.get('_steering') or task.get('_blocked_followup'):
@@ -1079,7 +1143,7 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
                 if not payload:
                     continue
                 recipients = [self._get('bots', identity) for identity in {payload['target_bot_id'], task['conversation_bot_id']}]
-                cancelled = task['status'] == 'cancelled' or self._get('exchanges', task['exchange_id']).get('cancelled')
+                cancelled = (task['status'] == 'cancelled' and not task.get('_dependency_cancelled')) or self._get('exchanges', task['exchange_id']).get('cancelled')
                 if not cancelled and not any(bot.get('_deleted') for bot in recipients) and any(bot['archived'] for bot in recipients):
                     continue
                 try:
@@ -1273,9 +1337,13 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
             result = self._steer_task(task, text, attachments, origin['id'])
             result['reply_status'] = 'next_safe_turn'
             return result
-        if task['status'] in ('queued', 'paused', 'scheduled'):
+        if task['status'] in ('queued', 'paused', 'scheduled', 'waiting'):
+            was_waiting = task['status'] == 'waiting'
+            if was_waiting:
+                self._advance_input(task)
+                task['status'] = 'queued'
             message = self._message(bot['id'], text, task_id=task['id'], role='user', human_authored=True)
-            if '_turn_message_ids' in task:
+            if was_waiting or task.get('_steering') or '_turn_message_ids' in task:
                 task.setdefault('_steering', []).append(text)
             task.setdefault('_preference_source_ids', [])
             if message.get('_human_device_id'):
@@ -1455,7 +1523,7 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
                 self._advance_input(task)
             else:
                 task.update(status='completed', summary='The proposed action was rejected.', updated_at=now())
-                self._prepare_return(task, 'The proposed action was rejected. No file was created.', 'rejected')
+                self._finish_assignment_turn(task, 'The proposed action was rejected. No file was created.', 'rejected')
         else:
             decision.update(status='approved', outcome='Approved. The service will recheck the selected file before execution.')
             task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
@@ -1617,7 +1685,7 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
                         continue
                     if task.get('scheduled_at') and datetime.fromisoformat(task['scheduled_at'].replace('Z', '+00:00')).timestamp() > time.time():
                         continue
-                    if self._task_paused(task):
+                    if self._task_paused(task) or self._continuation_blocked(task):
                         continue
                     worker = threading.Thread(target=self._run_task, args=(task['id'],), daemon=True, name=f'task-{task["id"][:8]}')
                     self.running[task['id']] = worker
@@ -1656,11 +1724,18 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
                     bot = self._get('bots', task['bot_id'])
                     if bot.get('_deleted') or bot['archived']:
                         return
-                    if self._task_paused(task):
+                    assignment = self._assignment(task)
+                    if task.get('_assignment_task_id') and assignment['status'] in ('failed', 'cancelled'):
+                        task.update(status=assignment['status'], summary='The original assignment stopped. Reply to continue.', updated_at=now())
+                        self._prepare_return(task, task['summary'], task['status'])
+                        self._put('tasks', task)
+                        self._event('task.updated', self._public(task), bot['id'], task_id)
+                        return
+                    if self._task_paused(task) or self._continuation_blocked(task):
                         return
                     if self._has_uncertain_receipt(task_id, task.get('_native_turn_id')):
                         task.update(status='failed', summary='A previous tool has no receipt. Check its result before starting new work.')
-                        self._prepare_return(task, 'Task failed: ' + task['summary'], 'failed')
+                        self._finish_assignment_turn(task, 'Task failed: ' + task['summary'], 'failed')
                         self._put('tasks', task)
                         self._event('task.updated', self._public(task), bot['id'], task_id)
                         self._refresh_bot(bot['id'])
@@ -1706,7 +1781,16 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
                     provider_task['_available_bots'] = [{'id': b['id'], 'name': b['name'], 'role': b['role']} for b in self._all('bots') if b['id'] != bot['id'] and not b['archived'] and not b.get('_deleted')]
                     provider_task['_bot_messages'] = task.get('_bot_messages', [])
                     provider_task['_is_return'] = bool(task.get('_is_return'))
-                    provider_task['_outgoing_bot_messages'] = [{'target_bot_id': delivery['target_bot_id'], 'text': delivery['text'], 'task_id': delivery['receipt']['task_id'], 'status': delivery['receipt']['status']} for delivery in self._all('deliveries') if delivery['source_task_id'] == task['id']]
+                    assignment = self._assignment(task)
+                    if task.get('_assignment_task_id'):
+                        instructions = [m['text'] for m in self._history(bot['id']) if m['task_id'] == assignment['id'] and m['role'] == 'user' and m['kind'] == 'text' and not m.get('decision_id')]
+                        provider_task['_handoff_assignment'] = {
+                            'task_id': assignment['id'], 'request': '\n\n'.join([*[m['text'] for m in assignment.get('_bot_messages', [])], *instructions]) or assignment['title'],
+                            'return_to_bot_id': assignment.get('source_bot_id'),
+                            'waiting_on_task_ids': [identity for identity in assignment.get('_waiting_on', []) if identity != task.get('_resolved_dependency_id')],
+                        }
+                    turn_ids = {t['id'] for t in self._all('tasks') if t['id'] == assignment['id'] or t.get('_assignment_task_id') == assignment['id']}
+                    provider_task['_outgoing_bot_messages'] = [{'target_bot_id': delivery['target_bot_id'], 'text': delivery['text'], 'task_id': delivery['receipt']['task_id'], 'status': self._get('tasks', delivery['receipt']['task_id'])['status'] if delivery['receipt']['task_id'] else delivery['receipt']['status']} for delivery in self._all('deliveries') if delivery['source_task_id'] in turn_ids]
                     exchange = self._get('exchanges', task['exchange_id'])
                     provider_task['_handoff_budget_remaining'] = max(0, self.EXCHANGE_LIMIT - exchange['deliveries'])
                 emit = lambda kind, payload: self.emit(task_id, kind, payload)
@@ -1841,11 +1925,13 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
                         result_text = artifact['preview'] if artifact['kind'] == 'task' else f'{artifact["title"]}: {artifact["status"]}'
                     if kind == 'failed':
                         result_text = 'Task failed: ' + result_text
-                    self._prepare_return(task, result_text, kind)
+                    self._finish_assignment_turn(task, result_text, kind)
                 self._put('tasks', task)
                 self._event('task.updated', self._public(task), bot_id, task_id)
                 generic_completion = kind == 'completed' and task['summary'].strip().rstrip('.!').casefold() in {'ready to review', 'done', 'complete', 'completed', 'task complete', 'task completed', 'work complete', 'work completed'}
-                if generic_completion:
+                if task['status'] == 'waiting':
+                    pass
+                elif generic_completion:
                     turn_started_at = task.get('_turn_started_at', task['created_at'])
                     result = next((message for message in reversed(self._all('messages')) if message['task_id'] == task_id and message['role'] == 'assistant' and message['kind'] in ('text', 'artifact') and message['created_at'] >= turn_started_at and message['text'].strip()), None)
                     if result:
@@ -2000,7 +2086,7 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
             if any(m.get('task_id') == task['id'] and m['kind'] == 'bot_exchange'
                    and m.get('sender_bot_id') == source['bot_id'] for m in messages):
                 continue
-            result = next((m for m in reversed(messages) if m.get('task_id') == source['id']
+            result = next((m for m in reversed(messages) if m.get('task_id') == source.get('_result_task_id', source['id'])
                            and m['kind'] == 'text' and m.get('sender_bot_id') == source['bot_id']
                            and m['text'] == delivery['text']), None)
             if result:
@@ -2031,7 +2117,7 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
                 uncertain = self._has_uncertain_receipt(task['id'], task.get('_native_turn_id'))
                 task.update(status='failed' if uncertain else 'queued', summary='A tool stopped without a receipt. Check its result before starting new work.' if uncertain else 'Resuming after the Mac service restarted.', updated_at=now())
                 if uncertain:
-                    self._prepare_return(task, 'Task failed: ' + task['summary'], 'failed')
+                    self._finish_assignment_turn(task, 'Task failed: ' + task['summary'], 'failed')
                 self._put('tasks', task)
                 self._event('task.recovered', self._public(task), task['bot_id'], task['id'])
         for message in self._all('messages'):
@@ -2050,7 +2136,7 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
                 decision.update(status='failed', outcome='Execution is uncertain. Inspect the Mac. The service will not repeat this action.')
                 task = self._get('tasks', decision['task_id'])
                 task.update(status='failed', summary=decision['outcome'])
-                self._prepare_return(task, 'Task failed: ' + task['summary'], 'failed')
+                self._finish_assignment_turn(task, 'Task failed: ' + task['summary'], 'failed')
                 self._put('decisions', decision)
                 self._put('tasks', task)
                 self.db.execute('UPDATE receipts SET state=? WHERE decision_id=?', ('uncertain', decision_id))

@@ -128,7 +128,7 @@ def notification_alert(service, job, bot, task, decision):
           AND COALESCE(json_extract(data, '$.sender_bot_id'), ?)=?
           AND COALESCE(json_array_length(data, '$.recipient_bot_ids'), 0)=0
           AND COALESCE(json_extract(data, '$._hidden'), 0)=0
-        ORDER BY rowid DESC''', (task['id'], task.get('_turn_started_at', task['created_at']), bot['id'], bot['id']))
+        ORDER BY rowid DESC''', (task.get('_result_task_id', task['id']), task.get('_turn_started_at', task['created_at']), bot['id'], bot['id']))
     for (data,) in rows:
         message = json.loads(data)
         text = message['text']

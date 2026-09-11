@@ -55,6 +55,347 @@ class TeamServiceTests(unittest.TestCase):
             self.service._put('routines', row)
         return current
 
+    def finish(self, task, text='Finished the assigned work.'):
+        self.service.emit(task['id'], 'text_delta', {'text': text})
+        self.service.emit(task['id'], 'completed', {'summary': 'Complete.'})
+
+    def test_nested_handoff_resumes_original_scope_and_returns_once_after_restart(self):
+        third = self.write('POST', '/v1/bots', {'name': 'Third'})
+        root = self.working(self.send(self.a, 'Complete the maintenance.'))
+        assignment_text = ('Check dependencies, then finish the maintenance. ' + 'Keep the existing files. ' * 10).strip()
+        middle = self.working(self.service._get('tasks', self.deliver(root, self.b, assignment_text)['task_id']))
+        leaf = self.working(self.service._get('tasks', self.deliver(middle, third, 'Check the dependency.')['task_id']))
+        self.finish(root, 'I asked Lin to handle this.')
+        # The reply arrives while Lin still works on an independent step.
+        self.finish(leaf, 'The dependency is unused.')
+        self.service._drain_returns()
+        self.finish(middle, 'The independent step is done.')
+        for task in (root, middle):
+            stored = self.service._get('tasks', task['id'])
+            self.assertEqual(stored['status'], 'waiting')
+            self.assertNotIn('_return_pending', stored)
+        self.restart()
+        continuation = next(t for t in self.service._all('tasks') if t.get('_assignment_task_id') == middle['id'])
+        self.assertEqual(continuation['_resolved_dependency_id'], leaf['id'])
+        captured = []
+        def continue_work(task, bot, history, emit):
+            captured.append(task)
+            emit('text_delta', {'text': 'The maintenance is complete.'})
+            emit('completed', {'summary': 'Complete.'})
+        self.provider.start_task = continue_work
+        self.service._run_task(continuation['id'])
+        context = captured[0]['_handoff_assignment']
+        self.assertEqual(context['request'], assignment_text)
+        self.assertEqual(context['return_to_bot_id'], self.a['id'])
+        self.assertEqual(context['waiting_on_task_ids'], [])
+        self.assertEqual(captured[0]['_outgoing_bot_messages'][0]['status'], 'completed')
+        prompt = conversation_input(dict(operation='start', task=captured[0], history=[]))[0]
+        self.assertIn(assignment_text, prompt)
+        self.assertIn('finish the remaining authorized work', prompt)
+        self.restart()
+        self.service._drain_returns()
+        self.service._drain_returns()
+        final = next(t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id'])
+        self.assertEqual(final['bot_id'], self.a['id'])
+        self.assertEqual(final['_bot_messages'][0]['text'], 'The maintenance is complete.')
+        self.service._run_task(final['id'])
+        self.service._drain_returns()
+        self.assertEqual(len(self.service._all('tasks')), 5)
+        self.assertTrue(all(t['status'] == 'completed' for t in self.service._all('tasks')))
+        before = len(self.service._all('messages'))
+        self.restart()
+        self.assertEqual(len(self.service._all('messages')), before)
+
+    def test_multiple_dependencies_keep_assignment_waiting_until_all_replies_are_processed(self):
+        third = self.write('POST', '/v1/bots', {'name': 'Third'})
+        root = self.working(self.send(self.a))
+        children = [self.working(self.service._get('tasks', self.deliver(root, bot)['task_id'])) for bot in (self.b, third)]
+        self.finish(root)
+        for index, child in enumerate(children):
+            self.finish(child)
+            self.service._drain_returns()
+            reply = next(t for t in self.service._all('tasks') if t.get('_resolved_dependency_id') == child['id'])
+            self.service._run_task(reply['id'])
+            stored = self.service._get('tasks', root['id'])
+            self.assertEqual(stored['status'], 'waiting' if index == 0 else 'completed')
+            self.assertEqual(len(stored['_waiting_on']), 1 if index == 0 else 0)
+
+    def test_continuation_can_delegate_again_without_losing_its_owner(self):
+        root = self.working(self.send(self.a))
+        child = self.working(self.service._get('tasks', self.deliver(root, self.b)['task_id']))
+        self.finish(root)
+        self.finish(child)
+        self.service._drain_returns()
+        reply = next(t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id'])
+        self.working(reply)
+        next_child = self.working(self.service._get('tasks', self.deliver(reply, self.b, 'Check another dependency.')['task_id']))
+        self.assertFalse(next_child['_is_return'])
+        self.finish(reply)
+        self.assertEqual(self.service._get('tasks', root['id'])['status'], 'waiting')
+        self.finish(next_child)
+        self.service._drain_returns()
+        next_reply = next(t for t in self.service._all('tasks') if t.get('_resolved_dependency_id') == next_child['id'])
+        self.assertEqual(next_reply['_assignment_task_id'], root['id'])
+        self.service._run_task(next_reply['id'])
+        self.assertEqual(self.service._get('tasks', root['id'])['status'], 'completed')
+
+    def test_automatic_results_return_when_request_budget_is_exhausted(self):
+        root = self.working(self.send(self.a))
+        child = self.working(self.service._get('tasks', self.deliver(root, self.b)['task_id']))
+        self.finish(root)
+        with self.service.transaction():
+            exchange = self.service._get('exchanges', root['exchange_id'])
+            exchange['deliveries'] = self.service.EXCHANGE_LIMIT
+            self.service._put('exchanges', exchange)
+        self.finish(child)
+        self.restart()
+        self.service._drain_returns()
+        reply = next(t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id'])
+        self.working(reply)
+        self.assertEqual(self.deliver(reply, self.b, 'An extra request')['status'], 'limit_reached')
+        self.finish(reply)
+        self.assertEqual(self.service._get('tasks', root['id'])['status'], 'completed')
+
+    def test_cancel_waiting_assignment_cancels_its_queued_continuation(self):
+        root = self.working(self.send(self.a))
+        child = self.working(self.service._get('tasks', self.deliver(root, self.b)['task_id']))
+        self.finish(root)
+        self.finish(child)
+        self.service._drain_returns()
+        self.write('POST', f'/v1/tasks/{root["id"]}/cancel')
+        self.restart()
+        self.service._drain_returns()
+        self.assertEqual(self.service._get('tasks', root['id'])['status'], 'cancelled')
+        reply = next(t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id'])
+        self.assertEqual(reply['status'], 'cancelled')
+
+    def test_failed_continuation_returns_failure_to_original_requester(self):
+        third = self.write('POST', '/v1/bots', {'name': 'Third'})
+        root = self.working(self.send(self.a))
+        middle = self.working(self.service._get('tasks', self.deliver(root, self.b)['task_id']))
+        leaf = self.working(self.service._get('tasks', self.deliver(middle, third)['task_id']))
+        self.finish(root)
+        self.finish(middle)
+        self.finish(leaf)
+        self.service._drain_returns()
+        continuation = next(t for t in self.service._all('tasks') if t.get('_assignment_task_id') == middle['id'])
+        self.working(continuation)
+        self.service.emit(continuation['id'], 'failed', {'summary': 'The tool failed.'})
+        self.assertEqual(self.service._get('tasks', middle['id'])['status'], 'failed')
+        self.restart()
+        self.service._drain_returns()
+        result = next(t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id'])
+        self.assertEqual(result['_bot_messages'][0]['result_status'], 'failed')
+        self.assertIn('The tool failed.', result['_bot_messages'][0]['text'])
+
+    def test_completion_notification_uses_final_continuation_and_waits_for_it(self):
+        from coconut.push_relay import notification_alert
+        device = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        self.service.push.registration(device, dict(token='a' * 64, environment='development', enabled=True))
+        root = self.working(self.send(self.a))
+        child = self.working(self.service._get('tasks', self.deliver(root, self.b)['task_id']))
+        self.finish(root, 'I am waiting for Lin.')
+        self.finish(child)
+        self.service._drain_returns()
+        self.assertEqual(self.service.db.execute('SELECT COUNT(*) FROM push_outbox').fetchone()[0], 0)
+        reply = next(t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id'])
+        self.working(reply)
+        self.finish(reply, 'The complete result is ready.')
+        jobs = self.service.db.execute('SELECT task_id,kind,turn_id FROM push_outbox').fetchall()
+        stored = self.service._get('tasks', root['id'])
+        self.assertEqual(jobs, [(root['id'], 'completed', stored.get('_native_turn_id') or stored['updated_at'])])
+        alert = notification_alert(self.service, {'kind': 'completed'}, self.a, stored, None)
+        self.assertEqual(alert['body'], 'The complete result is ready.')
+
+    def test_explicit_native_reply_records_its_own_receipt_after_restart(self):
+        root = self.working(self.send(self.a))
+        child = self.working(self.service._get('tasks', self.deliver(root, self.b)['task_id']))
+        self.finish(root)
+        envelope = uuid4().hex
+        receipt = self.service._deliver_bot_message(child['id'], dict(target_bot_id=self.a['id'],
+                                                    text='The dependency is ready.', native_envelope_id=envelope))
+        self.finish(child)
+        self.service._run_task(receipt['task_id'])
+        self.assertEqual(self.service._get('tasks', receipt['task_id'])['_native_reply_pending']['envelope_id'], envelope)
+        self.restart()
+        native = []
+        self.provider.native_settings = lambda operation, bots, **payload: native.append((operation, payload)) or {'ok': True}
+        self.service._drain_returns()
+        self.service._drain_returns()
+        self.assertEqual(len(native), 1)
+        self.assertEqual(native[0][0], 'relay_reply')
+        self.assertEqual(native[0][1]['envelope_id'], envelope)
+        self.assertEqual(native[0][1]['bot_id'], self.b['id'])
+        self.assertFalse(native[0][1]['failed'])
+        self.assertEqual(len(self.service._all('tasks')), 3)
+
+    def test_dependency_reply_waits_for_original_decision_before_running(self):
+        root = self.working(self.send(self.a))
+        child = self.working(self.service._get('tasks', self.deliver(root, self.b)['task_id']))
+        with self.assertRaises(YieldForDecision):
+            self.service.emit(root['id'], 'decision', {'title': 'Save the report?', 'explanation': 'Save this file.',
+                'action_type': 'create_file', 'action': {'type': 'create_file', 'filename': 'report.md', 'content': 'Report'},
+                'predicted_choice': 'approve'})
+        self.finish(child)
+        self.service._drain_returns()
+        reply = next(t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id'])
+        self.restart()
+        self.assertTrue(self.service._continuation_blocked(reply))
+        self.service._run_task(reply['id'])
+        self.assertEqual(self.provider.starts, [])
+        self.assertEqual(self.service._get('tasks', reply['id'])['status'], 'queued')
+        self.assertEqual(self.service._get('tasks', root['id'])['_waiting_on'], [child['id']])
+        decision = self.service.snapshot()['decisions'][0]
+        self.write('POST', f'/v1/decisions/{decision["id"]}/answer', {'choice': 'approve', 'revision': decision['revision']})
+        self.service._run_task(root['id'])
+        self.assertEqual(self.service._get('tasks', root['id'])['status'], 'waiting')
+        self.assertFalse(self.service._continuation_blocked(reply))
+        self.service._run_task(reply['id'])
+        self.assertEqual(self.service._get('tasks', root['id'])['status'], 'completed')
+
+    def test_failed_continuation_notifies_once_and_stops_later_replies(self):
+        device = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        self.service.push.registration(device, dict(token='a' * 64, environment='development', enabled=True))
+        third = self.write('POST', '/v1/bots', {'name': 'Third'})
+        root = self.working(self.send(self.a))
+        children = [self.working(self.service._get('tasks', self.deliver(root, bot)['task_id'])) for bot in (self.b, third)]
+        self.finish(root)
+        for child in children:
+            self.finish(child)
+        self.service._drain_returns()
+        replies = [t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id']]
+        self.working(replies[0])
+        self.service.emit(replies[0]['id'], 'failed', {'summary': 'The tool failed.'})
+        self.service._run_task(replies[1]['id'])
+        self.assertEqual(self.provider.starts, [])
+        self.assertEqual(self.service._get('tasks', replies[1]['id'])['status'], 'failed')
+        jobs = self.service.db.execute('SELECT task_id,kind FROM push_outbox').fetchall()
+        self.assertEqual(jobs, [(root['id'], 'failed')])
+
+    def test_rejecting_a_continuation_proposal_resolves_the_original_assignment(self):
+        root = self.working(self.send(self.a))
+        child = self.working(self.service._get('tasks', self.deliver(root, self.b)['task_id']))
+        self.finish(root)
+        self.finish(child)
+        self.service._drain_returns()
+        reply = next(t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id'])
+        self.working(reply)
+        with self.assertRaises(YieldForDecision):
+            self.service.emit(reply['id'], 'decision', {'title': 'Save the report?', 'explanation': 'Save this file.',
+                'action_type': 'create_file', 'action': {'type': 'create_file', 'filename': 'report.md', 'content': 'Report'},
+                'predicted_choice': 'approve'})
+        decision = self.service.snapshot()['decisions'][0]
+        self.write('POST', f'/v1/decisions/{decision["id"]}/answer', {'choice': 'reject', 'revision': decision['revision']})
+        stored = self.service._get('tasks', root['id'])
+        self.assertEqual(stored['status'], 'completed')
+        self.assertEqual(stored['_waiting_on'], [])
+        self.assertEqual(self.service.snapshot()['artifacts'], [])
+
+    def test_sibling_replies_wait_for_a_decision_but_separate_assignments_can_run(self):
+        third = self.write('POST', '/v1/bots', {'name': 'Third'})
+        root = self.working(self.send(self.a))
+        children = [self.working(self.service._get('tasks', self.deliver(root, bot)['task_id'])) for bot in (self.b, third)]
+        self.finish(root)
+        for child in children:
+            self.finish(child)
+        self.service._drain_returns()
+        replies = [t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id']]
+        self.working(replies[0])
+        with self.assertRaises(YieldForDecision):
+            self.service.emit(replies[0]['id'], 'decision', {'title': 'Save the report?', 'explanation': 'Save this file.',
+                'action_type': 'create_file', 'action': {'type': 'create_file', 'filename': 'report.md', 'content': 'Report'},
+                'predicted_choice': 'approve'})
+        self.restart()
+        self.assertTrue(self.service._continuation_blocked(replies[1]))
+        self.service._run_task(replies[1]['id'])
+        self.assertEqual(self.provider.starts, [])
+        self.assertEqual(self.service._get('tasks', replies[1]['id'])['status'], 'queued')
+        independent = self.send(self.a, 'An independent request.')
+        self.service._run_task(independent['id'])
+        self.assertEqual(self.service._get('tasks', independent['id'])['status'], 'completed')
+        decision = self.service.snapshot()['decisions'][0]
+        self.write('POST', f'/v1/decisions/{decision["id"]}/answer', {'choice': 'approve', 'revision': decision['revision']})
+        self.assertFalse(self.service._continuation_blocked(replies[0]))
+        self.service._run_task(replies[0]['id'])
+        self.assertEqual(self.service._get('tasks', root['id'])['status'], 'waiting')
+        self.service._run_task(replies[1]['id'])
+        self.assertEqual(self.service._get('tasks', root['id'])['status'], 'completed')
+
+    def test_deleting_dependency_bot_returns_failure_and_releases_waiting_owner(self):
+        for reply_already_queued in (False, True):
+            with self.subTest(reply_already_queued=reply_already_queued):
+                peer = self.write('POST', '/v1/bots', {'name': 'Dependency'})
+                root = self.working(self.send(self.a))
+                child = self.working(self.service._get('tasks', self.deliver(root, peer)['task_id']))
+                self.finish(root)
+                if reply_already_queued:
+                    self.finish(child)
+                    self.service._drain_returns()
+                self.write('DELETE', f'/v1/bots/{peer["id"]}')
+                self.restart()
+                self.service._drain_returns()
+                replies = [t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id'] and t['status'] == 'queued']
+                self.assertEqual(len(replies), 1)
+                self.assertEqual(replies[0]['_bot_messages'][0]['result_status'], 'failed')
+                self.assertIn('was deleted', replies[0]['_bot_messages'][0]['text'])
+                self.service._run_task(replies[0]['id'])
+                stored = self.service._get('tasks', root['id'])
+                self.assertEqual(stored['status'], 'completed')
+                self.assertEqual(stored['_waiting_on'], [])
+                self.service._drain_returns()
+                self.assertEqual(len([t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id'] and t['status'] == 'queued']), 0)
+
+    def test_human_reply_to_waiting_work_keeps_assignment_and_blocks_dependency_reply(self):
+        root = self.working(self.send(self.a, 'Finish the report.'))
+        child = self.working(self.service._get('tasks', self.deliver(root, self.b)['task_id']))
+        self.finish(root)
+        reply = self.write('POST', f'/v1/tasks/{root["id"]}/replies', {'text': 'Also save a copy.'})
+        self.assertEqual(reply['id'], root['id'])
+        self.assertEqual(reply['status'], 'queued')
+        self.assertEqual(self.service._get('tasks', root['id'])['_waiting_on'], [child['id']])
+        self.working(reply)
+        with self.assertRaises(YieldForDecision):
+            self.service.emit(reply['id'], 'decision', {'title': 'Save the report?', 'explanation': 'Save this file.',
+                'action_type': 'create_file', 'action': {'type': 'create_file', 'filename': 'report.md', 'content': 'Report'},
+                'predicted_choice': 'approve'})
+        self.finish(child)
+        self.service._drain_returns()
+        continuation = next(t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id'])
+        self.service._run_task(continuation['id'])
+        self.assertEqual(self.provider.starts, [])
+        decision = self.service.snapshot()['decisions'][0]
+        self.write('POST', f'/v1/decisions/{decision["id"]}/answer', {'choice': 'approve', 'revision': decision['revision']})
+        self.service._run_task(root['id'])
+        self.service._run_task(continuation['id'])
+        self.assertEqual(self.service._get('tasks', root['id'])['status'], 'completed')
+        self.assertIn('Also save a copy.', self.provider.starts[-1][0]['_handoff_assignment']['request'])
+
+    def test_failed_continuation_blocks_human_replies_queued_during_its_turn(self):
+        for uncertain in (False, True):
+            with self.subTest(uncertain=uncertain):
+                root = self.working(self.send(self.a))
+                child = self.working(self.service._get('tasks', self.deliver(root, self.b)['task_id']))
+                self.finish(root)
+                self.finish(child)
+                self.service._drain_returns()
+                continuation = next(t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id'])
+                for text in ('Also save a copy.', 'Keep both versions.'):
+                    self.write('POST', f'/v1/tasks/{root["id"]}/replies', {'text': text})
+                if uncertain:
+                    with patch.object(self.service, '_has_uncertain_receipt', return_value=True):
+                        self.service._run_task(continuation['id'])
+                else:
+                    self.working(continuation)
+                    self.service.emit(continuation['id'], 'failed', {'summary': 'The tool failed.'})
+                stored = self.service._get('tasks', root['id'])
+                self.assertEqual(stored['status'], 'failed')
+                held = stored['_blocked_followup']['message_ids']
+                self.assertEqual([self.service._get('messages', identity)['text'] for identity in held],
+                                 ['Also save a copy.', 'Keep both versions.'])
+                self.restart()
+                self.service._run_task(root['id'])
+                self.assertEqual(self.provider.starts, [])
+
     def test_mentions_address_only_selected_bots_once(self):
         c = self.write('POST', '/v1/bots', {'name': 'Ken'})
         first = self.send(self.a, 'Read the shared request', recipient_bot_ids=[self.b['id'], c['id'], self.b['id']])

@@ -479,7 +479,13 @@ def conversation_input(request):
         prompt += '\nThe service already recorded these outgoing messages for this task. Do not resend or rephrase the same request after a restart. Continue independent work or process its result:\n'
         prompt += json.dumps(outgoing)
     if request['task'].get('_is_return') is True:
-        prompt += '\nThis turn returns a result from your earlier handoff. Report it to the person. Do not send an acknowledgement back. Ask another bot question only when the task needs new information.'
+        prompt += ('\nThis reply continues your original assignment. Use the result to finish the remaining authorized work. '
+                   'Do not send an acknowledgement back. Ask another bot question only when the task needs new information. '
+                   'The service returns your final result to the original requester. A dependency result is not completion of your assignment. '
+                   'Report a concrete blocker if you cannot continue. Describe work as running only when a tool or recorded task is active.')
+    assignment = request['task'].get('_handoff_assignment')
+    if assignment:
+        prompt += '\nOriginal assignment and current dependencies, recorded by the service:\n' + json.dumps(assignment)
     for attachment in request['task'].get('attachments', []):
         prompt += '\nAttached file: ' + attachment['title'] + '\n'
         encoded = attachment.get('content_base64')

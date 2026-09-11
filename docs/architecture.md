@@ -69,7 +69,10 @@ Coconut does not provide an operating system sandbox or universal desktop lock.
 
 Hermes `message_agent` produces native relay envelopes.
 The Mac adapter routes these envelopes with stable IDs and durable delivery receipts.
-A delivery confirms queuing, not completion. Exchanges limit automatic messages and propagate cancellation.
+A delivery confirms queuing, not completion. Exchanges limit new requests and propagate cancellation.
+Results can return after the request limit is reached.
+An assignment waits while its dependencies run. Each reply resumes the original scope in the same Hermes conversation.
+The final result returns to the original requester. Intermediate turns do not send completion notifications.
 Native profile data is not copied into peer messages automatically.
 
 ## Transport and future providers

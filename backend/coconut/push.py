@@ -121,6 +121,8 @@ class PushDelivery:
         # Peer replies return to the originating task, which sends its own completion.
         if kind == 'completed' and task.get('source_task_id'):
             return
+        if kind == 'failed' and task.get('_assignment_task_id'):
+            return
         turn = task.get('_native_turn_id') or task.get('updated_at') or task['created_at']
         event_key = ':'.join((task_id, kind, decision_id or turn))
         stamp = time.time()
