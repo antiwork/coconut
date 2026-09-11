@@ -11,7 +11,7 @@ from coconut.terminal_setup import SHELL_INIT, command_path, configure_terminal
 
 class TerminalSetupTests(unittest.TestCase):
     def configure(self, root, config):
-        with patch('coconut.native_settings.raw_config', return_value=config), \
+        with patch.dict(os.environ), patch('coconut.native_settings.raw_config', return_value=config), \
              patch('coconut.native_settings.save_config') as save:
             configure_terminal(root)
         return save
@@ -22,11 +22,11 @@ class TerminalSetupTests(unittest.TestCase):
             config = {'terminal': {'cwd': '/workspace'}, 'model': 'native-model'}
             save = self.configure(home, config)
             self.assertEqual(config['terminal']['shell_init_files'],
-                             ['~/.profile', '~/.bash_profile', '~/.bashrc', str(home / 'coconut-terminal.sh')])
+                             [str(home / name) for name in ('.profile', '.bash_profile', '.bashrc', 'coconut-terminal.sh')])
             self.assertEqual(config['model'], 'native-model')
             self.assertEqual(config['terminal']['cwd'], '/workspace')
             save.assert_called_once_with(home, config)
-            self.assertEqual((home / 'coconut-terminal.sh').read_text(), SHELL_INIT)
+            self.assertTrue((home / 'coconut-terminal.sh').read_text().startswith(SHELL_INIT))
 
     def test_upgrade_preserves_custom_init_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -40,7 +40,7 @@ class TerminalSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = {'terminal': None}
             self.configure(Path(directory), config)
-            self.assertEqual(config['terminal']['shell_init_files'][0], '~/.profile')
+            self.assertEqual(config['terminal']['shell_init_files'][0], str(Path(directory) / '.profile'))
 
     def test_disabled_auto_source_stays_disabled(self):
         with tempfile.TemporaryDirectory() as directory:

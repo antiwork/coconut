@@ -138,7 +138,10 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(environment['ANTHROPIC_API_KEY'], 'test-only-model-key')
         self.assertNotIn('GITHUB_TOKEN', environment)
         self.assertNotIn('SSH_AUTH_SOCK', environment)
-        self.assertEqual(environment['HOME'], str(self.root / '.runtime/hermes/terminal/home'))
+        import pwd
+        self.assertEqual(environment['HOME'], pwd.getpwuid(os.getuid()).pw_dir)
+        self.assertEqual(environment['CLAUDE_CONFIG_DIR'], str(self.root / '.runtime/hermes/terminal/home/.claude'))
+        self.assertEqual(environment['CODEX_HOME'], str(self.root / '.runtime/hermes/terminal/home/.codex'))
         self.assertEqual(environment['HERMES_REAL_HOME'], environment['HOME'])
         self.assertEqual(environment['HERMES_HOME'], str(self.root / '.runtime/hermes/terminal/hermes'))
         self.assertEqual(result['command'][-3:], ['--profile', 'work', '--help'])

@@ -37,8 +37,8 @@ class BackgroundProcesses:
                 observed.add((tasks[record['task_id']]['bot_id'], identity))
         for record in records:
             identity = subscription(record)
-            if identity and not record.get('_process_registered'):
-                # Existing tool output already reached a finished turn before this adapter existed.
+            if identity and not record.get('_process_delivery'):
+                # A completed model tool call already delivered this result to a finished turn.
                 if (tasks[record['task_id']]['bot_id'], identity) in observed:
                     record['_process_delivery'] = 'consumed'
                 record['_process_registered'] = True
@@ -153,8 +153,13 @@ class BackgroundProcesses:
 
     def _record_consumed_processes(self, record, payload):
         consumed = payload.get('consumed_process_ids', [])
-        if not isinstance(consumed, list):
-            return
+        consumed = list(consumed) if isinstance(consumed, list) else []
+        value = result_value(payload)
+        action = record.get('action', {})
+        # Only a model tool receipt acknowledges output. The service poller creates no receipt.
+        if (action.get('name') in ('process', 'process_manage') and isinstance(value, dict)
+                and value.get('status') in ('exited', 'killed')):
+            consumed.append(action.get('arguments', {}).get('session_id'))
         bot_id = self._get('tasks', record['task_id'])['bot_id']
         for original in self._all('native_receipts'):
             if (not original.get('_process_delivery') and subscription(original) in consumed

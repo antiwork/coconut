@@ -162,15 +162,18 @@ class ProviderTests(unittest.TestCase):
         with patch.dict(os.environ, {'GITHUB_TOKEN': 'excluded', 'AWS_SECRET_ACCESS_KEY': 'excluded', 'SSH_AUTH_SOCK': 'excluded', 'ANTHROPIC_API_KEY': 'model-only'}, clear=True):
             first, first_cwd = provider.environment(self.bot['id'])
             second, second_cwd = provider.environment(str(uuid4()))
-        self.assertNotEqual(first['HOME'], second['HOME'])
+        self.assertEqual(first['HOME'], second['HOME'])
+        self.assertNotEqual(first['CODEX_HOME'], second['CODEX_HOME'])
+        self.assertNotEqual(first['CLAUDE_CONFIG_DIR'], second['CLAUDE_CONFIG_DIR'])
+        self.assertNotEqual(first['GH_CONFIG_DIR'], second['GH_CONFIG_DIR'])
         self.assertNotEqual(first_cwd, second_cwd)
         self.assertNotEqual(first['COCONUT_BROWSER_PROFILE'], second['COCONUT_BROWSER_PROFILE'])
-        self.assertEqual(first['HOME'], first['HERMES_HOME'])
+        self.assertNotEqual(first['HOME'], first['HERMES_HOME'])
         self.assertNotIn('GITHUB_TOKEN', first)
         self.assertNotIn('AWS_SECRET_ACCESS_KEY', first)
         self.assertNotIn('SSH_AUTH_SOCK', first)
         self.assertEqual(first['ANTHROPIC_API_KEY'], 'model-only')
-        config = json.loads((Path(first['HOME']) / 'config.yaml').read_text())
+        config = json.loads((Path(first['HERMES_HOME']) / 'config.yaml').read_text())
         self.assertEqual(config, existing_config)
         with self.assertRaises(ValueError):
             provider.environment('../../outside')
@@ -190,12 +193,15 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(json.loads(second_file.read_text()), trust)
         self.assertTrue(second_file.is_relative_to(self.root.resolve()))
         self.assertEqual(first_config.parent.stat().st_mode & 0o777, 0o700)
-        self.assertNotEqual(first['HOME'], second['HOME'])
+        self.assertEqual(first['HOME'], second['HOME'])
+        self.assertNotEqual(first['CODEX_HOME'], second['CODEX_HOME'])
+        self.assertNotEqual(first['CLAUDE_CONFIG_DIR'], second['CLAUDE_CONFIG_DIR'])
+        self.assertNotEqual(first['GH_CONFIG_DIR'], second['GH_CONFIG_DIR'])
         self.assertNotEqual(first['HERMES_HOME'], second['HERMES_HOME'])
         for environment in (first, second):
-            self.assertNotIn('XDG_CONFIG_HOME', environment)
+            self.assertTrue(Path(environment['XDG_CONFIG_HOME']).is_relative_to(self.root.resolve()))
             self.assertNotIn('HOMEBREW_NO_REQUIRE_TAP_TRUST', environment)
-            self.assertFalse((Path(environment['HOME']) / '.homebrew' / 'trust.json').exists())
+            self.assertNotEqual(environment['HOMEBREW_XDG_CONFIG_HOME'], environment['HOME'])
 
     def test_custom_endpoint_never_receives_ambient_provider_key(self):
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'private'}, clear=True):

@@ -375,7 +375,7 @@ class BackgroundProcessTests(unittest.TestCase):
             self.service._migrate_process_deliveries()
         self.assertEqual(self.service._get('native_receipts', record['id'])['_process_delivery'], 'consumed')
 
-    def test_new_poll_observation_does_not_suppress_native_notification(self):
+    def test_finished_model_poll_suppresses_duplicate_notification_after_upgrade(self):
         task_id = self.start()
         with self.service.transaction():
             self.service._put('native_receipts', dict(id=str(uuid4()), task_id=task_id, state='completed',
@@ -384,7 +384,23 @@ class BackgroundProcessTests(unittest.TestCase):
             self.service._migrate_process_deliveries()
         self.provider.results['proc_test'] = 'Completed'
         self.service._drain_process_completions()
-        self.assertEqual(self.service._get('tasks', task_id)['status'], 'queued')
+        self.assertEqual(self.service._get('tasks', task_id)['status'], 'waiting')
+
+    def test_model_poll_acknowledges_completed_output_without_native_consumed_flag(self):
+        task_id = self.start()
+        with self.service.transaction():
+            task = self.service._get('tasks', task_id)
+            task['status'] = 'working'
+            self.service._put('tasks', task)
+        receipt = self.service.native_event(task_id, 'native_call', {
+            'name': 'process_manage', 'arguments': {'action': 'poll', 'session_id': 'proc_test'}})
+        self.service.native_event(task_id, 'native_result', {
+            'id': receipt['id'], 'result': '{"status":"exited","output_preview":"Done"}'})
+        self.service.emit(task_id, 'completed', {'summary': 'Reviewed the result.'})
+        self.provider.results['proc_test'] = 'Completed'
+        self.service._drain_process_completions()
+        self.assertEqual(self.service._get('tasks', task_id)['status'], 'completed')
+        self.assertFalse(self.service._background_pending(task_id))
 
     def test_consumption_cannot_cross_bot_boundaries(self):
         task_id = self.start()

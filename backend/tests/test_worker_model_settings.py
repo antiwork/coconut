@@ -1,5 +1,6 @@
 import json
 import os
+import pwd
 from pathlib import Path
 import subprocess
 import sys
@@ -182,7 +183,7 @@ class WorkerModelProcessTests(unittest.TestCase):
                     self.assertEqual(record['api_mode'], 'codex')
                     self.assertEqual(record['base_url'], self.native['base_url'])
                     self.assertEqual(record['reasoning_config'], reasoning_configuration(effort))
-                    self.assertEqual((record['home'], record['hermes_home']), (str(home), str(home)))
+                    self.assertEqual((record['home'], record['hermes_home']), (pwd.getpwuid(os.getuid()).pw_dir, str(home)))
                     self.assertFalse(record['skip_context_files'])
                     self.assertFalse(record['skip_memory'])
                 expected = {'coconut_ask'}

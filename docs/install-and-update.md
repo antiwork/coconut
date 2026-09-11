@@ -73,14 +73,13 @@ The launcher holds the service lock while Terminal uses that bot. Restart Coconu
 ## GitHub access for a bot
 
 Each bot uses its own GitHub CLI configuration. A login in your normal Mac Terminal does not configure the bot.
-The macOS login Keychain can be unavailable when Coconut runs unattended.
-GitHub CLI supports native file storage for this case. It stores the token unencrypted with owner-only file permissions.
-Use this option only if you accept that storage method. Coconut does not copy tokens between bots.
+Coconut preserves the Mac account home for Keychain access and selects the bot through `GH_CONFIG_DIR`.
+Coconut does not copy tokens between bots.
 
 From a bot's terminal, run:
 
 ```sh
-gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key --insecure-storage
+gh auth login --hostname github.com --git-protocol https --web --skip-ssh-key
 ```
 
 Open the device authorization URL on your phone and enter the displayed code. Keep the login process running until authorization finishes.
@@ -93,8 +92,19 @@ gh api user --jq .login
 To run these commands from the Mac's normal Terminal, first run `hermes --coconut-bots` to find the bot's profile ID.
 From the Coconut folder, prefix each `gh` command with `GH_CONFIG_DIR="$PWD/.runtime/host/bots/PROFILE_ID/home/.config/gh"`.
 Replace `PROFILE_ID` with that bot's ID. Do not change the shell's `HOME` or paste a token into chat.
-File storage remains available when the login Keychain locks. Reauthorize if GitHub expires or revokes the token.
+If the Keychain is locked or unavailable, GitHub CLI supports `--insecure-storage`.
+This stores the token unencrypted with owner-only permissions. Use it only if you accept that storage method.
+Reauthorize if GitHub expires or revokes the token.
 See [GitHub CLI authentication](https://cli.github.com/manual/gh_auth_login).
+
+## CLI login from chat
+
+Bots use `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, and `GH_CONFIG_DIR` inside their existing Hermes profile directory.
+Keep these variables unchanged during login and later commands. Do not replace `HOME`.
+For interactive login, the bot starts a native Hermes terminal with `pty=true` and `background=true`.
+The process remains available while you authorize from your phone.
+The bot checks a fresh authenticated request before it reports a successful connection.
+Claude Code scopes its Keychain entry through `CLAUDE_CONFIG_DIR`; see [native credential storage](https://code.claude.com/docs/en/authentication#credential-management).
 
 ## Pair the iPhone
 

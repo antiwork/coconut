@@ -151,8 +151,13 @@ def merge_runtime_config(home: str | Path) -> None:
     from dotenv import dotenv_values
     home = Path(home).absolute()
     _safe(home / '.env', home)
+    try:
+        from .runtime_environment import profile_environment
+    except ImportError:
+        from runtime_environment import profile_environment
+    protected = set(profile_environment(home)) | {'HERMES_HOME', 'PYTHONPATH', 'COCONUT_DEFAULT_HOME'}
     for key, value in dotenv_values(home / '.env').items():
-        if value is not None and key not in ('HOME', 'HERMES_HOME', 'PYTHONPATH', 'COCONUT_DEFAULT_HOME'):
+        if value is not None and key not in protected:
             os.environ[key] = value
 
 

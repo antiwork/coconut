@@ -1,6 +1,7 @@
 """Configure native Hermes shells without modifying Hermes source."""
 from pathlib import Path
 import os
+import shlex
 
 
 def command_path(value: str) -> str:
@@ -37,9 +38,11 @@ def configure_terminal(home):
     try:
         from .native_settings import raw_config, save_config
         from .profiles import _write
+        from .runtime_environment import prepare_profile
     except ImportError:
         from native_settings import raw_config, save_config
         from profiles import _write
+        from runtime_environment import prepare_profile
     home = Path(home)
     config = raw_config(home)
     terminal = config.get('terminal') or {}
@@ -51,10 +54,15 @@ def configure_terminal(home):
         raise ValueError('Hermes terminal.shell_init_files must contain a list.')
     if not files and terminal.get('auto_source_bashrc', True):
         files = ['~/.profile', '~/.bash_profile', '~/.bashrc']
+    # Preserve the files that ~ resolved to before HOME used the real account home.
+    files = [str(home / item[2:]) if isinstance(item, str) and item.startswith('~/') else item for item in files]
     script = home / 'coconut-terminal.sh'
-    _write(script, SHELL_INIT, home)
+    environment = prepare_profile(home)
+    exports = ''.join(f'export {key}={shlex.quote(value)}\n' for key, value in environment.items())
+    _write(script, SHELL_INIT + exports, home)
     updated = [item for item in files if item != str(script)] + [str(script)]
     if terminal.get('shell_init_files') != updated:
         terminal['shell_init_files'] = updated
         save_config(home, config)
+    os.environ.update(environment)
     os.environ['PATH'] = command_path(os.environ.get('PATH', ''))

@@ -271,7 +271,10 @@ def _launch(arguments):
             base = private(ROOT / '.runtime/hermes/terminal')
             hermes_home = private(base / 'hermes')
             user_home = private(base / 'home')
-        environment.update(HOME=str(user_home), HERMES_REAL_HOME=str(user_home), HERMES_HOME=str(hermes_home),
+        sys.path.insert(0, str(ROOT / 'backend'))
+        from coconut.runtime_environment import prepare_profile
+        environment.update(prepare_profile(user_home))
+        environment.update(HERMES_HOME=str(hermes_home),
                            TMPDIR=str(private(base / 'tmp')), PYTHONPATH=str(source), PYTHONUNBUFFERED='1',
                            HERMES_DISABLE_TELEMETRY='1')
         environment['PATH'] = str(python.parent) + os.pathsep + environment.get('PATH', '/usr/bin:/bin')
