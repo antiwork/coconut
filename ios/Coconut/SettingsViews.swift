@@ -382,7 +382,7 @@ struct BotAppearancePicker: View {
                 .frame(maxWidth: .infinity).padding(.vertical, 12)
         }.listRowBackground(Color.clear)
         Section("Shape") {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 72))], spacing: 12) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 76))], spacing: 12) {
                 ForEach(CoconutShape.allCases, id: \.rawValue) { choice in
                     Button { avatar = choice.avatar } label: {
                         BotAvatar(symbol: choice.avatar, color: color, size: 56, identity: identity, animated: false)

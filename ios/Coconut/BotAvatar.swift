@@ -92,6 +92,7 @@ func characterSeed(_ value: String) -> UInt64 {
 }
 
 struct BotAvatar: View {
+    static let scale: CGFloat = 1.1
     let symbol: String
     let color: String
     var size: CGFloat = 52
@@ -104,7 +105,7 @@ struct BotAvatar: View {
     @State private var thinkingAmount = 0.0
 
     init(symbol: String, color: String, size: CGFloat = 52, identity: String = "", isThinking: Bool = false, animated: Bool = true) {
-        self.symbol = symbol; self.color = color; self.size = size
+        self.symbol = symbol; self.color = color; self.size = size * Self.scale
         self.identity = identity; self.isThinking = isThinking; self.animated = animated
     }
 
@@ -156,7 +157,7 @@ struct LiveBotAvatar: View {
     var size: CGFloat = 52
     var body: some View {
         BotAvatar(bot: bot, size: size, isThinking: store.isBotActive(bot))
-            .overlay(alignment: .bottomTrailing) { BotActivityDot(bot: bot).padding(size * 0.12) }
+            .overlay(alignment: .bottomTrailing) { BotActivityDot(bot: bot).padding(size * BotAvatar.scale * 0.12) }
     }
 }
 
@@ -176,7 +177,7 @@ private struct CoconutFigure: View, Animatable {
     var body: some View {
         let expression = CoconutExpression.sample(time: time, seed: seed, thinking: thinking)
         ZStack {
-            CoconutShell(shape: shape, color: color, seed: seed)
+            CoconutShell(shape: shape, color: color)
             CoconutFace(shape: shape, color: color, eyelid: eyelid, expression: expression)
         }
         .frame(width: size, height: size)
@@ -233,7 +234,6 @@ struct CoconutExpression: Equatable {
 private struct CoconutShell: View {
     let shape: CoconutShape
     let color: String
-    let seed: UInt64
 
     var body: some View {
         Canvas { context, size in
@@ -241,42 +241,9 @@ private struct CoconutShell: View {
             context.scaleBy(x: unit / 100, y: unit / 100)
             let outline = shape.outline
             context.fill(outline, with: .color(Color(hex: color)))
-            var grain = context
-            grain.clip(to: outline)
-            // Uneven pencil strokes stay fixed to the shell as it moves.
-            for i in 0..<22 {
-                let x = 11 + Double(i) * 3.8
-                let bend = noise(i) * 9
-                var line = Path()
-                line.move(to: CGPoint(x: x + 15, y: 7))
-                line.addCurve(to: CGPoint(x: x - 12, y: 96),
-                              control1: CGPoint(x: x - 24 + bend, y: 35),
-                              control2: CGPoint(x: x + 25, y: 65))
-                grain.stroke(line, with: .color(i.isMultiple(of: 3) ? .white.opacity(0.14) : .black.opacity(0.16)),
-                             style: StrokeStyle(lineWidth: 0.65 + noise(i + 30) * 1.15, lineCap: .round))
-            }
-            if unit >= 40 {
-                for i in 0..<100 {
-                    let x = noise(i + 100) * 100, y = noise(i + 300) * 100
-                    var fleck = Path()
-                    fleck.move(to: CGPoint(x: x, y: y))
-                    fleck.addLine(to: CGPoint(x: x + 0.6, y: y - 1.2))
-                    grain.stroke(fleck, with: .color(.white.opacity(0.14)), lineWidth: 0.55)
-                }
-            }
             context.stroke(outline, with: .color(.black.opacity(0.28)), style: StrokeStyle(lineWidth: 1.4, lineJoin: .round))
         }
     }
-
-    private func noise(_ index: Int) -> Double {
-        // Mix neighboring seeds and indices to vary the shell grain.
-        var value = seed &+ UInt64(index) &* 0x9E3779B97F4A7C15
-        value = (value ^ (value >> 30)) &* 0xBF58476D1CE4E5B9
-        value = (value ^ (value >> 27)) &* 0x94D049BB133111EB
-        value ^= value >> 31
-        return Double(value >> 11) / 9_007_199_254_740_992
-    }
-
 }
 
 private struct CoconutFace: View {

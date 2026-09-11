@@ -120,7 +120,9 @@ struct ConversationView: View {
                         HStack(spacing: 10) {
                             LiveBotAvatar(bot: bot, size: 34)
                             Text(bot.name).font(.subheadline.weight(.semibold))
-                        }.frame(minHeight: 44).contentShape(Rectangle())
+                                .lineLimit(1).frame(maxWidth: 150, alignment: .leading)
+                        }.fixedSize(horizontal: true, vertical: false)
+                            .frame(minHeight: 44).contentShape(Rectangle())
                         }
                         .buttonStyle(.plain).accessibilityLabel("\(bot.name) settings")
                         .accessibilityIdentifier("bot-settings")
