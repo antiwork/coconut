@@ -142,5 +142,44 @@ def verify_contract():
         if config.require_readable_config_before_write(path)['display']['theme'] != 'coconut-contract':
             raise ValueError('The profile update changed unrelated Hermes settings.')
 
-    return {'provider_contract': 'compatible', 'tool_registration': True, 'tool_dispatch': True,
+    verify_terminal_contract()
+
+    return {'native_terminal_path': True, 'provider_contract': 'compatible', 'tool_registration': True, 'tool_dispatch': True,
             'native_model_effort_roundtrip': True, 'profile_inheritance': True, 'model_request_sent': False}
+
+
+def verify_terminal_contract():
+    import os
+    from unittest.mock import patch
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from tools.environments.local import LocalEnvironment, _resolve_shell_init_files
+    from .terminal_setup import configure_terminal
+    from .native_settings import raw_config
+    with tempfile.TemporaryDirectory(prefix='coconut-terminal-contract-') as temporary:
+        home = Path(temporary)
+        (home / 'config.yaml').write_text('terminal:\n  auto_source_bashrc: false\n')
+        token = set_hermes_home_override(str(home))
+        try:
+            with patch.dict(os.environ, {'HOME': str(home), 'HERMES_HOME': str(home), 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'}):
+                configure_terminal(home)
+                if str(home / 'coconut-terminal.sh') not in _resolve_shell_init_files():
+                    raise ValueError('Hermes did not load Coconut terminal initialization.')
+                before = (home / 'config.yaml').read_bytes()
+                configure_terminal(home)
+                if before != (home / 'config.yaml').read_bytes():
+                    raise ValueError('Terminal configuration is not idempotent.')
+                if raw_config(home)['terminal']['auto_source_bashrc'] is not False:
+                    raise ValueError('Terminal configuration changed the native startup preference.')
+                terminal = LocalEnvironment(cwd=str(home), timeout=10)
+                try:
+                    result = terminal.execute('printf "%s" "$PATH"')
+                    paths = result['output'].strip().split(':')
+                    for prefix in ('/opt/homebrew', '/usr/local'):
+                        if Path(prefix + '/bin').is_dir() and paths.index(prefix + '/bin') > paths.index('/usr/bin'):
+                            raise ValueError('Native Hermes terminal puts system tools before package tools.')
+                    if result.get('returncode') != 0:
+                        raise ValueError('The native Hermes terminal check failed.')
+                finally:
+                    terminal.cleanup()
+        finally:
+            reset_hermes_home_override(token)

@@ -73,7 +73,10 @@ from .routine_coordinator import NativeRoutines
 from .approval_updates import ApprovalUpdates
 
 
-class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
+from .service_restart import ServiceRestart
+
+
+class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     EXCHANGE_LIMIT = 8
@@ -122,6 +125,9 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
         self._request_device_id = None
         self._request_key = None
         self.stopping = threading.Event()
+        self.generation = uid()
+        self.restart_enabled = False
+        self.restart_pending = False
         self.running: dict[str, threading.Thread] = {}
         self.bot_locks: dict[str, threading.Lock] = {}
         self.context_threads: dict[str, threading.Thread] = {}
@@ -1670,6 +1676,9 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
                 next_routine_tick = time.monotonic() + 1
             self._drain_returns()
             with self.changed:
+                if self.restart_pending:
+                    self.changed.wait(timeout=.2)
+                    continue
                 self.running = {k: v for k, v in self.running.items() if v.is_alive()}
                 self.context_threads = {k: v for k, v in self.context_threads.items() if v.is_alive()}
                 for context in self._all('contexts'):
@@ -1828,6 +1837,8 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates):
                         self._refresh_bot(task['bot_id'])
 
     def emit(self, task_id: str, kind: str, payload: dict):
+        if kind == 'service_restart':
+            return self.request_service_restart(task_id, payload)
         if kind in ('native_call', 'native_result', 'native_approval', 'native_question'):
             return self.native_event(task_id, kind, payload)
         if kind == 'bot_delete':

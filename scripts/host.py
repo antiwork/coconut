@@ -349,7 +349,8 @@ def owned_process() -> tuple[int, dict] | None:
                  "insecure_loopback": match["tls"] is None}
 
 
-def owned_agent() -> tuple[Path, bool]:
+def owned_agent(data_dir: Path | None = None) -> tuple[Path, bool]:
+    data_dir = data_dir if data_dir is not None else DEFAULT_DATA
     path = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
     if path.is_symlink():
         raise SystemExit("The LaunchAgent file must not be a symbolic link.")
@@ -361,7 +362,7 @@ def owned_agent() -> tuple[Path, bool]:
                      and isinstance(command, list) and len(command) >= 5
                      and command[1:3] == [str(Path(__file__).resolve()), "serve"]
                      and command.count("--data-dir") == 1
-                     and command[command.index("--data-dir") + 1] == str(DEFAULT_DATA))
+                     and command[command.index("--data-dir") + 1] == str(data_dir))
             if not valid:
                 raise ValueError()
         except (OSError, ValueError, KeyError, TypeError, IndexError, plistlib.InvalidFileException):
@@ -379,6 +380,19 @@ def owned_agent() -> tuple[Path, bool]:
             or working_directory[1].strip('"') != str(ROOT / "backend")):
         raise SystemExit("The loaded LaunchAgent does not identify this Coconut installation. No service was changed.")
     return path, True
+
+
+def managed_current_process(data_dir: Path | None = None) -> bool:
+    try:
+        path, loaded = owned_agent(data_dir)
+    except (SystemExit, OSError):
+        # Optional restart support must not prevent a manual service from starting.
+        return False
+    if not loaded or plistlib.loads(path.read_bytes()).get('KeepAlive') is not True:
+        return False
+    result = subprocess.run(['launchctl', 'print', f'gui/{os.getuid()}/{LABEL}'], capture_output=True, text=True)
+    match = re.search(r'^\s*pid = (\d+)\s*$', result.stdout, re.MULTILINE)
+    return result.returncode == 0 and match is not None and int(match[1]) == os.getpid()
 
 
 def stop_owned_process() -> None:
@@ -569,6 +583,11 @@ def main() -> None:
                 print("Coconut is stopped.")
     else:
         command = service_args(args)
+        sys.path.insert(0, str(ROOT / "backend"))
+        from coconut.terminal_setup import command_path
+        os.environ['PATH'] = command_path(os.environ.get('PATH', ''))
+        managed = managed_current_process(args.data_dir)
+        os.environ['COCONUT_MANAGED_SERVICE'] = '1' if managed else '0'
         private_directory(args.data_dir)
         os.chdir(ROOT / "backend")
         os.execv(command[0], command)

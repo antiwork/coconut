@@ -52,7 +52,7 @@ def get_plugin_manager(): return None
     (source / 'agent/skill_utils.py').write_text('def parse_config_string_list(value): return value or []\n')
 
     (source / 'yaml.py').write_text('import json\nsafe_load = json.loads\n')
-    (source / 'utils.py').write_text('import json\nfrom pathlib import Path\ndef atomic_yaml_write(path, data, **kwargs): Path(path).write_text(json.dumps(data))\n')
+    (source / 'utils.py').write_text('import json\nfrom pathlib import Path\ndef atomic_yaml_write(path, data, **kwargs): Path(path).write_text(json.dumps(data))\ndef atomic_roundtrip_yaml_save(path, data): atomic_yaml_write(path, data)\n')
     (source / 'tools/bot_mode_probe.py').write_text("BOT_CHAT_TITLE='Bot Chat'\n")
     (source / 'tools/bot_relay.py').write_text('''import json
 import os

@@ -1,0 +1,72 @@
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from coconut.terminal_setup import SHELL_INIT, command_path, configure_terminal
+
+
+class TerminalSetupTests(unittest.TestCase):
+    def configure(self, root, config):
+        with patch('coconut.native_settings.raw_config', return_value=config), \
+             patch('coconut.native_settings.save_config') as save:
+            configure_terminal(root)
+        return save
+
+    def test_new_install_preserves_native_default_init_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            config = {'terminal': {'cwd': '/workspace'}, 'model': 'native-model'}
+            save = self.configure(home, config)
+            self.assertEqual(config['terminal']['shell_init_files'],
+                             ['~/.profile', '~/.bash_profile', '~/.bashrc', str(home / 'coconut-terminal.sh')])
+            self.assertEqual(config['model'], 'native-model')
+            self.assertEqual(config['terminal']['cwd'], '/workspace')
+            save.assert_called_once_with(home, config)
+            self.assertEqual((home / 'coconut-terminal.sh').read_text(), SHELL_INIT)
+
+    def test_upgrade_preserves_custom_init_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            config = {'terminal': {'shell_init_files': ['/custom/startup.sh'], 'auto_source_bashrc': False}}
+            self.configure(home, config)
+            self.assertEqual(config['terminal']['shell_init_files'], ['/custom/startup.sh', str(home / 'coconut-terminal.sh')])
+            self.configure(home, config).assert_not_called()
+
+    def test_null_terminal_settings_use_native_defaults(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {'terminal': None}
+            self.configure(Path(directory), config)
+            self.assertEqual(config['terminal']['shell_init_files'][0], '~/.profile')
+
+    def test_disabled_auto_source_stays_disabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {'terminal': {'auto_source_bashrc': False}}
+            self.configure(Path(directory), config)
+            self.assertEqual(len(config['terminal']['shell_init_files']), 1)
+
+    def test_shell_restores_package_priority_after_system_login_and_preserves_custom_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            # Real shell execution verifies quoting, order, and repeat sourcing.
+            home = Path(directory)
+            brew = home / 'package tools'
+            brew.mkdir()
+            script = home / 'init.sh'
+            script.write_text(SHELL_INIT.replace('/opt/homebrew/bin', '"' + str(brew) + '"'))
+            result = subprocess.run(['/bin/bash', '-lc', 'PATH="/usr/bin:/bin:$1:/custom/tools"; source "$2"; source "$2"; printf "%s" "$PATH"', 'test', str(brew), str(script)],
+                                    capture_output=True, text=True, check=True, env={'HOME': directory, 'PATH': '/usr/bin:/bin'})
+            entries = result.stdout.split(':')
+            self.assertEqual(entries[0], str(brew))
+            self.assertEqual(entries.count(str(brew)), 1)
+            self.assertIn('/custom/tools', entries)
+            self.assertIn('/usr/bin', entries)
+
+    def test_command_path_keeps_custom_entries_and_removes_empty_entries(self):
+        with patch.object(Path, 'is_dir', return_value=True):
+            result = command_path('/usr/bin:/custom/bin::/opt/homebrew/bin:/custom/bin')
+        self.assertEqual(result.split(':')[0], '/opt/homebrew/bin')
+        self.assertEqual(result.split(':').count('/custom/bin'), 1)
+        self.assertNotIn('', result.split(':'))

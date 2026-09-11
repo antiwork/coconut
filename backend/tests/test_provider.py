@@ -408,9 +408,20 @@ class ProviderTests(unittest.TestCase):
             provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
         self.assertEqual(events[-1][0], 'completed')
 
+    def test_restart_tool_returns_durable_receipt_before_final_reply(self):
+        provider = self.fake_hermes("import json\nreceipt = json.loads(registry.dispatch('coconut_restart_service', {}))\nassert receipt['status'] == 'queued'\nreturn {'completed': True, 'final_response': 'Restart requested.'}\n")
+        events = []
+        def emit(kind, data):
+            events.append((kind, data))
+            return {'status': 'queued'} if kind == 'service_restart' else None
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(self.task, self.bot, [], emit)
+        self.assertEqual(events[0], ('service_restart', {}))
+        self.assertEqual(events[-1][0], 'completed')
+
     def test_zero_budget_keeps_native_tool_but_blocks_new_deliveries(self):
         self.configure_peer(budget=0)
-        provider = self.fake_hermes("assert set(registry.handlers) == {'coconut_propose_file', 'coconut_ask', 'message_agent'}\nreturn {'completed': True, 'final_response': 'No new bot deliveries.'}\n")
+        provider = self.fake_hermes("assert set(registry.handlers) == {'coconut_propose_file', 'coconut_ask', 'coconut_restart_service', 'message_agent'}\nreturn {'completed': True, 'final_response': 'No new bot deliveries.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))

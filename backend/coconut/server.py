@@ -31,6 +31,10 @@ class APIServer(ThreadingHTTPServer):
         super().__init__(address, Handler)
         self.service = service
 
+    def service_actions(self):
+        if self.service is not None and self.service.take_service_restart():
+            raise KeyboardInterrupt
+
     def process_request_thread(self, request, client_address):
         if self.tls_context is not None:
             try:
@@ -214,6 +218,7 @@ def main(argv=None):
         'pid': os.getpid(), 'data_dir': str(service.root),
         'project': str(Path(__file__).resolve().parents[2]),
     }))
+    service.restart_enabled = os.environ.get("COCONUT_MANAGED_SERVICE") == "1"
     service.start()
     print(f'Coconut is listening on {args.host}:{args.port}. Provider: {args.provider}.', flush=True)
     if args.provider == 'fixture':

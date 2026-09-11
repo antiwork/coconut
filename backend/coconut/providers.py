@@ -276,15 +276,15 @@ class HermesProvider(FixtureProvider):
                 if len(line) > MAX_EVENT_CHARACTERS:
                     raise RuntimeError('Hermes returned an oversized event.')
                 event = json.loads(line)
-                if event.get('type') not in ('text_delta', 'activity', 'decision', 'artifact', 'completed', 'failed', 'bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'native_call', 'native_result', 'native_approval', 'native_question') or not isinstance(event.get('data'), dict):
+                if event.get('type') not in ('text_delta', 'activity', 'decision', 'artifact', 'completed', 'failed', 'bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'native_call', 'native_result', 'native_approval', 'native_question') or not isinstance(event.get('data'), dict):
                     raise RuntimeError('Hermes returned an invalid structured event.')
-                if event['type'] in ('bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'native_call', 'native_result'):
+                if event['type'] in ('bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'native_call', 'native_result'):
                     request_id = event.get('request_id')
                     if type(request_id) is not int or request_id < 1:
                         raise RuntimeError('Hermes returned an operation without a receipt request.')
                     try:
                         result = emit(event['type'], event['data'])
-                        if event['type'] in ('native_call', 'native_result'):
+                        if event['type'] in ('native_call', 'native_result', 'service_restart'):
                             receipt = result
                         elif event['type'] == 'bot_create':
                             from .hermes_worker import bot_creation_receipt

@@ -28,6 +28,41 @@ cleanup = load('cleanup')
 
 
 class HostToolsTests(unittest.TestCase):
+    def test_restart_support_requires_the_current_launchd_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plist = Path(directory) / 'agent.plist'
+            plist.write_bytes(plistlib.dumps({'KeepAlive': True}))
+            with patch.object(host, 'owned_agent', return_value=(plist, True)), \
+                 patch.object(host.os, 'getpid', return_value=123), \
+                 patch.object(host.subprocess, 'run') as run:
+                run.return_value = subprocess.CompletedProcess([], 0, '  pid = 456\n', '')
+                self.assertFalse(host.managed_current_process())
+                run.return_value = subprocess.CompletedProcess([], 0, '  pid = 123\n', '')
+                self.assertTrue(host.managed_current_process())
+                plist.write_bytes(plistlib.dumps({'KeepAlive': False}))
+                self.assertFalse(host.managed_current_process())
+
+    def test_custom_data_launch_agent_can_enable_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            custom = home / 'custom-data'
+            plist = home / 'Library/LaunchAgents' / f'{host.LABEL}.plist'
+            plist.parent.mkdir(parents=True)
+            plist.write_bytes(plistlib.dumps({
+                'Label': host.LABEL, 'KeepAlive': True, 'WorkingDirectory': str(host.ROOT / 'backend'),
+                'ProgramArguments': [sys.executable, str(Path(host.__file__).resolve()), 'serve', '--data-dir', str(custom)],
+            }))
+            output = f'path = {plist}\nworking directory = {host.ROOT / "backend"}\npid = 123\n'
+            with patch.object(host.Path, 'home', return_value=home), \
+                 patch.object(host.os, 'getpid', return_value=123), \
+                 patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, output, '')):
+                self.assertTrue(host.managed_current_process(custom))
+                self.assertFalse(host.managed_current_process(home / 'different-data'))
+
+    def test_unavailable_restart_support_does_not_block_manual_start(self):
+        with patch.object(host, 'owned_agent', side_effect=SystemExit('Another installation owns the job')):
+            self.assertFalse(host.managed_current_process())
+
     def test_migrated_source_cannot_start_another_executor(self):
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory)

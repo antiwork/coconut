@@ -556,6 +556,8 @@ def main():
     try:
         from profiles import merge_runtime_config
         merge_runtime_config(os.environ['HERMES_HOME'])
+        from terminal_setup import configure_terminal
+        configure_terminal(os.environ['HERMES_HOME'])
         from run_agent import AIAgent
         from hermes_state import SessionDB
         from tools.registry import registry
@@ -661,6 +663,11 @@ def main():
 
         from native_bridge import NativeBridge, QUESTION_SCHEMA
         bridge = NativeBridge(request, emit, request_receipt)
+        if operation != 'context':
+            from service_restart import RESTART_SCHEMA
+            registry.register(name=RESTART_SCHEMA['name'], toolset='coconut', schema=RESTART_SCHEMA,
+                              handler=lambda arguments, **kwargs: json.dumps(request_receipt('service_restart', arguments)))
+            allowed.add(RESTART_SCHEMA['name'])
         registry.register(name=QUESTION_SCHEMA['name'], toolset='coconut', schema=QUESTION_SCHEMA, handler=bridge.ask)
         allowed.add(QUESTION_SCHEMA['name'])
         create_custom_toolset('coconut', 'Native Coconut actions', tools=sorted(allowed))
@@ -679,6 +686,9 @@ def main():
                         'Use the native message_agent tool to send useful requests and results. Use the exact contact ID as target. Do not send acknowledgements. '
                         'The Coconut relay connects isolated Hermes profiles on this same Mac. '
                         'Homebrew packages and its Homebrew-only configuration are shared across Coconut bots on this Mac. '
+                        'Coconut configures terminal PATH through Hermes shell_init_files. '
+                        'To reload the Coconut service, use coconut_restart_service, then finish your reply. '
+                        'The service restarts once after active turns finish. Do not create launchctl jobs or restart the parent from terminal. '
                         'Use the inherited HOMEBREW_XDG_CONFIG_HOME for package trust; do not replace HOME or share other configuration. '
                         'Share explicit task context only. Do not copy private memory or credentials between bots. '
                         'A queued message is not a reply. Never claim success without a tool result. ')
