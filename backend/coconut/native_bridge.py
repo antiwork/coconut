@@ -1,4 +1,5 @@
 """Connect native Hermes tools to Coconut receipts without changing Hermes source."""
+from contextvars import ContextVar
 import hashlib
 import json
 import threading
@@ -13,6 +14,7 @@ class NativeBridge:
         self.request, self.emit, self.receipt = request, emit, receipt
         self.local = threading.local()
         self.execution_lock = threading.RLock()
+        self.execution_scope = ContextVar("coconut_tool_execution", default=None)
         self.approval_used = False
         self.completed = {}
         for item in request['task'].get('_native_receipts', []):
@@ -54,7 +56,22 @@ class NativeBridge:
                 return result
             finally:
                 self.local.call = None
+        def scoped(tool_name, args, next_call, **kwargs):
+            active = threading.Event()
+            active.set()
+            token = self.execution_scope.set(active)
+            try:
+                return recorded(tool_name, args, next_call, **kwargs)
+            finally:
+                active.clear()
+                self.execution_scope.reset(token)
+
         def serialized(tool_name, args, next_call, **kwargs):
+            # Hermes propagates ContextVars into sandbox RPC threads. The parent
+            # already holds the lock and cron fence while it waits for these calls.
+            active = self.execution_scope.get()
+            if active is not None and active.is_set():
+                return recorded(tool_name, args, next_call, **kwargs)
             with self.execution_lock:
                 job = self.request['task'].get('_native_job')
                 if job:
@@ -62,8 +79,8 @@ class NativeBridge:
                     with fire_claim_fence(job['id'], expected_owner=job['fire_claim']['by']) as owns_claim:
                         if not owns_claim:
                             return json.dumps({'error': 'This routine no longer owns its native execution claim.'})
-                        return recorded(tool_name, args, next_call, **kwargs)
-                return recorded(tool_name, args, next_call, **kwargs)
+                        return scoped(tool_name, args, next_call, **kwargs)
+                return scoped(tool_name, args, next_call, **kwargs)
         self.registration = PluginContext(PluginManifest(name='coconut-runtime', version='1'), get_plugin_manager()).register_middleware(TOOL_EXECUTION_MIDDLEWARE, serialized)
 
     def approval(self, data):

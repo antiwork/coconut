@@ -49,6 +49,16 @@ class NativeExecutionTests(unittest.TestCase):
         self.assertEqual(self.service.snapshot()['tasks'][0]['status'], 'failed')
         self.assertFalse(any(m['streaming'] for m in self.service.snapshot()['messages']))
 
+    def test_unknown_tool_result_leaves_one_visible_reply_after_restart(self):
+        self.event('native_call', {'name': 'execute_code', 'arguments': {'code': 'write_file()'}})
+        self.restart()
+        replies = [m for m in self.service.snapshot()['messages'] if m['role'] == 'assistant' and m['kind'] == 'text']
+        self.assertEqual(len(replies), 1)
+        self.assertIn('Reply to continue', replies[0]['text'])
+        self.assertFalse(replies[0]['streaming'])
+        self.restart()
+        self.assertEqual([m for m in self.service.snapshot()['messages'] if m['role'] == 'assistant' and m['kind'] == 'text'], replies)
+
     def test_recovered_response_does_not_append_to_interrupted_text(self):
         self.event('text_delta', {'text': 'An unfinished response'})
         partial = self.service.snapshot()['messages'][-1]

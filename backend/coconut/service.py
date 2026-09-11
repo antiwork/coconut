@@ -2139,6 +2139,7 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
                 task.update(status='failed' if uncertain else 'queued', summary='A tool stopped without a receipt. Check its result before starting new work.' if uncertain else 'Resuming after the Mac service restarted.', updated_at=now())
                 if uncertain:
                     self._finish_assignment_turn(task, 'Task failed: ' + task['summary'], 'failed')
+                    self._message(task['bot_id'], 'The Mac restarted before a tool returned its result. I stopped to avoid repeating an action. Reply to continue.', task_id=task['id'])
                 self._put('tasks', task)
                 self._event('task.recovered', self._public(task), task['bot_id'], task['id'])
         for message in self._all('messages'):

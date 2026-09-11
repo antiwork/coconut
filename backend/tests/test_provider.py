@@ -279,6 +279,67 @@ class ProviderTests(unittest.TestCase):
                 return super()._run(operation, task, bot, history, acknowledge, **extra)
         return ReceiptProvider(self.root / 'data', python=sys.executable, hermes_root=source, catalog=FakeNativeCatalog(self.root / 'data'))
 
+    def test_nested_tool_on_a_native_context_thread_finishes(self):
+        provider = self.fake_hermes("""
+            import contextvars, threading
+            registry.handlers['read_file'] = lambda args: 'nested result'
+            def execute(args):
+                results = []
+                context = contextvars.copy_context()
+                worker = threading.Thread(target=lambda: context.run(
+                    lambda: results.append(registry.dispatch('read_file', {'path': 'note.txt'}))), daemon=True)
+                worker.start()
+                worker.join(timeout=1)
+                assert not worker.is_alive(), 'Nested tool blocked on the parent execution lock'
+                return results[0]
+            registry.handlers['execute_code'] = execute
+            result = registry.dispatch('execute_code', {'code': 'read_file()'})
+            return {'completed': True, 'final_response': result}
+        """)
+        events = []
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+        self.assertEqual(events, [('text_delta', {'text': 'nested result'}), ('completed', {'summary': 'Complete.'})])
+
+    def test_nested_routine_tools_share_the_parent_claim_fence(self):
+        self.task['_native_job'] = {'id': 'routine', 'fire_claim': {'by': 'owner'}}
+        provider = self.fake_hermes("""
+            import contextvars, threading, contextlib, sys, types
+            entered = []
+            @contextlib.contextmanager
+            def fence(job_id, *, expected_owner):
+                assert not entered, 'Nested tool tried to reacquire its parent claim fence'
+                assert (job_id, expected_owner) == ('routine', 'owner')
+                entered.append(True)
+                try: yield True
+                finally: entered.pop()
+            sys.modules['cron'] = types.ModuleType('cron')
+            jobs = types.ModuleType('cron.jobs')
+            jobs.fire_claim_fence = fence
+            sys.modules['cron.jobs'] = jobs
+            def leaf(args):
+                assert entered, 'Nested tool lost the routine claim fence'
+                return 'fenced result'
+            registry.handlers['read_file'] = leaf
+            def execute(args):
+                results = []
+                context = contextvars.copy_context()
+                worker = threading.Thread(target=lambda: context.run(
+                    lambda: results.append(registry.dispatch('read_file', {}))), daemon=True)
+                worker.start()
+                worker.join(timeout=1)
+                assert not worker.is_alive()
+                return results[0]
+            registry.handlers['execute_code'] = execute
+            result = registry.dispatch('execute_code', {})
+            assert not entered
+            return {'completed': True, 'final_response': result}
+        """)
+        events = []
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+        self.assertEqual(events, [('text_delta', {'text': 'fenced result'}), ('completed', {'summary': 'Complete.'})])
+
     def test_ordinary_reply_emits_only_answer_and_completion(self):
         provider = self.fake_hermes("kwargs['stream_callback']('Concise result.')\nreturn {'final_response': 'Concise result.', 'completed': True}\n")
         events = []
