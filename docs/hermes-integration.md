@@ -13,6 +13,8 @@ Its primary interfaces are [AIAgent](https://github.com/NousResearch/hermes-agen
 ## Worker
 
 The worker uses native context files, `SOUL.md`, memory, tool configuration, and skill discovery.
+It buffers response text until Hermes completes the turn, then publishes the full reply once.
+The app keeps the bot's thinking animation visible while it waits. Failed turns do not publish unfinished response text.
 It resumes native `SessionDB` history across tasks and follows Hermes compression continuations.
 Existing Coconut conversations enter native history through a one-time import.
 See [continuous conversations](conversation-continuity.md) for restart and retrieval behavior.

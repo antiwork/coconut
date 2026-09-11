@@ -6,6 +6,7 @@ import sys
 import tempfile
 import textwrap
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -291,6 +292,49 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue((home / '.no-bundled-skills').is_file())
         self.assertEqual((home / 'skill-sync-called').read_text(), 'True')
 
+    def wait_for_path(self, path):
+        deadline = time.monotonic() + 3
+        while not path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(path.exists(), 'The model did not reach the test checkpoint.')
+
+    def test_reply_stays_hidden_until_the_native_turn_finishes(self):
+        started, release = self.root / 'started', self.root / 'release'
+        provider = self.fake_hermes(
+            "from pathlib import Path\nimport time\n"
+            "kwargs['stream_callback']('An unfinished **')\n"
+            f"Path({str(started)!r}).touch()\n"
+            f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+            "kwargs['stream_callback']('draft')\n"
+            "return {'completed': True, 'final_response': 'The **finished reply**.'}\n")
+        events, errors = [], []
+        def run():
+            try:
+                provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            except Exception as error:
+                errors.append(error)
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            thread = threading.Thread(target=run)
+            thread.start()
+            try:
+                self.wait_for_path(started)
+                self.assertEqual(events, [])
+            finally:
+                release.touch()
+                thread.join(timeout=3)
+                if thread.is_alive(): provider.cancel_task(self.task['id'])
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(events, [('text_delta', {'text': 'The **finished reply**.'}),
+                                  ('completed', {'summary': 'Complete.'})])
+
+    def test_failed_turn_does_not_publish_an_unfinished_reply(self):
+        provider = self.fake_hermes("kwargs['stream_callback']('Unfinished answer')\nraise RuntimeError('failed')\n")
+        events = []
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+        self.assertEqual([kind for kind, _ in events], ['failed'])
+
     def configure_peer(self, *, budget=8):
         peer = {'id': str(uuid4()), 'name': 'Lin', 'role': 'Check calculations'}
         self.task['_available_bots'] = [peer]
@@ -502,7 +546,8 @@ class ProviderTests(unittest.TestCase):
         self.assertFalse(provider._processes)
 
     def test_worker_exits_when_the_service_pipe_closes(self):
-        provider = self.fake_hermes("import threading\nkwargs['stream_callback']('Model call started.')\nthreading.Event().wait()\n")
+        started = self.root / 'started'
+        provider = self.fake_hermes(f"import threading\nfrom pathlib import Path\nPath({str(started)!r}).touch()\nthreading.Event().wait()\n")
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             env, cwd = provider.environment(self.bot['id'])
             env['COCONUT_DEFAULT_HOME'] = str(provider.catalog.root)
@@ -514,7 +559,7 @@ class ProviderTests(unittest.TestCase):
             request = {'operation': 'start', 'task': self.task, 'bot': self.bot, 'history': [], 'model': provider.model}
             process.stdin.write(json.dumps(request) + '\n')
             process.stdin.flush()
-            self.assertEqual(json.loads(process.stdout.readline())['type'], 'text_delta')
+            self.wait_for_path(started)
             process.stdin.write('[]\n')
             process.stdin.flush()
             process.stdin.close()
@@ -526,19 +571,19 @@ class ProviderTests(unittest.TestCase):
             process.stdout.close()
 
     def test_cancel_stops_a_blocked_model_call(self):
-        provider = self.fake_hermes("import threading\nkwargs['stream_callback']('Model call started.')\nthreading.Event().wait()\n")
-        started = threading.Event()
+        started = self.root / 'started'
+        provider = self.fake_hermes(f"import threading\nfrom pathlib import Path\nPath({str(started)!r}).touch()\nthreading.Event().wait()\n")
         errors = []
         def run():
             try:
-                provider.start_task(self.task, self.bot, [], lambda *_: started.set())
+                provider.start_task(self.task, self.bot, [], lambda *_: None)
             except Exception as error:
                 errors.append(error)
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             thread = threading.Thread(target=run)
             thread.start()
             try:
-                self.assertTrue(started.wait(timeout=3))
+                self.wait_for_path(started)
             finally:
                 provider.cancel_task(self.task['id'])
             thread.join(timeout=3)

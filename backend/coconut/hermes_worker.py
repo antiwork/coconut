@@ -567,7 +567,7 @@ def main():
 
         operation = request['operation']
         proposed = False
-        streamed = False
+        response_chunks = []
         allowed = set()
         directory = bot_directory(request)
         remaining = request['task'].get('_handoff_budget_remaining', 0)
@@ -675,10 +675,8 @@ def main():
         create_custom_toolset('coconut', 'Native Coconut actions', tools=sorted(allowed))
 
         def stream_delta(text):
-            nonlocal streamed
             if isinstance(text, str) and text and not creation_errors and not deletion_errors:
-                streamed = True
-                emit('text_delta', {'text': text})
+                response_chunks.append(text)
 
         instructions = ('You work in Coconut, a concise messaging app. Give short, useful replies. '
                         'Use native Hermes tools and profile memory. Save standing preferences with the native memory tool. '
@@ -756,8 +754,8 @@ def main():
             emit('failed', {'summary': 'The Mac did not confirm the last bot deletion. Retry the exact request to finish it.',
                             'error_code': 'bot_deletion_' + category})
             return 1
-        final = result.get('final_response', '')
-        if not streamed and final:
+        final = result.get('final_response') or ''.join(response_chunks)
+        if final:
             emit('text_delta', {'text': final})
         if operation != 'context':
             emit('completed', {'summary': 'Complete.'})
