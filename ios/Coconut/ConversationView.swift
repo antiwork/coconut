@@ -121,16 +121,22 @@ struct ConversationView: View {
                 }
                 .onDisappear { composerFocused = false }
                 .toolbar {
-                    ToolbarItem(placement: .principal) {
+                    if #available(iOS 26.0, *) {
+                        ToolbarSpacer(.fixed, placement: .topBarLeading)
+                    }
+                    ToolbarItem(placement: .topBarLeading) {
                         NavigationLink(value: BotSettingsRoute(botId: bot.id)) {
-                        HStack(spacing: 10) {
-                            LiveBotAvatar(bot: bot, size: 34)
-                            Text(bot.name).font(.subheadline.weight(.semibold))
-                                .lineLimit(1).frame(maxWidth: 150, alignment: .leading)
-                        }.fixedSize(horizontal: true, vertical: false)
-                            .frame(minHeight: 44).contentShape(Rectangle())
+                            HStack(spacing: 8) {
+                                LiveBotAvatar(bot: bot, size: 28)
+                                Text(bot.name).font(.headline)
+                                    .lineLimit(1).truncationMode(.tail)
+                                    .frame(maxWidth: 150, alignment: .leading)
+                            }
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.leading, 4).padding(.trailing, 10)
+                            .frame(height: 44).contentShape(Capsule())
                         }
-                        .buttonStyle(.plain).accessibilityLabel("\(bot.name) settings")
+                        .buttonStyle(.plain).labelStyle(.titleAndIcon).accessibilityLabel("\(bot.name) settings")
                         .accessibilityIdentifier("bot-settings")
                         .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                     }
