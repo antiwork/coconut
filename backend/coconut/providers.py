@@ -127,7 +127,7 @@ class FixtureProvider:
 
 
 class HermesProvider(FixtureProvider):
-    """A separate Hermes Python process per task, using structured JSONL only."""
+    """One retained Hermes runtime per bot, using structured JSONL only."""
 
     name = 'hermes'
 
@@ -143,6 +143,13 @@ class HermesProvider(FixtureProvider):
         self._lock = threading.Lock()
         self._processes: dict[str, subprocess.Popen] = {}
         self._cancelled: set[str] = set()
+        self._runtimes: dict[str, subprocess.Popen] = {}
+        self._paused_processes: dict[str, subprocess.Popen] = {}
+        self._runtime_epochs: dict[str, tuple] = {}
+        self._bot_locks: dict[str, threading.Lock] = {}
+        self._closed = False
+        self._input_lock = threading.Lock()
+        self._runtime_envs = {}
 
     @property
     def ready(self):
@@ -246,6 +253,12 @@ class HermesProvider(FixtureProvider):
         self._run('context', task, bot, history, emit, question=question)
 
     def _run(self, operation, task, bot, history, emit, **extra):
+        with self._lock:
+            lock = self._bot_locks.setdefault(bot['id'], threading.Lock())
+        with lock:
+            self._run_turn(operation, task, bot, history, emit, **extra)
+
+    def _run_turn(self, operation, task, bot, history, emit, **extra):
         if (self.hermes_root / '.env').exists() or (self.hermes_root / '.env').is_symlink():
             raise RuntimeError('The Hermes checkout contains a shared .env file. Use a clean checkout for Coconut.')
         if not Path(self.python).is_file() or not (self.hermes_root / 'run_agent.py').is_file():
@@ -261,21 +274,37 @@ class HermesProvider(FixtureProvider):
         request = dict(operation=operation, task=task, bot=bot, history=history,
                        model=selection['model'], provider=selection['provider'], base_url=selection.get('base_url'),
                        reasoning_effort=selection.get('reasoning_effort'), runtime_config=runtime_config, **extra)
-        process = subprocess.Popen([self.python, str(Path(__file__).with_name('hermes_worker.py'))], cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
         with self._lock:
-            if task_id in self._cancelled:
-                self._terminate(process)
+            if self._closed or task_id in self._cancelled:
                 return
+            process = self._runtimes.get(bot['id'])
+            epoch = (bot['session_id'], task.get('_conversation_epoch'))
+            if process is None or process.poll() is not None or self._runtime_epochs.get(bot['id']) != epoch:
+                if process is not None:
+                    self._terminate(process)
+                process = subprocess.Popen([self.python, str(Path(__file__).with_name('hermes_worker.py'))], cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+                self._runtime_envs[process] = (env, cwd)
+                self._runtimes[bot['id']] = process
+                self._runtime_epochs[bot['id']] = epoch
+            if operation != 'context':
+                self._paused_processes.pop(task_id, None)
             self._processes[task_id] = process
+        reusable = False
+        deferred = None
+        paused = False
         try:
-            process.stdin.write(json.dumps(request) + '\n')
-            process.stdin.flush()
+            self._send(process, request)
             # Keep stdin open. EOF lets the worker stop if the service disappears.
             terminal_received = False
             for line in iter(lambda: process.stdout.readline(MAX_EVENT_CHARACTERS + 1), ''):
                 if len(line) > MAX_EVENT_CHARACTERS:
                     raise RuntimeError('Hermes returned an oversized event.')
                 event = json.loads(line)
+                if event.get('type') == 'turn_end':
+                    reusable = event.get('data', {}).get('reusable') is True
+                    if deferred is not None:
+                        raise deferred
+                    return
                 if event.get('type') not in ('text_delta', 'activity', 'decision', 'artifact', 'completed', 'failed', 'bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'native_call', 'native_result', 'native_approval', 'native_question') or not isinstance(event.get('data'), dict):
                     raise RuntimeError('Hermes returned an invalid structured event.')
                 if event['type'] in ('bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'native_call', 'native_result'):
@@ -306,32 +335,55 @@ class HermesProvider(FixtureProvider):
                             receipt = {'status': 'validation_failed', 'error': message}
                         else:
                             receipt = {'status': 'unconfirmed', 'error': 'The service did not confirm this operation. Retry only the exact same request.'}
-                    process.stdin.write(json.dumps({'request_id': request_id, 'receipt': receipt}) + '\n')
-                    process.stdin.flush()
+                    self._send(process, {'request_id': request_id, 'receipt': receipt})
                     continue
+                paused = paused or event['type'] in ('decision', 'native_approval', 'native_question')
                 terminal_received = terminal_received or event['type'] in ('completed', 'failed')
-                emit(event['type'], event['data'])
+                try:
+                    emit(event['type'], event['data'])
+                except Exception as error:
+                    if event['type'] not in ('decision', 'native_approval', 'native_question'):
+                        raise
+                    # Drain the paused turn before another message can use its runtime.
+                    deferred = error
             code = process.wait(timeout=5)
             if code and not terminal_received and task_id not in self._cancelled:
                 raise RuntimeError(f'Hermes worker stopped with exit code {code}.')
         finally:
-            self._terminate(process)
             with self._lock:
+                if reusable and paused and task_id not in self._cancelled and process.poll() is None:
+                    self._paused_processes[task_id] = process
                 if self._processes.get(task_id) is process:
                     del self._processes[task_id]
+                self._paused_processes = {key: value for key, value in self._paused_processes.items() if value.poll() is None}
+                if not reusable and self._runtimes.get(bot['id']) is process:
+                    del self._runtimes[bot['id']]
+            if not reusable:
+                self._terminate(process)
 
 
-    @staticmethod
-    def _terminate(process):
+    def _send(self, process, frame):
+        with self._input_lock:
+            process.stdin.write(json.dumps(frame) + '\n')
+            process.stdin.flush()
+
+    def _terminate(self, process):
         if process.poll() is None:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
-                process.wait(timeout=2)
+                process.wait(timeout=10)
             except ProcessLookupError:
                 pass
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait(timeout=2)
+        environment = self._runtime_envs.pop(process, None)
+        if environment is not None and process.returncode != 0:
+            # Hermes checks PID identity before reaping children after a forced exit.
+            env, cwd = environment
+            subprocess.run([self.python, str(Path(__file__).with_name('hermes_worker.py')), '--cleanup'],
+                           cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=30, check=True)
         for pipe in (process.stdin, process.stdout):
             if pipe:
                 pipe.close()
@@ -340,5 +392,27 @@ class HermesProvider(FixtureProvider):
         with self._lock:
             self._cancelled.add(task_id)
             process = self._processes.get(task_id)
-        if process:
+            paused = self._paused_processes.pop(task_id, None)
+        if process is not None:
+            self._terminate(process)
+        elif paused is not None and paused.poll() is None:
+            # Another turn can now own this runtime. Stop only the paused task's children.
+            self._send(paused, {'cancel_task': task_id})
+
+    def stop_bot(self, bot_id):
+        with self._lock:
+            process = self._runtimes.pop(bot_id, None)
+            self._runtime_epochs.pop(bot_id, None)
+            self._paused_processes = {key: value for key, value in self._paused_processes.items() if value is not process}
+        if process is not None:
+            self._terminate(process)
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+            processes = list(self._runtimes.values())
+            self._runtimes.clear()
+            self._paused_processes.clear()
+            self._runtime_epochs.clear()
+        for process in processes:
             self._terminate(process)

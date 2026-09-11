@@ -235,6 +235,7 @@ class ProviderTests(unittest.TestCase):
                 handlers = {}
                 def register(self, name, toolset, schema, handler):
                     self.handlers[name] = handler
+                def deregister(self, name): self.handlers.pop(name, None)
                 def dispatch(self, name, args, **kwargs):
                     return self.handlers[name](args)
             registry = Registry()
@@ -247,6 +248,7 @@ class ProviderTests(unittest.TestCase):
             import json
             class AIAgent:
                 def close(self): pass
+                def release_clients(self): pass
                 def __init__(self, **kwargs):
                     from tools.bot_relay import message_agent
                     registry.handlers['message_agent'] = message_agent
@@ -277,7 +279,9 @@ class ProviderTests(unittest.TestCase):
                     if kind == 'native_result': return {'status': 'recorded'}
                     return emit(kind, payload)
                 return super()._run(operation, task, bot, history, acknowledge, **extra)
-        return ReceiptProvider(self.root / 'data', python=sys.executable, hermes_root=source, catalog=FakeNativeCatalog(self.root / 'data'))
+        provider = ReceiptProvider(self.root / 'data', python=sys.executable, hermes_root=source, catalog=FakeNativeCatalog(self.root / 'data'))
+        self.addCleanup(provider.close)
+        return provider
 
     def test_nested_tool_on_a_native_context_thread_finishes(self):
         provider = self.fake_hermes("""
@@ -339,6 +343,188 @@ class ProviderTests(unittest.TestCase):
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
         self.assertEqual(events, [('text_delta', {'text': 'fenced result'}), ('completed', {'summary': 'Complete.'})])
+
+    def test_background_terminal_survives_reply_and_accepts_input_next_turn(self):
+        provider = self.fake_hermes("""
+            import os, pty, select, subprocess, sys
+            import run_agent
+            if not hasattr(run_agent, 'login'):
+                master, slave = pty.openpty()
+                child = subprocess.Popen([sys.executable, '-u', '-c',
+                    "print('Authorize on your phone', flush=True); input(); print('Saved', flush=True)"],
+                    stdin=slave, stdout=slave, stderr=slave)
+                os.close(slave)
+                run_agent.login = (child, master)
+                assert select.select([master], [], [], 2)[0]
+                os.read(master, 4096)
+                return {'completed': True, 'final_response': 'Authorize on your phone.'}
+            child, master = run_agent.login
+            assert child.poll() is None, 'The reply killed the terminal'
+            os.write(master, b'authorized\\n')
+            output = b''
+            while b'Saved' not in output:
+                assert select.select([master], [], [], 2)[0], 'The terminal lost its output'
+                output += os.read(master, 4096)
+            child.wait(timeout=2)
+            os.close(master)
+            return {'completed': True, 'final_response': 'Saved.'}
+        """)
+        self.addCleanup(lambda: getattr(provider, 'close', lambda: None)())
+        events = []
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            followup = dict(self.task, id=str(uuid4()), title='Done')
+            provider.start_task(followup, self.bot, [], lambda kind, data: events.append((kind, data)))
+        self.assertEqual([data['text'] for kind, data in events if kind == 'text_delta'],
+                         ['Authorize on your phone.', 'Saved.'])
+
+    def test_decision_retains_runtime_and_removes_previous_turn_tools(self):
+        provider = self.fake_hermes("""
+            import run_agent
+            if not hasattr(run_agent, 'asked'):
+                run_agent.asked = True
+                registry.dispatch('coconut_ask', {'title': 'Continue?', 'options': [{'id': 'yes', 'label': 'Yes'}]})
+                raise AssertionError('A paused turn must not execute more tools')
+            assert 'coconut_create_bot' not in registry.handlers
+            return {'completed': True, 'final_response': 'Same runtime.'}
+        """)
+        class Paused(Exception): pass
+        def pending(kind, data):
+            if kind == 'native_question': raise Paused()
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            with self.assertRaises(Paused):
+                provider.start_task(self.task, self.bot, [], pending)
+            pid = provider._runtimes[self.bot['id']].pid
+            events = []
+            provider.answer_context(self.task, self.bot, [], 'Explain', lambda kind, data: events.append((kind, data)))
+        self.assertEqual(provider._runtimes[self.bot['id']].pid, pid)
+        self.assertEqual(events, [('text_delta', {'text': 'Same runtime.'})])
+        process = provider._runtimes[self.bot['id']]
+        provider.cancel_task(self.task['id'])
+        self.assertIsNone(process.poll())
+
+    def test_queued_tool_cannot_run_after_a_question_pauses_the_turn(self):
+        side_effect = self.root / 'unexpected-write'
+        provider = self.fake_hermes("""
+            from pathlib import Path
+            registry.register(name='terminal', toolset='terminal', schema={},
+                              handler=lambda args: Path(SIDE_EFFECT).touch() or 'wrote')
+            try:
+                registry.dispatch('coconut_ask', {'title': 'Continue?', 'options': [{'id': 'yes', 'label': 'Yes'}]})
+            except BaseException:
+                pass
+            registry.dispatch('terminal', {'command': 'queued work'})
+            return {'completed': True, 'final_response': 'This must not run.'}
+        """.replace('SIDE_EFFECT', repr(str(side_effect))))
+        events = []
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+        self.assertFalse(side_effect.exists())
+        self.assertEqual([kind for kind, _ in events], ['native_question'])
+
+    def test_retained_runtime_does_not_repeat_old_tool_receipts(self):
+        provider = self.fake_hermes("""
+            registry.register(name='terminal', toolset='terminal', schema={}, handler=lambda args: 'ok')
+            result = registry.dispatch('terminal', {'command': 'check'})
+            return {'completed': True, 'final_response': result}
+        """)
+        # Use the real receipt path instead of the lifecycle-test auto-ack wrapper.
+        records = []
+        def receipt(kind, data):
+            if kind == 'native_call':
+                records.append(data)
+                return {'status': 'recorded', 'id': str(uuid4())}
+            if kind == 'native_result': return {'status': 'recorded'}
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            for _ in range(3):
+                HermesProvider._run(provider, 'start', dict(self.task, id=str(uuid4())), self.bot, [], receipt)
+        self.assertEqual(len(records), 3)
+
+    def test_bots_do_not_share_runtime_and_idle_runtimes_stop(self):
+        provider = self.fake_hermes("return {'completed': True, 'final_response': str(__import__('os').getpid())}")
+        other = dict(self.bot, id=str(uuid4()), session_id=str(uuid4()))
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            for bot in (self.bot, other):
+                provider.start_task(dict(self.task, id=str(uuid4())), bot, [], lambda *_: None)
+        first, second = [provider._runtimes[bot['id']] for bot in (self.bot, other)]
+        self.assertNotEqual(first.pid, second.pid)
+        provider.stop_bot(self.bot['id'])
+        self.assertIsNotNone(first.poll())
+        self.assertIsNone(second.poll())
+        provider.close()
+        self.assertIsNotNone(second.poll())
+        self.assertEqual(provider._runtimes, {})
+
+    def test_cancelling_a_paused_task_preserves_a_newer_turn(self):
+        child_path, started, release = [self.root / name for name in ('child-pid', 'started', 'release')]
+        provider = self.fake_hermes("""
+            import subprocess, sys, time
+            from pathlib import Path
+            import run_agent
+            from tools.process_registry import process_registry
+            if hasattr(run_agent, 'background'):
+                Path(STARTED).touch()
+                while not Path(RELEASE).exists(): time.sleep(0.01)
+                return {'completed': True, 'final_response': 'Newer turn finished.'}
+            child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True)
+            run_agent.background = [{'session_id': 'test-child', 'owner_task_id': kwargs['task_id'], 'status': 'running', 'pid': child.pid}]
+            Path(CHILD_PATH).write_text(str(child.pid))
+            registry.dispatch('coconut_ask', {'title': 'Continue?', 'options': [{'id': 'yes', 'label': 'Yes'}]})
+        """.replace('CHILD_PATH', repr(str(child_path))).replace('STARTED', repr(str(started))).replace('RELEASE', repr(str(release))))
+        events, errors = [], []
+        def next_turn():
+            try:
+                provider.start_task(dict(self.task, id=str(uuid4())), self.bot, [], lambda kind, data: events.append((kind, data)))
+            except Exception as error: errors.append(error)
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(self.task, self.bot, [], lambda *_: None)
+            process = provider._runtimes[self.bot['id']]
+            child_pid = int(child_path.read_text())
+            os.kill(child_pid, 0)
+            thread = threading.Thread(target=next_turn)
+            thread.start()
+            try:
+                self.wait_for_path(started)
+                provider.cancel_task(self.task['id'])
+                self.assertIsNone(process.poll())
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    try: os.kill(child_pid, 0)
+                    except ProcessLookupError: break
+                    time.sleep(0.01)
+                else: self.fail('The cancelled task left its background process running')
+            finally:
+                release.touch()
+                thread.join(timeout=3)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(events[0], ('text_delta', {'text': 'Newer turn finished.'}))
+
+    def test_runtime_shutdown_cleans_a_separate_child_process_group(self):
+        provider = self.fake_hermes("""
+            import subprocess, sys, run_agent
+            from tools.process_registry import process_registry
+            child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True)
+            run_agent.background = [{'session_id': 'test-child', 'owner_task_id': kwargs['task_id'], 'status': 'running', 'pid': child.pid}]
+            return {'completed': True, 'final_response': str(child.pid)}
+        """)
+        events = []
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+        child_pid = int(events[0][1]['text'])
+        os.kill(child_pid, 0)
+        provider.close()
+        with self.assertRaises(ProcessLookupError): os.kill(child_pid, 0)
+
+    def test_explicit_bot_restart_replaces_the_retained_runtime(self):
+        provider = self.fake_hermes("return {'completed': True, 'final_response': 'Ready.'}")
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(self.task, self.bot, [], lambda *_: None)
+            previous = provider._runtimes[self.bot['id']]
+            restarted = dict(self.task, id=str(uuid4()), _conversation_epoch=str(uuid4()))
+            provider.start_task(restarted, self.bot, [], lambda *_: None)
+        self.assertIsNotNone(previous.poll())
+        self.assertNotEqual(previous.pid, provider._runtimes[self.bot['id']].pid)
 
     def test_ordinary_reply_emits_only_answer_and_completion(self):
         provider = self.fake_hermes("kwargs['stream_callback']('Concise result.')\nreturn {'final_response': 'Concise result.', 'completed': True}\n")

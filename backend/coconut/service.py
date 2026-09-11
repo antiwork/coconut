@@ -771,6 +771,8 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
             except Exception as error:
                 errors.append(error)
         try:
+            if hasattr(self.provider, 'stop_bot'):
+                self.provider.stop_bot(bot_id)
             # A worker can still be preparing its profile before its process starts.
             if not bot_lock.acquire(timeout=5):
                 raise TimeoutError('The deleted bot is still stopping.')
@@ -2257,6 +2259,8 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
             context_task_ids = {c['task_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
         for task_id in set(self.running) | context_task_ids:
             self.provider.cancel_task(task_id)
+        if hasattr(self.provider, 'close'):
+            self.provider.close()
         for thread in list(self.running.values()) + list(self.context_threads.values()):
             thread.join(timeout=3)
         # A provider must honor cancellation before its connection can close.

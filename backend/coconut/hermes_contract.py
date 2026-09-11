@@ -19,6 +19,7 @@ def verify_contract():
     from run_agent import AIAgent
     from hermes_state import SessionDB
     from tools.registry import registry
+    from tools.process_registry import process_registry
     from toolsets import create_custom_toolset, get_toolset
     from hermes_cli import auth, config, models, profiles, runtime_provider, model_switch_providers
     from hermes_constants import (parse_reasoning_effort, resolve_reasoning_config,
@@ -41,7 +42,7 @@ def verify_contract():
     for function in (jobs.create_job, jobs.update_job, jobs.get_job, jobs.list_jobs, jobs.pause_job,
                      jobs.resume_job, jobs.remove_job, jobs.claim_dispatch, jobs.save_job_output, jobs.save_jobs, jobs._hermes_now,
                      profiles.read_profile_meta, profiles.write_profile_meta, _get_platform_tools,
-                     approval.register_gateway_notify, approval.resolve_gateway_approval, approval_context._get_approval_config):
+                     approval.register_gateway_notify, approval.unregister_gateway_notify, approval.resolve_gateway_approval, approval_context._get_approval_config):
         if not callable(function):
             raise ValueError('Hermes removed a required profile or scheduling interface.')
     if set(approval_context._VALID_MODES) != {'off', 'smart', 'manual'}:
@@ -59,7 +60,7 @@ def verify_contract():
         'max_tokens', 'max_iterations', 'run_budget_seconds', 'load_soul_identity', 'gateway_session_key', 'clarify_callback', 'disabled_toolsets', 'session_db',
     })
     require_keywords(AIAgent.run_conversation, {'conversation_history', 'task_id', 'stream_callback', 'persist_user_message', 'persist_user_platform_id'})
-    for name in ('close',):
+    for name in ('close', 'release_clients'):
         if not callable(getattr(AIAgent, name, None)):
             raise ValueError('Hermes removed native conversation cleanup.')
     for name in ('get_meta', 'set_meta', 'set_session_title', 'create_session', 'replace_messages', 'resolve_resume_session_id', 'get_resume_conversations', 'get_session', 'end_session', 'close'):
@@ -68,6 +69,10 @@ def verify_contract():
     require_keywords(SessionDB.replace_messages, {'archive_dropped', 'reject_active_turn_lease'})
     require_keywords(registry.register, {'name', 'toolset', 'schema', 'handler'})
     require_keywords(registry.dispatch, {'name', 'args'})
+    require_keywords(registry.deregister, {'name'})
+    require_keywords(process_registry.kill_process, {'session_id', 'source', 'consume_output'})
+    if not callable(process_registry.recover_from_checkpoint) or not callable(process_registry.list_sessions):
+        raise ValueError('Hermes removed native background process cleanup.')
     require_keywords(create_custom_toolset, {'name', 'description', 'tools'})
     require_keywords(runtime_provider.resolve_runtime_provider, {'requested', 'target_model'})
     require_keywords(model_switch_providers.list_authenticated_providers, {
@@ -119,6 +124,30 @@ def verify_contract():
                 'target_bot_id': '00000000-0000-4000-8000-000000000002', 'expected_name': arguments['name']}
     if json.loads(registry.dispatch('coconut_delete_bot', deletion)) != {'received': deletion}:
         raise ValueError('Hermes changed the deletion tool dispatch result.')
+
+    from hermes_cli.plugins import PluginManifest, get_plugin_manager
+    calls = []
+    def record(tool_name, args, next_call, **kwargs):
+        calls.append(tool_name)
+        return next_call(args)
+    registration = PluginContext(PluginManifest(name='coconut-contract', version='1'), get_plugin_manager()).register_middleware(
+        'tool_execution', record)
+    if not callable(getattr(registration, 'dispose', None)):
+        raise ValueError('Hermes removed middleware cleanup between turns.')
+    def dispatch():
+        return run_tool_execution_middleware(tool_name='coconut_create_bot', args=arguments,
+                                             next_call=lambda args: registry.dispatch('coconut_create_bot', args))
+    try:
+        dispatch()
+    finally:
+        registration.dispose()
+    dispatch()
+    if calls != ['coconut_create_bot']:
+        raise ValueError('Hermes did not remove the previous turn middleware.')
+    for name in names:
+        registry.deregister(name)
+    if registry.get_definitions(names, quiet=True):
+        raise ValueError('Hermes retained tools from the previous turn.')
 
     # These names are test values. The check never contacts a model provider.
     inherited = {'model': 'coconut-contract-default', 'provider': 'openai', 'base_url': None,

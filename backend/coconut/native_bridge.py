@@ -9,6 +9,10 @@ def fingerprint(action):
     return hashlib.sha256(json.dumps(action, separators=(',', ':'), sort_keys=True).encode()).hexdigest()
 
 
+class TurnPaused(BaseException):
+    """Unwind the native turn after Coconut receives a decision."""
+
+
 class NativeBridge:
     def __init__(self, request, emit, receipt):
         self.request, self.emit, self.receipt = request, emit, receipt
@@ -16,6 +20,7 @@ class NativeBridge:
         self.execution_lock = threading.RLock()
         self.execution_scope = ContextVar("coconut_tool_execution", default=None)
         self.approval_used = False
+        self.paused = threading.Event()
         self.completed = {}
         for item in request['task'].get('_native_receipts', []):
             self.completed.setdefault(item['action_hash'], []).append(item['result'])
@@ -28,6 +33,8 @@ class NativeBridge:
         from hermes_cli.plugins import PluginContext, PluginManifest, get_plugin_manager
         from hermes_cli.middleware import TOOL_EXECUTION_MIDDLEWARE
         def recorded(tool_name, args, next_call, **kwargs):
+            if self.paused.is_set():
+                raise TurnPaused()
             name = tool_name
             if name.startswith('coconut_'):
                 return next_call(args)
@@ -83,6 +90,19 @@ class NativeBridge:
                 return scoped(tool_name, args, next_call, **kwargs)
         self.registration = PluginContext(PluginManifest(name='coconut-runtime', version='1'), get_plugin_manager()).register_middleware(TOOL_EXECUTION_MIDDLEWARE, serialized)
 
+    def close(self):
+        from tools.approval import unregister_gateway_notify
+        unregister_gateway_notify(self.session_key)
+        registration = getattr(self, 'registration', None)
+        if registration is not None:
+            registration.dispose()
+
+    def pause(self, kind, data):
+        # Other tools in the native batch must stop after a decision, too.
+        self.paused.set()
+        self.emit(kind, data)
+        raise TurnPaused()
+
     def approval(self, data):
         from tools.approval import resolve_gateway_approval
         if self.request['operation'] == 'context':
@@ -96,9 +116,8 @@ class NativeBridge:
             self.approval_used = True
             resolve_gateway_approval(self.session_key, 'once', request_id=data.get('request_id'))
             return
-        self.emit('native_approval', dict(receipt_id=call['id'], title='Allow this action?',
+        self.pause('native_approval', dict(receipt_id=call['id'], title='Allow this action?',
                                          explanation=data.get('description', ''), resource=data.get('command', '')))
-        threading.Event().wait()
 
     def clarify(self, question, choices):
         options = [{'id': str(index), 'label': str(choice)} for index, choice in enumerate(choices or ['Continue'])]
@@ -110,8 +129,7 @@ class NativeBridge:
         if not isinstance(arguments, dict) or not isinstance(arguments.get('options'), list):
             return json.dumps({'error': 'Supply a title and choices.'})
         call = getattr(self.local, 'call', None)
-        self.emit('native_question', dict(arguments, receipt_id=call['id'] if call else None))
-        threading.Event().wait()
+        self.pause('native_question', dict(arguments, receipt_id=call['id'] if call else None))
 
 
 QUESTION_SCHEMA = {'name': 'coconut_ask', 'description': 'Ask the person to choose. Use their standing preferences when writing choices. The Inbox keeps this question pending.',

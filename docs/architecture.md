@@ -40,7 +40,7 @@ Switching modes affects subsequent actions. It cannot undo an action already exe
 
 ## Decisions and recovery
 
-The service persists each question or approval before stopping its worker and publishing an event.
+The service persists each question or approval before releasing its turn and publishing an event.
 Other bots continue. Context requests produce linked answers while preserving the decision.
 After an answer, the service starts a continuation with the recorded choice and prior completed tool receipts.
 A completed tool result can satisfy its matching replay call once. New turns use new receipt generations.

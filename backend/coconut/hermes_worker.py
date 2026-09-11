@@ -7,6 +7,7 @@ import json
 import os
 import queue
 import re
+import signal
 import sys
 import threading
 import unicodedata
@@ -16,9 +17,11 @@ from uuid import UUID, uuid4
 
 if __package__:
     from .native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history
+    from .native_bridge import TurnPaused
     from .worker_protocol import MAX_EVENT_CHARACTERS, event_frame
 else:
     from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history
+    from native_bridge import TurnPaused
     from worker_protocol import MAX_EVENT_CHARACTERS, event_frame
 
 
@@ -502,9 +505,25 @@ def conversation_input(request):
     return prompt, history
 
 
+def stop_native_processes(task_id=None, *, recover=False):
+    module = sys.modules.get('tools.process_registry')
+    if recover:
+        from tools import process_registry as module
+    if module is None:
+        return
+    registry = module.process_registry
+    if recover:
+        registry.recover_from_checkpoint()
+    for process in registry.list_sessions():
+        if process['status'] == 'running' and (task_id is None or process['owner_task_id'] == task_id):
+            result = registry.kill_process(process['session_id'], source='coconut_stop', consume_output=True)
+            if result.get('status') not in ('killed', 'already_exited'):
+                raise RuntimeError('Hermes did not stop a background process.')
+
+
 def main():
     service_input = sys.stdin
-    request = json.loads(service_input.readline())
+    requests = queue.Queue()
     output = sys.stdout
     sys.stdout = sys.stderr
     output_lock = threading.Lock()
@@ -535,11 +554,33 @@ def main():
             with receipt_lock:
                 pending_receipts.pop(request_id, None)
 
+    stopping = threading.Event()
+
+    def shutdown(*_):
+        if stopping.is_set():
+            return
+        stopping.set()
+        def clean():
+            try:
+                stop_native_processes()
+            except Exception:
+                os._exit(1)
+            os._exit(0)
+        threading.Thread(target=clean, daemon=True, name='runtime-cleanup').start()
+
+    signal.signal(signal.SIGTERM, shutdown)
+
     def watch_parent():
         for line in service_input:
             try:
                 frame = json.loads(line)
                 if not isinstance(frame, dict):
+                    continue
+                if isinstance(frame.get('cancel_task'), str):
+                    stop_native_processes(frame['cancel_task'])
+                    continue
+                if 'operation' in frame:
+                    requests.put(frame)
                     continue
                 with receipt_lock:
                     response = pending_receipts.get(frame.get('request_id'))
@@ -547,12 +588,26 @@ def main():
                     response.put_nowait(frame['receipt'])
             except (ValueError, TypeError, queue.Full):
                 continue
-        # EOF means the service died or closed its pipe. End even a blocked model call.
-        os._exit(0)
+        # EOF also stops native children that own separate process groups.
+        shutdown()
 
     threading.Thread(target=watch_parent, daemon=True, name='service-liveness').start()
+    from native_settings import install_approval_inheritance
+    install_approval_inheritance(os.environ['COCONUT_DEFAULT_HOME'])
+    while True:
+        request = requests.get()
+        code = run_turn(request, emit, request_receipt)
+        emit('turn_end', {'reusable': code == 0})
+        if code:
+            return code
+
+
+def run_turn(request, emit, request_receipt):
     conversation = None
     agent = None
+    bridge = None
+    registry = None
+    allowed = set()
     try:
         from profiles import merge_runtime_config
         merge_runtime_config(os.environ['HERMES_HOME'])
@@ -596,11 +651,7 @@ def main():
             except ValueError as error:
                 return json.dumps({'error': str(error)})
             proposed = True
-            emit('decision', proposal)
-            # Parent persists the decision and terminates this process. The wait prevents
-            # Hermes from claiming approval or executing another step before that commit.
-            threading.Event().wait()
-            return json.dumps({'status': 'pending'})
+            bridge.pause('decision', proposal)
 
         if operation != 'context' and not (operation == 'resume' and request['decision'].get('status') == 'executed'):
             schema = PROPOSAL_SCHEMA
@@ -713,8 +764,7 @@ def main():
                                          runtime_config=request.get('runtime_config'))
         if request.get('runtime_config') is None and not config.get('api_key'):
             raise ValueError('The selected model has no configured key on this Mac.')
-        from native_settings import install_approval_inheritance, raw_config
-        install_approval_inheritance(os.environ['COCONUT_DEFAULT_HOME'])
+        from native_settings import raw_config
         os.environ['HERMES_GATEWAY_SESSION'] = '1'
         os.environ['HERMES_SESSION_KEY'] = request['task']['id']
         profile_config = raw_config(os.environ['HERMES_HOME'])
@@ -740,8 +790,6 @@ def main():
                                         stream_callback=stream_delta,
                                         persist_user_message=current['text'] if current else request.get('question'),
                                         persist_user_platform_id='coconut:' + current['id'] if current else None)
-        agent.close()
-        agent = None
         if result.get('completed') is not True or result.get('failed') or result.get('interrupted'):
             raise RuntimeError('Hermes could not finish this turn.')
         if creation_errors:
@@ -759,17 +807,28 @@ def main():
             emit('text_delta', {'text': final})
         if operation != 'context':
             emit('completed', {'summary': 'Complete.'})
+    except TurnPaused:
+        return 0
     except Exception as error:
         # Model libraries can include request bodies or keys in exception strings.
         emit('failed', {'summary': f'Hermes could not finish ({type(error).__name__}). Check the model configuration on the Mac.'})
         return 1
     finally:
         if agent is not None:
-            agent.close()
+            # Native gateway eviction retains terminals, browsers, and process handles.
+            agent.release_clients()
+        if bridge is not None:
+            bridge.close()
+        if registry is not None:
+            for name in allowed:
+                registry.deregister(name)
         if conversation is not None:
             conversation.close()
     return 0
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    if sys.argv[1:] == ['--cleanup']:
+        stop_native_processes(recover=True)
+    else:
+        raise SystemExit(main())

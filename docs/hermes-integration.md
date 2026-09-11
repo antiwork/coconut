@@ -12,6 +12,15 @@ Its primary interfaces are [AIAgent](https://github.com/NousResearch/hermes-agen
 
 ## Worker
 
+Coconut retains one worker process per bot. Each turn reloads the bot's native settings and conversation.
+After the turn, `AIAgent.release_clients()` releases model clients and preserves native terminal and browser state.
+Background login processes remain available while the person authorizes them on their phone.
+Coconut removes each turn's middleware and tools before accepting another turn.
+Cancelling a paused task stops only its native background processes. A newer turn can continue in the same runtime.
+Cancelling an active turn, deleting a bot, restarting a bot, or shutting down the service stops the corresponding runtime.
+Coconut asks Hermes to stop native children before exiting. After a forced exit, Hermes recovers their checkpoints and checks process identities before cleanup.
+A Mac or service restart can still interrupt an unfinished login. Saved credentials remain in the bot's native profile.
+
 The worker uses native context files, `SOUL.md`, memory, tool configuration, and skill discovery.
 It buffers response text until Hermes completes the turn, then publishes the full reply once.
 The app keeps the bot's thinking animation visible while it waits. Failed turns do not publish unfinished response text.

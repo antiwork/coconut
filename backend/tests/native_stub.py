@@ -38,7 +38,23 @@ def sync_skills(quiet=False):
     (Path(os.environ['HERMES_HOME']) / 'skill-sync-called').write_text(str(quiet))
     return {}
 ''')
+    (source / 'tools/process_registry.py').write_text('''import os, signal, sys
+class Registry:
+    def recover_from_checkpoint(self): pass
+    def list_sessions(self):
+        return getattr(sys.modules.get('run_agent'), 'background', [])
+    def kill_process(self, session_id, **kwargs):
+        process = next(row for row in self.list_sessions() if row['session_id'] == session_id)
+        try: os.killpg(process['pid'], signal.SIGTERM)
+        except ProcessLookupError: pass
+        try: os.waitpid(process['pid'], 0)
+        except ChildProcessError: pass
+        process['status'] = 'exited'
+        return {'status': 'killed'}
+process_registry = Registry()
+''')
     (source / 'tools/approval.py').write_text('''def register_gateway_notify(*args): pass
+def unregister_gateway_notify(*args): pass
 def resolve_gateway_approval(*args, **kwargs): return 1
 ''')
     (source / 'hermes_cli/middleware.py').write_text("TOOL_EXECUTION_MIDDLEWARE='tool_execution'\n")
@@ -50,6 +66,9 @@ class PluginContext:
         from tools.registry import registry
         original=registry.dispatch
         registry.dispatch=lambda name,args,**kwargs:callback(name,args,lambda args:original(name,args,**kwargs))
+        class Registration:
+            def dispose(self): registry.dispatch=original
+        return Registration()
 def get_plugin_manager(): return None
 ''')
     (source / 'hermes_cli/tools_config.py').write_text("def _get_platform_tools(config, platform): return config.get('platform_toolsets', {}).get(platform, ['hermes-cli'])\n")

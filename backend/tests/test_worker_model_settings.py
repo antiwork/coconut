@@ -84,6 +84,7 @@ class WorkerModelProcessTests(unittest.TestCase):
                 handlers = {}
                 def register(self, name, toolset, schema, handler):
                     self.handlers[name] = handler
+                def deregister(self, name): self.handlers.pop(name, None)
                 def dispatch(self, name, args, **kwargs):
                     return self.handlers[name](args)
             registry = Registry()
@@ -97,6 +98,7 @@ class WorkerModelProcessTests(unittest.TestCase):
             from tools.registry import registry
             class AIAgent:
                 def close(self): pass
+                def release_clients(self): pass
                 def __init__(self, **kwargs):
                     self.preferences = kwargs['enabled_toolsets'] == []
                     self.valid_tool_names = set() if self.preferences else set(registry.handlers)
@@ -146,8 +148,14 @@ class WorkerModelProcessTests(unittest.TestCase):
         try:
             process.stdin.write(json.dumps(request) + '\n')
             process.stdin.flush()
+            events = []
+            for line in process.stdout:
+                event = json.loads(line)
+                if event['type'] == 'turn_end':
+                    process.stdin.close()
+                    break
+                events.append(event)
             code = process.wait(timeout=5)
-            events = [json.loads(line) for line in process.stdout.read().splitlines()]
             stderr = process.stderr.read()
         finally:
             if process.poll() is None:
