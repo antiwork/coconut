@@ -91,7 +91,8 @@ class HermesProfiles:
             if previous.get('status') == 'deleted' and not bot.get('_deleted'):
                 raise ProfileError('This Hermes profile belongs to a deleted bot.')
         status = 'deleted' if bot.get('_deleted') else 'archived' if bot.get('archived') else 'active'
-        metadata = dict(version=2, native_memory=True, profile_id=identity, bot_id=bot['id'], session_id=bot['session_id'],
+        metadata = dict(version=2, native_memory=True, skill_defaults_applied=True,
+                        profile_id=identity, bot_id=bot['id'], session_id=bot['session_id'],
                         status=status, managed_files=['coconut-profile.json'])
         # Deleting an unused bot does not create a new Hermes home.
         if status == 'deleted' and not home.exists():
@@ -99,6 +100,11 @@ class HermesProfiles:
         home.mkdir(parents=True, exist_ok=True, mode=0o700)
         home.chmod(0o700)
         if status != 'deleted':
+            # Apply the native default once. Later Hermes opt-in choices remain authoritative.
+            if not previous or not previous.get('skill_defaults_applied'):
+                _write(home / '.no-bundled-skills',
+                       'Use essential Hermes skills only. Run hermes skills opt-in to enable the bundled catalog.\n',
+                       self.root)
             soul = home / 'SOUL.md'
             _safe(soul, self.root)
             if previous is None and soul.exists():

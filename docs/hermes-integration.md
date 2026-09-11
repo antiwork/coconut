@@ -19,6 +19,11 @@ See [continuous conversations](conversation-continuity.md) for restart and retri
 The installed Hermes runtime resolves model credentials and effort. Model keys never enter phone API responses.
 The default model comes from the active native profile, not an app constant.
 
+New bot profiles use Hermes' `.no-bundled-skills` setting. Existing profiles receive this default once.
+Native skill sync supplies only the essential skills that Hermes defines, currently its `hermes-agent` operating manual.
+The larger bundled catalog stays absent across native syncs and updates. User-installed and bot-created skills remain available.
+Later changes through `hermes skills opt-in` remain authoritative. Coconut keeps no separate list of essential skills.
+
 Coconut registers tool middleware through `PluginContext.register_middleware` and `TOOL_EXECUTION_MIDDLEWARE`.
 The middleware persists tool intent and completion through the parent service.
 Native approval callbacks create durable Inbox cards. Context keeps the original decision pending.

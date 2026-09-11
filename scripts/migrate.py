@@ -212,7 +212,8 @@ def validate_files(root, data, staging, *, empty=False):
             if name in IGNORED_PROFILE_FILES:
                 continue
             mirror = expected / name
-            if name in {'home/SOUL.md', 'home/COCONUT_MEMORY.md', 'home/profile.yaml', 'home/coconut-profile.json', 'home/config.yaml'}:
+            if name in {'home/SOUL.md', 'home/COCONUT_MEMORY.md', 'home/profile.yaml', 'home/coconut-profile.json',
+                        'home/config.yaml', 'home/.no-bundled-skills'}:
                 if not mirror.is_file():
                     raise MigrationError('A custom profile file cannot regenerate from the database.')
                 try:

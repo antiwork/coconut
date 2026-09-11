@@ -287,6 +287,9 @@ class ProviderTests(unittest.TestCase):
         self.assertNotIn('noisy', json.dumps(events))
         self.assertEqual([kind for kind, _ in events], ['text_delta', 'completed'])
         self.assertFalse(provider._processes)
+        home = provider.data_dir / 'bots' / self.bot['id'] / 'home'
+        self.assertTrue((home / '.no-bundled-skills').is_file())
+        self.assertEqual((home / 'skill-sync-called').read_text(), 'True')
 
     def configure_peer(self, *, budget=8):
         peer = {'id': str(uuid4()), 'name': 'Lin', 'role': 'Check calculations'}

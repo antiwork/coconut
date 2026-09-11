@@ -558,6 +558,8 @@ def main():
         merge_runtime_config(os.environ['HERMES_HOME'])
         from terminal_setup import configure_terminal
         configure_terminal(os.environ['HERMES_HOME'])
+        from tools.skills_sync import sync_skills
+        sync_skills(quiet=True)
         from run_agent import AIAgent
         from hermes_state import SessionDB
         from tools.registry import registry

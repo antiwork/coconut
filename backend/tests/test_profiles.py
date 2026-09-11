@@ -53,6 +53,31 @@ class ProfileTests(unittest.TestCase):
         self.profiles.sync(self.bot)
         self.assertEqual(self.profiles.read_instructions(self.bot), '')
 
+    def test_new_profiles_opt_out_of_the_bundled_catalog(self):
+        self.profiles.sync(self.bot)
+        self.assertTrue((self.profiles.home(self.bot) / '.no-bundled-skills').is_file())
+
+    def test_existing_profile_gets_default_once_and_keeps_custom_skills(self):
+        self.profiles.sync(self.bot)
+        home = self.profiles.home(self.bot)
+        marker = home / '.no-bundled-skills'
+        marker.unlink()
+        metadata_path = home / 'coconut-profile.json'
+        metadata = json.loads(metadata_path.read_text())
+        metadata.pop('skill_defaults_applied')
+        metadata_path.write_text(json.dumps(metadata))
+        skill = home / 'skills' / 'custom' / 'SKILL.md'
+        skill.parent.mkdir(parents=True)
+        skill.write_text('Keep this custom skill.')
+
+        self.profiles.sync(self.bot)
+        self.assertTrue(marker.is_file())
+        self.assertEqual(skill.read_text(), 'Keep this custom skill.')
+
+        marker.unlink()  # Native Hermes opt-in removes this marker.
+        self.profiles.sync(self.bot)
+        self.assertFalse(marker.exists())
+
     def test_archive_preserves_identity_and_delete_prevents_resurrection(self):
         self.profiles.sync(self.bot)
         home = self.profiles.home(self.bot)

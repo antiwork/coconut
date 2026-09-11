@@ -143,9 +143,39 @@ def verify_contract():
             raise ValueError('The profile update changed unrelated Hermes settings.')
 
     verify_terminal_contract()
+    verify_skills_contract()
 
     return {'native_terminal_path': True, 'provider_contract': 'compatible', 'tool_registration': True, 'tool_dispatch': True,
-            'native_model_effort_roundtrip': True, 'profile_inheritance': True, 'model_request_sent': False}
+            'native_model_effort_roundtrip': True, 'profile_inheritance': True,
+            'native_essential_skills': True, 'model_request_sent': False}
+
+
+def verify_skills_contract():
+    from uuid import uuid4
+    from agent.skill_utils import ESSENTIAL_SKILLS
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from tools.skills_sync import sync_skills
+    from .profiles import HermesProfiles
+    with tempfile.TemporaryDirectory(prefix='coconut-skills-contract-') as temporary:
+        profiles = HermesProfiles(temporary)
+        bot = dict(id=str(uuid4()), session_id=str(uuid4()), name='Skills check')
+        profiles.sync(bot)
+        home = profiles.home(bot)
+        token = set_hermes_home_override(str(home))
+        try:
+            result = sync_skills(quiet=True)
+            if not ESSENTIAL_SKILLS or set(result['copied']) != set(ESSENTIAL_SKILLS):
+                raise ValueError('Hermes did not seed exactly its essential skills.')
+            custom = home / 'skills' / 'custom-check' / 'SKILL.md'
+            custom.parent.mkdir(parents=True)
+            custom.write_text('A user-created skill.\n')
+            result = sync_skills(quiet=True)
+            if result['copied'] or not result.get('skipped_opt_out'):
+                raise ValueError('Hermes added bundled skills after profile setup.')
+            if custom.read_text() != 'A user-created skill.\n':
+                raise ValueError('Hermes changed a user-created skill during sync.')
+        finally:
+            reset_hermes_home_override(token)
 
 
 def verify_terminal_contract():

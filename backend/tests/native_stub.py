@@ -32,6 +32,12 @@ def require_readable_config_before_write(path):
 _VALID_MODES = ('manual', 'smart', 'off')
 def _normalize_approval_mode(value): return 'off' if value is False else value
 ''')
+    (source / 'tools/skills_sync.py').write_text('''from pathlib import Path
+import os
+def sync_skills(quiet=False):
+    (Path(os.environ['HERMES_HOME']) / 'skill-sync-called').write_text(str(quiet))
+    return {}
+''')
     (source / 'tools/approval.py').write_text('''def register_gateway_notify(*args): pass
 def resolve_gateway_approval(*args, **kwargs): return 1
 ''')
