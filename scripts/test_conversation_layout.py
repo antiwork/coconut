@@ -22,6 +22,7 @@ def main():
     parser.add_argument('--result', type=Path, required=True)
     parser.add_argument('--exchange', action='store_true')
     parser.add_argument('--instant-send', action='store_true')
+    parser.add_argument('--decision-receipt', action='store_true')
     parser.add_argument('--transcript', type=Path, default=ROOT/'ios/CoconutUITests/Fixtures/ConversationLayoutMessages.json')
     args = parser.parse_args()
     state = json.loads((ROOT/'ios/Coconut/Fixtures/PreviewState.json').read_text())
@@ -50,6 +51,14 @@ def main():
         inward = message('assistant', '## Result\n\nThe check **passed**.\n\n```swift\nlet answer = 42\n```\n\n[Open reference](https://example.com)')
         inward.update(kind='text', bot_id=peer['id'], sender_bot_id=peer['id'], recipient_bot_ids=[], exchange_recipient_bot_ids=[bot['id']], created_at='2026-09-10T10:00:01Z')
         state['messages'] = [own, outward, inward]
+    if args.decision_receipt:
+        fixture = json.loads((ROOT/'ios/Coconut/Fixtures/PreviewState.json').read_text())
+        decision = dict(fixture['decisions'][0], bot_id=bot['id'], task_id=task['id'],
+                        title='Allow this action?', explanation='Choose how to continue.')
+        task['status'] = 'needs_you'
+        state['decisions'] = [decision]
+        state['messages'] = []
+    decision_attempts = 0
     changed = threading.Condition()
     events = []
     sends = 0
@@ -106,7 +115,7 @@ def main():
             except (BrokenPipeError, ConnectionResetError): pass
 
         def do_POST(self):
-            nonlocal sends
+            nonlocal sends, decision_attempts
             body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))) or b'{}')
             if self.path == '/v1/pair':
                 self.respond(dict(token='layout-fixture-only', device_id=str(uuid4())))
@@ -124,6 +133,18 @@ def main():
             elif self.path == '/test/release-send':
                 release_send.set()
                 self.respond(dict(ok=True))
+            elif args.decision_receipt and self.path.endswith('/answer'):
+                decision_attempts += 1
+                if decision_attempts == 1:
+                    self.respond(dict(error='Temporary test failure.'), status=503)
+                    return
+                release_send.wait(30)
+                with changed:
+                    option = next(o for o in decision['options'] if o['id'] == body['option_id'])
+                    decision.update(status='approved', selected_option_id=option['id'], selected_option_label=option['label'],
+                                    decided_by='fixture', outcome='Answer recorded. Hermes will continue.')
+                    publish('decision.updated', decision)
+                self.respond(decision)
             elif self.path.endswith('/messages'):
                 key = self.headers.get('Idempotency-Key')
                 if args.instant_send:
@@ -191,7 +212,7 @@ def main():
             runfile.write_bytes(plistlib.dumps(document))
             command = ['xcodebuild', 'test-without-building', '-xctestrun', str(runfile),
                             '-destination', 'platform=iOS Simulator,id='+args.simulator,
-                            '-only-testing:CoconutUITests/' + ('BotExchangeFlowTests' if args.exchange else 'InstantSendFlowTests' if args.instant_send else 'ConversationLayoutFlowTests'), '-parallel-testing-enabled', 'NO',
+                            '-only-testing:CoconutUITests/' + ('NativeDecisionFlowTests/testChoiceReceiptStaysStableDuringServerConfirmation' if args.decision_receipt else 'BotExchangeFlowTests' if args.exchange else 'InstantSendFlowTests' if args.instant_send else 'ConversationLayoutFlowTests'), '-parallel-testing-enabled', 'NO',
                             '-resultBundlePath', str(args.result)]
             with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as process:
                 for line in process.stdout:

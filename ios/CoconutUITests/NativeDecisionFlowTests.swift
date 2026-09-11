@@ -218,10 +218,18 @@ final class NativeDecisionFlowTests: XCTestCase {
         capture("Context requested with decision pending")
         option.tap()
 
+        let selection = app.staticTexts["decision-selection-00000000-0000-4000-8000-000000000031"]
+        reveal(selection, in: app)
+        XCTAssertTrue(selection.waitForExistence(timeout: 5))
+        XCTAssertEqual(selection.label, "Patch with notes")
+        XCTAssertFalse(app.staticTexts["Preview result saved. No real action ran."].exists)
+        XCTAssertFalse(menu.exists, "Answered cards must keep only the question and selected option.")
+        selection.press(forDuration: 1.1)
+        app.buttons["Details"].tap()
         let outcome = app.staticTexts["Preview result saved. No real action ran."]
-        reveal(outcome, in: app)
-        XCTAssertTrue(outcome.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Selected: Patch with notes"].exists, "The receipt must record the selected action.")
+        revealInList(outcome, in: app)
+        XCTAssertTrue(outcome.exists, "The full record must remain available through Details.")
+        app.buttons["close-decision-details"].tap()
         XCTAssertFalse(option.exists, "One tap must replace the pending choices with a backend receipt.")
         capture("Recorded decision outcome")
         let savedFile = app.staticTexts["retry-fix-notes.md"]
@@ -238,9 +246,49 @@ final class NativeDecisionFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["No pending decisions"].exists,
                       "Home must not use chat or completed work as the Inbox preview.")
         pinnedForge.tap()
-        let history = app.staticTexts["Selected: Patch with notes"]
+        let history = app.staticTexts["decision-selection-00000000-0000-4000-8000-000000000031"]
         reveal(history, in: app)
         XCTAssertTrue(history.exists, "The resolved decision must remain in the originating bot conversation.")
+    }
+
+    @MainActor
+    func testChoiceReceiptStaysStableDuringServerConfirmation() async throws {
+        guard let address = ProcessInfo.processInfo.environment["COCONUT_LAYOUT_TEST_URL"] else {
+            throw XCTSkip("Run scripts/test_conversation_layout.py with --decision-receipt.")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
+        app.launch()
+        let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
+        XCTAssertTrue(bot.waitForExistence(timeout: 15))
+        bot.tap()
+        let option = app.buttons["decision-option-00000000-0000-4000-8000-000000000062"]
+        XCTAssertTrue(option.waitForExistence(timeout: 5))
+        capture("Aligned decision choices")
+        option.tap()
+        XCTAssertTrue(app.staticTexts["Temporary test failure."].waitForExistence(timeout: 10))
+        XCTAssertTrue(option.isEnabled, "A failed send must restore the original choices.")
+        option.tap()
+        let selection = app.staticTexts["decision-selection-00000000-0000-4000-8000-000000000031"]
+        XCTAssertTrue(selection.waitForExistence(timeout: 1), "Selection must appear before the server accepts it.")
+        XCTAssertEqual(selection.label, "Patch with notes")
+        XCTAssertFalse(option.exists)
+        XCTAssertFalse(app.activityIndicators.firstMatch.exists)
+        XCTAssertFalse(app.buttons["decision-menu-00000000-0000-4000-8000-000000000031"].exists)
+        let pendingFrame = selection.frame
+        capture("Selected choice before confirmation")
+        var request = URLRequest(url: URL(string: address + "/test/release-send")!)
+        request.httpMethod = "POST"
+        _ = try await URLSession.shared.data(for: request)
+        XCTAssertTrue(app.images["Choice recorded"].waitForExistence(timeout: 10))
+        XCTAssertEqual(selection.frame.minX, pendingFrame.minX, accuracy: 1)
+        XCTAssertEqual(selection.frame.minY, pendingFrame.minY, accuracy: 1)
+        XCTAssertEqual(selection.frame.width, pendingFrame.width, accuracy: 1)
+        XCTAssertEqual(selection.frame.height, pendingFrame.height, accuracy: 1)
+        XCTAssertFalse(app.staticTexts["Answer recorded. Hermes will continue."].exists)
+        XCTAssertFalse(app.activityIndicators.firstMatch.exists)
+        capture("Confirmed choice without a layout shift")
     }
 
     @MainActor

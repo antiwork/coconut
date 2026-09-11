@@ -598,7 +598,12 @@ final class AppStore {
             }
             return
         }
-        let _: Decision? = await write("decisions/\(decision.id)/answer", payload: AnswerRequest(choice: choice, revision: decision.revision, correction: correction, optionId: optionId), as: Decision.self)
+        let recorded: Decision? = await write("decisions/\(decision.id)/answer", payload: AnswerRequest(choice: choice, revision: decision.revision, correction: correction, optionId: optionId), as: Decision.self)
+        // Keep the receipt if the answer succeeds before state sync recovers.
+        if let recorded, let index = decisions.firstIndex(where: { $0.id == recorded.id }),
+           decisions[index].isPending, decisions[index].revision == recorded.revision {
+            decisions[index] = recorded
+        }
     }
 
     func requestContext(_ decision: Decision, question: String) async {

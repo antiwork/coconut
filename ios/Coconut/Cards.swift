@@ -15,13 +15,19 @@ private enum DecisionSheet: Identifiable {
 
 struct DecisionCard: View {
     @Environment(AppStore.self) private var store
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let decision: Decision
     @State private var sheet: DecisionSheet?
     @State private var submitting = false
     @State private var submittingOptionId: String?
     @State private var responseError: String?
     private var canRespond: Bool { store.connection == .connected || store.isDemo }
+    private var showsSelection: Bool { submittingOptionId != nil || !decision.isPending }
+    private var selectionLabel: String {
+        if let id = submittingOptionId, let option = decision.options.first(where: { $0.id == id }) {
+            return option.label
+        }
+        return decision.selectedOptionLabel ?? decision.status.capitalized
+    }
     private var recommendation: String? {
         guard let index = decision.options.firstIndex(where: { $0.id == decision.recommendedOptionId }) else { return nil }
         return "Recommended: " + optionLetter(index)
@@ -36,15 +42,15 @@ struct DecisionCard: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(decision.title).font(.body.weight(.medium))
                         .fixedSize(horizontal: false, vertical: true)
-                    if decision.isPending {
+                    if !showsSelection && !recommendationText.isEmpty {
                         Text(recommendationText).font(.subheadline).foregroundStyle(.secondary)
                             .lineLimit(3).textSelection(.enabled)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                cardMenu
+                if !showsSelection { cardMenu }
             }
-            if decision.isPending {
+            if !showsSelection {
                 if !decision.options.isEmpty { choices }
                 if !canRespond {
                     Text("Reconnect to respond.").font(.caption).foregroundStyle(.secondary)
@@ -60,6 +66,10 @@ struct DecisionCard: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 22))
+        .contextMenu {
+            Button("Details", systemImage: "doc.text.magnifyingglass") { sheet = .details }
+        }
+        .accessibilityAction(named: "Details") { sheet = .details }
         .sheet(item: $sheet) { destination in
             switch destination {
             case .context: DecisionInputSheet(decision: decision, mode: "context")
@@ -83,9 +93,6 @@ struct DecisionCard: View {
                         Text(option.label).font(.subheadline).foregroundStyle(.primary)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 0)
-                        if submittingOptionId == option.id {
-                            ProgressView().controlSize(.small).accessibilityLabel("Sending choice")
-                        }
                     }
                     .padding(.horizontal, 12).padding(.vertical, 9)
                     .frame(maxWidth: .infinity, minHeight: 44)
@@ -130,37 +137,37 @@ struct DecisionCard: View {
         } label: {
             Image(systemName: "ellipsis").font(.system(size: 15))
                 .foregroundStyle(.secondary).frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .padding(.top, -11)
+        .padding(.trailing, -11)
+        .padding(.bottom, -11)
         .disabled(submitting)
         .accessibilityLabel("Decision options")
         .accessibilityIdentifier("decision-menu-\(decision.id)")
     }
 
     private var decisionReceipt: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if dynamicTypeSize.isAccessibilitySize {
-                VStack(alignment: .leading, spacing: 3) {
-                    StatusLabel(status: decision.status)
-                    Text(store.decisionActor(decision)).font(.caption).foregroundStyle(.secondary)
-                }
-            } else {
-                HStack {
-                    StatusLabel(status: decision.status)
-                    Spacer(minLength: 8)
-                    Text(store.decisionActor(decision)).font(.caption).foregroundStyle(.secondary)
-                }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(selectionLabel).font(.subheadline)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("decision-selection-\(decision.id)")
+                Image(systemName: decision.status == "failed" ? "exclamationmark.circle" : "checkmark")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(decision.status == "failed" ? BoardStyle.accent :
+                                        decision.isPending ? .secondary : BoardStyle.green)
+                    .accessibilityLabel(decision.isPending ? "Sending choice" :
+                                            decision.status == "failed" ? "Action failed" : "Choice recorded")
             }
-            if let selected = decision.selectedOptionLabel {
-                Text("Selected: \(selected)").font(.caption).foregroundStyle(.secondary)
-            }
-            if let correction = decision.correction, !correction.isEmpty {
-                Text("Changed: \(correction)").font(.caption).foregroundStyle(.secondary)
-            }
-            if let outcome = decision.outcome, !outcome.isEmpty {
-                Text(outcome).font(.subheadline)
-            } else {
-                Text(decision.status == "approved" ? "Approval recorded. The Mac will recheck the action before it runs." : "The Mac keeps this decision in the task history.")
-                    .font(.caption).foregroundStyle(.secondary)
+            .padding(.horizontal, 12).padding(.vertical, 12)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(BoardStyle.line))
+            if decision.status == "failed", let outcome = decision.outcome, !outcome.isEmpty {
+                Text(outcome).font(.caption).foregroundStyle(BoardStyle.accent)
             }
             if let replacement = decision.replacedByDecisionId {
                 NavigationLink(value: ConversationRoute(botId: store.conversationBotId(for: decision), decisionId: replacement)) {
