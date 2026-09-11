@@ -32,6 +32,7 @@ def main():
     task = dict(id=str(uuid4()), bot_id=bot['id'], session_id=bot['session_id'], title='Conversation layout',
                 status='completed', summary='', created_at=state['server_time'], updated_at=state['server_time'])
     task['thread_id'] = task['id']
+    if args.instant_send: task['status'] = 'working'
     state['tasks'].append(task)
     def message(role, text):
         return dict(id=str(uuid4()), bot_id=bot['id'], task_id=task['id'], thread_id=task['id'], role=role,
@@ -55,6 +56,7 @@ def main():
     streaming = threading.Event()
     release_send = threading.Event()
     send_keys = []
+    send_modes = []
     rejected_keys = set()
     responses = {}
 
@@ -126,6 +128,7 @@ def main():
                 key = self.headers.get('Idempotency-Key')
                 if args.instant_send:
                     send_keys.append(key)
+                    send_modes.append(body.get("mode"))
                     if body['text'] == 'Immediate message.':
                         release_send.wait(20)
                     if body['text'] == 'Retry this message.' and key not in rejected_keys:
@@ -156,7 +159,7 @@ def main():
         def do_GET(self):
             url = urlsplit(self.path)
             if url.path == '/test/send-status':
-                self.respond(dict(keys=send_keys, sends=sends))
+                self.respond(dict(keys=send_keys, sends=sends, modes=send_modes))
                 return
             with changed:
                 if url.path == '/v1/events':

@@ -445,6 +445,24 @@ class TeamServiceTests(unittest.TestCase):
         self.assertEqual(reply['conversation_bot_id'], self.a['id'])
         self.assertEqual(reply['reply_status'], 'queued_recipients')
 
+    def test_automatic_messages_do_not_join_peer_exchanges_or_mentioned_tasks(self):
+        mentioned = self.write('POST', f'/v1/bots/{self.a["id"]}/messages',
+                               {'text': 'Ask Lin', 'mode': 'auto', 'recipient_bot_ids': [self.b['id']]})
+        with self.service.transaction():
+            task = self.service._get('tasks', mentioned['id'])
+            task['status'] = 'working'
+            self.service._put('tasks', task)
+        own = self.write('POST', f'/v1/bots/{self.a["id"]}/messages', {'text': 'Ask Ada', 'mode': 'auto'})
+        self.assertEqual(own['bot_id'], self.a['id'])
+        self.assertNotEqual(own['id'], mentioned['id'])
+        with self.service.transaction():
+            task['source_bot_id'] = self.a['id']
+            self.service._put('tasks', task)
+        direct = self.write('POST', f'/v1/bots/{self.b["id"]}/messages', {'text': 'Direct request to Lin', 'mode': 'auto'})
+        self.assertEqual(direct['bot_id'], self.b['id'])
+        self.assertNotEqual(direct['id'], mentioned['id'])
+        self.assertFalse(self.service._get('tasks', mentioned['id']).get('_steering'))
+
     def test_steering_requires_exact_task_in_origin_conversation(self):
         task = self.send(self.a, recipient_bot_ids=[self.b['id']])
         self.working(task)

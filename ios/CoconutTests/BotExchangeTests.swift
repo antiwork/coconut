@@ -3,6 +3,27 @@ import XCTest
 
 final class BotExchangeTests: XCTestCase {
     @MainActor
+    func testAutomaticSendUsesTheOpenBotWithoutASelectedTask() async throws {
+        let store = AppStore(demo: true)
+        let bot = try XCTUnwrap(store.bots.first)
+        let other = try XCTUnwrap(store.bots.first { $0.id != bot.id })
+        let task = AgentTask(id: "mentioned", botId: other.id, sessionId: other.sessionId,
+                             title: "Other work", status: "working", summary: "", createdAt: "", updatedAt: "",
+                             threadId: "mentioned", conversationBotId: bot.id)
+        store.tasks = [task]
+        store.messages = []
+        let sent = await store.send(bot: bot, text: "New request")
+        XCTAssertTrue(sent)
+        XCTAssertEqual(store.tasks.last?.botId, bot.id)
+        XCTAssertNotEqual(store.messages.first?.taskId, task.id)
+        let current = try XCTUnwrap(store.tasks.last)
+        let followup = await store.send(bot: bot, text: "Also include this")
+        XCTAssertTrue(followup)
+        XCTAssertEqual(store.tasks.count, 2)
+        XCTAssertEqual(store.messages.last?.taskId, current.id)
+    }
+
+    @MainActor
     func testDelegatedTaskAcceptsSteeringFromItsExecutorConversation() async throws {
         let store = AppStore(demo: true)
         let origin = try XCTUnwrap(store.bots.first)

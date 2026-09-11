@@ -1177,8 +1177,8 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
     def _send(self, bot: dict, data: dict, *, thread_id: str | None = None, parent_task_id: str | None = None, conversation_bot_id: str | None = None, exchange_id: str | None = None, source_task: dict | None = None, record_message: bool = True, human_authored: bool = True, text_limit: int | None = 20000) -> dict:
         text = require_text(data, 'text', text_limit)
         mode = data.get('mode', 'queue')
-        if mode not in ('steer', 'queue'):
-            raise ServiceError(400, 'Choose steer or queue.')
+        if mode not in ('auto', 'steer', 'queue'):
+            raise ServiceError(400, 'Unsupported message mode.')
         if bot['archived'] or bot.get('_deleted'):
             raise ServiceError(409, 'Restore this bot before sending work.')
         conversation_bot_id = conversation_bot_id or bot['id']
@@ -1187,10 +1187,21 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
             raise ServiceError(409, 'Restore this conversation before sending work.')
         recipients = self._recipient_ids(data.get('recipient_bot_ids', []))
         if recipients:
-            if mode != 'queue':
-                raise ServiceError(400, 'Mentioned bots receive queued work. Use queue mode.')
+            if mode == 'steer':
+                raise ServiceError(400, 'Mentioned bots receive separate messages.')
             return self._dispatch_user(origin, data, recipients, thread_id=thread_id, parent_task_id=parent_task_id)
         attachments = self._validate_attachments(conversation_bot_id, data.get('attachment_ids', []))
+        if mode == 'auto' and not data.get('scheduled_at'):
+            # Route from current server state. A bot exchange never owns a new human message.
+            current = next((task for task in reversed(self._all('tasks'))
+                            if task['bot_id'] == bot['id'] and task['conversation_bot_id'] == conversation_bot_id
+                            and not task.get('source_bot_id') and not task.get('scheduled_at')
+                            and task['status'] in ('working', 'queued', 'waiting')), None)
+            if current:
+                pending_tasks = {task['id'] for task in self._all('tasks') if task['thread_id'] == current['thread_id']}
+                pending = any(d['task_id'] in pending_tasks and d['status'] == 'pending' for d in self._all('decisions'))
+                if not pending:
+                    return self._reply(current, data)
         if mode == 'steer':
             if not data.get('task_id'):
                 raise ServiceError(400, 'Choose an active task to steer.')
@@ -1257,7 +1268,6 @@ class Service(NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
         task.setdefault('_steering', []).append(text)
         task.update(updated_at=now(), steering_status='next_safe_turn', exchange_id=self._new_exchange(), exchange_depth=0)
         self._put('tasks', task)
-        self._message(task['bot_id'], 'Your follow-up applies at the next safe turn.', task_id=task['id'], role='system', kind='activity')
         self._event('task.steered', self._public(task), conversation_bot_id, task['id'])
         return self._public(task)
 

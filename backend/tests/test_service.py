@@ -302,6 +302,59 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.provider.last_context_task['pending_decision']['action']['content'], 'A complete report.\n')
         self.assertEqual(self.service.snapshot()['decisions'][0]['status'], 'pending')
 
+    def test_automatic_send_delivers_followup_once_at_next_safe_turn(self):
+        bot = self.bot()
+        task = self.send(bot, 'Hold this task')
+        self.service.start()
+        self.assertTrue(self.provider.started.wait(2))
+        data = {'text': 'Use the updated scope.', 'mode': 'auto', 'task_id': 'stale-client-id'}
+        key = str(uuid4())
+        first = self.write('POST', f'/v1/bots/{bot["id"]}/messages', data, key)
+        self.assertEqual(first['id'], task['id'])
+        self.assertEqual(self.write('POST', f'/v1/bots/{bot["id"]}/messages', data, key), first)
+        self.assertFalse(any(m['kind'] == 'activity' for m in self.service.snapshot()['messages']))
+        self.provider.hold.set()
+        state = self.wait(lambda state: len(self.provider.starts) == 2 and state['tasks'][0]['status'] == 'completed')
+        self.assertEqual(len(state['tasks']), 1)
+        self.assertEqual(sum(m['text'] == data['text'] for m in self.provider.starts[1][2]), 1)
+
+    def test_automatic_send_joins_queued_work_and_survives_restart(self):
+        bot = self.bot()
+        first = self.write('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'First request', 'mode': 'auto'})
+        second = self.write('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'Additional request', 'mode': 'auto'})
+        self.assertEqual(first['id'], second['id'])
+        self.service.close()
+        self.service = Service(self.temp.name, self.provider, start_workers=False)
+        self.service._run_task(first['id'])
+        texts = [m['text'] for m in self.provider.starts[0][2] if m['role'] == 'user']
+        self.assertEqual(texts, ['First request', 'Additional request'])
+
+    def test_automatic_send_after_completion_keeps_native_session(self):
+        bot = self.bot()
+        first = self.send(bot, 'Initial request')
+        self.service._run_task(first['id'])
+        second = self.write('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'Follow up', 'mode': 'auto', 'task_id': first['id']})
+        self.assertNotEqual(first['id'], second['id'])
+        self.assertEqual(first['session_id'], second['session_id'])
+        self.service._run_task(second['id'])
+        self.assertIn('Initial request', [m['text'] for m in self.provider.starts[-1][2]])
+
+    def test_automatic_send_keeps_pending_decision_and_allows_other_work(self):
+        bot = self.bot()
+        decision = self.pending(bot)
+        next_task = self.write('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'Another request', 'mode': 'auto'})
+        self.assertNotEqual(next_task['id'], decision['task_id'])
+        self.service._run_task(next_task['id'])
+        self.assertEqual(self.service.snapshot()['decisions'][0]['status'], 'pending')
+        self.assertEqual(self.provider.contexts, [])
+
+    def test_automatic_send_does_not_attach_to_scheduled_work(self):
+        bot = self.bot()
+        future = self.send(bot, 'Later', scheduled_at='2099-01-01T12:00:00Z')
+        current = self.write('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'Now', 'mode': 'auto'})
+        self.assertNotEqual(current['id'], future['id'])
+        self.assertEqual(current['status'], 'queued')
+
     def test_live_steering_runs_at_next_safe_turn(self):
         bot = self.bot()
         task = self.send(bot, 'Hold this task')

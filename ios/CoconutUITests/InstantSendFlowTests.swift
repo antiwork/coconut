@@ -19,6 +19,7 @@ final class InstantSendFlowTests: XCTestCase {
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         input.tap()
         input.typeText("Immediate message.")
+        XCTAssertFalse(app.buttons["message-mode"].exists)
         app.buttons["send-message"].tap()
         // The fixture cannot accept this request until this test releases it.
         XCTAssertTrue(app.staticTexts["Immediate message."].waitForExistence(timeout: 1))
@@ -68,6 +69,7 @@ final class InstantSendFlowTests: XCTestCase {
         XCTAssertEqual(finalKeys.count, 5)
         XCTAssertNotEqual(finalKeys[3], finalKeys[4])
         XCTAssertEqual(final["sends"] as? Int, 3)
+        XCTAssertEqual(final["modes"] as? [String], Array(repeating: "auto", count: 5))
     }
 
     @MainActor

@@ -381,12 +381,14 @@ final class AppStore {
     }
 
     @discardableResult
-    func send(bot: Bot, text: String, mode: String, taskId: String? = nil, attachments: [String] = [], scheduledAt: String? = nil, recipientBotIds: [String] = []) async -> Bool {
+    func send(bot: Bot, text: String, mode: String = "auto", taskId: String? = nil, attachments: [String] = [], scheduledAt: String? = nil, recipientBotIds: [String] = []) async -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return false }
-        guard ["steer", "queue"].contains(mode) else { error = "Choose whether to steer this task or queue a new task."; return false }
-        let selectedMode = recipientBotIds.isEmpty ? mode : "queue"
-        let currentTask = taskId.flatMap { id in tasks.first { $0.id == id && $0.chatBotId == bot.id } }
+        guard ["auto", "steer", "queue"].contains(mode) else { return false }
+        let selectedMode = recipientBotIds.isEmpty && scheduledAt == nil ? mode : "queue"
+        let currentTask = selectedMode == "auto"
+            ? tasks.last { $0.botId == bot.id && $0.chatBotId == bot.id && $0.sourceBotId == nil && $0.scheduledAt == nil && ["working", "queued", "waiting"].contains($0.status) }
+            : taskId.flatMap { id in tasks.first { $0.id == id && $0.chatBotId == bot.id } }
         if selectedMode == "steer" {
             guard let currentTask, ["working", "needs_you"].contains(currentTask.status) else {
                 error = "The selected task cannot receive steering now. Queue a new task instead."
@@ -398,7 +400,7 @@ final class AppStore {
                 return !previewMentionTasks(conversationBotId: bot.id, text: text, scheduledAt: scheduledAt, recipientBotIds: recipientBotIds).isEmpty
             }
             let target: AgentTask
-            if selectedMode == "queue" {
+            if selectedMode == "queue" || (selectedMode == "auto" && currentTask == nil) {
                 let id = UUID().uuidString
                 target = AgentTask(id: id, botId: bot.id, sessionId: bot.sessionId, title: String(text.prefix(72)), status: scheduledAt == nil ? "queued" : "scheduled", summary: "Preview: no agent execution.",
                                    createdAt: Self.now, updatedAt: Self.now, scheduledAt: scheduledAt, threadId: id, conversationBotId: bot.id)
@@ -408,7 +410,7 @@ final class AppStore {
             messages.append(Message(id: UUID().uuidString, botId: bot.id, taskId: target.id, role: "user", kind: "text", text: text,
                                     decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false, threadId: target.threadId))
             messages.append(Message(id: UUID().uuidString, botId: bot.id, taskId: target.id, role: "system", kind: "text",
-                                    text: selectedMode == "steer" ? "Preview: this follow-up applies at the next safe turn." : "Preview: this message queues a separate task.",
+                                    text: "Preview: no agent execution.",
                                     decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false, threadId: target.threadId))
             return true
         }
@@ -459,7 +461,7 @@ final class AppStore {
         guard outgoingMessages.contains(where: { $0.id == outgoing.id && $0.status == .rejected }),
               let bot = bots.first(where: { $0.id == outgoing.botId }) else { return }
         outgoingMessages.removeAll { $0.id == outgoing.id }
-        let saved = await send(bot: bot, text: text, mode: "queue", attachments: outgoing.request.attachmentIds,
+        let saved = await send(bot: bot, text: text, attachments: outgoing.request.attachmentIds,
                               scheduledAt: outgoing.request.scheduledAt, recipientBotIds: outgoing.request.recipientBotIds)
         if !saved { outgoingMessages.append(outgoing); try? saveOutgoing() }
     }

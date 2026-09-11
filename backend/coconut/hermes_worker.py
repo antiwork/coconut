@@ -680,6 +680,9 @@ def main():
 
         instructions = ('You work in Coconut, a concise messaging app. Give short, useful replies. '
                         'Use native Hermes tools and profile memory. Save standing preferences with the native memory tool. '
+                        'Treat new human messages as one continuous conversation. Decide whether each message revises current work or adds a request. '
+                        'Preserve unfinished requests unless the person changes or cancels them. Ask only when ambiguity changes the outcome. '
+                        'Do not ask the person to choose a queue or steering mode. '
                         'Use coconut_ask when the person must choose. Write choices for the current task and saved preferences. '
                         'Normal tool work does not need a question unless Hermes approval checks require one. '
                         'Do not expose internal reasoning or raw logs. Finish independent work before asking a question. '

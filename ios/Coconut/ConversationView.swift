@@ -365,7 +365,6 @@ struct ConversationComposer: View {
     let bot: Bot
     let task: AgentTask?
     @State private var text = ""
-    @State private var mode = "steer"
     @State private var importing = false
     @State private var attachments: [Artifact] = []
     @State private var uploading = false
@@ -382,22 +381,6 @@ struct ConversationComposer: View {
     var body: some View {
         VStack(spacing: 0) {
             BotMentionControls(text: $text, selection: $selection, selected: $mentions, bots: store.bots, focused: focused) { focused = true }
-            if task != nil && recipients.isEmpty && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !scheduling {
-                HStack {
-                    Menu {
-                        Picker("Message behavior", selection: $mode) {
-                            Text("Steer \(executorName)'s task").tag("steer")
-                            Text("Queue a new task").tag("queue")
-                        }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Text(mode == "steer" ? "Continue with \(executorName)" : "New task")
-                            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
-                        }.font(.caption).foregroundStyle(.secondary).frame(minHeight: 44)
-                    }.accessibilityIdentifier("message-mode")
-                    Spacer()
-                }
-            }
             if !attachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
@@ -430,7 +413,6 @@ struct ConversationComposer: View {
                     }
                     Button(scheduling ? "Send now" : "Schedule task", systemImage: "clock") {
                         scheduling.toggle()
-                        if scheduling { mode = "queue" }
                     }
                 } label: {
                     Image(systemName: uploading ? "hourglass" : "plus").font(.system(size: 22))
@@ -494,13 +476,11 @@ struct ConversationComposer: View {
         let submittedAttachments = submittedArtifacts.map(\.id)
         let submittedScheduling = scheduling
         let submittedDate = scheduledAt
-        let submittedTaskId = task?.id
         let submittedRecipients = recipients.map(\.id)
         let submittedMentions = mentions
-        let submittedMode = scheduling || task == nil || !submittedRecipients.isEmpty ? "queue" : mode
         text = ""; mentions = []; selection = nil; attachments = []; scheduling = false
         Task {
-            let success = await store.send(bot: bot, text: submittedText, mode: submittedMode, taskId: submittedTaskId,
+            let success = await store.send(bot: bot, text: submittedText,
                                            attachments: submittedAttachments,
                                            scheduledAt: submittedScheduling ? ISO8601DateFormatter().string(from: submittedDate) : nil,
                                            recipientBotIds: submittedRecipients)
