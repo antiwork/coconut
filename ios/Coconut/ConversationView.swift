@@ -9,6 +9,7 @@ struct ConversationView: View {
     @State private var taskToStop: AgentTask? = nil
     @State private var didFocusDecision = false
     @State private var nearBottom = true
+    @FocusState private var composerFocused: Bool
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
     private var messages: [Message] {
@@ -77,8 +78,11 @@ struct ConversationView: View {
                         .padding(.top, 4)
                         .padding(.bottom, 14)
                     }
+                    .accessibilityIdentifier("conversation-transcript")
                     .defaultScrollAnchor(.bottom)
                     .scrollDismissesKeyboard(.interactively)
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                     .onScrollGeometryChange(for: Bool.self) { geometry in
                         geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 100
                     } action: { _, value in
@@ -112,8 +116,10 @@ struct ConversationView: View {
                     }
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    ConversationComposer(bot: bot, task: activeTask)
+                    ConversationComposer(bot: bot, task: activeTask, focused: $composerFocused)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                .onDisappear { composerFocused = false }
                 .toolbar {
                     ToolbarItem(placement: .principal) {
                         NavigationLink(value: BotSettingsRoute(botId: bot.id)) {
@@ -126,6 +132,7 @@ struct ConversationView: View {
                         }
                         .buttonStyle(.plain).accessibilityLabel("\(bot.name) settings")
                         .accessibilityIdentifier("bot-settings")
+                        .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
@@ -139,6 +146,7 @@ struct ConversationView: View {
                         } label: {
                             Image(systemName: "ellipsis").frame(width: 44, height: 44)
                         }.accessibilityLabel("Bot options")
+                            .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                     }
                 }
                 .confirmationDialog("Stop \(taskToStop.map { executorName($0) } ?? bot.name)'s task?", isPresented: $stopOpen, titleVisibility: .visible) {
@@ -372,7 +380,7 @@ struct ConversationComposer: View {
     @State private var scheduledAt = Date().addingTimeInterval(3600)
     @State private var mentions: [SelectedBotMention] = []
     @State private var selection: TextSelection?
-    @FocusState private var focused: Bool
+    @FocusState.Binding var focused: Bool
 
     private var connected: Bool { store.hasPairing || store.isDemo }
     private var recipients: [SelectedBotMention] { BotMentions.recipients(in: text, selected: mentions, bots: store.bots) }

@@ -44,6 +44,63 @@ final class ConversationLayoutFlowTests: XCTestCase {
     }
 
     @MainActor
+    func testKeyboardDismissalAndComposerStayAvailable() throws {
+        guard let url = ProcessInfo.processInfo.environment["COCONUT_LAYOUT_TEST_URL"] else {
+            throw XCTSkip("Run with scripts/test_conversation_layout.py.")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": "layout-test"]
+        app.launch()
+        let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
+        XCTAssertTrue(bot.waitForExistence(timeout: 15))
+        bot.tap()
+        let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        let transcript = app.scrollViews["conversation-transcript"]
+        for draft in ["Keep this draft.", "\nFirst detail\nSecond detail\nThird detail\nFourth detail"] {
+            input.tap()
+            input.typeText(draft)
+            assertComposerAboveKeyboard(input, app: app)
+            app.coordinate(withNormalizedOffset: .zero).withOffset(
+                CGVector(dx: transcript.frame.maxX - 12, dy: input.frame.minY - 40)
+            ).tap()
+            XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3),
+                          "Tapping the conversation must dismiss the keyboard.")
+        }
+        let savedDraft = input.value as? String
+        input.tap()
+        let latest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Latest response stays visible.")).firstMatch
+        XCTAssertTrue(latest.isHittable)
+        latest.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3),
+                      "Tapping message text must dismiss the keyboard.")
+        input.tap()
+        app.buttons["bot-settings"].tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3),
+                      "Leaving the conversation must release its text field.")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        XCTAssertEqual(input.value as? String, savedDraft)
+        input.tap()
+        assertComposerAboveKeyboard(input, app: app)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Composer remains above the keyboard after returning"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
+    @MainActor
+    private func assertComposerAboveKeyboard(_ input: XCUIElement, app: XCUIApplication) {
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 5))
+        XCTAssertTrue(input.isHittable, "The focused composer must remain visible.")
+        XCTAssertGreaterThan(input.frame.height, 20)
+        XCTAssertLessThanOrEqual(input.frame.maxY, keyboard.frame.minY + 1,
+                                 "The keyboard must not cover the composer.")
+    }
+
+    @MainActor
     private func assertTranscriptVisible(_ app: XCUIApplication, stage: String) {
         let visible = NSPredicate { _, _ in
             app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@", "message-text-"))
