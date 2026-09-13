@@ -1973,6 +1973,7 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
         while not self.stopping.is_set():
             if time.monotonic() >= next_routine_tick:
                 self.tick_routines()
+                self._sync_automatic_work()
                 next_routine_tick = time.monotonic() + 1
             self.finish_inbox_swipes()
             self._drain_returns()

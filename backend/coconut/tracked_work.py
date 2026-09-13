@@ -1,5 +1,6 @@
 """Explicit work tracking outside pull requests."""
 import re
+from datetime import datetime, timezone
 
 
 WORK_STATES = ('working', 'waiting', 'ready', 'blocked', 'completed', 'cancelled')
@@ -18,6 +19,80 @@ TRACK_WORK_SCHEMA = {
 
 
 class TrackedWork:
+    def _automatic_work_state(self, root, tasks, records, timestamp):
+        chain = self._work_chain(root, tasks, records, include_continuations=True)
+        turns = [t for t, _ in chain.values()] or [root]
+        active = [t for t in turns if t['status'] in ('queued', 'working', 'waiting', 'needs_you')]
+        if any(t['status'] == 'needs_you' for t in active):
+            return 'waiting', 'Waiting for your decision'
+        if any(self._work_live(t, records, timestamp) for t in active):
+            return 'working', 'In progress'
+        if any(t.get('_waiting_on') for t in active):
+            return 'waiting', 'Waiting for another bot'
+        if active:
+            return 'waiting', 'Queued' if all(t['status'] == 'queued' for t in active) else 'Waiting'
+        if root['status'] == 'completed':
+            return 'completed', 'Completed'
+        if root['status'] == 'cancelled':
+            return 'cancelled', 'Stopped'
+        return 'blocked', 'Needs attention'
+
+    def _sync_automatic_work(self):
+        from .service import now, uid
+        with self.transaction():
+            tasks = {t['id']: t for t in self._all('tasks')}
+            records = self._all('native_receipts')
+            artifacts = self._all('artifacts')
+            timestamp = datetime.now(timezone.utc)
+            covered = {a.get('task_id') for a in artifacts if a['kind'] in ('work', 'pr')}
+            for task in tasks.values():
+                if (task['id'] in covered or task.get('source_bot_id')
+                        or task.get('_native_job') or task.get('_assignment_task_id')
+                        or task['status'] not in ('working', 'waiting', 'needs_you')):
+                    continue
+                bot = self._get('bots', task['bot_id'])
+                if bot.get('_deleted') or bot.get('archived') or task.get('session_id') != bot.get('session_id'):
+                    continue
+                if task.get('_conversation_epoch') != self._setting('conversation_epoch'):
+                    continue
+                # Brief replies do not need a permanent Work entry.
+                started = datetime.fromisoformat(task.get('_turn_started_at', task['created_at']).replace('Z', '+00:00'))
+                if (timestamp - started).total_seconds() < 30:
+                    continue
+                human_request = self.db.execute("""SELECT 1 FROM messages
+                    WHERE json_extract(data, '$.task_id')=? AND json_extract(data, '$.role')='user'
+                    AND json_extract(data, '$.sender_bot_id') IS NULL
+                    AND COALESCE(json_extract(data, '$.reaction_event'), 0)=0 LIMIT 1""", (task['id'],)).fetchone()
+                if not human_request:
+                    continue
+                chain = self._work_chain(task, tasks, records, include_continuations=True)
+                if covered.intersection(chain):
+                    continue
+                item = dict(id=uid(), bot_id=bot['id'], task_id=task['id'], kind='work', url=None, preview='',
+                            title=task['title'][:120], activity='In progress', status='working',
+                            created_at=now(), observed_at=now(), _work_key='task-' + task['id'], _automatic_work=True)
+                artifacts.append(item)
+                covered.add(task['id'])
+                self._put('artifacts', item)
+                self._event('artifact.created', self._public(item), bot['id'], task['id'])
+            for item in artifacts:
+                if not item.get('_automatic_work') or item.get('_hidden') or item.get('task_id') not in tasks:
+                    continue
+                chain = self._work_chain(tasks[item['task_id']], tasks, records, include_continuations=True)
+                if any(a['kind'] == 'pr' and a.get('task_id') in chain for a in artifacts):
+                    item['_hidden'] = True
+                    self._put('artifacts', item)
+                    self._event('artifact.updated', dict(self._public(item), _hidden=True), item['bot_id'], item['task_id'])
+                    continue
+                state, activity = self._automatic_work_state(tasks[item['task_id']], tasks, records, timestamp)
+                if (item['status'], item['activity']) == (state, activity):
+                    continue
+                item.update(status=state, activity=activity, observed_at=now())
+                if state not in ('completed', 'cancelled'):
+                    self.db.execute('DELETE FROM settings WHERE key=?', ('work.dismissed.work:' + item['id'],))
+                self._put('artifacts', item)
+                self._event('artifact.updated', self._public(item), item['bot_id'], item['task_id'])
+
     def _register_work(self, task_id, payload):
         from .service import ServiceError, YieldForDecision, now, require_text, uid
         key = require_text(payload, 'key', 80)
@@ -33,6 +108,8 @@ class TrackedWork:
                 raise YieldForDecision('This task no longer accepts provider output.')
             item = next((a for a in self._all('artifacts') if a['kind'] == 'work'
                          and a['bot_id'] == bot['id'] and a.get('_work_key') == key), None)
+            if item is None:
+                item = next((a for a in self._all('artifacts') if a.get('_automatic_work') and a.get('task_id') == task_id), None)
             created = item is None
             if item:
                 owner = self._get('tasks', item['task_id'])
@@ -41,15 +118,21 @@ class TrackedWork:
             else:
                 item = dict(id=uid(), bot_id=bot['id'], kind='work', url=None, preview='', created_at=now(), _work_key=key)
             item.update(task_id=task_id, title=title, activity=activity, status=state,
-                        _work_turn=task.get('_native_turn_id'), observed_at=now())
+                        _work_turn=task.get('_native_turn_id'), observed_at=now(), _work_key=key, _automatic_work=False, _hidden=False)
             if state not in ('completed', 'cancelled'):
                 self.db.execute('DELETE FROM settings WHERE key=?', ('work.dismissed.work:' + item['id'],))
             self._put('artifacts', item)
+            for automatic in self._all('artifacts'):
+                if (automatic.get('_automatic_work') and not automatic.get('_hidden')
+                        and automatic.get('task_id') == task_id and automatic['id'] != item['id']):
+                    automatic['_hidden'] = True
+                    self._put('artifacts', automatic)
+                    self._event('artifact.updated', dict(self._public(automatic), _hidden=True), bot['id'], task_id)
             self._event('artifact.created' if created else 'artifact.updated', self._public(item), bot['id'], task_id)
             return dict(self._public(item), key=key)
 
     def _tracked_items_input(self, task):
-        items = [a for a in self._all('artifacts') if a['kind'] == 'work' and a['bot_id'] == task['bot_id']]
+        items = [a for a in self._all('artifacts') if a['kind'] == 'work' and not a.get('_hidden') and a['bot_id'] == task['bot_id']]
         items = self._work_projection(items)
         items.sort(key=lambda a: (a['status'] not in ('completed', 'cancelled'), a['observed_at']), reverse=True)
         return [dict(key=a['_work_key'], title=a['title'], status=a['status'],
@@ -61,7 +144,9 @@ class TrackedWork:
                 continue
             task = tasks.get(item.get('task_id'))
             state, activity = item['status'], item['activity']
-            if state not in ('completed', 'cancelled'):
+            if item.get('_automatic_work') and task:
+                state, activity = self._automatic_work_state(task, tasks, records, timestamp)
+            elif state not in ('completed', 'cancelled'):
                 if not task or task['status'] in ('failed', 'paused'):
                     state, activity = 'blocked', 'Needs attention'
                 elif task['status'] == 'cancelled':

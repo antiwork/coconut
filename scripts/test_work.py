@@ -35,7 +35,8 @@ def main():
     first = pr(42, 'Fix the refund email', 'running')
     duplicate = dict(first, id=str(uuid4()))
     closed = pr(45, 'Already merged', 'passed'); closed['pr_state'] = 'merged'
-    state.update(bots=[bot], tasks=[task], decisions=[], messages=[],
+    decision.update(status='pending')
+    state.update(bots=[bot], tasks=[task], decisions=[decision], messages=[],
                  artifacts=[first, duplicate, pr(43, 'Restore failed downloads', 'failed'),
                             pr(44, 'Update account settings', 'passed', refresh_error='GitHub is unreachable.'), closed],
                  server_time=stamp, cursor=50, push_configured=False)
@@ -64,7 +65,12 @@ def main():
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
             url = urlsplit(self.path)
-            if url.path == '/test/complete':
+            if url.path == '/test/work-state':
+                item = next(a for a in state['artifacts'] if a['id'] == 'export-active')
+                item.update(status=body['status'], activity_state=body['status'], activity=body['activity'])
+                if body.get('resolved'): state['decisions'] = []
+                self.respond(dict(ok=True))
+            elif url.path == '/test/complete':
                 state['artifacts'] = []
                 self.respond(dict(ok=True))
             elif url.path.startswith('/v1/work/items/') and url.path.endswith('/dismiss'):
@@ -80,7 +86,11 @@ def main():
             if urlsplit(self.path).path == '/v1/events':
                 time.sleep(1)
                 self.respond(dict(events=[], cursor=50, server_time=state['server_time']))
-            else: self.respond(state)
+            else:
+                observed = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+                for item in state['artifacts']:
+                    if item['kind'] == 'work': item['activity_observed_at'] = observed
+                self.respond(state)
 
         def do_PUT(self): self.respond(dict(registered=True, configured=False))
         def do_DELETE(self): self.respond(dict(registered=False, configured=False))

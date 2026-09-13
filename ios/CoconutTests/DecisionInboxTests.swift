@@ -38,6 +38,24 @@ final class DecisionInboxTests: XCTestCase {
     }
 
     @MainActor
+    func testInboxBadgeIncludesLaterAndExcludesResolvedOrAnswering() throws {
+        let store = AppStore(demo: true)
+        var decision = try XCTUnwrap(store.decisions.first)
+        decision.status = "pending"
+        store.decisions = [decision]
+        XCTAssertEqual(store.inboxBadgeCount, 1)
+        store.answeringDecisionIds.insert(decision.id)
+        XCTAssertEqual(store.inboxBadgeCount, 0)
+        store.answeringDecisionIds.remove(decision.id)
+        XCTAssertEqual(store.inboxBadgeCount, 1)
+        for status in ["dismissed", "approved", "executed", "rejected"] {
+            decision.status = status
+            store.decisions = [decision]
+            XCTAssertEqual(store.inboxBadgeCount, 0)
+        }
+    }
+
+    @MainActor
     func testChatLinkTargetsTheCardWithinItsConversation() throws {
         let store = AppStore(demo: true)
         var decision = try XCTUnwrap(store.decisions.first)

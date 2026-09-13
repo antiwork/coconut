@@ -62,6 +62,7 @@ final class AppStore {
     var hasPairing: Bool { pairing != nil }
     var isBusy: Bool { writeCount > 0 }
     var pendingDecisions: [Decision] { decisions.filter(\.isPending) }
+    var inboxBadgeCount: Int { pendingDecisions.filter { !answeringDecisionIds.contains($0.id) }.count }
     var activeTasks: [AgentTask] { tasks.filter(\.isActive) }
     func isBotActive(_ bot: Bot) -> Bool {
         guard !bot.archived else { return false }

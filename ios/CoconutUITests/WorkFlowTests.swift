@@ -2,6 +2,41 @@ import XCTest
 
 final class WorkFlowTests: XCTestCase {
     @MainActor
+    func testPersistentWorkAndInboxBadge() async throws {
+        guard let address = ProcessInfo.processInfo.environment["COCONUT_WORK_TEST_URL"] else { throw XCTSkip("Run the Work fixture.") }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "work-test"]
+        app.launch()
+        let inbox = app.tabBars.buttons["Inbox"]
+        XCTAssertTrue(inbox.waitForExistence(timeout: 15))
+        app.tabBars.buttons["Work"].tap()
+        let item = app.buttons["work-item-export-active"]
+        XCTAssertTrue(item.waitForExistence(timeout: 15))
+        for (status, activity) in [("waiting", "Waiting for another bot"), ("working", "Preparing the export")] {
+            var request = URLRequest(url: URL(string: address + "/test/work-state")!)
+            request.httpMethod = "POST"
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["status": status, "activity": activity])
+            _ = try await URLSession.shared.data(for: request)
+            XCTAssertTrue(app.staticTexts[activity].waitForExistence(timeout: 25))
+            XCTAssertTrue(item.exists)
+        }
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Persistent Work and pending Inbox badge"; proof.lifetime = .keepAlways; add(proof)
+        var request = URLRequest(url: URL(string: address + "/test/work-state")!)
+        request.httpMethod = "POST"
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["status": "working", "activity": "Checking the completed export", "resolved": true])
+        _ = try await URLSession.shared.data(for: request)
+        XCTAssertTrue(app.staticTexts["Checking the completed export"].waitForExistence(timeout: 25))
+        let resolvedProof = XCTAttachment(screenshot: app.screenshot())
+        resolvedProof.name = "Inbox badge clears after the decision is resolved"
+        resolvedProof.lifetime = .keepAlways; add(resolvedProof)
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["status": "working", "activity": "Preparing the export"])
+        _ = try await URLSession.shared.data(for: request)
+        XCTAssertTrue(app.staticTexts["Preparing the export"].waitForExistence(timeout: 25))
+    }
+
+    @MainActor
     func testWorkListAndConversationNavigation() async throws {
         guard let address = ProcessInfo.processInfo.environment["COCONUT_WORK_TEST_URL"] else { throw XCTSkip("Run the Work fixture.") }
         continueAfterFailure = false

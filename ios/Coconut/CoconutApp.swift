@@ -84,7 +84,8 @@ struct CoconutHome: View {
                 Label { Text("Inbox") } icon: {
                     Image(systemName: "tray").environment(\.symbolVariants, .none)
                 }
-            }.accessibilityIdentifier("home-inbox")
+            }.badge(store.inboxBadgeCount)
+                .accessibilityIdentifier("home-inbox")
         }
         .modifier(NativeTabCollapse())
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
