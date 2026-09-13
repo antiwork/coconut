@@ -10,6 +10,7 @@ enum TranscriptPresentation {
     static func visibleMessages(_ messages: [Message], artifacts: [Artifact]) -> [Message] {
         let byID = Dictionary(artifacts.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
         return messages.filter { message in
+            if message.reactionEvent != nil { return false }
             if isSettingsNotice(message) { return false }
             let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 .trimmingCharacters(in: CharacterSet(charactersIn: ".!…")).lowercased()

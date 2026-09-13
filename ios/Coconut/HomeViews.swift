@@ -30,11 +30,6 @@ struct HomeLaunchView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 24).padding(.bottom, 24)
                 }
-                NavigationLink(value: HomeDestination.inbox) { HomeInboxRow() }
-                    .buttonStyle(HomePressStyle())
-                    .accessibilityIdentifier("home-inbox")
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 12)
                 ForEach(conversations) { bot in
                     NavigationLink(value: ConversationRoute(botId: bot.id)) {
                         BotContactRow(bot: bot)
@@ -108,7 +103,7 @@ struct HomeLaunchView: View {
         return store.messages.contains { $0.botId == bot.id && $0.kind == "text" && $0.text.localizedCaseInsensitiveContains(query) }
     }
     private func lastActivity(_ bot: Bot) -> Date {
-        store.messages.filter { $0.botId == bot.id }.compactMap { $0.createdAt.apiDate }.max()
+        store.messages.filter { $0.botId == bot.id && $0.reactionEvent == nil }.compactMap { $0.createdAt.apiDate }.max()
             ?? bot.createdAt.apiDate ?? .distantPast
     }
 }
@@ -119,9 +114,9 @@ struct HomePressStyle: ButtonStyle {
     }
 }
 
-private func latestConversationMessage(in messages: [Message]) -> Message? {
+func latestConversationMessage(in messages: [Message]) -> Message? {
     let textMessages = messages.filter {
-        $0.kind == "text" && ["user", "assistant"].contains($0.role)
+        $0.kind == "text" && $0.reactionEvent == nil && ["user", "assistant"].contains($0.role)
             && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     // Older hosts stored this completion event as a text message.
@@ -130,41 +125,6 @@ private func latestConversationMessage(in messages: [Message]) -> Message? {
     }
     return (content.isEmpty ? textMessages : content).max {
         ($0.createdAt.apiDate ?? .distantPast) < ($1.createdAt.apiDate ?? .distantPast)
-    }
-}
-
-private struct HomeInboxRow: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    private var pending: [Decision] { store.decisions.filter(\.isPending) }
-    private var preview: String {
-        if let decision = InboxPresentation.threads(decisions: pending, tasks: store.tasks).first?.decision {
-            let name = store.bots.first { $0.id == decision.botId }?.name ?? "Bot"
-            return "\(name): \(decision.title)"
-        }
-        return "No pending decisions"
-    }
-
-    var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "tray")
-                .font(.system(size: 22, weight: .light)).foregroundStyle(.primary)
-                .frame(width: 46, height: 46)
-                .background(BoardStyle.ink.opacity(0.07), in: RoundedRectangle(cornerRadius: 15))
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text("Inbox").font(.body.weight(.semibold)).foregroundStyle(.primary)
-                    Spacer()
-                    if !pending.isEmpty {
-                        Text("\(pending.count)").font(.caption.weight(.semibold)).foregroundStyle(BoardStyle.accent)
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(BoardStyle.accent.opacity(0.1), in: Capsule())
-                    }
-                }
-                Text(preview).font(.subheadline).foregroundStyle(.secondary)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-            }
-        }.frame(minHeight: 52)
     }
 }
 
@@ -263,73 +223,5 @@ struct ArchivedBotsView: View {
         }
         .listStyle(.plain).scrollContentBackground(.hidden).background(BoardStyle.paper)
         .navigationTitle("Archived").navigationBarTitleDisplayMode(.inline)
-    }
-}
-
-struct DecisionInboxView: View {
-    @Environment(AppStore.self) private var store
-    private var threads: [PendingDecisionThread] {
-        InboxPresentation.threads(decisions: store.decisions, tasks: store.tasks)
-    }
-
-    var body: some View {
-        List {
-            if threads.isEmpty {
-                QuietEmptyState(symbol: "tray", title: "No pending decisions", message: "Decisions that need your answer appear here.")
-                    .listRowBackground(Color.clear).listRowSeparator(.hidden)
-                    .accessibilityIdentifier("inbox-empty")
-            }
-            ForEach(threads) { thread in
-                NavigationLink(value: ConversationRoute(botId: store.conversationBotId(for: thread.decision), decisionId: thread.decision.id)) {
-                    InboxThreadRow(thread: thread)
-                }
-                .accessibilityIdentifier("inbox-thread-\(thread.id)")
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 12, leading: 20, bottom: 12, trailing: 16))
-                .alignmentGuide(.listRowSeparatorLeading) { _ in 46 }
-            }
-        }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .refreshable { await store.reconnect() }
-        .background(BoardStyle.paper)
-    }
-}
-
-struct InboxThreadRow: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    let thread: PendingDecisionThread
-    private var decision: Decision { thread.decision }
-    private var bot: Bot? { store.bots.first { $0.id == decision.botId } }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            if let bot { BotAvatar(bot: bot, size: 34) }
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(bot?.name ?? "Bot").font(.subheadline.weight(.semibold))
-                    if thread.decisions.count > 1 {
-                        Text("\(thread.decisions.count) decisions").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 8)
-                    if ["high", "critical"].contains(decision.urgency) {
-                        Image(systemName: "exclamationmark.circle")
-                            .font(.caption).foregroundStyle(BoardStyle.accent)
-                            .accessibilityLabel("Urgent")
-                    }
-                    if let date = decision.createdAt.apiDate {
-                        CompactAgeLabel(date: date).font(.caption2).foregroundStyle(.tertiary)
-                    }
-                }
-                Text(decision.title).font(.subheadline.weight(.semibold))
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                    .accessibilityIdentifier("inbox-subject-\(thread.id)")
-                Text(decision.explanation)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-            }
-        }
-        .frame(minHeight: 56, alignment: .top)
     }
 }

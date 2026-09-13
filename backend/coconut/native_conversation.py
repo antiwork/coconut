@@ -1,5 +1,6 @@
 """Resume each bot through native Hermes history and compression lineage."""
 from datetime import datetime
+import json
 from uuid import UUID, uuid5
 
 
@@ -33,9 +34,39 @@ def current_messages(request):
             and (message['id'] in identities if identities is not None else message.get('task_id') == request['task']['id'])]
 
 
+def message_content(message):
+    text = message['text']
+    reference = message.get('reply_to')
+    if reference:
+        # Match the native gateway's reply context. Keep the entire quoted message.
+        own = reference.get('author_bot_id') in message.get('recipient_bot_ids', [])
+        who = (' your previous message' if own else f" {reference['author']}'s message") if reference['role'] == 'assistant' else ''
+        text = f'[Replying to{who}: "{reference["text"]}"]\n\n{text}'
+    if message.get('reaction_event'):
+        text = ('The person changed an emoji reaction on the quoted message. '
+                'Treat it as feedback. It does not approve, reject, or select a pending decision. '
+                'Do not infer permission for a new action. Use the conversation to decide whether a useful response is needed.\n'
+                + text)
+    if message.get('bot_mentions'):
+        text += ('\n\n[Bot references: ' + json.dumps(message['bot_mentions'])
+                 + '. These mentions identify bots for you. The person is addressing this chat. '
+                 'A mention alone does not send a message, delegate work, or change the recipient.]')
+    return text
+
+
+def decision_context(request, decision):
+    context = dict(decision)
+    source = next((message for message in visible_history(request.get('history', []))
+                   if message['id'] == decision.get('request_message_id')), None)
+    if source:
+        # Recover the exact reference after native compaction, including a quoted reply.
+        context['request_text'] = message_content(source)
+    return context
+
+
 def current_message(request):
     messages = current_messages(request)
-    return dict(messages[-1], text='\n\n'.join(message['text'] for message in messages)) if messages else None
+    return dict(messages[-1], text='\n\n'.join(message_content(message) for message in messages)) if messages else None
 
 
 def seed_messages(request):
@@ -45,7 +76,7 @@ def seed_messages(request):
         rows = rows[:rows.index(current[0])]
     result = []
     for message in rows:
-        row = dict(role=message['role'], content=message['text'],
+        row = dict(role=message['role'], content=message_content(message),
                    platform_message_id='coconut:' + message['id'])
         if message.get('created_at'):
             row['timestamp'] = datetime.fromisoformat(message['created_at'].replace('Z', '+00:00')).timestamp()

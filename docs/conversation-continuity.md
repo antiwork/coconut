@@ -29,6 +29,13 @@ The bot handles context limits and compaction internally. The interface has no s
 The bot still answers direct technical questions accurately and admits missing facts when retrieval fails.
 Current service identity takes precedence over an old bot name in saved notes.
 
+Replies and reactions carry the exact referenced message into the new native turn.
+Card answers and follow-up questions carry the original human input and the current recorded decision.
+These references survive native compaction and continuation without restoring the full app transcript to model context.
+A reaction gives feedback; it does not authorize a pending action.
+A card answer uses its current revision and exact recorded action. Completed effects remain protected by execution receipts.
+Read-only bot exchanges open at their most recent message. New messages do not move someone reading older messages.
+
 Settings contains one `Restart Bots` action for all bots.
 It records a durable, idempotent request for fresh native working conversations after current work finishes.
 It does not interrupt an executing action or repeat its effect.
@@ -49,3 +56,17 @@ It tests old-message import and continuation after service restart with tools fo
 Separate checks cover native compaction, native continuation, history search, and global restart.
 It checks that another bot cannot see the test bot's private history.
 The check does not modify upstream Hermes or existing bot conversations.
+
+
+Delegated work uses a task list from Hermes. Coconut saves the native snapshot with tool receipts and decisions, then restores it for the same assignment. The list stays out of the chat UI. A finished reply does not complete an assignment with pending items. Coconut queues a continuation unless a recorded process, handoff, or decision owns the next step. After two unsuccessful automatic continuations, Coconut reports an unfinished-work failure to the owner. New input or a recorded dependency result resets that retry budget.
+
+Progress messages to the requesting bot preserve its dependency. They cannot suppress the final result. The model must verify each outcome before marking its native task items complete. Coconut does not infer completion, authorization, or future scheduling from prose. This guards lifecycle errors; it does not prove the model's assessment of task correctness.
+
+### Native schedules in Coconut
+
+Coconut's scheduler claims native Hermes jobs and queues durable bot turns. It does not require a standalone Hermes gateway.
+The cron tool reports Coconut's observed scheduler health and each job's support status. A saved or paused job does not imply active execution.
+Coconut uses Hermes to assemble scheduled prompts, load skills, include prior outputs, and check model drift. The worker scopes the job's working directory to its turn.
+Script-only jobs, monitors, explicit model routes, profile cron model defaults, and toolset overrides remain unsupported. Coconut reports these fields and leaves their jobs unchanged.
+Quiet runs use Hermes' native silence rule. Coconut records successful completion without publishing the silence marker or replacing prior useful output.
+Scheduled turns retain Coconut's gateway approval path. They can pause for a decision and resume with the recorded answer.

@@ -5,15 +5,30 @@ struct ConversationView: View {
     @Environment(AppStore.self) private var store
     let botId: String
     var focusDecisionId: String? = nil
+    var focusMessageId: String? = nil
+    private var focusTarget: String? { focusDecisionId ?? focusMessageId.map { store.displayedMessageId(for: $0) } }
+    private var focusTargetExists: Bool {
+        if let focusDecisionId { return store.decisions.contains { $0.id == focusDecisionId } }
+        if focusMessageId != nil, let focusTarget { return messages.contains { $0.id == focusTarget } }
+        return false
+    }
+    @State private var messageDraft = ""
+    @State private var replyTo: MessageReference?
+    @State private var messageAttachments: [Artifact] = []
+    @State private var messageScheduling = false
+    @State private var messageScheduledAt = Date().addingTimeInterval(3600)
+    @State private var messageMentions: [SelectedBotMention] = []
     @State private var stopOpen = false
     @State private var taskToStop: AgentTask? = nil
     @State private var didFocusDecision = false
     @State private var nearBottom = true
+    @State private var userScrolling = false
     @FocusState private var composerFocused: Bool
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
     private var messages: [Message] {
         TranscriptPresentation.visibleMessages(store.conversationMessages(for: botId), artifacts: store.artifacts)
+            .filter { $0.kind != "activity" }
     }
     private var waitingForResponse: [AgentTask] {
         guard store.connection == .connected || store.isDemo else { return [] }
@@ -34,12 +49,12 @@ struct ConversationView: View {
 
 
     var body: some View {
+        let messages = messages
         Group {
             if let bot {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        // Measure message heights before applying scroll and keyboard offsets.
-                        VStack(alignment: .leading, spacing: 10) {
+                        LazyVStack(alignment: .leading, spacing: 10) {
                             conversationHeader(bot: bot)
                             ForEach(store.tasks.filter {
                                 $0.botId == botId && $0.sourceBotId == nil && ($0.conversationBotId ?? botId) != botId
@@ -58,7 +73,10 @@ struct ConversationView: View {
                                 if entry.isExchange {
                                     BotExchangeRow(messages: entry.messages, botId: botId)
                                 } else {
-                                transcriptRow(message) { id in proxy.scrollTo(id, anchor: .top) }
+                                transcriptRow(message) { id in
+                                    nearBottom = false
+                                    proxy.scrollTo(id, anchor: .top)
+                                }
                                 }
                                 }
                                     .id(message.kind == "decision" ? (message.decisionId ?? entry.id) : entry.id)
@@ -79,17 +97,25 @@ struct ConversationView: View {
                         .padding(.bottom, 14)
                     }
                     .accessibilityIdentifier("conversation-transcript")
-                    .defaultScrollAnchor(.bottom)
+                    .defaultScrollAnchor(focusTarget == nil ? .bottom : .top, for: .initialOffset)
+                    .defaultScrollAnchor(focusTarget == nil ? .bottom : .top, for: .alignment)
                     .scrollDismissesKeyboard(.interactively)
                     .contentShape(Rectangle())
                     .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                     .onScrollGeometryChange(for: Bool.self) { geometry in
                         geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 100
                     } action: { _, value in
-                        nearBottom = value
+                        // Only a user scroll changes whether new messages follow the bottom.
+                        if userScrolling { nearBottom = value }
+                    }
+                    .onScrollPhaseChange { _, phase in
+                        userScrolling = phase == .interacting || phase == .decelerating
+                    }
+                    .onScrollGeometryChange(for: CGSize.self) { $0.contentSize } action: { _, _ in
+                        if nearBottom && (focusTarget == nil || didFocusDecision) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onScrollGeometryChange(for: CGSize.self) { $0.containerSize } action: { _, _ in
-                        if nearBottom && focusDecisionId == nil { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                        if nearBottom && (focusTarget == nil || didFocusDecision) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onChange(of: waitingBotIds) { _, _ in
                         if nearBottom { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
@@ -107,16 +133,20 @@ struct ConversationView: View {
                     }
                     .background(BoardStyle.paper)
                     .task { await store.markRead(bot) }
-                    .task(id: store.decisions.contains { $0.id == focusDecisionId }) {
-                        guard let focusDecisionId, !didFocusDecision,
-                              store.decisions.contains(where: { $0.id == focusDecisionId }) else { return }
+                    .task(id: focusTargetExists) {
+                        guard let focusTarget, !didFocusDecision, focusTargetExists else { return }
                         nearBottom = false
-                        proxy.scrollTo(focusDecisionId, anchor: .top)
+                        await Task.yield()
+                        guard !Task.isCancelled else { return }
+                        proxy.scrollTo(focusTarget, anchor: .top)
                         didFocusDecision = true
                     }
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    ConversationComposer(bot: bot, task: activeTask, focused: $composerFocused)
+                    ConversationComposer(bot: bot, task: activeTask, text: $messageDraft,
+                                         attachments: $messageAttachments, scheduling: $messageScheduling,
+                                         scheduledAt: $messageScheduledAt, mentions: $messageMentions,
+                                         focused: $composerFocused, replyTo: $replyTo)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .onDisappear { composerFocused = false }
@@ -200,7 +230,10 @@ struct ConversationView: View {
 
     @ViewBuilder
     private func transcriptRow(_ message: Message, scrollToDecision: @escaping (String) -> Void) -> some View {
-        TranscriptMessageRow(message: message, scrollToDecision: scrollToDecision)
+        TranscriptMessageRow(message: message, scrollToDecision: scrollToDecision, onReply: {
+            replyTo = store.messageReference(for: message)
+            composerFocused = true
+        })
     }
 }
 
@@ -208,6 +241,7 @@ struct TranscriptMessageRow: View {
     @Environment(AppStore.self) private var store
     let message: Message
     var scrollToDecision: (String) -> Void = { _ in }
+    var onReply: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -237,10 +271,8 @@ struct TranscriptMessageRow: View {
         } else if message.kind == "artifact", let id = message.artifactId,
                   let artifact = store.artifacts.first(where: { $0.id == id }) {
             ArtifactCard(artifact: artifact)
-        } else if message.kind == "activity" {
-            ActivityMessageRow(message: message)
         } else {
-            MessageBubble(message: message, scrollToDecision: scrollToDecision)
+            MessageBubble(message: message, scrollToDecision: scrollToDecision, onReply: onReply)
         }
         }
     }
@@ -253,15 +285,26 @@ struct TranscriptMessageRow: View {
 struct MessageBubble: View {
     @Environment(AppStore.self) private var store
     @State private var editingOutgoing: OutgoingMessage?
+    @State private var replyOffset: CGFloat = 0
+    @State private var actionsOpen = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let message: Message
     var scrollToDecision: (String) -> Void = { _ in }
+    var onReply: (() -> Void)? = nil
     private var isUser: Bool { message.role == "user" }
     private var displayText: String { message.text.trimmingCharacters(in: .newlines) }
 
     var body: some View {
         HStack {
             if isUser { Spacer(minLength: 36) }
+            VStack(alignment: isUser ? .trailing : .leading, spacing: 3) {
             VStack(alignment: .leading, spacing: 4) {
+                if let reference = message.replyTo {
+                    Button { scrollToDecision(store.displayedMessageId(for: reference.messageId)) } label: {
+                        MessageQuote(reference: reference)
+                    }.buttonStyle(.plain).accessibilityLabel("View replied message from \(reference.author)")
+                        .accessibilityIdentifier("message-quote-\(message.id)")
+                }
                 if let decisionId = message.decisionId {
                     Button { scrollToDecision(decisionId) } label: {
                         Label("View decision", systemImage: "arrow.turn.up.left")
@@ -269,7 +312,7 @@ struct MessageBubble: View {
                             .frame(minHeight: 44)
                     }.buttonStyle(.plain)
                 }
-                MessageText(text: displayText, linkColor: isUser ? BoardStyle.userBubbleLink : .blue)
+                MessageText(text: displayText, linkColor: isUser ? BoardStyle.userBubbleLink : .blue, allowsTextSelection: false)
                     .accessibilityIdentifier("message-text-\(message.id)")
                 if let requestId = message.clientRequestId,
                    let outgoing = store.outgoingMessages.first(where: { $0.id == requestId }) {
@@ -289,12 +332,78 @@ struct MessageBubble: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
             .background(isUser ? BoardStyle.userBubble : BoardStyle.surface, in: RoundedRectangle(cornerRadius: 22))
+            .simultaneousGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                actionsOpen = true
+            })
+            .popover(isPresented: $actionsOpen, arrowEdge: .bottom) {
+                VStack(spacing: 8) {
+                    if onReply != nil, store.messageReference(for: message) != nil {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
+                            ForEach(MessageReactions.all.indices, id: \.self) { reactionButton($0) }
+                        }
+                        Divider()
+                        Button { actionsOpen = false; onReply?() } label: {
+                            Label("Reply", systemImage: "arrowshape.turn.up.left").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                    }
+                    Button { UIPasteboard.general.string = message.text; actionsOpen = false } label: {
+                        Label("Copy", systemImage: "doc.on.doc").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    }
+                }.buttonStyle(.plain).padding(12).frame(width: 280)
+                    .presentationCompactAdaptation(.popover)
+            }
+                let reactions = store.reactions(for: message)
+                if !reactions.isEmpty {
+                    HStack(spacing: 3) {
+                        ForEach(MessageReactions.all.filter { reactions.contains($0) }, id: \.self) { emoji in
+                            Button { Task { await store.react(to: message, emoji: emoji) } } label: {
+                                Text(emoji).font(.caption).frame(minWidth: 28, minHeight: 32)
+                            }.buttonStyle(.plain).accessibilityLabel("Remove \(emoji) reaction")
+                                .disabled(onReply == nil)
+                        }
+                    }.padding(.horizontal, 5)
+                        .background(BoardStyle.surface, in: Capsule()).overlay(Capsule().stroke(BoardStyle.line))
+                        .accessibilityIdentifier("message-reactions-\(message.id)")
+                }
+            }
             if !isUser { Spacer(minLength: 18) }
         }
+        .offset(x: replyOffset)
+        .background(alignment: .leading) {
+            Image(systemName: "arrowshape.turn.up.left.fill").font(.body)
+                .foregroundStyle(.secondary).opacity(min(replyOffset / 55, 1))
+        }
+        .gesture(MessageReplyGesture(enabled: onReply != nil && store.messageReference(for: message) != nil,
+            changed: { replyOffset = min(72, $0 * 0.7) }, ended: { shouldReply in
+                if shouldReply { onReply?() }
+                withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.8)) { replyOffset = 0 }
+            }))
+        .accessibilityAction(named: "Reply") { onReply?() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(isUser ? "You" : store.bots.first { $0.id == (message.senderBotId ?? message.botId) }?.name ?? "Deleted bot")")
         .accessibilityValue(message.streaming ? "Response is streaming" : "")
         .sheet(item: $editingOutgoing) { RejectedMessageEditor(outgoing: $0) }
+    }
+    private func reactionButton(_ index: Int) -> some View {
+        let emoji = MessageReactions.all[index]
+        return Button { actionsOpen = false; Task { await store.react(to: message, emoji: emoji) } } label: {
+            Text(emoji).font(.system(size: 30)).frame(maxWidth: .infinity, minHeight: 56)
+                .background(store.reactions(for: message).contains(emoji) ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 12))
+        }.accessibilityLabel(MessageReactions.names[index])
+    }
+}
+
+struct MessageQuote: View {
+    let reference: MessageReference
+    var body: some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 2).fill(.secondary).frame(width: 3)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(reference.author).font(.caption.weight(.semibold))
+                Text(reference.text).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }.fixedSize(horizontal: false, vertical: true).padding(.vertical, 5)
     }
 }
 
@@ -350,43 +459,21 @@ private struct BotWorkingIndicator: View {
     }
 }
 
-struct ActivityMessageRow: View {
-    let message: Message
-    @State private var expanded = false
-    private var summary: String { message.text.components(separatedBy: "\n").first ?? message.text }
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            Text(message.text).font(.caption.monospaced()).foregroundStyle(.secondary)
-                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 8)
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "terminal").font(.caption)
-                Text(summary).font(.caption).lineLimit(1)
-            }.foregroundStyle(.secondary)
-        }
-        .tint(.secondary)
-        .padding(.horizontal, 12).padding(.vertical, 6)
-        .frame(minHeight: 44)
-        .accessibilityIdentifier("activity-row")
-    }
-}
-
 struct ConversationComposer: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let bot: Bot
     let task: AgentTask?
-    @State private var text = ""
+    @Binding var text: String
     @State private var importing = false
-    @State private var attachments: [Artifact] = []
+    @Binding var attachments: [Artifact]
     @State private var uploading = false
-    @State private var scheduling = false
-    @State private var scheduledAt = Date().addingTimeInterval(3600)
-    @State private var mentions: [SelectedBotMention] = []
+    @Binding var scheduling: Bool
+    @Binding var scheduledAt: Date
+    @Binding var mentions: [SelectedBotMention]
     @State private var selection: TextSelection?
     @FocusState.Binding var focused: Bool
+    @Binding var replyTo: MessageReference?
 
     private var connected: Bool { store.hasPairing || store.isDemo }
     private var recipients: [SelectedBotMention] { BotMentions.recipients(in: text, selected: mentions, bots: store.bots) }
@@ -394,6 +481,14 @@ struct ConversationComposer: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let reference = replyTo {
+                HStack(spacing: 8) {
+                    MessageQuote(reference: reference)
+                    Button { replyTo = nil } label: {
+                        Image(systemName: "xmark").foregroundStyle(.secondary).frame(width: 44, height: 44)
+                    }.accessibilityLabel("Cancel reply")
+                }.padding(.horizontal, 12).accessibilityIdentifier("reply-preview")
+            }
             BotMentionControls(text: $text, selection: $selection, selected: $mentions, bots: store.bots, focused: focused) { focused = true }
             if !attachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -486,21 +581,22 @@ struct ConversationComposer: View {
     private func send() {
         guard canSend else { return }
         let submittedText = text
+        let submittedReply = replyTo
         let submittedArtifacts = attachments
         let submittedAttachments = submittedArtifacts.map(\.id)
         let submittedScheduling = scheduling
         let submittedDate = scheduledAt
         let submittedRecipients = recipients.map(\.id)
         let submittedMentions = mentions
-        text = ""; mentions = []; selection = nil; attachments = []; scheduling = false
+        text = ""; mentions = []; selection = nil; attachments = []; scheduling = false; replyTo = nil
         Task {
             let success = await store.send(bot: bot, text: submittedText,
                                            attachments: submittedAttachments,
                                            scheduledAt: submittedScheduling ? ISO8601DateFormatter().string(from: submittedDate) : nil,
-                                           recipientBotIds: submittedRecipients)
+                                           mentionedBotIds: submittedRecipients, replyTo: submittedReply)
             if !success && text.isEmpty {
                 text = submittedText; mentions = submittedMentions; attachments = submittedArtifacts
-                scheduling = submittedScheduling; scheduledAt = submittedDate
+                scheduling = submittedScheduling; scheduledAt = submittedDate; replyTo = submittedReply
             }
         }
     }

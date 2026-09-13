@@ -7,6 +7,11 @@ struct MCPSettingsView: View {
     var body: some View {
         List {
             Section {
+                NavigationLink { GoogleSettingsView() } label: {
+                    Text("Google")
+                }.accessibilityIdentifier("google-settings")
+            }
+            Section {
                 ForEach(store.mcpServers) { server in
                     NavigationLink { MCPConnectionView(server: server) } label: {
                         VStack(alignment: .leading, spacing: 4) {
@@ -19,8 +24,10 @@ struct MCPSettingsView: View {
                 Button { adding = true } label: {
                     Label("Add connection", systemImage: "plus")
                 }.accessibilityIdentifier("add-mcp")
+            } header: {
+                Text("MCP servers")
             } footer: {
-                Text("Connections are available to all bots. Hermes stores their settings on your Mac.")
+                Text("MCP connections are available to all bots. Hermes stores their settings on your Mac.")
             }
         }
         .navigationTitle("Connections").navigationBarTitleDisplayMode(.inline)

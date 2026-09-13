@@ -82,7 +82,7 @@ class NativeExecutionTests(unittest.TestCase):
         state = self.service.snapshot()
         self.assertEqual(state['decisions'][0]['id'], decision['id'])
         self.assertEqual(state['tasks'][0]['status'], 'needs_you')
-        result = self.write('POST', f"/v1/decisions/{decision['id']}/answer", {'option_id': 'once'})
+        result = self.write('POST', f"/v1/decisions/{decision['id']}/answer", {'option_id': 'once', 'revision': decision['revision']})
         self.assertEqual(result['status'], 'approved')
         self.assertEqual(self.service.snapshot()['tasks'][0]['status'], 'queued')
 
@@ -137,7 +137,7 @@ class NativeExecutionTests(unittest.TestCase):
         context = self.request_context(decision)
         self.context_call(context)
         self.restart()
-        self.write('POST', f"/v1/decisions/{decision['id']}/answer", {'option_id': 'once'})
+        self.write('POST', f"/v1/decisions/{decision['id']}/answer", {'option_id': 'once', 'revision': decision['revision']})
         resumes = []
 
         def interrupted(task, bot, history, decision, emit):

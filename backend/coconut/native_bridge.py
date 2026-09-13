@@ -38,6 +38,13 @@ class NativeBridge:
             name = tool_name
             if name.startswith('coconut_'):
                 return next_call(args)
+            if name == 'cronjob_manage' and args.get('action', '').strip().lower() == 'create':
+                # Native auto-detection can differ from the route selected for this bot.
+                if not any(args.get(key) for key in ('model', 'provider', 'base_url')):
+                    args = dict(args, model=self.request['model'], provider=self.request['provider'],
+                                reasoning_effort=args.get('reasoning_effort') or self.request.get('reasoning_effort'))
+                from native_routine_execution import create_native_job
+                next_call = lambda arguments: create_native_job(arguments, self.session_key)
             action = dict(name=name, arguments=args)
             key = fingerprint(action)
             pending = self.request['task'].get('pending_decision', {})
@@ -55,6 +62,9 @@ class NativeBridge:
             try:
                 relay = getattr(self, 'relay', None)
                 result = relay.deliver(args, next_call, record['id']) if name == 'message_agent' and relay else next_call(args)
+                if name == 'cronjob_manage':
+                    from native_routine_execution import scheduler_result
+                    result = scheduler_result(result, record)
                 consumed = []
                 if name in ('process', 'process_manage') and args.get('session_id'):
                     from tools.process_registry import process_registry
@@ -138,10 +148,38 @@ class NativeBridge:
         self.pause('native_question', dict(arguments, receipt_id=call['id'] if call else None))
 
 
-QUESTION_SCHEMA = {'name': 'coconut_ask', 'description': 'Ask the person to choose. Use their standing preferences when writing choices. The Inbox keeps this question pending.',
+QUESTION_SCHEMA = {'name': 'coconut_ask', 'description': 'Create a required decision card in chat and Inbox, then wait for the human answer. Use for choices, permission, confirmation, missing information, and manual-step results. Never ask for these only in prose. The person can choose an option or type a reply. Honor standing preferences. Do not duplicate an existing pending card.',
                   'parameters': {'type': 'object', 'properties': {
-                      'title': {'type': 'string'}, 'explanation': {'type': 'string'},
+                      'title': {'type': 'string', 'description': 'One plain question about the outcome, usually eight words or fewer.'},
+                      'explanation': {'type': 'string', 'description': 'Optional supporting detail for chat. Put only facts that change the choice in context or option explanations.'},
                       'options': {'type': 'array', 'minItems': 1, 'maxItems': 8,
-                                  'items': {'type': 'object', 'properties': {'id': {'type': 'string'}, 'label': {'type': 'string'}}, 'required': ['id', 'label']}},
-                      'recommended_option_id': {'type': 'string'}, 'predicted_option_id': {'type': 'string'}},
+                                  'items': {'type': 'object', 'properties': {'id': {'type': 'string'}, 'label': {'type': 'string'},
+                                      'explanation': {'type': 'string', 'maxLength': 500, 'description': 'Plain effect of this choice, usually fifteen words or fewer. Keep important limits. Omit hashes, tool names, process steps, and repeated context.'}}, 'required': ['id', 'label', 'explanation']}},
+                      'recommended_option_id': {'type': 'string', 'description': 'Optional. Recommend one choice only when evidence and the user goal favor it. State the decisive reason once in context or that option explanation. Omit when no choice has a clear advantage.'}, 'predicted_option_id': {'type': 'string'}},
                   'required': ['title', 'options']}}
+
+# These fields carry evidence, not model confidence scores.
+QUESTION_SCHEMA['parameters']['properties'].update({
+    'merge_pr_url': {'type': 'string', 'description': 'Required for a question whose only action is whether to merge one PR. Use its full GitHub URL after coconut_track_pr. Coconut closes this card after a verified external merge. Omit for reviews, releases, or choices with other actions.'},
+    'context': {'type': 'string', 'description': 'Optional plain context for someone returning tomorrow, usually twenty words or fewer. State only what helps them choose. Keep technical evidence in chat.'},
+    'evidence': {'type': 'string', 'description': 'One short sentence naming the decisive check or linking its source. Do not repeat context or invent checks.'},
+    'uncertainty': {'type': 'string', 'description': 'One short sentence: the material unknown that could change the choice. Omit if none.'},
+    'risk': {'type': 'string', 'description': 'One short sentence: the material risk or recovery limit. Omit if none.'},
+})
+SUGGEST_SCHEMA = {
+    'name': 'coconut_suggest',
+    'description': 'Create an optional proposal card in chat and Inbox while continuing authorized work. Use for offers such as investigating, fixing, or doing something extra instead of offering only in prose. Do not execute the proposal until authorized. Reuse the same key when retrying. Do not recreate a dismissed proposal.',
+    'parameters': dict(QUESTION_SCHEMA['parameters'],
+                       properties=dict(QUESTION_SCHEMA['parameters']['properties'], key={'type': 'string'}),
+                       required=['key', 'title', 'options']),
+}
+REPLY_SCHEMA = {
+    'name': 'coconut_resolve_reply',
+    'description': 'Record an unambiguous human answer to the current decision. Questions and uncertain intent must stay pending. Native tool approvals still require a visible choice.',
+    'parameters': {'type': 'object', 'properties': {
+        'choice': {'type': 'string', 'enum': ['approve', 'reject', 'modify']},
+        'option_id': {'type': 'string', 'description': 'The current option ID for an explicit selection.'},
+        'revision': QUESTION_SCHEMA['parameters'],
+        'quote': {'type': 'string', 'description': 'Exact words from this human reply that give the instruction.'},
+    }, 'required': ['choice', 'quote']},
+}

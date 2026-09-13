@@ -70,3 +70,21 @@ class TerminalSetupTests(unittest.TestCase):
         self.assertEqual(result.split(':')[0], '/opt/homebrew/bin')
         self.assertEqual(result.split(':').count('/custom/bin'), 1)
         self.assertNotIn('', result.split(':'))
+
+    def test_all_bots_get_the_same_google_hook_before_connection(self):
+        with tempfile.TemporaryDirectory(prefix='google profile ') as directory:
+            root = Path(directory)
+            google_home = root / 'connections/google/home'
+            for name in ('desk', 'tuner'):
+                home = root / 'bots' / name / 'home'
+                home.mkdir(parents=True)
+                config = {'terminal': {'shell_init_files': ['/custom/startup.sh']}}
+                with patch.dict(os.environ, {'COCONUT_GOOGLE_HOME': str(google_home)}):
+                    self.configure(home, config)
+                    self.assertEqual(config['terminal']['shell_init_files'][-2:],
+                                     [str(home / 'coconut-terminal.sh'), str(home / 'coconut-google.sh')])
+                    script = (home / 'coconut-google.sh').read_text()
+                    self.assertIn('google_connection.py', script)
+                    self.assertIn(str(google_home), script)
+                    self.configure(home, config).assert_not_called()
+            self.assertFalse(google_home.exists())

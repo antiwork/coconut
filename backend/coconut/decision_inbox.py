@@ -1,0 +1,251 @@
+"""Share one decision record between chat and Inbox."""
+from __future__ import annotations
+
+
+def decision_options(options):
+    from .service import ServiceError
+    if (not isinstance(options, list) or not 1 <= len(options) <= 8
+            or any(not isinstance(option, dict)
+                   or any(not isinstance(option.get(key), str) or not option[key].strip() or len(option[key]) > limit
+                          for key, limit in (('id', 80), ('label', 300)))
+                   or not isinstance(option.get('explanation', ''), str)
+                   or len(option.get('explanation', '')) > 500 for option in options)
+            or len({option['id'] for option in options}) != len(options)):
+        raise ServiceError(400, 'Supply one to eight distinct choices with concise explanations.')
+    return [dict(id=option['id'], label=option['label'], answer='approve',
+                 explanation=option.get('explanation', '')) for option in options]
+
+
+class DecisionInbox:
+    def decision_origin(self, task):
+        seen = set()
+        messages = self._history(task['bot_id'])
+        while task and task['id'] not in seen:
+            seen.add(task['id'])
+            shared = set(task.get('_shared_message_ids', []))
+            source = next((m for m in messages if (m.get('task_id') == task['id'] or m['id'] in shared) and m['role'] == 'user'
+                           and m['kind'] == 'text' and not m.get('sender_bot_id')
+                           and not m.get('decision_id') and not m.get('_hidden') and not m.get('_deleted')), None)
+            if source:
+                return dict(request_text=source['text'][:4000], request_message_id=source['id'],
+                            request_bot_id=source['bot_id'], request_created_at=source['created_at'])
+            parent = task.get('source_task_id') or task.get('parent_task_id')
+            task = self._get('tasks', parent) if parent else None
+        return {}
+
+    def update_inbox(self, decision, task, data):
+        from datetime import datetime, timedelta, timezone
+        from .service import ServiceError, now, uid
+        action = data.get('action')
+        if (type(data.get('revision')) is not int or data['revision'] != decision['revision']
+                or task['status'] == 'cancelled'):
+            raise ServiceError(409, 'This decision changed. Refresh it first.')
+        if action == 'restore':
+            deadline = decision.get('inbox_undo_until')
+            if not deadline or datetime.fromisoformat(deadline.replace('Z', '+00:00')) <= datetime.now(timezone.utc):
+                raise ServiceError(409, 'The Undo window ended.')
+            if not data.get('swipe_id') or data['swipe_id'] != decision.get('inbox_swipe_id'):
+                raise ServiceError(409, 'Another swipe changed this decision.')
+            if decision['status'] not in ('pending', 'dismissed'):
+                raise ServiceError(409, 'This decision is no longer pending.')
+            if decision.pop('_inbox_reject_device', None) is not None:
+                decision['revision'] += 1
+            decision.update(status='pending', inbox_deferred_at=None, inbox_undo_until=None, inbox_swipe_id=None)
+        elif decision['status'] != 'pending':
+            raise ServiceError(409, 'This decision is no longer pending.')
+        elif action in ('keep', 'later', 'dismiss'):
+            decision['inbox_swipe_id'] = uid()
+            decision['inbox_undo_until'] = (datetime.now(timezone.utc) + timedelta(seconds=10)).isoformat()
+            if action == 'dismiss':
+                decision['status'] = 'dismissed'
+                if decision.get('inbox_kind') != 'proposal':
+                    decision['_inbox_reject_device'] = self._request_device_id or 'local'
+            else:
+                decision['inbox_deferred_at'] = now()
+        else:
+            raise ServiceError(400, 'Choose later, dismiss, or restore.')
+        self._put('decisions', decision)
+        self._event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
+        return self._public(decision)
+
+    def finish_inbox_swipes(self):
+        from datetime import datetime, timezone
+        with self.transaction():
+            for decision in self._all('decisions'):
+                deadline = decision.get('inbox_undo_until')
+                if not deadline or datetime.fromisoformat(deadline.replace('Z', '+00:00')) > datetime.now(timezone.utc):
+                    continue
+                task = self._get('tasks', decision['task_id'])
+                device = decision.get('_inbox_reject_device')
+                if device and task['status'] != 'cancelled' and self._task_paused(task):
+                    continue
+                decision['inbox_undo_until'] = None
+                decision['inbox_swipe_id'] = None
+                decision.pop('_inbox_reject_device', None)
+                if device and decision['status'] == 'dismissed' and task['status'] != 'cancelled':
+                    # Keep the rejection reversible until Undo expires. No worker resumes before this transaction.
+                    decision['status'] = 'pending'
+                    answer = self.answer_native if decision.get('_native') else self._answer
+                    answer(decision, task, dict(choice='reject', revision=decision['revision']), device)
+                else:
+                    if device and task['status'] == 'cancelled':
+                        decision['status'] = 'cancelled'
+                    self._put('decisions', decision)
+                    self._event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
+
+    def decision_chat_input(self, task):
+        from .service import ServiceError
+        sources = []
+        for identity in task.get('_turn_message_ids', []):
+            try:
+                source = self._human_source(task, identity, task, 'answer a decision')
+            except ServiceError:
+                continue
+            sources.append(dict(id=source['id'], text=source['text']))
+        decisions = [self._public(d) for d in self._all('decisions')
+                     if d['status'] == 'pending' and self._decision_visible_to_task(d, task)]
+        return dict(_pending_decisions=decisions, _decision_reply_sources=sources)
+
+    def _decision_visible_to_task(self, decision, task):
+        owner = self._get('tasks', decision['task_id'])['conversation_bot_id']
+        if owner != task['conversation_bot_id']:
+            return False
+        # The conversation owner sees delegated cards. Delegates see only shared messages.
+        return task['bot_id'] == owner or any(
+            message.get('decision_id') == decision['id'] for message in self._history(task['bot_id']))
+
+    def resolve_chat_decision(self, task_id, payload):
+        from .service import ServiceError, uid
+        with self.transaction():
+            source_task = self._get('tasks', task_id)
+            if source_task['status'] != 'working' or self.stopping.is_set():
+                raise ServiceError(409, 'This conversation is no longer working.')
+            source_id = payload.get('source_message_id')
+            if source_id not in source_task.get('_turn_message_ids', []):
+                raise ServiceError(409, 'Use a human message from the current turn.')
+            source = self._human_source(source_task, source_id, source_task, 'answer a decision')
+            decision = self._get('decisions', payload.get('decision_id'))
+            task = self._get('tasks', decision['task_id'])
+            if (not self._decision_visible_to_task(decision, source_task)
+                    or type(payload.get('decision_revision')) is not int or payload['decision_revision'] != decision['revision']):
+                raise ServiceError(409, 'Use a current decision from this conversation.')
+            context = dict(id=uid(), task_id=task['id'], bot_id=task['bot_id'], decision_id=decision['id'],
+                           question=source['text'], status='working', _reply_device=source['_human_device_id'],
+                           _decision_revision=decision['revision'], _source_message_id=source_id)
+            self._put('contexts', context)
+            result = self._resolve_decision_reply(context['id'], payload)
+            context['status'] = 'completed'
+            self._put('contexts', context)
+            return result
+
+    def resolve_decision_reply(self, context_id, payload):
+        with self.transaction():
+            return self._resolve_decision_reply(context_id, payload)
+
+    def _resolve_decision_reply(self, context_id, payload):
+        from .service import ServiceError
+        context = self._get('contexts', context_id)
+        decision = self._get('decisions', context['decision_id'])
+        task = self._get('tasks', context['task_id'])
+        if (not context.get('_reply_device') or context['status'] != 'working'
+                or decision['status'] != 'pending' or task['status'] == 'cancelled'
+                or decision['revision'] != context['_decision_revision']):
+            raise ServiceError(409, 'The reply no longer matches a pending decision.')
+        quote = payload.get('quote')
+        if not isinstance(quote, str) or not quote.strip() or quote not in context['question']:
+            raise ServiceError(400, 'Quote the exact instruction from this reply.')
+        # Native approval is bound to an exact action and requires its visible choice.
+        if decision['action_type'] == 'native_approval' and payload.get('choice') != 'reject':
+            return {'status': 'pending', 'error': 'Ask the person to select the exact action on its card. Do not execute it from this follow-up.'}
+        choice = payload.get('choice')
+        if choice not in ('approve', 'reject', 'modify'):
+            raise ServiceError(400, 'Choose approve, reject, or modify.')
+        if not decision.get('_native'):
+            if choice == 'approve':
+                return {'status': 'pending', 'error': 'Use the visible choice to approve this file action.'}
+            result = self._answer(decision, task, dict(choice=choice, revision=decision['revision'],
+                correction=context['question'] if choice == 'modify' else ''), context['_reply_device'])
+            return {'status': 'recorded', 'decision': result}
+        if choice == 'modify' and decision['action_type'] == 'question':
+            revision = payload.get('revision')
+            if not isinstance(revision, dict):
+                return {'status': 'pending', 'error': 'Supply the revised question and choices, or ask for clarification.'}
+            options = decision_options(revision.get('options'))
+            title = revision.get('title')
+            if not isinstance(title, str) or not title.strip() or len(title) > 160:
+                raise ServiceError(400, 'Supply the revised question.')
+            recommended = revision.get('recommended_option_id')
+            if recommended is not None and recommended not in {o['id'] for o in options}:
+                raise ServiceError(400, 'Recommend a current choice.')
+            decision.update(title=title, options=options,
+                            merge_pr_url=self._merge_decision_url(revision, task),
+                            recommended_option_id=recommended, revision=decision['revision'] + 1,
+                            inbox_deferred_at=None)
+            for field, limit in (('context', 2000), ('explanation', 2000), ('evidence', 8000), ('uncertainty', 2000), ('risk', 2000)):
+                value = revision.get(field, '')
+                if not isinstance(value, str) or len(value) > limit:
+                    raise ServiceError(400, 'Use concise text for decision details.')
+                decision[field] = value
+            decision.setdefault('_answers', []).append({'choice': 'revise', 'correction': context['question'], 'decided_by': context['_reply_device']})
+            self._put('decisions', decision)
+            self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
+            return {'status': 'recorded', 'decision': self._public(decision)}
+        result = self.answer_native(decision, task, {
+            'choice': choice, 'option_id': payload.get('option_id'),
+            'correction': context['question'] if choice == 'modify' else '',
+            'revision': decision['revision'],
+        }, context['_reply_device'])
+        return {'status': 'recorded', 'decision': result}
+
+
+DECISION_INSTRUCTIONS = (
+    'Coconut interaction rules apply to every bot, including delegated work and old conversations. '
+    'Whenever you need a human choice, permission, confirmation, or missing information, call coconut_ask. '
+    'A question in chat does not create a card and does not put the request in Inbox. '
+    'Do not finish with a prose request such as "Should I proceed?", "Which do you prefer?", or "Let me know when ready." '
+    'For optional next steps, call coconut_suggest and continue the authorized work. '
+    'An offer such as "I can investigate this if you want" belongs in an optional card. '
+    'Do not tell the person to remind each bot to use cards or save these app rules in each bot memory. '
+    'If the person must type an answer, ask through coconut_ask with meaningful choices when available; the card accepts a typed reply. '
+    'For a manual step, explain the required step and ask for its result in a card. Never invent a completed result. '
+    'For visual approval, provide the actual preview in chat before presenting the approval card. '
+    'State exactly what approval permits, including whether it permits publishing. '
+    'Do not ask again for work already authorized. Native Hermes approval checks still apply. '
+    'When a delegated task needs a human answer, create its card; do not relay a prose question for another bot to repeat. '
+    'If a card already asks the same question, refer to it without creating another card. '
+    'When answering a question about an existing card, explain in chat and leave that card pending. '
+    'Before ending a turn, check whether your reply asks the human to choose or offers optional work. '
+    'Use the appropriate card tool first. Ordinary answers, progress reports, and completed results stay in chat. '
+    'Write cards for a person returning tomorrow. Help them understand the choice quickly. '
+    'Use calm, plain language. Avoid commands, pressure, jargon, and internal process terms. '
+    'Ask one short question about the outcome. Usually use eight words or fewer. '
+    'Add context only when it helps the person choose: one short sentence, usually twenty words or fewer. '
+    'Name the thing being changed and the fact that matters now. Do not retell the work history. '
+    'Use short action labels. Explain each option by its practical effect, usually in fifteen words or fewer. '
+    'Do not repeat the title, context, recommendation badge, or the other options. '
+    'The card shows only the question, context, choices, and their explanations. Supporting detail stays in the original chat. '
+    'Keep commit hashes, review scores, tool names, check lists, and implementation steps out of cards unless the exact detail changes the choice. '
+    'For example, say "Checks and review passed" instead of listing checks, review tools, and commit IDs. '
+    'Say "The feature stays off" instead of describing rollout flags or activation authorization. '
+    'Retain exact targets and approval limits in the action and chat. Explain their practical effect on the card. '
+    'Keep facts that change the choice: unresolved problems, cost, affected people, public changes, or effects that cannot be undone. '
+    'Use extra words when needed to state those facts clearly. Never hide uncertainty or weaken an approval limit for brevity. '
+    'Example: title="Merge the euro checkout changes?" context="PR #7602 passed checks and review." '
+    'Choices: "Merge" with "Add the changes while keeping the feature off."; "Leave open" with "Keep the changes unmerged." '
+    'This example assumes those facts were verified. Do not copy its claims or choices into unrelated decisions. '
+    'Never invent a fixed set of choices or limit useful choices to three. '
+    'Before asking for a decision, investigate material uncertainty within the authorized scope. '
+    'Recommend a choice when verified facts support it. State the decisive reason once, in plain language. '
+    'Never claim 100 percent confidence, verified access, or completed work without relevant evidence. '
+    'Set recommended_option_id when evidence and the user goal give you a clear reason to prefer one choice. '
+    'The card adds the Recommended badge. Do not repeat the badge or a reason already stated in context. '
+    'Omit recommended_option_id when the choice depends on an unknown preference or the options have no clear advantage. '
+    'Do not mark an option just because it comes first. A recommendation is not permission to act. '
+    'Mention uncertainty when it could change the choice. Offer a useful way to resolve it when needed. '
+    'Use specific action labels. Respect standing preferences when generating options. '
+    'Use coconut_ask for a required answer. Use coconut_suggest for a useful optional proposal while continuing the current work. '
+    'Do not turn ordinary replies, activity, or completed work into Inbox entries. '
+    'In Inbox, Later leaves a decision pending. Dismiss rejects a required decision after the Undo window, or removes an optional suggestion. '
+    'Do not recreate dismissed proposals. A proposal is not authorization to perform it. '
+    'A response received is not an action completed. Report outcomes only after verification. '
+)

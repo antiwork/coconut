@@ -5,32 +5,55 @@ import UserNotifications
 import SwiftUI
 
 struct NotificationSettingsRow: View {
+    var body: some View {
+        NavigationLink("Notifications") { NotificationSettingsView() }
+            .accessibilityIdentifier("notification-settings")
+    }
+}
+
+struct NotificationSettingsView: View {
     @Environment(AppStore.self) private var store
-    private var push: PushNotifications { .shared }
+    @Bindable private var push = PushNotifications.shared
 
     var body: some View {
-        Button {
-            if push.authorization == .notDetermined {
-                Task { await push.refresh(requestPermission: true); await store.syncPushRegistration() }
-            } else { push.openSystemSettings() }
-        } label: {
-            HStack {
-                Text("Notifications")
-                Spacer()
-                Text(status).foregroundStyle(.secondary)
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+        Form {
+            Section {
+                Toggle(isOn: $push.decisionNotifications) {
+                    Text("Decisions").frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle()).onTapGesture { push.decisionNotifications.toggle() }
+                }.accessibilityIdentifier("decision-notifications")
+                Toggle(isOn: $push.messageNotifications) {
+                    Text("Messages").frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle()).onTapGesture { push.messageNotifications.toggle() }
+                }.accessibilityIdentifier("message-notifications")
+            } footer: {
+                Text("Decisions open the card in Inbox. Messages open the bot’s chat.")
             }
-        }.accessibilityIdentifier("notification-settings")
-        if let error = store.pushRegistrationError ?? push.error {
-            Text(error).font(.caption).foregroundStyle(.secondary)
+            Section {
+                Button(push.allowed ? "iOS notification settings" : "Enable notifications") {
+                    if push.authorization == .notDetermined {
+                        Task { await push.refresh(requestPermission: true); await store.syncPushRegistration() }
+                    } else { push.openSystemSettings() }
+                }
+                if let error = store.pushRegistrationError ?? push.error {
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                }
+            }
         }
+        .tint(BoardStyle.green)
+        .navigationTitle("Notifications")
+        .navigationBarTitleDisplayMode(.inline)
     }
+}
 
-    private var status: String {
-        if !store.pushConfigured { return "Mac setup required" }
-        if push.authorization == .notDetermined { return "Enable" }
-        return push.allowed ? "On" : "Off"
-    }
+struct NotificationPreferences: Encodable, Equatable, Sendable {
+    let decisions: Bool
+    let messages: Bool
+}
+
+enum NotificationDestination: Equatable {
+    case inbox(String)
+    case conversation(ConversationRoute)
 }
 
 struct NotificationTarget: Equatable, Sendable {
@@ -38,8 +61,17 @@ struct NotificationTarget: Equatable, Sendable {
     let botId: String
     let taskId: String
     let decisionId: String?
+    let messageId: String?
 
-    var conversationRoute: ConversationRoute { ConversationRoute(botId: botId, decisionId: decisionId) }
+    var conversationRoute: ConversationRoute { ConversationRoute(botId: botId, decisionId: decisionId, messageId: messageId) }
+
+    func destination(pendingDecisionIds: Set<String>, snapshotReady: Bool) -> NotificationDestination? {
+        if let decisionId {
+            guard snapshotReady else { return nil }
+            if pendingDecisionIds.contains(decisionId) { return .inbox(decisionId) }
+        }
+        return .conversation(conversationRoute)
+    }
 
     init?(userInfo: [AnyHashable: Any]) {
         let decoded = try? NotificationKeys.content(from: userInfo)
@@ -50,7 +82,9 @@ struct NotificationTarget: Equatable, Sendable {
               let task = data["task_id"] as? String, UUID(uuidString: task) != nil else { return nil }
         let decision = data["decision_id"] as? String
         guard decision == nil || UUID(uuidString: decision!) != nil else { return nil }
-        deviceId = device; botId = bot; taskId = task; decisionId = decision
+        let message = data["message_id"] as? String
+        guard message == nil || UUID(uuidString: message!) != nil else { return nil }
+        deviceId = device; botId = bot; taskId = task; decisionId = decision; messageId = message
     }
 }
 
@@ -61,6 +95,15 @@ final class PushNotifications {
     var authorization: UNAuthorizationStatus = .notDetermined
     var deviceToken: String?
     var error: String?
+    var decisionNotifications = UserDefaults.standard.object(forKey: "decisionNotifications") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(decisionNotifications, forKey: "decisionNotifications") }
+    }
+    var messageNotifications = UserDefaults.standard.object(forKey: "messageNotifications") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(messageNotifications, forKey: "messageNotifications") }
+    }
+    var preferences: NotificationPreferences {
+        NotificationPreferences(decisions: decisionNotifications, messages: messageNotifications)
+    }
 
     var allowed: Bool { [.authorized, .provisional, .ephemeral].contains(authorization) }
     var environment: String { Bundle.main.object(forInfoDictionaryKey: "CoconutPushEnvironment") as? String ?? "development" }
@@ -131,6 +174,7 @@ struct PushRegistration: Encodable {
     let environment: String
     let enabled: Bool
     var relay: PushRelayGrant? = nil
+    var preferences: NotificationPreferences? = nil
 }
 
 struct PushRegistrationResponse: Decodable, Sendable {

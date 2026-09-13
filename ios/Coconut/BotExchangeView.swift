@@ -98,17 +98,20 @@ struct BotExchangeView: View {
                     Color.clear.frame(height: 1).id("exchange-bottom")
                 }.padding(16)
             }
+            .defaultScrollAnchor(.bottom)
             .background(BoardStyle.paper)
             .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 80
+                geometry.visibleRect.maxY - geometry.contentInsets.bottom >= geometry.contentSize.height - 80
             } action: { _, value in nearBottom = value }
             .onChange(of: messages.last?.id) { _, _ in
                 if nearBottom { proxy.scrollTo("exchange-bottom", anchor: .bottom) }
             }
-            .task {
-                guard !positioned else { return }
+            .task(id: messages.isEmpty) {
+                guard !positioned, !messages.isEmpty else { return }
+                await Task.yield()
+                guard !Task.isCancelled else { return }
+                proxy.scrollTo("exchange-bottom", anchor: .bottom)
                 positioned = true
-                proxy.scrollTo(route.messageId, anchor: .top)
             }
             .safeAreaInset(edge: .bottom) {
                 HStack {

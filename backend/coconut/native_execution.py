@@ -31,6 +31,12 @@ class NativeExecution:
         receipt = self._store_bot_message(task_id, payload)
         receipt = {key: value for key, value in receipt.items() if isinstance(value, str)}
         receipt['delivery_id'] = payload['native_envelope_id']
+        if receipt.get('task_id'):
+            recipient = self._get('tasks', receipt['task_id'])
+            if any(message.get('progress_only') for message in recipient.get('_bot_messages', [])):
+                # Normal handoffs already have a return route. A message back to the
+                # requester needs its own callback, even while the parent waits.
+                record['_relay_task_id'] = recipient['id']
         record.update(state='completed', result=json.dumps(receipt, sort_keys=True), completed_at=now())
         self._put('native_receipts', record)
         return receipt
@@ -61,12 +67,17 @@ class NativeExecution:
             active = context['status'] == 'working' and context['task_id'] == task_id if context else task['status'] == 'working'
             if not active or self._task_paused(task):
                 raise ServiceError(409, 'This task cannot execute a tool now.')
+            if not context:
+                self._save_work_progress(task, payload)
             if kind == 'native_call':
                 action = {'name': payload['name'], 'arguments': payload['arguments']}
                 record = dict(id=str(uuid4()), task_id=task_id, turn_id=context_id or task.get('_native_turn_id'), action=action, action_hash=digest(encoded(action)),
                               state='executing', created_at=now())
                 self._put('native_receipts', record)
-                return {'status': 'recorded', 'id': record['id']}
+                result = {'status': 'recorded', 'id': record['id']}
+                if action['name'] == 'cronjob_manage':
+                    result.update(self.native_scheduler_status())
+                return result
             if kind == 'native_result':
                 record = self._get('native_receipts', payload['id'])
                 if record['task_id'] == task_id and record['state'] == 'completed' and record['result'] == payload['result']:
@@ -92,6 +103,13 @@ class NativeExecution:
                 return {'status': 'recorded'}
             action = payload.get('action', {})
             approval = kind == 'native_approval'
+            optional = kind == 'native_proposal'
+            if optional:
+                existing = next((d for d in self._all('decisions') if d.get('inbox_kind') == 'proposal' and d['task_id'] == task_id and d.get('_proposal_key') == payload.get('key')), None)
+                if existing:
+                    return {'status': 'recorded', 'decision_id': existing['id']}
+                if not isinstance(payload.get('key'), str) or not 1 <= len(payload['key']) <= 100:
+                    raise ServiceError(400, 'Supply a stable proposal key.')
             if approval:
                 record = self._get('native_receipts', payload['receipt_id'])
                 if record['task_id'] != task_id or record['state'] != 'executing':
@@ -99,7 +117,7 @@ class NativeExecution:
                 action = record['action']
                 record['state'] = 'awaiting_approval'
                 self._put('native_receipts', record)
-                options = [dict(id='once', label='Allow once', answer='approve', explanation=''), dict(id='deny', label='Do not run', answer='reject', explanation='')]
+                options = [dict(id='once', label='Allow once', answer='approve', explanation='Run this action once. Future actions still require their own permission.'), dict(id='deny', label='Do not run', answer='reject', explanation='Block this action and let the bot know you declined.')]
             else:
                 if payload.get('receipt_id'):
                     record = self._get('native_receipts', payload['receipt_id'])
@@ -108,12 +126,8 @@ class NativeExecution:
                     record['state'] = 'awaiting_answer'
                     self._put('native_receipts', record)
                     action = record['action']
-                options = payload.get('options', [])
-                if (not isinstance(options, list) or not 1 <= len(options) <= 8
-                        or any(not isinstance(o, dict) or any(not isinstance(o.get(k), str) or not o[k].strip() or len(o[k]) > limit for k, limit in (('id', 80), ('label', 300))) for o in options)
-                        or len({o['id'] for o in options}) != len(options)):
-                    raise ServiceError(400, 'Supply one to eight distinct choices.')
-                options = [dict(id=o['id'], label=o['label'], answer='approve', explanation='') for o in options]
+                from .decision_inbox import decision_options
+                options = decision_options(payload.get('options'))
                 for field in ('recommended_option_id', 'predicted_option_id'):
                     if payload.get(field) is not None and payload[field] not in {o['id'] for o in options}:
                         raise ServiceError(400, 'Recommendations must refer to a current choice.')
@@ -125,9 +139,22 @@ class NativeExecution:
                             options=options, recommended_option_id=payload.get('recommended_option_id'),
                             status='pending', urgency='normal', created_at=now(), decided_at=None, decided_by=None,
                             decided_by_name=None, correction=None, outcome=None, revision=1,
+                            inbox_kind='proposal' if optional else 'decision',
+                            context=str(payload.get('context', ''))[:2000],
+                            evidence=str(payload.get('evidence', ''))[:8000],
+                            uncertainty=str(payload.get('uncertainty', ''))[:2000],
+                            risk=str(payload.get('risk', ''))[:2000],
+                            _proposal_key=payload.get('key') if optional else None,
                             _action=action, _action_hash=digest(encoded(action)), _native=True,
                             _predicted_option_id=payload.get('predicted_option_id'), _receipt_id=payload.get('receipt_id'), _answers=[])
+            decision.update(self.decision_origin(task))
+            if not approval:
+                decision['merge_pr_url'] = self._merge_decision_url(payload, task)
             self._put('decisions', decision)
+            if optional:
+                self._message(task['bot_id'], decision['title'], task_id=task_id, kind='decision', decision_id=decision['id'])
+                self._event('decision.created', self._public(decision), task['bot_id'], task_id)
+                return {'status': 'recorded', 'decision_id': decision['id']}
             task.update(status='needs_you', summary=decision['title'])
             self._put('tasks', task)
             self._message(task['bot_id'], decision['title'], task_id=task_id, kind='decision', decision_id=decision['id'])
@@ -139,8 +166,14 @@ class NativeExecution:
         from .service import ServiceError, now, decision_correction
         if self._task_paused(task):
             raise ServiceError(409, 'Restore the bot before answering.')
+        if data.get('revision') != decision['revision']:
+            raise ServiceError(409, 'This decision changed. Review it before answering.')
         option_id = data.get('option_id')
         option = next((item for item in decision['options'] if item['id'] == option_id), None)
+        if option_id is not None and option is None:
+            raise ServiceError(400, 'Choose a current option.')
+        if option and data.get('choice') is not None and data['choice'] != option['answer']:
+            raise ServiceError(400, 'The response does not match this option.')
         choice = option['answer'] if option else data.get('choice')
         if choice not in ('approve', 'reject', 'modify') or (choice == 'approve' and not option):
             raise ServiceError(400, 'Choose one of the current options.')
@@ -158,6 +191,19 @@ class NativeExecution:
             record = self._get('native_receipts', decision['_receipt_id'])
             record.update(state='completed', result=json.dumps({'response': decision.get('selected_option_label') or correction or 'The person declined.'}))
             self._put('native_receipts', record)
+        if decision.get('inbox_kind') == 'proposal':
+            if choice != 'reject':
+                continuation = self._send(self._get('bots', task['bot_id']),
+                           {'text': 'Continue this proposal using the recorded reply. Proposal: ' + decision['title'] + '\nReply: ' + (decision.get('selected_option_label') or correction), 'mode': 'queue', 'attachment_ids': task.get('_attachment_ids', [])},
+                           thread_id=task['thread_id'], parent_task_id=task['id'],
+                           conversation_bot_id=task['conversation_bot_id'], record_message=False, human_authored=False)
+                stored = self._get('tasks', continuation['id'])
+                stored['_resume_decision'] = decision['id']
+                self._put('tasks', stored)
+                decision['_execution_task_id'] = stored['id']
+                self._put('decisions', decision)
+            self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
+            return self._public(decision)
         task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
         if correction.strip():
             self._record_decision_correction(task, decision, correction)

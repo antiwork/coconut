@@ -48,6 +48,48 @@ class ConversationInputTests(unittest.TestCase):
         self.assertEqual(prompt, 'Which label?')
         self.assertEqual([row['content'] for row in history], ['Use the blue label.', 'I will use blue.'])
 
+    def test_old_card_keeps_exact_request_after_native_compaction(self):
+        original = 'Detailed request. ' * 400 + 'Keep the final filename: annual-report.md'
+        self.request['history'][0]['text'] = original
+        decision = dict(id='old-card', task_id='earlier', action_type='question', status='approved',
+                        title='Which format?', request_message_id='old-user', request_text=original[:4000],
+                        selected_option_id='markdown', selected_option_label='Markdown')
+        self.db.meta['coconut.history-context.' + self.root] = 'complete'
+        self.db.sessions[self.root] = [{'role': 'user', 'content': 'Native summary of unrelated recent work.'}]
+        for operation in ('resume', 'context'):
+            with self.subTest(operation=operation):
+                request = dict(self.request, operation=operation, decision=decision, question='Use the original filename?',
+                               task=dict(self.request['task'], pending_decision=decision, _decision_reply=True))
+                prompt, _ = conversation_input(request)
+                self.assertIn(original, prompt)
+                self.assertNotIn('Do a different task later.', prompt)
+                self.assertEqual(NativeConversation(request, self.db).history, self.db.sessions[self.root])
+                self.assertEqual(self.db.replacements, 0)
+        self.assertEqual(decision['request_text'], original[:4000])
+
+    def test_old_reply_and_reaction_keep_reference_after_native_continuation(self):
+        source = self.request['history'][1]
+        source['text'] = 'The original recommendation has a unique detail: cobalt-17.'
+        current = self.request['history'][2]
+        current['reply_to'] = dict(message_id=source['id'], text=source['text'], author='Desk', role='assistant', author_bot_id=self.request['bot']['id'])
+        child = str(uuid4())
+        self.db.meta['coconut.history-context.' + self.root] = 'complete'
+        self.db.tips[self.root] = child
+        self.db.sessions[child] = [{'role': 'user', 'content': 'Recent work summary.'}]
+        for reaction in (False, True):
+            with self.subTest(reaction=reaction):
+                if reaction:
+                    current['reaction_event'] = dict(emoji='👍', action='added')
+                    current['text'] = 'Reaction added: 👍'
+                prompt, _ = conversation_input(self.request)
+                self.assertIn(source['text'], prompt)
+                active = NativeConversation(self.request, self.db)
+                self.assertEqual(active.session_id, child)
+                self.assertEqual(active.history, self.db.sessions[child])
+                self.assertEqual(self.db.replacements, 0)
+                if reaction:
+                    self.assertIn('does not approve, reject, or select a pending decision', prompt)
+
     def test_all_queued_messages_enter_the_prompt_in_order(self):
         self.request['history'].append(self.message('follow-up', 'current', 'user', 'Keep it short.'))
         prompt, history = conversation_input(self.request)

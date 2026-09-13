@@ -196,6 +196,23 @@ struct AgentTask: Codable, Identifiable, Equatable, Sendable {
     var isActive: Bool { ["working", "running", "queued", "waiting", "needs_you", "scheduled", "cancelling"].contains(status) }
 }
 
+struct MessageReference: Codable, Equatable, Sendable {
+    var messageId: String
+    var text: String
+    var author: String
+    var role: String
+}
+
+struct MessageReactionEvent: Codable, Equatable, Sendable {
+    var emoji: String
+    var action: String
+}
+
+enum MessageReactions {
+    static let all = ["👍", "👎", "😄", "🎉", "😕", "❤️", "🚀", "👀"]
+    static let names = ["Thumbs up", "Thumbs down", "Laugh", "Celebrate", "Confused", "Heart", "Rocket", "Eyes"]
+}
+
 struct Message: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var botId: String
@@ -212,6 +229,9 @@ struct Message: Codable, Identifiable, Equatable, Sendable {
     var recipientBotIds: [String]? = nil
     var exchangeRecipientBotIds: [String]? = nil
     var clientRequestId: String? = nil
+    var replyTo: MessageReference? = nil
+    var reactions: [String]? = nil
+    var reactionEvent: MessageReactionEvent? = nil
 }
 
 struct Decision: Codable, Identifiable, Equatable, Sendable {
@@ -242,6 +262,40 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     var replacesDecisionId: String? = nil
     var replacedByDecisionId: String? = nil
 
+    var context: String? = nil
+    var requestText: String? = nil
+    var requestMessageId: String? = nil
+    var requestBotId: String? = nil
+    var requestCreatedAt: String? = nil
+    var inboxKind: String? = nil
+    var inboxDeferredAt: String? = nil
+    var inboxUndoUntil: String? = nil
+    var inboxSwipeId: String? = nil
+    var evidence: String? = nil
+    var uncertainty: String? = nil
+    var risk: String? = nil
+    var replyPending: Bool? = nil
+
+    var cardOptions: [DecisionOption] {
+        guard options.isEmpty, actionType == "create_file" else { return options }
+        // File decisions without named choices use the service's direct answer contract.
+        return [
+            DecisionOption(id: "save-file", label: "Save file", explanation: "Create \(resource) on the Mac.", answer: "approve"),
+            DecisionOption(id: "do-not-save", label: "Do not save", explanation: "Create no file.", answer: "reject")
+        ]
+    }
+
+    var cardContext: String? {
+        let recap = context?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let text = recap.isEmpty ? explanation.trimmingCharacters(in: .whitespacesAndNewlines) : recap
+        let summary = text == title ? "" : text
+        if actionType == "native_approval", !resource.isEmpty, !summary.contains(resource) {
+            return [summary, resource].filter { !$0.isEmpty }.joined(separator: "\n")
+        }
+        return summary.isEmpty ? nil : summary
+    }
+
+    var isProposal: Bool { inboxKind == "proposal" }
     var isPending: Bool { status == "pending" }
 }
 
@@ -274,6 +328,14 @@ struct Artifact: Codable, Identifiable, Equatable, Sendable {
     var observedAt: String? = nil
     var headSha: String? = nil
     var refreshError: String? = nil
+    var prState: String? = nil
+    var draft: Bool? = nil
+    var checksState: String? = nil
+    var activity: String? = nil
+    var activityState: String? = nil
+    var activityObservedAt: String? = nil
+    var activityBotId: String? = nil
+    var workDismissalId: String? = nil
 }
 
 
@@ -378,11 +440,8 @@ enum APIJSON {
 
 extension String {
     var apiDate: Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: self) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: self)
+        (try? Date.ISO8601FormatStyle(includingFractionalSeconds: true).parse(self))
+            ?? (try? Date.ISO8601FormatStyle().parse(self))
     }
 }
 

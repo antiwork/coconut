@@ -15,6 +15,9 @@ struct CoconutApp: App {
                 .onChange(of: PushNotifications.shared.deviceToken) { _, _ in
                     Task { await store.syncPushRegistration() }
                 }
+                .onChange(of: PushNotifications.shared.preferences) { _, _ in
+                    Task { await store.syncPushRegistration() }
+                }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { store.setForeground(true) }
                     else if phase == .background { store.setForeground(false) }
@@ -26,6 +29,7 @@ struct CoconutApp: App {
 struct ConversationRoute: Hashable {
     let botId: String
     var decisionId: String? = nil
+    var messageId: String? = nil
 }
 
 struct BotSettingsRoute: Hashable {
@@ -36,61 +40,77 @@ enum HomeDestination: Hashable {
     case inbox, archived
 }
 
+enum HomeTab: Hashable { case bots, work, inbox }
+
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
     @State private var settingsOpen = false
     @State private var createOpen = false
     @State private var searchOpen = false
     @State private var searchText = ""
-    @State private var path = NavigationPath()
+    @State private var selectedTab: HomeTab = .bots
+    @State private var notificationDecisionId: String?
+    @State private var openingNotification = false
+    @State private var botsPath = NavigationPath()
+    @State private var inboxPath = NavigationPath()
+    @State private var workPath = NavigationPath()
+    @State private var keyboardVisible = false
     @FocusState private var searchFocused: Bool
 
-    private var homeBar: some View {
-        HStack(spacing: 8) {
-            Button { settingsOpen = true } label: {
-                Image(systemName: "person.fill")
-                    .font(.system(size: 19, weight: .medium)).foregroundStyle(.secondary)
-                    .frame(width: 38, height: 38)
-                    .background(BoardStyle.ink.opacity(0.09), in: Circle())
-                    .frame(width: 44, height: 44)
-            }.accessibilityLabel("App settings").accessibilityIdentifier("app-settings")
-            Spacer(minLength: 16)
-            Button { searchOpen = true; searchFocused = true } label: {
-                Image(systemName: "magnifyingglass").font(.system(size: 22, weight: .regular))
-                    .frame(width: 44, height: 44)
-            }.accessibilityLabel("Search conversations").accessibilityIdentifier("search-conversations")
-            Button { createOpen = true } label: {
-                Image(systemName: "plus").font(.system(size: 25, weight: .light))
-                    .frame(width: 44, height: 44)
-            }.accessibilityLabel("Create bot").accessibilityIdentifier("create-bot")
-        }
-        .buttonStyle(HomeCircleStyle())
-        .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 14)
-        .background(BoardStyle.paper)
+    private var tabBarVisibility: Visibility {
+        let activePath = selectedTab == .inbox ? inboxPath : selectedTab == .work ? workPath : botsPath
+        return keyboardVisible || !activePath.isEmpty ? .hidden : .automatic
     }
 
     var body: some View {
-        NavigationStack(path: $path) {
-            HomeLaunchView(searchText: searchText)
-                .navigationTitle("")
+        TabView(selection: $selectedTab) {
+            Tab("Bots", systemImage: "bubble.left.and.bubble.right", value: HomeTab.bots) {
+                root(tab: .bots, path: $botsPath)
+            }.accessibilityIdentifier("home-bots")
+            Tab("Work", systemImage: "briefcase", value: HomeTab.work) {
+                root(tab: .work, path: $workPath)
+            }.accessibilityIdentifier("home-work")
+            Tab("Inbox", systemImage: "tray", value: HomeTab.inbox) {
+                root(tab: .inbox, path: $inboxPath)
+            }.accessibilityIdentifier("home-inbox")
+        }
+        .modifier(NativeTabCollapse())
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
+        .onChange(of: selectedTab) { _, _ in searchFocused = false }
+        .sheet(isPresented: $settingsOpen) { AppSettingsView() }
+        .sheet(isPresented: $createOpen) { BotEditorView() }
+        .onChange(of: PushNotifications.shared.target) { _, _ in openNotification() }
+        .onChange(of: store.lastSync) { _, _ in openNotification() }
+        .onChange(of: store.connection) { _, _ in openNotification() }
+        .onAppear { openNotification() }
+    }
+
+    private func root(tab: HomeTab, path: Binding<NavigationPath>) -> some View {
+        NavigationStack(path: path) {
+            Group {
+                if tab == .inbox { DecisionInboxView(focusDecisionId: $notificationDecisionId) }
+                else if tab == .work { WorkView(isVisible: selectedTab == .work && workPath.isEmpty) }
+                else { HomeLaunchView(searchText: searchText) }
+            }
+                .toolbar(tabBarVisibility, for: .tabBar)
+                .navigationTitle(tab == .work ? "Work" : "")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar(path.isEmpty ? .hidden : .visible, for: .navigationBar)
+                .toolbar { rootToolbar(inbox: tab != .bots, isRoot: path.wrappedValue.isEmpty) }
                 .safeAreaInset(edge: .top, spacing: 0) {
-                    VStack(spacing: 0) {
-                        homeBar
-                        if searchOpen {
-                            HStack(spacing: 10) {
-                                Image(systemName: "magnifyingglass").font(.system(size: 17)).foregroundStyle(.secondary)
-                                TextField("Search conversations", text: $searchText)
-                                    .focused($searchFocused).textInputAutocapitalization(.never)
-                                    .autocorrectionDisabled().accessibilityIdentifier("home-search-input")
-                                Button { searchFocused = false; searchOpen = false; searchText = "" } label: {
-                                    Image(systemName: "xmark.circle.fill").font(.system(size: 17)).foregroundStyle(.secondary).frame(width: 44, height: 44)
-                                }.accessibilityLabel("Close search").accessibilityIdentifier("close-search")
-                            }
-                            .padding(.leading, 24).padding(.trailing, 12)
-                            .background(BoardStyle.paper)
+                    if searchOpen && tab == .bots {
+                        HStack(spacing: 10) {
+                            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                            TextField("Search conversations", text: $searchText)
+                                .focused($searchFocused).textInputAutocapitalization(.never)
+                                .autocorrectionDisabled().accessibilityIdentifier("home-search-input")
+                            Button { searchFocused = false; searchOpen = false; searchText = "" } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary).frame(width: 44, height: 44)
+                            }.accessibilityLabel("Close search").accessibilityIdentifier("close-search")
                         }
+                        .padding(.leading, 16).padding(.trailing, 4)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(.horizontal, 16).padding(.bottom, 8)
                     }
                 }
                 .navigationDestination(for: HomeDestination.self) { destination in
@@ -102,7 +122,7 @@ struct CoconutHome: View {
                     }
                 }
                 .navigationDestination(for: ConversationRoute.self) { route in
-                    ConversationView(botId: route.botId, focusDecisionId: route.decisionId)
+                    ConversationView(botId: route.botId, focusDecisionId: route.decisionId, focusMessageId: route.messageId)
                 }
                 .navigationDestination(for: BotExchangeRoute.self) { route in
                     BotExchangeView(route: route)
@@ -110,10 +130,6 @@ struct CoconutHome: View {
                 .navigationDestination(for: BotSettingsRoute.self) { route in
                     BotSettingsView(botId: route.botId)
                 }
-                .sheet(isPresented: $settingsOpen) { AppSettingsView() }
-                .sheet(isPresented: $createOpen) { BotEditorView() }
-                .onChange(of: PushNotifications.shared.target) { _, _ in openNotification() }
-                .onAppear { openNotification() }
                 .background(BoardStyle.paper)
                 .overlay(alignment: .top) {
                     if let error = store.error {
@@ -123,16 +139,58 @@ struct CoconutHome: View {
         }
     }
 
+    @ToolbarContentBuilder
+    private func rootToolbar(inbox: Bool, isRoot: Bool) -> some ToolbarContent {
+        if isRoot {
+            if !inbox {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { settingsOpen = true } label: {
+                        Image(systemName: "person.crop.circle")
+                    }.accessibilityLabel("App settings").accessibilityIdentifier("app-settings")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { searchOpen = true; searchFocused = true } label: {
+                        Image(systemName: "magnifyingglass")
+                    }.accessibilityLabel("Search conversations").accessibilityIdentifier("search-conversations")
+                }
+                if #available(iOS 26.0, *) { ToolbarSpacer(.fixed, placement: .topBarTrailing) }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { createOpen = true } label: {
+                        Image(systemName: "plus")
+                    }.accessibilityLabel("Create bot").accessibilityIdentifier("create-bot")
+                }
+            }
+        }
+    }
+
     private func openNotification() {
         guard let target = PushNotifications.shared.target else { return }
         guard store.acceptsNotification(target) else {
             PushNotifications.shared.target = nil
             return
         }
-        settingsOpen = false; createOpen = false
-        path = NavigationPath()
-        path.append(target.conversationRoute)
-        PushNotifications.shared.target = nil
+        guard !openingNotification else { return }
+        openingNotification = true
+        Task {
+            let destination = await store.notificationDestination(target)
+            openingNotification = false
+            guard PushNotifications.shared.target == target else { openNotification(); return }
+            guard let destination else { return }
+            settingsOpen = false; createOpen = false; searchOpen = false; searchFocused = false
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            switch destination {
+            case .inbox(let decisionId):
+                inboxPath = NavigationPath()
+                notificationDecisionId = decisionId
+                selectedTab = .inbox
+            case .conversation(let route):
+                notificationDecisionId = nil
+                selectedTab = .bots
+                botsPath = NavigationPath()
+                botsPath.append(route)
+            }
+            PushNotifications.shared.target = nil
+        }
     }
 
 }
@@ -203,12 +261,12 @@ struct CompactAgeLabel: View {
     }
 }
 
-private struct HomeCircleStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(BoardStyle.ink)
-            .background(BoardStyle.surface.opacity(0.45), in: Circle())
-            .overlay(Circle().stroke(BoardStyle.line, lineWidth: 0.8))
-            .opacity(configuration.isPressed ? 0.55 : 1)
+private struct NativeTabCollapse: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.tabBarMinimizeBehavior(.onScrollDown)
+        } else {
+            content
+        }
     }
 }

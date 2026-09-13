@@ -1,57 +1,87 @@
 import SwiftUI
 import QuickLook
-
-private enum DecisionSheet: Identifiable {
-    case context, modify, details, option(String)
-    var id: String {
-        switch self {
-        case .context: "context"
-        case .modify: "modify"
-        case .details: "details"
-        case .option(let id): "option-" + id
-        }
-    }
-}
+import MarkdownUI
 
 struct DecisionCard: View {
     @Environment(AppStore.self) private var store
     let decision: Decision
-    @State private var sheet: DecisionSheet?
+    var showsBot = false
+    var replyFocus: FocusState<Bool>.Binding? = nil
+    var confirmingOptionId: String? = nil
+    var onRespond: () -> Void = {}
+    var onChoose: ((String, String?) -> Void)? = nil
+    @State private var dismissing = false
+    @State private var dismissRequest: (revision: Int, id: String)?
     @State private var submitting = false
     @State private var submittingOptionId: String?
     @State private var responseError: String?
+    @State private var showsEarlierReplies = false
     private var canRespond: Bool { store.connection == .connected || store.isDemo }
-    private var showsSelection: Bool { submittingOptionId != nil || !decision.isPending }
+    private var showsSelection: Bool { !decision.isPending || dismissing }
+    private var isDismissed: Bool { dismissing || decision.status == "dismissed" }
     private var selectionLabel: String {
+        if isDismissed { return "Dismissed" }
         if let id = submittingOptionId, let option = decision.options.first(where: { $0.id == id }) {
             return option.label
         }
         return decision.selectedOptionLabel ?? decision.status.capitalized
     }
-    private var recommendation: String? {
-        guard let index = decision.options.firstIndex(where: { $0.id == decision.recommendedOptionId }) else { return nil }
-        return "Recommended: " + optionLetter(index)
-    }
-    private var recommendationText: String {
-        recommendation.map { $0 + ". " + decision.explanation } ?? decision.explanation
+    var body: some View {
+        Group {
+            if showsBot {
+                VStack(spacing: 0) {
+                    botHeader.padding(.horizontal, 16)
+                    Divider()
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            cardContent.padding(16)
+                            Color.clear.frame(height: 1).id("reply-bottom")
+                        }
+                        .scrollDismissesKeyboard(.interactively)
+                        .accessibilityIdentifier("inbox-card-scroll")
+                        .simultaneousGesture(TapGesture().onEnded { replyFocus?.wrappedValue = false })
+                        .onChange(of: replies.last?.id) { _, _ in
+                            proxy.scrollTo("reply-bottom", anchor: .bottom)
+                        }
+                    }
+                    if let replyFocus {
+                        DecisionReplyComposer(decision: decision, focused: replyFocus, onSend: onRespond)
+                            .padding(12)
+                    }
+                }
+            } else { cardContent.padding(16) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 24))
+        .clipShape(RoundedRectangle(cornerRadius: 24))
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 4) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(decision.title).font(.body.weight(.medium))
+    private var cardContent: some View {
+        VStack(alignment: .leading, spacing: showsBot ? 10 : 14) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(decision.title).font(.body.weight(.semibold))
                         .fixedSize(horizontal: false, vertical: true)
-                    if !showsSelection && !recommendationText.isEmpty {
-                        Text(recommendationText).font(.subheadline).foregroundStyle(.secondary)
-                            .lineLimit(3).textSelection(.enabled)
+                    if !showsSelection, let summary = decision.cardContext {
+                        Text(summary).font(.subheadline).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                if !showsSelection { cardMenu }
+                if !showsBot && !showsSelection {
+                    Button(action: dismiss) {
+                        Image(systemName: "xmark").font(.body).foregroundStyle(.secondary)
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canRespond || submitting || store.answeringDecisionIds.contains(decision.id))
+                    .accessibilityLabel("Dismiss card")
+                    .accessibilityIdentifier("dismiss-card-\(decision.id)")
+                }
             }
             if !showsSelection {
-                if !decision.options.isEmpty { choices }
+                if !decision.cardOptions.isEmpty { choices }
+                if showsBot { inlineReplies }
                 if !canRespond {
                     Text("Reconnect to respond.").font(.caption).foregroundStyle(.secondary)
                 }
@@ -63,89 +93,71 @@ struct DecisionCard: View {
                 decisionReceipt
             }
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 22))
-        .contextMenu {
-            Button("Details", systemImage: "doc.text.magnifyingglass") { sheet = .details }
+    }
+
+    private var botHeader: some View {
+        NavigationLink(value: store.decisionChatRoute(for: decision)) {
+            HStack(spacing: 8) {
+                if let bot = store.bots.first(where: { $0.id == decision.botId }) {
+                    BotAvatar(bot: bot, size: 24)
+                    Text(bot.name).font(.subheadline.weight(.medium)).lineLimit(1)
+                }
+                Spacer(minLength: 12)
+                Text("Open chat").font(.subheadline)
+                Image(systemName: "chevron.right").font(.caption2)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .accessibilityIdentifier("inbox-context-\(decision.id)")
+            .accessibilityLabel("Open this card in chat")
+            .simultaneousGesture(TapGesture().onEnded { replyFocus?.wrappedValue = false; onRespond() })
+    }
+
+    private var replies: [Message] {
+        store.messages.filter {
+            $0.decisionId == decision.id && $0.kind == "text" && !$0.text.isEmpty
         }
-        .accessibilityAction(named: "Details") { sheet = .details }
-        .sheet(item: $sheet) { destination in
-            switch destination {
-            case .context: DecisionInputSheet(decision: decision, mode: "context")
-            case .modify: DecisionInputSheet(decision: decision, mode: "modify")
-            case .details: DecisionDetailsSheet(decision: decision)
-            case .option(let id): DecisionDetailsSheet(decision: decision, optionId: id)
+    }
+
+    private var inlineReplies: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if replies.count > 2 {
+                Button(showsEarlierReplies ? "Hide earlier replies" : "Earlier replies") {
+                    showsEarlierReplies.toggle()
+                }.font(.subheadline).foregroundStyle(.secondary).frame(minHeight: 44)
+                    .accessibilityIdentifier("decision-earlier-replies")
+            }
+            ForEach(showsEarlierReplies ? replies : Array(replies.suffix(2))) { message in
+                HStack {
+                    if message.role == "user" { Spacer(minLength: 24) }
+                    Markdown(message.text).markdownTextStyle { FontSize(15) }
+                        .textSelection(.enabled)
+                        .padding(message.role == "user" ? 12 : 0)
+                        .background(message.role == "user" ? BoardStyle.paper : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 16))
+                    if message.role != "user" { Spacer(minLength: 0) }
+                }
             }
         }
     }
 
     private var choices: some View {
         VStack(spacing: 0) {
-            ForEach(Array(decision.options.enumerated()), id: \.element.id) { index, option in
-                Button { answer(option.answer, optionId: option.id) } label: {
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text(optionLetter(index)).font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .frame(minWidth: 23, minHeight: 25)
-                            .background(BoardStyle.ink.opacity(0.07), in: RoundedRectangle(cornerRadius: 5))
-                            .accessibilityHidden(true)
-                        Text(option.label).font(.subheadline).foregroundStyle(.primary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 12).padding(.vertical, 9)
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .contentShape(Rectangle())
+            ForEach(Array(decision.cardOptions.enumerated()), id: \.element.id) { index, option in
+                Button { answer(option.answer, optionId: decision.options.isEmpty ? nil : option.id) } label: {
+                    DecisionChoiceContent(option: option, index: index, isRecommended: decision.recommendedOptionId == option.id, isSending: submittingOptionId == option.id, isSelected: confirmingOptionId == option.id, isCompact: showsBot)
                 }
                 .buttonStyle(HomePressStyle())
-                .disabled(!canRespond || submitting)
+                .disabled(!canRespond || submitting || store.answeringDecisionIds.contains(decision.id))
                 .accessibilityIdentifier("decision-option-\(option.id)")
-                .accessibilityLabel("\(optionLetter(index)). \(option.label)")
+                .accessibilityLabel(option.label + (decision.recommendedOptionId == option.id ? ", Recommended" : ""))
                 .accessibilityHint("Submits this choice. " + option.explanation)
-                .contextMenu {
-                    Button("Review option", systemImage: "doc.text.magnifyingglass") { sheet = .option(option.id) }
-                }
-                if option.id != decision.options.last?.id { Divider().padding(.leading, 12) }
+                .accessibilityAddTraits(confirmingOptionId == option.id ? .isSelected : [])
+                if option.id != decision.cardOptions.last?.id { Divider().padding(.horizontal, 12) }
             }
         }
         .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: 12))
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(BoardStyle.line))
-    }
-
-    private var cardMenu: some View {
-        Menu {
-            Button("Details", systemImage: "doc.text.magnifyingglass") { sheet = .details }
-                .accessibilityIdentifier("decision-details")
-            if decision.isPending {
-                Button("Ask a question", systemImage: "bubble.left") { sheet = .context }
-                    .disabled(!canRespond || submitting)
-                    .accessibilityIdentifier("ask-decision-context")
-                Button("Modify", systemImage: "pencil") { sheet = .modify }
-                    .disabled(!canRespond || submitting)
-                    .accessibilityIdentifier("modify-decision")
-                Button("Reject", systemImage: "xmark", role: .destructive) { answer("reject") }
-                    .disabled(!canRespond || submitting)
-                    .accessibilityIdentifier("reject-decision")
-                if decision.options.isEmpty {
-                    Button("Approve", systemImage: "checkmark") { answer("approve") }
-                        .disabled(!canRespond || submitting)
-                        .accessibilityIdentifier("approve-decision")
-                }
-            }
-        } label: {
-            Image(systemName: "ellipsis").font(.system(size: 15))
-                .foregroundStyle(.secondary).frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.top, -11)
-        .padding(.trailing, -11)
-        .padding(.bottom, -11)
-        .disabled(submitting)
-        .accessibilityLabel("Decision options")
-        .accessibilityIdentifier("decision-menu-\(decision.id)")
     }
 
     private var decisionReceipt: some View {
@@ -155,17 +167,20 @@ struct DecisionCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("decision-selection-\(decision.id)")
-                Image(systemName: decision.status == "failed" ? "exclamationmark.circle" : "checkmark")
+                Image(systemName: isDismissed ? "xmark" : decision.status == "failed" ? "exclamationmark.circle" : decision.isPending ? "arrow.up" : "checkmark")
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(decision.status == "failed" ? BoardStyle.accent :
+                    .foregroundStyle(isDismissed ? .secondary : decision.status == "failed" ? BoardStyle.accent :
                                         decision.isPending ? .secondary : BoardStyle.green)
-                    .accessibilityLabel(decision.isPending ? "Sending choice" :
+                    .accessibilityLabel(isDismissed ? "Dismissed" : decision.isPending ? "Sending choice" :
                                             decision.status == "failed" ? "Action failed" : "Choice recorded")
             }
             .padding(.horizontal, 12).padding(.vertical, 12)
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(BoardStyle.line))
+            if decision.status == "approved" {
+                Text("Choice received").font(.caption).foregroundStyle(.secondary)
+            }
             if decision.status == "failed", let outcome = decision.outcome, !outcome.isEmpty {
                 Text(outcome).font(.caption).foregroundStyle(BoardStyle.accent)
             }
@@ -178,8 +193,31 @@ struct DecisionCard: View {
         }
     }
 
+    private func dismiss() {
+        guard decision.isPending, canRespond, !submitting, !dismissing,
+              !store.answeringDecisionIds.contains(decision.id) else { return }
+        let requestId = dismissRequest?.revision == decision.revision ? dismissRequest!.id : UUID().uuidString
+        dismissRequest = (decision.revision, requestId)
+        dismissing = true
+        responseError = nil
+        store.error = nil
+        onRespond()
+        Task {
+            let result = await store.updateInbox(decision, action: "dismiss", idempotencyKey: requestId)
+            dismissing = false
+            if result.decision != nil {
+                dismissRequest = nil
+            } else {
+                if !result.isUncertain { dismissRequest = nil }
+                responseError = "Dismissal not confirmed. Try again."
+            }
+        }
+    }
+
     private func answer(_ choice: String, optionId: String? = nil) {
         guard decision.isPending, canRespond, !submitting else { return }
+        if let onChoose { onChoose(choice, optionId); return }
+        onRespond()
         submitting = true
         submittingOptionId = optionId
         responseError = nil
@@ -192,143 +230,51 @@ struct DecisionCard: View {
         }
     }
 
-    private func optionLetter(_ index: Int) -> String {
-        let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-        return index < letters.count ? String(letters[index]) : String(index + 1)
-    }
+
 }
 
-private struct DecisionDetailsSheet: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    let decision: Decision
-    var optionId: String? = nil
-    private var current: Decision { store.decisions.first { $0.id == decision.id } ?? decision }
-    private var options: [DecisionOption] {
-        optionId.map { id in current.options.filter { $0.id == id } } ?? current.options
-    }
+
+struct DecisionChoiceContent: View {
+    let option: DecisionOption
+    let index: Int
+    var isRecommended = false
+    var isSending = false
+    var isSelected = false
+    var isCompact = false
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    Text(current.title).font(.headline)
-                    Text(current.explanation).font(.subheadline).textSelection(.enabled)
-                }
-                if !current.resource.isEmpty {
-                    Section("Affected resources") {
-                        Text(current.resource).font(.subheadline).textSelection(.enabled)
-                    }
-                }
-                if !current.consequences.isEmpty {
-                    Section("Consequences") {
-                        Text(current.consequences).font(.subheadline).textSelection(.enabled)
-                    }
-                }
-                if current.options.isEmpty || current.options.allSatisfy({ $0.action == nil }) {
-                    if let proposal = current.proposalPreview, !proposal.isEmpty {
-                        Section("Proposed file") { proposalText(proposal) }
-                    }
-                }
-                ForEach(options) { option in
-                    Section(option.label) {
-                        Text(option.explanation).font(.subheadline).textSelection(.enabled)
-                        if let action = option.action {
-                            Text(action.filename).font(.subheadline.monospaced()).textSelection(.enabled)
-                            proposalText(action.content)
-                        }
-                        if let modification = option.modification, !modification.isEmpty {
-                            Text(modification).font(.subheadline).textSelection(.enabled)
-                        }
-                    }
-                }
-                Section("Record") {
-                    StatusLabel(status: current.status)
-                    if let selected = current.selectedOptionLabel { LabeledContent("Selected", value: selected) }
-                    if current.decidedBy != nil { LabeledContent("Decided by", value: store.decisionActor(current)) }
-                    if let correction = current.correction, !correction.isEmpty { Text("Changed: \(correction)") }
-                    if let outcome = current.outcome, !outcome.isEmpty { Text(outcome) }
-                    if let date = current.createdAt.apiDate {
-                        LabeledContent("Created", value: date.formatted(date: .abbreviated, time: .shortened))
-                    }
-                    Text("Action: \(current.actionType) · Revision \(current.revision)")
-                        .font(.caption.monospaced()).foregroundStyle(.secondary)
-                    if let actor = current.decidedBy {
-                        Text("Recorded by: \(actor)").font(.caption.monospaced()).textSelection(.enabled)
-                    }
-                }
+        HStack(alignment: .top, spacing: isCompact ? 8 : 12) {
+            ZStack {
+                Text(String(UnicodeScalar(65 + index)!)).opacity(isSelected ? 0 : 1)
+                Image(systemName: "checkmark").fontWeight(.semibold).opacity(isSelected ? 1 : 0)
             }
-            .scrollContentBackground(.hidden).background(BoardStyle.paper)
-            .navigationTitle(optionId == nil ? "Decision details" : "Option details")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }.accessibilityIdentifier("close-decision-details")
+                .font(.subheadline)
+                .foregroundStyle(isSelected ? .primary : .secondary).frame(width: isCompact ? 24 : 28, height: isCompact ? 24 : 28)
+                .background(isSelected ? Color.white.opacity(0.14) : BoardStyle.surface, in: RoundedRectangle(cornerRadius: 7))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: isCompact ? 3 : 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    (Text(option.label) + Text(isRecommended ? "  Recommended" : "").font(.caption).foregroundColor(.secondary))
+                        .font(.body)
+                        .foregroundStyle(option.answer == "reject" ? Color.red : .primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    if isSending {
+                        Image(systemName: "checkmark").foregroundStyle(.secondary)
+                            .accessibilityLabel("Sending choice")
+                    }
+                }
+                if !option.explanation.isEmpty {
+                    Text(option.explanation).font(.subheadline).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
-    }
-
-    private func proposalText(_ value: String) -> some View {
-        ScrollView(.horizontal) {
-            Text(value).font(.caption.monospaced()).textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-}
-
-struct DecisionInputSheet: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    let decision: Decision
-    let mode: String
-    @State private var text = ""
-    @State private var sending = false
-    @FocusState private var focused: Bool
-    private var isContext: Bool { mode == "context" }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField(isContext ? "What do you need to know?" : "Describe the change…", text: $text, axis: .vertical)
-                        .lineLimit(3...10).focused($focused)
-                        .accessibilityIdentifier("decision-context-input")
-                } header: {
-                    Text(isContext ? "Your question" : "What should change?")
-                } footer: {
-                    Text(isContext ? "This decision stays pending." : "The bot prepares a new proposal. This change does not approve it.")
-                }
-                Section("Decision") {
-                    Text(decision.title).font(.subheadline)
-                }
-                if let error = store.error {
-                    Section { Text(error).font(.caption).foregroundStyle(BoardStyle.accent) }
-                }
-            }
-            .scrollContentBackground(.hidden).background(BoardStyle.paper)
-            .navigationTitle(isContext ? "Ask for context" : "Modify proposal")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button(isContext ? "Ask" : "Send") {
-                        sending = true
-                        store.error = nil
-                        Task {
-                            if isContext { await store.requestContext(decision, question: text) }
-                            else { await store.answer(decision, choice: "modify", correction: text) }
-                            sending = false
-                            if store.error == nil { dismiss() }
-                        }
-                    }
-                    .disabled(sending || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier("submit-decision-context")
-                }
-            }
-            .onAppear { focused = true }
-        }
-        .presentationDetents([.large])
+        .padding(.horizontal, 12).padding(.vertical, isCompact ? 8 : 12)
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .background(isSelected ? Color.white.opacity(0.12) : .clear)
+        .animation(.easeOut(duration: 0.1), value: isSelected)
+        .contentShape(Rectangle())
     }
 }
 
@@ -368,16 +314,9 @@ struct ArtifactCard: View {
                 Button(expanded ? "Show less" : "Show full result") { expanded.toggle() }
                     .font(.subheadline).frame(minHeight: 44)
             }
-            if artifact.kind == "pr" {
-                HStack(spacing: 5) {
-                    if let error = artifact.refreshError, !error.isEmpty {
-                        Image(systemName: "exclamationmark.circle")
-                        Text("Status could not refresh")
-                    } else if let checked = artifact.checkedAt?.apiDate {
-                        Text("Checked")
-                        Text(checked, style: .relative)
-                    }
-                }.font(.caption2).foregroundStyle(.secondary)
+            if artifact.kind == "pr", let error = artifact.refreshError, !error.isEmpty {
+                Label("Status could not refresh", systemImage: "exclamationmark.circle")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
             HStack {
                 if let externalURL {

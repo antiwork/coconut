@@ -75,6 +75,22 @@ def get_plugin_manager(): return None
     (source / 'agent').mkdir(exist_ok=True)
     (source / 'agent/__init__.py').write_text('')
     (source / 'agent/skill_utils.py').write_text('def parse_config_string_list(value): return value or []\n')
+    (source / 'cron').mkdir(exist_ok=True)
+    (source / 'cron/__init__.py').write_text('')
+    (source / 'cron/scheduler.py').write_text('''def _check_model_drift(*args): pass
+def _is_cron_silence_response(text): return text.strip() == '[SILENT]'
+''')
+    (source / 'cron/scheduler_prompt.py').write_text('''def _guard_job_credential_exfil(job): pass
+def _build_job_prompt(job): return job.get('prompt', '')
+''')
+    (source / 'gateway').mkdir(exist_ok=True)
+    (source / 'gateway/__init__.py').write_text('')
+    (source / 'gateway/session_context.py').write_text('''def set_session_vars(**kwargs): return kwargs
+def clear_session_vars(tokens): pass
+''')
+    (source / 'tools/terminal_tool.py').write_text('''def record_session_cwd(task_id, cwd): pass
+def clear_session_cwd(task_id): pass
+''')
 
     (source / 'yaml.py').write_text('import json\nsafe_load = json.loads\n')
     (source / 'utils.py').write_text('import json\nfrom pathlib import Path\ndef atomic_yaml_write(path, data, **kwargs): Path(path).write_text(json.dumps(data))\ndef atomic_roundtrip_yaml_save(path, data): atomic_yaml_write(path, data)\n')

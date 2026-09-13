@@ -8,6 +8,8 @@ from http.client import HTTPException
 import json
 import os
 import re
+import subprocess
+import shutil
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -34,6 +36,9 @@ class PRObservation:
     detail: str
     checked_at: str
     observed: bool
+    pr_state: str | None = None
+    draft: bool | None = None
+    checks_state: str | None = None
 
 
 class PRTrackingError(ValueError):
@@ -178,6 +183,25 @@ class GitHubPRTracker:
                 raise PRTrackingError("GitHub checks changed during refresh. Refresh again.")
         raise PRTrackingError("Too many checks to confirm the pull request state.")
 
+    @classmethod
+    def for_profile(cls, profile):
+        """Use only this bot's gh login. Never borrow another bot's credentials."""
+        from .runtime_environment import profile_environment
+        environment = dict(os.environ, **profile_environment(profile))
+        for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'):
+            environment.pop(key, None)
+        executable = shutil.which('gh')
+        token = ''
+        if executable:
+            try:
+                result = subprocess.run([executable, 'auth', 'token', '--hostname', 'github.com'],
+                                        env=environment, capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    token = result.stdout.strip()
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        return cls(token=token)
+
     def observe(self, url: str) -> PRObservation:
         """Errors carry no replacement state. Keep the last state and mark it stale."""
         checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -191,6 +215,7 @@ class GitHubPRTracker:
             deadline = time.monotonic() + 20
             before = _pr_fields(self._get(path, deadline))
             sha, state, draft, merged, title = before
+            checks_state = None
             if merged:
                 result, detail = "merged", "GitHub confirms this pull request merged."
             elif state == "closed":
@@ -203,7 +228,8 @@ class GitHubPRTracker:
                     raise PRTrackingError("The pull request changed during refresh. Refresh again.")
                 title = after[4]
                 result, detail = _classify(draft, checks, status, sha)
-            return PRObservation(result, sha, title, url, detail, checked_at, True)
+                checks_state = {"failed": "failed", "checks_running": "running", "opened": "none", "ready_for_review": "passed"}[_classify(False, checks, status, sha)[0]]
+            return PRObservation(result, sha, title, url, detail, checked_at, True, "merged" if merged else state, draft, checks_state)
         except HTTPError as error:
             detail = f"GitHub refresh failed (HTTP {error.code})."
             error.close()

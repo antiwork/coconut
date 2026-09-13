@@ -5,12 +5,17 @@ import MarkdownUI
 struct MessageText: View {
     let text: String
     var linkColor: Color = .blue
+    var allowsTextSelection = true
 
     var body: some View {
+        if allowsTextSelection { formatted.textSelection(.enabled) }
+        else { formatted.textSelection(.disabled) }
+    }
+
+    private var formatted: some View {
         Markdown(text.trimmingCharacters(in: .newlines))
             .font(.body)
             .markdownTheme(.coconutMessage)
-            .textSelection(.enabled)
             .tint(linkColor)
             .accessibilityElement(children: .combine)
     }

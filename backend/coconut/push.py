@@ -61,11 +61,14 @@ class PushDelivery:
             turn_id TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
             not_before REAL NOT NULL, expires REAL NOT NULL, reason TEXT,
             UNIQUE(device_id, event_key));
+        CREATE TABLE IF NOT EXISTS push_preferences (
+            device_id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS push_routes (
             device_id TEXT PRIMARY KEY, data TEXT NOT NULL);
         ''')
-        if 'envelope' not in {row[1] for row in service.db.execute('PRAGMA table_info(push_outbox)')}:
-            service.db.execute('ALTER TABLE push_outbox ADD COLUMN envelope TEXT')
+        for column in ('envelope', 'message_id'):
+            if column not in {row[1] for row in service.db.execute('PRAGMA table_info(push_outbox)')}:
+                service.db.execute(f'ALTER TABLE push_outbox ADD COLUMN {column} TEXT')
 
     @property
     def configured(self):
@@ -79,6 +82,11 @@ class PushDelivery:
         if (not isinstance(token, str) or not re.fullmatch(r'[0-9a-fA-F]{32,512}', token)
                 or len(token) % 2 or environment not in ('development', 'production') or type(enabled) is not bool):
             raise ServiceError(400, 'Supply an APNs token, environment, and notification preference.')
+        preferences = data.get('preferences')
+        if preferences is not None and (not isinstance(preferences, dict)
+                or set(preferences) != {'decisions', 'messages'}
+                or any(type(value) is not bool for value in preferences.values())):
+            raise ServiceError(400, 'Supply decision and message notification preferences.')
         token = token.lower()
         route = data.get('relay')
         if route is not None:
@@ -94,6 +102,13 @@ class PushDelivery:
         self.service.db.execute('''INSERT INTO push_devices VALUES (?,?,?,?,?) ON CONFLICT(device_id)
             DO UPDATE SET token=excluded.token,environment=excluded.environment,enabled=excluded.enabled,updated=excluded.updated''',
             (device_id, token, environment, int(enabled), time.time()))
+        if preferences is not None:
+            self.service.db.execute('INSERT INTO push_preferences VALUES (?,?) ON CONFLICT(device_id) DO UPDATE SET data=excluded.data',
+                                    (device_id, json.dumps(preferences)))
+            for kind in ('decision', 'message', 'failed', 'completed'):
+                if not self.allows(device_id, kind):
+                    self.service.db.execute("UPDATE push_outbox SET status='discarded',reason='Disabled' WHERE device_id=? AND kind=? AND status='queued'",
+                                            (device_id, kind))
         if not enabled:
             self.unregister_jobs(device_id)
         return {'registered': True, 'configured': self.configured}
@@ -104,17 +119,44 @@ class PushDelivery:
     def unregister(self, device_id):
         self.service.db.execute('DELETE FROM push_devices WHERE device_id=?', (device_id,))
         self.service.db.execute('DELETE FROM push_routes WHERE device_id=?', (device_id,))
+        self.service.db.execute('DELETE FROM push_preferences WHERE device_id=?', (device_id,))
         self.unregister_jobs(device_id)
         return {'registered': False, 'configured': self.configured}
 
+    def allows(self, device_id, kind):
+        row = self.service.db.execute('SELECT data FROM push_preferences WHERE device_id=?', (device_id,)).fetchone()
+        # Older phones keep task alerts until they register the new categories.
+        if not row:
+            return kind != 'message'
+        preferences = json.loads(row[0])
+        return kind != 'completed' and preferences['decisions' if kind == 'decision' else 'messages']
+
+    @staticmethod
+    def visible_message(message, task):
+        return (message.get('role') == 'assistant' and message.get('kind') in ('text', 'artifact')
+                and not message.get('streaming') and not message.get('_hidden') and not message.get('_deleted')
+                and not message.get('recipient_bot_ids') and not message.get('exchange_recipient_bot_ids')
+                and (not task.get('source_task_id') or task.get('_is_return') or message.get('decision_id'))
+                and bool(message.get('text', '').strip() or message.get('artifact_id')))
+
     def record(self, event_type, data, bot_id, task_id):
+        if not task_id:
+            return
+        message_id = None
         if event_type == 'decision.created' and data.get('status') == 'pending':
             kind, decision_id = 'decision', data['id']
+        elif event_type in ('message.created', 'message.completed'):
+            kind, decision_id, message_id = 'message', None, data['id']
         elif event_type == 'task.updated' and data.get('status') in ('completed', 'failed'):
             kind, decision_id = data['status'], None
         else:
             return
         task = self.service._get('tasks', task_id)
+        if message_id:
+            message = self.service._get('messages', message_id)
+            if not self.visible_message(message, task):
+                return
+            bot_id = message['bot_id']
         bot = self.service._get('bots', bot_id)
         if not bot.get('notifications', True) or bot.get('archived') or bot.get('_deleted'):
             return
@@ -124,14 +166,16 @@ class PushDelivery:
         if kind == 'failed' and task.get('_assignment_task_id'):
             return
         turn = task.get('_native_turn_id') or task.get('updated_at') or task['created_at']
-        event_key = ':'.join((task_id, kind, decision_id or turn))
+        event_key = ':'.join((task_id, kind, decision_id or message_id or turn))
         stamp = time.time()
         for (device_id,) in self.service.db.execute('SELECT device_id FROM push_devices WHERE enabled=1'):
+            if not self.allows(device_id, kind):
+                continue
             notification_id = str(uuid5(NAMESPACE_URL, device_id + ':' + event_key))
             self.service.db.execute('''INSERT OR IGNORE INTO push_outbox
-                (id,device_id,event_key,bot_id,task_id,decision_id,kind,turn_id,status,not_before,expires)
-                VALUES (?,?,?,?,?,?,?,?,'queued',?,?)''',
-                (notification_id, device_id, event_key, bot_id, task_id, decision_id, kind, turn, stamp + 2, stamp + 86400))
+                (id,device_id,event_key,bot_id,task_id,decision_id,kind,turn_id,message_id,status,not_before,expires)
+                VALUES (?,?,?,?,?,?,?,?,?,'queued',?,?)''',
+                (notification_id, device_id, event_key, bot_id, task_id, decision_id, kind, turn, message_id, stamp + 2, stamp + 86400))
 
     def start(self):
         if self.thread:
@@ -167,23 +211,27 @@ class PushDelivery:
             conversation = service._get('bots', task.get('conversation_bot_id', bot['id']))
             stale = (job['expires'] <= time.time() or not device or not device[2]
                      or bot.get('_deleted') or bot.get('archived') or not bot.get('notifications', True)
-                     or conversation.get('_deleted') or conversation.get('archived'))
+                     or conversation.get('_deleted') or conversation.get('archived')
+                     or not conversation.get('notifications', True) or not self.allows(job['device_id'], job['kind']))
             decision = None
             if job['decision_id']:
                 decision = service._get('decisions', job['decision_id'])
                 stale = stale or decision['status'] != 'pending' or decision.get('_hidden', False)
+            elif job['message_id']:
+                message = service._get('messages', job['message_id'])
+                stale = stale or not self.visible_message(message, task)
             else:
                 turn = task.get('_native_turn_id') or task.get('updated_at') or task['created_at']
                 stale = stale or task['status'] != job['kind'] or turn != job['turn_id']
             if stale:
                 service.db.execute("UPDATE push_outbox SET status='discarded',reason='NoLongerRelevant' WHERE id=?", (job['id'],))
                 return True
-            bodies = {'decision': 'A bot needs your decision.', 'completed': 'A bot finished its task.', 'failed': 'A bot could not finish its task.'}
+            bodies = {'message': 'A bot sent you a message.', 'decision': 'A bot needs your decision.', 'completed': 'A bot finished its task.', 'failed': 'A bot could not finish its task.'}
             payload = {'aps': {'alert': {'title': 'Coconut', 'body': bodies[job['kind']]}, 'sound': 'default',
                                'thread-id': task.get('thread_id', task['id'])},
                        'coconut': {'version': 1, 'device_id': job['device_id'], 'bot_id': task['bot_id'] if task.get('source_bot_id') else conversation['id'],
-                                   'task_id': task['id'], 'decision_id': job['decision_id'], 'kind': job['kind']}}
-            collapse = hashlib.sha256(task['id'].encode()).hexdigest()
+                                   'task_id': task['id'], 'decision_id': job['decision_id'], 'message_id': job['message_id'], 'kind': job['kind']}}
+            collapse = hashlib.sha256((job['decision_id'] or job['message_id'] or task['id']).encode()).hexdigest()
             if route:
                 if job['envelope']:
                     envelope = json.loads(job['envelope'])

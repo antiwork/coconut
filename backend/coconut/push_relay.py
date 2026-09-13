@@ -121,6 +121,13 @@ def notification_alert(service, job, bot, task, decision):
     if job['kind'] == 'failed':
         # Tool errors can contain credentials. Keep those inside the conversation.
         return {'title': title, 'subtitle': 'Could not finish', 'body': notification_text(task['title'])}
+    if job.get('message_id'):
+        message = service._get('messages', job['message_id'])
+        text = message['text']
+        if message.get('artifact_id'):
+            artifact = service._get('artifacts', message['artifact_id'])
+            text = artifact.get('preview') or artifact['title']
+        return {'title': title, 'body': notification_text(text)}
     rows = service.db.execute('''SELECT data FROM messages
         WHERE json_extract(data, '$.task_id')=? AND json_extract(data, '$.role')='assistant'
           AND json_extract(data, '$.kind') IN ('text','artifact')

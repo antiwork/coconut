@@ -118,6 +118,8 @@ class Handler(BaseHTTPRequestHandler):
             if method == 'GET':
                 if url.path == '/v1/state':
                     self._json(200, service.snapshot())
+                elif url.path == '/v1/settings/google':
+                    self._json(200, service.google_connection('status', {}, device))
                 elif url.path == '/v1/push/config':
                     self._json(200, service.push.relay.configuration())
                 elif url.path == '/v1/events':

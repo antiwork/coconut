@@ -66,8 +66,12 @@ def decision_correction(data: dict) -> str:
     return value
 
 
+from .work_status import WorkStatus
 from .background_processes import BackgroundProcesses
 from .native_execution import NativeExecution
+from .decision_inbox import DecisionInbox
+from .pull_request_reviews import PullRequestReviews
+from .work_progress import WorkProgress
 
 
 from .routine_coordinator import NativeRoutines
@@ -77,7 +81,7 @@ from .approval_updates import ApprovalUpdates
 from .service_restart import ServiceRestart
 
 
-class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
+class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     EXCHANGE_LIMIT = 8
@@ -97,7 +101,11 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
         self.files.mkdir(exist_ok=True, mode=0o700)
         self.provider = provider
         self.profiles = HermesProfiles(self.root)
-        self.pr_tracker = pr_tracker if pr_tracker is not None else GitHubPRTracker()
+        self.pr_tracker = pr_tracker
+        self.pr_refresh_requested = threading.Event()
+        self.pr_refresh_lock = threading.Lock()
+        self.pr_follow_lock = threading.Lock()
+        self.pr_last_request = float('-inf')
         self.lock = threading.RLock()
         self.model_settings_lock = threading.Lock()
         self.changed = threading.Condition(self.lock)
@@ -125,6 +133,7 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
         ''')
         self._request_device_id = None
         self._request_key = None
+        self._message_interaction = None
         self.stopping = threading.Event()
         self.generation = uid()
         self.restart_enabled = False
@@ -146,6 +155,9 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
                 self._migrate_threads()
                 self._migrate_bot_exchanges()
                 self._migrate_process_deliveries()
+                self._migrate_activity_notices()
+                self._migrate_pr_review_sources()
+                self._migrate_native_routine_prompts()
                 self._recover()
         except BaseException:
             self.db.close()
@@ -194,6 +206,26 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
                 except (ProfileError, OSError) as error:
                     raise ServiceError(503, 'The bot settings were saved, but its Hermes profile could not sync.') from error
 
+    def _migrate_activity_notices(self):
+        if self._setting('activity_notices_migrated'):
+            return
+        failures = set()
+        for (data,) in self.db.execute("SELECT data FROM events WHERE type IN ('task.updated','task.cancelled')"):
+            task = json.loads(data)
+            if task.get('status') in ('failed', 'cancelled'):
+                failures.add((task.get('id'), task.get('summary')))
+        for message in self._all('messages'):
+            if message['kind'] != 'activity':
+                continue
+            # Preserve recorded failures even when a later turn changes the task status.
+            delivery_notice = message.get('role') == 'system' and message.get('text', '').startswith((
+                'Bot messages paused after eight deliveries.', 'The result could not return to its sender:'))
+            if delivery_notice or (message.get('task_id'), message.get('text')) in failures:
+                message['kind'] = 'status'
+                self._put('messages', message)
+                self._event('message.updated', self._public(message), message['bot_id'], message.get('task_id'))
+        self.db.execute("INSERT INTO settings VALUES ('activity_notices_migrated','true')")
+
     def _all(self, table: str) -> list[dict]:
         return [json.loads(row[0]) for row in self.db.execute(f'SELECT data FROM {table} ORDER BY rowid')]
 
@@ -227,9 +259,14 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
             message.update(_human_device_id=self._request_device_id, _human_source_kind='chat')
             if role == 'user' and kind == 'text' and self._request_key:
                 message['client_request_id'] = self._request_key
+        if human_authored and role == 'user' and self._message_interaction:
+            message.update(self._message_interaction)
+            if message.get('reaction_event'):
+                message['_human_source_kind'] = 'reaction'
         self._put('messages', message)
         bot = self._get('bots', display_bot_id)
-        bot['last_message'] = text[:160]
+        if not message.get('reaction_event'):
+            bot['last_message'] = text[:160]
         if role == 'assistant':
             bot['unread_count'] += 1
         self._put('bots', bot)
@@ -253,7 +290,7 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
             raise ServiceError(409, f'This turn cannot use that message to {purpose}.')
         source = self._get('messages', source_id)
         if (not source.get('_human_device_id') or source.get('_human_source_kind') != 'chat'
-                or source.get('role') != 'user' or source.get('kind') != 'text'
+                or source.get('role') != 'user' or source.get('kind') != 'text' or source.get('reaction_event')
                 or source.get('sender_bot_id') is not None
                 or source.get('thread_id') != task['thread_id']
                 or task['bot_id'] not in source.get('recipient_bot_ids', [])):
@@ -485,6 +522,12 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
             state = {'bots': bots}
             for table in self.TABLES[1:]:
                 state[table] = [self._public(o) for o in self._all(table) if o['bot_id'] in visible and o.get('conversation_bot_id', o['bot_id']) in visible and not o.get('_deleted') and not o.get('_hidden') and (table not in ('decisions', 'artifacts') or not o.get('task_id') or o['task_id'] in visible_task_ids)]
+            state['artifacts'] = [self._public(a) for a in self._work_projection([self._get('artifacts', a['id']) for a in state['artifacts']])]
+            replying = {c['decision_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
+            for decision in state['decisions']:
+                decision['reply_pending'] = decision['id'] in replying
+                if not decision.get('request_text') and decision.get('task_id'):
+                    decision.update(self.decision_origin(self._get('tasks', decision['task_id'])))
             state.update(cursor=self._cursor(), server_time=now(), provider=getattr(self.provider, 'name', 'unknown'), push_configured=self.push.configured)
             if catalog is not None:
                 default = catalog.get('default', {})
@@ -524,6 +567,26 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
         except (ValueError, TypeError, AttributeError):
             raise ServiceError(400, 'Supply a UUID in Idempotency-Key.')
         fingerprint = digest(encoded([device_id, method, path, data]))
+        if method == 'POST' and path == '/v1/work/pull-requests':
+            with self.pr_follow_lock:
+                with self.lock:
+                    previous = self.db.execute('SELECT fingerprint,response FROM requests WHERE key=?', (key,)).fetchone()
+                    if previous:
+                        if not hmac.compare_digest(previous[0], fingerprint):
+                            raise ServiceError(409, 'This idempotency key belongs to a different request.')
+                        return json.loads(previous[1])
+                result = self._register_pr_artifact(None, data, bot_id=data.get('bot_id'))
+                with self.transaction():
+                    self.db.execute('INSERT INTO requests(key,fingerprint,response) VALUES (?,?,?)', (key, fingerprint, encoded(result)))
+                return result
+        if method == 'POST' and path == '/v1/work/refresh':
+            with self.lock:
+                if time.monotonic() - self.pr_last_request >= 10:
+                    self.pr_last_request = time.monotonic()
+                    self.pr_refresh_requested.set()
+            return {'ok': True}
+        if method == 'POST' and path.startswith('/v1/settings/google/'):
+            return self.google_connection(path.rsplit('/', 1)[1], data, device_id, key)
         if method == 'PUT' and path == '/v1/settings/approvals' and hasattr(self.provider, 'native_settings'):
             return self.mutate_approval_default(data, key, fingerprint)
         if method == 'PUT' and path == '/v1/settings/model' and hasattr(self.provider, 'set_model_default'):
@@ -794,9 +857,31 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
         if errors:
             raise ServiceError(503, 'Deletion was recorded, but cleanup is unconfirmed. Retry the exact request.') from errors[0]
 
+    def google_connection(self, action, data, device, key=None):
+        from .google_connection import GoogleConnections, GoogleError
+        manager = GoogleConnections(self.root)
+        try:
+            if action == 'status':
+                return manager.profile().status()
+            if action == 'start':
+                return manager.start(device, key)
+            if action == 'finish':
+                result = manager.finish(device, data.get('state'), data.get('code'))
+            elif action == 'disconnect':
+                result = manager.disconnect(device, key)
+            else:
+                raise ServiceError(404, 'This Google connection action was not found.')
+            with self.transaction():
+                self._event('google.updated', result)
+            return result
+        except (GoogleError, ValueError) as error:
+            raise ServiceError(409, str(error)) from None
+
     def _write(self, method: str, parts: list[str], data: dict, device: str, callbacks: list) -> dict:
         if not isinstance(data, dict) or not parts or parts[0] != 'v1':
             raise ServiceError(400, 'Send a JSON object to a v1 route.')
+        if method == 'POST' and len(parts) == 5 and parts[:3] == ['v1', 'work', 'pull-requests'] and parts[4] == 'dismiss':
+            return self._dismiss_work(parts[3], data)
         if parts == ['v1', 'device', 'push']:
             if method == 'PUT':
                 return self.push.registration(device, data)
@@ -848,11 +933,14 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
             if parts[3:] == ['routines'] and method == 'POST':
                 return self._create_routine(bot, data)
             if parts[3:] == ['messages'] and method == 'POST':
-                return self._send(bot, data)
+                return self._send_message_interaction(bot, data)
+        if len(parts) == 4 and parts[1] == 'messages' and parts[3] == 'reactions' and method == 'POST':
+            return self._react_to_message(parts[2], data)
         if len(parts) >= 3 and parts[1] == 'routines':
             return self._write_routine(method, parts, data)
         if len(parts) == 4 and parts[1] == 'tasks' and parts[3] == 'replies' and method == 'POST':
-            return self._reply(self._get('tasks', parts[2]), data)
+            task = self._get('tasks', parts[2])
+            return self._send_message_interaction(self._get('bots', task['conversation_bot_id']), data, task=task)
         if len(parts) == 4 and parts[1] == 'tasks' and parts[3] == 'cancel' and method == 'POST':
             task = self._get('tasks', parts[2])
             self._cancel(task, callbacks)
@@ -860,8 +948,14 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
         if len(parts) == 4 and parts[1] == 'decisions' and method == 'POST':
             decision = self._get('decisions', parts[2])
             task = self._get('tasks', decision['task_id'])
+            if parts[3] == 'inbox':
+                return self.update_inbox(decision, task, data)
             if decision['status'] != 'pending' or task['status'] == 'cancelled':
                 raise ServiceError(409, 'This decision is no longer pending.')
+            if parts[3] == 'reply':
+                if data.get('revision') != decision['revision']:
+                    raise ServiceError(409, 'This decision changed. Review it before replying.')
+                return self._request_context(decision, task, require_text(data, 'text', 4000), [], reply_device=device)
             if parts[3] == 'context':
                 question = require_text(data, 'question', 4000)
                 return self._request_context(decision, task, question, [])
@@ -1031,6 +1125,7 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
         if existing:
             receipt = json.loads(existing[0])['receipt']
             return receipt | {'status': 'duplicate' if receipt['task_id'] else receipt['status']}
+        progress_only = False
         exchange = self._get('exchanges', source['exchange_id'])
         cancellation_result = returning and source.get('_dependency_cancelled')
         if self.stopping.is_set() or exchange.get('cancelled') or (source['status'] == 'cancelled' and not cancellation_result):
@@ -1048,24 +1143,33 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
             if not exchange['paused']:
                 exchange['paused'] = True
                 self._put('exchanges', exchange)
-                self._message(source['bot_id'], 'Bot messages paused after eight deliveries. Send a reply to continue.', task_id=source['id'], role='system', kind='activity')
+                self._message(source['bot_id'], 'Bot messages paused after eight deliveries. Send a reply to continue.', task_id=source['id'], role='system', kind='status')
                 self._event('exchange.paused', {'exchange_id': exchange['id'], 'deliveries': exchange['deliveries'], 'limit': self.EXCHANGE_LIMIT}, origin['id'], source['id'])
             receipt = {'task_id': None, 'target_bot_id': target_id, 'thread_id': source['thread_id'], 'status': 'limit_reached'}
         else:
+            assignment = self._assignment(source)
+            progress_only = not returning and target_id == assignment.get('source_bot_id') and (
+                self._unfinished_work(assignment) or bool(assignment.get('_waiting_on')) or self._background_pending(assignment['id']))
             target = self._get('bots', target_id)
             task = self._send(target, {'text': text, 'mode': 'queue'}, thread_id=source['thread_id'], parent_task_id=source['id'], conversation_bot_id=origin['id'], exchange_id=source['exchange_id'], source_task=source, record_message=False, text_limit=None if returning else 20000)
             task = self._get('tasks', task['id'])
             sender = self._get('bots', source['bot_id'])
-            task['_bot_messages'] = [{'sender_bot_id': sender['id'], 'sender_name': sender['name'], 'text': text, 'result_status': payload.get('result_status')}]
+            task['_bot_messages'] = [{'sender_bot_id': sender['id'], 'sender_name': sender['name'], 'text': text, 'result_status': payload.get('result_status'), 'progress_only': progress_only}]
             assignment = self._assignment(source)
             task['_is_return'] = returning or target_id == assignment.get('source_bot_id')
             owner_id = assignment.get('_reply_to_task_id') or assignment.get('source_task_id')
             if target_id == assignment.get('source_bot_id') and owner_id:
                 owner = self._assignment(self._get('tasks', owner_id))
-                task.update(_is_return=True, _assignment_task_id=owner['id'],
-                            _resolved_dependency_id=assignment['id'])
+                task.update(_is_return=True, _assignment_task_id=owner['id'])
+                if assignment.get('_requester_reply_task_id'):
+                    task['_relay_callback_owner'] = assignment['_requester_reply_task_id']
+                if not progress_only:
+                    task['_resolved_dependency_id'] = assignment['id']
             elif not task['_is_return']:
                 task['_reply_to_task_id'] = assignment['id']
+                callback_owner = source.get('_relay_callback_owner') or (source['id'] if source.get('_native_relay') else None)
+                if callback_owner:
+                    task['_requester_reply_task_id'] = callback_owner
                 assignment['_waiting_on'] = list(dict.fromkeys([*assignment.get('_waiting_on', []), task['id']]))
                 self._put('tasks', assignment)
             if native_id:
@@ -1086,7 +1190,7 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
             self._put('exchanges', exchange)
             receipt = {'task_id': task['id'], 'target_bot_id': target_id, 'thread_id': task['thread_id'], 'status': 'paused' if task['status'] == 'paused' else 'queued'}
             self._event('bot_message.delivered', {'source_task_id': source['id'], 'source_bot_id': sender['id'], 'target_bot_id': target_id, 'task_id': task['id'], 'thread_id': task['thread_id'], 'conversation_bot_id': origin['id'], 'exchange_id': exchange['id'], 'deliveries': exchange['deliveries'], 'limit': self.EXCHANGE_LIMIT, 'is_return': task['_is_return']}, origin['id'], task['id'])
-        self._put('deliveries', dict(id=delivery_id, source_task_id=source['id'], target_bot_id=target_id, text=text, receipt=receipt, created_at=now()))
+        self._put('deliveries', dict(id=delivery_id, source_task_id=source['id'], target_bot_id=target_id, text=text, receipt=receipt, created_at=now(), _progress_only=progress_only))
         return receipt
 
     def _assignment(self, task: dict) -> dict:
@@ -1107,14 +1211,18 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
         # The continuation keeps the original assignment and its return address.
         # A reply can queue while that assignment still has a running turn.
         self._prepare_return(task, text, result_status)
+        # Preparing the callback can save the original assignment's reply receipt.
+        assignment = self._get('tasks', assignment['id'])
+        if dependency_id:
+            assignment['_waiting_on'] = [identity for identity in assignment.get('_waiting_on', []) if identity != dependency_id]
         if waiting and self._background_pending(task['id'], finishing_task_id=task['id']):
             task.update(status='waiting', summary='Waiting for a result.')
             if assignment['status'] == 'completed':
                 assignment['status'] = 'waiting'
-        if task.get('_background_completion'):
+        if task.get('_background_completion') or task.get('_pr_review') or task.get('_work_resume'):
             for key in ('_background_return_after', '_background_return_id'):
                 assignment[key] = task[key]
-        if assignment['status'] == 'waiting' or (task.get('_background_completion') and assignment['status'] == 'completed') or (result_status == 'failed' and assignment['status'] != 'cancelled'):
+        if assignment['status'] == 'waiting' or ((task.get('_background_completion') or task.get('_pr_review') or task.get('_work_resume')) and assignment['status'] == 'completed') or (result_status == 'failed' and assignment['status'] != 'cancelled'):
             if not waiting:
                 assignment.update(status='completed' if result_status == 'rejected' else result_status,
                                   summary=task['summary'], updated_at=now(), _result_task_id=task['id'])
@@ -1125,12 +1233,11 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
     def _prepare_return(self, task: dict, text: str, result_status: str):
         if result_status == 'failed':
             self._hold_failed_followup(task)
-        if task.get('_native_relay'):
-            task['_native_reply_pending'] = dict(task['_native_relay'], text=text, failed=result_status == 'failed')
+        self._prepare_native_reply(task, text, result_status)
         if not task.get('source_bot_id') or task.get('_is_return'):
             return
         turn_ids = {t['id'] for t in self._all('tasks') if t['id'] == task['id'] or t.get('_assignment_task_id') == task['id']}
-        already_sent = any(delivery['source_task_id'] in turn_ids and delivery['target_bot_id'] == task['source_bot_id'] and delivery['created_at'] >= task.get('_background_return_after', '') and delivery['receipt']['task_id'] for delivery in self._all('deliveries'))
+        already_sent = any(not delivery.get('_progress_only') and delivery['source_task_id'] in turn_ids and delivery['target_bot_id'] == task['source_bot_id'] and delivery['created_at'] >= task.get('_background_return_after', '') and delivery['receipt']['task_id'] for delivery in self._all('deliveries'))
         if not already_sent:
             task['_return_pending'] = {'target_bot_id': task['source_bot_id'], 'text': text, 'result_status': result_status,
                                        'return_id': task.get('_background_return_id')}
@@ -1182,7 +1289,7 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
                 try:
                     self._store_bot_message(task_id, payload, returning=True)
                 except ServiceError as error:
-                    self._message(task['bot_id'], f'The result could not return to its sender: {error}', task_id=task_id, role='system', kind='activity')
+                    self._message(task['bot_id'], f'The result could not return to its sender: {error}', task_id=task_id, role='system', kind='status')
                 task.pop('_return_pending', None)
                 self._put('tasks', task)
 
@@ -1200,6 +1307,67 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
             if bot.get('_deleted') or bot['archived']:
                 raise ServiceError(409, 'Choose bots that are active and not archived.')
         return recipients
+
+    def _interaction_target(self, message_id, bot_id=None):
+        if not isinstance(message_id, str):
+            raise ServiceError(400, 'Choose a message from this conversation.')
+        message = self._get('messages', message_id)
+        if (message.get('_hidden') or message.get('_deleted') or message.get('streaming')
+                or message['kind'] != 'text' or message['role'] not in ('user', 'assistant')
+                or message.get('reaction_event') or message.get('exchange_recipient_bot_ids')
+                or (bot_id is not None and message['bot_id'] != bot_id)):
+            raise ServiceError(409, 'Choose a finished message from this conversation.')
+        bot = self._get('bots', message['bot_id'])
+        if bot.get('_deleted') or bot['archived']:
+            raise ServiceError(409, 'Restore this conversation first.')
+        return message
+
+    def _reply_reference(self, message):
+        author = 'You' if message['role'] == 'user' else self._get('bots', message.get('sender_bot_id') or message['bot_id'])['name']
+        return dict(message_id=message['id'], text=message['text'], author=author, role=message['role'],
+                    author_bot_id=message.get('sender_bot_id') if message['role'] == 'assistant' else None)
+
+    def _send_message_interaction(self, bot, data, *, task=None):
+        target_id = data.get('reply_to_message_id')
+        mentioned = self._recipient_ids(data.get('mentioned_bot_ids', []))
+        if mentioned and data.get('recipient_bot_ids'):
+            raise ServiceError(400, 'A mention cannot change the message recipient.')
+        interaction = dict(bot_mentions=[dict(id=identity, name=self._get('bots', identity)['name'])
+                                         for identity in mentioned]) if mentioned else None
+        if target_id is not None:
+            target = self._interaction_target(target_id, bot['id'])
+            interaction = (interaction or {}) | dict(reply_to=self._reply_reference(target))
+        self._message_interaction = interaction
+        try:
+            return self._reply(task, data) if task else self._send(bot, data)
+        finally:
+            self._message_interaction = None
+
+    def _react_to_message(self, message_id, data):
+        message = self._interaction_target(message_id)
+        emoji, active = data.get('emoji'), data.get('active')
+        if emoji not in ('👍', '👎', '😄', '🎉', '😕', '❤️', '🚀', '👀') or not isinstance(active, bool):
+            raise ServiceError(400, 'Choose one of the available reactions.')
+        reactions = list(message.get('reactions', []))
+        if (emoji in reactions) == active:
+            return self._public(message)
+        if active:
+            reactions.append(emoji)
+        else:
+            reactions.remove(emoji)
+        message['reactions'] = reactions
+        self._put('messages', message)
+        self._event('message.updated', self._public(message), message['bot_id'], message.get('task_id'))
+        event = dict(emoji=emoji, action='added' if active else 'removed')
+        self._message_interaction = dict(reply_to=self._reply_reference(message), reaction_event=event)
+        try:
+            author_id = message.get('sender_bot_id') if message['role'] == 'assistant' else None
+            self._send(self._get('bots', author_id or message['bot_id']),
+                       dict(text=f"Reaction {event['action']}: {emoji}", mode='auto'),
+                       conversation_bot_id=message['bot_id'])
+        finally:
+            self._message_interaction = None
+        return self._public(message)
 
     def _send(self, bot: dict, data: dict, *, thread_id: str | None = None, parent_task_id: str | None = None, conversation_bot_id: str | None = None, exchange_id: str | None = None, source_task: dict | None = None, record_message: bool = True, human_authored: bool = True, text_limit: int | None = 20000) -> dict:
         text = require_text(data, 'text', text_limit)
@@ -1226,7 +1394,7 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
                             and task['status'] in ('working', 'queued', 'waiting')), None)
             if current:
                 pending_tasks = {task['id'] for task in self._all('tasks') if task['thread_id'] == current['thread_id']}
-                pending = any(d['task_id'] in pending_tasks and d['status'] == 'pending' for d in self._all('decisions'))
+                pending = any(d['task_id'] in pending_tasks and d['status'] == 'pending' and d.get('inbox_kind') != 'proposal' for d in self._all('decisions'))
                 if not pending:
                     return self._reply(current, data)
         if mode == 'steer':
@@ -1337,12 +1505,15 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
                 raise ServiceError(400, 'This attachment does not belong to this bot.')
         return list(dict.fromkeys(artifact_ids))
 
-    def _request_context(self, decision: dict, task: dict, question: str, attachments: list[str]) -> dict:
+    def _request_context(self, decision: dict, task: dict, question: str, attachments: list[str], reply_device=None) -> dict:
         message = self._message(task['bot_id'], question, task_id=task['id'], role='user', decision_id=decision['id'], human_authored=True)
         context_attachments = list(dict.fromkeys(task.get('_turn_attachment_ids', task.get('_attachment_ids', [])) + attachments))
         self._record_attachments(task['bot_id'], task, attachments)
         self._put('tasks', task)
         context = dict(id=uid(), bot_id=task['bot_id'], task_id=task['id'], decision_id=decision['id'], question=question, status='queued', _preference_source_ids=[message['id']] if message.get('_human_device_id') else [])
+        context['_message_id'] = message['id']
+        context['_reply_device'] = reply_device
+        context['_decision_revision'] = decision['revision']
         context['_attachment_ids'] = context_attachments
         context['_conversation_epoch'] = task.get('_conversation_epoch', self._setting('conversation_epoch'))
         self._put('contexts', context)
@@ -1364,7 +1535,7 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
             return self._dispatch_user(origin, data, recipients, thread_id=task['thread_id'], parent_task_id=task['id']) | {'reply_status': 'queued_recipients'}
         attachments = self._validate_attachments(origin['id'], data.get('attachment_ids', []))
         thread_tasks = {t['id'] for t in self._all('tasks') if t['thread_id'] == task['thread_id']}
-        pending = [d for d in self._all('decisions') if d['task_id'] in thread_tasks and d['status'] == 'pending']
+        pending = [d for d in self._all('decisions') if d['task_id'] in thread_tasks and d['status'] == 'pending' and d.get('inbox_kind') != 'proposal']
         if data.get('decision_id'):
             decision = self._get('decisions', data['decision_id'])
             if decision['task_id'] not in thread_tasks or decision['status'] != 'pending':
@@ -1434,7 +1605,8 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
         task.update(status='cancelled', summary='Cancelled. An action already executing may have finished.', updated_at=now())
         self._put('tasks', task)
         for decision in self._all('decisions'):
-            if decision['task_id'] == task['id'] and decision['status'] in ('pending', 'approved'):
+            owner = decision.get('_execution_task_id', decision['task_id'])
+            if owner == task['id'] and decision['status'] in ('pending', 'approved'):
                 decision.update(status='rejected', decided_at=now(), decided_by='cancellation', decided_by_name='Task cancellation', outcome='Task cancelled.')
                 self._put('decisions', decision)
                 self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
@@ -1444,7 +1616,7 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
                 self._put('contexts', context)
                 self._event('context.cancelled', {'id': context['id'], 'decision_id': context['decision_id']}, task['bot_id'], task['id'])
         self._event('task.cancelled', self._public(task), task['bot_id'], task['id'])
-        self._message(task['bot_id'], task['summary'], task_id=task['id'], role='system', kind='activity')
+        self._message(task['bot_id'], task['summary'], task_id=task['id'], role='system', kind='status')
         self._refresh_bot(task['bot_id'])
         callbacks.append(lambda: self.provider.cancel_task(task['id']))
 
@@ -1647,51 +1819,98 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
         self.process_poller.start()
         self.push.start()
 
-    def _register_pr_artifact(self, task_id: str, payload: dict):
+    def _register_pr_artifact(self, task_id: str | None, payload: dict, *, bot_id=None):
         try:
             owner, repo, number = parse_pr_url(payload.get('url'))
         except PRTrackingError as error:
             raise ServiceError(400, str(error)) from error
         url = f'https://github.com/{owner}/{repo}/pull/{number}'
         with self.lock:
-            task = self._get('tasks', task_id)
+            task = self._get('tasks', task_id) if task_id else dict(bot_id=bot_id, status='working')
+            bot = self._get('bots', task['bot_id'])
+            if bot.get('_deleted'):
+                raise ServiceError(404, 'This bot was deleted.')
             if task['status'] != 'working' or self.stopping.is_set():
                 raise YieldForDecision('This task no longer accepts provider output.')
-            existing = next((a for a in self._all('artifacts') if a['task_id'] == task_id and a['kind'] == 'pr' and a['url'] == url), None)
-            if existing:
+            review_task = self._pr_review_source(bot['id'], task_id or payload.get('review_task_id'))
+            existing = next((a for a in self._all('artifacts') if a['bot_id'] == bot['id'] and a['kind'] == 'pr' and a['url'].lower() == url.lower()), None)
+            if existing and existing.get('pr_state') not in ('closed', 'merged') and existing['status'] != 'merged':
+                self._bind_pr_review(existing, review_task, transfer=task_id is None and bool(payload.get('review_task_id')))
+                with self.transaction():
+                    self._set_work_activity(existing, task, payload)
                 return self._public(existing)
         # GitHub reads must not hold the service lock or delay other bots.
-        observation = self.pr_tracker.observe(url)
+        observation = self._pr_tracker_for(task['bot_id']).observe(url)
         if not observation.observed:
             raise ServiceError(502, observation.detail)
         with self.transaction():
-            task = self._get('tasks', task_id)
+            task = self._get('tasks', task_id) if task_id else dict(bot_id=bot_id, status='working')
+            bot = self._get('bots', task['bot_id'])
+            if bot.get('_deleted'):
+                raise ServiceError(404, 'This bot was deleted.')
             if task['status'] != 'working' or self.stopping.is_set():
                 raise YieldForDecision('This task no longer accepts provider output.')
-            existing = next((a for a in self._all('artifacts') if a['task_id'] == task_id and a['kind'] == 'pr' and a['url'] == url), None)
+            review_task = self._pr_review_source(bot['id'], task_id or payload.get('review_task_id'))
+            existing = next((a for a in self._all('artifacts') if a['bot_id'] == bot['id'] and a['kind'] == 'pr' and a['url'].lower() == url.lower()), None)
             if existing:
+                existing.update(status=observation.state, title=(observation.title or existing['title'])[:200],
+                                preview=observation.detail, head_sha=observation.head_sha,
+                                checked_at=observation.checked_at, observed_at=observation.checked_at,
+                                refresh_error=None, pr_state=observation.pr_state,
+                                draft=observation.draft, checks_state=observation.checks_state)
+                if review_task and (not self._pr_review_source_current(existing) or (task_id is None and payload.get('review_task_id'))):
+                    existing['_review_task_id'] = review_task['id']
+                self._set_work_activity(existing, task, payload)
+                self._put('artifacts', existing)
+                self._event('artifact.updated', self._public(existing), existing['bot_id'], existing['task_id'])
                 return self._public(existing)
-            artifact = dict(id=uid(), bot_id=task['bot_id'], task_id=task_id, title=(observation.title or 'Pull request')[:200], kind='pr', status=observation.state, preview=observation.detail, url=url, created_at=now(), checked_at=observation.checked_at, observed_at=observation.checked_at, head_sha=observation.head_sha, refresh_error=None)
+            artifact = dict(id=uid(), bot_id=task['bot_id'], task_id=task_id, title=(observation.title or 'Pull request')[:200], kind='pr', status=observation.state, preview=observation.detail, url=url, created_at=now(), checked_at=observation.checked_at, observed_at=observation.checked_at, head_sha=observation.head_sha, refresh_error=None, pr_state=observation.pr_state, draft=observation.draft, checks_state=observation.checks_state)
+            if review_task:
+                artifact['_review_task_id'] = review_task['id']
+            self._set_work_activity(artifact, task, payload)
             self._put('artifacts', artifact)
-            self._message(task['bot_id'], artifact['title'], task_id=task_id, kind='artifact', artifact_id=artifact['id'])
+            if task_id:
+                self._message(task['bot_id'], artifact['title'], task_id=task_id, kind='artifact', artifact_id=artifact['id'])
             self._event('artifact.created', artifact, task['bot_id'], task_id)
             self._refresh_bot(task['bot_id'])
             return self._public(artifact)
 
+    def _pr_tracker_for(self, bot_id):
+        if self.pr_tracker is not None:
+            return self.pr_tracker
+        with self.lock:
+            home = self.profiles.home(self._get('bots', bot_id))
+        return GitHubPRTracker.for_profile(home)
+
     def _poll_pull_requests(self):
         while not self.stopping.is_set():
             self.refresh_pull_requests()
-            self.stopping.wait(60)
+            self.pr_refresh_requested.wait(60)
+            self.pr_refresh_requested.clear()
 
     def refresh_pull_requests(self):
+        if not self.pr_refresh_lock.acquire(blocking=False):
+            return
+        try:
+            self._refresh_pull_requests()
+            self._resolve_merged_pr_decisions()
+            self._queue_pr_reviews()
+        finally:
+            self.pr_refresh_lock.release()
+
+    def _refresh_pull_requests(self):
         with self.lock:
             if self.stopping.is_set():
                 return
-            artifacts = [a for a in self._all('artifacts') if a['kind'] == 'pr' and a['status'] != 'merged' and not self._get('bots', a['bot_id']).get('_deleted')]
+            artifacts = [a for a in self._all('artifacts') if a['kind'] == 'pr' and a['status'] != 'merged' and a.get('pr_state') not in ('closed', 'merged') and not self._get('bots', a['bot_id']).get('_deleted')]
+        observations = {}
         for artifact in artifacts:
             if self.stopping.is_set():
                 return
-            observation = self.pr_tracker.observe(artifact['url'])
+            key = (artifact['bot_id'], artifact['url'].lower())
+            if key not in observations:
+                observations[key] = self._pr_tracker_for(artifact['bot_id']).observe(artifact['url'])
+            observation = observations[key]
             with self.lock:
                 if self.stopping.is_set():
                     return
@@ -1701,9 +1920,10 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
                         continue
                     current['checked_at'] = observation.checked_at
                     if observation.observed:
-                        current.update(status=observation.state, title=(observation.title or current['title'])[:200], preview=observation.detail, head_sha=observation.head_sha, observed_at=observation.checked_at, refresh_error=None)
+                        current.update(status=observation.state, title=(observation.title or current['title'])[:200], preview=observation.detail, head_sha=observation.head_sha, observed_at=observation.checked_at, refresh_error=None, pr_state=observation.pr_state, draft=observation.draft, checks_state=observation.checks_state)
                     else:
                         current.update(refresh_error=observation.detail, preview=observation.detail)
+                    self._restore_active_work(current)
                     self._put('artifacts', current)
                     self._event('artifact.updated', self._public(current), current['bot_id'], current['task_id'])
 
@@ -1713,6 +1933,7 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
             if time.monotonic() >= next_routine_tick:
                 self.tick_routines()
                 next_routine_tick = time.monotonic() + 1
+            self.finish_inbox_swipes()
             self._drain_returns()
             with self.changed:
                 if self.restart_pending:
@@ -1757,6 +1978,9 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
         task.pop('_conversation_epoch', None)
         task.pop('_resume_decision', None)
         task.pop('_background_completion', None)
+        task.pop('_pr_review', None)
+        task.pop('_work_retry', None)
+        task.pop('_work_resume', None)
         task['_preference_source_ids'] = [source_id for source_id in task.get('_preference_source_ids', [])
                                           if source_id not in task.get('_turn_preference_source_ids', [])]
 
@@ -1817,22 +2041,31 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
                         return
                     history = self._history(bot['id'])
                 provider_task = self._public(task)
+                for field in ('_work_todos', '_work_resume'):
+                    if field in task:
+                        provider_task[field] = task[field]
                 provider_task['_turn_message_ids'] = task['_turn_message_ids']
                 provider_task['_conversation_epoch'] = task['_conversation_epoch']
                 if task.get('_background_completion'):
                     provider_task['_background_completion'] = task['_background_completion']
+                if task.get('_pr_review'):
+                    provider_task['_pr_review'] = task['_pr_review']
                 if task.get('_native_job'):
                     provider_task['_native_job'] = task['_native_job']
                 provider_task['_native_receipts'] = [r for r in self._all('native_receipts') if r['task_id'] == task_id and r.get('turn_id') == task.get('_native_turn_id') and r['state'] == 'completed']
                 with self.lock:
                     bot = self._get('bots', task['bot_id'])
+                    provider_task['_tracked_prs'] = self._tracked_work_input(task)
                     provider_task.update(self._bot_creation_input(task))
+                    provider_task.update(self.decision_chat_input(task))
                     provider_task.update(self._bot_deletion_input(task))
                     provider_task['attachments'] = [self._public(self._get('artifacts', a)) | {'content_base64': self._get('artifacts', a).get('_content_base64')} for a in task['_turn_attachment_ids']]
                     provider_task['_available_bots'] = [{'id': b['id'], 'name': b['name'], 'role': b['role']} for b in self._all('bots') if b['id'] != bot['id'] and not b['archived'] and not b.get('_deleted')]
                     provider_task['_bot_messages'] = task.get('_bot_messages', [])
                     provider_task['_is_return'] = bool(task.get('_is_return'))
                     assignment = self._assignment(task)
+                    if assignment.get('_work_todos'):
+                        provider_task['_work_todos'] = assignment['_work_todos']
                     if task.get('_assignment_task_id'):
                         instructions = [m['text'] for m in self._history(bot['id']) if m['task_id'] == assignment['id'] and m['role'] == 'user' and m['kind'] == 'text' and not m.get('decision_id')]
                         provider_task['_handoff_assignment'] = {
@@ -1876,12 +2109,15 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
                                 message['streaming'] = False
                                 self._put('messages', message)
                                 self._event('message.updated', message, message['bot_id'], task_id)
+                                self.push.record('message.completed', message, message['bot_id'], task_id)
                         self._refresh_bot(task['bot_id'])
 
     def emit(self, task_id: str, kind: str, payload: dict):
+        if kind == 'decision_response':
+            return self.resolve_chat_decision(task_id, payload)
         if kind == 'service_restart':
             return self.request_service_restart(task_id, payload)
-        if kind in ('native_call', 'native_result', 'native_approval', 'native_question'):
+        if kind in ('native_call', 'native_result', 'native_approval', 'native_question', 'native_proposal'):
             return self.native_event(task_id, kind, payload)
         if kind == 'bot_delete':
             return self._delete_bot_from_chat(task_id, payload)
@@ -1953,6 +2189,16 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
                 self._message(bot_id, artifact['title'], task_id=task_id, kind='artifact', artifact_id=artifact['id'])
                 self._event('artifact.created', artifact, bot_id, task_id)
             elif kind in ('completed', 'failed'):
+                self._save_work_progress(task, payload)
+                if kind == 'completed' and not task.get('_steering'):
+                    continuation = self._continue_unfinished_work(task)
+                    if continuation == 'queued':
+                        return
+                    if continuation:
+                        kind = 'failed'
+                        payload = {'summary': continuation}
+                if task.get('_native_job'):
+                    task['_routine_silent'] = kind == 'completed' and payload.get('routine_silent') is True
                 error_code = payload.get('error_code')
                 known_errors = set()
                 known_errors.update({'bot_creation_invalid_request', 'bot_creation_rejected', 'bot_creation_receipt_unconfirmed'})
@@ -1960,12 +2206,13 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
                     task['error_code'] = error_code
                 has_followup = kind == 'completed' and bool(task.get('_steering'))
                 task.update(status='queued' if has_followup else kind, summary='Applying your follow-up at the next safe turn.' if has_followup else str(payload.get('summary', payload.get('text', 'Ready to review.' if kind == 'completed' else 'Work failed.')))[:500], updated_at=now())
-                if kind == 'completed':
-                    for decision in self._all('decisions'):
-                        if decision['task_id'] == task_id and decision.get('action_type') == 'question' and decision['status'] == 'approved':
-                            decision.update(status='executed', outcome='Hermes continued with your answer.')
-                            self._put('decisions', decision)
-                            self._event('decision.updated', self._public(decision), bot_id, task_id)
+                for decision in self._all('decisions'):
+                    execution_task = decision.get('_execution_task_id') if decision.get('inbox_kind') == 'proposal' else decision['task_id']
+                    if execution_task == task_id and decision.get('action_type') == 'question' and decision['status'] == 'approved':
+                        decision.update(status='executed' if kind == 'completed' else 'failed',
+                                        outcome='Hermes continued with your answer.' if kind == 'completed' else task['summary'])
+                        self._put('decisions', decision)
+                        self._event('decision.updated', self._public(decision), bot_id, task_id)
                 if has_followup:
                     self._advance_input(task)
                 else:
@@ -1982,7 +2229,7 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
                 self._put('tasks', task)
                 self._event('task.updated', self._public(task), bot_id, task_id)
                 generic_completion = kind == 'completed' and task['summary'].strip().rstrip('.!').casefold() in {'ready to review', 'done', 'complete', 'completed', 'task complete', 'task completed', 'work complete', 'work completed'}
-                if task['status'] == 'waiting':
+                if task['status'] == 'waiting' or task.get('_routine_silent'):
                     pass
                 elif generic_completion:
                     turn_started_at = task.get('_turn_started_at', task['created_at'])
@@ -1994,7 +2241,7 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
                     else:
                         self._message(bot_id, task['summary'], task_id=task_id, kind='activity')
                 else:
-                    self._message(bot_id, task['summary'], task_id=task_id, kind='activity' if kind == 'failed' else 'text')
+                    self._message(bot_id, task['summary'], task_id=task_id, kind='status' if kind == 'failed' else 'text')
             else:
                 raise ServiceError(400, f'Unknown provider event: {kind}')
             self._refresh_bot(bot_id)
@@ -2236,11 +2483,15 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
                     if task.get('_native_job'):
                         provider_task['_native_job'] = task['_native_job']
                     provider_task['_native_receipts'] = [r for r in self._all('native_receipts') if r['task_id'] == task['id'] and r.get('turn_id') == context_id and r['state'] == 'completed']
+                    provider_task['_decision_reply'] = context.get('_reply_device') is not None
+                    provider_task['_context_message_id'] = context.get('_message_id')
                     provider_task['pending_decision'] = self._public(decision) | {'action': decision.get('_action')}
                     provider_task['attachments'] = [self._public(self._get('artifacts', a)) | {'content_base64': self._get('artifacts', a).get('_content_base64')} for a in context.get('_attachment_ids', task.get('_turn_attachment_ids', []))]
                 chunks = []
                 context_failure = {}
                 def emit(kind, payload):
+                    if kind == 'decision_response':
+                        return self.resolve_decision_reply(context_id, payload)
                     if kind in ('native_call', 'native_result'):
                         return self.native_event(task['id'], kind, payload, context_id=context_id)
                     if kind == 'failed':
@@ -2276,6 +2527,7 @@ class Service(BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpda
 
     def close(self):
         self.stopping.set()
+        self.pr_refresh_requested.set()
         if hasattr(self.provider, 'subscribe_model_catalog'):
             self.provider.subscribe_model_catalog(None)
         with self.changed:

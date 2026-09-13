@@ -16,12 +16,16 @@ from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 if __package__:
-    from .native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history
+    from .native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context
     from .native_bridge import TurnPaused
+    from .pull_request_reviews import PR_REVIEW_INSTRUCTIONS
+    from .work_progress import NativeWork, WORK_INSTRUCTIONS
     from .worker_protocol import MAX_EVENT_CHARACTERS, event_frame
 else:
-    from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history
+    from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context
     from native_bridge import TurnPaused
+    from pull_request_reviews import PR_REVIEW_INSTRUCTIONS
+    from work_progress import NativeWork, WORK_INSTRUCTIONS
     from worker_protocol import MAX_EVENT_CHARACTERS, event_frame
 
 
@@ -42,7 +46,7 @@ PROPOSAL_SCHEMA = {
         'type': 'object', 'additionalProperties': False,
         'properties': {
             'title': {'type': 'string', 'minLength': 1, 'maxLength': 160, 'description': 'A concise question or proposed action specific to this decision.'},
-            'explanation': {'type': 'string', 'description': 'One short sentence explaining what the person needs to decide.'},
+            'explanation': {'type': 'string', 'description': 'One plain sentence explaining what helps the person choose. Keep technical evidence in chat.'},
             'options': {
                 'type': 'array', 'minItems': 1, 'maxItems': 8,
                 'description': 'Choose only distinct, useful outcomes for this decision. Honor explicit standing preferences for choices and exact labels. Each approval carries its exact action. Add rejection or modification choices when useful.',
@@ -51,7 +55,7 @@ PROPOSAL_SCHEMA = {
                     'properties': {
                         'id': {'type': 'string', 'description': 'A unique short identifier for this outcome.'},
                         'label': {'type': 'string', 'description': 'A short label for the native choice control.'},
-                        'explanation': {'type': 'string', 'description': 'One sentence explaining this choice.'},
+                        'explanation': {'type': 'string', 'description': 'Plain effect of this choice, usually fifteen words or fewer. Keep important limits. Omit technical process details and repeated context.'},
                         'answer': {'type': 'string', 'enum': ['approve', 'reject', 'modify']},
                         'action': FILE_ACTION_SCHEMA,
                         'modification': {'type': 'string', 'description': 'The exact requested change. Required only for a modify choice. This asks for a new proposal and grants no permission.'},
@@ -436,17 +440,30 @@ def execution_configuration(model, base_url, *, provider=None, runtime_config=No
 
 def conversation_input(request):
     rows = visible_history(request.get('history', []))
-    history = [{'role': message['role'], 'content': message['text']} for message in rows]
+    history = [{'role': message['role'], 'content': message_content(message)} for message in rows]
     operation = request['operation']
     if operation == 'context':
         proposal = request['task'].get('pending_decision', {})
-        prompt = ('Respond only to this follow-up. The pending proposal is context. Do not change or execute it. '
+        prompt = ('Respond only to this follow-up. The pending proposal is context. Do not execute it. '
                   'If the follow-up only changes a standing preference, save it and give one short confirmation. '
                   'Do not restate the proposal or its choices unless the person asks about them.\n')
-        prompt += json.dumps({'question': request['question'], 'proposal': proposal})
+        if request['task'].get('_decision_reply'):
+            prompt += ('Interpret this reply in the context of the pending decision. A question asks for information and leaves the decision pending. '
+                       'If the person clearly selects an option or rejects it, call coconut_resolve_reply with their exact words. '
+                       'If they change the scope, use modify with a revised question and choices. This updates the same pending card without authorizing work. '
+                       'Do not infer approval from a question, politeness, or uncertainty. Never execute the proposed action in this follow-up.\n')
+        else:
+            prompt += 'Do not change the pending proposal.\n'
+        source = next((row for row in rows if row['id'] == request['task'].get('_context_message_id')), None)
+        question = message_content(source) if source else request['question']
+        prompt += json.dumps({'question': question, 'proposal': decision_context(request, proposal)})
     elif operation == 'resume':
         decision = request['decision']
-        if decision.get('action_type') in ('native_approval', 'question'):
+        if decision.get('status') == 'resolved' and decision.get('merge_pr_url'):
+            prompt = ('GitHub confirms this PR already merged. Coconut closed the pending merge question. '
+                      'The person did not select an option or authorize other work. Do not merge again or ask this question again. '
+                      'Continue the original assignment from this verified result and report it to its requester if needed.\n')
+        elif decision.get('action_type') in ('native_approval', 'question'):
             prompt = ('Continue the original task using this recorded answer. Do not repeat completed tools. '
                       'An approved native action permits only the exact recorded tool and arguments. '
                       'A rejection or correction does not permit that action.\n')
@@ -456,20 +473,24 @@ def conversation_input(request):
             prompt = 'The service confirmed execution. Report the result briefly. Do not repeat the action.\n'
         else:
             raise ValueError('The decision has no valid continuation state.')
-        prompt += json.dumps(decision)
+        prompt += json.dumps(decision_context(request, decision))
     else:
         current = current_messages(request)
         index = rows.index(current[0]) if current else None
         if index is None:
             prompt = request['task']['title']
         else:
-            prompt = '\n\n'.join(message['text'] for message in current)
+            prompt = '\n\n'.join(message_content(message) for message in current)
             history = history[:index]
         if request['task'].get('_background_completion'):
             followup = '\nNew message from the person:\n' + prompt if current else ''
             prompt = ('Continue your existing work from these Hermes process results. Do not repeat the completed command. '
                       'Verify the result and continue any remaining work.\n'
                       + '\n\n'.join(request['task']['_background_completion']) + followup)
+    if request['task'].get('_work_resume'):
+        prompt = 'Continue the unfinished assignment from its saved task list. Do not repeat verified work. Record a real dependency or decision if blocked.\n' + prompt
+    if operation == 'start' and request['task'].get('_pr_review'):
+        prompt = PR_REVIEW_INSTRUCTIONS + '\nObserved GitHub facts:\n' + json.dumps(request['task']['_pr_review']) + '\nOriginal task context:\n' + prompt
     receipts = request['task'].get('_native_receipts', [])
     if receipts:
         prompt += '\nCompleted native tools for this task. Use these results. Do not repeat their effects:\n'
@@ -507,6 +528,12 @@ def conversation_input(request):
                 prompt += 'This attachment is binary. Its content is unavailable to this v1 provider. Do not claim to have read it.'
         else:
             prompt += attachment.get('preview', '')
+    if operation != 'context' and request['task'].get('_pending_decisions'):
+        prompt += ('\nPending decisions in this conversation follow. Decide whether the new human message answers one, asks about one, or starts other work. '
+                   'Use coconut_resolve_reply only for an explicit answer, rejection, or revision. Quote the supplied human source. '
+                   'Leave decisions pending for questions or unrelated work. If the intended decision is ambiguous, ask in chat. '
+                   'Native tool approvals still require the exact visible choice.\n' + json.dumps({
+                       'decisions': request['task']['_pending_decisions'], 'human_sources': request['task'].get('_decision_reply_sources', [])}))
     return prompt, history
 
 
@@ -619,7 +646,18 @@ def run_turn(request, emit, request_receipt):
     agent = None
     bridge = None
     registry = None
+    routine_scope = None
     allowed = set()
+    work = NativeWork(request)
+    raw_emit, raw_receipt = emit, request_receipt
+    def emit(kind, payload):
+        if kind in ('completed', 'failed', 'native_question', 'native_approval'):
+            payload = dict(payload, **work.payload(agent))
+        return raw_emit(kind, payload)
+    def request_receipt(kind, payload):
+        if kind in ('native_call', 'native_result', 'native_question', 'native_approval'):
+            payload = dict(payload, **work.payload(agent))
+        return raw_receipt(kind, payload)
     try:
         from profiles import merge_runtime_config
         merge_runtime_config(os.environ['HERMES_HOME'])
@@ -733,7 +771,8 @@ def run_turn(request, emit, request_receipt):
             registry.register(name=BOT_DELETION_SCHEMA['name'], toolset='coconut', schema=BOT_DELETION_SCHEMA, handler=delete_bot)
             allowed.add(BOT_DELETION_SCHEMA['name'])
 
-        from native_bridge import NativeBridge, QUESTION_SCHEMA
+        from native_bridge import NativeBridge, QUESTION_SCHEMA, SUGGEST_SCHEMA, REPLY_SCHEMA
+        from decision_inbox import DECISION_INSTRUCTIONS
         bridge = NativeBridge(request, emit, request_receipt)
         if operation != 'context':
             from service_restart import RESTART_SCHEMA
@@ -742,6 +781,30 @@ def run_turn(request, emit, request_receipt):
             allowed.add(RESTART_SCHEMA['name'])
         registry.register(name=QUESTION_SCHEMA['name'], toolset='coconut', schema=QUESTION_SCHEMA, handler=bridge.ask)
         allowed.add(QUESTION_SCHEMA['name'])
+        if operation != 'context':
+            registry.register(name=SUGGEST_SCHEMA['name'], toolset='coconut', schema=SUGGEST_SCHEMA,
+                              handler=lambda arguments, **kwargs: json.dumps(request_receipt('native_proposal', arguments)))
+            allowed.add(SUGGEST_SCHEMA['name'])
+        if request['task'].get('_decision_reply') or request['task'].get('_pending_decisions'):
+            schema = REPLY_SCHEMA
+            if operation != 'context':
+                schema = dict(REPLY_SCHEMA, parameters=dict(REPLY_SCHEMA['parameters'],
+                    properties=dict(REPLY_SCHEMA['parameters']['properties'],
+                        decision_id={'type': 'string'}, decision_revision={'type': 'integer'}, source_message_id={'type': 'string'}),
+                    required=REPLY_SCHEMA['parameters']['required'] + ['decision_id', 'decision_revision', 'source_message_id']))
+            registry.register(name=REPLY_SCHEMA['name'], toolset='coconut', schema=schema,
+                              handler=lambda arguments, **kwargs: json.dumps(request_receipt('decision_response', arguments)))
+            allowed.add(REPLY_SCHEMA['name'])
+        if operation != 'context':
+            pr_schema = {'name': 'coconut_track_pr', 'description':
+                'Track an existing GitHub pull request in Work. Call when you create a PR or begin work on one, or when the person asks to follow it. Do not track links mentioned only as context. Coconut reads GitHub status without model calls. This does not create, edit, push, or merge a PR.',
+                'parameters': {'type': 'object', 'properties': {'url': {'type': 'string',
+                    'description': 'The exact https://github.com/owner/repo/pull/number URL.'},
+                    'activity': {'type': 'string', 'maxLength': 80, 'description': 'One short current activity, for example Reviewing with Fable or Checking a finding. Update at phase changes and before finishing. No hashes or tool counts.'},
+                    'activity_state': {'type': 'string', 'enum': ['working', 'ready', 'blocked'], 'description': 'Use ready only after verified review, or blocked when a finding prevents progress. Defaults to working.'}}, 'required': ['url']}}
+            registry.register(name=pr_schema['name'], toolset='coconut', schema=pr_schema,
+                              handler=lambda arguments, **kwargs: json.dumps(request_receipt('artifact', dict(kind='pr', url=arguments.get('url'), **{k: arguments[k] for k in ('activity', 'activity_state') if k in arguments}))))
+            allowed.add(pr_schema['name'])
         create_custom_toolset('coconut', 'Native Coconut actions', tools=sorted(allowed))
 
         def stream_delta(text):
@@ -749,6 +812,11 @@ def run_turn(request, emit, request_receipt):
                 response_chunks.append(text)
 
         instructions = ('You work in Coconut, a concise messaging app. Give short, useful replies. '
+                        'Use coconut_track_pr when you create a PR, start work on an existing PR, or the person asks to follow one. Track the URL even when this task continues an older conversation. '
+                        'Include activity in coconut_track_pr at each phase change, before launching a background review, and when returning its result. Use a short phrase naming the work, such as Reviewing with Fable. Report the verified outcome with ready or blocked before finishing. '
+                        'When a delegated PR passes CI, its owner verifies current reviews, unresolved findings, conflicts, and required approvals, then returns the result to the requesting bot. '
+                        'The requesting bot offers one merge decision with coconut_ask when those checks support merging. Recommend Merge when justified. Do not ask the person to remind you. '
+                        'Reuse any pending merge decision for that PR. Green CI alone is not merge permission. Never merge without explicit authorization for the current changes; recheck the head before any authorized merge. '
                         'Use native Hermes tools and profile memory. Save standing preferences with the native memory tool. '
                         'Treat new human messages as one continuous conversation. Decide whether each message revises current work or adds a request. '
                         'Preserve unfinished requests unless the person changes or cancels them. Ask only when ambiguity changes the outcome. '
@@ -766,7 +834,10 @@ def run_turn(request, emit, request_receipt):
                         'HOME is the Mac account home so native credential storage works. '
                         'HERMES_HOME, CODEX_HOME, CLAUDE_CONFIG_DIR, GH_CONFIG_DIR, and XDG paths select this bot\'s profiles. '
                         'Keep those inherited paths during login and later commands. Do not invent a different HOME. '
-                        'Use native CLI login. Before requesting authorization, check the CLI auth status and credential storage from this terminal. '
+                        'For Gmail and Calendar, use the inherited gog access from this bot terminal. '
+                        'Google is one shared connection for all Coconut bots on this Mac. Google connections are read-only. If access is missing or expired, direct the person to Coconut Settings → Connections → Google. '
+                        'Never ask the person to configure a Google OAuth client, run gog auth login, or copy a callback URL. '
+                        'Use native CLI login for other services. Before requesting authorization, check the CLI auth status and credential storage from this terminal. '
                         'For interactive login, use terminal pty=true and background=true. Verify process input works before showing an authorization link. '
                         'Keep the login process alive while the person authorizes it. Never show or request a saved token in chat. '
                         'After login, start a fresh CLI command in the same profile and verify a real authenticated request. '
@@ -777,6 +848,14 @@ def run_turn(request, emit, request_receipt):
                         'Verify gh api user from this bot\'s terminal before reporting GitHub connected. '
                         'Share explicit task context only. Do not copy private memory or credentials between bots. '
                         'A queued message is not a reply. Never claim success without a tool result. ')
+        if request['task'].get('_tracked_prs'):
+            instructions += ('\nWork already tracks these PRs for this assignment and its callbacks: '
+                             + json.dumps(request['task']['_tracked_prs'])
+                             + '. Before starting work or a background process, call coconut_track_pr with the current short activity. '
+                             'Update it when the phase changes and when returning the verified result. This continues existing tracking.')
+        instructions += DECISION_INSTRUCTIONS
+        if work.enabled:
+            instructions += WORK_INSTRUCTIONS
         instructions += CONVERSATION_INSTRUCTIONS
         instructions += '\nYour current identity, confirmed by the service:\n' + json.dumps({
             'id': request['bot']['id'], 'name': request['bot'].get('name'), 'role': request['bot'].get('role', '')})
@@ -794,6 +873,11 @@ def run_turn(request, emit, request_receipt):
         os.environ['HERMES_GATEWAY_SESSION'] = '1'
         os.environ['HERMES_SESSION_KEY'] = request['task']['id']
         profile_config = raw_config(os.environ['HERMES_HOME'])
+        from native_routine_execution import job_context
+        routine_scope = job_context(request, config, profile_config)
+        routine_prompt = routine_scope.__enter__()
+        if routine_prompt:
+            instructions += '\nScheduled assignment with native skills and prior run context:\n' + routine_prompt
         from hermes_cli.tools_config import _get_platform_tools
         from agent.skill_utils import parse_config_string_list
         toolsets = sorted(_get_platform_tools(profile_config, 'cli'))
@@ -804,11 +888,12 @@ def run_turn(request, emit, request_receipt):
         relay.install(conversation)
         bridge.relay = relay
         agent = AIAgent(model=request['model'], **config, reasoning_config=reasoning_configuration(request.get('reasoning_effort')),
-                        enabled_toolsets=list(dict.fromkeys(toolsets + mcp_names + ['coconut'])), disabled_toolsets=disabled, quiet_mode=True,
+                        enabled_toolsets=list(dict.fromkeys(toolsets + mcp_names + ['coconut'] + (['todo'] if work.enabled else []))), disabled_toolsets=disabled, quiet_mode=True,
                         ephemeral_system_prompt=instructions, session_id=conversation.session_id, session_db=conversation.db,
                         platform='coconut', gateway_session_key=request['task']['id'], clarify_callback=bridge.clarify,
                         skip_context_files=False, load_soul_identity=True, skip_memory=False, skip_background_review=False,
                         save_trajectories=False, run_budget_seconds=None)
+        work.restore(agent)
         bridge.install(registry)
         prompt, _ = conversation_input(request)
         current = current_message(request) if operation == 'start' else None
@@ -829,10 +914,14 @@ def run_turn(request, emit, request_receipt):
                             'error_code': 'bot_deletion_' + category})
             return 1
         final = result.get('final_response') or ''.join(response_chunks)
-        if final:
+        routine_silent = False
+        if request['task'].get('_native_job'):
+            from cron.scheduler import _is_cron_silence_response
+            routine_silent = _is_cron_silence_response(final or '')
+        if final and not routine_silent:
             emit('text_delta', {'text': final})
         if operation != 'context':
-            emit('completed', {'summary': 'Complete.'})
+            emit('completed', {'summary': 'Complete.'} | ({'routine_silent': True} if routine_silent else {}))
     except TurnPaused:
         return 0
     except Exception as error:
@@ -850,6 +939,8 @@ def run_turn(request, emit, request_receipt):
                 registry.deregister(name)
         if conversation is not None:
             conversation.close()
+        if routine_scope is not None:
+            routine_scope.__exit__(None, None, None)
     return 0
 
 

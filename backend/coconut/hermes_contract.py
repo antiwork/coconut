@@ -35,6 +35,14 @@ def verify_contract():
     from .hermes_worker import BOT_CREATION_SCHEMA, BOT_DELETION_SCHEMA, PROPOSAL_SCHEMA
     from .native_bridge import QUESTION_SCHEMA
     from cron import jobs
+    from tools.terminal_tool import record_session_cwd, clear_session_cwd
+    assert callable(record_session_cwd) and callable(clear_session_cwd)
+    from cron.scheduler import _check_model_drift, _is_cron_silence_response
+    from cron.scheduler_prompt import _build_job_prompt, _guard_job_credential_exfil
+    require_keywords(_check_model_drift, {'job', 'job_id', 'cfg', 'runtime', 'primary_provider_for_drift', 'primary_model_for_drift'})
+    require_keywords(_build_job_prompt, {'job'})
+    require_keywords(_is_cron_silence_response, {'text'})
+    require_keywords(_guard_job_credential_exfil, {'job'})
     from tools import approval, approval_context
     from hermes_cli.tools_config import _get_platform_tools
     require_keywords(jobs.claim_job_for_fire, {'job_id', 'force', 'return_job'})
@@ -83,7 +91,7 @@ def verify_contract():
     require_keywords(process_registry.is_completion_consumed, {'session_id'})
     from tools.process_registry_notifications import format_process_notification
     from gateway.session_context import set_session_vars, clear_session_vars
-    require_keywords(set_session_vars, {'session_id', 'session_key'})
+    require_keywords(set_session_vars, {'session_id', 'session_key', 'cwd', 'cron_session'})
     assert callable(clear_session_vars) and callable(format_process_notification)
     if not callable(process_registry.recover_from_checkpoint) or not callable(process_registry.list_sessions):
         raise ValueError('Hermes removed native background process cleanup.')

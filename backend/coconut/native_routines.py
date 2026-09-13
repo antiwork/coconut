@@ -15,9 +15,11 @@ def profile(home):
         reset_hermes_home_override(token)
 
 
-def unsupported(job):
-    fields = ('script', 'no_agent', 'monitor_script', 'monitor_url', 'context_from', 'skills', 'skill', 'model', 'provider', 'provider_snapshot', 'model_snapshot', 'base_url', 'enabled_toolsets', 'workdir')
+def unsupported(job, config=None):
+    fields = ('script', 'no_agent', 'monitor_script', 'monitor_url', 'base_url', 'enabled_toolsets')
     present = [field for field in fields if job.get(field)]
+    cron_config = (config or {}).get('cron') or {}
+    present.extend('cron.' + field for field in ('model', 'model_provider') if cron_config.get(field))
     if job.get('deliver') not in (None, '', 'local', 'origin'):
         present.append('deliver')
     return 'Run this routine through Hermes: ' + ', '.join(present) + '.' if present else None
@@ -28,16 +30,17 @@ def view(bot_id, job):
     from hermes_constants import get_hermes_home
     import native_routine_receipts as receipts
     home = get_hermes_home()
+    config = load_config_readonly()
     receipt = receipts.read(home, job['id'])
     schedule = job.get('schedule') or {}
     identity = str(uuid5(UUID(bot_id), 'cron:' + job['id']))
     return dict(id=identity, bot_id=bot_id, name=job.get('name') or 'Routine', prompt=job.get('prompt') or '',
                 cron=schedule.get('expr') or schedule.get('display') or '',
-                timezone=load_config_readonly().get('timezone') or 'UTC',
+                timezone=config.get('timezone') or 'UTC',
                 enabled=job.get('enabled', True) and not job.get('paused_at'),
                 next_run_at=job.get('next_run_at'), last_run_at=job.get('last_run_at'), last_task_id=None,
                 created_at=job.get('created_at') or '', updated_at=job.get('updated_at') or job.get('created_at') or '',
-                _native_id=job['id'], _job=job, error=unsupported(job) or receipts.issue(home, job),
+                _native_id=job['id'], _job=job, error=unsupported(job, config) or receipts.issue(home, job),
                 _recover_claim=receipt.get('phase') == 'claimed')
 
 
@@ -58,6 +61,8 @@ def worker(operation, request, homes):
             if previous:
                 return view(bot_id, previous)
             job = jobs.create_job(data['prompt'], data['cron'], name=data['name'], deliver='local',
+                                  model=data.get('model'), provider=data.get('provider'),
+                                  reasoning_effort=data.get('reasoning_effort'),
                                   origin={'platform': 'coconut', 'chat_id': bot_id, 'coconut_request': source},
                                   paused=not data.get('enabled', True))
             return view(bot_id, job)
@@ -78,8 +83,10 @@ def worker(operation, request, homes):
             return {'ok': True}
         if operation == 'routine_claim':
             job = jobs.get_job(identity)
-            if job and unsupported(job):
-                raise ValueError(unsupported(job))
+            from hermes_cli.config import load_config_readonly
+            error = unsupported(job, load_config_readonly()) if job else None
+            if error:
+                raise ValueError(error)
             from native_routine_receipts import claim
             return claim(homes[bot_id], identity, jobs, manual=request.get('manual', False))
         if operation == 'routine_heartbeat':

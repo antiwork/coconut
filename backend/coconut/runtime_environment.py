@@ -29,6 +29,7 @@ def prepare_profile(profile):
         path = Path(value)
         _safe(path, profile)
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.chmod(0o700)
     # CLAUDE_CONFIG_DIR moves the global config inside the existing Claude directory.
     previous, current = profile / '.claude.json', profile / '.claude/.claude.json'
     _safe(previous, profile)

@@ -29,6 +29,7 @@ def completions(request):
                     continue
                 status = registry.poll(process.id)
                 if status.get('status') != 'exited':
+                    results.append(dict(id=item['id'], session_id=process.id, observation=status.get('status')))
                     continue
                 consumed = registry.is_completion_consumed(process.id)
                 event = dict(type='completion', session_id=process.id, owner_task_id=item['task_id'],
@@ -40,7 +41,7 @@ def completions(request):
                 clear_session_vars(tokens)
     finally:
         db.close()
-    by_session = {result['session_id']: result for result in results}
+    by_session = {result['session_id']: result for result in results if 'observation' not in result}
     for event, text in registry.drain_notifications(
             owns_event=lambda event: event.get('type') == 'completion' and event.get('session_id') in by_session,
             skip_poll_observed=False):

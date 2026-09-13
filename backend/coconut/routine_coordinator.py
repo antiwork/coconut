@@ -4,6 +4,23 @@ import time
 
 
 class NativeRoutines:
+    def _migrate_native_routine_prompts(self):
+        tasks = {task['id']: task for task in self._all('tasks')
+                 if task.get('routine_id') and task.get('_native_job')}
+        for message in self._all('messages'):
+            task = tasks.get(message.get('task_id'))
+            if (task and message['role'] == 'user' and message['kind'] == 'text'
+                    and not message.get('_human_device_id') and not message.get('_hidden')
+                    and message['text'] == task['_native_job'].get('prompt')):
+                message['_hidden'] = True
+                self._put('messages', message)
+
+    def native_scheduler_status(self):
+        stamp = getattr(self, '_native_cron_last_success', None)
+        running = (stamp is not None and time.monotonic() - stamp < 60
+                   and not getattr(self, '_native_cron_error', False) and not self.stopping.is_set())
+        return {'scheduler': 'coconut', 'scheduler_running': running}
+
     def refresh_native_routines(self):
         if not hasattr(self.provider, 'native_settings'):
             return
@@ -65,7 +82,7 @@ class NativeRoutines:
         previous = next((t for t in self._all('tasks') if (t.get('_native_job', {}).get('fire_claim') or {}).get('by') == owner), None)
         if previous:
             return self._public(previous)
-        task = self._send(bot, {'text': job.get('prompt') or routine['name'], 'mode': 'queue'}, human_authored=False)
+        task = self._send(bot, {'text': routine['name'], 'mode': 'queue'}, record_message=False, human_authored=False)
         task = self._get('tasks', task['id'])
         task.update(routine_id=routine['id'], _native_job=job)
         self._put('tasks', task)
@@ -102,7 +119,7 @@ class NativeRoutines:
                     result = self.provider.native_settings('routine_heartbeat', [bot], **args)
                 else:
                     result = self.provider.native_settings('routine_finish', [bot], **args, success=task['status'] == 'completed',
-                                                          output=output or task.get('summary', ''), failure=task.get('summary') if task['status'] != 'completed' else None)
+                                                          output='' if task.get('_routine_silent') else output or task.get('summary', ''), failure=task.get('summary') if task['status'] != 'completed' else None)
                 with self.transaction():
                     current = self._get('tasks', task['id'])
                     if current.get('_native_job') != job or current.get('_native_job_finished') or current['status'] != task['status']:
@@ -129,7 +146,10 @@ class NativeRoutines:
                         continue
                     if routine.get('_recover_claim') or (due and datetime.fromisoformat(due.replace('Z', '+00:00')) <= datetime.now(timezone.utc)):
                         self.claim_native_routine(routine)
+            self._native_cron_last_success = time.monotonic()
+            self._native_cron_error = False
         except Exception:
+            self._native_cron_error = True
             with self.transaction():
                 self._event('routines.unavailable', {'message': 'Hermes routines could not synchronize. The Mac will retry.'})
         for callback in callbacks:

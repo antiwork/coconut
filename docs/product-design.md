@@ -40,7 +40,7 @@ While a bot prepares a reply, animate its coconut character. Hide generic progre
 Characters use eight Bloub outlines and ten colors. Keep the outlines smooth and preserve Coconut’s shell texture. New bots receive a generated character. Users can change its shape and color in bot settings. Idle characters share a raised, right-facing pose and blink at separate intervals. Thinking changes gaze, eyelids, and mouth shape, with pauses between expressions. Working characters use this motion in pinned tiles, contact rows, and conversations. Reduce Motion keeps the character still and preserves the green activity dot. The native SwiftUI drawing uses [Bloub’s shape profiles](https://github.com/jeremy-prt/bloub/blob/b4bb3c1b5f93c7b87a2e8d620f667c4093d97749/src/bot/skins.ts) and curve method under its MIT license. The app bundles the license. The supplied Grok Bot recording informs the expressions.
 Record permission changes in the audit history. Do not add routine settings notices to chat.
 
-Keep specific tool activity expandable. Preserve errors, cancellation, decisions, files, links, and receipts. Presentation filters do not delete stored history.
+Keep tool activity out of the conversation UI. The bot animation shows progress. Show failure notices as plain messages. Preserve decisions, files, links, and receipts. Presentation filters do not delete stored history.
 
 Group decision choices in one list with dividers. Use compact letter markers. Keep action details in the card menu.
 
@@ -64,11 +64,11 @@ Routines accept a native Hermes schedule string. The Mac parses the schedule.
 
 The Mac runs routines while the phone app is closed. Pausing a routine stops future occurrences. Existing tasks retain their history.
 
-Typing `@` opens a compact bot picker. Selected recipients remain visible above the composer. Each recipient starts work in the same conversation.
+Typing `@` opens a compact bot picker. A selected mention identifies a bot for the current bot. It does not send or share the message, start work, or change the recipient.
 
-The service routes mentions by stable bot IDs. Duplicate names require a picker selection. Editing or removing a mention updates its recipients.
+The service resolves references by stable bot IDs. Duplicate names require a picker selection. The current bot receives the reference and decides how it relates to the human request. Delegation requires a separate tool call when the request calls for it.
 
-Mentioning a bot keeps pending decisions open. It requests work without answering the proposal.
+Mentioning a bot keeps pending decisions open. The mention alone does not answer a proposal or authorize work.
 
 Both bots show their exchange as a collapsed row. Tapping either row opens the same read-only exchange. Incoming messages never change the open conversation.
 
@@ -114,3 +114,36 @@ Mobbin MCP was absent from the session tools. The public Explore link returned t
 The fallback reference is [Google's current Gmail listing](https://apps.apple.com/us/app/gmail-email-by-google/id422689480). Its first screenshot shows compact sender, subject, and preview rows.
 
 [Mobbin's setup page](https://mobbin.com/mcp) describes the connection needed for a future reference pass. This task does not create a subscription or new account.
+
+### Account connections
+
+Users connect Google from Settings → Connections in Coconut. The system sign-in sheet returns directly to the app. Google is one shared connection for all bots on the paired Mac. The Mac stores and refreshes credentials once. Never ask users to run login commands, copy callback URLs, or configure a bot from Terminal. Publisher OAuth setup is separate from user onboarding.
+
+
+## Work
+
+Use three stable tabs: Bots, Work, and Inbox. Hide the tab bar inside every conversation.
+Work lists active pull requests that a bot creates or works on, or that the person asks to follow.
+Show one row per GitHub URL, with its title, repository, number, draft state, bot, and observed CI state.
+The PR link opens GitHub. The bot name opens its conversation.
+Keep draft state separate from CI. Passing checks do not establish merge readiness.
+Keep merged and closed PRs below open PRs in Work. Show purple Merged and gray Closed labels. Preserve these confirmed outcomes after polling stops. Keep their artifacts in chat.
+Mark failed or old observations as out of date. Refresh every 15 seconds while Work is visible and every minute otherwise.
+Keep process logs, activity counts, and automatic CI decision cards out of Work.
+Use each bot's own gh credentials. The Coconut adapter tracks PRs without changing Hermes source.
+
+Use green for passed checks, yellow for running checks, and red for failed checks. Keep status text for clarity without color.
+When CI passes on a tracked, non-draft PR, resume its owning bot once for that head.
+The owner verifies the current head, reviews, findings, conflicts, and existing approval requirements.
+For delegated work, return the verified result to the requesting bot. That bot offers one merge decision in chat and Inbox.
+A passing CI observation never authorizes a merge. Recheck the head after explicit approval.
+Keep pending decisions, cancelled work, archived bots, and reset conversations intact.
+
+Inbox cards use compact padding and body-size titles. Keep option explanations, recommendations, and 44-point touch targets. Preserve the swipe stack and direct chat link.
+
+### Decision card language
+
+Coconut supplies the same writing rules to every bot on every turn. A card names the choice and its practical effects.
+The bot uses plain language and states the decisive fact once. Technical evidence and exact execution targets stay in the original chat and action.
+Cards retain uncertainty, costs, affected people, public changes, irreversible effects, and approval limits when these affect the choice.
+Coconut does not shorten existing decisions or rewrite their meaning after the bot creates them.

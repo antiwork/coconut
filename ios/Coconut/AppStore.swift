@@ -10,8 +10,15 @@ final class AppStore {
     var tasks: [AgentTask] = []
     var messages: [Message] = []
     var outgoingMessages: [OutgoingMessage] = []
+    var reactionOverrides: [String: [String]] = [:]
     var decisions: [Decision] = []
+    var answeringDecisionIds: Set<String> = []
+    var decisionReplyDrafts: [String: String] = [:]
     var artifacts: [Artifact] = []
+    var workVisibility: [String: Bool] = [:]
+    var workUndo: [WorkDismissal] = []
+    @ObservationIgnored private var workMutationTail: Task<Void, Never>?
+    @ObservationIgnored private var workMutationIds: [String: UUID] = [:]
     var approvals: ApprovalSettings?
     var routines: [Routine] = []
     var learning: [LearningGroup] = []
@@ -32,6 +39,7 @@ final class AppStore {
     var pushRegistrationError: String?
     @ObservationIgnored private var registeredPushSignature: String?
     @ObservationIgnored private var registeringPush = false
+    @ObservationIgnored private var pushSyncRequested = false
     let isDemo: Bool
 
     private var pairing: PairingConfiguration?
@@ -48,7 +56,8 @@ final class AppStore {
     @ObservationIgnored private var cachedState: StateSnapshot?
     @ObservationIgnored private var cacheTask: Task<Void, Never>?
     @ObservationIgnored private let cacheQueue = DispatchQueue(label: "coconut.display-cache", qos: .utility)
-    @ObservationIgnored private var snapshotRequest: (id: UUID, generation: UUID, client: APIClient, task: Task<StateSnapshot, Error>)?
+    @ObservationIgnored private var snapshotEpoch = UUID()
+    @ObservationIgnored private var snapshotRequest: (id: UUID, generation: UUID, epoch: UUID, client: APIClient, task: Task<StateSnapshot, Error>)?
 
     var hasPairing: Bool { pairing != nil }
     var isBusy: Bool { writeCount > 0 }
@@ -64,6 +73,10 @@ final class AppStore {
     }
     func conversationBotId(for decision: Decision) -> String {
         tasks.first { $0.id == decision.taskId }?.chatBotId ?? decision.botId
+    }
+
+    func decisionChatRoute(for decision: Decision) -> ConversationRoute {
+        ConversationRoute(botId: conversationBotId(for: decision), decisionId: decision.id)
     }
 
     func decisionActor(_ decision: Decision) -> String {
@@ -94,6 +107,7 @@ final class AppStore {
             return
         }
         if let configuration: PairingConfiguration = ProtectedCache.read("pairing.json"), PairingToken.read() != nil {
+            workVisibility = [:]; workUndo = []; workMutationIds = [:]
             pairing = configuration
             serverURL = configuration.serverURL
             fingerprint = configuration.fingerprint
@@ -182,6 +196,7 @@ final class AppStore {
             try ProtectedCache.write(configuration, name: "pairing.json")
             outgoingMessages = []
             ProtectedCache.remove("outgoing.json")
+            workVisibility = [:]; workUndo = []; workMutationIds = [:]
             pairing = configuration
             pairCode = ""
             cursor = 0
@@ -217,6 +232,7 @@ final class AppStore {
     }
 
     func disconnect() {
+        workVisibility = [:]; workUndo = []; workMutationIds = [:]
         if let deviceId = pairing?.deviceId {
             PushRelayClient.shared.disable(deviceId: deviceId)
             NotificationKeys.forget(deviceId: deviceId)
@@ -382,11 +398,11 @@ final class AppStore {
     }
 
     @discardableResult
-    func send(bot: Bot, text: String, mode: String = "auto", taskId: String? = nil, attachments: [String] = [], scheduledAt: String? = nil, recipientBotIds: [String] = []) async -> Bool {
+    func send(bot: Bot, text: String, mode: String = "auto", taskId: String? = nil, attachments: [String] = [], scheduledAt: String? = nil, mentionedBotIds: [String] = [], replyTo: MessageReference? = nil) async -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return false }
         guard ["auto", "steer", "queue"].contains(mode) else { return false }
-        let selectedMode = recipientBotIds.isEmpty && scheduledAt == nil ? mode : "queue"
+        let selectedMode = scheduledAt == nil ? mode : "queue"
         let currentTask = selectedMode == "auto"
             ? tasks.last { $0.botId == bot.id && $0.chatBotId == bot.id && $0.sourceBotId == nil && $0.scheduledAt == nil && ["working", "queued", "waiting"].contains($0.status) }
             : taskId.flatMap { id in tasks.first { $0.id == id && $0.chatBotId == bot.id } }
@@ -397,9 +413,6 @@ final class AppStore {
             }
         }
         if isDemo {
-            if !recipientBotIds.isEmpty {
-                return !previewMentionTasks(conversationBotId: bot.id, text: text, scheduledAt: scheduledAt, recipientBotIds: recipientBotIds).isEmpty
-            }
             let target: AgentTask
             if selectedMode == "queue" || (selectedMode == "auto" && currentTask == nil) {
                 let id = UUID().uuidString
@@ -409,7 +422,7 @@ final class AppStore {
             } else if let currentTask { target = currentTask }
             else { return false }
             messages.append(Message(id: UUID().uuidString, botId: bot.id, taskId: target.id, role: "user", kind: "text", text: text,
-                                    decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false, threadId: target.threadId))
+                                    decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false, threadId: target.threadId, replyTo: replyTo))
             messages.append(Message(id: UUID().uuidString, botId: bot.id, taskId: target.id, role: "system", kind: "text",
                                     text: "Preview: no agent execution.",
                                     decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false, threadId: target.threadId))
@@ -417,10 +430,10 @@ final class AppStore {
         }
         let request = MessageRequest(text: text, mode: selectedMode,
             taskId: selectedMode == "steer" ? currentTask?.id : nil, scheduledAt: scheduledAt,
-            attachmentIds: attachments, recipientBotIds: recipientBotIds)
+            attachmentIds: attachments, recipientBotIds: [], replyToMessageId: replyTo?.messageId, mentionedBotIds: mentionedBotIds)
         let outgoing = OutgoingMessage(id: UUID().uuidString, botId: bot.id,
-            executorIds: recipientBotIds.isEmpty ? [selectedMode == "steer" ? currentTask!.botId : bot.id] : recipientBotIds,
-            request: request, createdAt: Self.now, status: .sending)
+            executorIds: [selectedMode == "steer" ? currentTask!.botId : bot.id],
+            request: request, createdAt: Self.now, status: .sending, replyTo: replyTo)
         outgoingMessages.append(outgoing)
         do { try saveOutgoing() }
         catch {
@@ -463,13 +476,57 @@ final class AppStore {
               let bot = bots.first(where: { $0.id == outgoing.botId }) else { return }
         outgoingMessages.removeAll { $0.id == outgoing.id }
         let saved = await send(bot: bot, text: text, attachments: outgoing.request.attachmentIds,
-                              scheduledAt: outgoing.request.scheduledAt, recipientBotIds: outgoing.request.recipientBotIds)
+                              scheduledAt: outgoing.request.scheduledAt, mentionedBotIds: outgoing.request.mentionedBotIds ?? outgoing.request.recipientBotIds, replyTo: outgoing.replyTo)
         if !saved { outgoingMessages.append(outgoing); try? saveOutgoing() }
     }
 
     private func saveOutgoing() throws {
         guard let pairing else { return }
         try ProtectedCache.write(OutgoingCache(deviceId: pairing.deviceId, messages: outgoingMessages), name: "outgoing.json")
+    }
+
+    func messageReference(for message: Message) -> MessageReference? {
+        guard message.kind == "text", ["user", "assistant"].contains(message.role),
+              !message.streaming, message.reactionEvent == nil, !message.isBotExchange,
+              let saved = messages.first(where: { $0.id == message.id || (message.clientRequestId != nil && $0.clientRequestId == message.clientRequestId) }) else { return nil }
+        return MessageReference(messageId: saved.id, text: saved.text,
+            author: saved.role == "user" ? "You" : bots.first { $0.id == (saved.senderBotId ?? saved.botId) }?.name ?? "Bot",
+            role: saved.role)
+    }
+
+    func reactions(for message: Message) -> [String] {
+        guard let reference = messageReference(for: message) else { return message.reactions ?? [] }
+        return reactionOverrides[reference.messageId] ?? messages.first { $0.id == reference.messageId }?.reactions ?? []
+    }
+
+    func react(to message: Message, emoji: String) async {
+        guard MessageReactions.all.contains(emoji), let reference = messageReference(for: message),
+              reactionOverrides[reference.messageId] == nil else { return }
+        let id = reference.messageId
+        let current = reactions(for: message)
+        let active = !current.contains(emoji)
+        let updated = active ? current + [emoji] : current.filter { $0 != emoji }
+        if isDemo {
+            if let index = messages.firstIndex(where: { $0.id == id }) { messages[index].reactions = updated }
+            return
+        }
+        let generation = connectionGeneration
+        reactionOverrides[id] = updated
+        defer { reactionOverrides[id] = nil }
+        let result: Message? = await write("messages/\(id)/reactions", payload: ReactionRequest(emoji: emoji, active: active),
+            as: Message.self, quiet: true, refreshInBackground: true, onSuccess: { receipt in
+                guard generation == self.connectionGeneration else { return }
+                self.snapshotEpoch = UUID()
+                self.snapshotRequest = nil
+                if let index = self.messages.firstIndex(where: { $0.id == id }) { self.messages[index].reactions = receipt.reactions }
+                if let index = self.cachedState?.messages.firstIndex(where: { $0.id == id }) { self.cachedState?.messages[index].reactions = receipt.reactions }
+            })
+        if result == nil && generation == connectionGeneration { error = "Reaction not confirmed. Try again." }
+    }
+
+    func displayedMessageId(for serverId: String) -> String {
+        guard let requestId = messages.first(where: { $0.id == serverId })?.clientRequestId else { return serverId }
+        return "outgoing-" + requestId
     }
 
     func conversationMessages(for botId: String) -> [Message] {
@@ -484,15 +541,11 @@ final class AppStore {
     }
 
     @discardableResult
-    func reply(task: AgentTask, text: String, attachments: [String] = [], decisionId: String? = nil, recipientBotIds: [String] = []) async -> Bool {
+    func reply(task: AgentTask, text: String, attachments: [String] = [], decisionId: String? = nil, mentionedBotIds: [String] = []) async -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
         if isDemo {
             guard let current = tasks.first(where: { $0.id == task.id }) else { return false }
-            if !recipientBotIds.isEmpty {
-                return !previewMentionTasks(conversationBotId: current.conversationBotId ?? current.botId, threadId: current.threadId,
-                                            text: text, recipientBotIds: recipientBotIds).isEmpty
-            }
             if current.status == "needs_you" {
                 guard let decisionId, let decision = decisions.first(where: { $0.id == decisionId && $0.taskId == task.id && $0.isPending }) else {
                     error = "Choose the pending decision before asking for context."
@@ -518,32 +571,8 @@ final class AppStore {
             return true
         }
         let result: AgentTask? = await write("tasks/\(task.id)/replies", payload: ReplyRequest(text: text, attachmentIds: attachments,
-                                                                                         decisionId: decisionId, recipientBotIds: recipientBotIds), as: AgentTask.self)
+                                                                                         decisionId: decisionId, mentionedBotIds: mentionedBotIds), as: AgentTask.self)
         return result != nil
-    }
-
-    private func previewMentionTasks(conversationBotId: String, threadId: String? = nil, text: String,
-                                     scheduledAt: String? = nil, recipientBotIds: [String]) -> [AgentTask] {
-        var seen = Set<String>()
-        let recipients = recipientBotIds.filter { seen.insert($0).inserted }
-        let selectedBots = recipients.compactMap { id in bots.first { $0.id == id && !$0.archived } }
-        guard selectedBots.count == recipients.count else { error = "One of the selected bots is unavailable."; return [] }
-        let threadId = threadId ?? UUID().uuidString
-        let dispatched = selectedBots.map { bot in
-            AgentTask(id: UUID().uuidString, botId: bot.id, sessionId: bot.sessionId, title: String(text.prefix(72)), status: scheduledAt == nil ? "queued" : "scheduled", summary: "Preview mention. No agent execution.",
-                      createdAt: Self.now, updatedAt: Self.now, scheduledAt: scheduledAt, threadId: threadId, conversationBotId: conversationBotId)
-        }
-        guard let first = dispatched.first else { return [] }
-        tasks.append(contentsOf: dispatched)
-        messages.append(Message(id: UUID().uuidString, botId: conversationBotId, taskId: first.id, role: "user", kind: "text", text: text,
-                                decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false, threadId: threadId,
-                                recipientBotIds: recipients))
-        for task in dispatched {
-            messages.append(Message(id: UUID().uuidString, botId: conversationBotId, taskId: task.id, role: "assistant", kind: "text",
-                                    text: "Preview: I received your message. My task stays in this thread.", decisionId: nil, artifactId: nil,
-                                    createdAt: Self.now, streaming: false, threadId: threadId, senderBotId: task.botId))
-        }
-        return dispatched
     }
 
     func cancel(_ task: AgentTask) async {
@@ -561,16 +590,20 @@ final class AppStore {
         let _: AgentTask? = await write("tasks/\(task.id)/cancel", payload: EmptyRequest(), as: AgentTask.self)
     }
 
-    func answer(_ decision: Decision, choice: String, correction: String? = nil, optionId: String? = nil) async {
-        guard ["approve", "reject", "modify"].contains(choice) else { return }
+    @discardableResult
+    func answer(_ decision: Decision, choice: String, correction: String? = nil, optionId: String? = nil) async -> Bool {
+        guard ["approve", "reject", "modify"].contains(choice) else { return false }
+        guard !answeringDecisionIds.contains(decision.id) else { return false }
+        answeringDecisionIds.insert(decision.id)
+        defer { answeringDecisionIds.remove(decision.id) }
         if isDemo {
-            guard let index = decisions.firstIndex(where: { $0.id == decision.id }), decisions[index].isPending else { return }
+            guard let index = decisions.firstIndex(where: { $0.id == decision.id }), decisions[index].isPending else { return false }
             let option = decisions[index].options.first { $0.id == optionId }
             if choice == "approve" && !decision.options.isEmpty && option == nil {
                 error = "Choose an option before approval."
-                return
+                return false
             }
-            if let option, option.answer != choice { error = "This option requires a different response."; return }
+            if let option, option.answer != choice { error = "This option requires a different response."; return false }
             decisions[index].status = choice == "modify" ? "modified" : choice == "approve" ? "executed" : "rejected"
             decisions[index].correction = correction ?? option?.modification
             decisions[index].selectedOptionId = option?.id
@@ -597,14 +630,68 @@ final class AppStore {
                                         decisionId: nil, artifactId: artifact.id, createdAt: Self.now, streaming: false,
                                         threadId: task?.threadId, senderBotId: decision.botId))
             }
-            return
+            return true
         }
-        let recorded: Decision? = await write("decisions/\(decision.id)/answer", payload: AnswerRequest(choice: choice, revision: decision.revision, correction: correction, optionId: optionId), as: Decision.self)
-        // Keep the receipt if the answer succeeds before state sync recovers.
-        if let recorded, let index = decisions.firstIndex(where: { $0.id == recorded.id }),
-           decisions[index].isPending, decisions[index].revision == recorded.revision {
-            decisions[index] = recorded
+        let generation = connectionGeneration
+        let recorded: Decision? = await write("decisions/\(decision.id)/answer", payload: AnswerRequest(choice: choice, revision: decision.revision, correction: correction, optionId: optionId), as: Decision.self, quiet: true, refreshInBackground: true, onFailure: { failure in
+            if generation == self.connectionGeneration { self.report(failure) }
+        }, onSuccess: { receipt in
+            guard generation == self.connectionGeneration else { return }
+            self.snapshotEpoch = UUID()
+            self.snapshotRequest = nil
+            if let index = self.decisions.firstIndex(where: { $0.id == receipt.id }),
+               self.decisions[index].revision == receipt.revision {
+                self.decisions[index] = receipt
+            }
+            if let index = self.cachedState?.decisions.firstIndex(where: { $0.id == receipt.id }) { self.cachedState?.decisions[index] = receipt }
+        })
+        return recorded != nil
+    }
+
+    func updateInbox(_ decision: Decision, action: String, idempotencyKey: String) async -> InboxMutationResult {
+        if isDemo, let index = decisions.firstIndex(where: { $0.id == decision.id }) {
+            decisions[index].inboxSwipeId = action == "restore" ? nil : UUID().uuidString
+            decisions[index].inboxUndoUntil = action == "restore" ? nil : ISO8601DateFormatter().string(from: Date().addingTimeInterval(10))
+            if action == "dismiss" { decisions[index].status = "dismissed" }
+            else if action == "restore" { decisions[index].status = "pending"; decisions[index].inboxDeferredAt = nil }
+            else { decisions[index].inboxDeferredAt = Self.now }
+            return InboxMutationResult(decision: decisions[index], isUncertain: false)
         }
+        var uncertain = false
+        let recorded: Decision? = await write("decisions/\(decision.id)/inbox",
+            payload: InboxRequest(action: action, revision: decision.revision, swipeId: decision.inboxSwipeId), as: Decision.self, refreshInBackground: true, idempotencyKey: idempotencyKey, onFailure: { error in
+                if let serviceError = error as? ServiceError, case .response = serviceError { uncertain = false }
+                else { uncertain = true }
+            }, onSuccess: { recorded in
+                self.applyInboxReceipt(recorded, replacing: decision)
+            })
+        return InboxMutationResult(decision: recorded, isUncertain: uncertain)
+    }
+
+    func applyInboxReceipt(_ recorded: Decision, replacing original: Decision) {
+        guard let index = decisions.firstIndex(where: { $0.id == recorded.id }),
+              decisions[index].revision == original.revision, decisions[index].status == original.status,
+              decisions[index].inboxSwipeId == original.inboxSwipeId else { return }
+        // Ignore snapshots started before this receipt. Keep message-only replay consistent too.
+        snapshotEpoch = UUID()
+        snapshotRequest = nil
+        // Preserve snapshot fields. A later snapshot can replace this confirmed mutation.
+        decisions[index].status = recorded.status
+        decisions[index].revision = recorded.revision
+        decisions[index].inboxDeferredAt = recorded.inboxDeferredAt
+        decisions[index].inboxUndoUntil = recorded.inboxUndoUntil
+        decisions[index].inboxSwipeId = recorded.inboxSwipeId
+        cachedState?.decisions = decisions
+    }
+
+    func replyToDecision(_ decision: Decision, text: String) async -> Bool {
+        if isDemo {
+            await requestContext(decision, question: text)
+            return true
+        }
+        let recorded: Message? = await write("decisions/\(decision.id)/reply",
+            payload: DecisionReplyRequest(text: text, revision: decision.revision), as: Message.self)
+        return recorded != nil
     }
 
     func requestContext(_ decision: Decision, question: String) async {
@@ -656,6 +743,20 @@ final class AppStore {
         }
         let response: ModelResponse? = await write("settings/model", method: "PUT", payload: selection, as: ModelResponse.self)
         return response != nil
+    }
+
+    func googleStatus() async throws -> GoogleConnectionStatus {
+        if isDemo { return GoogleConnectionStatus(connected: false, email: nil, needsReconnect: false) }
+        guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
+        return try await client.request("settings/google")
+    }
+
+    func googleRequest<Response: Decodable & Sendable>(_ action: String, request: GoogleConnectionRequest, as type: Response.Type) async throws -> Response {
+        guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
+        let generation = connectionGeneration
+        let response: Response = try await client.request("settings/google/\(action)", method: "POST", body: APIJSON.encode(request), retryTransient: true)
+        guard generation == connectionGeneration else { throw CancellationError() }
+        return response
     }
 
     func updateMCP(_ request: MCPRequest) async -> MCPResponse? {
@@ -711,6 +812,74 @@ final class AppStore {
         } catch { report(error); return nil }
     }
 
+    func dismissWork(_ pr: TrackedPullRequest) {
+        guard pr.isFinished else { return }
+        let dismissal = WorkDismissal(id: UUID().uuidString, artifactId: pr.artifact.id, url: pr.id)
+        workUndo.append(dismissal)
+        changeWorkVisibility(dismissal, undo: false)
+    }
+
+    func undoWorkDismissal() {
+        guard let dismissal = workUndo.popLast() else { return }
+        changeWorkVisibility(dismissal, undo: true)
+    }
+
+    private func changeWorkVisibility(_ dismissal: WorkDismissal, undo: Bool) {
+        workVisibility[dismissal.url] = !undo
+        let operation = UUID()
+        workMutationIds[dismissal.url] = operation
+        let deviceId = pairing?.deviceId
+        let previous = workMutationTail
+        workMutationTail = Task {
+            await previous?.value
+            guard deviceId == pairing?.deviceId else { return }
+            let succeeded: Bool
+            if isDemo {
+                applyWorkReceipt(dismissal, undo: undo)
+                succeeded = true
+            } else {
+                let result = await write("work/pull-requests/\(dismissal.artifactId)/dismiss",
+                    payload: WorkDismissRequest(dismissalId: dismissal.id, undo: undo), as: WorkRefreshResponse.self,
+                    onSuccess: { receipt in
+                        guard receipt.ok, deviceId == self.pairing?.deviceId else { return }
+                        self.applyWorkReceipt(dismissal, undo: undo)
+                    })
+                succeeded = result?.ok == true
+            }
+            guard deviceId == pairing?.deviceId, workMutationIds[dismissal.url] == operation else { return }
+            if !succeeded && undo {
+                workUndo.append(dismissal)
+            } else if !succeeded {
+                workUndo.removeAll { $0.id == dismissal.id }
+            }
+            workVisibility.removeValue(forKey: dismissal.url)
+            workMutationIds.removeValue(forKey: dismissal.url)
+        }
+    }
+
+    private func applyWorkReceipt(_ dismissal: WorkDismissal, undo: Bool) {
+        // Reject older snapshots and keep message replay consistent with the confirmed write.
+        snapshotEpoch = UUID()
+        snapshotRequest = nil
+        for index in artifacts.indices where artifacts[index].url?.lowercased() == dismissal.url {
+            artifacts[index].workDismissalId = undo ? nil : dismissal.id
+        }
+        cachedState?.artifacts = artifacts
+    }
+
+    func refreshWork() async {
+        guard !isDemo, foreground, let client else { return }
+        let generation = connectionGeneration
+        do {
+            let _: WorkRefreshResponse = try await client.request("work/refresh", method: "POST",
+                body: Data("{}".utf8), idempotencyKey: UUID().uuidString)
+            guard generation == connectionGeneration else { return }
+            try await refresh(using: client)
+        } catch {
+            // Keep observed PR data. Its timestamp marks stale status in Work.
+        }
+    }
+
     func downloadArtifact(_ artifact: Artifact) async -> URL? {
         do {
             let data: Data
@@ -746,7 +915,7 @@ final class AppStore {
         return result?.ok == true
     }
 
-    private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, idempotencyKey: String? = nil, onFailure: ((Error) -> Void)? = nil) async -> Response? {
+    private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, refreshInBackground: Bool = false, idempotencyKey: String? = nil, onFailure: ((Error) -> Void)? = nil, onSuccess: ((Response) -> Void)? = nil) async -> Response? {
         guard let pairing, let token = PairingToken.read() else {
             if !quiet { error = "Pair with your Mac in Settings to continue." }
             return nil
@@ -765,10 +934,11 @@ final class AppStore {
             let result: Response = try await client.request(path, method: method, body: body, idempotencyKey: key)
             uncertainWriteKeys.removeValue(forKey: requestSignature)
             if !quiet { error = nil }
-            do { try await refresh(using: client) }
-            catch {
-                recordSyncFailure(error)
-                beginPolling()
+            onSuccess?(result)
+            if refreshInBackground {
+                Task { await refreshAfterWrite(using: client) }
+            } else {
+                await refreshAfterWrite(using: client)
             }
             return result
         } catch {
@@ -786,6 +956,14 @@ final class AppStore {
                 if error is URLError { recordSyncFailure(error) }
             }
             return nil
+        }
+    }
+
+    private func refreshAfterWrite(using client: APIClient) async {
+        do { try await refresh(using: client) }
+        catch {
+            recordSyncFailure(error)
+            beginPolling()
         }
     }
 
@@ -842,13 +1020,19 @@ final class AppStore {
         guard self.client === client else { throw CancellationError() }
         let generation = connectionGeneration
         if snapshotRequest == nil || snapshotRequest?.generation != generation || snapshotRequest?.client !== client {
-            snapshotRequest = (UUID(), generation, client, Task { try await client.request("state") })
+            snapshotRequest = (UUID(), generation, snapshotEpoch, client, Task { try await client.request("state") })
         }
         guard let request = snapshotRequest else { return }
         defer { if snapshotRequest?.id == request.id { snapshotRequest = nil } }
-        let snapshot = try await request.task.value
+        let snapshot: StateSnapshot
+        do { snapshot = try await request.task.value }
+        catch {
+            if request.epoch != snapshotEpoch, !Task.isCancelled { return }
+            throw error
+        }
         try Task.checkCancellation()
         guard self.client === client, connectionGeneration == generation else { throw CancellationError() }
+        guard request.epoch == snapshotEpoch else { return }
         if snapshot.cursor >= cursor { apply(snapshot, persist: true) }
         connection = .connected
         syncIssue = nil
@@ -900,13 +1084,21 @@ final class AppStore {
     }
 
     func syncPushRegistration() async {
-        guard !isDemo, !registeringPush, let client, let pairing, connection == .connected else { return }
+        guard !isDemo, let client, let pairing, connection == .connected else { return }
+        if registeringPush { pushSyncRequested = true; return }
         registeringPush = true
-        defer { registeringPush = false }
+        defer {
+            registeringPush = false
+            if pushSyncRequested {
+                pushSyncRequested = false
+                Task { await syncPushRegistration() }
+            }
+        }
         let push = PushNotifications.shared
         await push.refresh(requestPermission: pushConfigured)
         guard self.client === client else { return }
-        let signature = [pairing.deviceId, push.environment, push.deviceToken ?? "", String(push.allowed)].joined(separator: ":")
+        let preferences = push.preferences
+        let signature = [pairing.deviceId, push.environment, push.deviceToken ?? "", String(push.allowed), String(preferences.decisions), String(preferences.messages)].joined(separator: ":")
         guard registeredPushSignature != signature else { return }
         do {
             let response: PushRegistrationResponse
@@ -920,7 +1112,7 @@ final class AppStore {
                     return
                 }
                 response = try await client.request("device/push", method: "PUT",
-                    body: APIJSON.encode(PushRegistration(token: token, environment: push.environment, enabled: true, relay: relay)),
+                    body: APIJSON.encode(PushRegistration(token: token, environment: push.environment, enabled: true, relay: relay, preferences: preferences)),
                     idempotencyKey: UUID().uuidString)
             } else {
                 PushRelayClient.shared.disable(deviceId: pairing.deviceId)
@@ -933,6 +1125,20 @@ final class AppStore {
         } catch {
             pushRegistrationError = "Notification setup has not reached your Mac. Coconut will retry when connected."
         }
+    }
+
+    func notificationDestination(_ target: NotificationTarget) async -> NotificationDestination? {
+        guard acceptsNotification(target) else { return nil }
+        if target.decisionId == nil { return .conversation(target.conversationRoute) }
+        guard let client else { return nil }
+        let epoch = snapshotEpoch
+        do {
+            // Fetch after the tap. A cached card can already be answered on another phone.
+            let snapshot: StateSnapshot = try await client.request("state")
+            guard self.client === client, acceptsNotification(target), epoch == snapshotEpoch else { return nil }
+            if snapshot.cursor >= cursor { apply(snapshot, persist: true) }
+            return target.destination(pendingDecisionIds: Set(decisions.filter(\.isPending).map(\.id)), snapshotReady: true)
+        } catch { return nil }
     }
 
     func acceptsNotification(_ target: NotificationTarget) -> Bool {
@@ -965,7 +1171,8 @@ final class AppStore {
                 try PairingToken.save(token)
                 let configuration = PairingConfiguration(serverURL: address, fingerprint: pin, deviceId: "simulator-bootstrap")
                 try ProtectedCache.write(configuration, name: "pairing.json")
-                pairing = configuration
+                workVisibility = [:]; workUndo = []; workMutationIds = [:]
+            pairing = configuration
                 connection = .disconnected
                 cursor = 0
             } catch { report(error) }
@@ -988,7 +1195,8 @@ private struct InstructionsRequest: Encodable { let instructions: String }
 private struct PreferenceRequest: Encodable { let text: String }
 private struct RoutineRequest: Encodable { let name: String; let prompt: String; let cron: String; let timezone: String; let enabled: Bool }
 private struct ArchiveRequest: Encodable { let archived: Bool }
-struct MessageRequest: Codable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String] }
+struct MessageRequest: Codable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String]; var replyToMessageId: String? = nil; var mentionedBotIds: [String]? = nil }
+private struct ReactionRequest: Encodable { let emoji: String; let active: Bool }
 struct OutgoingMessage: Codable, Identifiable {
     enum Status: String, Codable { case sending, accepted, failed, rejected }
     let id: String
@@ -998,6 +1206,7 @@ struct OutgoingMessage: Codable, Identifiable {
     let createdAt: String
     var status: Status
     var failureReason: String? = nil
+    var replyTo: MessageReference? = nil
     var expectsResponse: Bool { [.sending, .accepted].contains(status) && request.scheduledAt == nil }
     var afterRestart: Self {
         var restored = self
@@ -1007,12 +1216,14 @@ struct OutgoingMessage: Codable, Identifiable {
     var message: Message {
         Message(id: "outgoing-" + id, botId: botId, taskId: request.taskId, role: "user", kind: "text", text: request.text,
                 decisionId: nil, artifactId: nil, createdAt: createdAt, streaming: false,
-                recipientBotIds: request.recipientBotIds, clientRequestId: id)
+                recipientBotIds: request.recipientBotIds, clientRequestId: id, replyTo: replyTo)
     }
 }
 private struct OutgoingCache: Codable { let deviceId: String; let messages: [OutgoingMessage] }
 private struct AnswerRequest: Encodable { let choice: String; let revision: Int; let correction: String?; let optionId: String? }
-private struct ReplyRequest: Encodable { let text: String; let attachmentIds: [String]; let decisionId: String?; let recipientBotIds: [String] }
+private struct InboxRequest: Encodable { let action: String; let revision: Int; let swipeId: String? }
+private struct DecisionReplyRequest: Encodable { let text: String; let revision: Int }
+private struct ReplyRequest: Encodable { let text: String; let attachmentIds: [String]; let decisionId: String?; let mentionedBotIds: [String] }
 private struct ContextRequest: Encodable { let question: String }
 
 private struct ModelResponse: Decodable, Sendable { let model: String; let modelConfigured: Bool; let baseUrl: String?; let modelCatalog: ModelCatalog? }
@@ -1058,3 +1269,8 @@ private struct BotApprovalRequest: Encodable {
         else { try container.encodeNil(forKey: .approvalOverride) }
     }
 }
+
+private struct WorkRefreshResponse: Decodable { let ok: Bool }
+
+struct WorkDismissal: Identifiable { let id: String; let artifactId: String; let url: String }
+private struct WorkDismissRequest: Encodable { let dismissalId: String; let undo: Bool }

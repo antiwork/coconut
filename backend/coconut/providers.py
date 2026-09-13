@@ -184,7 +184,27 @@ class HermesProvider(FixtureProvider):
             raise ValueError(catalog['error'])
         return self.catalog.resolve(bot.get('model_override'), catalog=catalog)
 
+    def resolve_task_model(self, bot, task):
+        job = task.get('_native_job') or {}
+        selection = {} if job.get('model') and job.get('provider') else self.resolve_model(bot)
+        if job.get('model') or job.get('provider'):
+            from .model_catalog import _selection
+            # The native runtime validates this route using the bot's credentials.
+            # The global inventory can omit models configured only in this bot.
+            selection = _selection({
+                'model': job.get('model') or selection['model'],
+                'provider': job.get('provider') or selection['provider'],
+                'reasoning_effort': job.get('reasoning_effort'),
+            })
+        return selection
+
     def native_settings(self, operation='read', bots=(), **payload):
+        if operation == 'routine_create':
+            bot = next(bot for bot in bots if bot['id'] == payload['bot_id'])
+            selection = self.resolve_model(self.observe_bot(bot))
+            payload = dict(payload, changes=dict(payload['changes'],
+                           model=selection['model'], provider=selection['provider'],
+                           reasoning_effort=selection.get('reasoning_effort')))
         return self.catalog._call('native', native_operation=operation,
                                   homes={bot['id']: str(self.catalog._profile_home(bot['id'])) for bot in bots}, **payload)
 
@@ -272,6 +292,7 @@ class HermesProvider(FixtureProvider):
         env = {k: os.environ[k] for k in ('PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY') if k in os.environ}
         from .runtime_environment import prepare_profile
         env.update(prepare_profile(root / 'home'))
+        env['COCONUT_GOOGLE_HOME'] = str(self.data_dir / 'connections' / 'google' / 'home')
         env.update(HERMES_HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), PYTHONPATH=str(self.hermes_root), PYTHONUNBUFFERED='1', COCONUT_BROWSER_PROFILE=str(root / 'browser'), HERMES_DISABLE_TELEMETRY='1', HOMEBREW_XDG_CONFIG_HOME=str(shared_config))
         return env, root / 'workspace'
 
@@ -296,7 +317,7 @@ class HermesProvider(FixtureProvider):
         if not Path(self.python).is_file() or not (self.hermes_root / 'run_agent.py').is_file():
             raise RuntimeError('Install the Coconut Hermes runtime before starting this bot.')
         bot = self.observe_bot(bot)
-        selection = self.resolve_model(bot)
+        selection = self.resolve_task_model(bot, task)
         runtime_config = self.catalog.resolve_runtime(selection, bot_id=bot['id'])
         from .profiles import HermesProfiles
         HermesProfiles(self.data_dir).sync(bot)
@@ -339,15 +360,15 @@ class HermesProvider(FixtureProvider):
                     if deferred is not None:
                         raise deferred
                     return
-                if event.get('type') not in ('text_delta', 'activity', 'decision', 'artifact', 'completed', 'failed', 'bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'native_call', 'native_result', 'native_approval', 'native_question') or not isinstance(event.get('data'), dict):
+                if event.get('type') not in ('text_delta', 'activity', 'decision', 'artifact', 'completed', 'failed', 'bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'native_call', 'native_result', 'native_approval', 'native_question', 'native_proposal', 'decision_response') or not isinstance(event.get('data'), dict):
                     raise RuntimeError('Hermes returned an invalid structured event.')
-                if event['type'] in ('bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'native_call', 'native_result'):
+                if (event['type'] == 'artifact' and event.get('request_id')) or event['type'] in ('bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'native_call', 'native_result', 'native_proposal', 'decision_response'):
                     request_id = event.get('request_id')
                     if type(request_id) is not int or request_id < 1:
                         raise RuntimeError('Hermes returned an operation without a receipt request.')
                     try:
                         result = emit(event['type'], event['data'])
-                        if event['type'] in ('native_call', 'native_result', 'service_restart'):
+                        if event['type'] in ('artifact', 'native_call', 'native_result', 'service_restart', 'native_proposal', 'decision_response'):
                             receipt = result
                         elif event['type'] == 'bot_create':
                             from .hermes_worker import bot_creation_receipt

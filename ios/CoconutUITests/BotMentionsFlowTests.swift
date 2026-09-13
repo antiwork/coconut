@@ -32,7 +32,7 @@ final class BotMentionsFlowTests: XCTestCase {
     }
 
     @MainActor
-    func testMentionPickerRoutesReplyAndKeepsConversation() throws {
+    func testMentionPickerIdentifiesBotAndKeepsConversation() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
@@ -50,21 +50,15 @@ final class BotMentionsFlowTests: XCTestCase {
         capture("Filtered bot mention picker")
         scoutOption.tap()
         XCTAssertTrue(app.buttons["remove-mention-\(scoutId)"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["message-mode"].exists, "A mention must show explicit recipients instead of a steering mode.")
+        XCTAssertFalse(app.buttons["message-mode"].exists, "The composer keeps automatic routing.")
         input.typeText("Check the plan.")
         capture("Selected mention in composer")
         app.buttons["send-message"].tap()
-        let sender = app.buttons["message-sender-\(scoutId)"].firstMatch
-        XCTAssertTrue(sender.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["bot-settings"].label.contains("Forge"), "The response must remain in the original conversation.")
-        XCTAssertFalse(app.buttons["remove-mention-\(scoutId)"].exists)
-        capture("Attributed reply in original conversation")
-
-        sender.tap()
-        XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["bot-settings"].label.contains("Scout"))
-        XCTAssertTrue(app.staticTexts["In Forge"].waitForExistence(timeout: 5), "The recipient must link to work in another conversation.")
-        capture("Shared task in recipient conversation")
+        XCTAssertTrue(app.staticTexts["@Scout Check the plan."].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["message-sender-\(scoutId)"].firstMatch.exists)
+        XCTAssertTrue(app.buttons["bot-settings"].label.contains("Forge"))
+        XCTAssertFalse(app.staticTexts["To Scout"].exists)
+        capture("Mention stays in the current conversation")
     }
 
     @MainActor
@@ -89,10 +83,45 @@ final class BotMentionsFlowTests: XCTestCase {
         scout.tap()
         input.typeText("Please check this decision.")
         app.buttons["send-message"].tap()
-        XCTAssertTrue(app.buttons["message-sender-\(scoutId)"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["@Scout Please check this decision."].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["message-sender-\(scoutId)"].firstMatch.exists)
         for _ in 0..<7 where !option.isHittable { app.swipeDown() }
         XCTAssertTrue(option.exists && option.isEnabled, "Mentioning another bot must preserve the exact pending choices.")
         capture("Mention reply preserves pending decision")
+    }
+
+    @MainActor
+    func testMentionKeepsOwnerOnWire() async throws {
+        guard let address = ProcessInfo.processInfo.environment["COCONUT_LAYOUT_TEST_URL"] else {
+            throw XCTSkip("Run scripts/test_conversation_layout.py with --bot-references.")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
+        app.launch()
+        let scout = app.buttons["bot-conversation-\(scoutId)"]
+        XCTAssertTrue(scout.waitForExistence(timeout: 15)); scout.tap()
+        let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap()
+        input.typeText("Tell me about @Fo")
+        let mention = app.buttons["mention-bot-\(forgeId)"]
+        XCTAssertTrue(mention.waitForExistence(timeout: 5)); mention.tap()
+        XCTAssertTrue(app.staticTexts["Mentioned"].exists)
+        XCTAssertFalse(app.staticTexts["New task"].exists)
+        app.buttons["send-message"].tap()
+        XCTAssertTrue(app.staticTexts["Reply after message 1."].waitForExistence(timeout: 10))
+        let (data, _) = try await URLSession.shared.data(from: URL(string: address + "/test/send-status")!)
+        let status = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let requests = try XCTUnwrap(status["requests"] as? [[String: Any]])
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests[0]["path"] as? String, "/v1/bots/\(scoutId)/messages")
+        let body = try XCTUnwrap(requests[0]["body"] as? [String: Any])
+        XCTAssertEqual(body["mentioned_bot_ids"] as? [String], [forgeId])
+        XCTAssertEqual(body["recipient_bot_ids"] as? [String], [])
+        XCTAssertEqual(body["mode"] as? String, "auto")
+        XCTAssertTrue(app.buttons["bot-settings"].label.contains("Scout"))
+        XCTAssertFalse(app.staticTexts["To Forge"].exists)
+        capture("Mention keeps the original bot as recipient")
     }
 
     @MainActor

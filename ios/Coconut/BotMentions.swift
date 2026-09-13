@@ -172,7 +172,7 @@ struct BotMentionRecipients: View {
         if !recipients.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    Text("To").font(.caption).foregroundStyle(.secondary)
+                    Text("Mentioned").font(.caption).foregroundStyle(.secondary)
                     ForEach(recipients) { recipient in
                         Button { remove(recipient) } label: {
                             HStack(spacing: 5) {
@@ -187,7 +187,6 @@ struct BotMentionRecipients: View {
                         .accessibilityLabel("Remove mention \(recipient.name)")
                         .accessibilityIdentifier("remove-mention-\(recipient.id)")
                     }
-                    Text("New task").font(.caption2).foregroundStyle(.secondary)
                 }
             }
         }

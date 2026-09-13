@@ -48,6 +48,10 @@ targets:
     info:
       path: Coconut/Info.plist
       properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: Google
+            CFBundleURLSchemes:
+              - com.googleusercontent.apps.3509104299-du1m1pcfgm7meeivk712bmltf4bus8ae
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CoconutPushEnvironment: $(APS_ENVIRONMENT)
@@ -89,6 +93,10 @@ targets:
       path: CoconutNotificationService/Info.plist
       properties:
         CFBundleDisplayName: Coconut Notifications
+        CFBundleURLTypes:
+          - CFBundleURLName: Google
+            CFBundleURLSchemes:
+              - com.googleusercontent.apps.3509104299-du1m1pcfgm7meeivk712bmltf4bus8ae
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CoconutPushKeychainGroup: $(AppIdentifierPrefix)com.gumroad.coconut.push

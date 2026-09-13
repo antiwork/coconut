@@ -47,7 +47,7 @@ class BackgroundProcesses:
     def _background_pending(self, task_id, *, finishing_task_id=None):
         turns = [t for t in self._all('tasks') if t['id'] == task_id or t.get('_assignment_task_id') == task_id]
         owners = {t['id'] for t in turns}
-        return (any(r['task_id'] in owners and subscription(r) and not r.get('_process_delivery')
+        return (any(r['task_id'] in owners and (subscription(r) or r.get('_relay_task_id')) and not r.get('_process_delivery')
                     for r in self._all('native_receipts'))
                 or any(t['id'] != finishing_task_id and t.get('_background_completion')
                        and t['status'] in ('queued', 'working', 'needs_you', 'paused') for t in turns))
@@ -61,6 +61,7 @@ class BackgroundProcesses:
             self.stopping.wait(1)
 
     def _drain_process_completions(self):
+        self._drain_relay_completions()
         if not hasattr(self.provider, 'process_completions'):
             return
         with self.lock:
@@ -102,6 +103,11 @@ class BackgroundProcesses:
                         task = self._get('tasks', record['task_id'])
                         if record.get('_process_delivery') or not self._can_resume_process(task, self._get('bots', bot_id)):
                             continue
+                        if 'observation' in result:
+                            from .service import now
+                            record.update(_process_status=result['observation'], _process_observed_at=now())
+                            self._put('native_receipts', record)
+                            continue
                         if result.get('consumed'):
                             record['_process_delivery'] = 'consumed'
                             self._put('native_receipts', record)
@@ -112,6 +118,64 @@ class BackgroundProcesses:
                         self._resume_process_task(task_id, completions)
             finally:
                 bot_lock.release()
+
+    def _drain_relay_completions(self):
+        # The recipient receipt is durable. It also covers a restart after Hermes
+        # queues an envelope but before Coconut receives the waiter process ID.
+        with self.lock:
+            bot_ids = {self._get('tasks', r['task_id'])['bot_id'] for r in self._all('native_receipts')
+                       if r.get('_relay_task_id') and not r.get('_process_delivery')}
+        for bot_id in bot_ids:
+            with self.lock:
+                bot_lock = self.bot_locks.setdefault(bot_id, threading.Lock())
+            if not bot_lock.acquire(blocking=False):
+                continue
+            try:
+                with self.transaction():
+                    if self.stopping.is_set() or self.restart_pending:
+                        return
+                    grouped = {}
+                    for record in self._all('native_receipts'):
+                        if not record.get('_relay_task_id') or record.get('_process_delivery'):
+                            continue
+                        task = self._get('tasks', record['task_id'])
+                        if task['bot_id'] != bot_id or not self._can_resume_process(task, self._get('bots', bot_id)):
+                            continue
+                        recipient = self._get('tasks', record['_relay_task_id'])
+                        result = recipient.get('_native_relay_result')
+                        if not result:
+                            continue
+                        text = ('The other bot could not complete its turn: ' if result['failed'] else 'Reply from the other bot: ') + result['text']
+                        grouped.setdefault(task['id'], []).append((record, text))
+                    for task_id, completions in grouped.items():
+                        self._resume_process_task(task_id, completions)
+            finally:
+                bot_lock.release()
+
+    def _prepare_native_reply(self, task, text, result_status):
+        owners = {task['id']} if task.get('_native_relay') else set()
+        if task.get('_relay_callback_owner'):
+            owners.add(task['_relay_callback_owner'])
+        for owner_id in owners:
+            owner = task if owner_id == task['id'] else self._get('tasks', owner_id)
+            assignment = self._assignment(owner)
+            waiting = [identity for identity in assignment.get('_waiting_on', [])
+                       if identity != task.get('_resolved_dependency_id')]
+            # Only work started to answer this message belongs to its callback.
+            # The parent's other dependencies can include the sender itself.
+            pending = any(self._get('tasks', identity).get('_requester_reply_task_id') == owner_id
+                          for identity in waiting)
+            turns = [t for t in self._all('tasks')
+                     if t['id'] == owner_id or t.get('_relay_callback_owner') == owner_id]
+            pending = pending or any(self._background_pending(t['id'], finishing_task_id=task['id'])
+                                     or (t['id'] != task['id'] and t['status'] in ('queued', 'working', 'needs_you', 'paused'))
+                                     for t in turns)
+            if result_status != 'failed' and pending:
+                continue
+            owner['_native_reply_pending'] = dict(owner['_native_relay'], text=text, failed=result_status == 'failed')
+            owner['_native_relay_result'] = dict(owner['_native_reply_pending'])
+            if owner_id != task['id']:
+                self._put('tasks', owner)
 
     def _can_resume_process(self, task, bot):
         assignment = self._assignment(task)

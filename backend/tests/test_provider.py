@@ -215,7 +215,8 @@ class ProviderTests(unittest.TestCase):
         request = {'operation': 'context', 'task': {'pending_decision': {'proposal_preview': 'Exact approved-visible bytes'}}, 'history': [], 'question': 'What does this file contain?'}
         prompt, _ = conversation_input(request)
         self.assertIn('Exact approved-visible bytes', prompt)
-        self.assertIn('Do not change or execute it', prompt)
+        self.assertIn('Do not execute it', prompt)
+        self.assertIn('Do not change the pending proposal', prompt)
 
     def test_restarted_handoff_receipts_and_return_state_reach_the_prompt(self):
         self.task['_outgoing_bot_messages'] = [{'target_bot_id': 'recipient', 'text': 'The exact request already delivered.', 'task_id': 'receipt-task', 'status': 'completed', 'memory': 'PRIVATE_RECEIPT_MEMORY'}]
@@ -721,7 +722,7 @@ class ProviderTests(unittest.TestCase):
 
     def test_zero_budget_keeps_native_tool_but_blocks_new_deliveries(self):
         self.configure_peer(budget=0)
-        provider = self.fake_hermes("assert set(registry.handlers) == {'coconut_propose_file', 'coconut_ask', 'coconut_restart_service', 'message_agent'}\nreturn {'completed': True, 'final_response': 'No new bot deliveries.'}\n")
+        provider = self.fake_hermes("assert set(registry.handlers) == {'coconut_propose_file', 'coconut_ask', 'coconut_suggest', 'coconut_restart_service', 'coconut_track_pr', 'message_agent'}\nreturn {'completed': True, 'final_response': 'No new bot deliveries.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))

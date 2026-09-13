@@ -2,10 +2,12 @@
 from pathlib import Path
 import os
 import shlex
+import sys
 
 
 def command_path(value: str) -> str:
-    preferred = [p for p in ('/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/local/sbin') if Path(p).is_dir()]
+    preferred = [p for p in ('/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/local/sbin',
+                             str(Path.home() / '.orbstack/bin')) if Path(p).is_dir()]
     return ':'.join(dict.fromkeys([*preferred, *(p for p in value.split(':') if p), '/usr/bin', '/bin', '/usr/sbin', '/sbin']))
 
 
@@ -25,7 +27,7 @@ _coconut_prepend_path() {
     IFS="$old_ifs"
     PATH="$1${remaining:+:$remaining}"
 }
-for _coconut_dir in /usr/local/sbin /usr/local/bin /opt/homebrew/sbin /opt/homebrew/bin; do
+for _coconut_dir in "$HOME/.orbstack/bin" /usr/local/sbin /usr/local/bin /opt/homebrew/sbin /opt/homebrew/bin; do
     _coconut_prepend_path "$_coconut_dir"
 done
 export PATH
@@ -60,7 +62,13 @@ def configure_terminal(home):
     environment = prepare_profile(home)
     exports = ''.join(f'export {key}={shlex.quote(value)}\n' for key, value in environment.items())
     _write(script, SHELL_INIT + exports, home)
-    updated = [item for item in files if item != str(script)] + [str(script)]
+    google_script = home / 'coconut-google.sh'
+    updated = [item for item in files if item not in (str(script), str(google_script))] + [str(script)]
+    google_home = os.environ.get('COCONUT_GOOGLE_HOME')
+    if google_home:
+        command = shlex.join([sys.executable, str(Path(__file__).with_name('google_connection.py')), google_home])
+        _write(google_script, '# Managed by Coconut. Google sign-in stays in the phone app.\neval "$(' + command + ')"\n', home)
+        updated.append(str(google_script))
     if terminal.get('shell_init_files') != updated:
         terminal['shell_init_files'] = updated
         save_config(home, config)
