@@ -166,12 +166,18 @@ QUESTION_SCHEMA['parameters']['properties'].update({
     'uncertainty': {'type': 'string', 'description': 'One short sentence: the material unknown that could change the choice. Omit if none.'},
     'risk': {'type': 'string', 'description': 'One short sentence: the material risk or recovery limit. Omit if none.'},
 })
+try:
+    from .message_drafts import DRAFT_SCHEMA
+except ImportError:
+    from message_drafts import DRAFT_SCHEMA
+
 SUGGEST_SCHEMA = {
     'name': 'coconut_suggest',
     'description': 'Create an optional proposal card in chat and Inbox while continuing authorized work. Use for offers such as investigating, fixing, or doing something extra instead of offering only in prose. Do not execute the proposal until authorized. Reuse the same key when retrying. Do not recreate a dismissed proposal.',
     'parameters': dict(QUESTION_SCHEMA['parameters'],
-                       properties=dict(QUESTION_SCHEMA['parameters']['properties'], key={'type': 'string'}),
-                       required=['key', 'title', 'options']),
+                       properties=dict(QUESTION_SCHEMA['parameters']['properties'], key={'type': 'string'}, draft=DRAFT_SCHEMA),
+                       required=['key', 'title'],
+                       anyOf=[{'required': ['options']}, {'required': ['draft']}]),
 }
 REPLY_SCHEMA = {
     'name': 'coconut_resolve_reply',
@@ -179,7 +185,9 @@ REPLY_SCHEMA = {
     'parameters': {'type': 'object', 'properties': {
         'choice': {'type': 'string', 'enum': ['approve', 'reject', 'modify']},
         'option_id': {'type': 'string', 'description': 'The current option ID for an explicit selection.'},
-        'revision': QUESTION_SCHEMA['parameters'],
+        'revision': dict(QUESTION_SCHEMA['parameters'],
+                         properties=dict(QUESTION_SCHEMA['parameters']['properties'], draft=DRAFT_SCHEMA),
+                         required=[], anyOf=[{'required': ['title', 'options']}, {'required': ['draft']}]),
         'quote': {'type': 'string', 'description': 'Exact words from this human reply that give the instruction.'},
     }, 'required': ['choice', 'quote']},
 }

@@ -95,6 +95,8 @@
 		F410C10058BA0C8CB17BE9CA /* GoogleConnectionFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B111754C0CD9254BB7CFC46 /* GoogleConnectionFlowTests.swift */; };
 		F44E98A6DDB9163438280BAD /* SettingsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5C532B556E6AC4611DC4B3F /* SettingsViews.swift */; };
 		F6AA8200060D51B0E56BC6F6 /* NavigationPerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 775879288B90F2B57BD28B20 /* NavigationPerformanceTests.swift */; };
+		F81B2F287511865444AD03F8 /* MessageDraftView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78004F47AACBEB462A36AA3B /* MessageDraftView.swift */; };
+		F893B78721DBB37A269BC981 /* MessageDraftFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 266C0E77203BBC09A992449C /* MessageDraftFlowTests.swift */; };
 		FA3273EAC8CD61785B0DA57F /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC0BF5B02794FB407103AA4C /* AppStore.swift */; };
 /* End PBXBuildFile section */
 
@@ -152,6 +154,7 @@
 		1B267FBB35C435F1325F73EE /* StateSyncFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateSyncFlowTests.swift; sourceTree = "<group>"; };
 		2580B8702C72C82BDCCF6F55 /* ApprovalSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalSettingsView.swift; sourceTree = "<group>"; };
 		26119085DA97B96779F9E35B /* ConversationLayoutMessages.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = ConversationLayoutMessages.json; sourceTree = "<group>"; };
+		266C0E77203BBC09A992449C /* MessageDraftFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageDraftFlowTests.swift; sourceTree = "<group>"; };
 		2D7EAE47898978A1E16BCA48 /* BotExchangeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotExchangeTests.swift; sourceTree = "<group>"; };
 		314EA7AAB131B25EAEEE8971 /* PushNotifications.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushNotifications.swift; sourceTree = "<group>"; };
 		334802006423A1C089C7730D /* Coconut.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Coconut.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -179,6 +182,7 @@
 		775879288B90F2B57BD28B20 /* NavigationPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationPerformanceTests.swift; sourceTree = "<group>"; };
 		77967E2FBB093EE66F269506 /* TrackedWorkItemTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrackedWorkItemTests.swift; sourceTree = "<group>"; };
 		77FBB8BE2D0E08DEDC377755 /* GoogleAuthorizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleAuthorizationTests.swift; sourceTree = "<group>"; };
+		78004F47AACBEB462A36AA3B /* MessageDraftView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageDraftView.swift; sourceTree = "<group>"; };
 		7C477A5B7A98B02989D56026 /* MessageReplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageReplay.swift; sourceTree = "<group>"; };
 		7CF0373D5DC01EBE8685F781 /* BotShapeProfiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotShapeProfiles.swift; sourceTree = "<group>"; };
 		84292AC71716E6E3438006BC /* BotExchangeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotExchangeView.swift; sourceTree = "<group>"; };
@@ -343,6 +347,7 @@
 				84A0F7AB9F72DD714064B409 /* InboxPresentation.swift */,
 				FCABC9E056D35D74FCE1B244 /* Info.plist */,
 				9BF9EE12E54B4787D2E6B806 /* MCPSettingsView.swift */,
+				78004F47AACBEB462A36AA3B /* MessageDraftView.swift */,
 				7C477A5B7A98B02989D56026 /* MessageReplay.swift */,
 				02C28DCD356AB0A20D629F25 /* MessageReplyGesture.swift */,
 				766B7FAF417AC083D750B041 /* MessageText.swift */,
@@ -378,6 +383,7 @@
 				0B111754C0CD9254BB7CFC46 /* GoogleConnectionFlowTests.swift */,
 				5599CDEFE8D6BDE30E0FD009 /* InstantSendFlowTests.swift */,
 				53C542B24868FF4FB0A86C9E /* MCPSettingsFlowTests.swift */,
+				266C0E77203BBC09A992449C /* MessageDraftFlowTests.swift */,
 				0838438D9F6703EC59C5643C /* MessageInteractionFlowTests.swift */,
 				188778025113967153727FCD /* ModelSettingsFlowTests.swift */,
 				8ED43A5BCDAE960B89DFA65F /* NativeDecisionFlowTests.swift */,
@@ -617,6 +623,7 @@
 				77599D8DBF501C8105E0D7CB /* HomeViews.swift in Sources */,
 				286E1291C725E9334164C467 /* InboxPresentation.swift in Sources */,
 				061C88CB564F58F1D8B8D47F /* MCPSettingsView.swift in Sources */,
+				F81B2F287511865444AD03F8 /* MessageDraftView.swift in Sources */,
 				02A168DBF5C0F612F9B97558 /* MessageReplay.swift in Sources */,
 				93FBA3F4E639718755AE45A0 /* MessageReplyGesture.swift in Sources */,
 				40F39421A4C40643F7F46927 /* MessageText.swift in Sources */,
@@ -662,6 +669,7 @@
 				F410C10058BA0C8CB17BE9CA /* GoogleConnectionFlowTests.swift in Sources */,
 				2D2D246819BFEB091954CF14 /* InstantSendFlowTests.swift in Sources */,
 				8F7CAE9D3062FF3E2619EF8E /* MCPSettingsFlowTests.swift in Sources */,
+				F893B78721DBB37A269BC981 /* MessageDraftFlowTests.swift in Sources */,
 				DD72D80248A9DBD7C44816AF /* MessageInteractionFlowTests.swift in Sources */,
 				21BBC9280B22012EA2E56285 /* ModelSettingsFlowTests.swift in Sources */,
 				C9F269B7D9790F8BB589E0BF /* NativeDecisionFlowTests.swift in Sources */,

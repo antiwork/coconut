@@ -16,11 +16,15 @@ struct DecisionCard: View {
     @State private var submittingOptionId: String?
     @State private var responseError: String?
     @State private var showsEarlierReplies = false
+    @State private var editingDraft: Decision?
     private var canRespond: Bool { store.connection == .connected || store.isDemo }
     private var showsSelection: Bool { !decision.isPending || dismissing }
     private var isDismissed: Bool { dismissing || decision.status == "dismissed" }
     private var selectionLabel: String {
         if isDismissed { return "Dismissed" }
+        if decision.draft != nil {
+            return decision.status == "rejected" ? "Discarded" : decision.status == "failed" ? "Could not finish" : "Approved for sending"
+        }
         if let id = submittingOptionId, let option = decision.options.first(where: { $0.id == id }) {
             return option.label
         }
@@ -54,6 +58,7 @@ struct DecisionCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 24))
         .clipShape(RoundedRectangle(cornerRadius: 24))
+        .sheet(item: $editingDraft) { original in MessageDraftEditor(decision: original) }
     }
 
     private var cardContent: some View {
@@ -79,8 +84,10 @@ struct DecisionCard: View {
                     .accessibilityIdentifier("dismiss-card-\(decision.id)")
                 }
             }
+            if let draft = decision.draft { MessageDraftContent(draft: draft) }
             if !showsSelection {
-                if !decision.cardOptions.isEmpty { choices }
+                if decision.draft != nil { draftActions }
+                else if !decision.cardOptions.isEmpty { choices }
                 if showsBot { inlineReplies }
                 if !canRespond {
                     Text("Reconnect to respond.").font(.caption).foregroundStyle(.secondary)
@@ -141,6 +148,13 @@ struct DecisionCard: View {
         }
     }
 
+    private var draftActions: some View {
+        MessageDraftActions(selected: confirmingOptionId == "send", send: { answer("approve", optionId: "send") },
+            edit: { replyFocus?.wrappedValue = false; onRespond(); editingDraft = decision },
+            discard: { answer("reject", optionId: "discard") })
+        .disabled(!canRespond || submitting || store.answeringDecisionIds.contains(decision.id))
+    }
+
     private var choices: some View {
         VStack(spacing: 0) {
             ForEach(Array(decision.cardOptions.enumerated()), id: \.element.id) { index, option in
@@ -178,7 +192,7 @@ struct DecisionCard: View {
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(BoardStyle.line))
-            if decision.status == "approved" {
+            if decision.status == "approved" && decision.draft == nil {
                 Text("Choice received").font(.caption).foregroundStyle(.secondary)
             }
             if decision.status == "failed", let outcome = decision.outcome, !outcome.isEmpty {

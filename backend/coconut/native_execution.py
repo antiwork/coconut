@@ -110,6 +110,12 @@ class NativeExecution:
                     return {'status': 'recorded', 'decision_id': existing['id']}
                 if not isinstance(payload.get('key'), str) or not 1 <= len(payload['key']) <= 100:
                     raise ServiceError(400, 'Supply a stable proposal key.')
+            draft = None
+            if payload.get('draft') is not None:
+                if not optional:
+                    raise ServiceError(400, 'Create message drafts with coconut_suggest.')
+                from .message_drafts import message_draft
+                draft = message_draft(payload['draft'])
             if approval:
                 record = self._get('native_receipts', payload['receipt_id'])
                 if record['task_id'] != task_id or record['state'] != 'executing':
@@ -127,14 +133,15 @@ class NativeExecution:
                     self._put('native_receipts', record)
                     action = record['action']
                 from .decision_inbox import decision_options
-                options = decision_options(payload.get('options'))
+                from .message_drafts import draft_options
+                options = draft_options() if draft is not None else decision_options(payload.get('options'))
                 for field in ('recommended_option_id', 'predicted_option_id'):
                     if payload.get(field) is not None and payload[field] not in {o['id'] for o in options}:
                         raise ServiceError(400, 'Recommendations must refer to a current choice.')
             decision = dict(id=str(uuid4()), bot_id=task['bot_id'], task_id=task_id,
                             title=str(payload.get('title', 'Allow this action?'))[:160],
                             explanation=str(payload.get('explanation', ''))[:2000],
-                            action_type='native_approval' if approval else 'question',
+                            action_type='draft_message' if draft is not None else 'native_approval' if approval else 'question',
                             resource=str(payload.get('resource', ''))[:4000], consequences='', recommended='approve',
                             options=options, recommended_option_id=payload.get('recommended_option_id'),
                             status='pending', urgency='normal', created_at=now(), decided_at=None, decided_by=None,
@@ -147,8 +154,11 @@ class NativeExecution:
                             _proposal_key=payload.get('key') if optional else None,
                             _action=action, _action_hash=digest(encoded(action)), _native=True,
                             _predicted_option_id=payload.get('predicted_option_id'), _receipt_id=payload.get('receipt_id'), _answers=[])
+            if draft is not None:
+                decision['draft'] = draft
+                decision['draft_hash'] = digest(encoded(draft))
             decision.update(self.decision_origin(task))
-            if not approval:
+            if not approval and draft is None:
                 decision['merge_pr_url'] = self._merge_decision_url(payload, task)
             self._put('decisions', decision)
             if optional:
@@ -177,6 +187,10 @@ class NativeExecution:
         choice = option['answer'] if option else data.get('choice')
         if choice not in ('approve', 'reject', 'modify') or (choice == 'approve' and not option):
             raise ServiceError(400, 'Choose one of the current options.')
+        if decision.get('draft') is not None and choice == 'approve' and data.get('draft_hash') != decision.get('draft_hash'):
+            raise ServiceError(409, 'Open the full draft in the latest app before selecting Send.')
+        if decision.get('draft') is not None and choice == 'modify':
+            raise ServiceError(400, 'Edit the draft before selecting Send.')
         correction = decision_correction(data)
         if choice == 'modify' and not correction.strip():
             raise ServiceError(400, 'Describe the change.')
@@ -186,6 +200,9 @@ class NativeExecution:
                         outcome='Answer recorded. Hermes will continue.')
         decision['_answers'].append(dict(choice=choice, option_id=option_id, correction=correction,
                                           predicted_option_id=decision.get('_predicted_option_id'), decided_by=device))
+        if decision.get('draft') is not None:
+            decision['outcome'] = 'Approved for sending.' if choice == 'approve' else 'Draft discarded. Nothing was sent.'
+            decision['_answers'][-1].update(draft=decision['draft'], revision=decision['revision'])
         self._put('decisions', decision)
         if decision['action_type'] == 'question' and decision.get('_receipt_id'):
             record = self._get('native_receipts', decision['_receipt_id'])

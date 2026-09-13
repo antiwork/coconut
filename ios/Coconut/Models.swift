@@ -235,6 +235,15 @@ struct Message: Codable, Identifiable, Equatable, Sendable {
     var reactionEvent: MessageReactionEvent? = nil
 }
 
+struct MessageDraft: Codable, Equatable, Sendable {
+    var channel: String
+    var recipient: String
+    var body: String
+    var sender: String? = nil
+    var subject: String? = nil
+    var replyTo: String? = nil
+}
+
 struct Decision: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var botId: String
@@ -254,6 +263,8 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     var correction: String?
     var outcome: String?
     var revision: Int
+    var draft: MessageDraft? = nil
+    var draftHash: String? = nil
     var proposalPreview: String? = nil
     var proposalHash: String? = nil
     var decidedByName: String? = nil

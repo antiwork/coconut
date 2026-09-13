@@ -964,6 +964,8 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                 return self.update_inbox(decision, task, data)
             if decision['status'] != 'pending' or task['status'] == 'cancelled':
                 raise ServiceError(409, 'This decision is no longer pending.')
+            if parts[3] == 'draft':
+                return self.edit_message_draft(decision, task, data, device)
             if parts[3] == 'reply':
                 if data.get('revision') != decision['revision']:
                     raise ServiceError(409, 'This decision changed. Review it before replying.')

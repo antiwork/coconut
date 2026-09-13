@@ -605,7 +605,7 @@ final class AppStore {
                 return false
             }
             if let option, option.answer != choice { error = "This option requires a different response."; return false }
-            decisions[index].status = choice == "modify" ? "modified" : choice == "approve" ? "executed" : "rejected"
+            decisions[index].status = choice == "modify" ? "modified" : choice == "approve" ? (decision.draft == nil ? "executed" : "approved") : "rejected"
             decisions[index].correction = correction ?? option?.modification
             decisions[index].selectedOptionId = option?.id
             decisions[index].selectedOptionLabel = option?.label
@@ -621,7 +621,7 @@ final class AppStore {
                 tasks[taskIndex].summary = decisions[index].outcome ?? ""
             }
             if let botIndex = bots.firstIndex(where: { $0.id == decision.botId }) { bots[botIndex].status = choice == "modify" ? "working" : "idle" }
-            if choice == "approve" {
+            if choice == "approve" && decision.draft == nil {
                 let task = tasks.first { $0.id == decision.taskId }
                 let conversationBotId = task?.conversationBotId ?? decision.botId
                 let artifact = Artifact(id: UUID().uuidString, botId: decision.botId, taskId: decision.taskId, title: option?.action?.filename ?? "retry-fix.patch", kind: "file",
@@ -634,7 +634,7 @@ final class AppStore {
             return true
         }
         let generation = connectionGeneration
-        let recorded: Decision? = await write("decisions/\(decision.id)/answer", payload: AnswerRequest(choice: choice, revision: decision.revision, correction: correction, optionId: optionId), as: Decision.self, quiet: true, refreshInBackground: true, onFailure: { failure in
+        let recorded: Decision? = await write("decisions/\(decision.id)/answer", payload: AnswerRequest(choice: choice, revision: decision.revision, correction: correction, optionId: optionId, draftHash: decision.draftHash), as: Decision.self, quiet: true, refreshInBackground: true, onFailure: { failure in
             if generation == self.connectionGeneration { self.report(failure) }
         }, onSuccess: { receipt in
             guard generation == self.connectionGeneration else { return }
@@ -646,6 +646,28 @@ final class AppStore {
             }
             if let index = self.cachedState?.decisions.firstIndex(where: { $0.id == receipt.id }) { self.cachedState?.decisions[index] = receipt }
         })
+        return recorded != nil
+    }
+
+    func editDraft(_ decision: Decision, draft: MessageDraft) async -> Bool {
+        if isDemo, let index = decisions.firstIndex(where: { $0.id == decision.id && $0.isPending }) {
+            decisions[index].draft = draft
+            decisions[index].revision += 1
+            return true
+        }
+        let generation = connectionGeneration
+        let recorded: Decision? = await write("decisions/\(decision.id)/draft",
+            payload: DraftEditRequest(revision: decision.revision, draft: draft), as: Decision.self,
+            refreshInBackground: true, onSuccess: { receipt in
+                guard generation == self.connectionGeneration else { return }
+                self.snapshotEpoch = UUID()
+                self.snapshotRequest = nil
+                if let index = self.decisions.firstIndex(where: { $0.id == receipt.id }),
+                   self.decisions[index].revision <= receipt.revision {
+                    self.decisions[index] = receipt
+                }
+                self.cachedState?.decisions = self.decisions
+            })
         return recorded != nil
     }
 
@@ -1226,7 +1248,8 @@ struct OutgoingMessage: Codable, Identifiable {
     }
 }
 private struct OutgoingCache: Codable { let deviceId: String; let messages: [OutgoingMessage] }
-private struct AnswerRequest: Encodable { let choice: String; let revision: Int; let correction: String?; let optionId: String? }
+private struct AnswerRequest: Encodable { let choice: String; let revision: Int; let correction: String?; let optionId: String?; let draftHash: String? }
+private struct DraftEditRequest: Encodable { let revision: Int; let draft: MessageDraft }
 private struct InboxRequest: Encodable { let action: String; let revision: Int; let swipeId: String? }
 private struct DecisionReplyRequest: Encodable { let text: String; let revision: Int }
 private struct ReplyRequest: Encodable { let text: String; let attachmentIds: [String]; let decisionId: String?; let mentionedBotIds: [String] }

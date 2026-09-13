@@ -247,12 +247,17 @@ struct DecisionInboxView: View {
                         Text(context).font(.subheadline).foregroundStyle(.secondary)
                     }
                 }
+                if let draft = decision.draft {
+                    MessageDraftContent(draft: draft)
+                    MessageDraftActions()
+                } else {
                 VStack(spacing: 0) {
                     ForEach(Array(decision.cardOptions.enumerated()), id: \.element.id) { index, option in
                         DecisionChoiceContent(option: option, index: index, isRecommended: decision.recommendedOptionId == option.id, isCompact: true)
                         if option.id != decision.cardOptions.last?.id { Divider().padding(.horizontal, 12) }
                     }
                 }.background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: 12))
+                }
             }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 0)
             HStack {

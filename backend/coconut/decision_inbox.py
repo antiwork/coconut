@@ -17,6 +17,22 @@ def decision_options(options):
 
 
 class DecisionInbox:
+    def edit_message_draft(self, decision, task, data, device):
+        from .service import ServiceError, now, digest, encoded
+        from .message_drafts import message_draft
+        if (decision.get('action_type') != 'draft_message' or decision['status'] != 'pending'
+                or type(data.get('revision')) is not int or data['revision'] != decision['revision']
+                or task['status'] == 'cancelled' or self._task_paused(task)):
+            raise ServiceError(409, 'This draft changed. Open it again before editing.')
+        draft = message_draft(data.get('draft'))
+        decision.setdefault('_draft_edits', []).append(dict(draft=decision['draft'], revision=decision['revision'],
+                                                          edited_by=device, edited_at=now()))
+        decision.update(draft=draft, draft_hash=digest(encoded(draft)), revision=decision['revision'] + 1,
+                        inbox_deferred_at=None, inbox_undo_until=None, inbox_swipe_id=None)
+        self._put('decisions', decision)
+        self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
+        return self._public(decision)
+
     def decision_origin(self, task):
         seen = set()
         messages = self._history(task['bot_id'])
@@ -157,6 +173,14 @@ class DecisionInbox:
         # Native approval is bound to an exact action and requires its visible choice.
         if decision['action_type'] == 'native_approval' and payload.get('choice') != 'reject':
             return {'status': 'pending', 'error': 'Ask the person to select the exact action on its card. Do not execute it from this follow-up.'}
+        if decision['action_type'] == 'draft_message':
+            if payload.get('choice') == 'approve':
+                return {'status': 'pending', 'error': 'Ask the person to select Send on the exact draft.'}
+            if payload.get('choice') == 'modify':
+                revision = payload.get('revision', {})
+                result = self.edit_message_draft(decision, task,
+                    dict(revision=decision['revision'], draft=revision.get('draft')), context['_reply_device'])
+                return {'status': 'recorded', 'decision': result}
         choice = payload.get('choice')
         if choice not in ('approve', 'reject', 'modify'):
             raise ServiceError(400, 'Choose approve, reject, or modify.')
@@ -204,6 +228,15 @@ DECISION_INSTRUCTIONS = (
     'A question in chat does not create a card and does not put the request in Inbox. '
     'Do not finish with a prose request such as "Should I proceed?", "Which do you prefer?", or "Let me know when ready." '
     'For optional next steps, call coconut_suggest and continue the authorized work. '
+    'For an outbound email, message, or comment that needs review, call coconut_suggest with a draft object and a stable key. '
+    'This creates an editable draft card in chat and Inbox. Omit options; Coconut supplies Send and Discard. '
+    'Use a short title and only essential context. Put the complete exact text in draft.body, with the exact destination and sending account. '
+    'Check the connected service can send before offering Send. Resolve missing access or ambiguous destinations first. '
+    'Draft cards support text only. Do not hide attachments, CC, BCC, or extra actions behind Send. '
+    'Do not send before the person selects Send on the current draft. Edits and reactions do not approve it. '
+    'When asked to revise a draft, use coconut_resolve_reply with revision.draft. It stays pending for review. '
+    'After approval, send only the approved draft through the connected service and verify its result. Never call approval a completed send. '
+
     'An offer such as "I can investigate this if you want" belongs in an optional card. '
     'Do not tell the person to remind each bot to use cards or save these app rules in each bot memory. '
     'If the person must type an answer, ask through coconut_ask with meaningful choices when available; the card accepts a typed reply. '
