@@ -24,7 +24,7 @@ final class NavigationPerformanceTests: XCTestCase {
             XCTAssertTrue(bot.waitForExistence(timeout: 3))
             let tabsStart = ContinuousClock.now
             app.tabBars.buttons["Work"].tap()
-            XCTAssertTrue(app.staticTexts["No pull requests"].waitForExistence(timeout: 3))
+            XCTAssertTrue(app.staticTexts["No tracked work"].waitForExistence(timeout: 3))
             app.tabBars.buttons["Inbox"].tap()
             XCTAssertTrue(app.staticTexts["Review the old report?"].waitForExistence(timeout: 3))
             print("COCONUT_TABS_\(attempt)=\(tabsStart.duration(to: .now))")

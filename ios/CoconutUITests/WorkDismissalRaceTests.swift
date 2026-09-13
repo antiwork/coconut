@@ -26,6 +26,6 @@ final class WorkDismissalRaceTests: XCTestCase {
         XCTAssertEqual(proof["replayed"] as? Bool, true)
         XCTAssertFalse(app.staticTexts["First completed change"].exists)
         XCTAssertFalse(app.staticTexts["Second completed change"].exists)
-        XCTAssertTrue(app.staticTexts["No pull requests"].exists)
+        XCTAssertTrue(app.staticTexts["No tracked work"].exists)
     }
 }

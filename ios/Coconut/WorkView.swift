@@ -86,14 +86,16 @@ struct WorkView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let isVisible: Bool
+    let openConversation: (String) -> Void
     private var pullRequests: [TrackedPullRequest] { TrackedPullRequest.tracked(in: store.artifacts, visibility: store.workVisibility) }
 
     var body: some View {
         List {
             if pullRequests.isEmpty {
-                Text("No pull requests")
+                Text("No tracked work")
                     .font(.body).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 220)
+                    .listRowBackground(BoardStyle.paper)
                     .listRowSeparator(.hidden)
                     .accessibilityIdentifier("work-empty")
             }
@@ -169,7 +171,7 @@ struct WorkView: View {
             .buttonStyle(HomePressStyle())
             .accessibilityIdentifier("work-pr-\(pr.number)")
             if !pr.isFinished, let bot = store.bots.first(where: { $0.id == (pr.artifact.activityBotId ?? pr.artifact.botId) }) {
-                NavigationLink(value: ConversationRoute(botId: bot.id)) {
+                Button { openConversation(bot.id) } label: {
                     BotAvatar(bot: bot, size: 28, animated: false)
                         .frame(width: 44, height: 44).contentShape(Rectangle())
                 }

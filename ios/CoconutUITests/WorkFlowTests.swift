@@ -30,7 +30,11 @@ final class WorkFlowTests: XCTestCase {
         request.httpMethod = "POST"
         let (_, response) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
-        XCTAssertTrue(app.staticTexts["No pull requests"].waitForExistence(timeout: 25))
+        XCTAssertTrue(app.staticTexts["No tracked work"].waitForExistence(timeout: 25))
         XCTAssertTrue(work.exists)
+        let emptyProof = XCTAttachment(screenshot: app.screenshot())
+        emptyProof.name = "Work uses a uniform empty background"
+        emptyProof.lifetime = .keepAlways
+        add(emptyProof)
     }
 }

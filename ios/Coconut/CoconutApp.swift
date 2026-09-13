@@ -102,7 +102,11 @@ struct CoconutHome: View {
         NavigationStack(path: path) {
             Group {
                 if tab == .inbox { DecisionInboxView(focusDecisionId: $notificationDecisionId) }
-                else if tab == .work { WorkView(isVisible: selectedTab == .work && workPath.isEmpty) }
+                else if tab == .work {
+                    WorkView(isVisible: selectedTab == .work && workPath.isEmpty) { botId in
+                        workPath.append(ConversationRoute(botId: botId))
+                    }
+                }
                 else { HomeLaunchView(searchText: searchText) }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
