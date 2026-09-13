@@ -2,6 +2,22 @@ import XCTest
 @testable import Coconut
 
 final class TranscriptPresentationTests: XCTestCase {
+    func testSilenceControlsStayOutOfChatAndPreview() {
+        let normal = message("answer", text: "The review finished.")
+        let silent = message("silent", text: "  [SILENT]\n")
+        let exchange = message("exchange", kind: "bot_exchange", text: "[SILENT]")
+        XCTAssertEqual(visibleIDs([normal, silent, exchange]), [normal.id])
+        XCTAssertEqual(latestConversationMessage(in: [normal, silent])?.id, normal.id)
+        XCTAssertTrue(TranscriptPresentation.isSilenceControl(exchange))
+    }
+
+    func testUserTextAndQuotedMarkerStayVisible() {
+        let user = message("user", role: "user", text: "[SILENT]")
+        let explanation = message("explanation", text: "The marker is [SILENT].")
+        let quote = message("quote", text: "`[SILENT]`")
+        XCTAssertEqual(visibleIDs([user, explanation, quote]), [user.id, explanation.id, quote.id])
+    }
+
     func testLegacyGenericProgressDoesNotAddTranscriptRows() {
         let texts = ["Working", "Working on your request.", "Preparing an answer…", "  WORKING!\n"]
         let messages = texts.enumerated().map { message("activity-\($0.offset)", kind: "activity", text: $0.element) }

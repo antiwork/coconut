@@ -10,7 +10,7 @@ enum TranscriptPresentation {
     static func visibleMessages(_ messages: [Message], artifacts: [Artifact]) -> [Message] {
         let byID = Dictionary(artifacts.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
         return messages.filter { message in
-            if message.reactionEvent != nil { return false }
+            if message.reactionEvent != nil || isSilenceControl(message) { return false }
             if isSettingsNotice(message) { return false }
             let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 .trimmingCharacters(in: CharacterSet(charactersIn: ".!…")).lowercased()
@@ -43,6 +43,13 @@ enum TranscriptPresentation {
                     && answer.text.hasPrefix(artifact.preview)
             }
         }
+    }
+
+    static func isSilenceControl(_ message: Message) -> Bool {
+        ["text", "bot_exchange"].contains(message.kind)
+            && (message.role == "assistant" || message.senderBotId != nil)
+            && message.decisionId == nil && message.artifactId == nil
+            && message.text.trimmingCharacters(in: .whitespacesAndNewlines) == "[SILENT]"
     }
 
     private static func isSettingsNotice(_ message: Message) -> Bool {

@@ -12,8 +12,10 @@ final class BotExchangeFlowTests: XCTestCase {
         app.launch()
         let scout = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
         XCTAssertTrue(scout.waitForExistence(timeout: 15))
+        XCTAssertFalse(scout.label.contains("[SILENT]"))
         scout.tap()
         XCTAssertTrue(app.staticTexts["My own work stays here."].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["[SILENT]"].exists)
         let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bot-exchange-")).firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5))
         XCTAssertTrue(row.label.contains("2 messages with"))
@@ -89,6 +91,7 @@ final class BotExchangeFlowTests: XCTestCase {
 
     @MainActor
     private func assertExchange(_ app: XCUIApplication) {
+        XCTAssertFalse(app.staticTexts["[SILENT]"].exists)
         XCTAssertTrue(app.staticTexts["Read-only"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "message-input").firstMatch.exists)
         let request = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Check the report.")).firstMatch

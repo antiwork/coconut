@@ -117,6 +117,7 @@ struct HomePressStyle: ButtonStyle {
 func latestConversationMessage(in messages: [Message]) -> Message? {
     let textMessages = messages.filter {
         $0.kind == "text" && $0.reactionEvent == nil && ["user", "assistant"].contains($0.role)
+            && !TranscriptPresentation.isSilenceControl($0)
             && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     // Older hosts stored this completion event as a text message.
@@ -137,7 +138,7 @@ struct BotContactRow: View {
     }
     private var preview: String {
         guard let message = latestMessage else {
-            return bot.lastMessage.isEmpty || TranscriptPresentation.isLegacySettingsNotice(bot.lastMessage)
+            return bot.lastMessage.isEmpty || bot.lastMessage.trimmingCharacters(in: .whitespacesAndNewlines) == "[SILENT]" || TranscriptPresentation.isLegacySettingsNotice(bot.lastMessage)
                 ? bot.role : bot.lastMessage
         }
         let sender = message.senderBotId.flatMap { id in id == bot.id ? nil : store.bots.first { $0.id == id }?.name ?? "Deleted bot" }

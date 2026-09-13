@@ -61,5 +61,9 @@ class ReactionResponseTests(unittest.TestCase):
     def test_useful_reaction_reply_is_delivered(self):
         self.assertEqual(self.run_response('Which part should I change?', reaction=True), ['Which part should I change?'])
 
-    def test_normal_message_keeps_literal_silence_text(self):
-        self.assertEqual(self.run_response('[SILENT]', reaction=False), ['[SILENT]'])
+    def test_other_bot_turns_also_honor_the_silence_control(self):
+        self.assertEqual(self.run_response('[SILENT]', reaction=False), [])
+
+    def test_normal_message_keeps_an_explanation_of_the_marker(self):
+        text = 'The marker is [SILENT].'
+        self.assertEqual(self.run_response(text, reaction=False), [text])

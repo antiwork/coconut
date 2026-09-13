@@ -72,7 +72,7 @@ struct BotExchangeView: View {
     @State private var positioned = false
 
     private var messages: [Message] {
-        store.messages.filter { $0.isBotExchange && $0.exchangeBotIds == route.botIds }
+        store.messages.filter { $0.isBotExchange && $0.exchangeBotIds == route.botIds && !TranscriptPresentation.isSilenceControl($0) }
             .sorted { $0.createdAt < $1.createdAt }
     }
 

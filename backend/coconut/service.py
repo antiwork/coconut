@@ -85,9 +85,10 @@ from .approval_updates import ApprovalUpdates
 
 from .service_restart import ServiceRestart
 from .tracked_work import TrackedWork
+from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
-class Service(TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
+class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -162,6 +163,7 @@ class Service(TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, Decisio
                 self._migrate_bot_exchanges()
                 self._migrate_process_deliveries()
                 self._migrate_activity_notices()
+                self._migrate_silent_responses()
                 self._migrate_pr_review_sources()
                 self._migrate_native_routine_prompts()
                 self._recover()
@@ -269,6 +271,10 @@ class Service(TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, Decisio
             message.update(self._message_interaction)
             if message.get('reaction_event'):
                 message['_human_source_kind'] = 'reaction'
+        if is_silent_message(message):
+            message['_hidden'] = True
+            self._put('messages', message)
+            return message
         self._put('messages', message)
         bot = self._get('bots', display_bot_id)
         if not message.get('reaction_event'):
@@ -2182,8 +2188,14 @@ class Service(TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, Decisio
                 raise YieldForDecision('This task no longer accepts provider output.')
             bot_id = task['bot_id']
             if kind == 'text_delta':
-                text = str(payload.get('text', payload.get('delta', '')))
+                text = task.pop('_silence_candidate', '') + str(payload.get('text', payload.get('delta', '')))
                 previous = next((m for m in reversed(self._all('messages')) if m['task_id'] == task_id and m['streaming']), None)
+                # A later chunk may turn the marker into an ordinary sentence.
+                if not previous and ('[SILENT]'.startswith(text.lstrip()) or is_silent_response(text)):
+                    task['_silence_candidate'] = text
+                    self._put('tasks', task)
+                    return
+                self._put('tasks', task)
                 if previous:
                     previous['text'] += text
                     self._put('messages', previous)
@@ -2235,6 +2247,10 @@ class Service(TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, Decisio
                 self._message(bot_id, artifact['title'], task_id=task_id, kind='artifact', artifact_id=artifact['id'])
                 self._event('artifact.created', artifact, bot_id, task_id)
             elif kind in ('completed', 'failed'):
+                candidate = task.pop('_silence_candidate', '')
+                marker_silent = is_silent_response(candidate)
+                if candidate and not marker_silent:
+                    self._message(bot_id, candidate, task_id=task_id)
                 self._save_work_progress(task, payload)
                 if kind == 'completed' and not task.get('_steering'):
                     continuation = self._continue_unfinished_work(task)
@@ -2247,6 +2263,10 @@ class Service(TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, Decisio
                     task['_routine_silent'] = kind == 'completed' and payload.get('routine_silent') is True
                 reaction_silent = (kind == 'completed' and payload.get('reaction_silent') is True
                                    and reaction_only_turn(dict(operation='start', task=task, history=self._history(task['bot_id']))))
+                silent_completion = kind == 'completed' and (marker_silent or payload.get('silent_response') is True or is_silent_response(payload.get('summary')))
+                task['_silent_completion'] = silent_completion or reaction_silent or task.get('_routine_silent', False)
+                if is_silent_response(payload.get('summary')):
+                    payload = dict(payload, summary='Complete.')
                 error_code = payload.get('error_code')
                 known_errors = set()
                 known_errors.update({'bot_creation_invalid_request', 'bot_creation_rejected', 'bot_creation_receipt_unconfirmed'})
@@ -2265,7 +2285,7 @@ class Service(TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, Decisio
                     self._advance_input(task)
                 else:
                     task['_preference_source_ids'] = []
-                    results = [message for message in reversed(self._all('messages')) if message['task_id'] == task_id and message.get('sender_bot_id') == task['bot_id'] and message['kind'] in ('text', 'artifact') and not message.get('recipient_bot_ids')]
+                    results = [message for message in reversed(self._all('messages')) if message['task_id'] == task_id and message.get('sender_bot_id') == task['bot_id'] and message['kind'] in ('text', 'artifact') and not message.get('_hidden') and not message.get('recipient_bot_ids')]
                     result = next((message for message in results if message['kind'] == 'text'), results[0] if results else None)
                     result_text = result['text'] if result and kind == 'completed' else task['summary']
                     if result and result['kind'] == 'artifact' and kind == 'completed':
@@ -2277,11 +2297,11 @@ class Service(TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, Decisio
                 self._put('tasks', task)
                 self._event('task.updated', self._public(task), bot_id, task_id)
                 generic_completion = kind == 'completed' and task['summary'].strip().rstrip('.!').casefold() in {'ready to review', 'done', 'complete', 'completed', 'task complete', 'task completed', 'work complete', 'work completed'}
-                if task['status'] == 'waiting' or task.get('_routine_silent') or reaction_silent:
+                if task['status'] == 'waiting' or task.get('_routine_silent') or reaction_silent or silent_completion:
                     pass
                 elif generic_completion:
                     turn_started_at = task.get('_turn_started_at', task['created_at'])
-                    result = next((message for message in reversed(self._all('messages')) if message['task_id'] == task_id and message['role'] == 'assistant' and message['kind'] in ('text', 'artifact') and message['created_at'] >= turn_started_at and message['text'].strip()), None)
+                    result = next((message for message in reversed(self._all('messages')) if message['task_id'] == task_id and message['role'] == 'assistant' and message['kind'] in ('text', 'artifact') and not message.get('_hidden') and message['created_at'] >= turn_started_at and message['text'].strip()), None)
                     if result:
                         bot = self._get('bots', task['bot_id'] if task.get('source_bot_id') else task['conversation_bot_id'])
                         bot['last_message'] = result['text'][:160]

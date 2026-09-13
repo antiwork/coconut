@@ -80,7 +80,10 @@ def main():
         outward.update(kind='bot_exchange', sender_bot_id=bot['id'], recipient_bot_ids=[peer['id']], created_at='2026-09-10T10:00:00Z')
         inward = message('assistant', '## Result\n\nThe check **passed**.\n\n```swift\nlet answer = 42\n```\n\n[Open reference](https://example.com)')
         inward.update(kind='text', bot_id=peer['id'], sender_bot_id=peer['id'], recipient_bot_ids=[], exchange_recipient_bot_ids=[bot['id']], created_at='2026-09-10T10:00:01Z')
-        state['messages'] = [own, outward, inward]
+        silent = message('assistant', '[SILENT]')
+        silent_peer = dict(inward, id=str(uuid4()), text='[SILENT]')
+        state['messages'] = [own, silent, outward, inward, silent_peer]
+        bot['last_message'] = '[SILENT]'
     if args.decision_receipt:
         fixture = json.loads((ROOT/'ios/Coconut/Fixtures/PreviewState.json').read_text())
         decision = dict(fixture['decisions'][0], bot_id=bot['id'], task_id=task['id'],

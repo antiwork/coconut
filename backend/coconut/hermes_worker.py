@@ -21,6 +21,7 @@ if __package__:
     from .pull_request_reviews import PR_REVIEW_INSTRUCTIONS
     from .work_progress import NativeWork, WORK_INSTRUCTIONS
     from .tracked_work import TRACK_WORK_SCHEMA
+    from .silent_responses import is_silent_response
     from .worker_protocol import MAX_EVENT_CHARACTERS, event_frame
 else:
     from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn
@@ -28,6 +29,7 @@ else:
     from pull_request_reviews import PR_REVIEW_INSTRUCTIONS
     from work_progress import NativeWork, WORK_INSTRUCTIONS
     from tracked_work import TRACK_WORK_SCHEMA
+    from silent_responses import is_silent_response
     from worker_protocol import MAX_EVENT_CHARACTERS, event_frame
 
 
@@ -946,15 +948,21 @@ def run_turn(request, emit, request_receipt):
                             'error_code': 'bot_deletion_' + category})
             return 1
         final = result.get('final_response') or ''.join(response_chunks)
-        silent_response = False
+        silent_response = is_silent_response(final)
         if request['task'].get('_native_job') or reaction_only_turn(request):
             from cron.scheduler import _is_cron_silence_response
             silent_response = _is_cron_silence_response(final or '')
         if final and not silent_response:
             emit('text_delta', {'text': final})
         if operation != 'context':
-            silence_key = 'routine_silent' if request['task'].get('_native_job') else 'reaction_silent'
-            emit('completed', {'summary': 'Complete.'} | ({silence_key: True} if silent_response else {}))
+            completion = {'summary': 'Complete.'}
+            if silent_response:
+                completion['silent_response'] = True
+                if request['task'].get('_native_job'):
+                    completion['routine_silent'] = True
+                elif reaction_only_turn(request):
+                    completion['reaction_silent'] = True
+            emit('completed', completion)
     except TurnPaused:
         return 0
     except Exception as error:

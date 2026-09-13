@@ -160,6 +160,8 @@ class PushDelivery:
         bot = self.service._get('bots', bot_id)
         if not bot.get('notifications', True) or bot.get('archived') or bot.get('_deleted'):
             return
+        if kind == 'completed' and task.get('_silent_completion'):
+            return
         # Peer replies return to the originating task, which sends its own completion.
         if kind == 'completed' and task.get('source_task_id'):
             return
