@@ -134,8 +134,8 @@ def configure(args: argparse.Namespace) -> None:
         raise SystemExit("The team must be a ten-character Apple team ID.")
     if args.bundle_id != BUNDLE_ID:
         raise SystemExit(f"This project builds {BUNDLE_ID}. Use the default bundle ID.")
-    if not re.fullmatch(r"\d+(?:\.\d+){0,2}", args.version):
-        raise SystemExit("Use one to three numbers for the app version, such as 0.1.0.")
+    if args.version != "date" and not re.fullmatch(r"\d+(?:\.\d+){0,2}", args.version):
+        raise SystemExit("Use date for a UTC calendar version, or numbers such as 1.0.0.")
     if not any(identity["team"] == args.team for identity in signing_identities()):
         raise SystemExit("This Mac has no valid Apple Development identity for that team.")
     details = device_details(args.device)
@@ -177,6 +177,10 @@ def build(config: dict, archive: bool = False) -> Path:
     if not shutil.which("xcodegen"):
         raise SystemExit("Install XcodeGen before updating Coconut.")
     run(["xcodegen", "generate", "--spec", "ios/project.yml"], stdout=subprocess.DEVNULL)
+    version = config["version"]
+    if version == "date":
+        today = datetime.now(timezone.utc)
+        version = f"{today.year}.{today.month}.{today.day}"
     number = next_build_number(config)
     config["last_build_number"] = number
     save_config(config)
@@ -184,7 +188,7 @@ def build(config: dict, archive: bool = False) -> Path:
                "-sdk", "iphoneos", "-destination", "generic/platform=iOS", "-derivedDataPath", str(BUILD),
                "-allowProvisioningUpdates", "-allowProvisioningDeviceRegistration", f"DEVELOPMENT_TEAM={config['team']}",
                "CODE_SIGN_STYLE=Automatic", "CODE_SIGN_IDENTITY=Apple Development",
-               f"MARKETING_VERSION={config['version']}", f"CURRENT_PROJECT_VERSION={number}"]
+               f"MARKETING_VERSION={version}", f"CURRENT_PROJECT_VERSION={number}"]
     if archive:
         command.extend(["-archivePath", str(ARCHIVE), "archive"])
     else:
@@ -286,7 +290,7 @@ def main() -> None:
     setup.add_argument("--team", required=True)
     setup.add_argument("--device", required=True)
     setup.add_argument("--bundle-id", default=BUNDLE_ID)
-    setup.add_argument("--version", default="0.1.0")
+    setup.add_argument("--version", default="date", help="Use date (UTC) or an explicit version such as 1.0.0.")
     for name in ["install", "update"]:
         command = commands.add_parser(name)
         command.add_argument("--skip-build", action="store_true", help="Retry installation of the current signed build.")

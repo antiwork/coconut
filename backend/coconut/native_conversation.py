@@ -21,6 +21,7 @@ def visible_history(messages):
     return [message for message in messages
             if message.get('role') in ('user', 'assistant')
             and message.get('kind', 'text') == 'text'
+            and not (message.get('reaction_event') or {}).get('passive')
             and not message.get('_hidden') and not message.get('_deleted')
             and not message.get('streaming') and message.get('text', '').strip()]
 
@@ -34,6 +35,16 @@ def current_messages(request):
             and (message['id'] in identities if identities is not None else message.get('task_id') == request['task']['id'])]
 
 
+def reaction_only_turn(request):
+    if request['operation'] != 'start':
+        return False
+    messages = current_messages(request)
+    return (bool(messages)
+            and all(message.get('reaction_event') for message in messages)
+            and not any(request['task'].get(key) for key in
+                        ('_native_job', '_bot_messages', '_background_completion', '_pr_review', '_work_resume')))
+
+
 def message_content(message):
     text = message['text']
     reference = message.get('reply_to')
@@ -45,7 +56,9 @@ def message_content(message):
     if message.get('reaction_event'):
         text = ('The person changed an emoji reaction on the quoted message. '
                 'Treat it as feedback. It does not approve, reject, or select a pending decision. '
-                'Do not infer permission for a new action. Use the conversation to decide whether a useful response is needed.\n'
+                'Do not infer permission for a new action. Use the conversation to decide whether a useful response is needed. '
+                'Reply only if you can add useful information, address a concern, or ask a necessary question. '
+                'Do not acknowledge the emoji or explain that it is feedback.\n'
                 + text)
     if message.get('bot_mentions'):
         text += ('\n\n[Bot references: ' + json.dumps(message['bot_mentions'])

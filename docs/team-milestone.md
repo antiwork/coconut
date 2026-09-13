@@ -21,7 +21,7 @@ The check verifies these results:
 - Ada requests a check from Lin through a bot tool.
 - Lin returns the result through the bot tool.
 - Ada reports the result in the same conversation thread.
-- The exchange records two deliveries within its reported limit of eight.
+- The exchange records two deliveries in order.
 - A cancelled future task stays cancelled after the restart.
 - Event replay retrieves the restart and subsequent changes.
 
@@ -31,7 +31,7 @@ The fixture uses the same HTTP service, scheduling, routing, persistence, and re
 
 The run has one 170-second limit, followed by at most five seconds for process cleanup. The routine uses a daily schedule with at least two seconds before its first occurrence. It waits at most 62 seconds for that occurrence. This avoids a second legitimate occurrence during the restart check.
 
-The check verifies that this exchange stays within its delivery budget. It does not exhaust that budget or prove cancellation during a model request. The report states those limits.
+The check verifies delivery counts and attribution. It does not prove cancellation during a model request.
 
 `team-milestone-report.json` contains IDs, counts, statuses, and check results. It excludes prompt text, pairing tokens, and model keys. The isolated directory retains service history for inspection. `scripts/cleanup.py --yes` removes these directories with the rest of `.runtime`.
 

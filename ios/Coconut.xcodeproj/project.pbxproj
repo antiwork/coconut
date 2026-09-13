@@ -22,6 +22,7 @@
 		18C9E3DF4617AA05EF424413 /* StateSyncFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B267FBB35C435F1325F73EE /* StateSyncFlowTests.swift */; };
 		1AB47BE7DA5C7A26A9CF1BB5 /* ConversationLayoutMessages.json in Resources */ = {isa = PBXBuildFile; fileRef = 26119085DA97B96779F9E35B /* ConversationLayoutMessages.json */; };
 		1EB1F802466DF19388CE712C /* BotMentionsFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 400471E8AAF347FBC8EA7EBE /* BotMentionsFlowTests.swift */; };
+		20B536B711BCDE97F3DBA078 /* ConversationTimestamps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85FE35330C6B3578235F72A6 /* ConversationTimestamps.swift */; };
 		21BBC9280B22012EA2E56285 /* ModelSettingsFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 188778025113967153727FCD /* ModelSettingsFlowTests.swift */; };
 		2203E9B6441CCE3DE1D82FA9 /* BotExchangeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84292AC71716E6E3438006BC /* BotExchangeView.swift */; };
 		24518A2D914959FC5878BBEB /* BotAvatar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7F9AF04038A01979A05935C /* BotAvatar.swift */; };
@@ -75,7 +76,9 @@
 		A8E1E20FB19C388ACD17CA87 /* CoconutApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC13C2194F02562B923FE8C8 /* CoconutApp.swift */; };
 		A920F28EDB8F873C52A07D70 /* DecisionInboxView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94AFF4D887691B90DF9696F6 /* DecisionInboxView.swift */; };
 		B15ACAFBE7184FB08FD744E8 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = BC59E1DD5B09E3520ADF36FE /* MarkdownUI */; };
+		BA924B94BF0BB83AFD6D66D7 /* ConversationSendRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48C8A0078FDB1346414F800 /* ConversationSendRecoveryTests.swift */; };
 		BBDAE9B5F0E31E9B16121672 /* Bloub-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 52DB3E8483A7BFF7DE542101 /* Bloub-LICENSE.txt */; };
+		C724A1961D50DC48F11ACFA0 /* NavigationRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5E828E2D51E827B95F08B22 /* NavigationRecoveryTests.swift */; };
 		C9F269B7D9790F8BB589E0BF /* NativeDecisionFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8ED43A5BCDAE960B89DFA65F /* NativeDecisionFlowTests.swift */; };
 		CA39926E05C5B804536507BE /* WorkActivityFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C98AC93604CC881B05F674B7 /* WorkActivityFlowTests.swift */; };
 		CA614F81435252679031DB1E /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08638DC7DBFF79E2F881694 /* Theme.swift */; };
@@ -177,6 +180,7 @@
 		7CF0373D5DC01EBE8685F781 /* BotShapeProfiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotShapeProfiles.swift; sourceTree = "<group>"; };
 		84292AC71716E6E3438006BC /* BotExchangeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotExchangeView.swift; sourceTree = "<group>"; };
 		84A0F7AB9F72DD714064B409 /* InboxPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxPresentation.swift; sourceTree = "<group>"; };
+		85FE35330C6B3578235F72A6 /* ConversationTimestamps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationTimestamps.swift; sourceTree = "<group>"; };
 		86E50B95FC8F9D964C273561 /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
 		8C9BD0948D4BFCF51D6F5A47 /* GoogleSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleSettingsView.swift; sourceTree = "<group>"; };
 		8ED43A5BCDAE960B89DFA65F /* NativeDecisionFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeDecisionFlowTests.swift; sourceTree = "<group>"; };
@@ -208,6 +212,8 @@
 		D077096B1D7594B096B3D215 /* CoconutNotificationService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = CoconutNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		D0CD1E31F40E2FEE77BF1791 /* WorkActivityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkActivityTests.swift; sourceTree = "<group>"; };
 		D1BBB7948089F113C0343188 /* CoconutUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CoconutUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D48C8A0078FDB1346414F800 /* ConversationSendRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSendRecoveryTests.swift; sourceTree = "<group>"; };
+		D5E828E2D51E827B95F08B22 /* NavigationRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationRecoveryTests.swift; sourceTree = "<group>"; };
 		DC18213B09F82C2500E4D504 /* PreviewState.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = PreviewState.json; sourceTree = "<group>"; };
 		E071D5849425BFD67FAEE846 /* DecisionInboxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionInboxTests.swift; sourceTree = "<group>"; };
 		E7366950475F7C318199BF52 /* PhysicalPairingFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalPairingFlowTests.swift; sourceTree = "<group>"; };
@@ -323,6 +329,7 @@
 				FC5588CE8E93B2033A90C4CE /* Cards.swift */,
 				F10A7B1CED0436FAEEF28D16 /* Coconut.entitlements */,
 				AC13C2194F02562B923FE8C8 /* CoconutApp.swift */,
+				85FE35330C6B3578235F72A6 /* ConversationTimestamps.swift */,
 				86E50B95FC8F9D964C273561 /* ConversationView.swift */,
 				94AFF4D887691B90DF9696F6 /* DecisionInboxView.swift */,
 				980EB12D70F1EC36BEAD57F7 /* DecisionReplyComposer.swift */,
@@ -359,6 +366,7 @@
 				400471E8AAF347FBC8EA7EBE /* BotMentionsFlowTests.swift */,
 				9F8EE907E052D5714E1FCC28 /* ChatCardDismissTests.swift */,
 				43039CE9E1348253B7673A90 /* ConversationLayoutFlowTests.swift */,
+				D48C8A0078FDB1346414F800 /* ConversationSendRecoveryTests.swift */,
 				AD5ADD62DCB3A2581C84C9E0 /* ConversationTabBarTests.swift */,
 				E071D5849425BFD67FAEE846 /* DecisionInboxTests.swift */,
 				0B111754C0CD9254BB7CFC46 /* GoogleConnectionFlowTests.swift */,
@@ -368,6 +376,7 @@
 				188778025113967153727FCD /* ModelSettingsFlowTests.swift */,
 				8ED43A5BCDAE960B89DFA65F /* NativeDecisionFlowTests.swift */,
 				775879288B90F2B57BD28B20 /* NavigationPerformanceTests.swift */,
+				D5E828E2D51E827B95F08B22 /* NavigationRecoveryTests.swift */,
 				4272DD6AAF77EA5CE0FFF07F /* NotificationCategoryFlowTests.swift */,
 				F2D8BD1F0E75656ABA3C23B6 /* NotificationFlowTests.swift */,
 				E7366950475F7C318199BF52 /* PhysicalPairingFlowTests.swift */,
@@ -594,6 +603,7 @@
 				4926FC8F8CB0A6455C5281BD /* BotShapeProfiles.swift in Sources */,
 				6E47FB1A60D0E8881BA987B0 /* Cards.swift in Sources */,
 				A8E1E20FB19C388ACD17CA87 /* CoconutApp.swift in Sources */,
+				20B536B711BCDE97F3DBA078 /* ConversationTimestamps.swift in Sources */,
 				7E6BE2B190E6D5186E0DDE7A /* ConversationView.swift in Sources */,
 				A920F28EDB8F873C52A07D70 /* DecisionInboxView.swift in Sources */,
 				0E708C1B47846F82A49FC450 /* DecisionReplyComposer.swift in Sources */,
@@ -639,6 +649,7 @@
 				1EB1F802466DF19388CE712C /* BotMentionsFlowTests.swift in Sources */,
 				4E1E4CFAE936241C91CBA5E0 /* ChatCardDismissTests.swift in Sources */,
 				10C16BD73DAEB79E40A83E4B /* ConversationLayoutFlowTests.swift in Sources */,
+				BA924B94BF0BB83AFD6D66D7 /* ConversationSendRecoveryTests.swift in Sources */,
 				89734281AA398A6DCA35A869 /* ConversationTabBarTests.swift in Sources */,
 				5E7A2170D2C541082457D5CD /* DecisionInboxTests.swift in Sources */,
 				F410C10058BA0C8CB17BE9CA /* GoogleConnectionFlowTests.swift in Sources */,
@@ -648,6 +659,7 @@
 				21BBC9280B22012EA2E56285 /* ModelSettingsFlowTests.swift in Sources */,
 				C9F269B7D9790F8BB589E0BF /* NativeDecisionFlowTests.swift in Sources */,
 				F6AA8200060D51B0E56BC6F6 /* NavigationPerformanceTests.swift in Sources */,
+				C724A1961D50DC48F11ACFA0 /* NavigationRecoveryTests.swift in Sources */,
 				560614048702C0CD4B47A9AB /* NotificationCategoryFlowTests.swift in Sources */,
 				CF2134EE2AC9BDD89514BF51 /* NotificationFlowTests.swift in Sources */,
 				76046FD4D9906425ACF64954 /* PhysicalPairingFlowTests.swift in Sources */,

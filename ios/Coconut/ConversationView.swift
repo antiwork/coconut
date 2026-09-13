@@ -86,6 +86,7 @@ struct ConversationView: View {
                                     && !messages.contains { $0.kind == "decision" && $0.decisionId == decision.id }
                             }) { decision in
                                 DecisionCard(decision: decision).id(decision.id)
+                                    .modifier(MessageTimestamp(createdAt: decision.createdAt))
                             }
                             ForEach(waitingBotIds, id: \.self) { id in
                                 BotWorkingIndicator(botId: id)
@@ -97,6 +98,7 @@ struct ConversationView: View {
                         .padding(.bottom, 14)
                     }
                     .accessibilityIdentifier("conversation-transcript")
+                    .modifier(ConversationTimestamps())
                     .defaultScrollAnchor(focusTarget == nil ? .bottom : .top, for: .initialOffset)
                     .defaultScrollAnchor(focusTarget == nil ? .bottom : .top, for: .alignment)
                     .scrollDismissesKeyboard(.interactively)
@@ -115,7 +117,10 @@ struct ConversationView: View {
                         if nearBottom && (focusTarget == nil || didFocusDecision) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onScrollGeometryChange(for: CGSize.self) { $0.containerSize } action: { _, _ in
-                        if nearBottom && (focusTarget == nil || didFocusDecision) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                        // Resizing must not interrupt an active keyboard or scroll gesture.
+                        if !composerFocused && !userScrolling && nearBottom && (focusTarget == nil || didFocusDecision) {
+                            proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                        }
                     }
                     .onChange(of: waitingBotIds) { _, _ in
                         if nearBottom { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
@@ -265,6 +270,7 @@ struct TranscriptMessageRow: View {
             Text("To \(names)").font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .trailing).padding(.horizontal, 14)
         }
+        Group {
         if message.kind == "decision", let id = message.decisionId,
            let decision = store.decisions.first(where: { $0.id == id }) {
             DecisionCard(decision: decision)
@@ -274,6 +280,8 @@ struct TranscriptMessageRow: View {
         } else {
             MessageBubble(message: message, scrollToDecision: scrollToDecision, onReply: onReply)
         }
+        }
+        .modifier(MessageTimestamp(createdAt: message.createdAt))
         }
     }
 
@@ -339,8 +347,8 @@ struct MessageBubble: View {
             .popover(isPresented: $actionsOpen, arrowEdge: .bottom) {
                 VStack(spacing: 8) {
                     if onReply != nil, store.messageReference(for: message) != nil {
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
-                            ForEach(MessageReactions.all.indices, id: \.self) { reactionButton($0) }
+                        HStack(spacing: 4) {
+                            ForEach(MessageReactions.selectable.indices, id: \.self) { reactionButton($0) }
                         }
                         Divider()
                         Button { actionsOpen = false; onReply?() } label: {
@@ -386,7 +394,7 @@ struct MessageBubble: View {
         .sheet(item: $editingOutgoing) { RejectedMessageEditor(outgoing: $0) }
     }
     private func reactionButton(_ index: Int) -> some View {
-        let emoji = MessageReactions.all[index]
+        let emoji = MessageReactions.selectable[index]
         return Button { actionsOpen = false; Task { await store.react(to: message, emoji: emoji) } } label: {
             Text(emoji).font(.system(size: 30)).frame(maxWidth: .infinity, minHeight: 56)
                 .background(store.reactions(for: message).contains(emoji) ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 12))

@@ -20,13 +20,16 @@ class WorkStatus:
         self._put('artifacts', artifact)
         self._event('artifact.updated', self._public(artifact), artifact['bot_id'], artifact.get('task_id'))
 
-    def _work_chain(self, root, tasks, records):
+    def _work_chain(self, root, tasks, records, *, include_continuations=False):
         """Follow recorded callbacks, including replies that assign further work."""
         linked = {}
         for record in records:
-            if record.get('_relay_task_id') and not record.get('_process_delivery'):
-                linked.setdefault(record['task_id'], set()).add(record['_relay_task_id'])
+            for key in ('_relay_task_id', '_wait_task_id'):
+                if record.get(key) and not record.get('_process_delivery'):
+                    linked.setdefault(record['task_id'], set()).add(record[key])
         for task in tasks.values():
+            if include_continuations and task.get('_assignment_task_id'):
+                linked.setdefault(task['_assignment_task_id'], set()).add(task['id'])
             for field in ('_requester_reply_task_id', '_relay_callback_owner'):
                 if task.get(field):
                     linked.setdefault(task[field], set()).add(task['id'])
@@ -90,18 +93,46 @@ class WorkStatus:
             task = tasks.get((source or {}).get('_review_task_id'))
             if task:
                 chain = self._work_chain(task, tasks, records)
-                if chain:
-                    task, _ = max(chain.values(), key=lambda pair: (
-                        pair[0]['status'] in ('working', 'waiting') and self._work_live(pair[0], records, timestamp),
-                        pair[0]['status'] in ('queued', 'working', 'waiting', 'needs_you', 'paused', 'failed'),
-                        pair[1], pair[0]['updated_at'], pair[0]['id']))
-                status = task['status']
-                label = source.get('_activity')
-                phase = source.get('_activity_state', 'working')
                 latest = max(peers, key=lambda a: (a.get('observed_at') or a['created_at'], a.get('checked_at') or a['created_at'], a['id']))
-                current = (source.get('_activity_head') == latest.get('head_sha')
-                           and source.get('_activity_turn') == task.get('_native_turn_id')
-                           and source.get('_activity_task_id') == task['id'])
+                current_reports = [a for a in reported if a.get('_activity_task_id') in tasks
+                                   and a['_activity_at'] >= task['created_at']
+                                   and not self._get('exchanges', tasks[a['_activity_task_id']]['exchange_id']).get('cancelled')
+                                   and a.get('_activity_head') == latest.get('head_sha')
+                                   and a.get('_activity_turn') == tasks[a['_activity_task_id']].get('_native_turn_id')
+                                   and tasks[a['_activity_task_id']]['status'] != 'cancelled'
+                                   and self._work_chain(tasks[a['_activity_task_id']], tasks, records)]
+                if current_reports:
+                    active_report = max(current_reports, key=lambda a: a['_activity_at'])
+                    reported_task = tasks[active_report['_activity_task_id']]
+                    # Reporting a new phase changes presentation, not the review's return route.
+                    if reported_task['exchange_id'] != task['exchange_id']:
+                        chain = {}
+                    chain.update(self._work_chain(reported_task, tasks, records))
+                def report(candidate):
+                    matches = [a for a in peers if a.get('_activity')
+                               and a.get('_activity_task_id') == candidate['id']
+                               and a.get('_activity_turn') == candidate.get('_native_turn_id')
+                               and a.get('_activity_head') == latest.get('head_sha')]
+                    return max(matches, key=lambda a: a['_activity_at']) if matches else {}
+                def priority(pair):
+                    candidate, depth = pair
+                    phase = report(candidate).get('_activity_state')
+                    blocked = candidate['status'] == 'failed' or phase == 'blocked'
+                    descendants = self._work_chain(candidate, tasks, records) if blocked else {}
+                    progressing = any(t['id'] != candidate['id'] and t['status'] in ('queued', 'working', 'waiting', 'needs_you')
+                                      for t, _ in descendants.values())
+                    urgent = 4 if candidate['status'] == 'needs_you' else 3 if blocked and not progressing else 0
+                    live = candidate['status'] in ('working', 'waiting') and self._work_live(candidate, records, timestamp)
+                    return (max(urgent, 2 if live else 0),
+                            candidate['status'] in ('queued', 'working', 'waiting', 'needs_you', 'paused', 'failed'),
+                            depth, candidate['updated_at'], candidate['id'])
+                if chain:
+                    task, _ = max(chain.values(), key=priority)
+                status = task['status']
+                selected = report(task)
+                label = selected.get('_activity')
+                phase = selected.get('_activity_state', 'working')
+                current = bool(selected)
                 live = self._work_live(task, records, timestamp)
                 if status == 'needs_you':
                     activity, state = 'Waiting for your decision', 'waiting'
@@ -109,12 +140,16 @@ class WorkStatus:
                     activity, state = 'Needs attention', 'blocked'
                 elif status == 'cancelled':
                     activity, state = 'Stopped', 'blocked'
+                elif label and current and phase == 'blocked':
+                    activity, state = label, 'blocked'
                 elif live and status in ('working', 'waiting'):
                     activity, state = (label if label and current else 'Working'), 'working'
                 elif status == 'queued':
                     activity, state = 'Queued', 'waiting'
                 elif status == 'waiting':
-                    activity, state = ('Waiting for another bot' if task.get('_waiting_on') else 'Activity unconfirmed'), 'waiting'
+                    waits = [r for r in records if r['task_id'] == task['id'] and r.get('_wait_task_id') and not r.get('_process_delivery')]
+                    reason = waits[-1]['action']['arguments']['reason'] if waits else None
+                    activity, state = (reason or ('Waiting for another bot' if task.get('_waiting_on') else 'Activity unconfirmed')), 'waiting'
                 elif status == 'completed':
                     if phase == 'ready':
                         observed = latest.get('observed_at')

@@ -258,8 +258,7 @@ def main() -> None:
                        and event["task_id"] in {task["id"] for task in exchange_tasks}]
         assert len(tool_events) == 2
         assert all(event["data"]["exchange_id"] == handoff["exchange_id"] for event in tool_events)
-        assert all(event["data"]["limit"] == 8 and event["data"]["deliveries"] <= event["data"]["limit"]
-                   for event in tool_events)
+        assert [event["data"]["deliveries"] for event in tool_events] == [1, 2]
         handoff_messages = []
         for task in exchange_tasks:
             messages = [message for message in observed["messages"] if message["task_id"] == task["id"]
@@ -283,10 +282,10 @@ def main() -> None:
                                  and message["recipient_bot_ids"] == [delivery["target_bot_id"]]]
             assert len(matching_messages) == 1
         report.update(collaboration_thread_id=handoff["thread_id"], collaboration_task_ids=[task["id"] for task in exchange_tasks],
-                      collaboration_delivery_count=len(tool_events), delivery_budget=8,
+                      collaboration_delivery_count=len(tool_events),
                       reported_delivery_count=max(event["data"]["deliveries"] for event in tool_events),
                       handoff_message_count=len(handoff_messages), handoff_messages_attributed=True,
-                      collaboration_return_attributed=True, same_thread=True, within_delivery_budget=True)
+                      collaboration_return_attributed=True, same_thread=True)
 
         stage = "automatic_routine_occurrence"
         while not routine_events(routine["id"]):

@@ -75,7 +75,12 @@ Open **Update TestFlight.command**, or run:
 python3 scripts/iphone.py testflight
 ```
 
-The command assigns a build number, archives Release, and asks Xcode to sign and upload it.
+New configurations use the UTC build date as the version, such as `2026.9.13`.
+The separate build number increases with each build and does not reset each day.
+The command archives Release and asks Xcode to sign and upload it.
+Use `configure --version 1.0.0` with the team and device arguments to select a fixed version.
+Use `--version date` to return to calendar versions.
+An upload with `--skip-build` keeps the existing archive's version and build number.
 It sets `testFlightInternalTestingOnly` to prevent external testing and App Store distribution.
 It requires the Gumroad team and Coconut bundle ID.
 It records an upload only after Xcode reports success. Apple processing and tester availability require separate checks.

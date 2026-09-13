@@ -209,6 +209,7 @@ struct MessageReactionEvent: Codable, Equatable, Sendable {
 }
 
 enum MessageReactions {
+    static let selectable = ["👍", "👎"]
     static let all = ["👍", "👎", "😄", "🎉", "😕", "❤️", "🚀", "👀"]
     static let names = ["Thumbs up", "Thumbs down", "Laugh", "Celebrate", "Confused", "Heart", "Rocket", "Eyes"]
 }

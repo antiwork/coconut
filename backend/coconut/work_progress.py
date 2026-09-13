@@ -1,5 +1,7 @@
 """Keep delegated work distinct from a completed Hermes reply."""
 import copy
+import json
+import threading
 
 ROOT_ID = 'coconut-assignment'
 WORK_INSTRUCTIONS = (
@@ -10,6 +12,9 @@ WORK_INSTRUCTIONS = (
     'Mark coconut-assignment completed with todo_list when all assigned outcomes are verified. '
     'Mark work completed only after verifying the outcome. A plan, status reply, or handoff is not completion. '
     'Keep blocked or delegated steps pending. Launch a real process or message_agent handoff before saying work is running or queued. '
+    'If another existing task owns the next step, use coconut_wait to record that dependency, then finish this turn. '
+    'Call coconut_wait without arguments to list tasks in this exchange. Do not start a duplicate review or watcher. '
+    'Do not add later work outside this assignment to its task list. The completed coconut-assignment item closes this assignment. '
     'Continue independent authorized work. Use coconut_ask if a human decision is required. '
     'Cancel an item only when the person cancels or changes its scope. Preserve all existing approval limits and skill requirements. '
     'Coconut retains unfinished items and continues the assignment after a reply ends. '
@@ -58,7 +63,92 @@ class NativeWork:
 class WorkProgress:
     @staticmethod
     def _unfinished_work(task):
-        return any(t['status'] in ('pending', 'in_progress') for t in task.get('_work_todos', {}).get('todos', []))
+        items = task.get('_work_todos', {}).get('todos', [])
+        root = next((t for t in items if t['id'] == ROOT_ID), None)
+        if root and root['status'] in ('completed', 'cancelled'):
+            return False
+        return any(t['status'] in ('pending', 'in_progress') for t in items)
+
+    def wait_for_task(self, task_id, payload):
+        from .service import ServiceError, digest, encoded, now, require_text
+        with self.transaction():
+            task = self._get('tasks', task_id)
+            if task['status'] != 'working' or self._task_paused(task) or self.stopping.is_set():
+                raise ServiceError(409, 'This task cannot register a wait now.')
+            peers = {t['id']: t for t in self._all('tasks')
+                     if t['id'] != task_id and t['exchange_id'] == task['exchange_id']
+                     and t['conversation_bot_id'] == task['conversation_bot_id']
+                     and not self._get('bots', t['bot_id']).get('_deleted')
+                     and t['session_id'] == self._get('bots', t['bot_id'])['session_id']
+                     and (t.get('_conversation_epoch') == task.get('_conversation_epoch')
+                          or (t['status'] == 'queued' and not t.get('_native_turn_id') and '_conversation_epoch' not in t))}
+            if not payload.get('task_id'):
+                return {'tasks': [{k: t.get(k) for k in ('id', 'bot_id', 'title', 'status')}
+                                  for t in peers.values()]}
+            target_id = require_text(payload, 'task_id', 100)
+            reason = require_text(payload, 'reason', 80)
+            if target_id not in peers or '\n' in reason:
+                raise ServiceError(400, 'Choose a task from this exchange and give one short reason.')
+            target = peers[target_id]
+            tasks = {t['id']: t for t in self._all('tasks')}
+            if task_id in self._work_chain(target, tasks, self._all('native_receipts'), include_continuations=True):
+                raise ServiceError(409, 'This task already depends on your result. Do not create a circular wait.')
+            assignment = self._assignment(task)
+            turn_ids = {t['id'] for t in tasks.values() if self._assignment(t)['id'] == assignment['id']}
+            existing_dependency = (target_id in assignment.get('_waiting_on', [])
+                or any(r['task_id'] in turn_ids and target_id in (r.get('_relay_task_id'), r.get('_wait_task_id'))
+                       and not r.get('_process_delivery') for r in self._all('native_receipts')))
+            if existing_dependency:
+                return {'status': 'waiting', 'task_id': target_id, 'reason': reason}
+            identity = digest(json.dumps([task_id, task.get('_native_turn_id'), target_id]))
+            existing = next((r for r in self._all('native_receipts') if r['id'] == identity), None)
+            if not existing:
+                action = {'name': 'coconut_wait', 'arguments': {'task_id': target_id, 'reason': reason}}
+                self._put('native_receipts', dict(id=identity, task_id=task_id, turn_id=task.get('_native_turn_id'),
+                    action=action, action_hash=digest(encoded(action)),
+                    state='completed', result='{}', created_at=now(), completed_at=now(),
+                    _wait_task_id=target_id, _wait_session_id=target['session_id']))
+            return {'status': 'waiting', 'task_id': target_id, 'reason': reason}
+
+    def _drain_task_completions(self):
+        with self.lock:
+            bot_ids = {self._get('tasks', r['task_id'])['bot_id'] for r in self._all('native_receipts')
+                       if r.get('_wait_task_id') and not r.get('_process_delivery')}
+        for bot_id in bot_ids:
+            with self.lock:
+                bot_lock = self.bot_locks.setdefault(bot_id, threading.Lock())
+            if not bot_lock.acquire(blocking=False):
+                continue
+            try:
+                with self.transaction():
+                    if self.stopping.is_set() or self.restart_pending:
+                        return
+                    grouped = {}
+                    for record in self._all('native_receipts'):
+                        if not record.get('_wait_task_id') or record.get('_process_delivery'):
+                            continue
+                        task = self._get('tasks', record['task_id'])
+                        if task['bot_id'] != bot_id or not self._can_resume_process(task, self._get('bots', bot_id)):
+                            continue
+                        target = self._get('tasks', record['_wait_task_id'])
+                        target_bot = self._get('bots', target['bot_id'])
+                        reset = (target_bot.get('_deleted') or target['session_id'] != target_bot['session_id']
+                                 or target['session_id'] != record['_wait_session_id']
+                                 or (target.get('_conversation_epoch') is not None
+                                     and target.get('_conversation_epoch') != task.get('_conversation_epoch')))
+                        if reset:
+                            text = 'The task you waited for is no longer in the current conversation.'
+                        elif target['status'] in ('failed', 'cancelled'):
+                            text = f"Task {target['id']} {target['status']}: {target['summary']}"
+                        elif target['status'] == 'completed' and not self._background_pending(target['id']) and not target.get('_waiting_on'):
+                            text = f"Task {target['id']} completed: {target['summary']}"
+                        else:
+                            continue
+                        grouped.setdefault(task['id'], []).append((record, text))
+                    for task_id, completions in grouped.items():
+                        self._resume_process_task(task_id, completions)
+            finally:
+                bot_lock.release()
 
     def _save_work_progress(self, task, payload):
         if '_work_todos' not in payload:

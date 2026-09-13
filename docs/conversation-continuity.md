@@ -29,7 +29,13 @@ The bot handles context limits and compaction internally. The interface has no s
 The bot still answers direct technical questions accurately and admits missing facts when retrieval fails.
 Current service identity takes precedence over an old bot name in saved notes.
 
-Replies and reactions carry the exact referenced message into the new native turn.
+Replies carry the exact referenced message into the new native turn.
+Adding 👍 or 👎 starts a turn so the bot can judge whether a reply helps.
+The bot can use Hermes’s native silence response when no reply helps.
+Other reactions and all removals update the message without starting or steering a model turn.
+Coconut supplies passive feedback and a short message excerpt with the author bot’s next work turn.
+It retains feedback across restarts and provider failures.
+A completed turn clears only the feedback it received.
 Card answers and follow-up questions carry the original human input and the current recorded decision.
 These references survive native compaction and continuation without restoring the full app transcript to model context.
 A reaction gives feedback; it does not authorize a pending action.

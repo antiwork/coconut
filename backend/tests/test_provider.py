@@ -633,10 +633,10 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(set(deliveries[0]), {'target_bot_id', 'text', 'native_envelope_id', 'native_call_id'})
         self.assertEqual(terminal, ['completed'])
 
-    def test_service_delivery_limit_stops_further_messages(self):
-        peer = self.configure_peer()
+    def test_native_relay_delivers_past_the_old_limit(self):
+        peer = self.configure_peer(budget=0)
         arguments = repr({'target': peer['id'], 'message': 'Check this result.'})
-        provider = self.fake_hermes("import json\nfor _ in range(2):\n    result = json.loads(registry.dispatch('message_agent', " + arguments + "))\n    assert result['status'] == 'limit_reached'\nreturn {'completed': True, 'final_response': 'Independent work only.'}\n")
+        provider = self.fake_hermes("import json\nassert 'Remaining automatic deliveries' not in self.system_prompt\nfor index in range(12):\n    result = json.loads(registry.dispatch('message_agent', " + arguments + "))\n    assert result['status'] == 'queued'\nreturn {'completed': True, 'final_response': 'Requests delivered.'}\n")
         deliveries = []
         terminal = []
         def emit(kind, data):
@@ -644,10 +644,10 @@ class ProviderTests(unittest.TestCase):
                 terminal.append(kind)
             if kind == 'native_bot_message':
                 deliveries.append(data)
-                return {'status': 'limit_reached'}
+                return {'status': 'queued', 'task_id': str(uuid4())}
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.start_task(self.task, self.bot, [], emit)
-        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(len(deliveries), 12)
         self.assertEqual(terminal, ['completed'])
 
     def test_bot_message_cannot_address_an_unlisted_bot(self):
@@ -883,9 +883,9 @@ class ProviderTests(unittest.TestCase):
                    'source_message_id': source['id']}
         return arguments, receipt
 
-    def test_create_bot_from_empty_directory_then_handoff_uses_existing_budget(self):
+    def test_create_bot_from_empty_directory_then_handoff(self):
         arguments, created = self.creation_request()
-        provider = self.fake_hermes("import json\nassert 'coconut_create_bot' in registry.handlers\nassert 'message_agent' in registry.handlers\nreceipt = json.loads(registry.dispatch('coconut_create_bot', " + repr(arguments) + "))\nassert receipt['status'] == 'created'\nassert 'private_memory' not in receipt\nmessage = {'target': receipt['bot_id'], 'message': 'Check 17 times 19.'}\nassert json.loads(registry.dispatch('message_agent', message))['status'] == 'queued'\nassert json.loads(registry.dispatch('message_agent', message))['status'] == 'limit_reached'\nkwargs['stream_callback']('Scout is ready and has the check.')\nreturn {'completed': True, 'final_response': ''}\n")
+        provider = self.fake_hermes("import json\nassert 'coconut_create_bot' in registry.handlers\nassert 'message_agent' in registry.handlers\nreceipt = json.loads(registry.dispatch('coconut_create_bot', " + repr(arguments) + "))\nassert receipt['status'] == 'created'\nassert 'private_memory' not in receipt\nmessage = {'target': receipt['bot_id'], 'message': 'Check 17 times 19.'}\nassert json.loads(registry.dispatch('message_agent', message))['status'] == 'queued'\nassert json.loads(registry.dispatch('message_agent', message))['status'] == 'queued'\nkwargs['stream_callback']('Scout is ready and has the check.')\nreturn {'completed': True, 'final_response': ''}\n")
         events = []
         def emit(kind, data):
             events.append((kind, data))
@@ -895,7 +895,7 @@ class ProviderTests(unittest.TestCase):
                 return {'status': 'queued', 'task_id': str(uuid4()), 'target_bot_id': created['bot_id'], 'thread_id': str(uuid4())}
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.start_task(self.task, self.bot, [], emit)
-        self.assertEqual([kind for kind, _ in events], ['bot_create', 'native_bot_message', 'text_delta', 'completed'])
+        self.assertEqual([kind for kind, _ in events], ['bot_create', 'native_bot_message', 'native_bot_message', 'text_delta', 'completed'])
         self.assertEqual(events[0][1], arguments)
         self.assertEqual(events[1][1]['target_bot_id'], created['bot_id'])
 
@@ -1031,18 +1031,20 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(creations, [arguments, arguments])
         self.assertEqual([kind for kind, _ in events], ['bot_create', 'bot_create', 'native_bot_message', 'text_delta', 'completed'])
 
-    def test_creation_does_not_reset_a_zero_delivery_budget(self):
+    def test_creation_allows_handoff_with_a_legacy_zero_budget(self):
         arguments, receipt = self.creation_request()
         self.task['_handoff_budget_remaining'] = 0
-        provider = self.fake_hermes("import json\nconfirmed = json.loads(registry.dispatch('coconut_create_bot', " + repr(arguments) + "))\nmessage = {'target': confirmed['bot_id'], 'message': 'This cannot create a new delivery budget.'}\nassert json.loads(registry.dispatch('message_agent', message))['status'] == 'limit_reached'\nreturn {'completed': True, 'final_response': 'Scout is ready. The delivery limit prevents a new handoff in this exchange.'}\n")
+        provider = self.fake_hermes("import json\nconfirmed = json.loads(registry.dispatch('coconut_create_bot', " + repr(arguments) + "))\nmessage = {'target': confirmed['bot_id'], 'message': 'Check the calculation.'}\nassert json.loads(registry.dispatch('message_agent', message))['status'] == 'queued'\nreturn {'completed': True, 'final_response': 'Scout has the calculation.'}\n")
         events = []
         def emit(kind, data):
             events.append((kind, data))
             if kind == 'bot_create':
                 return receipt
+            if kind == 'native_bot_message':
+                return {'status': 'queued', 'task_id': str(uuid4())}
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.start_task(self.task, self.bot, [], emit)
-        self.assertEqual([kind for kind, _ in events], ['bot_create', 'text_delta', 'completed'])
+        self.assertEqual([kind for kind, _ in events], ['bot_create', 'native_bot_message', 'text_delta', 'completed'])
 
     def test_peer_request_without_human_source_cannot_create_bots(self):
         peer = self.configure_peer()

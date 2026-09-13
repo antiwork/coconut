@@ -11,8 +11,6 @@ class NativeRelay:
         self.request, self.receipt = request, receipt
         self.home = Path(os.environ['HERMES_HOME'])
         self.peers = {bot['id']: bot for bot in request['task'].get('_available_bots', [])}
-        budget = request['task'].get('_handoff_budget_remaining', 0)
-        self.remaining = max(0, min(8, budget)) if isinstance(budget, int) else 0
 
     def install(self, conversation):
         import yaml
@@ -48,8 +46,6 @@ class NativeRelay:
         target = str(arguments.get('target', '')).lstrip('@').split('@')[0]
         if self.request['operation'] == 'context' or target not in self.peers:
             return json.dumps({'error': 'Choose the exact bot ID from the current contact list.'})
-        if self.remaining <= 0:
-            return json.dumps({'status': 'limit_reached', 'error': 'This exchange has no remaining automatic deliveries.'})
         with relay_lock(self.home):
             intent = dict(call_id=call_id, task_id=self.request['task']['id'], target_bot_id=target,
                           text=arguments['message'], previous_ids=[e['id'] for e in stored_envelopes(self.home)])
@@ -66,12 +62,8 @@ class NativeRelay:
             intent['envelope'] = matching[0]
             save_intent(self.home, intent)
             confirmed = self.receipt('native_bot_message', delivery_payload(intent))
-            if confirmed.get('status') not in ('queued', 'duplicate', 'paused', 'limit_reached'):
+            if confirmed.get('status') not in ('queued', 'duplicate', 'paused'):
                 os._exit(74)
-            if confirmed['status'] == 'limit_reached':
-                self.remaining = 0
-            elif confirmed['status'] != 'duplicate':
-                self.remaining -= 1
             return json.dumps(confirmed, sort_keys=True)
 
 

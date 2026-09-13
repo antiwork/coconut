@@ -160,7 +160,7 @@ class NativeExecution:
             self._message(task['bot_id'], decision['title'], task_id=task_id, kind='decision', decision_id=decision['id'])
             self._event('decision.created', self._public(decision), task['bot_id'], task_id)
             self._refresh_bot(task['bot_id'])
-        raise YieldForDecision('The native decision is durable.')
+        raise YieldForDecision('The native decision is durable.', decision_id=decision['id'])
 
     def answer_native(self, decision, task, data, device):
         from .service import ServiceError, now, decision_correction

@@ -20,6 +20,7 @@ from uuid import UUID, uuid4, uuid5
 
 from .pr_tracking import GitHubPRTracker, PRTrackingError, parse_pr_url
 from .routines import validate_schedule, next_run
+from .native_conversation import reaction_only_turn
 from .profiles import HermesProfiles, ProfileError, profile_id
 
 
@@ -30,7 +31,11 @@ class ServiceError(Exception):
 
 
 class YieldForDecision(RuntimeError):
-    """Stop the provider after the service commits its proposed action."""
+    """Stop provider output, optionally after a durable decision."""
+
+    def __init__(self, message, *, decision_id=None):
+        super().__init__(message)
+        self.decision_id = decision_id
 
 
 def now() -> str:
@@ -84,7 +89,7 @@ from .service_restart import ServiceRestart
 class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
-    EXCHANGE_LIMIT = 8
+    BOT_CHANGE_LIMIT = 8
     ACTIONS = {'create_file'}
 
     def __init__(self, data_dir: str | Path, provider: Any, *, start_workers: bool = True, pr_tracker: Any = None):
@@ -344,7 +349,7 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
                     raise ServiceError(409, 'That bot was deleted. Send a new human request to create another bot.')
                 self._sync_profile(bot)
                 return record['receipt'] | {'status': 'duplicate'}
-            if sum(record['source_message_id'] == source_id for record in self._all('bot_creation_receipts')) >= self.EXCHANGE_LIMIT:
+            if sum(record['source_message_id'] == source_id for record in self._all('bot_creation_receipts')) >= self.BOT_CHANGE_LIMIT:
                 raise ServiceError(409, 'This message created eight bots. Send a new human request to create more.')
             audit = {'source_message_id': source_id, 'source_task_id': task_id, 'created_by': source['_human_device_id']}
             bot = self._create_bot({'name': name, 'role': role, 'instructions': instructions}, audit=audit)
@@ -396,7 +401,7 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
                 receipt = receipt | {'status': 'duplicate'}
                 callbacks.append(lambda: self._finish_bot_deletion(target_id))
             else:
-                if sum(record['source_message_id'] == source_id for record in self._all('bot_deletion_receipts')) >= self.EXCHANGE_LIMIT:
+                if sum(record['source_message_id'] == source_id for record in self._all('bot_deletion_receipts')) >= self.BOT_CHANGE_LIMIT:
                     raise ServiceError(409, 'This message deleted eight bots. Send a new request to delete more.')
                 audit = {'source_message_id': source_id, 'source_task_id': task_id, 'deleted_by': source['_human_device_id']}
                 if task_id in self._bot_deletion_scope(target_id):
@@ -1138,58 +1143,49 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
         origin = self._get('bots', source['conversation_bot_id'])
         if origin['archived'] or origin.get('_deleted'):
             raise ServiceError(409, 'The originating conversation is unavailable.')
-        # A recorded result must reach its owner even when new requests exhaust the budget.
-        if exchange['deliveries'] >= self.EXCHANGE_LIMIT and not returning:
-            if not exchange['paused']:
-                exchange['paused'] = True
-                self._put('exchanges', exchange)
-                self._message(source['bot_id'], 'Bot messages paused after eight deliveries. Send a reply to continue.', task_id=source['id'], role='system', kind='status')
-                self._event('exchange.paused', {'exchange_id': exchange['id'], 'deliveries': exchange['deliveries'], 'limit': self.EXCHANGE_LIMIT}, origin['id'], source['id'])
-            receipt = {'task_id': None, 'target_bot_id': target_id, 'thread_id': source['thread_id'], 'status': 'limit_reached'}
-        else:
-            assignment = self._assignment(source)
-            progress_only = not returning and target_id == assignment.get('source_bot_id') and (
-                self._unfinished_work(assignment) or bool(assignment.get('_waiting_on')) or self._background_pending(assignment['id']))
-            target = self._get('bots', target_id)
-            task = self._send(target, {'text': text, 'mode': 'queue'}, thread_id=source['thread_id'], parent_task_id=source['id'], conversation_bot_id=origin['id'], exchange_id=source['exchange_id'], source_task=source, record_message=False, text_limit=None if returning else 20000)
-            task = self._get('tasks', task['id'])
-            sender = self._get('bots', source['bot_id'])
-            task['_bot_messages'] = [{'sender_bot_id': sender['id'], 'sender_name': sender['name'], 'text': text, 'result_status': payload.get('result_status'), 'progress_only': progress_only}]
-            assignment = self._assignment(source)
-            task['_is_return'] = returning or target_id == assignment.get('source_bot_id')
-            owner_id = assignment.get('_reply_to_task_id') or assignment.get('source_task_id')
-            if target_id == assignment.get('source_bot_id') and owner_id:
-                owner = self._assignment(self._get('tasks', owner_id))
-                task.update(_is_return=True, _assignment_task_id=owner['id'])
-                if assignment.get('_requester_reply_task_id'):
-                    task['_relay_callback_owner'] = assignment['_requester_reply_task_id']
-                if not progress_only:
-                    task['_resolved_dependency_id'] = assignment['id']
-            elif not task['_is_return']:
-                task['_reply_to_task_id'] = assignment['id']
-                callback_owner = source.get('_relay_callback_owner') or (source['id'] if source.get('_native_relay') else None)
-                if callback_owner:
-                    task['_requester_reply_task_id'] = callback_owner
-                assignment['_waiting_on'] = list(dict.fromkeys([*assignment.get('_waiting_on', []), task['id']]))
-                self._put('tasks', assignment)
-            if native_id:
-                task['_native_relay'] = {'sender_bot_id': source['bot_id'], 'envelope_id': native_id}
-            self._put('tasks', task)
-            returned_message = next((m for m in reversed(self._all('messages'))
-                                     if returning and m.get('task_id') == source.get('_result_task_id', source['id'])
-                                     and m.get('sender_bot_id') == sender['id'] and m['kind'] == 'text'
-                                     and m['text'] == text), None)
-            if returned_message:
-                returned_message['exchange_recipient_bot_ids'] = [target_id]
-                self._put('messages', returned_message)
-                self._event('message.updated', self._public(returned_message), sender['id'], source['id'])
-            elif record_message:
-                self._message(origin['id'], text, task_id=task['id'], sender_bot_id=sender['id'], recipient_bot_ids=[target_id])
-            if not returning:
-                exchange['deliveries'] += 1
-            self._put('exchanges', exchange)
-            receipt = {'task_id': task['id'], 'target_bot_id': target_id, 'thread_id': task['thread_id'], 'status': 'paused' if task['status'] == 'paused' else 'queued'}
-            self._event('bot_message.delivered', {'source_task_id': source['id'], 'source_bot_id': sender['id'], 'target_bot_id': target_id, 'task_id': task['id'], 'thread_id': task['thread_id'], 'conversation_bot_id': origin['id'], 'exchange_id': exchange['id'], 'deliveries': exchange['deliveries'], 'limit': self.EXCHANGE_LIMIT, 'is_return': task['_is_return']}, origin['id'], task['id'])
+        assignment = self._assignment(source)
+        progress_only = not returning and target_id == assignment.get('source_bot_id') and (
+            self._unfinished_work(assignment) or bool(assignment.get('_waiting_on')) or self._background_pending(assignment['id']))
+        target = self._get('bots', target_id)
+        task = self._send(target, {'text': text, 'mode': 'queue'}, thread_id=source['thread_id'], parent_task_id=source['id'], conversation_bot_id=origin['id'], exchange_id=source['exchange_id'], source_task=source, record_message=False, text_limit=None if returning else 20000)
+        task = self._get('tasks', task['id'])
+        sender = self._get('bots', source['bot_id'])
+        task['_bot_messages'] = [{'sender_bot_id': sender['id'], 'sender_name': sender['name'], 'text': text, 'result_status': payload.get('result_status'), 'progress_only': progress_only}]
+        assignment = self._assignment(source)
+        task['_is_return'] = returning or target_id == assignment.get('source_bot_id')
+        owner_id = assignment.get('_reply_to_task_id') or assignment.get('source_task_id')
+        if target_id == assignment.get('source_bot_id') and owner_id:
+            owner = self._assignment(self._get('tasks', owner_id))
+            task.update(_is_return=True, _assignment_task_id=owner['id'])
+            if assignment.get('_requester_reply_task_id'):
+                task['_relay_callback_owner'] = assignment['_requester_reply_task_id']
+            if not progress_only:
+                task['_resolved_dependency_id'] = assignment['id']
+        elif not task['_is_return']:
+            task['_reply_to_task_id'] = assignment['id']
+            callback_owner = source.get('_relay_callback_owner') or (source['id'] if source.get('_native_relay') else None)
+            if callback_owner:
+                task['_requester_reply_task_id'] = callback_owner
+            assignment['_waiting_on'] = list(dict.fromkeys([*assignment.get('_waiting_on', []), task['id']]))
+            self._put('tasks', assignment)
+        if native_id:
+            task['_native_relay'] = {'sender_bot_id': source['bot_id'], 'envelope_id': native_id}
+        self._put('tasks', task)
+        returned_message = next((m for m in reversed(self._all('messages'))
+                                 if returning and m.get('task_id') == source.get('_result_task_id', source['id'])
+                                 and m.get('sender_bot_id') == sender['id'] and m['kind'] == 'text'
+                                 and m['text'] == text), None)
+        if returned_message:
+            returned_message['exchange_recipient_bot_ids'] = [target_id]
+            self._put('messages', returned_message)
+            self._event('message.updated', self._public(returned_message), sender['id'], source['id'])
+        elif record_message:
+            self._message(origin['id'], text, task_id=task['id'], sender_bot_id=sender['id'], recipient_bot_ids=[target_id])
+        if not returning:
+            exchange['deliveries'] += 1
+        self._put('exchanges', exchange)
+        receipt = {'task_id': task['id'], 'target_bot_id': target_id, 'thread_id': task['thread_id'], 'status': 'paused' if task['status'] == 'paused' else 'queued'}
+        self._event('bot_message.delivered', {'source_task_id': source['id'], 'source_bot_id': sender['id'], 'target_bot_id': target_id, 'task_id': task['id'], 'thread_id': task['thread_id'], 'conversation_bot_id': origin['id'], 'exchange_id': exchange['id'], 'deliveries': exchange['deliveries'], 'is_return': task['_is_return']}, origin['id'], task['id'])
         self._put('deliveries', dict(id=delivery_id, source_task_id=source['id'], target_bot_id=target_id, text=text, receipt=receipt, created_at=now(), _progress_only=progress_only))
         return receipt
 
@@ -1358,16 +1354,54 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
         message['reactions'] = reactions
         self._put('messages', message)
         self._event('message.updated', self._public(message), message['bot_id'], message.get('task_id'))
-        event = dict(emoji=emoji, action='added' if active else 'removed')
-        self._message_interaction = dict(reply_to=self._reply_reference(message), reaction_event=event)
+        if active and emoji in ('👍', '👎'):
+            self._message_interaction = dict(reply_to=self._reply_reference(message),
+                                             reaction_event=dict(emoji=emoji, action='added'))
+            try:
+                author_id = message.get('sender_bot_id') if message['role'] == 'assistant' else None
+                recipient = self._get('bots', author_id or message['bot_id'])
+                pending = recipient.get('_pending_reactions', {}).get(message_id)
+                if pending:
+                    pending.update(event_id=uid(), reactions=reactions)
+                    self._put('bots', recipient)
+                self._send(recipient,
+                           dict(text=f'Reaction added: {emoji}', mode='auto'),
+                           conversation_bot_id=message['bot_id'])
+            finally:
+                self._message_interaction = None
+            return self._public(message)
+        event = dict(emoji=emoji, action='added' if active else 'removed', passive=True)
+        reference = self._reply_reference(message)
+        author_id = message.get('sender_bot_id') if message['role'] == 'assistant' else None
+        recipient = self._get('bots', author_id or message['bot_id'])
+        self._message_interaction = dict(reply_to=reference, reaction_event=event)
         try:
-            author_id = message.get('sender_bot_id') if message['role'] == 'assistant' else None
-            self._send(self._get('bots', author_id or message['bot_id']),
-                       dict(text=f"Reaction {event['action']}: {emoji}", mode='auto'),
-                       conversation_bot_id=message['bot_id'])
+            feedback = self._message(message['bot_id'], f"Reaction {event['action']}: {emoji}",
+                                     role='user', recipient_bot_ids=[recipient['id']], human_authored=True)
         finally:
             self._message_interaction = None
+        recipient = self._get('bots', recipient['id'])
+        recipient.setdefault('_pending_reactions', {})[message_id] = dict(
+            event_id=feedback['id'], message_id=message_id, reactions=reactions,
+            author=reference['author'], excerpt=message['text'][:1000])
+        self._put('bots', recipient)
         return self._public(message)
+
+    def _ack_reaction_feedback(self, bot_id, task_id, feedback):
+        with self.transaction():
+            if self.stopping.is_set():
+                return
+            bot = self._get('bots', bot_id)
+            pending = bot.get('_pending_reactions', {})
+            for item in feedback:
+                current = pending.get(item['message_id'])
+                if current and current['event_id'] == item['event_id']:
+                    del pending[item['message_id']]
+            self._put('bots', bot)
+            task = self._get('tasks', task_id)
+            if task.get('_reaction_feedback') == feedback:
+                task.pop('_reaction_feedback', None)
+                self._put('tasks', task)
 
     def _send(self, bot: dict, data: dict, *, thread_id: str | None = None, parent_task_id: str | None = None, conversation_bot_id: str | None = None, exchange_id: str | None = None, source_task: dict | None = None, record_message: bool = True, human_authored: bool = True, text_limit: int | None = 20000) -> dict:
         text = require_text(data, 'text', text_limit)
@@ -1981,6 +2015,7 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
         task.pop('_pr_review', None)
         task.pop('_work_retry', None)
         task.pop('_work_resume', None)
+        task.pop('_reaction_feedback', None)
         task['_preference_source_ids'] = [source_id for source_id in task.get('_preference_source_ids', [])
                                           if source_id not in task.get('_turn_preference_source_ids', [])]
 
@@ -1989,6 +2024,7 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
             task = self._get('tasks', task_id)
             bot_lock = self.bot_locks.setdefault(task['bot_id'], threading.Lock())
         with bot_lock:
+            reaction_feedback = []
             try:
                 with self.transaction():
                     task = self._get('tasks', task_id)
@@ -2024,6 +2060,7 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
                             messages = messages[boundary + 1:]
                         task.update(_turn_message_ids=[m['id'] for m in messages], _turn_started_at=now(),
                                     _steering=[], _turn_preference_source_ids=list(task.get('_preference_source_ids', [])))
+                    task.setdefault('_reaction_feedback', list(bot.get('_pending_reactions', {}).values()))
                     task.setdefault('_turn_attachment_ids', list(task.get('_attachment_ids', [])))
                     task.pop('error_code', None)
                     task.update(status='working', summary='Working', updated_at=now())
@@ -2044,6 +2081,8 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
                 for field in ('_work_todos', '_work_resume'):
                     if field in task:
                         provider_task[field] = task[field]
+                reaction_feedback = task.get('_reaction_feedback', [])
+                provider_task['_reaction_feedback'] = reaction_feedback
                 provider_task['_turn_message_ids'] = task['_turn_message_ids']
                 provider_task['_conversation_epoch'] = task['_conversation_epoch']
                 if task.get('_background_completion'):
@@ -2075,8 +2114,6 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
                         }
                     turn_ids = {t['id'] for t in self._all('tasks') if t['id'] == assignment['id'] or t.get('_assignment_task_id') == assignment['id']}
                     provider_task['_outgoing_bot_messages'] = [{'target_bot_id': delivery['target_bot_id'], 'text': delivery['text'], 'task_id': delivery['receipt']['task_id'], 'status': self._get('tasks', delivery['receipt']['task_id'])['status'] if delivery['receipt']['task_id'] else delivery['receipt']['status']} for delivery in self._all('deliveries') if delivery['source_task_id'] in turn_ids]
-                    exchange = self._get('exchanges', task['exchange_id'])
-                    provider_task['_handoff_budget_remaining'] = max(0, self.EXCHANGE_LIMIT - exchange['deliveries'])
                 emit = lambda kind, payload: self.emit(task_id, kind, payload)
                 if decision:
                     self.provider.resume_task(provider_task, self._public(bot), history, self._public(decision) | {'action': decision.get('_action')}, emit)
@@ -2084,10 +2121,13 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
                     self.provider.start_task(provider_task, self._public(bot), history, emit)
                 with self.lock:
                     current = self._get('tasks', task_id)
+                if current['status'] not in ('failed', 'cancelled'):
+                    self._ack_reaction_feedback(bot['id'], task_id, reaction_feedback)
                 if current['status'] == 'working':
                     self.emit(task_id, 'completed', {'summary': 'Ready to review.'})
-            except YieldForDecision:
-                pass
+            except YieldForDecision as pause:
+                if pause.decision_id:
+                    self._ack_reaction_feedback(task['bot_id'], task_id, reaction_feedback)
             except Exception as error:
                 if not self.stopping.is_set():
                     summary = f'Work stopped: {str(error)[:240]}'
@@ -2113,6 +2153,8 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
                         self._refresh_bot(task['bot_id'])
 
     def emit(self, task_id: str, kind: str, payload: dict):
+        if kind == 'work_wait':
+            return self.wait_for_task(task_id, payload)
         if kind == 'decision_response':
             return self.resolve_chat_decision(task_id, payload)
         if kind == 'service_restart':
@@ -2199,6 +2241,8 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
                         payload = {'summary': continuation}
                 if task.get('_native_job'):
                     task['_routine_silent'] = kind == 'completed' and payload.get('routine_silent') is True
+                reaction_silent = (kind == 'completed' and payload.get('reaction_silent') is True
+                                   and reaction_only_turn(dict(operation='start', task=task, history=self._history(task['bot_id']))))
                 error_code = payload.get('error_code')
                 known_errors = set()
                 known_errors.update({'bot_creation_invalid_request', 'bot_creation_rejected', 'bot_creation_receipt_unconfirmed'})
@@ -2229,7 +2273,7 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
                 self._put('tasks', task)
                 self._event('task.updated', self._public(task), bot_id, task_id)
                 generic_completion = kind == 'completed' and task['summary'].strip().rstrip('.!').casefold() in {'ready to review', 'done', 'complete', 'completed', 'task complete', 'task completed', 'work complete', 'work completed'}
-                if task['status'] == 'waiting' or task.get('_routine_silent'):
+                if task['status'] == 'waiting' or task.get('_routine_silent') or reaction_silent:
                     pass
                 elif generic_completion:
                     turn_started_at = task.get('_turn_started_at', task['created_at'])
@@ -2246,7 +2290,7 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
                 raise ServiceError(400, f'Unknown provider event: {kind}')
             self._refresh_bot(bot_id)
         if pending:
-            raise YieldForDecision('The service persisted the decision.')
+            raise YieldForDecision('The service persisted the decision.', decision_id=decision['id'])
 
     def _execute_decision(self, decision_id: str):
         with self.transaction():

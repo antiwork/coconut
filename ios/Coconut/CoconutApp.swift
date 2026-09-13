@@ -64,14 +64,26 @@ struct CoconutHome: View {
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            Tab("Bots", systemImage: "bubble.left.and.bubble.right", value: HomeTab.bots) {
+            Tab(value: HomeTab.bots) {
                 root(tab: .bots, path: $botsPath)
+            } label: {
+                Label { Text("Bots") } icon: {
+                    Image(systemName: "bubble.left.and.bubble.right").environment(\.symbolVariants, .none)
+                }
             }.accessibilityIdentifier("home-bots")
-            Tab("Work", systemImage: "briefcase", value: HomeTab.work) {
+            Tab(value: HomeTab.work) {
                 root(tab: .work, path: $workPath)
+            } label: {
+                Label { Text("Work") } icon: {
+                    Image(systemName: "checklist").environment(\.symbolVariants, .none)
+                }
             }.accessibilityIdentifier("home-work")
-            Tab("Inbox", systemImage: "tray", value: HomeTab.inbox) {
+            Tab(value: HomeTab.inbox) {
                 root(tab: .inbox, path: $inboxPath)
+            } label: {
+                Label { Text("Inbox") } icon: {
+                    Image(systemName: "tray").environment(\.symbolVariants, .none)
+                }
             }.accessibilityIdentifier("home-inbox")
         }
         .modifier(NativeTabCollapse())
@@ -96,7 +108,7 @@ struct CoconutHome: View {
                 .toolbar(tabBarVisibility, for: .tabBar)
                 .navigationTitle(tab == .work ? "Work" : "")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { rootToolbar(inbox: tab != .bots, isRoot: path.wrappedValue.isEmpty) }
+                .toolbar { rootToolbar(inbox: tab != .bots) }
                 .safeAreaInset(edge: .top, spacing: 0) {
                     if searchOpen && tab == .bots {
                         HStack(spacing: 10) {
@@ -140,25 +152,23 @@ struct CoconutHome: View {
     }
 
     @ToolbarContentBuilder
-    private func rootToolbar(inbox: Bool, isRoot: Bool) -> some ToolbarContent {
-        if isRoot {
-            if !inbox {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { settingsOpen = true } label: {
-                        Image(systemName: "person.crop.circle")
-                    }.accessibilityLabel("App settings").accessibilityIdentifier("app-settings")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { searchOpen = true; searchFocused = true } label: {
-                        Image(systemName: "magnifyingglass")
-                    }.accessibilityLabel("Search conversations").accessibilityIdentifier("search-conversations")
-                }
-                if #available(iOS 26.0, *) { ToolbarSpacer(.fixed, placement: .topBarTrailing) }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { createOpen = true } label: {
-                        Image(systemName: "plus")
-                    }.accessibilityLabel("Create bot").accessibilityIdentifier("create-bot")
-                }
+    private func rootToolbar(inbox: Bool) -> some ToolbarContent {
+        if !inbox {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { settingsOpen = true } label: {
+                    Image(systemName: "person.crop.circle")
+                }.accessibilityLabel("App settings").accessibilityIdentifier("app-settings")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { searchOpen = true; searchFocused = true } label: {
+                    Image(systemName: "magnifyingglass")
+                }.accessibilityLabel("Search conversations").accessibilityIdentifier("search-conversations")
+            }
+            if #available(iOS 26.0, *) { ToolbarSpacer(.fixed, placement: .topBarTrailing) }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { createOpen = true } label: {
+                    Image(systemName: "plus")
+                }.accessibilityLabel("Create bot").accessibilityIdentifier("create-bot")
             }
         }
     }

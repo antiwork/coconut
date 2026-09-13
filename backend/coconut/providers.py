@@ -67,9 +67,6 @@ class FixtureProvider:
             return True
         if not text.startswith(('TEAM_MILESTONE_HANDOFF:', 'TEAM_MILESTONE_REQUEST:')):
             return False
-        if task.get('_handoff_budget_remaining', 0) <= 0:
-            emit('completed', {'summary': 'Fixture: the exchange delivery limit is reached.'})
-            return True
         directory = bot_directory({'task': task, 'bot': bot})
         if text.startswith('TEAM_MILESTONE_REQUEST:') and message:
             target = message['sender_bot_id']
@@ -360,15 +357,15 @@ class HermesProvider(FixtureProvider):
                     if deferred is not None:
                         raise deferred
                     return
-                if event.get('type') not in ('text_delta', 'activity', 'decision', 'artifact', 'completed', 'failed', 'bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'native_call', 'native_result', 'native_approval', 'native_question', 'native_proposal', 'decision_response') or not isinstance(event.get('data'), dict):
+                if event.get('type') not in ('text_delta', 'activity', 'decision', 'artifact', 'completed', 'failed', 'bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'work_wait', 'native_call', 'native_result', 'native_approval', 'native_question', 'native_proposal', 'decision_response') or not isinstance(event.get('data'), dict):
                     raise RuntimeError('Hermes returned an invalid structured event.')
-                if (event['type'] == 'artifact' and event.get('request_id')) or event['type'] in ('bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'native_call', 'native_result', 'native_proposal', 'decision_response'):
+                if (event['type'] == 'artifact' and event.get('request_id')) or event['type'] in ('bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'work_wait', 'native_call', 'native_result', 'native_proposal', 'decision_response'):
                     request_id = event.get('request_id')
                     if type(request_id) is not int or request_id < 1:
                         raise RuntimeError('Hermes returned an operation without a receipt request.')
                     try:
                         result = emit(event['type'], event['data'])
-                        if event['type'] in ('artifact', 'native_call', 'native_result', 'service_restart', 'native_proposal', 'decision_response'):
+                        if event['type'] in ('artifact', 'native_call', 'native_result', 'service_restart', 'work_wait', 'native_proposal', 'decision_response'):
                             receipt = result
                         elif event['type'] == 'bot_create':
                             from .hermes_worker import bot_creation_receipt
@@ -377,12 +374,14 @@ class HermesProvider(FixtureProvider):
                             from .hermes_worker import bot_deletion_receipt
                             receipt = bot_deletion_receipt(result, event['data'], bot)
                         else:
-                            if not isinstance(result, dict) or result.get('status') not in ('queued', 'paused', 'duplicate', 'limit_reached'):
+                            if not isinstance(result, dict) or result.get('status') not in ('queued', 'paused', 'duplicate'):
                                 raise ValueError('The service did not return a delivery receipt.')
                             receipt = {key: result[key] for key in ('task_id', 'target_bot_id', 'thread_id', 'status', 'delivery_id') if isinstance(result.get(key), str)}
                     except Exception as error:
                         from .service import ServiceError
-                        if event['type'] in ('bot_create', 'bot_delete') and isinstance(error, ServiceError) and 400 <= error.status < 500:
+                        if event['type'] == 'work_wait' and isinstance(error, ServiceError) and 400 <= error.status < 500:
+                            receipt = {'status': 'rejected', 'error': str(error)}
+                        elif event['type'] in ('bot_create', 'bot_delete') and isinstance(error, ServiceError) and 400 <= error.status < 500:
                             message = {
                                 'bot_create': 'The service rejected this bot creation. Use the same human source and exact requested bot details.',
                                 'bot_delete': 'The service rejected this deletion. Check the current bot name, ID, task state, and human source.',

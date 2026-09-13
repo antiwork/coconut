@@ -139,20 +139,20 @@ class TeamServiceTests(unittest.TestCase):
         self.service._run_task(next_reply['id'])
         self.assertEqual(self.service._get('tasks', root['id'])['status'], 'completed')
 
-    def test_automatic_results_return_when_request_budget_is_exhausted(self):
+    def test_automatic_results_return_after_many_deliveries(self):
         root = self.working(self.send(self.a))
         child = self.working(self.service._get('tasks', self.deliver(root, self.b)['task_id']))
         self.finish(root)
         with self.service.transaction():
             exchange = self.service._get('exchanges', root['exchange_id'])
-            exchange['deliveries'] = self.service.EXCHANGE_LIMIT
+            exchange['deliveries'] = 100
             self.service._put('exchanges', exchange)
         self.finish(child)
         self.restart()
         self.service._drain_returns()
         reply = next(t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id'])
         self.working(reply)
-        self.assertEqual(self.deliver(reply, self.b, 'An extra request')['status'], 'limit_reached')
+        self.assertEqual(self.service._get('exchanges', root['exchange_id'])['deliveries'], 100)
         self.finish(reply)
         self.assertEqual(self.service._get('tasks', root['id'])['status'], 'completed')
 
@@ -677,22 +677,25 @@ class TeamServiceTests(unittest.TestCase):
     def test_uncertain_file_returns_a_failure_after_restart(self):
         self.assert_uncertain_child_returns('file')
 
-    def test_budget_survives_restart_and_user_reply_resets_budget(self):
+    def test_many_deliveries_survive_restart_without_a_user_reply(self):
         current = self.working(self.send(self.a))
-        for index in range(8):
+        exchange_id = current['exchange_id']
+        for index in range(20):
+            if index == 10:
+                self.restart()
+                current = self.working(self.service._get('tasks', current['id']))
             target = self.b if current['bot_id'] == self.a['id'] else self.a
             receipt = self.deliver(current, target, f'Request {index}')
+            self.assertEqual(receipt['status'], 'queued')
+            self.assertEqual(self.deliver(current, target, f'Request {index}')['status'], 'duplicate')
             current = self.working(self.service._get('tasks', receipt['task_id']))
-        target = self.b if current['bot_id'] == self.a['id'] else self.a
-        blocked = self.deliver(current, target, 'Another request')
-        self.assertEqual(blocked['status'], 'limit_reached')
-        self.restart()
-        self.assertEqual(self.deliver(current, target, 'Another request')['status'], 'limit_reached')
-        reply = self.write('POST', f'/v1/tasks/{current["id"]}/replies', {'text': 'Continue with one more check.'})
-        self.assertNotEqual(reply['exchange_id'], current['exchange_id'])
-        current = self.working(self.service._get('tasks', current['id']))
-        self.assertEqual(self.deliver(current, target, 'User requested check')['status'], 'queued')
-        self.assertEqual(len([m for m in self.service.snapshot()['messages'] if 'paused after eight' in m['text']]), 1)
+            self.assertEqual(current['exchange_id'], exchange_id)
+        exchange = self.service._get('exchanges', exchange_id)
+        self.assertEqual(exchange['deliveries'], 20)
+        self.assertFalse(exchange.get('paused'))
+        self.assertFalse(any('paused after eight' in m['text'] for m in self.service.snapshot()['messages']))
+        self.write('POST', f'/v1/tasks/{current["id"]}/cancel')
+        self.assertEqual(self.deliver(current, target, 'Do not deliver after cancellation')['status'], 'cancelled')
 
     def test_cancel_cascades_and_suppresses_pending_return(self):
         root = self.working(self.send(self.a))
