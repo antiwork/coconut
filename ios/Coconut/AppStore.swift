@@ -813,8 +813,12 @@ final class AppStore {
     }
 
     func dismissWork(_ pr: TrackedPullRequest) {
-        guard pr.isFinished else { return }
-        let dismissal = WorkDismissal(id: UUID().uuidString, artifactId: pr.artifact.id, url: pr.id)
+        dismissWork(TrackedWorkItem(artifact: pr.artifact, pullRequest: pr))
+    }
+
+    func dismissWork(_ item: TrackedWorkItem) {
+        guard item.isFinished else { return }
+        let dismissal = WorkDismissal(id: UUID().uuidString, artifactId: item.artifact.id, url: item.id)
         workUndo.append(dismissal)
         changeWorkVisibility(dismissal, undo: false)
     }
@@ -838,7 +842,8 @@ final class AppStore {
                 applyWorkReceipt(dismissal, undo: undo)
                 succeeded = true
             } else {
-                let result = await write("work/pull-requests/\(dismissal.artifactId)/dismiss",
+                let collection = dismissal.url.hasPrefix("work:") ? "items" : "pull-requests"
+                let result = await write("work/\(collection)/\(dismissal.artifactId)/dismiss",
                     payload: WorkDismissRequest(dismissalId: dismissal.id, undo: undo), as: WorkRefreshResponse.self,
                     onSuccess: { receipt in
                         guard receipt.ok, deviceId == self.pairing?.deviceId else { return }
@@ -861,7 +866,7 @@ final class AppStore {
         // Reject older snapshots and keep message replay consistent with the confirmed write.
         snapshotEpoch = UUID()
         snapshotRequest = nil
-        for index in artifacts.indices where artifacts[index].url?.lowercased() == dismissal.url {
+        for index in artifacts.indices where (artifacts[index].kind == "work" ? "work:" + artifacts[index].id : artifacts[index].url?.lowercased()) == dismissal.url {
             artifacts[index].workDismissalId = undo ? nil : dismissal.id
         }
         cachedState?.artifacts = artifacts

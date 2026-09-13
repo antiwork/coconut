@@ -39,6 +39,14 @@ def main():
                  artifacts=[first, duplicate, pr(43, 'Restore failed downloads', 'failed'),
                             pr(44, 'Update account settings', 'passed', refresh_error='GitHub is unreachable.'), closed],
                  server_time=stamp, cursor=50, push_configured=False)
+    state['artifacts'] += [
+        dict(id='export-active', bot_id=bot['id'], task_id=task['id'], kind='work',
+             title='Export account data', status='working', preview='', url=None, created_at=stamp,
+             activity='Preparing the export', activity_state='working', activity_observed_at=stamp),
+        dict(id='report-complete', bot_id=bot['id'], task_id=task['id'], kind='work',
+             title='Prepare the weekly report', status='completed', preview='', url=None, created_at=stamp,
+             activity='Report saved', activity_state='completed', activity_observed_at=stamp),
+    ]
     device = str(uuid4())
 
     class Handler(BaseHTTPRequestHandler):
@@ -54,10 +62,14 @@ def main():
             except BrokenPipeError: pass
 
         def do_POST(self):
-            self.rfile.read(int(self.headers.get('Content-Length', 0)))
+            body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
             url = urlsplit(self.path)
             if url.path == '/test/complete':
                 state['artifacts'] = []
+                self.respond(dict(ok=True))
+            elif url.path.startswith('/v1/work/items/') and url.path.endswith('/dismiss'):
+                item = next(a for a in state['artifacts'] if a['id'] == url.path.split('/')[-2])
+                item['work_dismissal_id'] = None if body.get('undo') else body['dismissal_id']
                 self.respond(dict(ok=True))
             elif url.path == '/v1/work/refresh':
                 self.respond(dict(ok=True))

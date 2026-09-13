@@ -84,9 +84,10 @@ from .approval_updates import ApprovalUpdates
 
 
 from .service_restart import ServiceRestart
+from .tracked_work import TrackedWork
 
 
-class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
+class Service(TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -885,7 +886,7 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
     def _write(self, method: str, parts: list[str], data: dict, device: str, callbacks: list) -> dict:
         if not isinstance(data, dict) or not parts or parts[0] != 'v1':
             raise ServiceError(400, 'Send a JSON object to a v1 route.')
-        if method == 'POST' and len(parts) == 5 and parts[:3] == ['v1', 'work', 'pull-requests'] and parts[4] == 'dismiss':
+        if method == 'POST' and len(parts) == 5 and parts[:2] == ['v1', 'work'] and parts[2] in ('pull-requests', 'items') and parts[4] == 'dismiss':
             return self._dismiss_work(parts[3], data)
         if parts == ['v1', 'device', 'push']:
             if method == 'PUT':
@@ -2095,6 +2096,7 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
                 with self.lock:
                     bot = self._get('bots', task['bot_id'])
                     provider_task['_tracked_prs'] = self._tracked_work_input(task)
+                    provider_task['_tracked_work'] = self._tracked_items_input(task)
                     provider_task.update(self._bot_creation_input(task))
                     provider_task.update(self.decision_chat_input(task))
                     provider_task.update(self._bot_deletion_input(task))
@@ -2169,6 +2171,8 @@ class Service(WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, Backg
             return self.native_relay_delivery(task_id, payload)
         if kind == 'bot_message':
             return self._deliver_bot_message(task_id, payload)
+        if kind == 'artifact' and payload.get('kind') == 'work':
+            return self._register_work(task_id, payload)
         if kind == 'artifact' and payload.get('kind') == 'pr':
             return self._register_pr_artifact(task_id, payload)
         pending = False

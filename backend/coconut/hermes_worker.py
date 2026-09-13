@@ -20,12 +20,14 @@ if __package__:
     from .native_bridge import TurnPaused
     from .pull_request_reviews import PR_REVIEW_INSTRUCTIONS
     from .work_progress import NativeWork, WORK_INSTRUCTIONS
+    from .tracked_work import TRACK_WORK_SCHEMA
     from .worker_protocol import MAX_EVENT_CHARACTERS, event_frame
 else:
     from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn
     from native_bridge import TurnPaused
     from pull_request_reviews import PR_REVIEW_INSTRUCTIONS
     from work_progress import NativeWork, WORK_INSTRUCTIONS
+    from tracked_work import TRACK_WORK_SCHEMA
     from worker_protocol import MAX_EVENT_CHARACTERS, event_frame
 
 
@@ -814,6 +816,9 @@ def run_turn(request, emit, request_receipt):
             registry.register(name=pr_schema['name'], toolset='coconut', schema=pr_schema,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('artifact', dict(kind='pr', url=arguments.get('url'), **{k: arguments[k] for k in ('activity', 'activity_state') if k in arguments}))))
             allowed.add(pr_schema['name'])
+            registry.register(name=TRACK_WORK_SCHEMA['name'], toolset='coconut', schema=TRACK_WORK_SCHEMA,
+                              handler=lambda arguments, **kwargs: json.dumps(request_receipt('artifact', dict(arguments, kind='work'))))
+            allowed.add(TRACK_WORK_SCHEMA['name'])
         if operation != 'context':
             wait_schema = {'name': 'coconut_wait', 'description':
                 'Wait for work an existing task already owns. Call without arguments to list tasks in this exchange. '
@@ -874,6 +879,13 @@ def run_turn(request, emit, request_receipt):
                              + json.dumps(request['task']['_tracked_prs'])
                              + '. Before starting work or a background process, call coconut_track_pr with the current short activity. '
                              'Update it when the phase changes and when returning the verified result. This continues existing tracking.')
+        instructions += ('Use coconut_track_work for substantial non-PR work that the person needs to follow. '
+                         'Reuse its key across turns; update the activity at phase changes and record completed only after verifying the result. '
+                         'Do not create a work item for routine checks, brief replies, or each delegated step. '
+                         'A waiting status does not register a dependency; use coconut_wait or native scheduling for that. '
+                         'Do not reopen completed or dismissed work unless the person requests more work. ')
+        if request['task'].get('_tracked_work'):
+            instructions += '\nExisting work for this bot: ' + json.dumps(request['task']['_tracked_work'])
         instructions += DECISION_INSTRUCTIONS
         if work.enabled:
             instructions += WORK_INSTRUCTIONS

@@ -87,11 +87,11 @@ struct WorkView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let isVisible: Bool
     let openConversation: (String) -> Void
-    private var pullRequests: [TrackedPullRequest] { TrackedPullRequest.tracked(in: store.artifacts, visibility: store.workVisibility) }
+    private var items: [TrackedWorkItem] { TrackedWorkItem.tracked(in: store.artifacts, visibility: store.workVisibility) }
 
     var body: some View {
         List {
-            if pullRequests.isEmpty {
+            if items.isEmpty {
                 Text("No tracked work")
                     .font(.body).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 220)
@@ -99,17 +99,17 @@ struct WorkView: View {
                     .listRowSeparator(.hidden)
                     .accessibilityIdentifier("work-empty")
             }
-            ForEach(pullRequests) { pr in
-                row(pr)
+            ForEach(items) { item in
+                workRow(item)
                     .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
                     .listRowBackground(BoardStyle.paper)
                     .listRowSeparator(.hidden, edges: .top)
                     .navigationLinkIndicatorVisibility(.hidden)
                     .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        if pr.isFinished {
+                        if item.isFinished {
                             Button {
-                                withAnimation(reduceMotion ? nil : .smooth(duration: 0.22)) { store.dismissWork(pr) }
+                                withAnimation(reduceMotion ? nil : .smooth(duration: 0.22)) { store.dismissWork(item) }
                             } label: { Label("Dismiss", systemImage: "xmark") }
                             .tint(.gray)
                         }
@@ -148,6 +148,34 @@ struct WorkView: View {
         .disabled(store.workUndo.isEmpty)
         .accessibilityHidden(store.workUndo.isEmpty)
         .accessibilityIdentifier("work-undo")
+    }
+
+    @ViewBuilder
+    private func workRow(_ item: TrackedWorkItem) -> some View {
+        if let pr = item.pullRequest {
+            row(pr)
+        } else {
+            Button { openConversation(item.artifact.botId) } label: {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(item.artifact.title).font(.body.weight(.medium))
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                            .foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
+                        TimelineView(.periodic(from: .now, by: 15)) { context in
+                            Text(item.activity(at: context.date)).font(.caption)
+                                .foregroundStyle(item.color(at: context.date, scheme: colorScheme))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    if !item.isFinished, let bot = store.bots.first(where: { $0.id == item.artifact.botId }) {
+                        BotAvatar(bot: bot, size: 28, animated: false).frame(width: 44, height: 44)
+                            .accessibilityHidden(true)
+                    }
+                }.padding(.vertical, 14).contentShape(Rectangle())
+            }.buttonStyle(HomePressStyle())
+                .accessibilityHint("Opens the bot conversation")
+                .accessibilityIdentifier("work-item-\(item.artifact.id)")
+        }
     }
 
     private func row(_ pr: TrackedPullRequest) -> some View {

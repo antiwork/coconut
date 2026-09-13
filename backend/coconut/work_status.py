@@ -166,6 +166,7 @@ class WorkStatus:
                 artifact.update(activity=activity, activity_state=state, activity_observed_at=timestamp.isoformat(),
                                 activity_bot_id=task['bot_id'] if task else None,
                                 work_dismissal_id=dismissed)
+        self._project_tracked_items(artifacts, tasks, records, timestamp)
         return artifacts
 
     def _restore_active_work(self, artifact):
@@ -175,9 +176,10 @@ class WorkStatus:
     def _dismiss_work(self, artifact_id, data):
         from .service import ServiceError, encoded, require_text
         artifact = self._get('artifacts', artifact_id)
-        if artifact['kind'] != 'pr':
-            raise ServiceError(400, 'Only pull requests appear in Work.')
-        key = 'work.dismissed.' + artifact['url'].lower()
+        if artifact['kind'] not in ('pr', 'work'):
+            raise ServiceError(400, 'This item does not appear in Work.')
+        identity = 'work:' + artifact['id'] if artifact['kind'] == 'work' else artifact['url'].lower()
+        key = 'work.dismissed.' + identity
         token = require_text(data, 'dismissal_id', 80)
         undo = data.get('undo') is True
         current = self._setting(key)
@@ -186,10 +188,14 @@ class WorkStatus:
                 raise ServiceError(409, 'A newer dismissal replaced this action.')
             self.db.execute('DELETE FROM settings WHERE key=?', (key,))
         else:
-            peers = [a for a in self._all('artifacts') if a['kind'] == 'pr' and a['url'].lower() == artifact['url'].lower()]
+            if artifact['kind'] == 'work':
+                peers = self._work_projection([artifact])
+            else:
+                peers = [a for a in self._all('artifacts') if a['kind'] == 'pr' and a['url'].lower() == artifact['url'].lower()]
             latest = max(peers, key=lambda a: (a.get('observed_at') or a['created_at'], a.get('checked_at') or a['created_at'], a['id']))
-            if latest.get('pr_state') not in ('merged', 'closed') and latest['status'] != 'merged':
+            finished = latest['status'] in ('completed', 'cancelled') if artifact['kind'] == 'work' else (latest.get('pr_state') in ('merged', 'closed') or latest['status'] == 'merged')
+            if not finished:
                 raise ServiceError(409, 'Only completed work can be dismissed.')
             self.db.execute('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key, encoded(token)))
-        self._event('work.updated', {'url': artifact['url']})
+        self._event('work.updated', {'url': artifact['url'], 'id': artifact['id']})
         return {'ok': True}
