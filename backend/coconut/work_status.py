@@ -96,15 +96,19 @@ class WorkStatus:
             if task:
                 chain = self._work_chain(task, tasks, records)
                 latest = max(peers, key=lambda a: (a.get('observed_at') or a['created_at'], a.get('checked_at') or a['created_at'], a['id']))
+                active_states = ('queued', 'working', 'waiting', 'needs_you')
                 current_reports = [a for a in reported if a.get('_activity_task_id') in tasks
                                    and a['_activity_at'] >= task['created_at']
                                    and not self._get('exchanges', tasks[a['_activity_task_id']]['exchange_id']).get('cancelled')
                                    and a.get('_activity_head') == latest.get('head_sha')
-                                   and a.get('_activity_turn') == tasks[a['_activity_task_id']].get('_native_turn_id')
+                                   and (a.get('_activity_turn') == tasks[a['_activity_task_id']].get('_native_turn_id')
+                                        or tasks[a['_activity_task_id']]['status'] in active_states)
                                    and tasks[a['_activity_task_id']]['status'] != 'cancelled'
                                    and self._work_chain(tasks[a['_activity_task_id']], tasks, records)]
                 if current_reports:
-                    active_report = max(current_reports, key=lambda a: a['_activity_at'])
+                    # A completed status report cannot replace unfinished work on the same PR.
+                    active_report = max(current_reports, key=lambda a:
+                        (tasks[a['_activity_task_id']]['status'] in active_states, a['_activity_at']))
                     reported_task = tasks[active_report['_activity_task_id']]
                     # Reporting a new phase changes presentation, not the review's return route.
                     if reported_task['exchange_id'] != task['exchange_id']:
