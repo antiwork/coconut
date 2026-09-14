@@ -160,7 +160,13 @@ class NativeBridge:
         if not isinstance(arguments, dict) or not isinstance(arguments.get('options'), list):
             return json.dumps({'error': 'Supply a title and choices.'})
         call = getattr(self.local, 'call', None)
-        self.pause('native_question', dict(arguments, receipt_id=call['id'] if call else None))
+        result = self.receipt('native_question', dict(arguments, receipt_id=call['id'] if call else None))
+        if result.get('status') == 'validation_failed':
+            return json.dumps(result)
+        # Pause only after the service accepts the card. An uncertain result must
+        # also stop this batch until the service resolves whether it saved a card.
+        self.paused.set()
+        raise TurnPaused()
 
 
 QUESTION_SCHEMA = {'name': 'coconut_ask', 'description': 'Create a required decision card in chat and Inbox, then wait for the human answer. Use for choices, permission, confirmation, missing information, and manual-step results. Never ask for these only in prose. The person can choose an option or type a reply. Honor standing preferences. Do not duplicate an existing pending card.',
@@ -175,7 +181,7 @@ QUESTION_SCHEMA = {'name': 'coconut_ask', 'description': 'Create a required deci
 
 # These fields carry evidence, not model confidence scores.
 QUESTION_SCHEMA['parameters']['properties'].update({
-    'previous_decision_id': {'type': 'string', 'description': 'For a follow-up question, the answered question ID from this conversation, including a completed earlier task. Explain the check result and why this next choice is needed in context. Coconut links the answer automatically during its immediate continuation.'},
+    'previous_decision_id': {'type': 'string', 'description': 'For a follow-up question, the answered card ID from this conversation, including an approved draft or a completed earlier task. This links context only; it does not approve the new card. Explain the check result and why this next choice is needed in context. Coconut links the answer automatically during its immediate continuation.'},
     'merge_pr_url': {'type': 'string', 'description': 'Required for a question whose only action is whether to merge one PR. Use its full GitHub URL after coconut_track_pr. Coconut closes this card after a verified external merge. Omit for reviews, releases, or choices with other actions.'},
     'context': {'type': 'string', 'description': 'Name the affected project or task and explain why this choice is needed. State the practical approval scope, including publishing limits. The card must make sense without nearby messages. Use short plain sentences; keep technical evidence in chat.'},
     'evidence': {'type': 'string', 'description': 'One short sentence naming the decisive check or linking its source. Do not repeat context or invent checks.'},

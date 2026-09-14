@@ -46,7 +46,7 @@ class DecisionInbox:
         valid = (previous_task is not None and previous['bot_id'] == previous_task['bot_id']
                  and previous_task.get('conversation_bot_id', previous_task['bot_id'])
                  == task.get('conversation_bot_id', task['bot_id'])
-                 and previous.get('action_type') == 'question'
+                 and previous.get('action_type') in ('question', 'draft_message', 'native_approval')
                  and previous['status'] in ('approved', 'rejected', 'modified', 'executed', 'failed')
                  and bool(previous.get('selected_option_label') or previous.get('correction')))
         if not valid:

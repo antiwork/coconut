@@ -168,6 +168,7 @@ class Service(WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgres
                 self._migrate_bot_exchanges()
                 self._migrate_process_deliveries()
                 self._migrate_activity_notices()
+                self._migrate_decision_link_notices()
                 self._migrate_silent_responses()
                 self._migrate_pr_review_sources()
                 self._migrate_native_routine_prompts()
@@ -238,6 +239,25 @@ class Service(WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgres
                 self._put('messages', message)
                 self._event('message.updated', self._public(message), message['bot_id'], message.get('task_id'))
         self.db.execute("INSERT INTO settings VALUES ('activity_notices_migrated','true')")
+
+    def _migrate_decision_link_notices(self):
+        if self._setting('decision_link_notices_migrated'):
+            return
+        text = 'Work stopped: Link an answered question from this conversation.'
+        seen, changed = set(), False
+        for message in reversed(self._all('messages')):
+            if (message.get('kind') != 'status' or message.get('role') != 'assistant'
+                    or message.get('text') != text or message.get('_hidden')):
+                continue
+            # Keep one failure notice. The task and event records retain every failure.
+            if message['bot_id'] in seen:
+                message['_hidden'] = True
+                self._put('messages', message)
+                changed = True
+            seen.add(message['bot_id'])
+        if changed:
+            self._event('transcript.updated', {})
+        self.db.execute("INSERT INTO settings VALUES ('decision_link_notices_migrated','true')")
 
     def _all(self, table: str) -> list[dict]:
         return [json.loads(row[0]) for row in self.db.execute(f'SELECT data FROM {table} ORDER BY rowid')]
