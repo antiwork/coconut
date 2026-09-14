@@ -972,6 +972,7 @@ def run_turn(request, emit, request_receipt):
         instructions += ('Use coconut_track_work for substantial non-PR work that the person needs to follow. '
                          'Reuse its key across turns; update the activity at phase changes and record completed only after verifying the result. '
                          'When existing work belongs to this request, update that row before returning. '
+                         'A later stage of the same result keeps the same work key, including after a decision. '
                          'Replace an automatic chat-message title with the intended result in plain words. '
                          'Clear an old blocked or waiting activity when evidence resolves it. '
                          'Do not create a work item for routine checks, brief replies, or each delegated step. '

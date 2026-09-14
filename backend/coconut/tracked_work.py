@@ -19,9 +19,83 @@ TRACK_WORK_SCHEMA = {
 
 
 class TrackedWork:
+    def _canonical_work(self, item):
+        seen = set()
+        while item.get('_work_replaced_by') and item['id'] not in seen:
+            seen.add(item['id'])
+            replacement = self._get('artifacts', item['_work_replaced_by'])
+            if replacement['kind'] != 'work' or replacement['bot_id'] != item['bot_id']:
+                break
+            item = replacement
+        return item
+
+    @staticmethod
+    def _followup_task_ids(task, decisions):
+        questions = {d['id']: d for d in decisions if d['bot_id'] == task['bot_id']}
+        pending = [d.get('previous_decision_id') for d in questions.values() if d['task_id'] == task['id']]
+        pending.append(task.get('_resume_decision'))
+        seen, task_ids = set(), []
+        while pending:
+            identity = pending.pop()
+            if identity in seen or identity not in questions:
+                continue
+            seen.add(identity)
+            previous = questions[identity]
+            task_ids.append(previous['task_id'])
+            pending.append(previous.get('previous_decision_id'))
+        return list(dict.fromkeys(task_ids))
+
+    def _work_for_followup(self, task, artifacts, tasks, decisions):
+        previous_tasks = set(self._followup_task_ids(task, decisions))
+        candidates = []
+        for item in artifacts:
+            if item['kind'] != 'work' or item.get('_hidden') or item['bot_id'] != task['bot_id']:
+                continue
+            owner = tasks.get(item.get('task_id'))
+            history = set(item.get('_work_previous_task_ids', []) + [item.get('task_id'), item.get('_work_origin_task_id')])
+            if not owner or not previous_tasks.intersection(history):
+                continue
+            if owner['id'] != task['id']:
+                if (item['status'] in ('completed', 'cancelled') or owner['status'] not in ('completed', 'failed')
+                        or owner['created_at'] >= task['created_at']
+                        or any(owner.get(k) != task.get(k) for k in ('session_id', 'conversation_bot_id', '_conversation_epoch'))):
+                    continue
+            candidates.append(item)
+        earlier = [a for a in candidates if a['task_id'] != task['id']]
+        candidates = earlier or candidates
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _carry_work_history(self, item, previous):
+        origins = [previous.get('_work_origin_task_id', previous['task_id'])]
+        if item.get('_work_origin_task_id'):
+            origins.append(item['_work_origin_task_id'])
+        item['_work_origin_task_id'] = min(origins, key=lambda identity: (self._get('tasks', identity)['created_at'], identity))
+        item['_work_previous_task_ids'] = list(dict.fromkeys(previous.get('_work_previous_task_ids', [])
+            + [previous['task_id']] + item.get('_work_previous_task_ids', [])))
+
+    def _sync_followup_work(self, tasks, artifacts):
+        decisions = self._all('decisions')
+        for item in sorted(artifacts, key=lambda a: (a['created_at'], a['id'])):
+            if (item['kind'] != 'work' or item.get('_hidden') or item.get('_automatic_work')
+                    or item.get('task_id') not in tasks or not item.get('_work_key', '').startswith('task-')
+                    or item['_work_key'][5:] not in tasks):
+                continue
+            previous = self._work_for_followup(tasks[item['task_id']], artifacts, tasks, decisions)
+            if not previous or previous['id'] == item['id']:
+                continue
+            # Keep the later report's ID so its links and any existing Undo still work.
+            self._carry_work_history(item, previous)
+            item['_work_previous_task_ids'] = list(dict.fromkeys(item['_work_previous_task_ids']
+                + self._followup_task_ids(tasks[item['task_id']], decisions)))
+            previous.update(_hidden=True, _work_replaced_by=item['id'])
+            self._put('artifacts', previous)
+            self._put('artifacts', item)
+            self._event('artifact.updated', dict(self._public(previous), _hidden=True), previous['bot_id'], previous['task_id'])
+            self._event('artifact.updated', self._public(item), item['bot_id'], item['task_id'])
+
     def _work_message_target(self, bot, data):
         from .service import ServiceError, require_text
-        item = self._get('artifacts', require_text(data, 'work_artifact_id', 100))
+        item = self._canonical_work(self._get('artifacts', require_text(data, 'work_artifact_id', 100)))
         if item['kind'] not in ('work', 'pr') or item.get('_hidden'):
             raise ServiceError(400, 'This work item is unavailable.')
         projected = next(a for a in self._work_projection(self._all('artifacts')) if a['id'] == item['id'])
@@ -37,7 +111,8 @@ class TrackedWork:
         return item
 
     def work_context_input(self, item_id):
-        item = self._get('artifacts', item_id)
+        item = self._canonical_work(self._get('artifacts', item_id))
+        item_id = item['id']
         tasks = {t['id']: t for t in self._all('tasks')}
         records = self._all('native_receipts')
         peers = [a for a in self._all('artifacts') if a['id'] == item_id or
@@ -157,6 +232,7 @@ class TrackedWork:
             records = self._all('native_receipts')
             artifacts = self._all('artifacts')
             timestamp = datetime.now(timezone.utc)
+            self._sync_followup_work(tasks, artifacts)
             self._resume_tracked_work(tasks, artifacts)
             covered = {a.get('task_id') for a in artifacts if a['kind'] in ('work', 'pr')}
             for task in tasks.values():
@@ -222,6 +298,15 @@ class TrackedWork:
                 raise YieldForDecision('This task no longer accepts provider output.')
             item = next((a for a in self._all('artifacts') if a['kind'] == 'work'
                          and a['bot_id'] == bot['id'] and a.get('_work_key') == key), None)
+            if item is not None:
+                item = self._canonical_work(item)
+                key = item['_work_key']
+            if item is None and key == 'task-' + task_id:
+                item = self._work_for_followup(task, self._all('artifacts'),
+                    {t['id']: t for t in self._all('tasks')}, self._all('decisions'))
+                if item:
+                    key = item['_work_key']
+                    self._carry_work_history(item, dict(item))
             if item is None:
                 item = next((a for a in self._all('artifacts') if a.get('_automatic_work') and a.get('task_id') == task_id), None)
             created = item is None
@@ -229,8 +314,13 @@ class TrackedWork:
                 owner = self._get('tasks', item['task_id'])
                 if owner['id'] != task_id and owner['created_at'] >= task['created_at']:
                     raise ServiceError(409, 'A newer task owns this work item.')
+                if owner['id'] != task_id:
+                    self._carry_work_history(item, dict(item))
             else:
                 item = dict(id=uid(), bot_id=bot['id'], kind='work', url=None, preview='', created_at=now(), _work_key=key)
+            previous_tasks = self._followup_task_ids(task, self._all('decisions'))
+            if previous_tasks:
+                item['_work_previous_task_ids'] = list(dict.fromkeys(item.get('_work_previous_task_ids', []) + previous_tasks))
             item.pop('_work_resuming', None)
             item.update(task_id=task_id, title=title, activity=activity, status=state,
                         _work_turn=task.get('_native_turn_id'), observed_at=now(), _work_key=key, _automatic_work=False, _hidden=False)

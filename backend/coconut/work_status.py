@@ -175,7 +175,7 @@ class WorkStatus:
 
     def _dismiss_work(self, artifact_id, data):
         from .service import ServiceError, encoded, require_text
-        artifact = self._get('artifacts', artifact_id)
+        artifact = self._canonical_work(self._get('artifacts', artifact_id))
         if artifact['kind'] not in ('pr', 'work'):
             raise ServiceError(400, 'This item does not appear in Work.')
         identity = 'work:' + artifact['id'] if artifact['kind'] == 'work' else artifact['url'].lower()
