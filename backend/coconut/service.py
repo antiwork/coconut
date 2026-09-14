@@ -76,7 +76,7 @@ from .background_processes import BackgroundProcesses
 from .native_execution import NativeExecution
 from .decision_inbox import DecisionInbox
 from .pull_request_reviews import PullRequestReviews
-from .work_progress import WorkProgress
+from .work_progress import WorkProgress, work_enabled
 
 
 from .routine_coordinator import NativeRoutines
@@ -2121,8 +2121,6 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                     if task.get('_work_context_id'):
                         provider_task['_work_context'] = self.work_context_input(task['_work_context_id'])
                         provider_task['_work_status_only'] = task.get('_work_status_only', False)
-                    if task.get('source_bot_id') or task.get('_work_todos'):
-                        provider_task['_work_dependencies'] = self.work_dependencies(task)
                     provider_task.update(self._bot_creation_input(task))
                     provider_task.update(self.decision_chat_input(task))
                     provider_task.update(self._bot_deletion_input(task))
@@ -2140,6 +2138,9 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                             'return_to_bot_id': assignment.get('source_bot_id'),
                             'waiting_on_task_ids': [identity for identity in assignment.get('_waiting_on', []) if identity != task.get('_resolved_dependency_id')],
                         }
+                    # Same predicate as the worker's NativeWork, evaluated on the assembled provider task.
+                    if work_enabled('resume' if decision else 'start', provider_task):
+                        provider_task['_work_dependencies'] = self.work_dependencies(task)
                     turn_ids = {t['id'] for t in self._all('tasks') if t['id'] == assignment['id'] or t.get('_assignment_task_id') == assignment['id']}
                     provider_task['_outgoing_bot_messages'] = [{'target_bot_id': delivery['target_bot_id'], 'text': delivery['text'], 'task_id': delivery['receipt']['task_id'], 'status': self._get('tasks', delivery['receipt']['task_id'])['status'] if delivery['receipt']['task_id'] else delivery['receipt']['status']} for delivery in self._all('deliveries') if delivery['source_task_id'] in turn_ids]
                 emit = lambda kind, payload: self.emit(task_id, kind, payload)
