@@ -16,6 +16,7 @@ WORK_INSTRUCTIONS = (
     'If another existing task owns the next step, use coconut_wait to record that dependency, then finish this turn. '
     'Call coconut_wait without arguments to list tasks and processes in this exchange. '
     'For an existing background process, use process_id to wait for its result without waiting for its owner task. '
+    'For an existing human decision in this exchange, use decision_id to wait for its answer without waiting for its owner task. '
     'Do not start a duplicate review or watcher. '
     'Do not add later work outside this assignment to its task list. The completed coconut-assignment item closes this assignment. '
     'Continue independent authorized work. Use coconut_ask if a human decision is required. '
@@ -95,6 +96,25 @@ class WorkProgress:
                 raise ServiceError(409, 'This task cannot register a wait now.')
             peers = self._exchange_peers(task)
             process_owners = peers | {task_id: task}
+            decisions = {d['id']: d for d in self._all('decisions') if d['task_id'] in process_owners}
+            if sum(bool(payload.get(key)) for key in ('task_id', 'process_id', 'decision_id')) > 1:
+                raise ServiceError(400, 'Choose one task, process, or decision.')
+            if payload.get('decision_id'):
+                identity = require_text(payload, 'decision_id', 100)
+                reason = require_text(payload, 'reason', 80)
+                if identity not in decisions or '\n' in reason:
+                    raise ServiceError(400, 'Choose a decision from this exchange and give one short reason.')
+                decision = decisions[identity]
+                if not self._decision_wait_pending(decision):
+                    return {'status': 'completed', 'decision_id': identity, 'result': self._decision_wait_result(decision)}
+                receipt_id = digest(json.dumps([task_id, task.get('_native_turn_id'), 'decision', identity]))
+                if not any(r['id'] == receipt_id for r in self._all('native_receipts')):
+                    action = {'name': 'coconut_wait', 'arguments': {'decision_id': identity, 'reason': reason}}
+                    self._put('native_receipts', dict(id=receipt_id, task_id=task_id, turn_id=task.get('_native_turn_id'),
+                        action=action, action_hash=digest(encoded(action)), state='completed', result='{}',
+                        created_at=now(), completed_at=now(), _wait_decision_id=identity,
+                        _wait_session_id=process_owners[decision['task_id']]['session_id']))
+                return {'status': 'waiting', 'decision_id': identity, 'reason': reason}
             from .background_processes import subscription
             processes = {}
             for record in self._all('native_receipts'):
@@ -127,7 +147,8 @@ class WorkProgress:
                         _wait_session_id=process_owners[source['task_id']]['session_id']))
                 return {'status': 'waiting', 'process_id': process_id, 'reason': reason}
             if not payload.get('task_id'):
-                return {'processes': [{'process_id': identity, 'task_id': r['task_id']} for identity, r in processes.items()], 'tasks': [{k: t.get(k) for k in ('id', 'bot_id', 'title', 'status')}
+                return {'decisions': [{k: d.get(k) for k in ('id', 'task_id', 'title', 'status')} for d in decisions.values()],
+                        'processes': [{'process_id': identity, 'task_id': r['task_id']} for identity, r in processes.items()], 'tasks': [{k: t.get(k) for k in ('id', 'bot_id', 'title', 'status')}
                                   for t in peers.values()]}
             target_id = require_text(payload, 'task_id', 100)
             reason = require_text(payload, 'reason', 80)
@@ -154,6 +175,18 @@ class WorkProgress:
                     _wait_task_id=target_id, _wait_session_id=target['session_id']))
             return {'status': 'waiting', 'task_id': target_id, 'reason': reason}
 
+    @staticmethod
+    def _decision_wait_pending(decision):
+        # Inbox finalizes a swipe before any worker can act on the dismissal.
+        return decision['status'] == 'pending' or (decision['status'] == 'dismissed' and bool(decision.get('inbox_undo_until')))
+
+    @staticmethod
+    def _decision_wait_result(decision):
+        return ('Existing decision changed. Apply only its recorded scope and selected option. '
+                'A dismissal or a request for changes does not approve publication.\n' + json.dumps(
+                    {key: decision.get(key) for key in ('id', 'title', 'status', 'selected_option_id',
+                                                       'selected_option_label', 'correction', 'context')}, ensure_ascii=False))
+
     def work_dependencies(self, task):
         """Expose existing owners before a bot can start duplicate work."""
         # A listing is read-only. The wait-registration guard applies only to an explicit coconut_wait.
@@ -174,7 +207,7 @@ class WorkProgress:
     def _drain_task_completions(self):
         with self.lock:
             bot_ids = {self._get('tasks', r['task_id'])['bot_id'] for r in self._all('native_receipts')
-                       if (r.get('_wait_task_id') or r.get('_wait_process_receipt')) and not r.get('_process_delivery')}
+                       if (r.get('_wait_task_id') or r.get('_wait_process_receipt') or r.get('_wait_decision_id')) and not r.get('_process_delivery')}
         for bot_id in bot_ids:
             with self.lock:
                 bot_lock = self.bot_locks.setdefault(bot_id, threading.Lock())
@@ -186,13 +219,14 @@ class WorkProgress:
                         return
                     grouped = {}
                     for record in self._all('native_receipts'):
-                        if not (record.get('_wait_task_id') or record.get('_wait_process_receipt')) or record.get('_process_delivery'):
+                        if not (record.get('_wait_task_id') or record.get('_wait_process_receipt') or record.get('_wait_decision_id')) or record.get('_process_delivery'):
                             continue
                         task = self._get('tasks', record['task_id'])
                         if task['bot_id'] != bot_id or not self._can_resume_process(task, self._get('bots', bot_id)):
                             continue
                         source = self._get('native_receipts', record['_wait_process_receipt']) if record.get('_wait_process_receipt') else None
-                        target = self._get('tasks', source['task_id'] if source else record['_wait_task_id'])
+                        decision = self._get('decisions', record['_wait_decision_id']) if record.get('_wait_decision_id') else None
+                        target = self._get('tasks', decision['task_id'] if decision else source['task_id'] if source else record['_wait_task_id'])
                         target_bot = self._get('bots', target['bot_id'])
                         reset = (target_bot.get('_deleted') or target['session_id'] != target_bot['session_id']
                                  or target['session_id'] != record['_wait_session_id']
@@ -200,6 +234,10 @@ class WorkProgress:
                                      and target.get('_conversation_epoch') != task.get('_conversation_epoch')))
                         if reset:
                             text = 'The task you waited for is no longer in the current conversation.'
+                        elif decision:
+                            if self._decision_wait_pending(decision):
+                                continue
+                            text = self._decision_wait_result(decision)
                         elif source:
                             text = source.get('_completion_text')
                             if not text and source.get('_process_delivery'):

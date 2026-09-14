@@ -913,13 +913,15 @@ def run_turn(request, emit, request_receipt):
             allowed.add(TRACK_WORK_SCHEMA['name'])
         if operation != 'context':
             wait_schema = {'name': 'coconut_wait', 'description':
-                'Wait for work an existing task already owns. Call without arguments to list tasks and background processes in this exchange. '
-                'Supply task_id or process_id and a short reason to register a durable wait. Use process_id when awaiting a background process, '
+                'Wait for existing work. Call without arguments to list tasks, decisions, and background processes in this exchange. '
+                'Supply task_id, process_id, or decision_id and a short reason to register a durable wait. '
+                'Use decision_id for an existing card, including when its owner waits for your work. '
+                'Use process_id when awaiting a background process, '
                 'especially if its owner task already depends on your reply. Finish your turn after registration; '
                 'Coconut resumes it once the task finishes or fails. A completed process returns its saved result immediately; '
                 'use that result without waiting again. This does not send a message or create new work.',
                 'parameters': {'type': 'object', 'properties': {
-                    'task_id': {'type': 'string'}, 'process_id': {'type': 'string'}, 'reason': {'type': 'string', 'maxLength': 80}}}}
+                    'task_id': {'type': 'string'}, 'process_id': {'type': 'string'}, 'decision_id': {'type': 'string'}, 'reason': {'type': 'string', 'maxLength': 80}}}}
             registry.register(name='coconut_wait', toolset='coconut', schema=wait_schema,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('work_wait', arguments)))
             allowed.add('coconut_wait')

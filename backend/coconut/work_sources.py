@@ -37,6 +37,8 @@ def coverage(item, binding, tasks, decisions, receipts, current, seen=None, *, i
         for receipt in receipts.values():
             if receipt.get('task_id') != key or receipt.get('_process_delivery'):
                 continue
+            if receipt.get('_wait_decision_id') in decisions:
+                return True
             if any(active(receipt[field]) for field in ('_wait_task_id', '_relay_task_id') if receipt.get(field)):
                 return True
             receipt = receipts.get(receipt.get('_wait_process_receipt'), receipt)

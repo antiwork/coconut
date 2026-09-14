@@ -59,7 +59,7 @@ class BackgroundProcesses:
     def _background_pending(self, task_id, *, finishing_task_id=None):
         turns = [t for t in self._all('tasks') if t['id'] == task_id or t.get('_assignment_task_id') == task_id]
         owners = {t['id'] for t in turns}
-        return (any(r['task_id'] in owners and (subscription(r) or r.get('_relay_task_id') or r.get('_wait_task_id') or r.get('_wait_process_receipt')) and not r.get('_process_delivery')
+        return (any(r['task_id'] in owners and (subscription(r) or r.get('_relay_task_id') or r.get('_wait_task_id') or r.get('_wait_process_receipt') or r.get('_wait_decision_id')) and not r.get('_process_delivery')
                     for r in self._all('native_receipts'))
                 or any(t['id'] != finishing_task_id and t.get('_background_completion')
                        and t['status'] in ('queued', 'working', 'needs_you', 'paused') for t in turns))
