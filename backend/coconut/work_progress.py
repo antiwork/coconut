@@ -94,11 +94,12 @@ class WorkProgress:
             if task['status'] != 'working' or self._task_paused(task) or self.stopping.is_set():
                 raise ServiceError(409, 'This task cannot register a wait now.')
             peers = self._exchange_peers(task)
+            process_owners = peers | {task_id: task}
             from .background_processes import subscription
             processes = {}
             for record in self._all('native_receipts'):
                 process_id = subscription(record)
-                owner = peers.get(record['task_id'])
+                owner = process_owners.get(record['task_id'])
                 if process_id and owner and owner['bot_id'] == task['bot_id']:
                     processes[process_id] = record
             if payload.get('process_id'):
@@ -109,15 +110,18 @@ class WorkProgress:
                 source = processes[process_id]
                 identity = digest(json.dumps([task_id, source['id']]))
                 existing = next((r for r in self._all('native_receipts') if r['id'] == identity), None)
-                if source.get('_completion_text') or (existing and existing.get('_process_delivery')):
+                if source.get('_process_delivery') or source.get('_completion_text') or (existing and existing.get('_process_delivery')):
                     return {'status': 'completed', 'process_id': process_id,
-                            'result': source.get('_completion_text') or existing.get('_completion_text', 'The result was already received.')}
+                            'result': source.get('_completion_text') or (existing or {}).get('_completion_text', 'The result was already received.')}
+                # The owner's native receipt already registers its completion callback.
+                if source['task_id'] == task_id:
+                    return {'status': 'waiting', 'process_id': process_id, 'reason': reason}
                 if not existing:
                     action = {'name': 'coconut_wait', 'arguments': {'process_id': process_id, 'reason': reason}}
                     self._put('native_receipts', dict(id=identity, task_id=task_id, turn_id=task.get('_native_turn_id'),
                         action=action, action_hash=digest(encoded(action)), state='completed', result='{}',
                         created_at=now(), completed_at=now(), _wait_process_receipt=source['id'],
-                        _wait_session_id=peers[source['task_id']]['session_id']))
+                        _wait_session_id=process_owners[source['task_id']]['session_id']))
                 return {'status': 'waiting', 'process_id': process_id, 'reason': reason}
             if not payload.get('task_id'):
                 return {'processes': [{'process_id': identity, 'task_id': r['task_id']} for identity, r in processes.items()], 'tasks': [{k: t.get(k) for k in ('id', 'bot_id', 'title', 'status')}

@@ -61,6 +61,24 @@ class WorkQueueIsolationTests(unittest.TestCase):
             self.service._put('tasks', intake)
         self.assertEqual(self.service._active_routine_task('intake')['id'], intake['id'])
 
+    def test_bot_can_wait_for_its_own_notified_process_without_duplicate_subscription(self):
+        task = self.task('Watch the published review')
+        with self.service.transaction():
+            task = self.service._get('tasks', task['id'])
+            task['status'] = 'working'
+            self.service._put('tasks', task)
+        receipt = self.service.emit(task['id'], 'native_call', {'name': 'terminal', 'arguments': {}})
+        self.service.emit(task['id'], 'native_result', {'id': receipt['id'], 'result': json.dumps(
+            {'session_id': 'review-watch', 'notify_on_complete': True})})
+        listed = self.service.wait_for_task(task['id'], {})
+        self.assertIn('review-watch', [p['process_id'] for p in listed['processes']])
+        for _ in range(2):
+            result = self.service.wait_for_task(task['id'], {'process_id': 'review-watch', 'reason': 'Review checks'})
+            self.assertEqual(result['status'], 'waiting')
+        self.assertEqual(len(self.service._all('native_receipts')), 1)
+        self.service.emit(task['id'], 'completed', {'summary': 'Waiting for review checks.'})
+        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'waiting')
+
     def test_native_run_uses_the_coconut_queue_and_records_one_receipt(self):
         caller = self.task('Run intake now')
         routine_id = str(uuid4())
