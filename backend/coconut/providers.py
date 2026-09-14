@@ -183,14 +183,16 @@ class HermesProvider(FixtureProvider):
 
     def resolve_task_model(self, bot, task):
         job = task.get('_native_job') or {}
-        selection = {} if job.get('model') and job.get('provider') else self.resolve_model(bot)
-        if job.get('model') or job.get('provider'):
+        model = job.get('model') or job.get('model_snapshot')
+        provider = job.get('provider') or job.get('provider_snapshot')
+        selection = {} if model and provider else self.resolve_model(bot)
+        if model or provider:
             from .model_catalog import _selection
             # The native runtime validates this route using the bot's credentials.
             # The global inventory can omit models configured only in this bot.
             selection = _selection({
-                'model': job.get('model') or selection['model'],
-                'provider': job.get('provider') or selection['provider'],
+                'model': model or selection['model'],
+                'provider': provider or selection['provider'],
                 'reasoning_effort': job.get('reasoning_effort'),
             })
         return selection

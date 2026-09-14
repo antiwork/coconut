@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -315,6 +316,9 @@ class HermesModelCatalog:
                            XDG_CACHE_HOME=str(self.private_home / '.cache'),
                            TMPDIR=str(self.private_home / 'tmp'), HERMES_DISABLE_TELEMETRY='1',
                            PYTHONUNBUFFERED='1')
+        if operation == 'native' and payload.get('native_operation', '').startswith('routine_'):
+            # Coconut retains job ownership after the settings subprocess exits.
+            environment['HERMES_MACHINE_ID'] = 'coconut-' + hashlib.sha256(str(self.data_dir).encode()).hexdigest()[:24]
         try:
             with ExitStack() as files:
                 request = dict(operation=operation, data_root=str(self.data_dir), **payload)

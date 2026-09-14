@@ -1,5 +1,6 @@
 """Use native Hermes job context inside Coconut's durable worker."""
 from contextlib import contextmanager
+from importlib import import_module
 import json
 from pathlib import Path
 
@@ -55,11 +56,18 @@ def job_context(request, runtime, config):
     error = unsupported(job, config)
     if error:
         raise ValueError(error)
-    from cron.scheduler import _check_model_drift
+    scheduler = import_module('cron.scheduler')
     from cron.scheduler_prompt import _build_job_prompt, _guard_job_credential_exfil
     from gateway.session_context import set_session_vars, clear_session_vars
     from tools.terminal_tool import record_session_cwd, clear_session_cwd
-    _check_model_drift(job, job['id'], config, runtime, runtime.get('provider'), request['model'])
+    if hasattr(scheduler, '_check_model_drift'):
+        # Keep the installed runtime usable while the release update is staged.
+        scheduler._check_model_drift(job, job['id'], config, runtime, runtime.get('provider'), request['model'])
+    else:
+        for axis, current in (('model', request['model']), ('provider', request.get('provider') or runtime.get('provider'))):
+            expected = job.get(axis) or scheduler._snapshot_pin(job, axis, current, job['id']) or current
+            if expected != current:
+                raise ValueError('The scheduled ' + axis + ' differs from its saved route.')
     _guard_job_credential_exfil(job)
     prompt = _build_job_prompt(job)
     workdir = job.get('workdir') or ''

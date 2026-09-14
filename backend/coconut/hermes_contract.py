@@ -37,9 +37,13 @@ def verify_contract():
     from cron import jobs
     from tools.terminal_tool import record_session_cwd, clear_session_cwd
     assert callable(record_session_cwd) and callable(clear_session_cwd)
-    from cron.scheduler import _check_model_drift, _is_cron_silence_response
+    import cron.scheduler as scheduler
+    from cron.scheduler import _is_cron_silence_response
     from cron.scheduler_prompt import _build_job_prompt, _guard_job_credential_exfil
-    require_keywords(_check_model_drift, {'job', 'job_id', 'cfg', 'runtime', 'primary_provider_for_drift', 'primary_model_for_drift'})
+    if hasattr(scheduler, '_check_model_drift'):
+        require_keywords(scheduler._check_model_drift, {'job', 'job_id', 'cfg', 'runtime', 'primary_provider_for_drift', 'primary_model_for_drift'})
+    else:
+        require_keywords(scheduler._snapshot_pin, {'job', 'axis', 'current', 'job_id'})
     require_keywords(_build_job_prompt, {'job'})
     require_keywords(_is_cron_silence_response, {'text'})
     require_keywords(_guard_job_credential_exfil, {'job'})

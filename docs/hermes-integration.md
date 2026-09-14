@@ -3,8 +3,8 @@
 Each Coconut bot maps to one native Hermes profile. Coconut's adapter runs outside the upstream source checkout.
 The installer pins and verifies the upstream revision before accepting updates.
 
-The tested revision is `b2aa855b626ff8688eb34b95c60ee8b6a4af3679`.
-Its primary interfaces are [AIAgent](https://github.com/NousResearch/hermes-agent/blob/b2aa855b626ff8688eb34b95c60ee8b6a4af3679/run_agent.py),
+The tested revision is `939e45c91d751fadd94dcd1b873ac3cb44846213` from stable release `v2026.9.11`.
+Its primary interfaces are [AIAgent](https://github.com/NousResearch/hermes-agent/blob/939e45c91d751fadd94dcd1b873ac3cb44846213/run_agent.py),
 [native profiles](https://hermes-agent.nousresearch.com/docs/user-guide/profiles/),
 [native memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory/),
 [approvals](https://hermes-agent.nousresearch.com/docs/user-guide/security/), and
@@ -83,10 +83,13 @@ Coconut changes no Hermes source files.
 Native cron APIs create, edit, pause, resume, delete, claim, and finish jobs in each profile.
 Coconut runs supported prompt jobs as conversation tasks while the phone is closed.
 Native cron state determines recurrence and repeat limits.
-Completion uses the pinned [native outcome and schedule helpers](https://github.com/NousResearch/hermes-agent/blob/b2aa855b626ff8688eb34b95c60ee8b6a4af3679/cron/jobs.py).
+Completion uses the pinned [native outcome and schedule helpers](https://github.com/NousResearch/hermes-agent/blob/939e45c91d751fadd94dcd1b873ac3cb44846213/cron/jobs.py).
 Coconut records the completion owner in the same native write as the outcome.
 This lets a retry confirm completion without advancing the schedule twice.
 The compatibility check verifies these interfaces before accepting an update.
+Jobs keep their saved model and provider when the bot default changes. Explicit job settings take priority.
+Coconut supplies a stable native claim identity because its settings subprocess exits before the job finishes.
+Native claim tokens, heartbeats, and completion checks still control ownership.
 Jobs with scripts, monitors, skills, delivery targets, or execution overrides require native Hermes execution.
 The app displays that limitation instead of discarding the unsupported settings.
 
