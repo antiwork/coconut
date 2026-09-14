@@ -156,22 +156,20 @@ struct DecisionCard: View {
     }
 
     private var choices: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(decision.cardOptions.enumerated()), id: \.element.id) { index, option in
+        VStack(spacing: 8) {
+            ForEach(decision.cardOptions, id: \.id) { option in
                 Button { answer(option.answer, optionId: decision.options.isEmpty ? nil : option.id) } label: {
-                    DecisionChoiceContent(option: option, index: index, isRecommended: decision.recommendedOptionId == option.id, isSending: submittingOptionId == option.id, isSelected: confirmingOptionId == option.id, isCompact: showsBot)
+                    DecisionChoiceContent(option: option, isRecommended: decision.recommendedOptionId == option.id, isSending: submittingOptionId == option.id, isSelected: confirmingOptionId == option.id, isCompact: showsBot)
                 }
                 .buttonStyle(HomePressStyle())
                 .disabled(!canRespond || submitting || store.answeringDecisionIds.contains(decision.id))
                 .accessibilityIdentifier("decision-option-\(option.id)")
                 .accessibilityLabel(option.label + (decision.recommendedOptionId == option.id ? ", Recommended" : ""))
                 .accessibilityHint("Submits this choice. " + option.explanation)
+                .accessibilityValue(submittingOptionId == option.id ? "Sending choice" : confirmingOptionId == option.id ? "Selected" : "")
                 .accessibilityAddTraits(confirmingOptionId == option.id ? .isSelected : [])
-                if option.id != decision.cardOptions.last?.id { Divider().padding(.horizontal, 12) }
             }
         }
-        .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: 12))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private var decisionReceipt: some View {
@@ -250,7 +248,6 @@ struct DecisionCard: View {
 
 struct DecisionChoiceContent: View {
     let option: DecisionOption
-    let index: Int
     var isRecommended = false
     var isSending = false
     var isSelected = false
@@ -258,14 +255,6 @@ struct DecisionChoiceContent: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: isCompact ? 8 : 12) {
-            ZStack {
-                Text(String(UnicodeScalar(65 + index)!)).opacity(isSelected ? 0 : 1)
-                Image(systemName: "checkmark").fontWeight(.semibold).opacity(isSelected ? 1 : 0)
-            }
-                .font(.subheadline)
-                .foregroundStyle(isSelected ? .primary : .secondary).frame(width: isCompact ? 24 : 28, height: isCompact ? 24 : 28)
-                .background(isSelected ? Color.white.opacity(0.14) : BoardStyle.surface, in: RoundedRectangle(cornerRadius: 7))
-                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: isCompact ? 3 : 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     (Text(option.label) + Text(isRecommended ? "  Recommended" : "").font(.caption).foregroundColor(.secondary))
@@ -273,10 +262,12 @@ struct DecisionChoiceContent: View {
                         .foregroundStyle(option.answer == "reject" ? Color.red : .primary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
-                    if isSending {
-                        Image(systemName: "checkmark").foregroundStyle(.secondary)
-                            .accessibilityLabel("Sending choice")
-                    }
+                    Image(systemName: "checkmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(BoardStyle.green)
+                        .frame(width: 20, height: 20)
+                        .opacity(isSelected || isSending ? 1 : 0)
+                        .accessibilityHidden(true)
                 }
                 if !option.explanation.isEmpty {
                     Text(option.explanation).font(.subheadline).foregroundStyle(.secondary)
@@ -286,7 +277,10 @@ struct DecisionChoiceContent: View {
         }
         .padding(.horizontal, 12).padding(.vertical, isCompact ? 8 : 12)
         .frame(maxWidth: .infinity, minHeight: 44)
-        .background(isSelected ? Color.white.opacity(0.12) : .clear)
+        .background(isSelected ? BoardStyle.green.opacity(0.14) : BoardStyle.paper,
+                    in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .stroke(isSelected ? BoardStyle.green.opacity(0.7) : BoardStyle.line, lineWidth: 1))
         .animation(.easeOut(duration: 0.1), value: isSelected)
         .contentShape(Rectangle())
     }

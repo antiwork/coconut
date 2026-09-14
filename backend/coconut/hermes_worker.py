@@ -11,7 +11,7 @@ import signal
 import sys
 import threading
 import unicodedata
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
@@ -278,13 +278,48 @@ def bot_creation_instructions(request):
                          'An exact retry must keep the same source, name, role, and instructions:\n' + json.dumps(receipts))
     return instructions
 
-def bot_directory(request):
+def bot_directory(request, profile_home=None):
     current_id = request.get('bot', {}).get('id')
-    return [
+    contacts = [
         {'id': bot['id'], 'name': str(bot.get('name', 'Bot'))[:80], 'role': str(bot.get('role', ''))[:160]}
         for bot in request['task'].get('_available_bots', [])
         if isinstance(bot, dict) and isinstance(bot.get('id'), str) and bot['id'] != current_id
     ]
+    if profile_home is not None:
+        try:
+            from hermes_cli.profiles import read_profile_meta
+            if __package__:
+                from .profiles import HermesProfiles
+            else:
+                from profiles import HermesProfiles
+            profiles = HermesProfiles(Path(profile_home).parents[2])
+        except (ImportError, OSError, ValueError):
+            return contacts
+        for contact in contacts:
+            try:
+                home = profiles.home(contact)
+                # Read only public routing metadata. Never share SOUL.md or memory.
+                meta_path = home / 'profile.yaml'
+                if meta_path.is_symlink():
+                    continue
+                meta = read_profile_meta(home)
+                if meta.get('description'):
+                    contact['role'] = str(meta['description'])[:160]
+            except (OSError, ValueError):
+                # One damaged profile must not keep other contacts out of date.
+                continue
+    return contacts
+
+
+BOT_ROLE_INSTRUCTIONS = (
+    'Maintain your internal routing description in your native Hermes profile.yaml metadata. '
+    'If the description is missing or no longer matches your purpose, generate a concise capability summary '
+    'from your own instructions and skills during this turn. Limit it to 160 characters. '
+    'Use hermes_cli.profiles.write_profile_meta with your HERMES_HOME, description, and description_auto=True. '
+    'Preserve other metadata. Include only capabilities that other bots can use to select you. '
+    'Exclude private instructions, credentials, personal preferences, and conversation content. '
+    'Do not ask the user to maintain labels or announce this update. '
+)
 
 
 def explicit_bot_messages(task):
@@ -703,7 +738,7 @@ def run_turn(request, emit, request_receipt):
         proposed = False
         response_chunks = []
         allowed = set()
-        directory = bot_directory(request)
+        directory = bot_directory(request, os.environ['HERMES_HOME'])
         directory_lock = threading.Lock()
         creation_sources = {source['id']: source for source in bot_creation_sources(request)}
         creation_lock = threading.Lock()
@@ -899,6 +934,7 @@ def run_turn(request, emit, request_receipt):
         if work.enabled:
             instructions += WORK_INSTRUCTIONS
         instructions += CONVERSATION_INSTRUCTIONS
+        instructions += BOT_ROLE_INSTRUCTIONS
         instructions += '\nYour current identity, confirmed by the service:\n' + json.dumps({
             'id': request['bot']['id'], 'name': request['bot'].get('name'), 'role': request['bot'].get('role', '')})
         instructions += '\nUse this identity when older notes contain a previous name. Check the roster before creating a bot with an existing name.'

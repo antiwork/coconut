@@ -123,9 +123,15 @@ enum BotMentions {
 
 struct BotMentionPicker: View {
     @ScaledMetric(relativeTo: .body) private var nameHeight: CGFloat = 22
-    @ScaledMetric(relativeTo: .caption) private var roleHeight: CGFloat = 16
     let bots: [Bot]
     let select: (Bot) -> Void
+
+    private func accessibleName(for bot: Bot) -> String {
+        let matching = bots.filter { $0.name.lowercased() == bot.name.lowercased() }
+        guard matching.count > 1, let index = matching.firstIndex(where: { $0.id == bot.id }) else { return bot.name }
+        let fruit = FruitArtwork.all[FruitArtwork.index(symbol: bot.avatar, identity: bot.id)].name
+        return "\(bot.name), \(fruit), bot \(index + 1) of \(matching.count)"
+    }
 
     var body: some View {
         if !bots.isEmpty {
@@ -137,9 +143,6 @@ struct BotMentionPicker: View {
                                 BotAvatar(bot: bot, size: 30)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(bot.name).font(.body).lineLimit(1)
-                                    if bots.filter({ $0.name.lowercased() == bot.name.lowercased() }).count > 1 {
-                                        Text(bot.role).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                    }
                                 }
                                 Spacer(minLength: 0)
                             }
@@ -148,14 +151,12 @@ struct BotMentionPicker: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("mention-bot-\(bot.id)")
+                        .accessibilityLabel(accessibleName(for: bot))
                         if bot.id != bots.last?.id { Divider().padding(.leading, 56) }
                     }
                 }
             }
-            .frame(height: min(bots.reduce(CGFloat.zero) { height, bot in
-                let duplicate = bots.filter { $0.name.lowercased() == bot.name.lowercased() }.count > 1
-                return height + max(50, nameHeight + 18 + (duplicate ? roleHeight + 2 : 0)) + 1
-            }, 260))
+            .frame(height: min(CGFloat(bots.count) * (max(50, nameHeight + 18) + 1), 260))
             .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 22))
             .overlay(RoundedRectangle(cornerRadius: 22).stroke(BoardStyle.line))
             .padding(.bottom, 8)
