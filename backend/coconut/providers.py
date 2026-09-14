@@ -385,7 +385,7 @@ class HermesProvider(FixtureProvider):
                             receipt = {key: result[key] for key in ('task_id', 'target_bot_id', 'thread_id', 'status', 'delivery_id') if isinstance(result.get(key), str)}
                     except Exception as error:
                         from .service import ServiceError
-                        if event['type'] == 'work_wait' and isinstance(error, ServiceError) and 400 <= error.status < 500:
+                        if event['type'] in ('work_wait', 'decision_response') and isinstance(error, ServiceError) and 400 <= error.status < 500:
                             receipt = {'status': 'rejected', 'error': str(error)}
                         elif event['type'] in ('bot_create', 'bot_delete') and isinstance(error, ServiceError) and 400 <= error.status < 500:
                             message = {

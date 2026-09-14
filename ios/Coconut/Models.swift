@@ -272,6 +272,7 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     var recommendedOptionId: String? = nil
     var selectedOptionId: String? = nil
     var selectedOptionLabel: String? = nil
+    var previousDecisionId: String? = nil
     var replacesDecisionId: String? = nil
     var replacedByDecisionId: String? = nil
 
@@ -301,7 +302,11 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     var cardContext: String? {
         let recap = context?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let text = recap.isEmpty ? explanation.trimmingCharacters(in: .whitespacesAndNewlines) : recap
-        let summary = text == title ? "" : text
+        var summary = text == title ? "" : text
+        let unknown = uncertainty?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !unknown.isEmpty, !summary.localizedCaseInsensitiveContains(unknown) {
+            summary = [summary, unknown].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        }
         if actionType == "native_approval", !resource.isEmpty, !summary.contains(resource) {
             return [summary, resource].filter { !$0.isEmpty }.joined(separator: "\n")
         }

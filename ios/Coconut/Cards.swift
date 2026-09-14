@@ -9,6 +9,7 @@ struct DecisionCard: View {
     var replyFocus: FocusState<Bool>.Binding? = nil
     var confirmingOptionId: String? = nil
     var onRespond: () -> Void = {}
+    var onViewPrevious: ((String) -> Void)? = nil
     var onChoose: ((String, String?) -> Void)? = nil
     @State private var dismissing = false
     @State private var dismissRequest: (revision: Int, id: String)?
@@ -63,6 +64,25 @@ struct DecisionCard: View {
 
     private var cardContent: some View {
         VStack(alignment: .leading, spacing: showsBot ? 10 : 14) {
+            if let previousId = decision.previousDecisionId {
+                let previous = store.decisions.first { $0.id == previousId }
+                let label = previous?.selectedOptionLabel.map { "Earlier choice: \($0)" } ?? "View earlier answer"
+                Group {
+                    if let onViewPrevious {
+                        Button { onViewPrevious(previousId) } label: {
+                            Label(label, systemImage: "arrow.turn.up.left")
+                        }
+                    } else {
+                        NavigationLink(value: previous.map { store.decisionChatRoute(for: $0) }
+                            ?? ConversationRoute(botId: store.conversationBotId(for: decision), decisionId: previousId)) {
+                            Label(label, systemImage: "arrow.turn.up.left")
+                        }
+                    }
+                }
+                .font(.caption).foregroundStyle(.secondary).buttonStyle(.plain)
+                .frame(minHeight: 44, alignment: .leading)
+                .accessibilityIdentifier("previous-decision-\(decision.id)")
+            }
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(decision.title).font(.body.weight(.semibold))

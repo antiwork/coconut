@@ -33,6 +33,25 @@ class DecisionInbox:
         self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
         return self._public(decision)
 
+    def decision_followup(self, task, payload):
+        from .service import ServiceError
+        explicit = payload.get('previous_decision_id')
+        if explicit is not None and (not isinstance(explicit, str) or not explicit.strip()):
+            raise ServiceError(400, 'Link an answered question from this task.')
+        previous_id = explicit or task.get('_resume_decision')
+        if not previous_id:
+            return {}
+        previous = next((d for d in self._all('decisions') if d['id'] == previous_id), None)
+        valid = (previous is not None and previous['task_id'] == task['id']
+                 and previous['bot_id'] == task['bot_id'] and previous.get('action_type') == 'question'
+                 and previous['status'] in ('approved', 'rejected', 'modified')
+                 and bool(previous.get('selected_option_label') or previous.get('correction')))
+        if not valid:
+            if explicit is not None:
+                raise ServiceError(400, 'Link an answered question from this task.')
+            return {}
+        return dict(previous_decision_id=previous_id)
+
     def decision_origin(self, task):
         seen = set()
         messages = self._history(task['bot_id'])
@@ -201,6 +220,8 @@ class DecisionInbox:
             recommended = revision.get('recommended_option_id')
             if recommended is not None and recommended not in {o['id'] for o in options}:
                 raise ServiceError(400, 'Recommend a current choice.')
+            if 'previous_decision_id' in revision:
+                decision.update(self.decision_followup(task, revision))
             decision.update(title=title, options=options,
                             merge_pr_url=self._merge_decision_url(revision, task),
                             recommended_option_id=recommended, revision=decision['revision'] + 1,
@@ -271,6 +292,13 @@ DECISION_INSTRUCTIONS = (
     'This example assumes those facts were verified. Do not copy its claims or choices into unrelated decisions. '
     'Never invent a fixed set of choices or limit useful choices to three. '
     'Before asking for a decision, investigate material uncertainty within the authorized scope. '
+    'After a requested check, explain what you checked, what changed, and why the next choice is needed. '
+    'Link the answered card with previous_decision_id when the follow-up occurs in a later turn. '
+    'A request to investigate is not a ruling or permission for the proposed action. '
+    'For past decisions, treat summaries as leads. Read the original decision and discussion, including later reversals. '
+    'Cite the original records in evidence or chat. Separate verified facts from inference. '
+    'If original records are missing or inaccessible, state that limit in uncertainty and context. '
+    'Do not call that check complete or remove a useful read-only next step while material evidence remains missing. '
     'Recommend a choice when verified facts support it. State the decisive reason once, in plain language. '
     'Never claim 100 percent confidence, verified access, or completed work without relevant evidence. '
     'Set recommended_option_id when evidence and the user goal give you a clear reason to prefer one choice. '

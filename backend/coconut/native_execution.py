@@ -159,6 +159,8 @@ class NativeExecution:
                 decision['draft_hash'] = digest(encoded(draft))
             decision.update(self.decision_origin(task))
             if not approval and draft is None:
+                decision.update(self.decision_followup(task, payload))
+            if not approval and draft is None:
                 decision['merge_pr_url'] = self._merge_decision_url(payload, task)
             self._put('decisions', decision)
             if optional:

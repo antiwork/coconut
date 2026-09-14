@@ -93,7 +93,10 @@ struct ConversationView: View {
                                 store.conversationBotId(for: decision) == botId
                                     && !messages.contains { $0.kind == "decision" && $0.decisionId == decision.id }
                             }) { decision in
-                                DecisionCard(decision: decision).id(decision.id)
+                                DecisionCard(decision: decision, onViewPrevious: { id in
+                                    nearBottom = false
+                                    proxy.scrollTo(id, anchor: .top)
+                                }).id(decision.id)
                                     .modifier(MessageTimestamp(createdAt: decision.createdAt))
                             }
                             ForEach(waitingBotIds, id: \.self) { id in
@@ -280,7 +283,7 @@ struct TranscriptMessageRow: View {
         Group {
         if message.kind == "decision", let id = message.decisionId,
            let decision = store.decisions.first(where: { $0.id == id }) {
-            DecisionCard(decision: decision)
+            DecisionCard(decision: decision, onViewPrevious: scrollToDecision)
         } else if message.kind == "artifact", let id = message.artifactId,
                   let artifact = store.artifacts.first(where: { $0.id == id }) {
             ArtifactCard(artifact: artifact)
