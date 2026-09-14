@@ -110,11 +110,14 @@ class WorkProgress:
                 source = processes[process_id]
                 identity = digest(json.dumps([task_id, source['id']]))
                 existing = next((r for r in self._all('native_receipts') if r['id'] == identity), None)
-                if source.get('_process_delivery') or source.get('_completion_text') or (existing and existing.get('_process_delivery')):
+                if source.get('_completion_text') or (existing and existing.get('_process_delivery')):
                     return {'status': 'completed', 'process_id': process_id,
                             'result': source.get('_completion_text') or (existing or {}).get('_completion_text', 'The result was already received.')}
                 # The owner's native receipt already registers its completion callback.
                 if source['task_id'] == task_id:
+                    if source.get('_process_delivery'):
+                        return {'status': 'completed', 'process_id': process_id,
+                                'result': 'The process finished, but its saved output is unavailable.'}
                     return {'status': 'waiting', 'process_id': process_id, 'reason': reason}
                 if not existing:
                     action = {'name': 'coconut_wait', 'arguments': {'process_id': process_id, 'reason': reason}}
