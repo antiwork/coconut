@@ -293,7 +293,10 @@ def bot_directory(request, profile_home=None):
             else:
                 from profiles import HermesProfiles
             profiles = HermesProfiles(Path(profile_home).parents[2])
-            for contact in contacts:
+        except (ImportError, OSError, ValueError):
+            return contacts
+        for contact in contacts:
+            try:
                 home = profiles.home(contact)
                 # Read only public routing metadata. Never share SOUL.md or memory.
                 meta_path = home / 'profile.yaml'
@@ -302,8 +305,9 @@ def bot_directory(request, profile_home=None):
                 meta = read_profile_meta(home)
                 if meta.get('description'):
                     contact['role'] = str(meta['description'])[:160]
-        except (ImportError, OSError, ValueError):
-            pass
+            except (OSError, ValueError):
+                # One damaged profile must not keep other contacts out of date.
+                continue
     return contacts
 
 

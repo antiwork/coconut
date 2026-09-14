@@ -126,6 +126,13 @@ struct BotMentionPicker: View {
     let bots: [Bot]
     let select: (Bot) -> Void
 
+    private func accessibleName(for bot: Bot) -> String {
+        let matching = bots.filter { $0.name.lowercased() == bot.name.lowercased() }
+        guard matching.count > 1, let index = matching.firstIndex(where: { $0.id == bot.id }) else { return bot.name }
+        let fruit = FruitArtwork.all[FruitArtwork.index(symbol: bot.avatar, identity: bot.id)].name
+        return "\(bot.name), \(fruit), bot \(index + 1) of \(matching.count)"
+    }
+
     var body: some View {
         if !bots.isEmpty {
             ScrollView {
@@ -144,6 +151,7 @@ struct BotMentionPicker: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("mention-bot-\(bot.id)")
+                        .accessibilityLabel(accessibleName(for: bot))
                         if bot.id != bots.last?.id { Divider().padding(.leading, 56) }
                     }
                 }

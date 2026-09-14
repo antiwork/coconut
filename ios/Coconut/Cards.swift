@@ -166,6 +166,7 @@ struct DecisionCard: View {
                 .accessibilityIdentifier("decision-option-\(option.id)")
                 .accessibilityLabel(option.label + (decision.recommendedOptionId == option.id ? ", Recommended" : ""))
                 .accessibilityHint("Submits this choice. " + option.explanation)
+                .accessibilityValue(submittingOptionId == option.id ? "Sending choice" : confirmingOptionId == option.id ? "Selected" : "")
                 .accessibilityAddTraits(confirmingOptionId == option.id ? .isSelected : [])
             }
         }

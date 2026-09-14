@@ -31,6 +31,24 @@ class BotContactPurposeTests(unittest.TestCase):
             self.assertNotIn('private', str(result))
             self.assertNotIn('secret', str(result))
 
+    def test_unreadable_contact_does_not_stop_later_descriptions(self):
+        with tempfile.TemporaryDirectory() as root:
+            current, damaged, healthy = str(uuid4()), str(uuid4()), str(uuid4())
+            home = Path(root) / 'bots' / current / 'home'
+            native = ModuleType('hermes_cli.profiles')
+            def read_meta(path):
+                if path.parent.name == damaged:
+                    raise OSError('Unreadable profile')
+                return {'description': 'Review code.'}
+            native.read_profile_meta = read_meta
+            request = {'bot': {'id': current}, 'task': {'_available_bots': [
+                {'id': damaged, 'name': 'Damaged', 'role': 'Old role'},
+                {'id': healthy, 'name': 'Dev', 'role': ''}]}}
+            with patch.dict(sys.modules, {'hermes_cli.profiles': native}):
+                result = bot_directory(request, home)
+            self.assertEqual(result[0]['role'], 'Old role')
+            self.assertEqual(result[1]['role'], 'Review code.')
+
     def test_missing_native_metadata_keeps_existing_contacts(self):
         current, peer = str(uuid4()), str(uuid4())
         request = {'bot': {'id': current}, 'task': {'_available_bots': [
