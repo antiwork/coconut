@@ -100,15 +100,12 @@ class BackgroundProcesses:
                         continue
                     records = [r for r in self._all('native_receipts') if subscription(r) and (not r.get('_process_delivery') or r.get('_delegation_ack_pending'))
                                and self._get('tasks', r['task_id'])['bot_id'] == bot_id]
-                    waited_on = {r['_wait_process_receipt'] for r in self._all('native_receipts')
-                                 if r.get('_wait_process_receipt') and not r.get('_process_delivery')
-                                 and self._can_resume_process(self._get('tasks', r['task_id']), bot)}
                     processes, cached = [], []
                     for record in records:
                         task = self._get('tasks', record['task_id'])
                         if record.get('_delegation_ack_pending'):
                             processes.append(dict(id=record['id'], task_id=task['id'],
-                                                  delegation_ids=delegation_ids(record), acknowledge=True))
+                                                  delegation_ids=delegation_ids(record), epoch=task.get('_conversation_epoch'), acknowledge=True))
                             continue
                         if not self._process_observation_current(task, bot):
                             continue
@@ -116,8 +113,6 @@ class BackgroundProcesses:
                         if record.get('_completion_text'):
                             if resumable:
                                 cached.append(dict(id=record['id'], text=record['_completion_text']))
-                            continue
-                        if not resumable and record['id'] not in waited_on:
                             continue
                         processes.append(dict(id=record['id'], session_id=subscription(record), task_id=task['id'],
                                               epoch=task.get('_conversation_epoch'), delegation_ids=delegation_ids(record)))

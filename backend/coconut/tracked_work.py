@@ -324,7 +324,7 @@ class TrackedWork:
             if item is None:
                 item = next((a for a in self._all('artifacts') if a.get('_automatic_work') and a.get('task_id') == task_id), None)
             created = item is None
-            report_only = bool(item and task.get('_source_audit_prompt'))
+            report_only = bool(item and self._assignment(task).get('_source_audit_prompt'))
             if item:
                 owner = self._get('tasks', item['task_id'])
                 if owner['id'] != task_id and owner['created_at'] >= task['created_at']:

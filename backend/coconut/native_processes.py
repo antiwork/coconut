@@ -6,13 +6,19 @@ import sys
 from uuid import UUID, uuid5
 
 
-def delegation_completion(item):
+def delegation_completion(item, *, session_id=None, resolve_session=None):
     from tools import async_delegation as native
 
     native.recover_abandoned_delegations()
     rows = [native.get_durable_delegation(identity) for identity in item['delegation_ids']]
-    # A profile can contain several Coconut conversations. Never adopt another task's result.
-    if any(row is None or row['origin_session'] != item['task_id'] for row in rows):
+    # Receipt IDs identify the task. Hermes stores their origin as the native conversation.
+    def owns(row):
+        if row is None:
+            return False
+        origin = row['origin_session']
+        return (origin == item['task_id'] or bool(session_id and resolve_session
+                and resolve_session(origin) == session_id))
+    if not all(owns(row) for row in rows):
         return []
     if item.get('acknowledge'):
         for row in rows:
@@ -41,13 +47,14 @@ def completions(request):
     db = SessionDB()
     try:
         for item in request['processes']:
-            if item.get('delegation_ids'):
-                results.extend(delegation_completion(item))
-                continue
             root = request['bot']['session_id']
             if item.get('epoch'):
                 root = str(uuid5(UUID(root), item['epoch']))
             session_id = db.resolve_resume_session_id(root)
+            if item.get('delegation_ids'):
+                results.extend(delegation_completion(item, session_id=session_id,
+                    resolve_session=db.resolve_resume_session_id))
+                continue
             tokens = set_session_vars(session_id=session_id, session_key=item['task_id'])
             try:
                 process = registry.get(item['session_id'])

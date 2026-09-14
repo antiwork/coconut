@@ -10,7 +10,7 @@ import subprocess
 import time
 
 
-def coverage(item, binding, tasks, decisions, receipts, current, seen=None):
+def coverage(item, binding, tasks, decisions, receipts, current, seen=None, *, include_task_decisions=False):
     """Require a live dependency or an explicit, bounded deferral."""
     if binding.get('updated_at') != item.get('updated_at'):
         return False
@@ -23,6 +23,8 @@ def coverage(item, binding, tasks, decisions, receipts, current, seen=None):
             return False
         seen.add(key)
         task = tasks.get(key, {})
+        if include_task_decisions and any(d.get('task_id') == key and d.get('status') == 'pending' for d in decisions.values()):
+            return True
         if task.get('status') in ('queued', 'working'):
             return True
         if task.get('status') != 'waiting':
@@ -33,7 +35,12 @@ def coverage(item, binding, tasks, decisions, receipts, current, seen=None):
             return True
         from .background_processes import subscription
         for receipt in receipts.values():
-            if receipt.get('task_id') != key or not subscription(receipt) or receipt.get('_process_delivery'):
+            if receipt.get('task_id') != key or receipt.get('_process_delivery'):
+                continue
+            if any(active(receipt[field]) for field in ('_wait_task_id', '_relay_task_id') if receipt.get(field)):
+                return True
+            receipt = receipts.get(receipt.get('_wait_process_receipt'), receipt)
+            if receipt.get('_process_delivery') or not subscription(receipt):
                 continue
             if receipt.get('_completion_text'):
                 return True
@@ -107,9 +114,13 @@ class WorkSources:
                         signature = hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest()
                         previous = recoveries.get(identity, {})
                         previous_status = tasks.get(previous.get('task_id'), {}).get('status')
-                        retry = (previous_status in ('failed', 'completed') and previous.get('attempts', 1) < 2)
+                        live = coverage(proof['item'], dict(updated_at=proof['item']['updated_at'], task_ids=[previous.get('task_id')]),
+                                        tasks, decisions, receipts, current, include_task_decisions=True)
+                        retry = (previous_status in ('failed', 'completed', 'waiting') and not live
+                                 and (previous.get('attempts', 1) < 2 and previous_status != 'waiting'
+                                      or time.time() >= previous.get('retry_at', 0)))
                         if ((signature != previous.get('signature') or retry)
-                                and previous_status not in ('queued', 'working')):
+                                and previous_status not in ('queued', 'working', 'needs_you') and not live):
                             eligible.append(proof['item'])
                             signatures[identity] = signature
                     # Deduplicate each assignment independently. A waiting recovery must
@@ -135,7 +146,9 @@ class WorkSources:
                         state['task_id'] = task['id']
                         previous = recoveries.get(item['id'], {})
                         attempts = previous.get('attempts', 1) + 1 if previous.get('signature') == signatures[item['id']] else 1
-                        recoveries[item['id']] = dict(signature=signatures[item['id']], task_id=task['id'], attempts=attempts)
+                        recoveries[item['id']] = dict(signature=signatures[item['id']], task_id=task['id'], attempts=attempts,
+                                                     retry_at=time.time() + min(3600, max(600, source.get('interval_seconds', 600))
+                                                                               * 2 ** min(attempts - 1, 3)))
                     state['recoveries'] = recoveries
                     state.update(checked_at=current.isoformat(), missing=[item['id'] for item in gaps], error=None,
                                  next_check=time.time() + max(60, source.get('interval_seconds', 600)))
