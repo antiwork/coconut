@@ -91,6 +91,54 @@ final class ConversationLayoutFlowTests: XCTestCase {
     }
 
     @MainActor
+    func testKeyboardKeepsBottomPinnedAndPreservesHistory() throws {
+        guard let url = ProcessInfo.processInfo.environment["COCONUT_LAYOUT_TEST_URL"] else {
+            throw XCTSkip("Run with scripts/test_conversation_layout.py.")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": "layout-test"]
+        app.launch()
+        let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
+        XCTAssertTrue(bot.waitForExistence(timeout: 15))
+        bot.tap()
+        let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        let latest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Latest response stays visible.")).firstMatch
+        assertVisible(latest, app: app, stage: "Bottom before keyboard")
+        input.tap()
+        assertComposerAboveKeyboard(input, app: app)
+        XCTAssertLessThanOrEqual(latest.frame.maxY, input.frame.minY,
+                                 "Opening the keyboard at the bottom must keep the end of the latest message visible.")
+        let pinned = XCTAttachment(screenshot: app.screenshot())
+        pinned.name = "Keyboard keeps the latest message above the composer"
+        pinned.lifetime = .keepAlways
+        add(pinned)
+
+        let transcript = app.scrollViews["conversation-transcript"]
+        app.coordinate(withNormalizedOffset: .zero).withOffset(
+            CGVector(dx: transcript.frame.maxX - 8, dy: input.frame.minY - 40)
+        ).tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
+        transcript.swipeDown()
+        transcript.swipeDown()
+        let visibleMessages = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@", "message-text-"))
+            .allElementsBoundByIndex.filter { $0.isHittable }
+        let history = visibleMessages.first { $0.frame.minY > 140 && $0.frame.minY < 350 } ?? visibleMessages.first
+        let anchorID = try XCTUnwrap(history).identifier
+        let anchor = app.staticTexts[anchorID]
+        let previousY = anchor.frame.minY
+        input.tap()
+        assertComposerAboveKeyboard(input, app: app)
+        XCTAssertEqual(anchor.frame.minY, previousY, accuracy: 3,
+                       "Opening the keyboard while reading history must preserve the reading position.")
+        let preserved = XCTAttachment(screenshot: app.screenshot())
+        preserved.name = "Keyboard preserves the history position"
+        preserved.lifetime = .keepAlways
+        add(preserved)
+    }
+
+    @MainActor
     private func assertComposerAboveKeyboard(_ input: XCUIElement, app: XCUIApplication) {
         let keyboard = app.keyboards.firstMatch
         XCTAssertTrue(keyboard.waitForExistence(timeout: 5))

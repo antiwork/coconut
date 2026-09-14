@@ -123,15 +123,19 @@ struct ConversationView: View {
                         // Only a user scroll changes whether new messages follow the bottom.
                         if userScrolling { nearBottom = value }
                     }
-                    .onScrollPhaseChange { _, phase in
+                    .onScrollPhaseChange { previous, phase, context in
                         userScrolling = phase == .interacting || phase == .decelerating
+                        if userScrolling || previous == .interacting || previous == .decelerating {
+                            let geometry = context.geometry
+                            nearBottom = geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 100
+                        }
                     }
                     .onScrollGeometryChange(for: CGSize.self) { $0.contentSize } action: { _, _ in
                         if nearBottom && (focusTarget == nil || didFocusDecision) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onScrollGeometryChange(for: CGSize.self) { $0.containerSize } action: { _, _ in
-                        // Resizing must not interrupt an active keyboard or scroll gesture.
-                        if !composerFocused && !userScrolling && nearBottom && (focusTarget == nil || didFocusDecision) {
+                        // Follow keyboard and composer resizing only when the reader stays at the bottom.
+                        if !userScrolling && nearBottom && (focusTarget == nil || didFocusDecision) {
                             proxy.scrollTo("conversation-bottom", anchor: .bottom)
                         }
                     }
