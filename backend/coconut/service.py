@@ -519,39 +519,59 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
             raise ServiceError(400, str(error)) from None
         return selection
 
-    def snapshot(self) -> dict:
+    def snapshot(self, *, timings=None) -> dict:
+        started = time.perf_counter()
+        def measured(name):
+            nonlocal started
+            stamp = time.perf_counter()
+            if timings is not None:
+                timings[name] = (stamp - started) * 1000
+            started = stamp
         self.refresh_native_routines()
+        measured('routines')
         catalog = self._model_catalog()
+        measured('models')
         with self.lock:
             stored_bots = [bot for bot in self._all('bots') if not bot.get('_deleted')]
         if hasattr(self.provider, 'observe_bots'):
             observed = self.provider.observe_bots(stored_bots)
         else:
             observed = {bot['id']: dict(bot, instructions=self.profiles.read_instructions(bot)) for bot in stored_bots}
-        with self.transaction():
-            bots = [self._bot_view(dict(b, **{key: value for key, value in observed.get(b['id'], {}).items() if key in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'model_override', '_native_effective_model', '_model_error')}), catalog) for b in self._all('bots') if not b.get('_deleted')]
-            visible = {b['id'] for b in bots}
-            visible_task_ids = {task['id'] for task in self._all('tasks') if task['bot_id'] in visible and task['conversation_bot_id'] in visible}
-            state = {'bots': bots}
-            for table in self.TABLES[1:]:
-                state[table] = [self._public(o) for o in self._all(table) if o['bot_id'] in visible and o.get('conversation_bot_id', o['bot_id']) in visible and not o.get('_deleted') and not o.get('_hidden') and (table not in ('decisions', 'artifacts') or not o.get('task_id') or o['task_id'] in visible_task_ids)]
-            state['artifacts'] = [self._public(a) for a in self._work_projection([self._get('artifacts', a['id']) for a in state['artifacts']])]
-            replying = {c['decision_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
-            for decision in state['decisions']:
-                decision['reply_pending'] = decision['id'] in replying
-                if not decision.get('request_text') and decision.get('task_id'):
-                    decision.update(self.decision_origin(self._get('tasks', decision['task_id'])))
-            state.update(cursor=self._cursor(), server_time=now(), provider=getattr(self.provider, 'name', 'unknown'), push_configured=self.push.configured)
-            if catalog is not None:
-                default = catalog.get('default', {})
-                state.update(model_catalog=catalog, model=default.get('model') or '', base_url=default.get('base_url') or '', model_configured=bool(catalog.get('default_configured', False)))
-            else:
-                state.update(model=self._setting('model', getattr(self.provider, 'model', '') or ''), base_url=self._setting('base_url', getattr(self.provider, 'base_url', '') or ''), model_configured=bool(getattr(self.provider, 'ready', False)))
-            if hasattr(self.provider, 'native_settings'):
-                native = self.provider.native_settings()
-                state['approvals'] = native['approvals']
-                state['mcp_servers'] = native.get('mcp_servers', [])
-            return state
+        measured('bots')
+        for _ in range(3):
+            with self.lock:
+                settings_cursor = self._cursor()
+            native = self.provider.native_settings() if hasattr(self.provider, 'native_settings') else None
+            measured('settings')
+            with self.transaction():
+                if self.db.execute("SELECT 1 FROM events WHERE seq>? AND type='settings.updated' LIMIT 1", (settings_cursor,)).fetchone():
+                    continue
+                bots = [self._bot_view(dict(b, **{key: value for key, value in observed.get(b['id'], {}).items() if key in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'model_override', '_native_effective_model', '_model_error')}), catalog) for b in self._all('bots') if not b.get('_deleted')]
+                visible = {b['id'] for b in bots}
+                visible_task_ids = {task['id'] for task in self._all('tasks') if task['bot_id'] in visible and task['conversation_bot_id'] in visible}
+                state = {'bots': bots}
+                for table in self.TABLES[1:]:
+                    state[table] = [self._public(o) for o in self._all(table) if o['bot_id'] in visible and o.get('conversation_bot_id', o['bot_id']) in visible and not o.get('_deleted') and not o.get('_hidden') and (table not in ('decisions', 'artifacts') or not o.get('task_id') or o['task_id'] in visible_task_ids)]
+                state['artifacts'] = [self._public(a) for a in self._work_projection([self._get('artifacts', a['id']) for a in state['artifacts']])]
+                replying = {c['decision_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
+                for decision in state['decisions']:
+                    decision['reply_pending'] = decision['id'] in replying
+                    if not decision.get('request_text') and decision.get('task_id'):
+                        decision.update(self.decision_origin(self._get('tasks', decision['task_id'])))
+                state.update(cursor=self._cursor(), server_time=now(), provider=getattr(self.provider, 'name', 'unknown'), push_configured=self.push.configured)
+                if catalog is not None:
+                    default = catalog.get('default', {})
+                    state.update(model_catalog=catalog, model=default.get('model') or '', base_url=default.get('base_url') or '', model_configured=bool(catalog.get('default_configured', False)))
+                else:
+                    state.update(model=self._setting('model', getattr(self.provider, 'model', '') or ''), base_url=self._setting('base_url', getattr(self.provider, 'base_url', '') or ''), model_configured=bool(getattr(self.provider, 'ready', False)))
+                if native is not None:
+                    state['approvals'] = native['approvals']
+                    state['mcp_servers'] = native.get('mcp_servers', [])
+            break
+        else:
+            raise ServiceError(503, 'Settings changed during this request. Try again.')
+        measured('data')
+        return state
 
     def _cursor(self) -> int:
         return self.db.execute('SELECT COALESCE(MAX(seq),0) FROM events').fetchone()[0]

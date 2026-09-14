@@ -26,7 +26,10 @@ class ServiceRestart:
             return {'status': 'queued', 'detail': 'The service restarts once after active turns finish. Finish your reply now.'}
 
     def take_service_restart(self):
-        with self.lock:
+        # The HTTP accept loop must remain available while another request owns the queue.
+        if not self.lock.acquire(blocking=False):
+            return False
+        try:
             if not self.restart_pending or self.stopping.is_set():
                 return False
             if any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values()]):
@@ -34,3 +37,5 @@ class ServiceRestart:
             self.restart_pending = False
             self.stopping.set()
             return True
+        finally:
+            self.lock.release()

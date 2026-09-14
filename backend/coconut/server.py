@@ -77,6 +77,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(content)))
         self.send_header('Cache-Control', 'no-store')
+        if getattr(self, 'timings', None):
+            self.send_header('Server-Timing', ', '.join(f'{name};dur={duration:.1f}' for name, duration in self.timings.items()))
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.end_headers()
         self.wfile.write(content)
@@ -114,10 +116,12 @@ class Handler(BaseHTTPRequestHandler):
             authorization = self.headers.get('Authorization', '')
             if not authorization.startswith('Bearer '):
                 raise ServiceError(401, 'Pair this phone with the Mac to continue.')
+            started = time.perf_counter()
             device = service.authenticate(authorization[7:])
+            self.timings = {'auth': (time.perf_counter() - started) * 1000}
             if method == 'GET':
                 if url.path == '/v1/state':
-                    self._json(200, service.snapshot())
+                    self._json(200, service.snapshot(timings=self.timings))
                 elif url.path == '/v1/settings/google':
                     self._json(200, service.google_connection('status', {}, device))
                 elif url.path == '/v1/push/config':
