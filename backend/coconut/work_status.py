@@ -28,7 +28,8 @@ class WorkStatus:
                 if record.get(key) and not record.get('_process_delivery'):
                     linked.setdefault(record['task_id'], set()).add(record[key])
         for task in tasks.values():
-            if task.get('_native_relay') and task.get('source_task_id') and not task.get('_is_return'):
+            if task.get('source_task_id') and ((task.get('_native_relay') and not task.get('_is_return'))
+                    or (include_continuations and task.get('_is_return') and task.get('_assignment_task_id'))):
                 linked.setdefault(task['source_task_id'], set()).add(task['id'])
             if include_continuations and task.get('_assignment_task_id'):
                 linked.setdefault(task['_assignment_task_id'], set()).add(task['id'])
@@ -42,7 +43,7 @@ class WorkStatus:
             if identity in found or identity not in tasks:
                 continue
             task = tasks[identity]
-            if task.get('exchange_id') != root.get('exchange_id'):
+            if not include_continuations and task.get('exchange_id') != root.get('exchange_id'):
                 continue
             bot = self._get('bots', task['bot_id'])
             unstarted = task['status'] == 'queued' and not task.get('_native_turn_id') and '_conversation_epoch' not in task
@@ -50,7 +51,14 @@ class WorkStatus:
                     or (not unstarted and task.get('_conversation_epoch') != self._setting('conversation_epoch'))):
                 continue
             found[identity] = (task, depth)
-            pending.extend((child, depth + 1) for child in sorted(linked.get(identity, set())) if child != identity)
+            for child in sorted(linked.get(identity, set())):
+                if child == identity or child not in tasks:
+                    continue
+                # A human reply can change the parent's exchange while its saved wait remains valid.
+                if (include_continuations and tasks[child].get('exchange_id') != task.get('exchange_id')
+                        and child not in task.get('_waiting_on', [])):
+                    continue
+                pending.append((child, depth + 1))
         return found
 
     def _work_live(self, task, records, timestamp):

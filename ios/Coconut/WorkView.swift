@@ -111,7 +111,7 @@ struct WorkView: View {
                     }
                     .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
                     .listRowBackground(BoardStyle.paper)
-                    .listRowSeparator(.hidden, edges: .top)
+                    .listRowSeparator(.hidden)
                     .navigationLinkIndicatorVisibility(.hidden)
                     .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
@@ -180,7 +180,7 @@ struct WorkView: View {
     private func workRow(_ item: TrackedWorkItem) -> some View {
         Button { openWork(item.artifact) } label: {
             VStack(alignment: .leading, spacing: 5) {
-                Text(item.artifact.title).font(.body.weight(.medium))
+                Text(item.artifact.title).font(.body.weight(.semibold))
                     .modifier(WorkTextLines())
                     .foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
                 TimelineView(.periodic(from: .now, by: 15)) { context in
@@ -203,7 +203,12 @@ struct WorkView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 14).contentShape(Rectangle())
+            .padding(.vertical, 12)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(.primary.opacity(0.10)).frame(height: 0.5)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
         }
         .buttonStyle(HomePressStyle())
         .accessibilityHint("Opens the bot conversation")

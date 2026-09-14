@@ -117,6 +117,8 @@ class WorkSources:
                     for item in eligible:
                         text = ('Reconcile these open assignments against the original sources and existing work. '
                                 'Read prior decisions before asking anything. An answered or dismissed decision is not permission to ask it again. '
+                                'Update existing Work rows with the verified current activity before returning or recording a deferral. '
+                                'Reuse their keys; do not create a row for this audit or each delegated step. '
                                 'Reuse active work. Inspect unknown outcomes before retrying any external action. '
                                 'Create a concise decision card only when a new human choice is necessary. '
                                 'For every item, save coverage in ' + str(bindings_path) + '. '

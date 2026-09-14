@@ -225,6 +225,7 @@ class NativeExecution:
                            conversation_bot_id=task['conversation_bot_id'], record_message=False, human_authored=False)
                 stored = self._get('tasks', continuation['id'])
                 stored['_resume_decision'] = decision['id']
+                stored['title'] = decision['title'][:120]
                 self._put('tasks', stored)
                 decision['_execution_task_id'] = stored['id']
                 self._put('decisions', decision)

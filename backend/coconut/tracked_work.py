@@ -268,7 +268,15 @@ class TrackedWork:
             for item in artifacts:
                 if not item.get('_automatic_work') or item.get('_hidden') or item.get('task_id') not in tasks:
                     continue
-                chain = self._work_chain(tasks[item['task_id']], tasks, records, include_continuations=True)
+                task = tasks[item['task_id']]
+                if item['title'].startswith('Continue this proposal using the recorded reply.'):
+                    proposal = next((d for d in self._all('decisions')
+                                     if d.get('_execution_task_id') == task['id']), None)
+                    if proposal:
+                        item['title'] = proposal['title'][:120]
+                        self._put('artifacts', item)
+                        self._event('artifact.updated', self._public(item), item['bot_id'], task['id'])
+                chain = self._work_chain(task, tasks, records, include_continuations=True)
                 if any(a['kind'] == 'pr' and a.get('task_id') in chain for a in artifacts):
                     item['_hidden'] = True
                     self._put('artifacts', item)
@@ -338,10 +346,14 @@ class TrackedWork:
 
     def _tracked_items_input(self, task):
         items = [a for a in self._all('artifacts') if a['kind'] == 'work' and not a.get('_hidden') and a['bot_id'] == task['bot_id']]
+        tasks = {t['id']: t for t in self._all('tasks')}
+        records = self._all('native_receipts')
+        owned = {a['id'] for a in items if a.get('task_id') in tasks
+                 and task['id'] in self._work_chain(tasks[a['task_id']], tasks, records, include_continuations=True)}
         items = self._work_projection(items)
         items.sort(key=lambda a: (a['status'] not in ('completed', 'cancelled'), a['observed_at']), reverse=True)
         return [dict(key=a['_work_key'], title=a['title'], status=a['status'], activity=a.get('activity'),
-                     task_id=a['task_id'], current_task=a['task_id'] == task['id'],
+                     task_id=a['task_id'], current_task=a['id'] in owned,
                      dismissed=bool(self._setting('work.dismissed.work:' + a['id']))) for a in items[:30]]
 
     def _project_tracked_items(self, artifacts, tasks, records, timestamp):
@@ -357,7 +369,17 @@ class TrackedWork:
                 if state == 'completed':
                     state, activity = 'blocked', 'Needs attention'
             elif state not in ('completed', 'cancelled'):
-                if not task or task['status'] in ('failed', 'paused'):
+                chain = self._work_chain(task, tasks, records, include_continuations=True) if task else {}
+                active = [t for t, _ in chain.values() if t['id'] != task['id']
+                          and t['status'] in ('queued', 'working', 'waiting', 'needs_you')]
+                if active and task['status'] in ('completed', 'failed', 'waiting'):
+                    if any(t['status'] == 'needs_you' for t in active):
+                        state, activity = 'waiting', 'Waiting for your decision'
+                    elif any(self._work_live(t, records, timestamp) for t in active):
+                        state, activity = 'working', 'In progress'
+                    else:
+                        state, activity = 'waiting', 'Waiting for another bot'
+                elif not task or task['status'] in ('failed', 'paused'):
                     state, activity = 'blocked', 'Needs attention'
                 elif task['status'] == 'cancelled':
                     state, activity = 'cancelled', 'Stopped'
@@ -365,15 +387,7 @@ class TrackedWork:
                     state, activity = 'waiting', 'Waiting for your decision'
                 elif state == 'working':
                     if task['status'] == 'completed':
-                        chain = self._work_chain(task, tasks, records, include_continuations=True)
-                        active = [t for t, _ in chain.values() if t['id'] != task['id']
-                                  and t['status'] in ('queued', 'working', 'waiting', 'needs_you')]
-                        if active:
-                            state = 'waiting'
-                            activity = ('Waiting for your decision' if any(t['status'] == 'needs_you' for t in active)
-                                        else 'Waiting for another bot')
-                        else:
-                            state, activity = 'blocked', 'Needs attention'
+                        state, activity = 'blocked', 'Needs attention'
                     elif task['status'] == 'queued':
                         state, activity = 'waiting', 'Queued'
                     elif task.get('_waiting_on'):
