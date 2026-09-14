@@ -6,6 +6,31 @@ import sys
 from uuid import UUID, uuid5
 
 
+def delegation_completion(item):
+    from tools import async_delegation as native
+
+    native.recover_abandoned_delegations()
+    rows = [native.get_durable_delegation(identity) for identity in item['delegation_ids']]
+    # A profile can contain several Coconut conversations. Never adopt another task's result.
+    if any(row is None or row['origin_session'] != item['task_id'] for row in rows):
+        return []
+    if item.get('acknowledge'):
+        for row in rows:
+            native.mark_completion_delivered(row['delegation_id'])
+        return [dict(id=item['id'], acknowledged=True)]
+    if any(row['state'] in ('running', 'finalizing') for row in rows):
+        return [dict(id=item['id'], observation='running')]
+    if all(row['delivery_state'] == 'delivered' for row in rows):
+        return [dict(id=item['id'], consumed=True)]
+    # Coconut saves the result before acknowledging it on the next poll. A crash
+    # between these steps cannot lose the result or queue a second continuation.
+    text = ('Background delegation finished. Read the recorded outcomes below. '
+            'For an unknown outcome, inspect existing evidence before repeating any external action.\n'
+            + json.dumps([dict(delegation_id=row['delegation_id'], state=row['state'], result=row['result'])
+                          for row in rows], ensure_ascii=False))
+    return [dict(id=item['id'], text=text)]
+
+
 def completions(request):
     from gateway.session_context import set_session_vars, clear_session_vars
     from hermes_state import SessionDB
@@ -16,6 +41,9 @@ def completions(request):
     db = SessionDB()
     try:
         for item in request['processes']:
+            if item.get('delegation_ids'):
+                results.extend(delegation_completion(item))
+                continue
             root = request['bot']['session_id']
             if item.get('epoch'):
                 root = str(uuid5(UUID(root), item['epoch']))
@@ -41,7 +69,7 @@ def completions(request):
                 clear_session_vars(tokens)
     finally:
         db.close()
-    by_session = {result['session_id']: result for result in results if 'observation' not in result}
+    by_session = {result['session_id']: result for result in results if 'session_id' in result and 'observation' not in result}
     for event, text in registry.drain_notifications(
             owns_event=lambda event: event.get('type') == 'completion' and event.get('session_id') in by_session,
             skip_poll_observed=False):

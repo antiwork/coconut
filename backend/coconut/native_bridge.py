@@ -26,6 +26,7 @@ class NativeBridge:
             self.completed.setdefault(item['action_hash'], []).append(item['result'])
         self.decision = request.get('decision') or {}
         self.session_key = request['task']['id']
+        self.execution_owner = ContextVar('coconut_execution_owner', default=self.session_key)
 
     def install(self, registry):
         from tools.approval import register_gateway_notify
@@ -93,6 +94,17 @@ class NativeBridge:
                 self.execution_scope.reset(token)
 
         def serialized(tool_name, args, next_call, **kwargs):
+            owner = kwargs.get('task_id') or self.execution_owner.get()
+            if owner != self.session_key:
+                # Native children keep their own execution history. Their durable
+                # delegation result belongs to this parent; individual calls do not.
+                token = self.execution_owner.set(owner)
+                try:
+                    if tool_name.startswith('coconut_'):
+                        return json.dumps({'error': 'Return this request to your parent in the delegation result.'})
+                    return next_call(args)
+                finally:
+                    self.execution_owner.reset(token)
             # Hermes propagates ContextVars into sandbox RPC threads. The parent
             # already holds the lock and cron fence while it waits for these calls.
             active = self.execution_scope.get()

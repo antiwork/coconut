@@ -71,6 +71,7 @@ def decision_correction(data: dict) -> str:
     return value
 
 
+from .work_sources import WorkSources
 from .work_status import WorkStatus
 from .background_processes import BackgroundProcesses
 from .native_execution import NativeExecution
@@ -88,7 +89,7 @@ from .tracked_work import TrackedWork
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
-class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
+class Service(WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -154,6 +155,7 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
         self.dispatcher: threading.Thread | None = None
         self.pr_poller: threading.Thread | None = None
         self.process_poller: threading.Thread | None = None
+        self.source_poller: threading.Thread | None = None
         from .push import PushDelivery
         self.push = PushDelivery(self)
         if hasattr(self.provider, 'migrate_model_default'):
@@ -1900,6 +1902,8 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
         self.pr_poller.start()
         self.process_poller = threading.Thread(target=self._poll_processes, name='coconut-process-poll', daemon=True)
         self.process_poller.start()
+        self.source_poller = threading.Thread(target=self._poll_work_sources, name='coconut-source-poll', daemon=True)
+        self.source_poller.start()
         self.push.start()
 
     def _register_pr_artifact(self, task_id: str | None, payload: dict, *, bot_id=None):
@@ -2130,7 +2134,7 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                         return
                     history = self._history(bot['id'])
                 provider_task = self._public(task)
-                for field in ('_work_todos', '_work_resume'):
+                for field in ('_work_todos', '_work_resume', '_source_audit_prompt'):
                     if field in task:
                         provider_task[field] = task[field]
                 reaction_feedback = task.get('_reaction_feedback', [])
@@ -2661,6 +2665,8 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
             self.pr_poller.join(timeout=2)
         if self.process_poller:
             self.process_poller.join(timeout=20)
+        if self.source_poller:
+            self.source_poller.join(timeout=65)
         self.push.close()
         with self.lock:
             context_task_ids = {c['task_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}

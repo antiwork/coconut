@@ -14,13 +14,25 @@ def result_value(record):
         return {}
 
 
+def delegation_ids(record):
+    result = result_value(record)
+    if (record['state'] != 'completed' or record['action']['name'] != 'delegate_task'
+            or not isinstance(result, dict) or result.get('status') != 'dispatched'):
+        return []
+    units = result.get('units') or [result]
+    return list(dict.fromkeys(unit['delegation_id'] for unit in units
+                             if isinstance(unit, dict) and isinstance(unit.get('delegation_id'), str)
+                             and unit['delegation_id']))
+
+
 def subscription(record):
     result = result_value(record)
     if (record['state'] == 'completed' and record['action']['name'] == 'terminal'
             and isinstance(result, dict) and result.get('notify_on_complete') is True
             and isinstance(result.get('session_id'), str)):
         return result['session_id']
-    return None
+    identities = delegation_ids(record)
+    return identities[0] if identities else None
 
 
 class BackgroundProcesses:
@@ -73,7 +85,7 @@ class BackgroundProcesses:
             return
         with self.lock:
             bot_ids = {self._get('tasks', r['task_id'])['bot_id'] for r in self._all('native_receipts')
-                       if subscription(r) and not r.get('_process_delivery')}
+                       if subscription(r) and (not r.get('_process_delivery') or r.get('_delegation_ack_pending'))}
         for bot_id in bot_ids:
             with self.lock:
                 bot_lock = self.bot_locks.setdefault(bot_id, threading.Lock())
@@ -86,7 +98,7 @@ class BackgroundProcesses:
                     bot = self._get('bots', bot_id)
                     if bot.get('_deleted') or bot['archived']:
                         continue
-                    records = [r for r in self._all('native_receipts') if subscription(r) and not r.get('_process_delivery')
+                    records = [r for r in self._all('native_receipts') if subscription(r) and (not r.get('_process_delivery') or r.get('_delegation_ack_pending'))
                                and self._get('tasks', r['task_id'])['bot_id'] == bot_id]
                     waited_on = {r['_wait_process_receipt'] for r in self._all('native_receipts')
                                  if r.get('_wait_process_receipt') and not r.get('_process_delivery')
@@ -94,6 +106,10 @@ class BackgroundProcesses:
                     processes, cached = [], []
                     for record in records:
                         task = self._get('tasks', record['task_id'])
+                        if record.get('_delegation_ack_pending'):
+                            processes.append(dict(id=record['id'], task_id=task['id'],
+                                                  delegation_ids=delegation_ids(record), acknowledge=True))
+                            continue
                         if not self._process_observation_current(task, bot):
                             continue
                         resumable = self._can_resume_process(task, bot)
@@ -104,7 +120,7 @@ class BackgroundProcesses:
                         if not resumable and record['id'] not in waited_on:
                             continue
                         processes.append(dict(id=record['id'], session_id=subscription(record), task_id=task['id'],
-                                              epoch=task.get('_conversation_epoch')))
+                                              epoch=task.get('_conversation_epoch'), delegation_ids=delegation_ids(record)))
                 if not processes and not cached:
                     continue
                 results = cached + (self.provider.process_completions(bot, processes) if processes else [])
@@ -118,6 +134,10 @@ class BackgroundProcesses:
                             continue
                         record = self._get('native_receipts', result['id'])
                         task = self._get('tasks', record['task_id'])
+                        if result.get('acknowledged') and record.get('_delegation_ack_pending'):
+                            record.pop('_delegation_ack_pending', None)
+                            self._put('native_receipts', record)
+                            continue
                         if record.get('_process_delivery') or not self._process_observation_current(task, self._get('bots', bot_id)):
                             continue
                         if 'observation' in result:
@@ -132,6 +152,8 @@ class BackgroundProcesses:
                             continue
                         if isinstance(result.get('text'), str) and result['text'].strip():
                             record['_completion_text'] = result['text']
+                            if delegation_ids(record):
+                                record['_delegation_ack_pending'] = True
                             self._put('native_receipts', record)
                             if self._can_resume_process(task, self._get('bots', bot_id)):
                                 grouped.setdefault(task['id'], []).append((record, result['text']))

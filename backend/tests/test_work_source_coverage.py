@@ -1,0 +1,154 @@
+from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+from uuid import uuid4
+
+from coconut.hermes_worker import conversation_input
+from coconut.providers import FixtureProvider
+from coconut.service import Service
+from coconut.work_sources import coverage
+
+
+class WorkSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.provider = FixtureProvider(self.temp.name)
+        self.provider.environment = lambda bot: ({}, self.root)
+        self.service = Service(self.temp.name, self.provider, start_workers=False)
+        self.addCleanup(self.temp.cleanup)
+        self.addCleanup(self.service.close)
+        self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'Desk', 'role': ''}, str(uuid4()))
+        self.source = dict(id='assigned', bot_id=self.bot['id'], command=['read-assignments'], bindings='coverage.json')
+        (self.root / 'work-sources.json').write_text(json.dumps([self.source]))
+        self.item = dict(id='https://github.com/example/repo/issues/1', updated_at='2026-09-14T12:00:00Z', title='Older open assignment')
+
+    def audit(self, complete=True):
+        with self.service.transaction():
+            state = self.service._setting('work-source:assigned', {})
+            state['next_check'] = 0
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', ('work-source:assigned', json.dumps(state)))
+        with patch('coconut.work_sources.subprocess.run') as run:
+            run.return_value.stdout = json.dumps(dict(complete=complete, items=getattr(self, 'items', [self.item])))
+            self.service.audit_work_sources()
+        return self.service._setting('work-source:assigned')
+
+    def test_unchanged_assignment_gets_one_retry_with_full_hidden_context(self):
+        state = self.audit()
+        task = self.service._get('tasks', state['task_id'])
+        self.assertEqual(len(self.service._all('messages')), 0)
+        captured = []
+        def start(task, bot, history, emit):
+            captured.append(conversation_input(dict(operation='start', task=task, history=history)))
+            emit('completed', {'summary': 'Coverage reviewed'})
+        self.provider.start_task = start
+        self.service._run_task(task['id'])
+        result = captured[0]
+        self.assertIn(self.item['id'], str(result))
+        self.assertIn('answered or dismissed', str(result))
+        with self.service.transaction():
+            task['status'] = 'completed'
+            self.service._put('tasks', task)
+        retry = self.audit()['task_id']
+        self.assertNotEqual(retry, task['id'])
+        with self.service.transaction():
+            retry_task = self.service._get('tasks', retry)
+            retry_task['status'] = 'failed'
+            self.service._put('tasks', retry_task)
+        self.assertEqual(self.audit()['task_id'], retry)
+        self.assertEqual(len(self.service._all('tasks')), 2)
+        self.item['updated_at'] = '2026-09-14T13:00:00Z'
+        self.assertNotEqual(self.audit()['task_id'], task['id'])
+
+    def test_dead_dependency_is_not_coverage(self):
+        current = datetime.now(timezone.utc)
+        binding = dict(updated_at=self.item['updated_at'], task_ids=['parent'])
+        tasks = {'parent': dict(status='waiting', _waiting_on=['child']), 'child': dict(status='completed')}
+        self.assertFalse(coverage(self.item, binding, tasks, {}, {}, current))
+        tasks['child']['status'] = 'working'
+        self.assertTrue(coverage(self.item, binding, tasks, {}, {}, current))
+        tasks['child'].update(status='waiting', _waiting_on=['parent'])
+        self.assertFalse(coverage(self.item, binding, tasks, {}, {}, current))
+
+    def test_answered_card_and_expired_deferral_need_followthrough(self):
+        current = datetime.now(timezone.utc)
+        binding = dict(updated_at=self.item['updated_at'], decision_ids=['card'])
+        self.assertTrue(coverage(self.item, binding, {}, {'card': {'status': 'pending'}}, {}, current))
+        self.assertFalse(coverage(self.item, binding, {}, {'card': {'status': 'executed'}}, {}, current))
+        binding.update(reason='Wait for the external reply', next_check_at=(current + timedelta(hours=1)).isoformat())
+        self.assertTrue(coverage(self.item, binding, {}, {}, {}, current))
+        binding['next_check_at'] = (current - timedelta(seconds=1)).isoformat()
+        self.assertFalse(coverage(self.item, binding, {}, {}, {}, current))
+
+    def test_partial_read_preserves_prior_coverage_and_does_not_queue(self):
+        state = self.audit()
+        failed = self.audit(complete=False)
+        self.assertEqual(failed['missing'], state['missing'])
+        self.assertEqual(failed['task_id'], state['task_id'])
+        self.assertEqual(failed['error'], 'ValueError')
+        self.assertEqual(len(self.service._all('tasks')), 1)
+
+    def test_waiting_recovery_does_not_block_new_assignments(self):
+        original = self.audit()['task_id']
+        with self.service.transaction():
+            task = self.service._get('tasks', original)
+            task['status'] = 'waiting'
+            self.service._put('tasks', task)
+        new_item = self.item | {'id': 'https://github.com/example/repo/issues/2', 'title': 'New assignment'}
+        self.items = [self.item, new_item]
+        state = self.audit()
+        self.assertNotEqual(state['task_id'], original)
+        prompt = self.service._get('tasks', state['task_id'])['_source_audit_prompt']
+        self.assertIn(new_item['id'], prompt)
+        self.assertNotIn(self.item['id'], prompt)
+        self.assertEqual(len(self.service._all('tasks')), 2)
+
+    def test_human_followup_reaches_the_provider(self):
+        state = self.audit()
+        self.service.mutate('POST', f"/v1/tasks/{state['task_id']}/replies", {'text': 'Check issue 7 first'}, str(uuid4()))
+        captured = []
+        def start(task, bot, history, emit):
+            captured.append(conversation_input(dict(operation='start', task=task, history=history)))
+            emit('completed', {'summary': 'Done'})
+        self.provider.start_task = start
+        self.service._run_task(state['task_id'])
+        self.assertIn('Check issue 7 first', str(captured[0]))
+        self.assertIn(self.item['id'], str(captured[0]))
+        self.assertIn('coverage.json', str(captured[0]))
+
+    def test_each_uncovered_assignment_has_an_independent_task(self):
+        self.items = [self.item, self.item | {'id': 'issue-2'}]
+        state = self.audit()
+        owners = [entry['task_id'] for entry in state['recoveries'].values()]
+        self.assertEqual(len(set(owners)), 2)
+        with self.service.transaction():
+            first = self.service._get('tasks', owners[0])
+            first['status'] = 'needs_you'
+            self.service._put('tasks', first)
+        self.assertEqual(self.service._get('tasks', owners[1])['status'], 'queued')
+        self.audit()
+        self.assertEqual(len(self.service._all('tasks')), 2)
+
+    def test_a_shared_task_card_does_not_cover_every_assignment(self):
+        binding = dict(updated_at=self.item['updated_at'], task_ids=['shared'])
+        decisions = {'card': dict(task_id='shared', status='pending')}
+        self.assertFalse(coverage(self.item, binding, {'shared': {'status': 'needs_you'}}, decisions, {}, datetime.now(timezone.utc)))
+        binding['decision_ids'] = ['card']
+        self.assertTrue(coverage(self.item, binding, {}, decisions, {}, datetime.now(timezone.utc)))
+
+    def test_assignment_continuation_counts_as_existing_work(self):
+        current = datetime.now(timezone.utc)
+        binding = dict(updated_at=self.item['updated_at'], task_ids=['parent'])
+        tasks = {'parent': dict(status='waiting', _waiting_on=[]),
+                 'continuation': dict(status='working', _assignment_task_id='parent')}
+        self.assertTrue(coverage(self.item, binding, tasks, {}, {}, current))
+        tasks['continuation']['status'] = 'waiting'
+        receipt = dict(task_id='continuation', state='completed', action={'name': 'terminal'},
+                       result={'session_id': 'process', 'notify_on_complete': True},
+                       _process_status='running', _process_observed_at=current.isoformat())
+        self.assertTrue(coverage(self.item, binding, tasks, {}, {'receipt': receipt}, current))
+        receipt['_process_delivery'] = 'consumed'
+        self.assertFalse(coverage(self.item, binding, tasks, {}, {'receipt': receipt}, current))

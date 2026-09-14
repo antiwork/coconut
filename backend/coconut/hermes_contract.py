@@ -197,6 +197,7 @@ def verify_contract():
         if config.require_readable_config_before_write(path)['display']['theme'] != 'coconut-contract':
             raise ValueError('The profile update changed unrelated Hermes settings.')
 
+    verify_delegation_contract()
     verify_terminal_contract()
     verify_skills_contract()
 
@@ -267,4 +268,47 @@ def verify_terminal_contract():
                 finally:
                     terminal.cleanup()
         finally:
+            reset_hermes_home_override(token)
+
+
+def verify_delegation_contract():
+    import threading
+    import time
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from tools import async_delegation as native
+    from .native_processes import delegation_completion
+    from agent.inline_tool_executors import tool_hook_ids
+    from types import SimpleNamespace
+    if tool_hook_ids(SimpleNamespace(), 'coconut-child', None).get('task_id') != 'coconut-child':
+        raise ValueError('Hermes removed task ownership from tool middleware.')
+
+    with tempfile.TemporaryDirectory(prefix='coconut-delegation-contract-') as temporary:
+        token = set_hermes_home_override(temporary)
+        release = threading.Event()
+        try:
+            def runner():
+                release.wait(5)
+                return {'status': 'completed', 'summary': 'Coconut delegation contract'}
+            result = native.dispatch_async_delegation(goal='Check durable delivery', context=None, toolsets=None,
+                        role='general', model=None, session_key='coconut-contract', runner=runner)
+            item = dict(id='receipt', task_id='coconut-contract', delegation_ids=[result['delegation_id']])
+            if delegation_completion(item)[0].get('observation') != 'running':
+                raise ValueError('Hermes lost the running delegation.')
+            release.set()
+            deadline = time.monotonic() + 10
+            while native.get_durable_delegation(result['delegation_id'])['state'] in ('running', 'finalizing'):
+                if time.monotonic() >= deadline:
+                    raise ValueError('Hermes did not save the delegation result.')
+                time.sleep(.05)
+            if 'Coconut delegation contract' not in delegation_completion(item)[0].get('text', ''):
+                raise ValueError('Hermes changed the durable delegation result.')
+            if native.get_durable_delegation(result['delegation_id'])['delivery_state'] != 'pending':
+                raise ValueError('Reading a delegation acknowledged it too early.')
+            if delegation_completion(item | {'task_id': 'another-task'}):
+                raise ValueError('A delegation result crossed task boundaries.')
+            delegation_completion(item | {'acknowledge': True})
+            if delegation_completion(item)[0].get('consumed') is not True:
+                raise ValueError('Hermes did not acknowledge the saved delegation.')
+        finally:
+            release.set()
             reset_hermes_home_override(token)
