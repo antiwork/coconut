@@ -67,7 +67,7 @@ with tempfile.TemporaryDirectory(prefix='coconut-native-restart-') as temporary:
   service._run_task(second['id']);assert service._get('tasks',second['id'])['status']=='completed'
   service.close();service=start()
   assert service._get('decisions',decision['id'])['status']=='pending'
-  context=write('POST',f"/v1/decisions/{decision['id']}/context",{'question':'Which disposable folder does this action remove? Do not run it.'})
+  context=write('POST',f"/v1/decisions/{decision['id']}/reply",{'text':'Which disposable folder does this action remove? Do not run it.','revision':decision['revision']})
   context=service._all('contexts')[-1]
   service._start_context(context['id'])
   deadline=time.time()+90
@@ -76,7 +76,7 @@ with tempfile.TemporaryDirectory(prefix='coconut-native-restart-') as temporary:
   assert service._get('contexts',context['id'])['status']=='completed'
   assert service._get('decisions',decision['id'])['status']=='pending'
   assert (workspace/'approval-fixture').exists()
-  write('POST',f"/v1/decisions/{decision['id']}/answer",{'option_id':'once'})
+  write('POST',f"/v1/decisions/{decision['id']}/answer",{'option_id':'once','revision':decision['revision']})
   service._run_task(task['id'])
   print('After approval:',service._get('tasks',task['id'])['status'],service._get('decisions',decision['id'])['status'],flush=True)
   assert not (workspace/'approval-fixture').exists()

@@ -1,0 +1,35 @@
+name: Hermes compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-compatibility-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: Check syntax
+        run: python -m compileall -q backend/coconut scripts
+      - name: Check Hermes contracts and recovery
+        env:
+          PYTHONPATH: backend
+        run: |
+          for test in test_hermes_compatibility.py test_hermes_release_routines.py test_native_scheduler.py test_native_execution.py test_native_relay_recovery.py; do
+            python -m unittest discover -s backend/tests -p "$test"
+          done
