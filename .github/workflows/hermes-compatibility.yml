@@ -30,6 +30,6 @@ jobs:
         env:
           PYTHONPATH: backend
         run: |
-          for test in test_decision_followups.py test_decision_reply_receipts.py test_decision_inbox.py test_work_questions.py test_work_dependency_context.py test_bot_contact_purpose.py test_hermes_compatibility.py test_hermes_release_routines.py test_native_scheduler.py test_native_execution.py test_native_relay_recovery.py; do
+          for test in test_context_presence.py test_decision_followups.py test_decision_reply_receipts.py test_decision_inbox.py test_work_questions.py test_work_dependency_context.py test_bot_contact_purpose.py test_hermes_compatibility.py test_hermes_release_routines.py test_native_scheduler.py test_native_execution.py test_native_relay_recovery.py; do
             python -m unittest discover -s backend/tests -p "$test"
           done

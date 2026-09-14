@@ -434,7 +434,8 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
         states = {t['status'] for t in tasks if t['status'] in ('working', 'needs_you', 'scheduled')}
         if tasks and tasks[-1]['status'] == 'failed':
             states.add('failed')
-        bot['status'] = next((s for s in ('needs_you', 'working', 'scheduled', 'failed') if s in states), 'idle')
+        answering = any(c['bot_id'] == bot_id and c['status'] == 'working' for c in self._all('contexts'))
+        bot['status'] = 'working' if answering else next((s for s in ('needs_you', 'working', 'scheduled', 'failed') if s in states), 'idle')
         self._put('bots', bot)
         self._event('bot.updated', self._public(bot), bot_id)
 
@@ -2565,6 +2566,7 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                         return
                     context['status'] = 'working'
                     self._put('contexts', context)
+                    self._refresh_bot(bot['id'])
                     history = self._history(bot['id'])
                     decision = self._get('decisions', context['decision_id'])
                     provider_task = self._public(task)
@@ -2608,6 +2610,7 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                     if context_failure:
                         context['error_code'] = context_failure['error_code']
                     self._put('contexts', context)
+                    self._refresh_bot(bot['id'])
                     self._message(bot['id'], answer, task_id=task['id'], decision_id=context['decision_id'])
                     self._event('context.completed' if status == 'completed' else 'context.failed', {'id': context_id, 'decision_id': context['decision_id'], 'status': status, 'error_code': context.get('error_code')}, bot['id'], task['id'])
         thread = threading.Thread(target=run, daemon=True, name='decision-context')
