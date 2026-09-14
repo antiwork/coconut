@@ -52,6 +52,7 @@ struct CoconutHome: View {
     @State private var selectedTab: HomeTab = .bots
     @State private var notificationDecisionId: String?
     @State private var openingNotification = false
+    @State private var previewedNotification: NotificationTarget?
     @State private var botsPath = NavigationPath()
     @State private var inboxPath = NavigationPath()
     @State private var workPath = NavigationPath()
@@ -91,7 +92,13 @@ struct CoconutHome: View {
         .modifier(NativeTabCollapse())
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
-        .onChange(of: selectedTab) { _, _ in searchFocused = false }
+        .onChange(of: selectedTab) { _, tab in
+            searchFocused = false
+            if previewedNotification?.decisionId != nil && tab != .inbox {
+                PushNotifications.shared.target = nil
+                previewedNotification = nil
+            }
+        }
         .sheet(isPresented: $settingsOpen) { AppSettingsView() }
         .sheet(isPresented: $createOpen) { BotEditorView() }
         .onChange(of: PushNotifications.shared.target) { _, _ in openNotification() }
@@ -103,7 +110,7 @@ struct CoconutHome: View {
     private func root(tab: HomeTab, path: Binding<NavigationPath>) -> some View {
         NavigationStack(path: path) {
             Group {
-                if tab == .inbox { DecisionInboxView(focusDecisionId: $notificationDecisionId) }
+                if tab == .inbox { DecisionInboxView(focusDecisionId: $notificationDecisionId, refreshingDecisionId: PushNotifications.shared.target?.decisionId) }
                 else if tab == .work {
                     WorkView(isVisible: selectedTab == .work && workPath.isEmpty) { route in
                         workPath.append(route)
@@ -185,6 +192,16 @@ struct CoconutHome: View {
             PushNotifications.shared.target = nil
             return
         }
+        if target.decisionId == nil {
+            PushNotifications.shared.target = nil
+            previewedNotification = nil
+            showNotification(.conversation(target.conversationRoute))
+            return
+        }
+        if previewedNotification != target {
+            previewedNotification = target
+            showNotification(target.decisionId.map(NotificationDestination.inbox) ?? .conversation(target.conversationRoute))
+        }
         guard !openingNotification else { return }
         openingNotification = true
         Task {
@@ -192,20 +209,25 @@ struct CoconutHome: View {
             openingNotification = false
             guard PushNotifications.shared.target == target else { openNotification(); return }
             guard let destination else { return }
-            settingsOpen = false; createOpen = false; searchOpen = false; searchFocused = false
-            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-            switch destination {
-            case .inbox(let decisionId):
-                inboxPath = NavigationPath()
-                notificationDecisionId = decisionId
-                selectedTab = .inbox
-            case .conversation(let route):
-                notificationDecisionId = nil
-                selectedTab = .bots
-                botsPath = NavigationPath()
-                botsPath.append(route)
-            }
             PushNotifications.shared.target = nil
+            previewedNotification = nil
+            showNotification(destination)
+        }
+    }
+
+    private func showNotification(_ destination: NotificationDestination) {
+        settingsOpen = false; createOpen = false; searchOpen = false; searchFocused = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        switch destination {
+        case .inbox(let decisionId):
+            inboxPath = NavigationPath()
+            notificationDecisionId = decisionId
+            selectedTab = .inbox
+        case .conversation(let route):
+            notificationDecisionId = nil
+            selectedTab = .bots
+            botsPath = NavigationPath()
+            botsPath.append(route)
         }
     }
 

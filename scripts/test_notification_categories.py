@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--xctestrun', type=Path, required=True)
     parser.add_argument('--simulator', required=True)
     parser.add_argument('--result', type=Path, required=True)
+    parser.add_argument('--slow-open', action='store_true')
     args = parser.parse_args()
     state = json.loads((ROOT / 'ios/Coconut/Fixtures/PreviewState.json').read_text())
     bot, task, decision = state['bots'][0], state['tasks'][0], state['decisions'][0]
@@ -34,6 +35,8 @@ def main():
     state.update(bots=[bot], tasks=[task], decisions=[decision, deferred], messages=[message], artifacts=[],
                  cursor=50, push_configured=False)
     device = str(uuid4())
+    hold_state = threading.Event()
+    release_state = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args): pass
@@ -51,6 +54,7 @@ def main():
             url = urlsplit(self.path)
             if url.path == '/test/push':
                 kind = parse_qs(url.query)['kind'][0]
+                if args.slow_open: hold_state.set()
                 payload = dict(aps=dict(alert=dict(title=bot['name'], body='Notification fixture ' + kind), sound='default'),
                     coconut=dict(version=1, device_id=device, bot_id=bot['id'], task_id=task['id'], kind=kind))
                 payload['coconut']['decision_id' if kind == 'decision' else 'message_id'] = deferred['id'] if kind == 'decision' else message['id']
@@ -60,6 +64,9 @@ def main():
                                    input=json.dumps(payload), text=True, check=True)
                 threading.Thread(target=push, daemon=True).start()
                 self.respond(dict(ok=True))
+            elif url.path == '/test/release-state':
+                release_state.set()
+                self.respond(dict(ok=True))
             else:
                 self.respond(dict(device_id=device, token='notification-fixture-token', snapshot=state))
 
@@ -67,7 +74,9 @@ def main():
             if urlsplit(self.path).path == '/v1/events':
                 time.sleep(1)
                 self.respond(dict(events=[], cursor=50, server_time=state['server_time']))
-            else: self.respond(state)
+            else:
+                if hold_state.is_set(): release_state.wait(20)
+                self.respond(state)
 
         def do_PUT(self): self.respond(dict(registered=True, configured=False))
         def do_DELETE(self): self.respond(dict(registered=False, configured=False))
@@ -92,10 +101,11 @@ def main():
             runfile.write_bytes(plistlib.dumps(document))
             result = subprocess.run(['xcodebuild', 'test-without-building', '-xctestrun', str(runfile),
                 '-destination', 'platform=iOS Simulator,id=' + args.simulator,
-                '-only-testing:CoconutUITests/NotificationCategoryFlowTests', '-parallel-testing-enabled', 'NO',
+                '-only-testing:CoconutUITests/' + ('NotificationOpenPerformanceTests' if args.slow_open else 'NotificationCategoryFlowTests'), '-parallel-testing-enabled', 'NO',
                 '-resultBundlePath', str(args.result)])
             raise SystemExit(result.returncode)
     finally:
+        release_state.set()
         server.shutdown()
         server.server_close()
 

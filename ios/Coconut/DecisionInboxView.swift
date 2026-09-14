@@ -8,8 +8,10 @@ enum InboxSort: String, CaseIterable {
 
 struct DecisionInboxView: View {
     @Binding var focusDecisionId: String?
+    let refreshingDecisionId: String?
 
-    init(focusDecisionId: Binding<String?> = .constant(nil)) {
+    init(focusDecisionId: Binding<String?> = .constant(nil), refreshingDecisionId: String? = nil) {
+        self.refreshingDecisionId = refreshingDecisionId
         _focusDecisionId = focusDecisionId
     }
     @Environment(AppStore.self) private var store
@@ -41,7 +43,14 @@ struct DecisionInboxView: View {
     private var canRespond: Bool { store.connection == .connected || store.isDemo }
 
     var body: some View {
-        inboxContent
+        Group {
+            if let refreshingDecisionId, !pending.contains(where: { $0.id == refreshingDecisionId }) {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                inboxContent.disabled(refreshingDecisionId != nil)
+                    .allowsHitTesting(refreshingDecisionId == nil)
+            }
+        }
         .padding(.bottom, 12)
         .background(BoardStyle.paper)
         .toolbar { inboxToolbar }

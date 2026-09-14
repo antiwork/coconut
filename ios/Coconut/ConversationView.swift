@@ -87,6 +87,8 @@ struct ConversationView: View {
                                 }
                                 }
                                 }
+                                    // Keep full text height when the lazy stack resizes or scrolls to a new message.
+                                    .fixedSize(horizontal: false, vertical: true)
                                     .id(message.kind == "decision" ? (message.decisionId ?? entry.id) : entry.id)
                             }
                             ForEach(store.decisions.filter { decision in
