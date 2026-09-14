@@ -26,6 +26,12 @@ struct TrackedWorkItem: Identifiable {
         return artifact.activity ?? "Status unavailable"
     }
 
+    func isWorking(at date: Date) -> Bool {
+        guard !isFinished, artifact.activityState == "working",
+              let observed = artifact.activityObservedAt?.apiDate else { return false }
+        return date.timeIntervalSince(observed) < 60
+    }
+
     func color(at date: Date, scheme: ColorScheme) -> Color {
         let green = scheme == .dark ? Color.green : Color(red: 0.12, green: 0.44, blue: 0.22)
         if artifact.status == "completed" { return green }

@@ -365,7 +365,15 @@ class TrackedWork:
                     state, activity = 'waiting', 'Waiting for your decision'
                 elif state == 'working':
                     if task['status'] == 'completed':
-                        state, activity = 'blocked', 'Needs attention'
+                        chain = self._work_chain(task, tasks, records, include_continuations=True)
+                        active = [t for t, _ in chain.values() if t['id'] != task['id']
+                                  and t['status'] in ('queued', 'working', 'waiting', 'needs_you')]
+                        if active:
+                            state = 'waiting'
+                            activity = ('Waiting for your decision' if any(t['status'] == 'needs_you' for t in active)
+                                        else 'Waiting for another bot')
+                        else:
+                            state, activity = 'blocked', 'Needs attention'
                     elif task['status'] == 'queued':
                         state, activity = 'waiting', 'Queued'
                     elif task.get('_waiting_on'):

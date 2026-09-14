@@ -70,7 +70,7 @@ final class WorkFlowTests: XCTestCase {
         XCTAssertTrue(work.waitForExistence(timeout: 5))
         let proof = XCTAttachment(screenshot: app.screenshot())
         proof.name = "Work shows tasks and pull requests"; proof.lifetime = .keepAlways; add(proof)
-        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "work-bot-")).firstMatch.tap()
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "work-pr-")).firstMatch.tap()
         XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.tabBars.buttons["Work"].isHittable)
         app.navigationBars.buttons.element(boundBy: 0).tap()

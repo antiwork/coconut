@@ -84,3 +84,38 @@ class TrackedWorkTests(unittest.TestCase):
         self.service._register_pr_artifact(self.task['id'], dict(url='https://github.com/example/project/pull/42'))
         result = self.write('POST', f'/v1/work/items/{item["id"]}/dismiss', dict(dismissal_id='one'))
         self.assertTrue(result['ok'])
+
+
+class DelegatedTrackedWorkTests(unittest.TestCase):
+    setUp = TrackedWorkTests.setUp
+    tearDown = TrackedWorkTests.tearDown
+    write = TrackedWorkTests.write
+    track = TrackedWorkTests.track
+    row = TrackedWorkTests.row
+    def delegated(self, **changes):
+        self.track()
+        with self.service.transaction():
+            parent = self.service._get('tasks', self.task['id'])
+            parent.update(status='completed', _conversation_epoch=self.service._setting('conversation_epoch'))
+            self.service._put('tasks', parent)
+            child = dict(parent, id='delegated', status='waiting', source_task_id=parent['id'],
+                         _native_relay={'envelope_id': 'delivery'}, _is_return=False)
+            child.update(changes)
+            self.service._put('tasks', child)
+        return child
+
+    def test_native_handoff_keeps_reported_work_waiting(self):
+        self.delegated()
+        self.assertEqual(self.row()['status'], 'waiting')
+        self.assertEqual(self.row()['activity'], 'Waiting for another bot')
+
+    def test_child_decision_reaches_reported_work(self):
+        self.delegated(status='needs_you')
+        self.assertEqual(self.row()['activity'], 'Waiting for your decision')
+
+    def test_finished_or_unrelated_child_does_not_claim_progress(self):
+        for changes in (dict(status='completed'), dict(_conversation_epoch='old'),
+                        dict(exchange_id='other'), dict(_is_return=True)):
+            with self.subTest(changes=changes):
+                self.delegated(**changes)
+                self.assertEqual(self.row()['activity'], 'Needs attention')

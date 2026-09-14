@@ -900,7 +900,7 @@ def run_turn(request, emit, request_receipt):
                 'parameters': {'type': 'object', 'properties': {'url': {'type': 'string',
                     'description': 'The exact https://github.com/owner/repo/pull/number URL.'},
                     'activity': {'type': 'string', 'maxLength': 80, 'description': 'One short current activity, for example Reviewing with Fable or Checking a finding. Update at phase changes and before finishing. No hashes or tool counts.'},
-                    'activity_state': {'type': 'string', 'enum': ['working', 'ready', 'blocked'], 'description': 'Use ready only after verified review, or blocked when a finding prevents progress. Defaults to working.'}}, 'required': ['url']}}
+                    'activity_state': {'type': 'string', 'enum': ['working', 'ready', 'blocked'], 'description': 'Use working while investigating or fixing, even when CI fails or merge is blocked. Use blocked only when work cannot proceed. Use ready only after verified review. Defaults to working.'}}, 'required': ['url']}}
             registry.register(name=pr_schema['name'], toolset='coconut', schema=pr_schema,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('artifact', dict(kind='pr', url=arguments.get('url'), **{k: arguments[k] for k in ('activity', 'activity_state') if k in arguments}))))
             allowed.add(pr_schema['name'])

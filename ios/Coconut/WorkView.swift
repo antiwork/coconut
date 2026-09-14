@@ -178,84 +178,66 @@ struct WorkView: View {
 
     @ViewBuilder
     private func workRow(_ item: TrackedWorkItem) -> some View {
-        if let pr = item.pullRequest {
-            row(pr)
-        } else {
-            Button { openWork(item.artifact) } label: {
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(item.artifact.title).font(.body.weight(.medium))
-                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
-                            .foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
-                        TimelineView(.periodic(from: .now, by: 15)) { context in
-                            Text(item.activity(at: context.date)).font(.caption)
-                                .foregroundStyle(item.color(at: context.date, scheme: colorScheme))
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                    if !item.isFinished, let bot = store.bots.first(where: { $0.id == item.artifact.botId }) {
-                        BotAvatar(bot: bot, size: 28, animated: false).frame(width: 44, height: 44)
-                            .accessibilityHidden(true)
-                    }
-                }.padding(.vertical, 14).contentShape(Rectangle())
-            }.buttonStyle(HomePressStyle())
-                .accessibilityHint("Opens the bot conversation")
-                .accessibilityIdentifier("work-item-\(item.artifact.id)")
-        }
-    }
-
-    private func row(_ pr: TrackedPullRequest) -> some View {
-        HStack(spacing: 8) {
-            Button { openWork(pr.artifact) } label: {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(pr.artifact.title).font(.body.weight(.medium))
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
-                        .foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
-                    ViewThatFits(in: .horizontal) {
+        Button { openWork(item.artifact) } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(item.artifact.title).font(.body.weight(.medium))
+                    .modifier(WorkTextLines())
+                    .foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
+                TimelineView(.periodic(from: .now, by: 15)) { context in
+                    if let pr = item.pullRequest {
                         HStack(spacing: 6) {
-                            reference(pr)
+                            Text("\(pr.repository) #\(pr.number)" + (!pr.isFinished && pr.artifact.draft == true ? " · Draft" : ""))
+                                .foregroundStyle(.secondary)
                             Text("·").foregroundStyle(.tertiary).accessibilityHidden(true)
-                            checks(pr)
-                        }.fixedSize(horizontal: true, vertical: false)
-                        VStack(alignment: .leading, spacing: 3) { reference(pr); checks(pr) }
+                            Text(pr.checksLabel(at: context.date))
+                                .foregroundStyle(pr.checksColor(at: context.date, scheme: colorScheme))
+                                .layoutPriority(1)
+                        }.font(.caption).lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if !pr.isFinished {
+                            activity(pr.activityLabel(at: context.date) ?? "No activity reported", item: item, at: context.date)
+                        }
+                    } else {
+                        activity(item.activity(at: context.date), item: item, at: context.date)
                     }
-                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                    .padding(.vertical, 14)
-            }
-            .buttonStyle(HomePressStyle())
-            .accessibilityIdentifier("work-pr-\(pr.number)")
-            if !pr.isFinished, let bot = store.bots.first(where: { $0.id == (pr.artifact.activityBotId ?? pr.artifact.botId) }) {
-                Button { openWork(pr.artifact) } label: {
-                    BotAvatar(bot: bot, size: 28, animated: false)
-                        .frame(width: 44, height: 44).contentShape(Rectangle())
                 }
-                .buttonStyle(HomePressStyle())
-                .frame(width: 44)
-                .accessibilityLabel("Open \(bot.name) conversation")
-                .accessibilityIdentifier("work-bot-\(bot.id)")
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 14).contentShape(Rectangle())
+        }
+        .buttonStyle(HomePressStyle())
+        .accessibilityHint("Opens the bot conversation")
+        .accessibilityIdentifier(item.pullRequest.map { "work-pr-\($0.number)" } ?? "work-item-\(item.artifact.id)")
+    }
+
+    private func activity(_ label: String, item: TrackedWorkItem, at date: Date) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(label).font(.caption)
+                .foregroundStyle(item.color(at: date, scheme: colorScheme))
+                .modifier(WorkTextLines())
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            // Reserve the indicator's space while activity changes.
+            ZStack {
+                if item.isWorking(at: date) {
+                    ProgressView().controlSize(.mini)
+                        .accessibilityLabel("Working")
+                        .accessibilityIdentifier("work-progress-\(item.artifact.id)")
+                }
+            }.frame(width: 16, height: 16)
         }
     }
+}
 
-    private func reference(_ pr: TrackedPullRequest) -> some View {
-        Text("\(pr.repository) #\(pr.number)" + (!pr.isFinished && pr.artifact.draft == true ? " · Draft" : ""))
-            .font(.caption).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-    }
+private struct WorkTextLines: ViewModifier {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    private func checks(_ pr: TrackedPullRequest) -> some View {
-        TimelineView(.periodic(from: .now, by: 15)) { context in
-            HStack(spacing: 6) {
-                if let activity = pr.activityLabel(at: context.date) {
-                    Text(activity).font(.caption).foregroundStyle(.secondary)
-                    Circle().fill(pr.checksColor(at: context.date, scheme: colorScheme))
-                        .frame(width: 6, height: 6)
-                        .accessibilityLabel(pr.checksLabel(at: context.date))
-                } else {
-                    Text(pr.checksLabel(at: context.date)).font(.caption)
-                        .foregroundStyle(pr.checksColor(at: context.date, scheme: colorScheme))
-                }
-            }.fixedSize(horizontal: false, vertical: true)
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            content.lineLimit(nil)
+        } else {
+            content.lineLimit(2, reservesSpace: true)
         }
     }
 }

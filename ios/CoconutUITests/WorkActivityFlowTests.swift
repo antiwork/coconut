@@ -2,6 +2,44 @@ import XCTest
 
 final class WorkActivityFlowTests: XCTestCase {
     @MainActor
+    func testActivityUpdatesKeepRowsInPlace() async throws {
+        guard let address = ProcessInfo.processInfo.environment["COCONUT_WORK_ACTIVITY_URL"] else { throw XCTSkip("Run the Work activity fixture.") }
+        var reset = URLRequest(url: URL(string: address + "/test/activity")!)
+        reset.httpMethod = "POST"
+        reset.httpBody = try JSONSerialization.data(withJSONObject: [
+            "title": "Review the refund change", "activity": "Reviewing with Fable", "activity_state": "working"])
+        _ = try await URLSession.shared.data(for: reset)
+        let app = XCUIApplication()
+        app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "work-test"]
+        app.launch()
+        let work = app.tabBars.buttons["Work"]
+        XCTAssertTrue(work.waitForExistence(timeout: 15)); work.tap()
+        let row = app.buttons["work-pr-42"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        let original = row.frame
+        let checksY = app.staticTexts["Checks passed"].frame.minY
+        let spinner = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "work-progress-")).firstMatch
+        XCTAssertTrue(spinner.exists)
+        var request = URLRequest(url: URL(string: address + "/test/activity")!)
+        request.httpMethod = "POST"
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "title": "Generate product file archives after the editor save commits",
+            "activity": "Waiting for the final recovery test before checking the saved archive",
+            "activity_state": "waiting"])
+        _ = try await URLSession.shared.data(for: request)
+        let changed = app.staticTexts["Waiting for the final recovery test before checking the saved archive"]
+        XCTAssertTrue(changed.waitForExistence(timeout: 25))
+        XCTAssertEqual(row.frame.height, original.height, accuracy: 1)
+        XCTAssertEqual(app.staticTexts["Checks passed"].frame.minY, checksY, accuracy: 1)
+        XCTAssertFalse(spinner.exists)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Work with separate checks and stable activity"; proof.lifetime = .keepAlways; add(proof)
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "title": "Review the refund change", "activity": "Reviewing with Fable", "activity_state": "working"])
+        _ = try await URLSession.shared.data(for: request)
+    }
+
+    @MainActor
     func testQueuedUndoSurvivesBackgroundAndReconnect() async throws {
         guard let address = ProcessInfo.processInfo.environment["COCONUT_WORK_ACTIVITY_URL"] else { throw XCTSkip("Run the Work activity fixture.") }
         continueAfterFailure = false
@@ -71,7 +109,7 @@ final class WorkActivityFlowTests: XCTestCase {
         dismissError.tap()
         let proof = XCTAttachment(screenshot: app.screenshot())
         proof.name = "Compact activity and restored completed work"; proof.lifetime = .keepAlways; add(proof)
-        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "work-bot-")).firstMatch.tap()
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "work-pr-")).firstMatch.tap()
         XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Open pull request"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["Checked"].exists)

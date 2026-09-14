@@ -57,7 +57,11 @@ def main():
         def do_POST(self):
             payload = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
             url = urlsplit(self.path)
-            if url.path == '/test/delay-next':
+            if url.path == '/test/activity':
+                first.update({key: payload[key] for key in ('title', 'activity', 'activity_state') if key in payload})
+                first['activity_observed_at'] = datetime.now(timezone.utc).isoformat()
+                self.respond(dict(ok=True))
+            elif url.path == '/test/delay-next':
                 delay_next[0] = 8
                 self.respond(dict(ok=True))
             elif url.path == '/test/fail-next':

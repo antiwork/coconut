@@ -28,6 +28,8 @@ class WorkStatus:
                 if record.get(key) and not record.get('_process_delivery'):
                     linked.setdefault(record['task_id'], set()).add(record[key])
         for task in tasks.values():
+            if task.get('_native_relay') and task.get('source_task_id') and not task.get('_is_return'):
+                linked.setdefault(task['source_task_id'], set()).add(task['id'])
             if include_continuations and task.get('_assignment_task_id'):
                 linked.setdefault(task['_assignment_task_id'], set()).add(task['id'])
             for field in ('_requester_reply_task_id', '_relay_callback_owner'):
