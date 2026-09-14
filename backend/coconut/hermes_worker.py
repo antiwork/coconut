@@ -971,6 +971,9 @@ def run_turn(request, emit, request_receipt):
                              'Update it when the phase changes and when returning the verified result. This continues existing tracking.')
         instructions += ('Use coconut_track_work for substantial non-PR work that the person needs to follow. '
                          'Reuse its key across turns; update the activity at phase changes and record completed only after verifying the result. '
+                         'When existing work belongs to this request, update that row before returning. '
+                         'Replace an automatic chat-message title with the intended result in plain words. '
+                         'Clear an old blocked or waiting activity when evidence resolves it. '
                          'Do not create a work item for routine checks, brief replies, or each delegated step. '
                          'A waiting status does not register a dependency; use coconut_wait or native scheduling for that. '
                          'Do not reopen completed or dismissed work unless the person requests more work. ')

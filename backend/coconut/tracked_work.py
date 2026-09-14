@@ -44,14 +44,15 @@ class TrackedWork:
                  (item['kind'] == 'pr' and a['kind'] == 'pr' and a['url'].lower() == item['url'].lower())]
         linked = {}
         for peer in peers:
-            for key in ('task_id', '_review_task_id', '_activity_task_id'):
-                if peer.get(key) in tasks:
-                    linked.update(self._work_chain(tasks[peer[key]], tasks, records, include_continuations=True))
+            identities = [peer.get(key) for key in ('task_id', '_work_origin_task_id', '_review_task_id', '_activity_task_id')]
+            for identity in identities + peer.get('_work_previous_task_ids', []):
+                if identity in tasks:
+                    linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
         projected = next(a for a in self._work_projection(peers) if a['id'] == item_id)
         latest = max(peers, key=lambda a: (a.get('observed_at') or a['created_at'], a.get('checked_at') or a['created_at'], a['id']))
         updates = [m for m in self._all('messages') if m.get('task_id') in linked
                    and m['role'] == 'assistant' and m['kind'] == 'text' and not m.get('streaming')]
-        source = next((m for m in self._all('messages') if m.get('task_id') == item.get('task_id')
+        source = next((m for m in self._all('messages') if m.get('task_id') == item.get('_work_origin_task_id', item.get('task_id'))
                        and m['role'] == 'user'), None)
         return dict(id=item['id'], title=item['title'], url=item.get('url'),
                     status=latest['status'], activity_state=projected.get('activity_state'), activity=projected.get('activity'),
@@ -60,7 +61,8 @@ class TrackedWork:
                     source_message=dict(id=source['id'], text=source['text'][:1000]) if source else None,
                     updates=[dict(id=m['id'], text=m['text'][:1000], created_at=m['created_at']) for m in updates[-3:]],
                     tasks=[dict(id=t['id'], status=t['status'], summary=t['summary'][:200])
-                           for t, _ in list(linked.values())[-16:]],
+                           for t, _ in sorted(linked.values(), key=lambda pair: (pair[0]['id'] == item.get('task_id'),
+                                   pair[0]['created_at'], pair[0]['id']))[-16:]],
                     recent_results=[dict(tool=r['action']['name'], result=str(r.get('_completion_text') or r.get('result', ''))[-1800:],
                                          delivered=bool(r.get('_process_delivery')),
                                          completed_at=r.get('completed_at'), process_status=r.get('_process_status'),
@@ -99,6 +101,55 @@ class TrackedWork:
             return 'cancelled', 'Stopped'
         return 'blocked', 'Needs attention'
 
+    def _resume_tracked_work(self, tasks, artifacts):
+        """Keep a failed request's row when a human continues that request."""
+        from .service import now
+        for task in sorted(tasks.values(), key=lambda t: (t['created_at'], t['id'])):
+            parent = tasks.get(task.get('parent_task_id'))
+            if (not parent or parent['status'] != 'failed' or task.get('source_bot_id')
+                    or task.get('_work_context_id') or task.get('_assignment_task_id')
+                    or task['thread_id'] != parent['thread_id']
+                    or any(task.get(k) != parent.get(k) for k in ('bot_id', 'conversation_bot_id', 'session_id'))):
+                continue
+            bot = self._get('bots', task['bot_id'])
+            unstarted = task['status'] == 'queued' and not task.get('_native_turn_id') and '_conversation_epoch' not in task
+            if (bot.get('_deleted') or bot.get('archived') or task['session_id'] != bot['session_id']
+                    or parent.get('_conversation_epoch') != self._setting('conversation_epoch')
+                    or (not unstarted and task.get('_conversation_epoch') != self._setting('conversation_epoch'))):
+                continue
+            items = [a for a in artifacts if a['kind'] == 'work' and not a.get('_hidden')]
+            previous = next((a for a in items if parent['id'] in [a.get('task_id'), a.get('_work_origin_task_id')] + a.get('_work_previous_task_ids', [])
+                             and a['status'] not in ('completed', 'cancelled')), None)
+            if not previous:
+                continue
+            owner = tasks[previous['task_id']]
+            if owner['id'] != parent['id'] and (owner['status'] != 'failed' or owner['created_at'] >= task['created_at']):
+                continue
+            history = list(dict.fromkeys(previous.get('_work_previous_task_ids', []) + [owner['id']]))
+            copies = [a for a in items if a.get('task_id') == task['id']]
+            reported = [a for a in copies if not a.get('_automatic_work')
+                        or self._setting('work.dismissed.work:' + a['id'])]
+            if reported:
+                # Preserve existing report links and the artifact ID used by Undo.
+                if previous.get('_automatic_work'):
+                    current = max(reported, key=lambda a: (a['observed_at'], a['id']))
+                    current.setdefault('_work_origin_task_id', previous.get('_work_origin_task_id', parent['id']))
+                    current['_work_previous_task_ids'] = list(dict.fromkeys(history + current.get('_work_previous_task_ids', [])))
+                    self._put('artifacts', current)
+                    previous['_hidden'] = True
+                    self._put('artifacts', previous)
+                    self._event('artifact.updated', dict(self._public(previous), _hidden=True), previous['bot_id'], parent['id'])
+                continue
+            previous.setdefault('_work_origin_task_id', parent['id'])
+            previous['_work_previous_task_ids'] = history
+            previous.update(task_id=task['id'], status='waiting', activity='Queued', observed_at=now(), _work_resuming=True)
+            self._put('artifacts', previous)
+            self._event('artifact.updated', self._public(previous), previous['bot_id'], task['id'])
+            for duplicate in copies:
+                duplicate['_hidden'] = True
+                self._put('artifacts', duplicate)
+                self._event('artifact.updated', dict(self._public(duplicate), _hidden=True), duplicate['bot_id'], task['id'])
+
     def _sync_automatic_work(self):
         from .service import now, uid
         with self.transaction():
@@ -106,6 +157,7 @@ class TrackedWork:
             records = self._all('native_receipts')
             artifacts = self._all('artifacts')
             timestamp = datetime.now(timezone.utc)
+            self._resume_tracked_work(tasks, artifacts)
             covered = {a.get('task_id') for a in artifacts if a['kind'] in ('work', 'pr')}
             for task in tasks.values():
                 if (task['id'] in covered or task.get('source_bot_id')
@@ -179,6 +231,7 @@ class TrackedWork:
                     raise ServiceError(409, 'A newer task owns this work item.')
             else:
                 item = dict(id=uid(), bot_id=bot['id'], kind='work', url=None, preview='', created_at=now(), _work_key=key)
+            item.pop('_work_resuming', None)
             item.update(task_id=task_id, title=title, activity=activity, status=state,
                         _work_turn=task.get('_native_turn_id'), observed_at=now(), _work_key=key, _automatic_work=False, _hidden=False)
             if state not in ('completed', 'cancelled'):
@@ -197,7 +250,8 @@ class TrackedWork:
         items = [a for a in self._all('artifacts') if a['kind'] == 'work' and not a.get('_hidden') and a['bot_id'] == task['bot_id']]
         items = self._work_projection(items)
         items.sort(key=lambda a: (a['status'] not in ('completed', 'cancelled'), a['observed_at']), reverse=True)
-        return [dict(key=a['_work_key'], title=a['title'], status=a['status'],
+        return [dict(key=a['_work_key'], title=a['title'], status=a['status'], activity=a.get('activity'),
+                     task_id=a['task_id'], current_task=a['task_id'] == task['id'],
                      dismissed=bool(self._setting('work.dismissed.work:' + a['id']))) for a in items[:30]]
 
     def _project_tracked_items(self, artifacts, tasks, records, timestamp):
@@ -208,6 +262,10 @@ class TrackedWork:
             state, activity = item['status'], item['activity']
             if item.get('_automatic_work') and task:
                 state, activity = self._automatic_work_state(task, tasks, records, timestamp)
+            elif item.get('_work_resuming') and task:
+                state, activity = self._automatic_work_state(task, tasks, records, timestamp)
+                if state == 'completed':
+                    state, activity = 'blocked', 'Needs attention'
             elif state not in ('completed', 'cancelled'):
                 if not task or task['status'] in ('failed', 'paused'):
                     state, activity = 'blocked', 'Needs attention'
