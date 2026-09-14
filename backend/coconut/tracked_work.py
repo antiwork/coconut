@@ -19,6 +19,68 @@ TRACK_WORK_SCHEMA = {
 
 
 class TrackedWork:
+    def _work_message_target(self, bot, data):
+        from .service import ServiceError, require_text
+        item = self._get('artifacts', require_text(data, 'work_artifact_id', 100))
+        if item['kind'] not in ('work', 'pr') or item.get('_hidden'):
+            raise ServiceError(400, 'This work item is unavailable.')
+        projected = next(a for a in self._work_projection(self._all('artifacts')) if a['id'] == item['id'])
+        owners = {item['bot_id'], projected.get('activity_bot_id')}
+        if item.get('_activity_task_id'):
+            owners.add(self._get('tasks', item['_activity_task_id'])['bot_id'])
+        if bot['id'] not in owners:
+            raise ServiceError(400, 'Open this work item in its bot conversation.')
+        if data.get('mode') == 'steer' or data.get('scheduled_at') or data.get('recipient_bot_ids'):
+            raise ServiceError(400, 'Send work questions now in the selected conversation.')
+        if not isinstance(data.get('work_status_only', False), bool):
+            raise ServiceError(400, 'Use a valid update request.')
+        return item
+
+    def work_context_input(self, item_id):
+        item = self._get('artifacts', item_id)
+        tasks = {t['id']: t for t in self._all('tasks')}
+        records = self._all('native_receipts')
+        peers = [a for a in self._all('artifacts') if a['id'] == item_id or
+                 (item['kind'] == 'pr' and a['kind'] == 'pr' and a['url'].lower() == item['url'].lower())]
+        linked = {}
+        for peer in peers:
+            for key in ('task_id', '_review_task_id', '_activity_task_id'):
+                if peer.get(key) in tasks:
+                    linked.update(self._work_chain(tasks[peer[key]], tasks, records, include_continuations=True))
+        projected = next(a for a in self._work_projection(peers) if a['id'] == item_id)
+        latest = max(peers, key=lambda a: (a.get('observed_at') or a['created_at'], a.get('checked_at') or a['created_at'], a['id']))
+        updates = [m for m in self._all('messages') if m.get('task_id') in linked
+                   and m['role'] == 'assistant' and m['kind'] == 'text' and not m.get('streaming')]
+        source = next((m for m in self._all('messages') if m.get('task_id') == item.get('task_id')
+                       and m['role'] == 'user'), None)
+        return dict(id=item['id'], title=item['title'], url=item.get('url'),
+                    status=latest['status'], activity_state=projected.get('activity_state'), activity=projected.get('activity'),
+                    pull_request={k: latest.get(k) for k in ('pr_state', 'checks_state', 'head_sha', 'draft',
+                                  'observed_at', 'checked_at', 'refresh_error', 'preview')} if item['kind'] == 'pr' else None,
+                    source_message=dict(id=source['id'], text=source['text'][:1000]) if source else None,
+                    updates=[dict(id=m['id'], text=m['text'][:1000], created_at=m['created_at']) for m in updates[-3:]],
+                    tasks=[dict(id=t['id'], status=t['status'], summary=t['summary'][:200])
+                           for t, _ in list(linked.values())[-16:]],
+                    recent_results=[dict(tool=r['action']['name'], result=str(r.get('_completion_text') or r.get('result', ''))[-1800:],
+                                         delivered=bool(r.get('_process_delivery')),
+                                         completed_at=r.get('completed_at'), process_status=r.get('_process_status'),
+                                         process_observed_at=r.get('_process_observed_at'))
+                                    for r in [r for r in records if r['task_id'] in linked and r['state'] == 'completed'][-3:]],
+                    decisions=[dict(id=d['id'], title=d['title'], context=d.get('context', ''))
+                               for d in self._all('decisions') if d['task_id'] in linked and d['status'] == 'pending'])
+
+    def recent_work_updates(self, task):
+        tasks = [t for t in self._all('tasks') if t['bot_id'] == task['bot_id']
+                 and t['session_id'] == task['session_id']]
+        before = max((t.get('_turn_started_at', '') for t in tasks
+                      if t['id'] != task['id'] and not t.get('_work_status_only')), default='')
+        updates = {t['id']: t for t in tasks if t.get('_work_status_only')}
+        messages = [m for m in self._all('messages') if m['task_id'] in updates
+                    and m['role'] == 'assistant' and m['kind'] == 'text' and not m.get('streaming')
+                    and not m.get('_hidden') and not m.get('_deleted') and m['created_at'] > before]
+        return [dict(message_id=m['id'], text=m['text'][:1000], created_at=m['created_at'],
+                     work_id=updates[m['task_id']]['_work_context_id']) for m in messages[-3:]]
+
     def _automatic_work_state(self, root, tasks, records, timestamp):
         chain = self._work_chain(root, tasks, records, include_continuations=True)
         turns = [t for t, _ in chain.values()] or [root]
@@ -47,7 +109,7 @@ class TrackedWork:
             covered = {a.get('task_id') for a in artifacts if a['kind'] in ('work', 'pr')}
             for task in tasks.values():
                 if (task['id'] in covered or task.get('source_bot_id')
-                        or task.get('_native_job') or task.get('_assignment_task_id')
+                        or task.get('_native_job') or task.get('_assignment_task_id') or task.get('_work_context_id')
                         or task['status'] not in ('working', 'waiting', 'needs_you')):
                     continue
                 bot = self._get('bots', task['bot_id'])

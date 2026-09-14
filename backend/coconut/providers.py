@@ -305,12 +305,14 @@ class HermesProvider(FixtureProvider):
         self._run('context', task, bot, history, emit, question=question)
 
     def _run(self, operation, task, bot, history, emit, **extra):
+        if task.get('_work_status_only'):
+            return self._run_turn(operation, task, bot, history, emit, isolated=True, **extra)
         with self._lock:
             lock = self._bot_locks.setdefault(bot['id'], threading.Lock())
         with lock:
             self._run_turn(operation, task, bot, history, emit, **extra)
 
-    def _run_turn(self, operation, task, bot, history, emit, **extra):
+    def _run_turn(self, operation, task, bot, history, emit, *, isolated=False, **extra):
         if (self.hermes_root / '.env').exists() or (self.hermes_root / '.env').is_symlink():
             raise RuntimeError('The Hermes checkout contains a shared .env file. Use a clean checkout for Coconut.')
         if not Path(self.python).is_file() or not (self.hermes_root / 'run_agent.py').is_file():
@@ -319,7 +321,8 @@ class HermesProvider(FixtureProvider):
         selection = self.resolve_task_model(bot, task)
         runtime_config = self.catalog.resolve_runtime(selection, bot_id=bot['id'])
         from .profiles import HermesProfiles
-        HermesProfiles(self.data_dir).sync(bot)
+        if not isolated:
+            HermesProfiles(self.data_dir).sync(bot)
         task_id = task['id']
         env, cwd = self.environment(bot['id'])
         env['COCONUT_DEFAULT_HOME'] = str(self.catalog.root)
@@ -329,15 +332,16 @@ class HermesProvider(FixtureProvider):
         with self._lock:
             if self._closed or task_id in self._cancelled:
                 return
-            process = self._runtimes.get(bot['id'])
+            process = None if isolated else self._runtimes.get(bot['id'])
             epoch = (bot['session_id'], task.get('_conversation_epoch'))
             if process is None or process.poll() is not None or self._runtime_epochs.get(bot['id']) != epoch:
                 if process is not None:
                     self._terminate(process)
                 process = subprocess.Popen([self.python, str(Path(__file__).with_name('hermes_worker.py'))], cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
-                self._runtime_envs[process] = (env, cwd)
-                self._runtimes[bot['id']] = process
-                self._runtime_epochs[bot['id']] = epoch
+                if not isolated:
+                    self._runtime_envs[process] = (env, cwd)
+                    self._runtimes[bot['id']] = process
+                    self._runtime_epochs[bot['id']] = epoch
             if operation != 'context':
                 self._paused_processes.pop(task_id, None)
             self._processes[task_id] = process
@@ -406,6 +410,8 @@ class HermesProvider(FixtureProvider):
             if code and not terminal_received and task_id not in self._cancelled:
                 raise RuntimeError(f'Hermes worker stopped with exit code {code}.')
         finally:
+            if isolated:
+                reusable = False
             with self._lock:
                 if reusable and paused and task_id not in self._cancelled and process.poll() is None:
                     self._paused_processes[task_id] = process

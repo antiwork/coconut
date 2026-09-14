@@ -1333,6 +1333,9 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                     author_bot_id=message.get('sender_bot_id') if message['role'] == 'assistant' else None)
 
     def _send_message_interaction(self, bot, data, *, task=None):
+        if task and task.get('_work_status_only'):
+            data = dict(data, work_artifact_id=task['_work_context_id'], work_status_only=False, mode='queue')
+        work_item = self._work_message_target(bot, data) if data.get('work_artifact_id') else None
         target_id = data.get('reply_to_message_id')
         mentioned = self._recipient_ids(data.get('mentioned_bot_ids', []))
         if mentioned and data.get('recipient_bot_ids'):
@@ -1342,9 +1345,12 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
         if target_id is not None:
             target = self._interaction_target(target_id, bot['id'])
             interaction = (interaction or {}) | dict(reply_to=self._reply_reference(target))
+        if work_item:
+            interaction = (interaction or {}) | dict(work_context=dict(id=work_item['id'], title=work_item['title']))
+            data = dict(data, mode='queue')
         self._message_interaction = interaction
         try:
-            return self._reply(task, data) if task else self._send(bot, data)
+            return self._send(bot, data, work_item=work_item) if work_item else (self._reply(task, data) if task else self._send(bot, data))
         finally:
             self._message_interaction = None
 
@@ -1412,7 +1418,7 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                 task.pop('_reaction_feedback', None)
                 self._put('tasks', task)
 
-    def _send(self, bot: dict, data: dict, *, thread_id: str | None = None, parent_task_id: str | None = None, conversation_bot_id: str | None = None, exchange_id: str | None = None, source_task: dict | None = None, record_message: bool = True, human_authored: bool = True, text_limit: int | None = 20000) -> dict:
+    def _send(self, bot: dict, data: dict, *, thread_id: str | None = None, parent_task_id: str | None = None, conversation_bot_id: str | None = None, exchange_id: str | None = None, source_task: dict | None = None, record_message: bool = True, human_authored: bool = True, text_limit: int | None = 20000, work_item: dict | None = None) -> dict:
         text = require_text(data, 'text', text_limit)
         mode = data.get('mode', 'queue')
         if mode not in ('auto', 'steer', 'queue'):
@@ -1433,7 +1439,7 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
             # Route from current server state. A bot exchange never owns a new human message.
             current = next((task for task in reversed(self._all('tasks'))
                             if task['bot_id'] == bot['id'] and task['conversation_bot_id'] == conversation_bot_id
-                            and not task.get('source_bot_id') and not task.get('scheduled_at')
+                            and not task.get('source_bot_id') and not task.get('scheduled_at') and not task.get('_work_status_only')
                             and task['status'] in ('working', 'queued', 'waiting')), None)
             if current:
                 pending_tasks = {task['id'] for task in self._all('tasks') if task['thread_id'] == current['thread_id']}
@@ -1445,7 +1451,7 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                 raise ServiceError(400, 'Choose an active task to steer.')
             task = self._get('tasks', data['task_id'])
             owner = task['bot_id'] if task.get('source_bot_id') else task['conversation_bot_id']
-            if owner != conversation_bot_id or task['status'] not in ('working', 'needs_you'):
+            if owner != conversation_bot_id or task.get('_work_status_only') or task['status'] not in ('working', 'needs_you'):
                 raise ServiceError(409, 'Choose an active task from this conversation.')
             if task['status'] == 'needs_you':
                 decisions = [decision for decision in self._all('decisions') if decision['task_id'] == task['id'] and decision['status'] == 'pending']
@@ -1464,7 +1470,7 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                 raise ServiceError(400, 'scheduled_at must contain an ISO 8601 date with a time zone.')
         task_id = uid()
         blocked = None
-        if record_message and human_authored:
+        if record_message and human_authored and not work_item:
             blocked = next((prior for prior in reversed(self._all('tasks'))
                 if prior['bot_id'] == bot['id'] and prior['status'] == 'failed' and prior.get('_blocked_followup')
                 and (prior['id'] == parent_task_id if parent_task_id else
@@ -1474,6 +1480,8 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                 thread_id, parent_task_id = blocked['thread_id'], blocked['id']
         status = 'scheduled' if scheduled else 'queued'
         task = dict(id=task_id, thread_id=thread_id or task_id, parent_task_id=parent_task_id, bot_id=bot['id'], conversation_bot_id=conversation_bot_id, session_id=bot['session_id'], source_bot_id=source_task['bot_id'] if source_task else None, source_task_id=source_task['id'] if source_task else None, exchange_id=exchange_id or self._new_exchange(), exchange_depth=source_task.get('exchange_depth', 0) + 1 if source_task else 0, title=text[:72], status=status, summary='Waiting for its scheduled time.' if scheduled else 'Queued', created_at=now(), updated_at=now(), scheduled_at=scheduled, _attachment_ids=attachments)
+        if work_item:
+            task.update(_work_context_id=work_item['id'], _work_status_only=data.get('work_status_only', False))
         if self._task_paused(task):
             task['status'] = 'paused'
         if blocked:
@@ -1989,12 +1997,13 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                     if (context['status'] == 'queued' and context['id'] not in self.context_threads
                             and not self._task_paused(self._get('tasks', context['task_id']))):
                         self._start_context(context['id'])
-                active_bots = {self._get('tasks', task_id)['bot_id'] for task_id in self.running}
+                active_bots = {self._get('tasks', task_id)['bot_id'] for task_id in self.running
+                               if not self._get('tasks', task_id).get('_work_status_only')}
                 for task in self._all('tasks'):
                     bot = self._get('bots', task['bot_id'])
                     if bot['archived'] or bot.get('_deleted'):
                         continue
-                    if task['status'] not in ('queued', 'scheduled') or task['bot_id'] in active_bots:
+                    if task['status'] not in ('queued', 'scheduled') or (task['bot_id'] in active_bots and not task.get('_work_status_only')):
                         continue
                     if task.get('scheduled_at') and datetime.fromisoformat(task['scheduled_at'].replace('Z', '+00:00')).timestamp() > time.time():
                         continue
@@ -2002,7 +2011,8 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                         continue
                     worker = threading.Thread(target=self._run_task, args=(task['id'],), daemon=True, name=f'task-{task["id"][:8]}')
                     self.running[task['id']] = worker
-                    active_bots.add(task['bot_id'])
+                    if not task.get('_work_status_only'):
+                        active_bots.add(task['bot_id'])
                     worker.start()
                 self.changed.wait(.2)
 
@@ -2032,7 +2042,7 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
     def _run_task(self, task_id: str):
         with self.lock:
             task = self._get('tasks', task_id)
-            bot_lock = self.bot_locks.setdefault(task['bot_id'], threading.Lock())
+            bot_lock = self.bot_locks.setdefault(task['id'] if task.get('_work_status_only') else task['bot_id'], threading.Lock())
         with bot_lock:
             reaction_feedback = []
             try:
@@ -2070,7 +2080,7 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                             messages = messages[boundary + 1:]
                         task.update(_turn_message_ids=[m['id'] for m in messages], _turn_started_at=now(),
                                     _steering=[], _turn_preference_source_ids=list(task.get('_preference_source_ids', [])))
-                    task.setdefault('_reaction_feedback', list(bot.get('_pending_reactions', {}).values()))
+                    task.setdefault('_reaction_feedback', [] if task.get('_work_status_only') else list(bot.get('_pending_reactions', {}).values()))
                     task.setdefault('_turn_attachment_ids', list(task.get('_attachment_ids', [])))
                     task.pop('error_code', None)
                     task.update(status='working', summary='Working', updated_at=now())
@@ -2106,6 +2116,11 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                     bot = self._get('bots', task['bot_id'])
                     provider_task['_tracked_prs'] = self._tracked_work_input(task)
                     provider_task['_tracked_work'] = self._tracked_items_input(task)
+                    if not task.get('_work_status_only'):
+                        provider_task['_recent_work_updates'] = self.recent_work_updates(task)
+                    if task.get('_work_context_id'):
+                        provider_task['_work_context'] = self.work_context_input(task['_work_context_id'])
+                        provider_task['_work_status_only'] = task.get('_work_status_only', False)
                     if task.get('source_bot_id') or task.get('_work_todos'):
                         provider_task['_work_dependencies'] = self.work_dependencies(task)
                     provider_task.update(self._bot_creation_input(task))

@@ -30,6 +30,7 @@ struct ConversationRoute: Hashable {
     let botId: String
     var decisionId: String? = nil
     var messageId: String? = nil
+    var workContext: WorkReference? = nil
 }
 
 struct BotSettingsRoute: Hashable {
@@ -104,8 +105,8 @@ struct CoconutHome: View {
             Group {
                 if tab == .inbox { DecisionInboxView(focusDecisionId: $notificationDecisionId) }
                 else if tab == .work {
-                    WorkView(isVisible: selectedTab == .work && workPath.isEmpty) { botId in
-                        workPath.append(ConversationRoute(botId: botId))
+                    WorkView(isVisible: selectedTab == .work && workPath.isEmpty) { route in
+                        workPath.append(route)
                     }
                 }
                 else { HomeLaunchView(searchText: searchText) }
@@ -139,7 +140,7 @@ struct CoconutHome: View {
                     }
                 }
                 .navigationDestination(for: ConversationRoute.self) { route in
-                    ConversationView(botId: route.botId, focusDecisionId: route.decisionId, focusMessageId: route.messageId)
+                    ConversationView(botId: route.botId, focusDecisionId: route.decisionId, focusMessageId: route.messageId, attachedWork: route.workContext)
                 }
                 .navigationDestination(for: BotExchangeRoute.self) { route in
                     BotExchangeView(route: route)

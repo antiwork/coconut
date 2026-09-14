@@ -86,7 +86,8 @@ struct WorkView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let isVisible: Bool
-    let openConversation: (String) -> Void
+    let openConversation: (ConversationRoute) -> Void
+    @State private var requestingUpdates: Set<String> = []
     private var items: [TrackedWorkItem] { TrackedWorkItem.tracked(in: store.artifacts, visibility: store.workVisibility) }
 
     var body: some View {
@@ -101,6 +102,13 @@ struct WorkView: View {
             }
             ForEach(items) { item in
                 workRow(item)
+                    .contextMenu {
+                        Button("Get update", systemImage: "arrow.clockwise") { getUpdate(item.artifact) }
+                            .disabled(requestingUpdates.contains(item.artifact.id))
+                        if let pr = item.pullRequest {
+                            Link(destination: pr.url) { Label("Open pull request", systemImage: "arrow.up.right") }
+                        }
+                    }
                     .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
                     .listRowBackground(BoardStyle.paper)
                     .listRowSeparator(.hidden, edges: .top)
@@ -150,12 +158,30 @@ struct WorkView: View {
         .accessibilityIdentifier("work-undo")
     }
 
+    private func openWork(_ artifact: Artifact, attach: Bool = true) {
+        let botId = artifact.activityBotId ?? artifact.botId
+        openConversation(ConversationRoute(botId: botId,
+            workContext: attach ? WorkReference(id: artifact.id, title: artifact.title) : nil))
+    }
+
+    private func getUpdate(_ artifact: Artifact) {
+        let botId = artifact.activityBotId ?? artifact.botId
+        guard !requestingUpdates.contains(artifact.id), let bot = store.bots.first(where: { $0.id == botId }) else { return }
+        requestingUpdates.insert(artifact.id)
+        openWork(artifact, attach: false)
+        Task {
+            defer { requestingUpdates.remove(artifact.id) }
+            await store.send(bot: bot, text: "How is this going?",
+                workContext: WorkReference(id: artifact.id, title: artifact.title), workStatusOnly: true)
+        }
+    }
+
     @ViewBuilder
     private func workRow(_ item: TrackedWorkItem) -> some View {
         if let pr = item.pullRequest {
             row(pr)
         } else {
-            Button { openConversation(item.artifact.botId) } label: {
+            Button { openWork(item.artifact) } label: {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(item.artifact.title).font(.body.weight(.medium))
@@ -180,7 +206,7 @@ struct WorkView: View {
 
     private func row(_ pr: TrackedPullRequest) -> some View {
         HStack(spacing: 8) {
-            Link(destination: pr.url) {
+            Button { openWork(pr.artifact) } label: {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(pr.artifact.title).font(.body.weight(.medium))
                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
@@ -199,7 +225,7 @@ struct WorkView: View {
             .buttonStyle(HomePressStyle())
             .accessibilityIdentifier("work-pr-\(pr.number)")
             if !pr.isFinished, let bot = store.bots.first(where: { $0.id == (pr.artifact.activityBotId ?? pr.artifact.botId) }) {
-                Button { openConversation(bot.id) } label: {
+                Button { openWork(pr.artifact) } label: {
                     BotAvatar(bot: bot, size: 28, animated: false)
                         .frame(width: 44, height: 44).contentShape(Rectangle())
                 }

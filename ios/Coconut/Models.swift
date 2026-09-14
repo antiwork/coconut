@@ -231,6 +231,7 @@ struct Message: Codable, Identifiable, Equatable, Sendable {
     var exchangeRecipientBotIds: [String]? = nil
     var clientRequestId: String? = nil
     var replyTo: MessageReference? = nil
+    var workContext: WorkReference? = nil
     var reactions: [String]? = nil
     var reactionEvent: MessageReactionEvent? = nil
 }
@@ -324,6 +325,11 @@ struct ProposedFileAction: Codable, Equatable, Sendable {
     var type: String
     var filename: String
     var content: String
+}
+
+struct WorkReference: Codable, Hashable, Sendable {
+    let id: String
+    let title: String
 }
 
 struct Artifact: Codable, Identifiable, Equatable, Sendable {

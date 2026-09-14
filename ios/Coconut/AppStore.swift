@@ -399,11 +399,11 @@ final class AppStore {
     }
 
     @discardableResult
-    func send(bot: Bot, text: String, mode: String = "auto", taskId: String? = nil, attachments: [String] = [], scheduledAt: String? = nil, mentionedBotIds: [String] = [], replyTo: MessageReference? = nil) async -> Bool {
+    func send(bot: Bot, text: String, mode: String = "auto", taskId: String? = nil, attachments: [String] = [], scheduledAt: String? = nil, mentionedBotIds: [String] = [], replyTo: MessageReference? = nil, workContext: WorkReference? = nil, workStatusOnly: Bool = false) async -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return false }
         guard ["auto", "steer", "queue"].contains(mode) else { return false }
-        let selectedMode = scheduledAt == nil ? mode : "queue"
+        let selectedMode = workContext != nil ? "queue" : (scheduledAt == nil ? mode : "queue")
         let currentTask = selectedMode == "auto"
             ? tasks.last { $0.botId == bot.id && $0.chatBotId == bot.id && $0.sourceBotId == nil && $0.scheduledAt == nil && ["working", "queued", "waiting"].contains($0.status) }
             : taskId.flatMap { id in tasks.first { $0.id == id && $0.chatBotId == bot.id } }
@@ -423,7 +423,7 @@ final class AppStore {
             } else if let currentTask { target = currentTask }
             else { return false }
             messages.append(Message(id: UUID().uuidString, botId: bot.id, taskId: target.id, role: "user", kind: "text", text: text,
-                                    decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false, threadId: target.threadId, replyTo: replyTo))
+                                    decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false, threadId: target.threadId, replyTo: replyTo, workContext: workContext))
             messages.append(Message(id: UUID().uuidString, botId: bot.id, taskId: target.id, role: "system", kind: "text",
                                     text: "Preview: no agent execution.",
                                     decisionId: nil, artifactId: nil, createdAt: Self.now, streaming: false, threadId: target.threadId))
@@ -431,10 +431,10 @@ final class AppStore {
         }
         let request = MessageRequest(text: text, mode: selectedMode,
             taskId: selectedMode == "steer" ? currentTask?.id : nil, scheduledAt: scheduledAt,
-            attachmentIds: attachments, recipientBotIds: [], replyToMessageId: replyTo?.messageId, mentionedBotIds: mentionedBotIds)
+            attachmentIds: attachments, recipientBotIds: [], replyToMessageId: replyTo?.messageId, mentionedBotIds: mentionedBotIds, workArtifactId: workContext?.id, workStatusOnly: workStatusOnly)
         let outgoing = OutgoingMessage(id: UUID().uuidString, botId: bot.id,
             executorIds: [selectedMode == "steer" ? currentTask!.botId : bot.id],
-            request: request, createdAt: Self.now, status: .sending, replyTo: replyTo)
+            request: request, createdAt: Self.now, status: .sending, replyTo: replyTo, workContext: workContext)
         outgoingMessages.append(outgoing)
         do { try saveOutgoing() }
         catch {
@@ -477,7 +477,7 @@ final class AppStore {
               let bot = bots.first(where: { $0.id == outgoing.botId }) else { return }
         outgoingMessages.removeAll { $0.id == outgoing.id }
         let saved = await send(bot: bot, text: text, attachments: outgoing.request.attachmentIds,
-                              scheduledAt: outgoing.request.scheduledAt, mentionedBotIds: outgoing.request.mentionedBotIds ?? outgoing.request.recipientBotIds, replyTo: outgoing.replyTo)
+                              scheduledAt: outgoing.request.scheduledAt, mentionedBotIds: outgoing.request.mentionedBotIds ?? outgoing.request.recipientBotIds, replyTo: outgoing.replyTo, workContext: outgoing.workContext, workStatusOnly: outgoing.request.workStatusOnly ?? false)
         if !saved { outgoingMessages.append(outgoing); try? saveOutgoing() }
     }
 
@@ -1223,7 +1223,7 @@ private struct InstructionsRequest: Encodable { let instructions: String }
 private struct PreferenceRequest: Encodable { let text: String }
 private struct RoutineRequest: Encodable { let name: String; let prompt: String; let cron: String; let timezone: String; let enabled: Bool }
 private struct ArchiveRequest: Encodable { let archived: Bool }
-struct MessageRequest: Codable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String]; var replyToMessageId: String? = nil; var mentionedBotIds: [String]? = nil }
+struct MessageRequest: Codable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String]; var replyToMessageId: String? = nil; var mentionedBotIds: [String]? = nil; var workArtifactId: String? = nil; var workStatusOnly: Bool? = nil }
 private struct ReactionRequest: Encodable { let emoji: String; let active: Bool }
 struct OutgoingMessage: Codable, Identifiable {
     enum Status: String, Codable { case sending, accepted, failed, rejected }
@@ -1235,6 +1235,7 @@ struct OutgoingMessage: Codable, Identifiable {
     var status: Status
     var failureReason: String? = nil
     var replyTo: MessageReference? = nil
+    var workContext: WorkReference? = nil
     var expectsResponse: Bool { [.sending, .accepted].contains(status) && request.scheduledAt == nil }
     var afterRestart: Self {
         var restored = self
@@ -1244,7 +1245,7 @@ struct OutgoingMessage: Codable, Identifiable {
     var message: Message {
         Message(id: "outgoing-" + id, botId: botId, taskId: request.taskId, role: "user", kind: "text", text: request.text,
                 decisionId: nil, artifactId: nil, createdAt: createdAt, streaming: false,
-                recipientBotIds: request.recipientBotIds, clientRequestId: id, replyTo: replyTo)
+                recipientBotIds: request.recipientBotIds, clientRequestId: id, replyTo: replyTo, workContext: workContext)
     }
 }
 private struct OutgoingCache: Codable { let deviceId: String; let messages: [OutgoingMessage] }

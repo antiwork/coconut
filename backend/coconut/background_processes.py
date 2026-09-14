@@ -47,7 +47,7 @@ class BackgroundProcesses:
     def _background_pending(self, task_id, *, finishing_task_id=None):
         turns = [t for t in self._all('tasks') if t['id'] == task_id or t.get('_assignment_task_id') == task_id]
         owners = {t['id'] for t in turns}
-        return (any(r['task_id'] in owners and (subscription(r) or r.get('_relay_task_id') or r.get('_wait_task_id')) and not r.get('_process_delivery')
+        return (any(r['task_id'] in owners and (subscription(r) or r.get('_relay_task_id') or r.get('_wait_task_id') or r.get('_wait_process_receipt')) and not r.get('_process_delivery')
                     for r in self._all('native_receipts'))
                 or any(t['id'] != finishing_task_id and t.get('_background_completion')
                        and t['status'] in ('queued', 'working', 'needs_you', 'paused') for t in turns))
@@ -59,6 +59,12 @@ class BackgroundProcesses:
             except Exception:
                 logging.getLogger(__name__).exception('Could not deliver a Hermes process result.')
             self.stopping.wait(1)
+
+    def _process_observation_current(self, task, bot):
+        return (not bot.get('_deleted') and not bot['archived'] and task['status'] != 'cancelled'
+                and not self._get('exchanges', task['exchange_id']).get('cancelled')
+                and task['session_id'] == bot['session_id']
+                and task.get('_conversation_epoch') == self._setting('conversation_epoch'))
 
     def _drain_process_completions(self):
         self._drain_relay_completions()
@@ -82,27 +88,37 @@ class BackgroundProcesses:
                         continue
                     records = [r for r in self._all('native_receipts') if subscription(r) and not r.get('_process_delivery')
                                and self._get('tasks', r['task_id'])['bot_id'] == bot_id]
-                    processes = []
+                    waited_on = {r['_wait_process_receipt'] for r in self._all('native_receipts')
+                                 if r.get('_wait_process_receipt') and not r.get('_process_delivery')
+                                 and self._can_resume_process(self._get('tasks', r['task_id']), bot)}
+                    processes, cached = [], []
                     for record in records:
                         task = self._get('tasks', record['task_id'])
-                        if not self._can_resume_process(task, bot):
+                        if not self._process_observation_current(task, bot):
+                            continue
+                        resumable = self._can_resume_process(task, bot)
+                        if record.get('_completion_text'):
+                            if resumable:
+                                cached.append(dict(id=record['id'], text=record['_completion_text']))
+                            continue
+                        if not resumable and record['id'] not in waited_on:
                             continue
                         processes.append(dict(id=record['id'], session_id=subscription(record), task_id=task['id'],
                                               epoch=task.get('_conversation_epoch')))
-                if not processes:
+                if not processes and not cached:
                     continue
-                results = self.provider.process_completions(bot, processes)
+                results = cached + (self.provider.process_completions(bot, processes) if processes else [])
                 with self.transaction():
                     if self.stopping.is_set() or self.restart_pending:
                         return
                     grouped = {}
-                    expected = {item['id'] for item in processes}
+                    expected = {item['id'] for item in processes + cached}
                     for result in results:
                         if result.get('id') not in expected:
                             continue
                         record = self._get('native_receipts', result['id'])
                         task = self._get('tasks', record['task_id'])
-                        if record.get('_process_delivery') or not self._can_resume_process(task, self._get('bots', bot_id)):
+                        if record.get('_process_delivery') or not self._process_observation_current(task, self._get('bots', bot_id)):
                             continue
                         if 'observation' in result:
                             from .service import now
@@ -111,10 +127,14 @@ class BackgroundProcesses:
                             continue
                         if result.get('consumed'):
                             record['_process_delivery'] = 'consumed'
+                            record['_completion_text'] = result.get('text', 'The process result was already received.')
                             self._put('native_receipts', record)
                             continue
                         if isinstance(result.get('text'), str) and result['text'].strip():
-                            grouped.setdefault(task['id'], []).append((record, result['text']))
+                            record['_completion_text'] = result['text']
+                            self._put('native_receipts', record)
+                            if self._can_resume_process(task, self._get('bots', bot_id)):
+                                grouped.setdefault(task['id'], []).append((record, result['text']))
                     for task_id, completions in grouped.items():
                         self._resume_process_task(task_id, completions)
             finally:
@@ -209,7 +229,8 @@ class BackgroundProcesses:
         task.update(status='queued', updated_at=now(), summary='Continuing with the result.',
                     _conversation_epoch=epoch, _background_completion=[text for _, text in completions],
                     _background_return_after=now(), _background_return_id=uid())
-        for record, _ in completions:
+        for record, text in completions:
+            record['_completion_text'] = text
             record['_process_delivery'] = task['_native_turn_id']
             self._put('native_receipts', record)
         self._put('tasks', task)
@@ -230,4 +251,5 @@ class BackgroundProcesses:
             if (not original.get('_process_delivery') and subscription(original) in consumed
                     and self._get('tasks', original['task_id'])['bot_id'] == bot_id):
                 original['_process_delivery'] = 'consumed'
+                original['_completion_text'] = json.dumps(value)
                 self._put('native_receipts', original)

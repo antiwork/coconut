@@ -13,6 +13,7 @@ struct ConversationView: View {
         return false
     }
     @State private var messageDraft = ""
+    @State private var workContext: WorkReference?
     @State private var replyTo: MessageReference?
     @State private var messageAttachments: [Artifact] = []
     @State private var messageScheduling = false
@@ -24,6 +25,13 @@ struct ConversationView: View {
     @State private var nearBottom = true
     @State private var userScrolling = false
     @FocusState private var composerFocused: Bool
+
+    init(botId: String, focusDecisionId: String? = nil, focusMessageId: String? = nil, attachedWork: WorkReference? = nil) {
+        self.botId = botId
+        self.focusDecisionId = focusDecisionId
+        self.focusMessageId = focusMessageId
+        _workContext = State(initialValue: attachedWork)
+    }
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
     private var messages: [Message] {
@@ -151,7 +159,7 @@ struct ConversationView: View {
                     ConversationComposer(bot: bot, task: activeTask, text: $messageDraft,
                                          attachments: $messageAttachments, scheduling: $messageScheduling,
                                          scheduledAt: $messageScheduledAt, mentions: $messageMentions,
-                                         focused: $composerFocused, replyTo: $replyTo)
+                                         focused: $composerFocused, replyTo: $replyTo, workContext: $workContext)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .onDisappear { composerFocused = false }
@@ -306,6 +314,10 @@ struct MessageBubble: View {
             if isUser { Spacer(minLength: 36) }
             VStack(alignment: isUser ? .trailing : .leading, spacing: 3) {
             VStack(alignment: .leading, spacing: 4) {
+                if let work = message.workContext {
+                    Label(work.title, systemImage: "checklist").font(.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("message-work-context")
+                }
                 if let reference = message.replyTo {
                     Button { scrollToDecision(store.displayedMessageId(for: reference.messageId)) } label: {
                         MessageQuote(reference: reference)
@@ -481,6 +493,7 @@ struct ConversationComposer: View {
     @State private var selection: TextSelection?
     @FocusState.Binding var focused: Bool
     @Binding var replyTo: MessageReference?
+    @Binding var workContext: WorkReference?
 
     private var connected: Bool { store.hasPairing || store.isDemo }
     private var recipients: [SelectedBotMention] { BotMentions.recipients(in: text, selected: mentions, bots: store.bots) }
@@ -488,6 +501,18 @@ struct ConversationComposer: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let work = workContext {
+                HStack(spacing: 8) {
+                    Label(work.title, systemImage: "checklist")
+                        .font(.subheadline).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+                    Button { workContext = nil } label: {
+                        Image(systemName: "xmark").foregroundStyle(.secondary).frame(width: 44, height: 44)
+                    }.accessibilityLabel("Remove work context")
+                }.padding(.leading, 16).padding(.trailing, 4)
+                    .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 16))
+                    .padding(.horizontal, 12).padding(.bottom, 6)
+                    .accessibilityIdentifier("work-context-preview")
+            }
             if let reference = replyTo {
                 HStack(spacing: 8) {
                     MessageQuote(reference: reference)
@@ -527,8 +552,10 @@ struct ConversationComposer: View {
                             Task { await store.cancel(task) }
                         }
                     }
-                    Button(scheduling ? "Send now" : "Schedule task", systemImage: "clock") {
-                        scheduling.toggle()
+                    if workContext == nil {
+                        Button(scheduling ? "Send now" : "Schedule task", systemImage: "clock") {
+                            scheduling.toggle()
+                        }
                     }
                 } label: {
                     Image(systemName: uploading ? "hourglass" : "plus").font(.system(size: 22))
@@ -588,6 +615,7 @@ struct ConversationComposer: View {
     private func send() {
         guard canSend else { return }
         let submittedText = text
+        let submittedWork = workContext
         let submittedReply = replyTo
         let submittedArtifacts = attachments
         let submittedAttachments = submittedArtifacts.map(\.id)
@@ -595,15 +623,15 @@ struct ConversationComposer: View {
         let submittedDate = scheduledAt
         let submittedRecipients = recipients.map(\.id)
         let submittedMentions = mentions
-        text = ""; mentions = []; selection = nil; attachments = []; scheduling = false; replyTo = nil
+        text = ""; mentions = []; selection = nil; attachments = []; scheduling = false; replyTo = nil; workContext = nil
         Task {
             let success = await store.send(bot: bot, text: submittedText,
                                            attachments: submittedAttachments,
                                            scheduledAt: submittedScheduling ? ISO8601DateFormatter().string(from: submittedDate) : nil,
-                                           mentionedBotIds: submittedRecipients, replyTo: submittedReply)
+                                           mentionedBotIds: submittedRecipients, replyTo: submittedReply, workContext: submittedWork)
             if !success && text.isEmpty {
                 text = submittedText; mentions = submittedMentions; attachments = submittedArtifacts
-                scheduling = submittedScheduling; scheduledAt = submittedDate; replyTo = submittedReply
+                scheduling = submittedScheduling; scheduledAt = submittedDate; replyTo = submittedReply; workContext = submittedWork
             }
         }
     }
