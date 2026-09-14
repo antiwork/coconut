@@ -32,12 +32,17 @@ def snapshot(value):
     return {'todos': copy.deepcopy(items), 'revision': max(0, int(value.get('revision', 0)))}
 
 
+def work_enabled(operation, task):
+    """One predicate decides native todo restoration and the dependency prompt for a turn."""
+    return operation != 'context' and not task.get('_pr_review') and bool(
+        task.get('_work_todos') or (task.get('source_bot_id') and not task.get('_is_return'))
+        or task.get('_handoff_assignment', {}).get('return_to_bot_id'))
+
+
 class NativeWork:
     def __init__(self, request):
         task = request['task']
-        self.enabled = request['operation'] != 'context' and not task.get('_pr_review') and bool(
-            task.get('_work_todos') or (task.get('source_bot_id') and not task.get('_is_return'))
-            or task.get('_handoff_assignment', {}).get('return_to_bot_id'))
+        self.enabled = work_enabled(request['operation'], task)
         self.saved = task.get('_work_todos')
         self.request = (task.get('_handoff_assignment', {}).get('request')
                         or '\n'.join(m['text'] for m in task.get('_bot_messages', []) if m.get('text'))
@@ -69,19 +74,23 @@ class WorkProgress:
             return False
         return any(t['status'] in ('pending', 'in_progress') for t in items)
 
+    def _exchange_peers(self, task):
+        """Other tasks of this exchange in the current conversation. Reading them registers nothing."""
+        return {t['id']: t for t in self._all('tasks')
+                if t['id'] != task['id'] and t['exchange_id'] == task['exchange_id']
+                and t['conversation_bot_id'] == task['conversation_bot_id']
+                and not self._get('bots', t['bot_id']).get('_deleted')
+                and t['session_id'] == self._get('bots', t['bot_id'])['session_id']
+                and (t.get('_conversation_epoch') == task.get('_conversation_epoch')
+                     or (t['status'] == 'queued' and not t.get('_native_turn_id') and '_conversation_epoch' not in t))}
+
     def wait_for_task(self, task_id, payload):
         from .service import ServiceError, digest, encoded, now, require_text
         with self.transaction():
             task = self._get('tasks', task_id)
             if task['status'] != 'working' or self._task_paused(task) or self.stopping.is_set():
                 raise ServiceError(409, 'This task cannot register a wait now.')
-            peers = {t['id']: t for t in self._all('tasks')
-                     if t['id'] != task_id and t['exchange_id'] == task['exchange_id']
-                     and t['conversation_bot_id'] == task['conversation_bot_id']
-                     and not self._get('bots', t['bot_id']).get('_deleted')
-                     and t['session_id'] == self._get('bots', t['bot_id'])['session_id']
-                     and (t.get('_conversation_epoch') == task.get('_conversation_epoch')
-                          or (t['status'] == 'queued' and not t.get('_native_turn_id') and '_conversation_epoch' not in t))}
+            peers = self._exchange_peers(task)
             if not payload.get('task_id'):
                 return {'tasks': [{k: t.get(k) for k in ('id', 'bot_id', 'title', 'status')}
                                   for t in peers.values()]}
@@ -112,19 +121,20 @@ class WorkProgress:
 
     def work_dependencies(self, task):
         """Expose existing owners before a bot can start duplicate work."""
-        peers = self.wait_for_task(task['id'], {})['tasks']
-        tasks = {t['id']: t for t in self._all('tasks')}
-        records = self._all('native_receipts')
-        dependencies = []
-        for peer in peers:
-            target = tasks[peer['id']]
-            pending = self._background_pending(target['id'])
-            if target['status'] not in self.ACTIVE and not pending:
-                continue
-            if task['id'] in self._work_chain(target, tasks, records, include_continuations=True):
-                continue
-            dependencies.append(dict(peer, status='waiting' if pending and target['status'] == 'completed' else target['status']))
-        return dependencies
+        # A listing is read-only. The wait-registration guard applies only to an explicit coconut_wait.
+        with self.lock:
+            tasks = {t['id']: t for t in self._all('tasks')}
+            records = self._all('native_receipts')
+            dependencies = []
+            for target in self._exchange_peers(task).values():
+                pending = self._background_pending(target['id'])
+                if target['status'] not in self.ACTIVE and not pending:
+                    continue
+                if task['id'] in self._work_chain(target, tasks, records, include_continuations=True):
+                    continue
+                dependencies.append({key: target.get(key) for key in ('id', 'bot_id', 'title')}
+                                    | {'status': 'waiting' if pending and target['status'] == 'completed' else target['status']})
+            return dependencies
 
     def _drain_task_completions(self):
         with self.lock:
