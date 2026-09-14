@@ -37,18 +37,21 @@ class DecisionInbox:
         from .service import ServiceError
         explicit = payload.get('previous_decision_id')
         if explicit is not None and (not isinstance(explicit, str) or not explicit.strip()):
-            raise ServiceError(400, 'Link an answered question from this task.')
+            raise ServiceError(400, 'Link an answered question from this conversation.')
         previous_id = explicit or task.get('_resume_decision')
         if not previous_id:
             return {}
         previous = next((d for d in self._all('decisions') if d['id'] == previous_id), None)
-        valid = (previous is not None and previous['task_id'] == task['id']
-                 and previous['bot_id'] == task['bot_id'] and previous.get('action_type') == 'question'
-                 and previous['status'] in ('approved', 'rejected', 'modified')
+        previous_task = next((t for t in self._all('tasks') if previous and t['id'] == previous['task_id']), None)
+        valid = (previous_task is not None and previous['bot_id'] == previous_task['bot_id']
+                 and previous_task.get('conversation_bot_id', previous_task['bot_id'])
+                 == task.get('conversation_bot_id', task['bot_id'])
+                 and previous.get('action_type') == 'question'
+                 and previous['status'] in ('approved', 'rejected', 'modified', 'executed', 'failed')
                  and bool(previous.get('selected_option_label') or previous.get('correction')))
         if not valid:
             if explicit is not None:
-                raise ServiceError(400, 'Link an answered question from this task.')
+                raise ServiceError(400, 'Link an answered question from this conversation.')
             return {}
         return dict(previous_decision_id=previous_id)
 

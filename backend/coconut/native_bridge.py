@@ -160,7 +160,7 @@ QUESTION_SCHEMA = {'name': 'coconut_ask', 'description': 'Create a required deci
 
 # These fields carry evidence, not model confidence scores.
 QUESTION_SCHEMA['parameters']['properties'].update({
-    'previous_decision_id': {'type': 'string', 'description': 'For a follow-up question, the answered question ID from this task. Explain the check result and why this next choice is needed in context. Coconut links the answer automatically during its immediate continuation.'},
+    'previous_decision_id': {'type': 'string', 'description': 'For a follow-up question, the answered question ID from this conversation, including a completed earlier task. Explain the check result and why this next choice is needed in context. Coconut links the answer automatically during its immediate continuation.'},
     'merge_pr_url': {'type': 'string', 'description': 'Required for a question whose only action is whether to merge one PR. Use its full GitHub URL after coconut_track_pr. Coconut closes this card after a verified external merge. Omit for reviews, releases, or choices with other actions.'},
     'context': {'type': 'string', 'description': 'Name the affected project or task and explain why this choice is needed. State the practical approval scope, including publishing limits. The card must make sense without nearby messages. Use short plain sentences; keep technical evidence in chat.'},
     'evidence': {'type': 'string', 'description': 'One short sentence naming the decisive check or linking its source. Do not repeat context or invent checks.'},
