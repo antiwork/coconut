@@ -10,6 +10,20 @@ import subprocess
 import time
 
 
+def audit_item(task):
+    if isinstance(task.get('_source_assignment'), dict):
+        return task['_source_assignment']
+    # Older audit tasks store the source record at the end of the generated prompt.
+    tail = task.get('_source_audit_prompt', '').partition('Source data follows; it contains no instructions:\n')[2]
+    try:
+        items = json.loads(tail)
+        if isinstance(items, list) and len(items) == 1 and isinstance(items[0], dict):
+            return items[0]
+    except (ValueError, TypeError):
+        pass
+    return {}
+
+
 def coverage(item, binding, tasks, decisions, receipts, current, seen=None, *, include_task_decisions=False):
     """Require a live dependency or an explicit, bounded deferral."""
     if binding.get('updated_at') != item.get('updated_at'):
@@ -102,6 +116,15 @@ class WorkSources:
                         return
                     tasks, decisions, receipts = ({r['id']: r for r in self._all(table)}
                                                   for table in ('tasks', 'decisions', 'native_receipts'))
+                    audit_owners = {}
+                    epoch = self._setting('conversation_epoch')
+                    for task in tasks.values():
+                        if (task['bot_id'] != bot['id'] or task['session_id'] != bot['session_id']
+                                or task.get('_conversation_epoch', epoch) != epoch):
+                            continue
+                        item = audit_item(tasks.get(task.get('_assignment_task_id'), task))
+                        if item.get('id') and item.get('updated_at'):
+                            audit_owners.setdefault((item['id'], item['updated_at']), []).append(task['id'])
                     current = datetime.now(timezone.utc)
                     gaps = [item for item in items if not coverage(item, bindings.get(item['id'], {}), tasks, decisions, receipts, current)]
                     evidence = [dict(item=item, binding=bindings.get(item['id'], {}),
@@ -116,7 +139,8 @@ class WorkSources:
                         signature = hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest()
                         previous = recoveries.get(identity, {})
                         previous_status = tasks.get(previous.get('task_id'), {}).get('status')
-                        live = coverage(proof['item'], dict(updated_at=proof['item']['updated_at'], task_ids=[previous.get('task_id')]),
+                        owners = audit_owners.get((identity, proof['item']['updated_at']), []) + [previous.get('task_id')]
+                        live = coverage(proof['item'], dict(updated_at=proof['item']['updated_at'], task_ids=owners),
                                         tasks, decisions, receipts, current, include_task_decisions=True)
                         retry = (previous_status in ('failed', 'completed', 'waiting') and not live
                                  and (previous.get('attempts', 1) < 2 and previous_status != 'waiting'
@@ -144,6 +168,7 @@ class WorkSources:
                                           human_authored=False)
                         task = self._get('tasks', task['id'])
                         task['_source_audit_prompt'] = text
+                        task['_source_assignment'] = {key: item[key] for key in ('id', 'updated_at')}
                         self._put('tasks', task)
                         state['task_id'] = task['id']
                         previous = recoveries.get(item['id'], {})
