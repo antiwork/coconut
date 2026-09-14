@@ -136,6 +136,9 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
         CREATE TABLE IF NOT EXISTS bot_deletion_receipts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS native_receipts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS native_receipts_executing ON native_receipts
+            (json_extract(data, '$.task_id'), json_extract(data, '$.turn_id'))
+            WHERE json_extract(data, '$.state')='executing';
         CREATE TABLE IF NOT EXISTS receipts (decision_id TEXT PRIMARY KEY, state TEXT NOT NULL, artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL, detail TEXT NOT NULL);
         ''')
         self._request_device_id = None
@@ -554,10 +557,14 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                     state[table] = [self._public(o) for o in self._all(table) if o['bot_id'] in visible and o.get('conversation_bot_id', o['bot_id']) in visible and not o.get('_deleted') and not o.get('_hidden') and (table not in ('decisions', 'artifacts') or not o.get('task_id') or o['task_id'] in visible_task_ids)]
                 state['artifacts'] = [self._public(a) for a in self._work_projection([self._get('artifacts', a['id']) for a in state['artifacts']])]
                 replying = {c['decision_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
+                histories = {}
                 for decision in state['decisions']:
                     decision['reply_pending'] = decision['id'] in replying
                     if not decision.get('request_text') and decision.get('task_id'):
-                        decision.update(self.decision_origin(self._get('tasks', decision['task_id'])))
+                        task = self._get('tasks', decision['task_id'])
+                        if task['bot_id'] not in histories:
+                            histories[task['bot_id']] = self._history(task['bot_id'])
+                        decision.update(self.decision_origin(task, messages=histories[task['bot_id']]))
                 state.update(cursor=self._cursor(), server_time=now(), provider=getattr(self.provider, 'name', 'unknown'), push_configured=self.push.configured)
                 if catalog is not None:
                     default = catalog.get('default', {})

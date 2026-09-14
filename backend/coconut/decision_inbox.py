@@ -55,9 +55,10 @@ class DecisionInbox:
             return {}
         return dict(previous_decision_id=previous_id)
 
-    def decision_origin(self, task):
+    def decision_origin(self, task, *, messages=None):
         seen = set()
-        messages = self._history(task['bot_id'])
+        if messages is None:
+            messages = self._history(task['bot_id'])
         while task and task['id'] not in seen:
             seen.add(task['id'])
             shared = set(task.get('_shared_message_ids', []))

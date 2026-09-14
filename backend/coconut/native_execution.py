@@ -7,8 +7,10 @@ from uuid import uuid4
 
 class NativeExecution:
     def _has_uncertain_receipt(self, task_id, turn_id):
-        return any(record['task_id'] == task_id and record.get('turn_id') == turn_id
-                   and record['state'] == 'executing' for record in self._all('native_receipts'))
+        return self.db.execute(
+            "SELECT 1 FROM native_receipts WHERE json_extract(data, '$.state')='executing' "
+            "AND json_extract(data, '$.task_id')=? AND json_extract(data, '$.turn_id') IS ? LIMIT 1",
+            (task_id, turn_id)).fetchone() is not None
 
     def native_relay_delivery(self, task_id, payload):
         with self.transaction():
