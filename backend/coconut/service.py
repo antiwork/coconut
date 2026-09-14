@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import hmac
 import json
+import logging
 import os
 from pathlib import Path
 import secrets
@@ -260,10 +261,12 @@ class Service(WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgres
         self.db.execute("INSERT INTO settings VALUES ('decision_link_notices_migrated','true')")
 
     def _all(self, table: str) -> list[dict]:
-        return [json.loads(row[0]) for row in self.db.execute(f'SELECT data FROM {table} ORDER BY rowid')]
+        with self.lock:
+            return [json.loads(row[0]) for row in self.db.execute(f'SELECT data FROM {table} ORDER BY rowid')]
 
     def _get(self, table: str, object_id: str) -> dict:
-        row = self.db.execute(f'SELECT data FROM {table} WHERE id=?', (object_id,)).fetchone()
+        with self.lock:
+            row = self.db.execute(f'SELECT data FROM {table} WHERE id=?', (object_id,)).fetchone()
         if not row:
             raise ServiceError(404, f'{table[:-1].capitalize()} was not found.')
         return json.loads(row[0])
@@ -603,7 +606,8 @@ class Service(WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgres
         return state
 
     def _cursor(self) -> int:
-        return self.db.execute('SELECT COALESCE(MAX(seq),0) FROM events').fetchone()[0]
+        with self.lock:
+            return self.db.execute('SELECT COALESCE(MAX(seq),0) FROM events').fetchone()[0]
 
     def events(self, after: int, wait: float = 0) -> dict:
         if after < 0:
@@ -620,7 +624,8 @@ class Service(WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgres
             return dict(events=result, cursor=result[-1]['seq'] if result else max(after, self._cursor()), server_time=now())
 
     def _setting(self, key: str, default: Any = None) -> Any:
-        row = self.db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+        with self.lock:
+            row = self.db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
         return json.loads(row[0]) if row else default
 
     def mutate(self, method: str, path: str, data: dict, key: str, device_id: str = 'local') -> dict:
@@ -2036,42 +2041,53 @@ class Service(WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgres
                     self._event('artifact.updated', self._public(current), current['bot_id'], current['task_id'])
 
     def _dispatch(self):
-        next_routine_tick = 0.0
+        next_routine_tick = 0
         while not self.stopping.is_set():
             if time.monotonic() >= next_routine_tick:
-                self.tick_routines()
-                self._sync_automatic_work()
                 next_routine_tick = time.monotonic() + 1
-            self.finish_inbox_swipes()
-            self._drain_returns()
-            with self.changed:
-                if self.restart_pending:
-                    self.changed.wait(timeout=.2)
+                for update in (self.tick_routines, self._sync_automatic_work):
+                    try:
+                        update()
+                    except Exception:
+                        logging.getLogger(__name__).exception('Queue maintenance failed: %s', update.__name__)
+            try:
+                self._dispatch_pending()
+            except Exception:
+                logging.getLogger(__name__).exception('Queue dispatch failed; queued work will retry.')
+                self.stopping.wait(1)
+
+    def _dispatch_pending(self):
+        self.finish_inbox_swipes()
+        self._drain_returns()
+        with self.changed:
+            if self.restart_pending:
+                self.changed.wait(timeout=.2)
+                return
+            self.running = {k: v for k, v in self.running.items() if v.is_alive()}
+            self.context_threads = {k: v for k, v in self.context_threads.items() if v.is_alive()}
+            for context in self._all('contexts'):
+                if (context['status'] == 'queued' and context['id'] not in self.context_threads
+                        and not self._task_paused(self._get('tasks', context['task_id']))):
+                    self._start_context(context['id'])
+            active_bots = {self._get('tasks', task_id)['bot_id'] for task_id in self.running
+                           if not self._get('tasks', task_id).get('_work_status_only')}
+            for task in self._all('tasks'):
+                bot = self._get('bots', task['bot_id'])
+                if bot['archived'] or bot.get('_deleted'):
                     continue
-                self.running = {k: v for k, v in self.running.items() if v.is_alive()}
-                self.context_threads = {k: v for k, v in self.context_threads.items() if v.is_alive()}
-                for context in self._all('contexts'):
-                    if (context['status'] == 'queued' and context['id'] not in self.context_threads
-                            and not self._task_paused(self._get('tasks', context['task_id']))):
-                        self._start_context(context['id'])
-                active_bots = {self._get('tasks', task_id)['bot_id'] for task_id in self.running
-                               if not self._get('tasks', task_id).get('_work_status_only')}
-                for task in self._all('tasks'):
-                    bot = self._get('bots', task['bot_id'])
-                    if bot['archived'] or bot.get('_deleted'):
-                        continue
-                    if task['status'] not in ('queued', 'scheduled') or (task['bot_id'] in active_bots and not task.get('_work_status_only')):
-                        continue
-                    if task.get('scheduled_at') and datetime.fromisoformat(task['scheduled_at'].replace('Z', '+00:00')).timestamp() > time.time():
-                        continue
-                    if self._task_paused(task) or self._continuation_blocked(task):
-                        continue
-                    worker = threading.Thread(target=self._run_task, args=(task['id'],), daemon=True, name=f'task-{task["id"][:8]}')
-                    self.running[task['id']] = worker
-                    if not task.get('_work_status_only'):
-                        active_bots.add(task['bot_id'])
-                    worker.start()
-                self.changed.wait(.2)
+                if task['status'] not in ('queued', 'scheduled') or (task['bot_id'] in active_bots and not task.get('_work_status_only')):
+                    continue
+                if task.get('scheduled_at') and datetime.fromisoformat(task['scheduled_at'].replace('Z', '+00:00')).timestamp() > time.time():
+                    continue
+                if self._task_paused(task) or self._continuation_blocked(task):
+                    continue
+                worker = threading.Thread(target=self._run_task, args=(task['id'],), daemon=True, name=f'task-{task["id"][:8]}')
+                self.running[task['id']] = worker
+                if not task.get('_work_status_only'):
+                    active_bots.add(task['bot_id'])
+                worker.start()
+            self.changed.wait(.2)
+
 
     def _history(self, bot_id: str) -> list[dict]:
         # Threads organize Inbox decisions. They never restrict a bot's own recall.
