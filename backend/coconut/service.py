@@ -2106,6 +2106,8 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
                     bot = self._get('bots', task['bot_id'])
                     provider_task['_tracked_prs'] = self._tracked_work_input(task)
                     provider_task['_tracked_work'] = self._tracked_items_input(task)
+                    if task.get('source_bot_id') or task.get('_work_todos'):
+                        provider_task['_work_dependencies'] = self.work_dependencies(task)
                     provider_task.update(self._bot_creation_input(task))
                     provider_task.update(self.decision_chat_input(task))
                     provider_task.update(self._bot_deletion_input(task))

@@ -156,12 +156,12 @@ QUESTION_SCHEMA = {'name': 'coconut_ask', 'description': 'Create a required deci
                                   'items': {'type': 'object', 'properties': {'id': {'type': 'string'}, 'label': {'type': 'string'},
                                       'explanation': {'type': 'string', 'maxLength': 500, 'description': 'Plain effect of this choice, usually fifteen words or fewer. Keep important limits. Omit hashes, tool names, process steps, and repeated context.'}}, 'required': ['id', 'label', 'explanation']}},
                       'recommended_option_id': {'type': 'string', 'description': 'Optional. Recommend one choice only when evidence and the user goal favor it. State the decisive reason once in context or that option explanation. Omit when no choice has a clear advantage.'}, 'predicted_option_id': {'type': 'string'}},
-                  'required': ['title', 'options']}}
+                  'required': ['title', 'context', 'options']}}
 
 # These fields carry evidence, not model confidence scores.
 QUESTION_SCHEMA['parameters']['properties'].update({
     'merge_pr_url': {'type': 'string', 'description': 'Required for a question whose only action is whether to merge one PR. Use its full GitHub URL after coconut_track_pr. Coconut closes this card after a verified external merge. Omit for reviews, releases, or choices with other actions.'},
-    'context': {'type': 'string', 'description': 'Optional plain context for someone returning tomorrow, usually twenty words or fewer. State only what helps them choose. Keep technical evidence in chat.'},
+    'context': {'type': 'string', 'description': 'Name the affected project or task and explain why this choice is needed. State the practical approval scope, including publishing limits. The card must make sense without nearby messages. Use short plain sentences; keep technical evidence in chat.'},
     'evidence': {'type': 'string', 'description': 'One short sentence naming the decisive check or linking its source. Do not repeat context or invent checks.'},
     'uncertainty': {'type': 'string', 'description': 'One short sentence: the material unknown that could change the choice. Omit if none.'},
     'risk': {'type': 'string', 'description': 'One short sentence: the material risk or recovery limit. Omit if none.'},

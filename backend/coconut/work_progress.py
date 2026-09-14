@@ -110,6 +110,22 @@ class WorkProgress:
                     _wait_task_id=target_id, _wait_session_id=target['session_id']))
             return {'status': 'waiting', 'task_id': target_id, 'reason': reason}
 
+    def work_dependencies(self, task):
+        """Expose existing owners before a bot can start duplicate work."""
+        peers = self.wait_for_task(task['id'], {})['tasks']
+        tasks = {t['id']: t for t in self._all('tasks')}
+        records = self._all('native_receipts')
+        dependencies = []
+        for peer in peers:
+            target = tasks[peer['id']]
+            pending = self._background_pending(target['id'])
+            if target['status'] not in self.ACTIVE and not pending:
+                continue
+            if task['id'] in self._work_chain(target, tasks, records, include_continuations=True):
+                continue
+            dependencies.append(dict(peer, status='waiting' if pending and target['status'] == 'completed' else target['status']))
+        return dependencies
+
     def _drain_task_completions(self):
         with self.lock:
             bot_ids = {self._get('tasks', r['task_id'])['bot_id'] for r in self._all('native_receipts')
@@ -172,7 +188,7 @@ class WorkProgress:
             return None  # Existing durable dependencies own the next wakeup.
         attempts = task.get('_work_retry', 0)
         if attempts >= 2:
-            return 'The assignment is unfinished. The bot ended repeated turns without completing it or recording a dependency.'
+            return f'“{task["title"]}” is unfinished. The bot stopped without completing this work or saving what it needs next.'
         epoch = task.get('_conversation_epoch')
         self._advance_input(task)
         task.update(status='queued', summary='Continuing unfinished work.', updated_at=now(),
