@@ -65,6 +65,21 @@ class NativeRoutines:
         self._event('routine.updated', self._public(result), bot['id'])
         return self._public(result)
 
+    def run_native_routine_tool(self, task, arguments):
+        from .service import ServiceError
+        identity = arguments.get('job_id')
+        routine = next((r for r in self._all('routines')
+                        if r.get('_native_id') == identity and r['bot_id'] == task['bot_id']), None)
+        if not routine:
+            return {'success': False, 'error': 'This routine is not synchronized. List routines and try again.'}
+        try:
+            active = self._active_routine_task(routine['id'])
+            queued = self._public(active) if active else self.claim_native_routine(routine, manual=True)
+        except ServiceError as error:
+            return {'success': False, 'error': str(error)}
+        return {'success': True, 'scheduler': 'coconut', 'job_id': identity,
+                'task_id': queued['id'], 'status': queued['status']}
+
     def claim_native_routine(self, routine, manual=False):
         from .service import ServiceError, now
         bot = self._get('bots', routine['bot_id'])

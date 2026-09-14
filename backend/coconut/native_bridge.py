@@ -58,6 +58,9 @@ class NativeBridge:
             record = self.receipt('native_call', action)
             if record.get('status') != 'recorded':
                 return json.dumps({'error': 'The Mac did not persist the tool intent. The tool did not run.'})
+            if 'routine_result' in record:
+                # Coconut records the queued run atomically. Do not start a second native runner.
+                return record['routine_result']
             self.local.call = dict(id=record['id'], action=action)
             try:
                 relay = getattr(self, 'relay', None)

@@ -79,6 +79,11 @@ class NativeExecution:
                 result = {'status': 'recorded', 'id': record['id']}
                 if action['name'] == 'cronjob_manage':
                     result.update(self.native_scheduler_status())
+                    if str(action['arguments'].get('action', '')).strip().lower() in ('run', 'run_now', 'trigger'):
+                        output = json.dumps(self.run_native_routine_tool(task, action['arguments']), sort_keys=True)
+                        record.update(state='completed', result=output, completed_at=now())
+                        self._put('native_receipts', record)
+                        result['routine_result'] = output
                 return result
             if kind == 'native_result':
                 record = self._get('native_receipts', payload['id'])

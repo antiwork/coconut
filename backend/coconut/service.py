@@ -1101,7 +1101,9 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
 
     def _active_routine_task(self, routine_id: str) -> dict | None:
         tasks = self._all('tasks')
-        related = {task['id'] for task in tasks if task.get('routine_id') == routine_id}
+        # A closed native occurrence no longer owns the next scheduled intake.
+        related = {task['id'] for task in tasks if task.get('routine_id') == routine_id
+                   and not task.get('_native_job_finished')}
         while True:
             expanded = related | {task['id'] for task in tasks if task.get('source_task_id') in related}
             if expanded == related:
@@ -1234,7 +1236,9 @@ class Service(SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullReques
         dependency_id = task.get('_resolved_dependency_id')
         if dependency_id:
             assignment['_waiting_on'] = [identity for identity in assignment.get('_waiting_on', []) if identity != dependency_id]
-        waiting = result_status in ('completed', 'rejected') and (bool(assignment.get('_waiting_on')) or self._background_pending(assignment['id'], finishing_task_id=task['id']))
+        # A failed continuation must not fail the parent's independent dependencies.
+        can_wait = result_status in ('completed', 'rejected') or (result_status == 'failed' and assignment['id'] != task['id'] and bool(assignment.get('_waiting_on')))
+        waiting = can_wait and (bool(assignment.get('_waiting_on')) or self._background_pending(assignment['id'], finishing_task_id=task['id']))
         if assignment['id'] == task['id']:
             if waiting:
                 task.update(status='waiting', summary='Waiting for a result.')
