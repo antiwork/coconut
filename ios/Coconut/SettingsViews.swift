@@ -278,10 +278,9 @@ struct BotEditorView: View {
     var bot: Bot? = nil
     var identityOnly = false
     @State private var name = ""
-    @State private var role = ""
     @State private var instructions = ""
-    @State private var avatar = CoconutShape.allCases.randomElement()!.avatar
-    @State private var color = CoconutColor.palette.randomElement()!.hex
+    @State private var avatar = "fruit." + FruitArtwork.all.randomElement()!.id
+    @State private var color = "A86640"
     @State private var saving = false
     @State private var deleteOpen = false
     @State private var originalBot: Bot?
@@ -296,8 +295,6 @@ struct BotEditorView: View {
                         .padding(.vertical, 14).listRowBackground(Color.clear)
                     TextField("Name", text: $name).textContentType(.name)
                         .accessibilityIdentifier("bot-name")
-                    TextField("Label (optional)", text: $role)
-                        .accessibilityIdentifier("bot-role")
                 }
 
                 Section("Description") {
@@ -331,7 +328,6 @@ struct BotEditorView: View {
                 if let bot {
                     originalBot = bot
                     name = bot.name
-                    role = bot.role
                     instructions = bot.instructions
                     avatar = bot.avatar
                     color = bot.color
@@ -360,7 +356,6 @@ struct BotEditorView: View {
             if let originalBot {
                 var updated = originalBot
                 updated.name = name
-                updated.role = role
                 if !identityOnly {
                     updated.instructions = instructions
                 }
@@ -368,7 +363,7 @@ struct BotEditorView: View {
                 updated.color = color
                 await store.updateBot(updated, comparedTo: originalBot)
             } else {
-                await store.createBot(name: name, role: role, avatar: avatar, color: color, instructions: instructions, memory: "")
+                await store.createBot(name: name, role: "", avatar: avatar, color: color, instructions: instructions, memory: "")
             }
             saving = false
             if store.error == nil { dismiss() }
@@ -380,44 +375,31 @@ struct BotAppearancePicker: View {
     @Binding var avatar: String
     @Binding var color: String
     var identity = ""
-    private var shape: CoconutShape { CoconutShape.resolve(avatar, identity: identity) }
+    private var selectedFruit: FruitArtwork { FruitArtwork.all[FruitArtwork.index(symbol: avatar, identity: identity)] }
 
     var body: some View {
         Section {
             BotAvatar(symbol: avatar, color: color, size: 120, identity: identity)
                 .frame(maxWidth: .infinity).padding(.vertical, 12)
         }.listRowBackground(Color.clear)
-        Section("Shape") {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 76))], spacing: 12) {
-                ForEach(CoconutShape.allCases, id: \.rawValue) { choice in
-                    Button { avatar = choice.avatar } label: {
-                        BotAvatar(symbol: choice.avatar, color: color, size: 56, identity: identity, animated: false)
-                            .padding(6)
-                            .background(shape == choice ? BoardStyle.ink.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 16))
-                            .overlay(RoundedRectangle(cornerRadius: 16).stroke(shape == choice ? BoardStyle.ink : .clear, lineWidth: 1.5))
+        Section("Fruit") {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 76))], spacing: 18) {
+                ForEach(FruitArtwork.all, id: \.id) { fruit in
+                    Button { avatar = "fruit." + fruit.id; color = fruit.color } label: {
+                        VStack(spacing: 3) {
+                            BotAvatar(symbol: "fruit." + fruit.id, color: fruit.color, size: 56, animated: false)
+                            Text(fruit.name).font(.caption2).foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity).padding(.vertical, 7)
+                        .background(selectedFruit.id == fruit.id ? BoardStyle.ink.opacity(0.07) : .clear,
+                                    in: RoundedRectangle(cornerRadius: 16))
                     }
                     .buttonStyle(HomePressStyle())
-                    .accessibilityLabel(choice.label)
-                    .accessibilityIdentifier("bot-avatar-\(choice.avatar)")
-                    .accessibilityAddTraits(shape == choice ? .isSelected : [])
+                    .accessibilityLabel(fruit.name)
+                    .accessibilityIdentifier("bot-avatar-fruit." + fruit.id)
+                    .accessibilityAddTraits(selectedFruit.id == fruit.id ? .isSelected : [])
                 }
-            }.padding(.vertical, 8)
-        }
-        Section("Color") {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 44))], spacing: 8) {
-                ForEach(CoconutColor.palette, id: \.hex) { choice in
-                    let selected = CoconutColor.displayHex(color) == CoconutColor.displayHex(choice.hex)
-                    Button { color = choice.hex } label: {
-                        Circle().fill(Color(hex: CoconutColor.displayHex(choice.hex))).frame(width: 28, height: 28)
-                            .padding(5).overlay(Circle().stroke(selected ? BoardStyle.ink : .clear, lineWidth: 1.5))
-                            .frame(width: 44, height: 44)
-                    }
-                    .buttonStyle(HomePressStyle())
-                    .accessibilityLabel("\(choice.name) avatar")
-                    .accessibilityIdentifier("bot-color-\(choice.hex)")
-                    .accessibilityAddTraits(selected ? .isSelected : [])
-                }
-            }.padding(.vertical, 8)
+            }
         }
     }
 }

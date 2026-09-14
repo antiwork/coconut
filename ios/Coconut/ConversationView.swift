@@ -219,7 +219,6 @@ struct ConversationView: View {
                 VStack(spacing: 10) {
                     BotAvatar(bot: bot, size: 68)
                     Text("Meet \(bot.name)").font(.title2.weight(.semibold))
-                    Text(bot.role).font(.subheadline).foregroundStyle(.secondary)
                     Text("Give \(bot.name) a task. You can leave while the work continues.")
                         .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }.frame(maxWidth: .infinity).padding(.vertical, 45)

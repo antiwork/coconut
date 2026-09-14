@@ -134,7 +134,7 @@ struct DecisionInboxView: View {
                     VStack(spacing: 16) {
                         Spacer()
                         VStack(spacing: 8) {
-                            BotAvatar(symbol: CoconutShape.round.avatar, color: "64866A", size: 64,
+                            BotAvatar(symbol: "fruit.coconut", color: "64866A", size: 64,
                                       identity: "inbox-caught-up", animated: false)
                             Text("All caught up")
                                 .font(.title3.weight(.semibold)).accessibilityIdentifier("inbox-empty")
@@ -251,12 +251,11 @@ struct DecisionInboxView: View {
                     MessageDraftContent(draft: draft)
                     MessageDraftActions()
                 } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(decision.cardOptions.enumerated()), id: \.element.id) { index, option in
-                        DecisionChoiceContent(option: option, index: index, isRecommended: decision.recommendedOptionId == option.id, isCompact: true)
-                        if option.id != decision.cardOptions.last?.id { Divider().padding(.horizontal, 12) }
+                VStack(spacing: 8) {
+                    ForEach(decision.cardOptions, id: \.id) { option in
+                        DecisionChoiceContent(option: option, isRecommended: decision.recommendedOptionId == option.id, isCompact: true)
                     }
-                }.background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: 12))
+                }
                 }
             }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 0)

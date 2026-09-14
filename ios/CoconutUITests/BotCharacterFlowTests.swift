@@ -12,21 +12,16 @@ final class BotCharacterFlowTests: XCTestCase {
         forge.tap()
         app.buttons["bot-settings"].tap()
         app.buttons["Change character"].tap()
-        let shape = app.buttons["bot-avatar-coconut.wide"]
-        XCTAssertTrue(shape.waitForExistence(timeout: 5))
-        shape.tap()
-        let color = app.buttons["bot-color-9272B3"]
-        if !color.isHittable { app.swipeUp() }
-        color.tap()
-        capture("Coconut shape and color picker")
+        let fruit = app.buttons["bot-avatar-fruit.apple"]
+        XCTAssertTrue(fruit.waitForExistence(timeout: 5))
+        fruit.tap()
         app.buttons["Done"].tap()
         app.buttons["save-bot"].tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.buttons["bot-settings"].tap()
         app.buttons["Change character"].tap()
-        XCTAssertTrue(shape.waitForExistence(timeout: 5))
-        XCTAssertTrue(shape.isSelected)
-        XCTAssertTrue(color.isSelected)
+        XCTAssertTrue(fruit.waitForExistence(timeout: 5))
+        XCTAssertTrue(fruit.isSelected)
         capture("Saved coconut character")
     }
 

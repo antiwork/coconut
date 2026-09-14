@@ -1,91 +1,5 @@
 import SwiftUI
 
-// Appearance stays in the bot's existing avatar and color fields.
-enum CoconutShape: String, CaseIterable {
-    case round, oval, square, wide, triangle, hexagon, bean, pointed
-
-    var avatar: String { "coconut.\(rawValue)" }
-    var label: String {
-        switch self {
-        case .round: "Circle"
-        case .oval: "Pebble"
-        case .square: "Squircle"
-        case .wide: "Capsule"
-        case .triangle: "Triangle"
-        case .hexagon: "Hexagon"
-        case .bean: "Cloud"
-        case .pointed: "Droplet"
-        }
-    }
-
-    static func resolve(_ avatar: String, identity: String) -> Self {
-        // Keep earlier generated assignments stable when the picker gains shapes.
-        let original: [Self] = [.round, .oval, .wide, .square, .pointed, .bean]
-        return allCases.first { $0.avatar == avatar }
-            ?? original[Int(characterSeed(identity.isEmpty ? avatar : identity) % UInt64(original.count))]
-    }
-
-    var outline: Path { Self.outlines[self]! }
-
-    // Narrow silhouettes need space for the full range of gaze and mouth poses.
-    var facePlacement: (scale: CGFloat, x: CGFloat, y: CGFloat) {
-        switch self {
-        case .pointed: (0.85, -3, 8)
-        case .triangle: (0.9, -2, 4)
-        case .wide: (0.92, 0, 2.5)
-        case .bean: (0.94, 0, 2)
-        default: (1, 0, 0)
-        }
-    }
-
-    // Bloub's 64 radial samples and closed Catmull-Rom curves, at Coconut's scale.
-    // Copyright (c) 2026 Jérémy Perret. See Resources/Bloub-LICENSE.txt.
-    private static let outlines: [Self: Path] = BotShapeProfiles.radii.mapValues { radii in
-        let points = radii.enumerated().map { index, radius in
-            let angle = Double(index) / Double(radii.count) * .pi * 2
-            return CGPoint(x: 50 + 37 * radius * cos(angle), y: 51 + 37 * radius * sin(angle))
-        }
-        return Path { path in
-            path.move(to: points[0])
-            for i in points.indices {
-                let p0 = points[(i - 1 + points.count) % points.count]
-                let p1 = points[i]
-                let p2 = points[(i + 1) % points.count]
-                let p3 = points[(i + 2) % points.count]
-                path.addCurve(to: p2,
-                              control1: CGPoint(x: p1.x + (p2.x - p0.x) / 6, y: p1.y + (p2.y - p0.y) / 6),
-                              control2: CGPoint(x: p2.x - (p3.x - p1.x) / 6, y: p2.y - (p3.y - p1.y) / 6))
-            }
-            path.closeSubpath()
-        }
-    }
-}
-
-struct CoconutColor {
-    let name: String
-    let hex: String
-    static let palette = [
-        Self(name: "Coconut", hex: "A85F32"), Self(name: "Coral", hex: "C76552"),
-        Self(name: "Gold", hex: "B5913F"), Self(name: "Green", hex: "64866A"),
-        Self(name: "Teal", hex: "448A89"), Self(name: "Blue", hex: "6087B0"),
-        Self(name: "Purple", hex: "9272B3"), Self(name: "Pink", hex: "BF759B"),
-        Self(name: "Cream", hex: "D6C6A2"), Self(name: "Gray", hex: "858680")
-    ]
-
-    private static let displayPalette = [
-            "A85F32": "CE7A3C", "C76552": "F56B5D", "B5913F": "F2BB3F",
-            "64866A": "3ECF8E", "448A89": "24C8B5", "6087B0": "4395F7",
-            "9272B3": "A06AF4", "BF759B": "EE66B5", "D6C6A2": "F1E3BE",
-            "858680": "A3AAA8"
-    ]
-
-    // Stored palette values keep their identity when the visual palette changes.
-    static func displayHex(_ value: String) -> String {
-        let hex = value.trimmingCharacters(in: CharacterSet.alphanumerics.inverted).uppercased()
-        return displayPalette[hex] ?? hex
-    }
-}
-
 // Swift's Hasher changes between launches. Character details must not.
 func characterSeed(_ value: String) -> UInt64 {
     value.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { ($0 ^ UInt64($1)) &* 1_099_511_628_211 }
@@ -118,9 +32,9 @@ struct BotAvatar: View {
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !motionEnabled || !isThinking)) { timeline in
-            CoconutFigure(shape: CoconutShape.resolve(symbol, identity: identity), color: CoconutColor.displayHex(color), size: size,
-                          seed: seed, time: timeline.date.timeIntervalSinceReferenceDate,
-                          thinking: thinkingAmount, eyelid: blinking ? 0.08 : 1)
+            FruitFigure(index: FruitArtwork.index(symbol: symbol, identity: identity),
+                        size: size, seed: seed, time: timeline.date.timeIntervalSinceReferenceDate,
+                        thinking: thinkingAmount, eyelid: blinking ? 0.08 : 1)
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
@@ -158,30 +72,6 @@ struct LiveBotAvatar: View {
     var body: some View {
         BotAvatar(bot: bot, size: size, isThinking: store.isBotActive(bot))
             .overlay(alignment: .bottomTrailing) { BotActivityDot(bot: bot).padding(size * BotAvatar.scale * 0.12) }
-    }
-}
-
-private struct CoconutFigure: View, Animatable {
-    let shape: CoconutShape
-    let color: String
-    let size: CGFloat
-    let seed: UInt64
-    let time: Double
-    var thinking: Double
-    var eyelid: Double
-    nonisolated var animatableData: AnimatablePair<Double, Double> {
-        get { AnimatablePair(thinking, eyelid) }
-        set { thinking = newValue.first; eyelid = newValue.second }
-    }
-
-    var body: some View {
-        let expression = CoconutExpression.sample(time: time, seed: seed, thinking: thinking)
-        ZStack {
-            CoconutShell(shape: shape, color: color)
-            CoconutFace(shape: shape, color: color, eyelid: eyelid, expression: expression)
-        }
-        .frame(width: size, height: size)
-        .rotationEffect(.degrees(expression.roll))
     }
 }
 
@@ -228,72 +118,5 @@ struct CoconutExpression: Equatable {
                     leftEye: mix(leftEye, other.leftEye), rightEye: mix(rightEye, other.rightEye),
                     eyeTilt: mix(eyeTilt, other.eyeTilt), mouthWidth: mix(mouthWidth, other.mouthWidth),
                     smile: mix(smile, other.smile), mouthOpen: mix(mouthOpen, other.mouthOpen), roll: mix(roll, other.roll))
-    }
-}
-
-private struct CoconutShell: View {
-    let shape: CoconutShape
-    let color: String
-
-    var body: some View {
-        Canvas { context, size in
-            let unit = min(size.width, size.height)
-            context.scaleBy(x: unit / 100, y: unit / 100)
-            let outline = shape.outline
-            context.fill(outline, with: .color(Color(hex: color)))
-            context.stroke(outline, with: .color(.black.opacity(0.28)), style: StrokeStyle(lineWidth: 1.4, lineJoin: .round))
-        }
-    }
-}
-
-private struct CoconutFace: View {
-    let shape: CoconutShape
-    let color: String
-    let eyelid: Double
-    let expression: CoconutExpression
-
-    private var ink: Color {
-        let value = UInt64(color.trimmingCharacters(in: CharacterSet.alphanumerics.inverted), radix: 16) ?? 0
-        let luminance = Double((value >> 16) & 255) * 0.2126 + Double((value >> 8) & 255) * 0.7152 + Double(value & 255) * 0.0722
-        return luminance > 170 ? Color(red: 0.22, green: 0.15, blue: 0.1) : Color(red: 1, green: 0.97, blue: 0.88)
-    }
-
-    var body: some View {
-        Canvas { context, size in
-            context.scaleBy(x: size.width / 100, y: size.height / 100)
-            let placement = shape.facePlacement
-            context.translateBy(x: 50 * (1 - placement.scale) + placement.x,
-                                y: 50 * (1 - placement.scale) + placement.y)
-            context.scaleBy(x: placement.scale, y: placement.scale)
-            let yaw = expression.yaw
-            let pitch = expression.pitch
-            let faceX = 50 + yaw * 13
-            let faceY = 43 + pitch * 12
-            for side in [-1.0, 1.0] {
-                let farSide = max(0, side * yaw)
-                let openness = (side < 0 ? expression.leftEye : expression.rightEye) * eyelid
-                let width = 7.2 * (1 - farSide * 0.22)
-                let height = 12.4 * openness * (1 - farSide * 0.12)
-                var eye = context
-                eye.translateBy(x: faceX + side * 10 * (1 - abs(yaw) * 0.18),
-                                y: faceY - side * yaw * 1.8)
-                eye.rotate(by: .degrees(expression.eyeTilt))
-                eye.fill(Path(ellipseIn: CGRect(x: -width / 2, y: -height / 2, width: width, height: height)), with: .color(ink))
-            }
-            var mouth = context
-            mouth.translateBy(x: faceX, y: 57 + pitch * 7)
-            mouth.rotate(by: .degrees(-yaw * 9))
-            let halfWidth = expression.mouthWidth / 2
-            var lip = Path()
-            lip.move(to: CGPoint(x: -halfWidth, y: 0))
-            lip.addQuadCurve(to: CGPoint(x: halfWidth, y: 0), control: CGPoint(x: 0, y: expression.smile + expression.mouthOpen))
-            if expression.mouthOpen > 0.05 {
-                lip.addQuadCurve(to: CGPoint(x: -halfWidth, y: 0),
-                                 control: CGPoint(x: 0, y: expression.smile - expression.mouthOpen))
-                lip.closeSubpath()
-                mouth.fill(lip, with: .color(ink))
-            }
-            mouth.stroke(lip, with: .color(ink), style: StrokeStyle(lineWidth: 2.7, lineCap: .round, lineJoin: .round))
-        }
     }
 }

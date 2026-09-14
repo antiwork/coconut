@@ -25,9 +25,6 @@ struct BotSettingsView: View {
                 Section("Name") {
                     TextField("Name", text: field(\.name)).accessibilityIdentifier("bot-name")
                 }
-                Section("Label (optional)") {
-                    TextField("Research, marketing, admin", text: field(\.role)).accessibilityIdentifier("bot-role")
-                }
                 Section("Description") {
                     TextField("What should this bot do?", text: field(\.instructions), axis: .vertical)
                         .lineLimit(5...18).accessibilityIdentifier("bot-instructions")

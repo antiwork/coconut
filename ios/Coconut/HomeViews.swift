@@ -139,7 +139,7 @@ struct BotContactRow: View {
     private var preview: String {
         guard let message = latestMessage else {
             return bot.lastMessage.isEmpty || bot.lastMessage.trimmingCharacters(in: .whitespacesAndNewlines) == "[SILENT]" || TranscriptPresentation.isLegacySettingsNotice(bot.lastMessage)
-                ? bot.role : bot.lastMessage
+                ? "" : bot.lastMessage
         }
         let sender = message.senderBotId.flatMap { id in id == bot.id ? nil : store.bots.first { $0.id == id }?.name ?? "Deleted bot" }
         let prefix = message.role == "user" ? "You: " : sender.map { $0 + ": " } ?? ""
@@ -172,7 +172,7 @@ struct BotContactRow: View {
         }
         .frame(minHeight: 52)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(bot.name), \(bot.role), \(bot.status.replacingOccurrences(of: "_", with: " ")), \(preview), \(bot.unreadCount) unread")
+        .accessibilityLabel("\(bot.name), \(bot.status.replacingOccurrences(of: "_", with: " ")), \(preview), \(bot.unreadCount) unread")
     }
 
     private var name: some View {
