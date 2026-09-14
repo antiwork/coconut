@@ -94,6 +94,7 @@ struct CoconutHome: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
         .onChange(of: selectedTab) { _, tab in
             searchFocused = false
+            if tab == .work { workPath = NavigationPath() }
             if previewedNotification?.decisionId != nil && tab != .inbox {
                 PushNotifications.shared.target = nil
                 previewedNotification = nil

@@ -237,7 +237,8 @@ class TrackedWork:
             covered = {a.get('task_id') for a in artifacts if a['kind'] in ('work', 'pr')}
             for task in tasks.values():
                 if (task['id'] in covered or task.get('source_bot_id')
-                        or task.get('_native_job') or task.get('_assignment_task_id') or task.get('_work_context_id')
+                        or task.get('_native_job') or task.get('_source_audit_prompt')
+                        or task.get('_assignment_task_id') or task.get('_work_context_id')
                         or task['status'] not in ('working', 'waiting', 'needs_you')):
                     continue
                 bot = self._get('bots', task['bot_id'])
@@ -269,6 +270,11 @@ class TrackedWork:
                 if not item.get('_automatic_work') or item.get('_hidden') or item.get('task_id') not in tasks:
                     continue
                 task = tasks[item['task_id']]
+                if task.get('_source_audit_prompt'):
+                    item['_hidden'] = True
+                    self._put('artifacts', item)
+                    self._event('artifact.updated', dict(self._public(item), _hidden=True), item['bot_id'], item['task_id'])
+                    continue
                 if item['title'].startswith('Continue this proposal using the recorded reply.'):
                     proposal = next((d for d in self._all('decisions')
                                      if d.get('_execution_task_id') == task['id']), None)
@@ -318,11 +324,12 @@ class TrackedWork:
             if item is None:
                 item = next((a for a in self._all('artifacts') if a.get('_automatic_work') and a.get('task_id') == task_id), None)
             created = item is None
+            report_only = bool(item and task.get('_source_audit_prompt'))
             if item:
                 owner = self._get('tasks', item['task_id'])
                 if owner['id'] != task_id and owner['created_at'] >= task['created_at']:
                     raise ServiceError(409, 'A newer task owns this work item.')
-                if owner['id'] != task_id:
+                if owner['id'] != task_id and not report_only:
                     self._carry_work_history(item, dict(item))
             else:
                 item = dict(id=uid(), bot_id=bot['id'], kind='work', url=None, preview='', created_at=now(), _work_key=key)
@@ -330,8 +337,11 @@ class TrackedWork:
             if previous_tasks:
                 item['_work_previous_task_ids'] = list(dict.fromkeys(item.get('_work_previous_task_ids', []) + previous_tasks))
             item.pop('_work_resuming', None)
-            item.update(task_id=task_id, title=title, activity=activity, status=state,
-                        _work_turn=task.get('_native_turn_id'), observed_at=now(), _work_key=key, _automatic_work=False, _hidden=False)
+            # Audits report progress without replacing the task doing the work.
+            if not report_only:
+                item.update(task_id=task_id, _work_turn=task.get('_native_turn_id'))
+            item.update(title=title, activity=activity, status=state,
+                        observed_at=now(), _work_key=key, _automatic_work=False, _hidden=False)
             if state not in ('completed', 'cancelled'):
                 self.db.execute('DELETE FROM settings WHERE key=?', ('work.dismissed.work:' + item['id'],))
             self._put('artifacts', item)

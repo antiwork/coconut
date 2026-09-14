@@ -1494,6 +1494,7 @@ class Service(WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgres
             current = next((task for task in reversed(self._all('tasks'))
                             if task['bot_id'] == bot['id'] and task['conversation_bot_id'] == conversation_bot_id
                             and not task.get('source_bot_id') and not task.get('scheduled_at') and not task.get('_work_status_only')
+                            and not task.get('_source_audit_prompt') and not task.get('_native_job')
                             and task['status'] in ('working', 'queued', 'waiting')), None)
             if current:
                 pending_tasks = {task['id'] for task in self._all('tasks') if task['thread_id'] == current['thread_id']}
