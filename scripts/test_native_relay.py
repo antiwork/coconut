@@ -44,7 +44,7 @@ try:
         service.bot_locks[recipient['id']]=busy
         stage='native-send-while-busy'
         parent=write('POST','/v1/bots/'+sender['id']+'/messages',dict(text='Use message_agent to ask Relay Recipient to save the check. Then finish your turn without waiting.', mode='queue'))
-        state=wait(lambda s:any(t['id']==parent['id'] and t['status']=='completed' for t in s['tasks']))
+        state=wait(lambda s:any(t['id']==parent['id'] and t['status']=='waiting' for t in s['tasks']))
         deliveries=[r for r in service._all('deliveries') if r['source_task_id']==parent['id']]
         assert len(deliveries)==1
         child_id=deliveries[0]['receipt']['task_id']
@@ -68,13 +68,13 @@ try:
         service=Service(data,provider())
         assert service._get('decisions',decision['id'])['status']=='pending'
         stage='context'
-        write('POST','/v1/tasks/'+child_id+'/replies',dict(text='What exactly will this do?',decision_id=decision['id']))
+        write('POST','/v1/decisions/'+decision['id']+'/reply',dict(text='What exactly will this do?',revision=decision['revision']))
         state=wait(lambda s:any(m.get('decision_id')==decision['id'] and m['kind']=='text' and m['role']=='assistant' for m in s['messages']))
         assert service._get('decisions',decision['id'])['status']=='pending' and not file.exists()
         report['context_preserves_pending_decision']=True
         stage='approve-and-resume'
         option=next(o for o in decision['options'] if o['label']=='Save it')
-        write('POST','/v1/decisions/'+decision['id']+'/answer',dict(option_id=option['id']))
+        write('POST','/v1/decisions/'+decision['id']+'/answer',dict(option_id=option['id'],revision=decision['revision']))
         state=wait(lambda s:any(t['id']==child_id and t['status']=='completed' for t in s['tasks']))
         assert file.read_text()=='native relay verified'
         signature=(file.stat().st_ino,file.stat().st_mtime_ns)
