@@ -87,6 +87,7 @@
 		CD7FC75ABAC6876E70EFE907 /* BotExchangeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D7EAE47898978A1E16BCA48 /* BotExchangeTests.swift */; };
 		CF2134EE2AC9BDD89514BF51 /* NotificationFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2D8BD1F0E75656ABA3C23B6 /* NotificationFlowTests.swift */; };
 		D35610C887D087022D940EB6 /* BotMentions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8BC9EE960764592EBC7C381 /* BotMentions.swift */; };
+		D36E102F94F4D2185F04FF83 /* AppPerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9E11D62880BADDFD4804BBC /* AppPerformanceTests.swift */; };
 		D3A352B0532BFBFDB3510329 /* NotificationRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B6A1814CA765B7D74783FEA /* NotificationRoutingTests.swift */; };
 		DD72D80248A9DBD7C44816AF /* MessageInteractionFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0838438D9F6703EC59C5643C /* MessageInteractionFlowTests.swift */; };
 		DFEBABEA6463487DEAFD1A92 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50F92806249627421617701A /* NotificationService.swift */; };
@@ -215,6 +216,7 @@
 		C38B2409FAF726BAA1D88006 /* ConversationPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPerformanceTests.swift; sourceTree = "<group>"; };
 		C77D5CDAA72E7F4867D4E5DA /* TranscriptPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptPresentation.swift; sourceTree = "<group>"; };
 		C98AC93604CC881B05F674B7 /* WorkActivityFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkActivityFlowTests.swift; sourceTree = "<group>"; };
+		C9E11D62880BADDFD4804BBC /* AppPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPerformanceTests.swift; sourceTree = "<group>"; };
 		D06723F2DD7E138C71DBE073 /* MacEncryptedNotification.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = MacEncryptedNotification.json; sourceTree = "<group>"; };
 		D077096B1D7594B096B3D215 /* CoconutNotificationService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = CoconutNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		D0CD1E31F40E2FEE77BF1791 /* WorkActivityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkActivityTests.swift; sourceTree = "<group>"; };
@@ -372,6 +374,7 @@
 		D29F1FE8882C293B783F4D2F /* CoconutUITests */ = {
 			isa = PBXGroup;
 			children = (
+				C9E11D62880BADDFD4804BBC /* AppPerformanceTests.swift */,
 				14989796E26DE12C64A8913B /* BotCharacterFlowTests.swift */,
 				AB2417619FA30AF5EAF2B0BC /* BotExchangeFlowTests.swift */,
 				400471E8AAF347FBC8EA7EBE /* BotMentionsFlowTests.swift */,
@@ -658,6 +661,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D36E102F94F4D2185F04FF83 /* AppPerformanceTests.swift in Sources */,
 				09F74A644FB1733BEE399A18 /* BotCharacterFlowTests.swift in Sources */,
 				39B3A0FE631ECEBD97FB4E54 /* BotExchangeFlowTests.swift in Sources */,
 				1EB1F802466DF19388CE712C /* BotMentionsFlowTests.swift in Sources */,
