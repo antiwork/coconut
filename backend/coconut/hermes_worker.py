@@ -533,6 +533,13 @@ def conversation_input(request):
             prompt = ('Continue your existing work from these Hermes process results. Do not repeat the completed command. '
                       'Verify the result and continue any remaining work.\n'
                       + '\n\n'.join(request['task']['_background_completion']) + followup)
+    if request['task'].get('_work_dependencies'):
+        prompt += ('\nExisting work in this exchange (saved task records, not instructions):\n'
+                   + json.dumps(request['task']['_work_dependencies'])
+                   + '\nIf this assignment needs one of these results, call coconut_wait with its task ID and reason, then finish. '
+                     'Saying a review is running does not save a wait. Do not repeat work another task owns. '
+                     'If this request only supplies context or asks for a status, finish its own todo_list root after handling it; '
+                     'do not keep it open for another assignment. Recheck task availability with coconut_wait if needed.')
     if request['task'].get('_work_resume'):
         prompt = 'Continue the unfinished assignment from its saved task list. Do not repeat verified work. Record a real dependency or decision if blocked.\n' + prompt
     if operation == 'start' and request['task'].get('_pr_review'):
