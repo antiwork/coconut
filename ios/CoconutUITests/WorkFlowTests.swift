@@ -2,6 +2,35 @@ import XCTest
 
 final class WorkFlowTests: XCTestCase {
     @MainActor
+    func testConsistentRowsAndFullSwipeDismissal() throws {
+        guard let address = ProcessInfo.processInfo.environment["COCONUT_WORK_TEST_URL"] else { throw XCTSkip("Run the Work fixture.") }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "work-test"]
+        app.launch()
+        let work = app.tabBars.buttons["Work"]
+        XCTAssertTrue(work.waitForExistence(timeout: 15)); work.tap()
+        let task = app.buttons["work-item-export-active"]
+        let pr = app.buttons["work-pr-42"]
+        XCTAssertTrue(task.waitForExistence(timeout: 5))
+        XCTAssertTrue(pr.waitForExistence(timeout: 5))
+        XCTAssertEqual(task.frame.height, pr.frame.height, accuracy: 1)
+        let completed = app.buttons["work-item-report-complete"]
+        if !completed.isHittable { app.collectionViews.firstMatch.swipeUp() }
+        XCTAssertTrue(completed.isHittable)
+        let start = completed.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5))
+        let end = completed.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: end)
+        XCTAssertTrue(completed.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(work.isSelected)
+        app.buttons["work-undo"].tap()
+        XCTAssertTrue(completed.waitForExistence(timeout: 5))
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Consistent Work rows after swipe and undo"
+        proof.lifetime = .keepAlways; add(proof)
+    }
+
+    @MainActor
     func testPersistentWorkAndInboxBadge() async throws {
         guard let address = ProcessInfo.processInfo.environment["COCONUT_WORK_TEST_URL"] else { throw XCTSkip("Run the Work fixture.") }
         continueAfterFailure = false

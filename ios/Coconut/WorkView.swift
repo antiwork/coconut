@@ -87,6 +87,8 @@ struct WorkView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let isVisible: Bool
     let openConversation: (ConversationRoute) -> Void
+    @ScaledMetric(relativeTo: .body) private var titleHeight: CGFloat = 42
+    @ScaledMetric(relativeTo: .caption) private var detailHeight: CGFloat = 36
     @State private var requestingUpdates: Set<String> = []
     private var items: [TrackedWorkItem] { TrackedWorkItem.tracked(in: store.artifacts, visibility: store.workVisibility) }
 
@@ -116,8 +118,8 @@ struct WorkView: View {
                     .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         if item.isFinished {
-                            Button {
-                                withAnimation(reduceMotion ? nil : .smooth(duration: 0.22)) { store.dismissWork(item) }
+                            Button(role: .destructive) {
+                                store.dismissWork(item)
                             } label: { Label("Dismiss", systemImage: "xmark") }
                             .tint(.gray)
                         }
@@ -181,25 +183,29 @@ struct WorkView: View {
         Button { openWork(item.artifact) } label: {
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.artifact.title).font(.body.weight(.semibold))
-                    .modifier(WorkTextLines())
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                     .foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
+                    .frame(minHeight: dynamicTypeSize.isAccessibilitySize ? nil : titleHeight, alignment: .bottomLeading)
                 TimelineView(.periodic(from: .now, by: 15)) { context in
-                    if let pr = item.pullRequest {
-                        HStack(spacing: 6) {
-                            Text("\(pr.repository) #\(pr.number)" + (!pr.isFinished && pr.artifact.draft == true ? " · Draft" : ""))
-                                .foregroundStyle(.secondary)
-                            Text("·").foregroundStyle(.tertiary).accessibilityHidden(true)
-                            Text(pr.checksLabel(at: context.date))
-                                .foregroundStyle(pr.checksColor(at: context.date, scheme: colorScheme))
-                                .layoutPriority(1)
-                        }.font(.caption).lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        if !pr.isFinished {
-                            activity(pr.activityLabel(at: context.date) ?? "No activity reported", item: item, at: context.date)
+                    VStack(alignment: .leading, spacing: 5) {
+                        if let pr = item.pullRequest {
+                            HStack(spacing: 6) {
+                                Text("\(pr.repository) #\(pr.number)" + (!pr.isFinished && pr.artifact.draft == true ? " · Draft" : ""))
+                                    .foregroundStyle(.secondary)
+                                Text("·").foregroundStyle(.tertiary).accessibilityHidden(true)
+                                Text(pr.checksLabel(at: context.date))
+                                    .foregroundStyle(pr.checksColor(at: context.date, scheme: colorScheme))
+                                    .layoutPriority(1)
+                            }.font(.caption).lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if !pr.isFinished {
+                                activity(pr.activityLabel(at: context.date) ?? "No activity reported", item: item, at: context.date, lines: 1)
+                            }
+                        } else {
+                            activity(item.activity(at: context.date), item: item, at: context.date)
                         }
-                    } else {
-                        activity(item.activity(at: context.date), item: item, at: context.date)
                     }
+                    .frame(minHeight: dynamicTypeSize.isAccessibilitySize ? nil : detailHeight, alignment: .top)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -210,16 +216,16 @@ struct WorkView: View {
             }
             .contentShape(Rectangle())
         }
-        .buttonStyle(HomePressStyle())
+        .buttonStyle(.plain)
         .accessibilityHint("Opens the bot conversation")
         .accessibilityIdentifier(item.pullRequest.map { "work-pr-\($0.number)" } ?? "work-item-\(item.artifact.id)")
     }
 
-    private func activity(_ label: String, item: TrackedWorkItem, at date: Date) -> some View {
+    private func activity(_ label: String, item: TrackedWorkItem, at date: Date, lines: Int = 2) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Text(label).font(.caption)
                 .foregroundStyle(item.color(at: date, scheme: colorScheme))
-                .modifier(WorkTextLines())
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : lines)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
             // Reserve the indicator's space while activity changes.
@@ -230,19 +236,6 @@ struct WorkView: View {
                         .accessibilityIdentifier("work-progress-\(item.artifact.id)")
                 }
             }.frame(width: 16, height: 16)
-        }
-    }
-}
-
-private struct WorkTextLines: ViewModifier {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if dynamicTypeSize.isAccessibilitySize {
-            content.lineLimit(nil)
-        } else {
-            content.lineLimit(2, reservesSpace: true)
         }
     }
 }

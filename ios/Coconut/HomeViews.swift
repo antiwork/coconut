@@ -196,7 +196,7 @@ struct BotActivityDot: View {
     let bot: Bot
     var body: some View {
         if store.isBotActive(bot) {
-            Circle().fill(BoardStyle.green).frame(width: 10, height: 10)
+            Circle().fill(Color.green).frame(width: 10, height: 10)
                 .overlay(Circle().stroke(BoardStyle.paper, lineWidth: 2))
                 .offset(x: 2, y: 2)
                 .accessibilityElement().accessibilityLabel("Working")
