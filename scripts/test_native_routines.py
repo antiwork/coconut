@@ -32,7 +32,9 @@ try:
         assert job, 'Coconut did not claim the routine.'
         owner = job['fire_claim']['by']
         env = dict(os.environ, HERMES_HOME=str(home), PYTHONPATH=str(root/'.runtime/hermes/source'))
-        env.pop('HERMES_MACHINE_ID', None)
+        rival_owner = 'rival-' + str(uuid4())
+        assert not owner.startswith(rival_owner + ':')
+        env['HERMES_MACHINE_ID'] = rival_owner
         rival = subprocess.run([sys.executable, '-c',
             'import json,sys;from cron import jobs;print(json.dumps(bool(jobs.claim_job_for_fire(sys.argv[1],force=True,return_job=True))))',
             identity], env=env, text=True, capture_output=True, check=True, timeout=30)
