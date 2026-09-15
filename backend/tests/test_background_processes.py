@@ -68,6 +68,24 @@ class BackgroundProcessTests(unittest.TestCase):
         self.assertEqual(len(self.provider.starts), 2)
         self.assertEqual(len(self.service._all('tasks')), 1)
 
+    def test_pending_check_reads_only_the_assignment_receipts(self):
+        task_id = self.start()
+        original = self.service._all('native_receipts')[0]
+        other = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Other work'})
+        with self.service.transaction():
+            for index in range(100):
+                self.service._put('native_receipts', dict(original, id=f'unrelated-{index}', task_id=other['id']))
+            original['_process_delivery'] = 'consumed'
+            self.service._put('native_receipts', original)
+        with patch('coconut.background_processes.json.loads', wraps=json.loads) as reads:
+            self.assertFalse(self.service._background_pending(task_id))
+            self.assertLess(reads.call_count, 10, 'Unrelated tool history must not increase the read cost.')
+        with self.service.transaction():
+            child = self.service._get('tasks', other['id'])
+            child['_assignment_task_id'] = task_id
+            self.service._put('tasks', child)
+        self.assertTrue(self.service._background_pending(task_id))
+
     def test_delivery_survives_restart_before_model_continuation(self):
         task_id = self.start()
         self.provider.results['proc_test'] = 'Completed'

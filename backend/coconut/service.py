@@ -145,6 +145,8 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
         CREATE INDEX IF NOT EXISTS native_receipts_executing ON native_receipts
             (json_extract(data, '$.task_id'), json_extract(data, '$.turn_id'))
             WHERE json_extract(data, '$.state')='executing';
+        CREATE INDEX IF NOT EXISTS native_receipts_task ON native_receipts (json_extract(data, '$.task_id'));
+        CREATE INDEX IF NOT EXISTS tasks_assignment ON tasks (json_extract(data, '$._assignment_task_id'));
         CREATE INDEX IF NOT EXISTS tasks_blocked ON tasks (id)
             WHERE json_extract(data, '$.status') IN ('needs_you', 'paused');
         CREATE TABLE IF NOT EXISTS receipts (decision_id TEXT PRIMARY KEY, state TEXT NOT NULL, artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL, detail TEXT NOT NULL);
@@ -2278,7 +2280,11 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                     provider_task['_pr_review'] = task['_pr_review']
                 if task.get('_native_job'):
                     provider_task['_native_job'] = task['_native_job']
-                provider_task['_native_receipts'] = [r for r in self._all('native_receipts') if r['task_id'] == task_id and r.get('turn_id') == task.get('_native_turn_id') and r['state'] == 'completed']
+                with self.lock:
+                    provider_task['_native_receipts'] = [json.loads(row[0]) for row in self.db.execute(
+                        "SELECT data FROM native_receipts WHERE json_extract(data, '$.task_id')=? "
+                        "AND json_extract(data, '$.turn_id')=? AND json_extract(data, '$.state')='completed' ORDER BY rowid",
+                        (task_id, task.get('_native_turn_id')))]
                 with self.lock:
                     bot = self._get('bots', task['bot_id'])
                     provider_task['_tracked_prs'] = self._tracked_work_input(task)
