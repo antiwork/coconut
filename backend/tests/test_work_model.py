@@ -19,6 +19,28 @@ class WorkModelTests(unittest.TestCase):
             task.update(fields)
             self.service._put('tasks', task)
 
+    def test_completed_pr_check_waits_for_author_without_recovery_loop(self):
+        from dataclasses import replace
+        from test_service_pr import observation
+        self.tracker.observations = [replace(observation(), pr_state='open', draft=True, checks_state='failed')]
+        self.provider.payload.update(activity='Waiting for the author', activity_state='blocked')
+        self.service._run_task(self.task['id'])
+        self.state(_work_todos={'todos': [dict(id='coconut-assignment', status='completed',
+            content='Verified the requested PR status; the author still owns implementation.')]})
+        row = self.row()
+        self.assertEqual(row['work_state'], 'waiting')
+        self.assertEqual(row['activity'], 'Waiting for the PR author')
+        self.assertIsNone(row['completion_evidence'])
+        count = len(self.service._all('tasks'))
+        for _ in range(3):
+            self.service._queue_work_recoveries()
+        self.assertEqual(len(self.service._all('tasks')), count)
+        self.assertEqual(self.service._all('decisions'), [])
+        self.tracker.observations = [replace(observation(), pr_state='open', draft=False, checks_state='passed')]
+        self.service.refresh_pull_requests()
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'queued')
+        self.assertEqual(self.row()['work_state'], 'queued')
+
     def test_turn_completion_does_not_complete_the_outcome(self):
         self.track(completion_condition='The exported file contains every requested record.')
         self.state(status='completed')

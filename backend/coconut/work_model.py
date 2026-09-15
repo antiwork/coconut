@@ -113,6 +113,11 @@ class WorkModel:
             root = next((t for t in owner.get('_work_todos', {}).get('todos', []) if t['id'] == 'coconut-assignment'), None)
             if root and root['status'] == 'completed':
                 evidence = owner.get('summary') or root['content']
+        # Completing the bot's assignment can leave a PR waiting on its author or checks.
+        awaiting_pr = (item['kind'] == 'pr' and attempts and all(t['status'] == 'completed' for t in attempts)
+                       and any(t['id'] == 'coconut-assignment' and t['status'] == 'completed'
+                               for t in owner.get('_work_todos', {}).get('todos', []))
+                       and not dependencies and not pending and not replies)
         if self._setting('work.cancelled.' + self._work_identity(item)) or (item['kind'] == 'work' and (owner.get('status') == 'cancelled' or item['status'] == 'cancelled')):
             state, activity, next_step = 'cancelled', 'Stopped', None
         elif evidence and item['kind'] == 'pr':
@@ -121,6 +126,8 @@ class WorkModel:
             state, activity, next_step = 'completed', 'Completed', None
         elif pending and not live_reply and not replies and not ready_reply and not live:
             state, activity, next_step = 'needs_decision', 'Waiting for your decision', 'Review decision'
+        elif awaiting_pr:
+            state, activity, next_step = 'waiting', ('Waiting for the PR author' if item.get('draft') else 'Waiting for PR updates'), 'Continue when the PR changes'
         elif blockers and not live_reply and not replies:
             state, activity, next_step = 'needs_recovery', blockers[-1][1] or 'Needs recovery', 'Ask for progress'
         elif live or live_reply:
