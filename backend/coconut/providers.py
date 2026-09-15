@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import signal
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Callable, Optional, Protocol
 from uuid import UUID
@@ -374,6 +376,7 @@ class HermesProvider(FixtureProvider):
                     request_id = event.get('request_id')
                     if type(request_id) is not int or request_id < 1:
                         raise RuntimeError('Hermes returned an operation without a receipt request.')
+                    receipt_started = time.monotonic()
                     try:
                         result = emit(event['type'], event['data'])
                         if event['type'] == 'native_question':
@@ -413,6 +416,11 @@ class HermesProvider(FixtureProvider):
                         else:
                             receipt = {'status': 'unconfirmed', 'error': 'The service did not confirm this operation. Retry only the exact same request.'}
                     self._send(process, {'request_id': request_id, 'receipt': receipt})
+                    elapsed = time.monotonic() - receipt_started
+                    if event['type'] in ('native_call', 'native_result') and (elapsed >= 5 or receipt.get('status') != 'recorded'):
+                        logging.getLogger(__name__).warning(
+                            'Tool confirmation task=%s kind=%s duration_ms=%d status=%s',
+                            task_id, event['type'], round(elapsed * 1000), receipt.get('status'))
                     continue
                 paused = paused or event['type'] in ('decision', 'native_approval', 'native_question')
                 terminal_received = terminal_received or event['type'] in ('completed', 'failed')

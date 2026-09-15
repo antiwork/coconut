@@ -451,6 +451,37 @@ class ProviderTests(unittest.TestCase):
                 HermesProvider._run(provider, 'start', dict(self.task, id=str(uuid4())), self.bot, [], receipt)
         self.assertEqual(len(records), 3)
 
+    def test_delayed_service_receipts_do_not_abandon_or_repeat_tools(self):
+        output = self.root / 'tool-output'
+        provider = self.fake_hermes("""
+            from pathlib import Path
+            def write(args):
+                with Path(OUTPUT).open('a') as output: output.write('once\n')
+                return 'saved'
+            registry.register(name='terminal', toolset='terminal', schema={}, handler=write)
+            result = registry.dispatch('terminal', {'command': 'write once'})
+            return {'completed': True, 'final_response': result}
+        """.replace('OUTPUT', repr(str(output))).replace("'once\n'", "'once\\n'"))
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            for delayed in ('native_call', 'native_result'):
+                with self.subTest(delayed=delayed):
+                    output.unlink(missing_ok=True)
+                    events = []
+                    def receipt(kind, data):
+                        events.append(kind)
+                        if kind == delayed:
+                            time.sleep(31)
+                        if kind == 'native_call':
+                            return {'status': 'recorded', 'id': str(uuid4())}
+                        if kind == 'native_result':
+                            return {'status': 'recorded'}
+                    HermesProvider._run(provider, 'start', dict(self.task, id=str(uuid4())), self.bot, [], receipt)
+                    self.assertEqual(output.read_text() if output.exists() else '', 'once\n')
+                    self.assertEqual(events.count('native_call'), 1)
+                    self.assertEqual(events.count('native_result'), 1)
+                    self.assertIn('completed', events)
+                    self.assertNotIn('failed', events)
+
     def test_bots_do_not_share_runtime_and_idle_runtimes_stop(self):
         provider = self.fake_hermes("return {'completed': True, 'final_response': str(__import__('os').getpid())}")
         other = dict(self.bot, id=str(uuid4()), session_id=str(uuid4()))

@@ -686,10 +686,16 @@ def main():
             with output_lock:
                 output.write(json.dumps({'type': kind, 'data': data, 'request_id': request_id, 'turn_id': getattr(output_turn, 'identity', None)}, ensure_ascii=False) + '\n')
                 output.flush()
-            try:
-                return response.get(timeout=30)
-            except queue.Empty:
-                return {'status': 'unconfirmed', 'error': 'The service has not confirmed this operation. Retry only the exact same request.'}
+            # The local service can commit after a timeout. Keep this exchange
+            # open until it answers; parent EOF already stops the runtime.
+            while True:
+                scope = current_turn.get()
+                if scope is not None and scope.cancelled.is_set():
+                    raise TurnPaused()
+                try:
+                    return response.get(timeout=.25)
+                except queue.Empty:
+                    continue
         finally:
             with receipt_lock:
                 pending_receipts.pop(request_id, None)
