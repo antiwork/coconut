@@ -99,7 +99,13 @@ struct AppSettingsView: View {
 
     private var connectionSummary: String {
         if store.isDemo { return "Preview data" }
-        let status = store.connection == .connected ? "Connected" : "Connecting…"
+        let status: String = switch store.connection {
+        case .connected: "Connected"
+        case .connecting: "Connecting…"
+        case .disconnected: "Disconnected"
+        case .unconfigured: "Not paired"
+        case .preview: "Preview data"
+        }
         guard let lastSync = store.lastSync else { return status }
         return status + " · Synced " + lastSync.formatted(date: .abbreviated, time: .shortened)
     }
@@ -235,7 +241,6 @@ private struct MacConnectionSettingsView: View {
                         Text(store.serverURL).font(.caption).textSelection(.enabled)
                     }
                     Button("Reconnect") { Task { await store.reconnect() } }
-                        .disabled(store.connection == .connecting)
                 } else {
                     MacPairingFields()
                 }
