@@ -152,3 +152,21 @@ class WorkSourceTests(unittest.TestCase):
         self.assertTrue(coverage(self.item, binding, tasks, {}, {'receipt': receipt}, current))
         receipt['_process_delivery'] = 'consumed'
         self.assertFalse(coverage(self.item, binding, tasks, {}, {'receipt': receipt}, current))
+
+    def test_expired_reminder_reuses_live_pr_work(self):
+        from test_service_pr import Tracker, observation, URL
+        self.item.update(id=URL)
+        self.service.pr_tracker = Tracker(observation())
+        task = self.service.mutate('POST', f"/v1/bots/{self.bot['id']}/messages",
+                                   {'text': 'Fix the report', 'mode': 'queue'}, str(uuid4()))
+        task.update(status='working', _conversation_epoch=self.service._setting('conversation_epoch'))
+        self.service._put('tasks', task)
+        self.service._register_pr_artifact(task['id'], {'url': URL})
+        binding = dict(updated_at=self.item['updated_at'], reason='Check later', next_check_at='2000-01-01T00:00:00Z')
+        (self.root / 'coverage.json').write_text(json.dumps({URL: binding}))
+        self.assertEqual(self.audit()['missing'], [])
+        self.assertEqual(len(self.service._all('tasks')), 1)
+        task.update(status='completed')
+        self.service._put('tasks', task)
+        self.assertEqual(self.audit()['missing'], [URL])
+        self.assertEqual(len(self.service._all('tasks')), 2)

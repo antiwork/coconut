@@ -126,6 +126,16 @@ class WorkSources:
                         if item.get('id') and item.get('updated_at'):
                             audit_owners.setdefault((item['id'], item['updated_at']), []).append(task['id'])
                     current = datetime.now(timezone.utc)
+                    # A reminder can omit task IDs. Recover the durable PR links before queuing another audit.
+                    for artifact in self._all('artifacts'):
+                        identity = artifact.get('url')
+                        binding = bindings.get(identity)
+                        if artifact.get('kind') != 'pr' or not binding or not self._pr_review_source_current(artifact):
+                            continue
+                        owner = tasks.get(artifact.get('_review_task_id'))
+                        if owner:
+                            chain = self._work_chain(owner, tasks, list(receipts.values()), include_continuations=True)
+                            binding['task_ids'] = list(dict.fromkeys(binding.get('task_ids', []) + list(chain)))
                     gaps = [item for item in items if not coverage(item, bindings.get(item['id'], {}), tasks, decisions, receipts, current)]
                     evidence = [dict(item=item, binding=bindings.get(item['id'], {}),
                                      tasks={key: tasks.get(key, {}).get('status') for key in bindings.get(item['id'], {}).get('task_ids', [])},

@@ -2124,7 +2124,7 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                 self._start_context(context['id'])
                 active.add(key)
                 slots += 1
-            for task in self._all('tasks'):
+            for task in self._dispatch_order(self._all('tasks')):
                 bot = self._get('bots', task['bot_id'])
                 if bot['archived'] or bot.get('_deleted') or task['id'] in self.running:
                     continue
@@ -2165,10 +2165,16 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
             return False
         return not self._task_paused(task) and not self._continuation_blocked(task)
 
+    def _dispatch_order(self, tasks):
+        # Routine source audits yield to requested work and returned results.
+        by_id = {task['id']: task for task in tasks}
+        return sorted(tasks, key=lambda task: bool(
+            by_id.get(task.get('_assignment_task_id'), task).get('_source_audit_prompt'))
+            and not task.get('_is_return') and not task.get('_background_completion'))
+
     def _queue_positions(self, tasks, timestamp):
         positions = {}
-        # Dictionary insertion order matches the dispatcher's durable row order.
-        for task in tasks.values():
+        for task in self._dispatch_order(list(tasks.values())):
             if task.get('_work_status_only') or not self._dispatch_eligible(task, timestamp):
                 continue
             positions[task['id']] = len(positions) + 1

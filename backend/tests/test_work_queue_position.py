@@ -38,6 +38,13 @@ class WorkQueuePositionTests(unittest.TestCase):
         self.update(next_task, _work_status_only=True)
         self.assertNotIn(next_task['id'], self.positions())
 
+    def test_returned_result_runs_before_routine_source_audits(self):
+        audit = self.update(self.task, status='queued', _source_audit_prompt='Check source coverage')
+        result = self.update(self.send(), _is_return=True)
+        self.assertEqual(self.positions(), {result['id']: 1, audit['id']: 2})
+        tasks = self.service._dispatch_order(self.service._all('tasks'))
+        self.assertEqual([t['id'] for t in tasks], [result['id'], audit['id']])
+
     def test_blocked_continuations_do_not_claim_a_queue_position(self):
         self.update(self.task, status='needs_you')
         child = self.send()

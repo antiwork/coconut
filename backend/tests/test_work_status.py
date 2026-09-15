@@ -29,6 +29,20 @@ class WorkStatusTests(unittest.TestCase):
             task['status'] = status
             self.service._put('tasks', task)
 
+    def test_delayed_callback_does_not_replace_newer_worker_report(self):
+        artifact = self.artifact('Tests finished', 'ready')
+        callback = self.write('POST', f"/v1/bots/{self.bot['id']}/messages",
+                              dict(text='Older worker callback', mode='queue'))
+        callback.update(_is_return=True, created_at='2000-01-01T00:00:00Z')
+        self.service._put('tasks', callback)
+        self.service._set_work_activity(artifact, callback, dict(activity='Still testing'))
+        self.assertEqual(self.service._get('artifacts', artifact['id'])['_activity'], 'Tests finished')
+        self.service._put('native_receipts', dict(id=str(uuid4()), task_id=callback['id'],
+            state='completed', created_at='2000-01-01T00:00:00Z', completed_at=now(),
+            action={'name': 'terminal'}, result={'exit_code': 0}))
+        self.service._set_work_activity(artifact, callback, dict(activity='Resolving publication'))
+        self.assertEqual(self.service._get('artifacts', artifact['id'])['_activity'], 'Resolving publication')
+
     def test_finished_turn_cannot_keep_claiming_review_runs(self):
         self.artifact()
         self.assertNotEqual(self.row()['activity'], 'Reviewing with Fable')

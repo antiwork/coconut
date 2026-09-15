@@ -11,6 +11,21 @@ class WorkStatus:
         self._restore_active_work(artifact)
         if 'activity' not in payload:
             return
+        if task.get('_is_return'):
+            newer = [peer.get('_activity_at', '') for peer in self._all('artifacts')
+                     if peer.get('kind') == 'pr' and peer.get('url', '').lower() == artifact['url'].lower()
+                     and peer.get('_activity_head') == artifact.get('head_sha')
+                     and peer.get('_activity_task_id') != task['id']
+                     and peer.get('_activity_at', '') > task['created_at']]
+            if newer:
+                # A delayed callback needs fresh execution evidence before replacing newer worker progress.
+                fresh = any(record.get('task_id') == task['id'] and record.get('state') == 'completed'
+                            and (record.get('completed_at') or record.get('created_at', '')) > max(newer)
+                            and (record.get('action', {}).get('name') in ('terminal', 'process', 'execute_code')
+                                 or record.get('action', {}).get('name', '').startswith('mcp__'))
+                            for record in self._all('native_receipts'))
+                if not fresh:
+                    return
         text = require_text(payload, 'activity', 80)
         state = payload.get('activity_state', 'working')
         if state not in ('working', 'ready', 'blocked') or '\n' in text:
