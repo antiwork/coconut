@@ -283,9 +283,18 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                 # Valid rows can outgrow SQLite's limit for a single combined value.
                 return [json.loads(row[0]) for row in self.db.execute(f'SELECT data FROM {table} ORDER BY rowid')]
 
+    def _read_one(self, statement, parameters):
+        cache = getattr(self, '_read_cache', None)
+        if cache is None:
+            return self.db.execute(statement, parameters).fetchone()
+        key = (statement, parameters)
+        if key not in cache:
+            cache[key] = self.db.execute(statement, parameters).fetchone()
+        return cache[key]
+
     def _get(self, table: str, object_id: str) -> dict:
         with self.lock:
-            row = self.db.execute(f'SELECT data FROM {table} WHERE id=?', (object_id,)).fetchone()
+            row = self._read_one(f'SELECT data FROM {table} WHERE id=?', (object_id,))
         if not row:
             raise ServiceError(404, f'{table[:-1].capitalize()} was not found.')
         return json.loads(row[0])
@@ -574,14 +583,19 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
             view = copy.copy(self)
             view.db = db
             view.lock = threading.RLock()
+            view._read_cache = None
             yield view
 
     @contextlib.contextmanager
     def _read_transaction(self):
         self.db.execute('BEGIN')
+        if hasattr(self, '_read_cache'):
+            self._read_cache = {}
         try:
             yield
         finally:
+            if hasattr(self, '_read_cache'):
+                self._read_cache = None
             self.db.execute('ROLLBACK')
 
     def snapshot(self, *, timings=None) -> dict:
@@ -672,7 +686,7 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
 
     def _setting(self, key: str, default: Any = None) -> Any:
         with self.lock:
-            row = self.db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+            row = self._read_one('SELECT value FROM settings WHERE key=?', (key,))
         return json.loads(row[0]) if row else default
 
     def mutate(self, method: str, path: str, data: dict, key: str, device_id: str = 'local') -> dict:

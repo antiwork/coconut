@@ -106,7 +106,7 @@ class WorkStatus:
 
     def _work_projection(self, artifacts):
         self._project_work_outcomes(artifacts, {t['id']: t for t in self._all('tasks')},
-                                    self._all('native_receipts'), self._all('decisions'), datetime.now(timezone.utc))
+                                    self._pending_completion_receipts(), self._all('decisions'), datetime.now(timezone.utc))
         return artifacts
 
     def _restore_active_work(self, artifact):

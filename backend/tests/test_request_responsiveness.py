@@ -43,6 +43,24 @@ class RequestResponsivenessTests(unittest.TestCase):
         finally:
             self.service.db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, previous)
 
+    def test_read_view_reuses_lookups_only_within_the_same_snapshot(self):
+        bot = self.service.mutate('POST', '/v1/bots', {'name': 'Desk', 'role': ''}, str(uuid4()))
+        with self.service._read_view() as view:
+            queries = []
+            view.db.set_trace_callback(queries.append)
+            with view._read_transaction():
+                first = view._get('bots', bot['id'])
+                first['name'] = 'Changed copy'
+                for _ in range(20):
+                    self.assertEqual(view._get('bots', bot['id'])['name'], 'Desk')
+                selects = [query for query in queries if query.startswith('SELECT data FROM bots WHERE')]
+                self.assertEqual(len(selects), 1, 'Repeated Work links must reuse the snapshot lookup.')
+            with self.service.transaction():
+                bot['name'] = 'Updated Desk'
+                self.service._put('bots', bot)
+            with view._read_transaction():
+                self.assertEqual(view._get('bots', bot['id'])['name'], 'Updated Desk')
+
     def test_task_context_reads_do_not_block_another_tools_receipt(self):
         service = self.service
         bot = service.mutate('POST', '/v1/bots', {'name': 'Desk', 'role': ''}, str(uuid4()))
