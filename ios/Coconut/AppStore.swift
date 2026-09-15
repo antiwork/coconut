@@ -54,7 +54,7 @@ final class AppStore {
     @ObservationIgnored private var bootstrapPairing = false
     @ObservationIgnored private var uncertainWriteKeys: [String: String] = [:]
     @ObservationIgnored private var networkMonitor: NWPathMonitor?
-    @ObservationIgnored private var receivedNetworkPath = false
+    @ObservationIgnored private var networkAvailable: Bool?
     @ObservationIgnored private var cachedState: StateSnapshot?
     @ObservationIgnored private var cacheTask: Task<Void, Never>?
     @ObservationIgnored private let cacheQueue = DispatchQueue(label: "coconut.display-cache", qos: .utility)
@@ -142,12 +142,13 @@ final class AppStore {
         setForeground(true)
     }
 
-    private func networkChanged(available: Bool) {
-        let initial = !receivedNetworkPath
-        receivedNetworkPath = true
+    func networkChanged(available: Bool) {
+        let recovered = networkAvailable == false && available
+        networkAvailable = available
         // A default route does not prove whether the Mac is reachable.
-        if available, hasPairing, foreground, !initial {
+        if recovered, hasPairing, foreground {
             stopPolling()
+            client = nil
             beginPolling()
         }
     }
@@ -1090,6 +1091,7 @@ final class AppStore {
                 catch {
                     guard self.connectionGeneration == generation else { break }
                     self.recordSyncFailure(error)
+                    if error is URLError { self.client = nil }
                     needsSnapshot = true
                     failures += 1
                     do { try await Task.sleep(for: .milliseconds(min(10_000, 500 * (1 << min(failures - 1, 5))))) }
