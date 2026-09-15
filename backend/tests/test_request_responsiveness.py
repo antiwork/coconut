@@ -1,5 +1,6 @@
 import http.client
 import json
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -18,6 +19,29 @@ class RequestResponsivenessTests(unittest.TestCase):
         self.service = Service(self.temp.name, FixtureProvider(self.temp.name), start_workers=False)
         self.addCleanup(self.temp.cleanup)
         self.addCleanup(self.service.close)
+
+    def test_table_reads_batch_decoding_without_changing_values_or_order(self):
+        self.assertEqual(self.service._all('artifacts'), [])
+        expected = [dict(id=str(200-index), text='Line one\n"quoted", café 🍉',
+                         detail={'number': index, 'value': None, 'enabled': True}) for index in range(200)]
+        with self.service.transaction():
+            for item in expected:
+                self.service._put('artifacts', item)
+        with patch('coconut.service.json.loads', wraps=json.loads) as decode:
+            actual = self.service._all('artifacts')
+        self.assertEqual(actual, expected)
+        self.assertEqual(decode.call_count, 1, 'Decode one database result instead of switching per row.')
+
+    def test_table_reads_preserve_rows_when_combined_value_exceeds_sqlite_limit(self):
+        expected = [dict(id=str(index), text='x' * 200) for index in range(20)]
+        with self.service.transaction():
+            for item in expected:
+                self.service._put('artifacts', item)
+        previous = self.service.db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 512)
+        try:
+            self.assertEqual(self.service._all('artifacts'), expected)
+        finally:
+            self.service.db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, previous)
 
     def test_task_context_reads_do_not_block_another_tools_receipt(self):
         service = self.service

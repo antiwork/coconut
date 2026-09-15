@@ -272,7 +272,16 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
 
     def _all(self, table: str) -> list[dict]:
         with self.lock:
-            return [json.loads(row[0]) for row in self.db.execute(f'SELECT data FROM {table} ORDER BY rowid')]
+            # One SQLite result avoids a Python thread handoff for every stored row.
+            try:
+                row = self.db.execute(f"SELECT '[' || group_concat(data, ',') || ']' "
+                                      f'FROM (SELECT data FROM {table} ORDER BY rowid)').fetchone()
+                return json.loads(row[0] or '[]')
+            except sqlite3.DataError as error:
+                if error.sqlite_errorcode != sqlite3.SQLITE_TOOBIG:
+                    raise
+                # Valid rows can outgrow SQLite's limit for a single combined value.
+                return [json.loads(row[0]) for row in self.db.execute(f'SELECT data FROM {table} ORDER BY rowid')]
 
     def _get(self, table: str, object_id: str) -> dict:
         with self.lock:
