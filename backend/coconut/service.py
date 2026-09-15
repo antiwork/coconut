@@ -2634,6 +2634,16 @@ class Service(WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgres
                     bot = self._get('bots', task['bot_id'])
                     if context['status'] != 'queued' or task['status'] == 'cancelled' or self._task_paused(task) or self.stopping.is_set():
                         return
+                    if context.get('_background_completion'):
+                        decision = self._get('decisions', context['decision_id'])
+                        if (decision['status'] != 'pending'
+                                or not self._process_observation_current(task, bot)
+                                or context.get('_conversation_epoch') != task.get('_conversation_epoch')):
+                            context['status'] = 'cancelled'
+                            self._put('contexts', context)
+                            self._event('context.cancelled', {'id': context_id, 'decision_id': decision['id']}, bot['id'], task['id'])
+                            return
+                        context['_decision_revision'] = decision['revision']
                     if self._block_uncertain_context(context):
                         return
                     context['status'] = 'working'
@@ -2646,6 +2656,8 @@ class Service(WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgres
                     if task.get('_native_job'):
                         provider_task['_native_job'] = task['_native_job']
                     provider_task['_native_receipts'] = [r for r in self._all('native_receipts') if r['task_id'] == task['id'] and r.get('turn_id') == context_id and r['state'] == 'completed']
+                    if context.get('_background_completion'):
+                        provider_task['_background_completion'] = context['_background_completion']
                     provider_task['_decision_reply'] = context.get('_reply_device') is not None
                     provider_task['_context_message_id'] = context.get('_message_id')
                     provider_task['pending_decision'] = self._public(decision) | {'action': decision.get('_action')}

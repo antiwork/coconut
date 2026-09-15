@@ -109,7 +109,7 @@ class BackgroundProcesses:
                             continue
                         if not self._process_observation_current(task, bot):
                             continue
-                        resumable = self._can_resume_process(task, bot)
+                        resumable = self._can_resume_completion(task, bot, record)
                         if record.get('_completion_text'):
                             if resumable:
                                 cached.append(dict(id=record['id'], text=record['_completion_text']))
@@ -150,12 +150,47 @@ class BackgroundProcesses:
                             if delegation_ids(record):
                                 record['_delegation_ack_pending'] = True
                             self._put('native_receipts', record)
-                            if self._can_resume_process(task, self._get('bots', bot_id)):
-                                grouped.setdefault(task['id'], []).append((record, result['text']))
-                    for task_id, completions in grouped.items():
-                        self._resume_process_task(task_id, completions)
+                            if self._can_resume_completion(task, self._get('bots', bot_id), record):
+                                context = self._completion_context(record)
+                                grouped.setdefault((task['id'], context['id'] if context else None), []).append((record, result['text']))
+                    for (task_id, context_id), completions in grouped.items():
+                        if context_id:
+                            self._resume_process_context(context_id, completions)
+                        else:
+                            self._resume_process_task(task_id, completions)
             finally:
                 bot_lock.release()
+
+    def _completion_context(self, record):
+        row = self.db.execute('SELECT data FROM contexts WHERE id=?', (record.get('turn_id'),)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def _can_resume_completion(self, task, bot, record):
+        context = self._completion_context(record)
+        if context is None:
+            return self._can_resume_process(task, bot)
+        decision = self._get('decisions', context['decision_id'])
+        return (context['task_id'] == task['id'] and context['status'] in ('completed', 'failed')
+                and decision['status'] == 'pending' and decision['task_id'] == task['id']
+                and self._process_observation_current(task, bot) and not self._task_paused(task)
+                and self._assignment(task)['status'] != 'cancelled'
+                and context.get('_conversation_epoch') == task.get('_conversation_epoch')
+                and not self._has_uncertain_receipt(task['id'], context['id']))
+
+    def _resume_process_context(self, context_id, completions):
+        from .service import uid
+        source = self._get('contexts', context_id)
+        decision = self._get('decisions', source['decision_id'])
+        # Keep the human source separate from tool output and keep the task behind its decision.
+        context = dict(source, id=uid(), status='queued', _decision_revision=decision['revision'],
+                       _background_completion=[text for _, text in completions])
+        context.pop('error_code', None)
+        self._put('contexts', context)
+        for record, text in completions:
+            record.update(_completion_text=text, _process_delivery=context['id'])
+            self._put('native_receipts', record)
+        self._event('context.queued', {'id': context['id'], 'decision_id': context['decision_id']},
+                    context['bot_id'], context['task_id'])
 
     def _drain_relay_completions(self):
         # The recipient receipt is durable. It also covers a restart after Hermes

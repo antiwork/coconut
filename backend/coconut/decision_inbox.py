@@ -190,6 +190,8 @@ class DecisionInbox:
                 or decision['status'] != 'pending' or task['status'] == 'cancelled'
                 or decision['revision'] != context['_decision_revision']):
             raise ServiceError(409, 'The reply no longer matches a pending decision.')
+        if context.get('_background_completion') and payload.get('choice') != 'modify':
+            return {'status': 'pending', 'error': 'Background results can update the card but cannot answer it for the person.'}
         quote = payload.get('quote')
         if not isinstance(quote, str) or not quote.strip() or quote not in context['question']:
             raise ServiceError(400, 'Quote the exact instruction from this reply.')
