@@ -45,6 +45,14 @@ class WorkQueuePositionTests(unittest.TestCase):
         tasks = self.service._dispatch_order(self.service._all('tasks'))
         self.assertEqual([t['id'] for t in tasks], [result['id'], audit['id']])
 
+    def test_result_and_decision_continuations_run_before_new_work(self):
+        ordinary = self.update(self.task, status='queued')
+        returned = self.update(self.send(), _is_return=True)
+        process = self.update(self.send(), _background_completion=['Tests passed'])
+        decision = self.update(self.send(), _resume_decision='approved-card')
+        self.assertEqual(self.positions(), {returned['id']: 1, process['id']: 2,
+                                            decision['id']: 3, ordinary['id']: 4})
+
     def test_blocked_continuations_do_not_claim_a_queue_position(self):
         self.update(self.task, status='needs_you')
         child = self.send()

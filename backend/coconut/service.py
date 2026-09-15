@@ -2166,11 +2166,13 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
         return not self._task_paused(task) and not self._continuation_blocked(task)
 
     def _dispatch_order(self, tasks):
-        # Routine source audits yield to requested work and returned results.
+        # Consume results and decisions before starting more work.
         by_id = {task['id']: task for task in tasks}
-        return sorted(tasks, key=lambda task: bool(
-            by_id.get(task.get('_assignment_task_id'), task).get('_source_audit_prompt'))
-            and not task.get('_is_return') and not task.get('_background_completion'))
+        def priority(task):
+            if task.get('_is_return') or task.get('_background_completion') or task.get('_resume_decision'):
+                return 0
+            return 2 if by_id.get(task.get('_assignment_task_id'), task).get('_source_audit_prompt') else 1
+        return sorted(tasks, key=priority)
 
     def _queue_positions(self, tasks, timestamp):
         positions = {}
