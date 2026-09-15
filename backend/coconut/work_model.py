@@ -11,9 +11,14 @@ class WorkModel:
             review = self._pr_review_owner(peers)
             owner = tasks.get(review['_review_task_id'], {}) if review else {}
             identities = [owner.get('id')]
+            owner_active = bool(owner) and any(
+                task['status'] == 'queued' or self._work_live(task, records, timestamp)
+                for task, _ in self._work_chain(owner, tasks, records, include_continuations=True).values())
             identities += [p.get('_activity_task_id') for p in peers
                            if p.get('_activity_at', '') >= owner.get('created_at', '')
-                           and p.get('_activity_head') == item.get('head_sha')]
+                           and p.get('_activity_head') == item.get('head_sha')
+                           and not (owner_active and (tasks.get(p.get('_activity_task_id'), {}).get('_is_return')
+                               or tasks.get(p.get('_activity_task_id'), {}).get('_source_audit_prompt')))]
         else:
             identities = [owner.get('id')]
         if item['kind'] == 'pr' and owner:

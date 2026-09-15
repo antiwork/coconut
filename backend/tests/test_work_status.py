@@ -43,6 +43,25 @@ class WorkStatusTests(unittest.TestCase):
         self.service._set_work_activity(artifact, callback, dict(activity='Resolving publication'))
         self.assertEqual(self.service._get('artifacts', artifact['id'])['_activity'], 'Resolving publication')
 
+    def test_coordinator_callback_cannot_replace_the_running_pr_owner(self):
+        artifact = self.artifact('Checking published CI')
+        self.status('working')
+        callback = self.write('POST', f"/v1/bots/{self.bot['id']}/messages",
+                              dict(text='Older coordinator callback', mode='queue'))
+        callback.update(status='working', _is_return=True,
+                        _conversation_epoch=self.service._setting('conversation_epoch'))
+        self.service._put('tasks', callback)
+        peer = dict(artifact, id=str(uuid4()), _activity_task_id=callback['id'],
+                    _activity='Resolving the old publishing hold', _activity_at=now())
+        self.service._put('artifacts', peer)
+        self.service.running[self.task['id']] = threading.current_thread()
+        self.service.running[callback['id']] = threading.current_thread()
+        try:
+            self.assertEqual(self.row()['activity'], 'Checking published CI')
+            self.assertIn(self.task['id'], [attempt['id'] for attempt in self.row()['work_attempts']])
+        finally:
+            self.service.running.clear()
+
     def test_finished_turn_cannot_keep_claiming_review_runs(self):
         self.artifact()
         self.assertNotEqual(self.row()['activity'], 'Reviewing with Fable')
