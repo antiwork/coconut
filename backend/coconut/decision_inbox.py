@@ -109,6 +109,7 @@ class DecisionInbox:
 
     def finish_inbox_swipes(self):
         from datetime import datetime, timezone
+        callbacks = []
         with self.transaction():
             for decision in self._all('decisions'):
                 deadline = decision.get('inbox_undo_until')
@@ -124,13 +125,18 @@ class DecisionInbox:
                 if device and decision['status'] == 'dismissed' and task['status'] != 'cancelled':
                     # Keep the rejection reversible until Undo expires. No worker resumes before this transaction.
                     decision['status'] = 'pending'
-                    answer = self.answer_native if decision.get('_native') else self._answer
-                    answer(decision, task, dict(choice='reject', revision=decision['revision']), device)
+                    data = dict(choice='reject', revision=decision['revision'])
+                    if decision.get('_native'):
+                        self.answer_native(decision, task, data, device, callbacks)
+                    else:
+                        self._answer(decision, task, data, device)
                 else:
                     if device and task['status'] == 'cancelled':
                         decision['status'] = 'cancelled'
                     self._put('decisions', decision)
                     self._event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
+        for callback in callbacks:
+            callback()
 
     def decision_chat_input(self, task):
         from .service import ServiceError
@@ -154,6 +160,7 @@ class DecisionInbox:
             message.get('decision_id') == decision['id'] for message in self._history(task['bot_id']))
 
     def resolve_chat_decision(self, task_id, payload):
+        callbacks = []
         from .service import ServiceError, uid
         with self.transaction():
             source_task = self._get('tasks', task_id)
@@ -172,16 +179,22 @@ class DecisionInbox:
                            question=source['text'], status='working', _reply_device=source['_human_device_id'],
                            _decision_revision=decision['revision'], _source_message_id=source_id)
             self._put('contexts', context)
-            result = self._resolve_decision_reply(context['id'], payload)
+            result = self._resolve_decision_reply(context['id'], payload, callbacks)
             context['status'] = 'completed'
             self._put('contexts', context)
-            return result
+        for callback in callbacks:
+            callback()
+        return result
 
     def resolve_decision_reply(self, context_id, payload):
+        callbacks = []
         with self.transaction():
-            return self._resolve_decision_reply(context_id, payload)
+            result = self._resolve_decision_reply(context_id, payload, callbacks)
+        for callback in callbacks:
+            callback()
+        return result
 
-    def _resolve_decision_reply(self, context_id, payload):
+    def _resolve_decision_reply(self, context_id, payload, callbacks):
         from .service import ServiceError
         context = self._get('contexts', context_id)
         decision = self._get('decisions', context['decision_id'])
@@ -245,7 +258,7 @@ class DecisionInbox:
             'choice': choice, 'option_id': payload.get('option_id'),
             'correction': context['question'] if choice == 'modify' else '',
             'revision': decision['revision'],
-        }, context['_reply_device'])
+        }, context['_reply_device'], callbacks)
         return {'status': 'recorded', 'decision': result}
 
 

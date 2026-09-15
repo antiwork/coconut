@@ -62,7 +62,7 @@ class NativeExecution:
                 except ServiceError:
                     continue
 
-    def native_event(self, task_id, kind, payload, context_id=None):
+    def native_event(self, task_id, kind, payload, context_id=None, *, recovery_work_ids=None):
         from .service import ServiceError, YieldForDecision, now, digest, encoded
         with self.transaction():
             task = self._get('tasks', task_id)
@@ -165,6 +165,8 @@ class NativeExecution:
             if draft is not None:
                 decision['draft'] = draft
                 decision['draft_hash'] = digest(encoded(draft))
+            if recovery_work_ids is not None:
+                decision['_recovery_work_ids'] = recovery_work_ids
             decision.update(self.decision_origin(task))
             if not approval and draft is None:
                 decision.update(self.decision_followup(task, payload))
@@ -182,7 +184,7 @@ class NativeExecution:
             self._refresh_bot(task['bot_id'])
         raise YieldForDecision('The native decision is durable.', decision_id=decision['id'])
 
-    def answer_native(self, decision, task, data, device):
+    def answer_native(self, decision, task, data, device, callbacks):
         from .service import ServiceError, now, decision_correction
         if self._task_paused(task):
             raise ServiceError(409, 'Restore the bot before answering.')
@@ -232,6 +234,19 @@ class NativeExecution:
                 self._put('decisions', decision)
             self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
             return self._public(decision)
+        if decision.get('_recovery_work_ids'):
+            if option_id == 'stop' or choice == 'reject':
+                for identity in decision['_recovery_work_ids']:
+                    self._cancel_work(identity, callbacks)
+                self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
+                return self._public(decision)
+            unknown = task['_self_recovery'].get('unknown_tools', [])
+            unknown += [{k: r.get(k) for k in ('id', 'task_id', 'turn_id', 'action', 'created_at')}
+                        for r in self._all('native_receipts') if r['task_id'] == task['id'] and r['state'] == 'executing']
+            task['_self_recovery']['unknown_tools'] = list({r['id']: r for r in unknown}.values())
+            self._advance_input(task)
+        if task.get('_self_recovery') and (not decision.get('_recovery_work_ids') or option_id == 'retry'):
+            task['_self_recovery']['attempt'] = 0
         task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
         if correction.strip():
             self._record_decision_correction(task, decision, correction)

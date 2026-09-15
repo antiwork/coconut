@@ -89,10 +89,11 @@ from .parallel_work_updates import ParallelWorkUpdates
 from .service_restart import ServiceRestart
 from .tracked_work import TrackedWork
 from .work_model import WorkModel
+from .work_recovery import WorkRecovery
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
-class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart):
+class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -1047,7 +1048,7 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
                 return self._request_context(decision, task, question, [])
             if parts[3] == 'answer':
                 if decision.get('_native'):
-                    return self.answer_native(decision, task, data, device)
+                    return self.answer_native(decision, task, data, device, callbacks)
                 return self._answer(decision, task, data, device)
         if parts == ['v1', 'settings', 'mcp'] and method == 'POST':
             if not hasattr(self.provider, 'native_settings'):
@@ -2063,6 +2064,7 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
 
     def _dispatch(self):
         next_routine_tick = 0
+        next_recovery_tick = 0
         while not self.stopping.is_set():
             if time.monotonic() >= next_routine_tick:
                 next_routine_tick = time.monotonic() + 1
@@ -2071,6 +2073,13 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
                         update()
                     except Exception:
                         logging.getLogger(__name__).exception('Queue maintenance failed: %s', update.__name__)
+            if time.monotonic() >= next_recovery_tick:
+                next_recovery_tick = time.monotonic() + 5
+                try:
+                    self._queue_work_recoveries()
+                    self._queue_context_recoveries()
+                except Exception:
+                    logging.getLogger(__name__).exception('Work recovery failed; the next scan will retry.')
             try:
                 self._dispatch_pending()
             except Exception:
@@ -2208,7 +2217,7 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
                         return
                     history = self._history(bot['id'])
                 provider_task = self._public(task)
-                for field in ('_work_todos', '_work_resume', '_source_audit_prompt'):
+                for field in ('_work_todos', '_work_resume', '_source_audit_prompt', '_self_recovery'):
                     if field in task:
                         provider_task[field] = task[field]
                 reaction_feedback = task.get('_reaction_feedback', [])
@@ -2697,6 +2706,8 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
                         provider_task['_background_completion'] = context['_background_completion']
                     provider_task['_decision_reply'] = context.get('_reply_device') is not None
                     provider_task['_context_message_id'] = context.get('_message_id')
+                    if context.get('_recovery_attempt'):
+                        provider_task['_context_recovery'] = context['_context_recovery']
                     provider_task['pending_decision'] = self._public(decision) | {'action': decision.get('_action')}
                     provider_task['attachments'] = [self._public(self._get('artifacts', a)) | {'content_base64': self._get('artifacts', a).get('_content_base64')} for a in context.get('_attachment_ids', task.get('_turn_attachment_ids', []))]
                 chunks = []

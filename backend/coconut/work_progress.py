@@ -278,6 +278,8 @@ class WorkProgress:
         waiting_on = [identity for identity in assignment.get('_waiting_on', []) if identity != task.get('_resolved_dependency_id')]
         if waiting_on or self._background_pending(assignment['id'], finishing_task_id=task['id']):
             return None  # Existing durable dependencies own the next wakeup.
+        if task.get('_self_recovery'):
+            return 'Recovery ended without a verified outcome or a saved next step.'
         attempts = task.get('_work_retry', 0)
         if attempts >= 2:
             title = task['title']
