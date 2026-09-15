@@ -5,6 +5,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
+from unittest.mock import patch
 
 from coconut.providers import FixtureProvider
 from coconut.server import APIServer
@@ -17,6 +18,68 @@ class RequestResponsivenessTests(unittest.TestCase):
         self.service = Service(self.temp.name, FixtureProvider(self.temp.name), start_workers=False)
         self.addCleanup(self.temp.cleanup)
         self.addCleanup(self.service.close)
+
+    def test_task_context_reads_do_not_block_another_tools_receipt(self):
+        service = self.service
+        bot = service.mutate('POST', '/v1/bots', {'name': 'Desk', 'role': ''}, str(uuid4()))
+        first = service.mutate('POST', f"/v1/bots/{bot['id']}/messages", {'text': 'Check one.'}, str(uuid4()))
+        second = service.mutate('POST', f"/v1/bots/{bot['id']}/messages", {'text': 'Check two.', 'mode': 'queue'}, str(uuid4()))
+        with service.transaction():
+            second = service._get('tasks', second['id'])
+            second.update(status='working', _native_turn_id=str(uuid4()))
+            service._put('tasks', second)
+        reading, release = threading.Event(), threading.Event()
+        original = Service._tracked_work_input
+        def slow_read(view, task):
+            reading.set()
+            release.wait(3)
+            return original(view, task)
+        with patch.object(Service, '_tracked_work_input', slow_read), ThreadPoolExecutor(max_workers=2) as pool:
+            worker = pool.submit(service._run_task, first['id'])
+            self.assertTrue(reading.wait(2))
+            result = pool.submit(service.native_event, second['id'], 'native_call',
+                                 {'name': 'read_file', 'arguments': {'path': 'README.md'}})
+            try:
+                self.assertEqual(result.result(timeout=.5)['status'], 'recorded')
+            finally:
+                release.set()
+            worker.result(timeout=3)
+
+    def test_cancel_during_context_reads_prevents_model_execution(self):
+        service = self.service
+        bot = service.mutate('POST', '/v1/bots', {'name': 'Desk', 'role': ''}, str(uuid4()))
+        task = service.mutate('POST', f"/v1/bots/{bot['id']}/messages", {'text': 'Check one.'}, str(uuid4()))
+        original = Service._tracked_work_input
+        def cancel_during_read(view, current):
+            with service.transaction():
+                cancelled = service._get('tasks', task['id'])
+                cancelled['status'] = 'cancelled'
+                service._put('tasks', cancelled)
+            return original(view, current)
+        with patch.object(Service, '_tracked_work_input', cancel_during_read), patch.object(service.provider, 'start_task') as start:
+            service._run_task(task['id'])
+        start.assert_not_called()
+
+    def test_archiving_during_context_reads_preserves_queued_work(self):
+        service = self.service
+        bot = service.mutate('POST', '/v1/bots', {'name': 'Desk', 'role': ''}, str(uuid4()))
+        task = service.mutate('POST', f"/v1/bots/{bot['id']}/messages", {'text': 'Check one.'}, str(uuid4()))
+        original = Service._tracked_work_input
+        def archive_during_read(view, current):
+            with service.transaction():
+                archived = service._get('bots', bot['id'])
+                archived['archived'] = True
+                service._put('bots', archived)
+            return original(view, current)
+        with patch.object(Service, '_tracked_work_input', archive_during_read), patch.object(service.provider, 'start_task') as start:
+            service._run_task(task['id'])
+        start.assert_not_called()
+        self.assertEqual(service._get('tasks', task['id'])['status'], 'queued')
+        with service.transaction():
+            service._put('bots', bot)
+        with patch.object(service.provider, 'start_task') as start:
+            service._run_task(task['id'])
+        start.assert_called_once()
 
     def test_slow_settings_read_does_not_block_message_acceptance(self):
         service = self.service

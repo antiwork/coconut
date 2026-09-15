@@ -2313,27 +2313,27 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                         "SELECT data FROM native_receipts WHERE json_extract(data, '$.task_id')=? "
                         "AND json_extract(data, '$.turn_id')=? AND json_extract(data, '$.state')='completed' ORDER BY rowid",
                         (task_id, task.get('_native_turn_id')))]
-                with self.lock:
-                    bot = self._get('bots', task['bot_id'])
-                    provider_task['_tracked_prs'] = self._tracked_work_input(task)
-                    provider_task['_tracked_work'] = self._tracked_items_input(task)
-                    if not task.get('_work_status_only'):
-                        provider_task['_recent_work_updates'] = self.recent_work_updates(task)
-                    if task.get('_work_context_id'):
-                        provider_task['_work_context'] = self.work_context_input(task['_work_context_id'])
-                        provider_task['_work_status_only'] = task.get('_work_status_only', False)
                     provider_task.update(self._bot_creation_input(task))
-                    provider_task.update(self.decision_chat_input(task))
-                    provider_task.update(self._bot_deletion_input(task))
-                    provider_task['attachments'] = [self._public(self._get('artifacts', a)) | {'content_base64': self._get('artifacts', a).get('_content_base64')} for a in task['_turn_attachment_ids']]
-                    provider_task['_available_bots'] = [{'id': b['id'], 'name': b['name'], 'role': b['role']} for b in self._all('bots') if b['id'] != bot['id'] and not b['archived'] and not b.get('_deleted')]
+                with self._read_view() as view, view._read_transaction():
+                    bot = view._get('bots', task['bot_id'])
+                    provider_task['_tracked_prs'] = view._tracked_work_input(task)
+                    provider_task['_tracked_work'] = view._tracked_items_input(task)
+                    if not task.get('_work_status_only'):
+                        provider_task['_recent_work_updates'] = view.recent_work_updates(task)
+                    if task.get('_work_context_id'):
+                        provider_task['_work_context'] = view.work_context_input(task['_work_context_id'])
+                        provider_task['_work_status_only'] = task.get('_work_status_only', False)
+                    provider_task.update(view.decision_chat_input(task))
+                    provider_task.update(view._bot_deletion_input(task))
+                    provider_task['attachments'] = [view._public(view._get('artifacts', a)) | {'content_base64': view._get('artifacts', a).get('_content_base64')} for a in task['_turn_attachment_ids']]
+                    provider_task['_available_bots'] = [{'id': b['id'], 'name': b['name'], 'role': b['role']} for b in view._all('bots') if b['id'] != bot['id'] and not b['archived'] and not b.get('_deleted')]
                     provider_task['_bot_messages'] = task.get('_bot_messages', [])
                     provider_task['_is_return'] = bool(task.get('_is_return'))
-                    assignment = self._assignment(task)
+                    assignment = view._assignment(task)
                     if assignment.get('_work_todos'):
                         provider_task['_work_todos'] = assignment['_work_todos']
                     if task.get('_assignment_task_id'):
-                        instructions = [m['text'] for m in self._history(bot['id']) if m['task_id'] == assignment['id'] and m['role'] == 'user' and m['kind'] == 'text' and not m.get('decision_id')]
+                        instructions = [m['text'] for m in view._history(bot['id']) if m['task_id'] == assignment['id'] and m['role'] == 'user' and m['kind'] == 'text' and not m.get('decision_id')]
                         provider_task['_handoff_assignment'] = {
                             'task_id': assignment['id'], 'request': '\n\n'.join([*[m['text'] for m in assignment.get('_bot_messages', [])], *instructions]) or assignment['title'],
                             'return_to_bot_id': assignment.get('source_bot_id'),
@@ -2341,9 +2341,19 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                         }
                     # Same predicate as the worker's NativeWork, evaluated on the assembled provider task.
                     if work_enabled('resume' if decision else 'start', provider_task):
-                        provider_task['_work_dependencies'] = self.work_dependencies(task)
-                    turn_ids = {t['id'] for t in self._all('tasks') if t['id'] == assignment['id'] or t.get('_assignment_task_id') == assignment['id']}
-                    provider_task['_outgoing_bot_messages'] = [{'target_bot_id': delivery['target_bot_id'], 'text': delivery['text'], 'task_id': delivery['receipt']['task_id'], 'status': self._get('tasks', delivery['receipt']['task_id'])['status'] if delivery['receipt']['task_id'] else delivery['receipt']['status']} for delivery in self._all('deliveries') if delivery['source_task_id'] in turn_ids]
+                        provider_task['_work_dependencies'] = view.work_dependencies(task)
+                    turn_ids = {t['id'] for t in view._all('tasks') if t['id'] == assignment['id'] or t.get('_assignment_task_id') == assignment['id']}
+                    provider_task['_outgoing_bot_messages'] = [{'target_bot_id': delivery['target_bot_id'], 'text': delivery['text'], 'task_id': delivery['receipt']['task_id'], 'status': view._get('tasks', delivery['receipt']['task_id'])['status'] if delivery['receipt']['task_id'] else delivery['receipt']['status']} for delivery in view._all('deliveries') if delivery['source_task_id'] in turn_ids]
+                with self.transaction():
+                    current = self._get('tasks', task_id)
+                    if (current['status'] != 'working' or self.stopping.is_set()
+                            or current.get('_native_turn_id') != task.get('_native_turn_id')):
+                        return
+                    if self._task_paused(current):
+                        current.update(status='queued', summary='Waiting for the bot to be restored.', updated_at=now())
+                        self._put('tasks', current)
+                        self._event('task.updated', self._public(current), current['bot_id'], task_id)
+                        return
                 emit = lambda kind, payload: self.emit(task_id, kind, payload)
                 if decision:
                     self.provider.resume_task(provider_task, self._public(bot), history, self._public(decision) | {'action': decision.get('_action')}, emit)
