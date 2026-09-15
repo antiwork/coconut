@@ -253,12 +253,16 @@ class ProviderTests(unittest.TestCase):
         (source / 'run_agent.py').write_text(textwrap.dedent('''
             from tools.registry import registry
             import json
+            class TodoStore:
+                def restore(self, todos, revision): self.todos, self.revision = todos, revision
+                def snapshot(self): return {'todos': self.todos, 'revision': self.revision}
             class AIAgent:
                 def close(self): pass
                 def release_clients(self): pass
                 def __init__(self, **kwargs):
                     from tools.bot_relay import message_agent
                     registry.handlers['message_agent'] = message_agent
+                    self._todo_store = TodoStore()
                     self.preference_check = kwargs.get('enabled_toolsets') == []
                     self.valid_tool_names = set() if self.preference_check else set(registry.handlers)
                     self.system_prompt = kwargs.get('ephemeral_system_prompt', '')

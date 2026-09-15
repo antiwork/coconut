@@ -84,6 +84,7 @@ class DecisionCallRecoveryTests(unittest.TestCase):
                 'key': 'next', 'title': 'Continue?', 'context': 'A new choice.',
                 'previous_decision_id': 'missing', 'options': [{'id': 'yes', 'label': 'Yes'}]}))
             assert result['status'] == 'rejected', result
+            self._todo_store.todos[0]['status'] = 'completed'
             return {'completed': True, 'final_response': 'I can correct that link.'}
         ''')
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
