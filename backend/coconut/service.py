@@ -143,6 +143,8 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
         CREATE INDEX IF NOT EXISTS native_receipts_executing ON native_receipts
             (json_extract(data, '$.task_id'), json_extract(data, '$.turn_id'))
             WHERE json_extract(data, '$.state')='executing';
+        CREATE INDEX IF NOT EXISTS tasks_blocked ON tasks (id)
+            WHERE json_extract(data, '$.status') IN ('needs_you', 'paused');
         CREATE TABLE IF NOT EXISTS receipts (decision_id TEXT PRIMARY KEY, state TEXT NOT NULL, artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL, detail TEXT NOT NULL);
         ''')
         self._request_device_id = None
@@ -1319,8 +1321,11 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
 
     def _continuation_blocked(self, task: dict) -> bool:
         assignment_id = task.get('_assignment_task_id', task['id'])
-        return any(turn['id'] != task['id'] and turn.get('_assignment_task_id', turn['id']) == assignment_id
-                   and turn['status'] in ('needs_you', 'paused') for turn in self._all('tasks'))
+        with self.lock:
+            # Work projection checks many receipts. Read only the indexed blockers.
+            rows = self.db.execute("SELECT data FROM tasks WHERE json_extract(data, '$.status') IN ('needs_you', 'paused') AND id<>?", (task['id'],))
+            return any(turn.get('_assignment_task_id', turn['id']) == assignment_id
+                       for turn in (json.loads(row[0]) for row in rows))
 
     def _hold_failed_followup(self, task):
         if not task.get('_steering') or task.get('_blocked_followup'):
