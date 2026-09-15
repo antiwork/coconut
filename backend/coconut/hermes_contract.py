@@ -197,6 +197,7 @@ def verify_contract():
         if config.require_readable_config_before_write(path)['display']['theme'] != 'coconut-contract':
             raise ValueError('The profile update changed unrelated Hermes settings.')
 
+    verify_parallel_work_contract()
     verify_delegation_contract()
     verify_terminal_contract()
     verify_skills_contract()
@@ -311,4 +312,34 @@ def verify_delegation_contract():
                 raise ValueError('Hermes did not acknowledge the saved delegation.')
         finally:
             release.set()
+            reset_hermes_home_override(token)
+
+
+def verify_parallel_work_contract():
+    import os
+    from unittest.mock import patch
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from tools.delegate_tool_config import _get_max_concurrent_children
+    from .parallel_work import prepare_turn, save
+    with tempfile.TemporaryDirectory(prefix='coconut-workers-contract-') as temporary:
+        root = Path(temporary)
+        home = root / 'bot'
+        home.mkdir()
+        token = set_hermes_home_override(str(home))
+        try:
+            with patch.dict(os.environ, {'HERMES_HOME': str(home)}):
+                save(root, 6)
+                save(home, None, inherit=True)
+                prepare_turn(root)
+                if _get_max_concurrent_children() != 6:
+                    raise ValueError('Hermes did not use the default worker limit.')
+                save(home, 3)
+                if _get_max_concurrent_children() != 3:
+                    raise ValueError('Hermes did not use the bot worker limit.')
+                save(root, 8)
+                save(home, None, inherit=True)
+                prepare_turn(root)
+                if _get_max_concurrent_children() != 8:
+                    raise ValueError('Hermes did not restore the default worker limit.')
+        finally:
             reset_hermes_home_override(token)

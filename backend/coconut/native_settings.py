@@ -42,7 +42,8 @@ def profile_state(home, default_home):
     override = mode(approvals['mode']) if 'mode' in approvals else None
     return dict(name=meta.get('display_name', Path(home).name), role=meta.get('description', ''),
                 instructions=(Path(home) / 'SOUL.md').read_text() if (Path(home) / 'SOUL.md').exists() else '',
-                approval_override=override, effective_approval=override or approval_state(default_home)['default'])
+                approval_override=override, effective_approval=override or approval_state(default_home)['default'],
+                worker_limit=(config.get('delegation') or {}).get('max_concurrent_children'))
 
 
 def validate_mode(value, nullable=False):
@@ -89,6 +90,12 @@ def worker(request, default_home):
             from profiles import _write
             _write(marker, '{"version":1}\n', marker.parent)
         for home in homes.values():
+            config = raw_config(home)
+            delegation = config.setdefault('delegation', {})
+            if 'max_concurrent_children' not in delegation:
+                # Null selects Hermes's environment fallback instead of its merged default.
+                delegation['max_concurrent_children'] = None
+                save_config(home, config)
             marker = home / '.coconut-native-config.json'
             if marker.exists():
                 continue
@@ -114,8 +121,13 @@ def worker(request, default_home):
         return {'ok': True}
     if op == 'read':
         from native_mcp import public_servers
+        from parallel_work import state as parallel_state
         return {'profiles': {identity: profile_state(home, default_home) for identity, home in homes.items()},
-                'approvals': approval_state(default_home), 'mcp_servers': public_servers(Path(request.get('settings_root', default_home)))}
+                'approvals': approval_state(default_home), 'parallel_work': parallel_state(default_home), 'mcp_servers': public_servers(Path(request.get('settings_root', default_home)))}
+    if op == 'set_parallel_work':
+        from parallel_work import save, state
+        save(default_home, request['limit'])
+        return state(default_home)
     if op == 'set_default_approval':
         value = request['mode']
         validate_mode(value)
@@ -129,6 +141,9 @@ def worker(request, default_home):
         if 'name' in changes or 'role' in changes:
             write_profile_meta(home, **{native: changes[app] for app, native in
                                        (('name', 'display_name'), ('role', 'description')) if app in changes})
+        if 'worker_limit' in changes:
+            from parallel_work import save
+            save(home, changes['worker_limit'], inherit=True)
         if 'approval_override' in changes:
             value = changes['approval_override']
             validate_mode(value, nullable=True)

@@ -39,6 +39,12 @@ struct AppSettingsView: View {
                     }
                 }
                 Section {
+                    NavigationLink { ParallelWorkSettingsView() } label: {
+                        SettingsNavigationLabel(title: "Parallel work", subtitle: store.parallelWork.map { "Up to \($0.effectiveLimit) workers per session" } ?? "Hermes workers")
+                    }
+                    .accessibilityIdentifier("parallel-work-settings")
+                }
+                Section {
                     NavigationLink { MCPSettingsView() } label: {
                         SettingsNavigationLabel(title: "Connections", subtitle: "Google and MCP servers")
                     }
@@ -53,6 +59,7 @@ struct AppSettingsView: View {
                             List {
                                 NavigationLink("Model") { ModelSettingsView(botId: bot.id) }
                                 NavigationLink("Access") { ApprovalSettingsView(botId: bot.id) }
+                                NavigationLink("Parallel work") { ParallelWorkSettingsView(botId: bot.id) }
                             }.navigationTitle(bot.name)
                         }
                     }

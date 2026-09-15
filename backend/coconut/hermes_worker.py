@@ -771,6 +771,9 @@ def run_turn(request, emit, request_receipt):
             return 0
         from profiles import merge_runtime_config
         merge_runtime_config(os.environ['HERMES_HOME'])
+        if os.environ.get('COCONUT_DEFAULT_HOME'):
+            from parallel_work import prepare_turn
+            prepare_turn(os.environ['COCONUT_DEFAULT_HOME'])
         from terminal_setup import configure_terminal
         configure_terminal(os.environ['HERMES_HOME'])
         mcp_names = []

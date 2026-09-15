@@ -83,6 +83,7 @@ from .work_progress import WorkProgress, work_enabled
 
 from .routine_coordinator import NativeRoutines
 from .approval_updates import ApprovalUpdates
+from .parallel_work_updates import ParallelWorkUpdates
 
 
 from .service_restart import ServiceRestart
@@ -91,7 +92,7 @@ from .work_model import WorkModel
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
-class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
+class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -575,7 +576,7 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
             with self.transaction():
                 if self.db.execute("SELECT 1 FROM events WHERE seq>? AND type='settings.updated' LIMIT 1", (settings_cursor,)).fetchone():
                     continue
-                bots = [self._bot_view(dict(b, **{key: value for key, value in observed.get(b['id'], {}).items() if key in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'model_override', '_native_effective_model', '_model_error')}), catalog) for b in self._all('bots') if not b.get('_deleted')]
+                bots = [self._bot_view(dict(b, **{key: value for key, value in observed.get(b['id'], {}).items() if key in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'worker_limit', 'model_override', '_native_effective_model', '_model_error')}), catalog) for b in self._all('bots') if not b.get('_deleted')]
                 visible = {b['id'] for b in bots}
                 visible_task_ids = {task['id'] for task in self._all('tasks') if task['bot_id'] in visible and task['conversation_bot_id'] in visible}
                 state = {'bots': bots}
@@ -599,6 +600,7 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
                     state.update(model=self._setting('model', getattr(self.provider, 'model', '') or ''), base_url=self._setting('base_url', getattr(self.provider, 'base_url', '') or ''), model_configured=bool(getattr(self.provider, 'ready', False)))
                 if native is not None:
                     state['approvals'] = native['approvals']
+                    state['parallel_work'] = native.get('parallel_work')
                     state['mcp_servers'] = native.get('mcp_servers', [])
             break
         else:
@@ -655,6 +657,8 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
             return {'ok': True}
         if method == 'POST' and path.startswith('/v1/settings/google/'):
             return self.google_connection(path.rsplit('/', 1)[1], data, device_id, key)
+        if method == 'PUT' and path == '/v1/settings/parallel-work' and hasattr(self.provider, 'native_settings'):
+            return self.mutate_parallel_work(data, key, fingerprint)
         if method == 'PUT' and path == '/v1/settings/approvals' and hasattr(self.provider, 'native_settings'):
             return self.mutate_approval_default(data, key, fingerprint)
         if method == 'PUT' and path == '/v1/settings/model' and hasattr(self.provider, 'set_model_default'):
@@ -713,7 +717,7 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
                 self._request_device_id = intent['device_id']
                 try:
                     response = self._write('PATCH', ['v1', 'bots', intent['bot_id']], intent['data'], intent['device_id'], [])
-                    response = self._bot_view(dict(response, **{field: value for field, value in observed.items() if field in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'model_override', '_native_effective_model', '_model_error')}), catalog)
+                    response = self._bot_view(dict(response, **{field: value for field, value in observed.items() if field in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'worker_limit', 'model_override', '_native_effective_model', '_model_error')}), catalog)
                 finally:
                     self._request_model_catalog = None
                     self._request_device_id = None
@@ -781,6 +785,12 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
                     require_text(data, field, 160)
             if 'role' in data and (not isinstance(data['role'], str) or len(data['role']) > 160):
                 raise ServiceError(400, 'The label must contain at most 160 characters.')
+            if 'worker_limit' in data:
+                from .parallel_work import validate_limit
+                try:
+                    validate_limit(data['worker_limit'])
+                except ValueError as error:
+                    raise ServiceError(400, str(error)) from None
             if 'approval_override' in data and data['approval_override'] not in (None, 'off', 'smart', 'manual'):
                 raise ServiceError(400, 'Choose an approval mode from Hermes settings.')
             for field in ('archived', 'pinned', 'notifications'):
@@ -791,7 +801,7 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
                 expected['model_override'] = self._model_override(data['model_override'], catalog)
             if 'instructions' in data:
                 expected['instructions'] = data['instructions']
-            expected.update({field: data[field] for field in ('name', 'role', 'approval_override') if field in data})
+            expected.update({field: data[field] for field in ('name', 'role', 'approval_override', 'worker_limit') if field in data})
             intent = dict(bot_id=bot_id, expected=expected, data=data, device_id=device)
             with self.transaction():
                 self.db.execute('INSERT INTO requests VALUES (?,?,?)', (key, fingerprint, encoded({'_model_pending': intent})))
@@ -801,7 +811,7 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
                     if hasattr(self.provider, 'set_bot_model'):
                         self.provider.set_bot_model(bot, expected['model_override'])
                 if hasattr(self.provider, 'set_bot_settings'):
-                    self.provider.set_bot_settings(bot, {field: expected[field] for field in ('name', 'role', 'approval_override') if field in expected})
+                    self.provider.set_bot_settings(bot, {field: expected[field] for field in ('name', 'role', 'approval_override', 'worker_limit') if field in expected})
                 if 'instructions' in expected:
                     self.profiles.write_instructions(bot, expected['instructions'])
             except Exception:

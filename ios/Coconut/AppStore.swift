@@ -20,6 +20,7 @@ final class AppStore {
     @ObservationIgnored private var workMutationTail: Task<Void, Never>?
     @ObservationIgnored private var workMutationIds: [String: UUID] = [:]
     var approvals: ApprovalSettings?
+    var parallelWork: ParallelWorkSettings?
     var routines: [Routine] = []
     var learning: [LearningGroup] = []
     var connection: ConnectionState = .unconfigured
@@ -788,6 +789,26 @@ final class AppStore {
         return result
     }
 
+    func setWorkerLimit(_ value: Int?, botId: String? = nil) async {
+        if isDemo {
+            if let botId, let index = bots.firstIndex(where: { $0.id == botId }) {
+                bots[index].workerLimit = value
+            } else if let settings = parallelWork {
+                parallelWork = ParallelWorkSettings(limit: value, effectiveLimit: value ?? settings.automaticLimit, automaticLimit: settings.automaticLimit)
+            }
+            return
+        }
+        if let botId {
+            let _: Bot? = await write("bots/\(botId)", method: "PATCH", payload: WorkerLimitRequest(limit: value, bot: true), as: Bot.self,
+                                      onSuccess: { result in
+                                          if let index = self.bots.firstIndex(where: { $0.id == botId }) { self.bots[index].workerLimit = result.workerLimit }
+                                      })
+        } else {
+            let _: ParallelWorkSettings? = await write("settings/parallel-work", method: "PUT", payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self,
+                                                       onSuccess: { self.parallelWork = $0 })
+        }
+    }
+
     func setApproval(_ value: String?, botId: String? = nil) async {
         if isDemo {
             if let botId, let index = bots.firstIndex(where: { $0.id == botId }) {
@@ -1079,6 +1100,8 @@ final class AppStore {
         if decisions != snapshot.decisions { decisions = snapshot.decisions }
         if artifacts != snapshot.artifacts { artifacts = snapshot.artifacts }
         approvals = snapshot.approvals
+        parallelWork = snapshot.parallelWork
+        if isDemo && parallelWork == nil { parallelWork = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4) }
         mcpServers = snapshot.mcpServers ?? []
         if routines != snapshot.routines ?? [] { routines = snapshot.routines ?? [] }
         cursor = snapshot.cursor

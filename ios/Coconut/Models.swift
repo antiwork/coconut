@@ -21,6 +21,7 @@ struct Bot: Codable, Identifiable, Equatable, Sendable {
     var notifications: Bool = true
     var approvalOverride: String? = nil
     var effectiveApproval: String? = nil
+    var workerLimit: Int? = nil
     var modelError: String? = nil
 }
 
@@ -67,7 +68,7 @@ struct BotPatch: Encodable {
 extension Bot {
     enum CodingKeys: String, CodingKey {
         case id, sessionId, name, role, avatar, color, instructions, status
-        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval
+        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit
     }
 
     init(from decoder: Decoder) throws {
@@ -92,6 +93,7 @@ extension Bot {
         notifications = try values.decodeIfPresent(Bool.self, forKey: .notifications) ?? true
         approvalOverride = try values.decodeIfPresent(String.self, forKey: .approvalOverride)
         effectiveApproval = try values.decodeIfPresent(String.self, forKey: .effectiveApproval)
+        workerLimit = try values.decodeIfPresent(Int.self, forKey: .workerLimit)
         modelError = try values.decodeIfPresent(String.self, forKey: .modelError)
     }
 }
@@ -410,6 +412,7 @@ struct StateSnapshot: Codable, Sendable {
     var routines: [Routine]? = nil
     var modelCatalog: ModelCatalog? = nil
     var approvals: ApprovalSettings? = nil
+    var parallelWork: ParallelWorkSettings? = nil
     var mcpServers: [MCPServer]? = nil
     var pushConfigured: Bool? = nil
 }

@@ -64,6 +64,7 @@
 		76046FD4D9906425ACF64954 /* PhysicalPairingFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7366950475F7C318199BF52 /* PhysicalPairingFlowTests.swift */; };
 		77599D8DBF501C8105E0D7CB /* HomeViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4244E5068C8ECED6C1D1E124 /* HomeViews.swift */; };
 		7E6BE2B190E6D5186E0DDE7A /* ConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86E50B95FC8F9D964C273561 /* ConversationView.swift */; };
+		8355B52BB9772B22B337E236 /* ParallelWorkSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 700B733AA852AB61242F7E50 /* ParallelWorkSettingsView.swift */; };
 		86259EBC5A39AEE162388FD2 /* NotificationKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66C75106310254DAF919E136 /* NotificationKeys.swift */; };
 		8629F31D5BE1BFC518C066E4 /* BotMentionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D24A4DC92A5C15DAD46F2D3 /* BotMentionsTests.swift */; };
 		89734281AA398A6DCA35A869 /* ConversationTabBarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD5ADD62DCB3A2581C84C9E0 /* ConversationTabBarTests.swift */; };
@@ -98,6 +99,7 @@
 		DD72D80248A9DBD7C44816AF /* MessageInteractionFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0838438D9F6703EC59C5643C /* MessageInteractionFlowTests.swift */; };
 		DFEBABEA6463487DEAFD1A92 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50F92806249627421617701A /* NotificationService.swift */; };
 		E637B9E7B37A98DF9816061C /* WorkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6C27C3421D9D9F50F7C8CAF /* WorkView.swift */; };
+		EC7C4F9CEDD9890D9C194664 /* ParallelWorkSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9496F889212FE574F7A27C5F /* ParallelWorkSettingsTests.swift */; };
 		F282AC112039B4318D41128A /* GoogleSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C9BD0948D4BFCF51D6F5A47 /* GoogleSettingsView.swift */; };
 		F410C10058BA0C8CB17BE9CA /* GoogleConnectionFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B111754C0CD9254BB7CFC46 /* GoogleConnectionFlowTests.swift */; };
 		F44E98A6DDB9163438280BAD /* SettingsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5C532B556E6AC4611DC4B3F /* SettingsViews.swift */; };
@@ -188,6 +190,7 @@
 		5E16911D28AA51ED1EC38B15 /* ConnectionFailureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionFailureTests.swift; sourceTree = "<group>"; };
 		66C75106310254DAF919E136 /* NotificationKeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationKeys.swift; sourceTree = "<group>"; };
 		68629CEC6C869677D8EA1CE0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		700B733AA852AB61242F7E50 /* ParallelWorkSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParallelWorkSettingsView.swift; sourceTree = "<group>"; };
 		766B7FAF417AC083D750B041 /* MessageText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageText.swift; sourceTree = "<group>"; };
 		76D8E2A4D64365ABF13522F6 /* DecisionFollowupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionFollowupTests.swift; sourceTree = "<group>"; };
 		775879288B90F2B57BD28B20 /* NavigationPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationPerformanceTests.swift; sourceTree = "<group>"; };
@@ -204,6 +207,7 @@
 		90BFAD6752A037B879992361 /* OutgoingMessageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutgoingMessageTests.swift; sourceTree = "<group>"; };
 		9161A48CE88624483A69EAB7 /* PushEnvelopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushEnvelopeTests.swift; sourceTree = "<group>"; };
 		92F9D270338BED68C35CC516 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		9496F889212FE574F7A27C5F /* ParallelWorkSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParallelWorkSettingsTests.swift; sourceTree = "<group>"; };
 		94AFF4D887691B90DF9696F6 /* DecisionInboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionInboxView.swift; sourceTree = "<group>"; };
 		980EB12D70F1EC36BEAD57F7 /* DecisionReplyComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionReplyComposer.swift; sourceTree = "<group>"; };
 		9841C0E34ADB4C5B376B9844 /* TranscriptPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptPresentationTests.swift; sourceTree = "<group>"; };
@@ -370,6 +374,7 @@
 				10DFD4C7D86BB227502C3FFF /* ModelSettingsView.swift */,
 				4E55B585FD3DDC0CF935CC3E /* PairingScannerView.swift */,
 				F148539DFD85BF3879FA031A /* PairingSetup.swift */,
+				700B733AA852AB61242F7E50 /* ParallelWorkSettingsView.swift */,
 				0F7D0F8D88BFF0F00891F0D9 /* PreviewStateFixture.swift */,
 				314EA7AAB131B25EAEEE8971 /* PushNotifications.swift */,
 				A60CFE7EAB28FA54EB0D2203 /* PushRelayClient.swift */,
@@ -409,6 +414,7 @@
 				4272DD6AAF77EA5CE0FFF07F /* NotificationCategoryFlowTests.swift */,
 				F2D8BD1F0E75656ABA3C23B6 /* NotificationFlowTests.swift */,
 				1672CEE8BC93CE62BDF964D2 /* NotificationOpenPerformanceTests.swift */,
+				9496F889212FE574F7A27C5F /* ParallelWorkSettingsTests.swift */,
 				E7366950475F7C318199BF52 /* PhysicalPairingFlowTests.swift */,
 				47270532BCA4420B6DD214D3 /* QuietConversationTests.swift */,
 				CC4FFE607ED2AB2368E679FC /* SendFromHistoryTests.swift */,
@@ -653,6 +659,7 @@
 				86259EBC5A39AEE162388FD2 /* NotificationKeys.swift in Sources */,
 				2F9037AC6BD00EE689BBC91A /* PairingScannerView.swift in Sources */,
 				93D8D55FE5A94348416B8153 /* PairingSetup.swift in Sources */,
+				8355B52BB9772B22B337E236 /* ParallelWorkSettingsView.swift in Sources */,
 				59CFA44816F4310DB9EBBEFE /* PreviewStateFixture.swift in Sources */,
 				26418D4226589A02C99AF807 /* PushNotifications.swift in Sources */,
 				162DBDC6EC96A90E4269536F /* PushRelayClient.swift in Sources */,
@@ -701,6 +708,7 @@
 				560614048702C0CD4B47A9AB /* NotificationCategoryFlowTests.swift in Sources */,
 				CF2134EE2AC9BDD89514BF51 /* NotificationFlowTests.swift in Sources */,
 				2DC99A002F70D12D87D69422 /* NotificationOpenPerformanceTests.swift in Sources */,
+				EC7C4F9CEDD9890D9C194664 /* ParallelWorkSettingsTests.swift in Sources */,
 				76046FD4D9906425ACF64954 /* PhysicalPairingFlowTests.swift in Sources */,
 				2CED05440D1E58CBBA5B06DC /* QuietConversationTests.swift in Sources */,
 				A7E12C189671C57F76A8FF84 /* SendFromHistoryTests.swift in Sources */,
