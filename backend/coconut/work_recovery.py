@@ -116,9 +116,6 @@ class WorkRecovery:
             if any(d['task_id'] == task['id'] and d['status'] == 'pending' for d in self._all('decisions')):
                 return
             # A failing provider cannot create its own card. Stop a repeated failure here.
-            with self.transaction():
-                current.update(status='working')
-                self._put('tasks', current)
             try:
                 self.native_event(task['id'], 'native_question', {
                     'title': 'Retry recovery for ' + items[0]['title'][:110] + '?',

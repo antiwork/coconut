@@ -68,6 +68,8 @@ class NativeExecution:
             task = self._get('tasks', task_id)
             context = self._get('contexts', context_id) if context_id else None
             active = context['status'] == 'working' and context['task_id'] == task_id if context else task['status'] == 'working'
+            if recovery_work_ids and kind == 'native_question' and not context:
+                active = task['status'] in ('completed', 'failed', 'waiting')
             if not active or self._task_paused(task):
                 raise ServiceError(409, 'This task cannot execute a tool now.')
             if not context:

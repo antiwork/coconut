@@ -103,6 +103,57 @@ class WorkSelfRecoveryTests(unittest.TestCase):
         self.recover()
         self.assertEqual(len(self.service._all('tasks')), count)
 
+    def test_service_restarts_do_not_exhaust_recovery_attempts(self):
+        self.stranded()
+        receipts = []
+        for _ in range(4):
+            task = self.recover()
+            self.assertEqual(task['status'], 'queued')
+            self.assertEqual(task['_self_recovery']['attempt'], 1)
+            task.update(status='working', _native_turn_id='restart-' + task['id'])
+            self.service._put('tasks', task)
+            receipt = self.service.native_event(task['id'], 'native_call',
+                dict(name='terminal', arguments={'command': 'git push'}))
+            receipts.append(receipt['id'])
+            self.service.close()
+            self.service = Service(self.temp.name, self.provider, start_workers=False, pr_tracker=self.tracker)
+            self.assertEqual(self.service._get('tasks', task['id'])['status'], 'failed')
+            self.assertEqual(self.service._all('decisions'), [])
+        task = self.recover()
+        self.assertTrue(set(receipts).issubset({r['id'] for r in task['_self_recovery']['unknown_tools']}))
+        for identity in receipts:
+            self.assertEqual(self.service._get('native_receipts', identity)['state'], 'executing')
+        # Actual unsuccessful turns still reach the limit after service interruptions.
+        for attempt in (1, 2):
+            self.assertEqual(task['_self_recovery']['attempt'], attempt)
+            task.update(status='failed', summary='Provider unavailable')
+            self.service._put('tasks', task)
+            task = self.recover()
+        self.assertEqual(len(self.service._all('decisions')), 1)
+        self.assertEqual(self.sync()[0]['work_state'], 'needs_decision')
+
+    def test_restart_before_recovery_card_preserves_exhausted_attempts(self):
+        from unittest.mock import patch
+        self.stranded()
+        for _ in range(2):
+            task = self.recover()
+            task.update(status='working')
+            self.service._put('tasks', task)
+            self.service.native_event(task['id'], 'native_call',
+                dict(name='terminal', arguments={'command': 'git push'}))
+            task.update(status='failed')
+            self.service._put('tasks', task)
+        with patch.object(self.service, 'native_event', side_effect=RuntimeError('Service stopped')):
+            with self.assertRaises(RuntimeError):
+                self.recover()
+        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'failed')
+        self.service.close()
+        self.service = Service(self.temp.name, self.provider, start_workers=False, pr_tracker=self.tracker)
+        count = len(self.service._all('tasks'))
+        self.recover()
+        self.assertEqual(len(self.service._all('tasks')), count)
+        self.assertEqual(len(self.service._all('decisions')), 1)
+
     def test_repeated_failure_creates_one_card_instead_of_loop(self):
         self.stranded()
         for _ in range(2):

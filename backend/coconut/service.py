@@ -2741,6 +2741,9 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                 uncertain = self._has_uncertain_receipt(task['id'], task.get('_native_turn_id'))
                 task.update(status='failed' if uncertain else 'queued', summary='A tool stopped without a receipt. Check its result before starting new work.' if uncertain else 'Resuming after the Mac service restarted.', updated_at=now())
                 if uncertain:
+                    if recovery := task.get('_self_recovery'):
+                        # A service interruption does not consume a bot's recovery attempt.
+                        task['_self_recovery'] = dict(recovery, attempt=max(0, recovery.get('attempt', 0) - 1))
                     self._finish_assignment_turn(task, 'Task failed: ' + task['summary'], 'failed')
                     self._message(task['bot_id'], 'The Mac restarted before a tool returned its result. I stopped to avoid repeating an action. Reply to continue.', task_id=task['id'])
                 self._put('tasks', task)
