@@ -6,6 +6,8 @@ PR_REVIEW_INSTRUCTIONS = (
     'Coconut observed passing CI for a tracked pull request. This is a request to assess merge readiness, not permission to merge. '
     'Read the current PR head, required checks, reviews, unresolved findings, merge conflicts, and the original human instructions. '
     'Do not repeat finished implementation work. Respect any visual approval or other pending decision. '
+    'A draft can be ready for a decision when its owner reports the current head ready. '
+    'If the PR remains a draft, include marking it ready in the proposed merge action. '
     'If the PR head changed, checks are incomplete, or a requirement remains unmet, do not claim it is ready. '
     'If another bot requested this work, return your verified result to that bot through the existing assignment. '
     'Ask the requesting bot to offer one coconut_ask merge decision when the evidence supports it. '
@@ -146,7 +148,10 @@ class PullRequestReviews:
                     for artifact in self._all('artifacts'):
                         if (artifact['bot_id'] != bot_id or artifact['kind'] != 'pr'
                                 or not artifact.get('_review_task_id') or artifact.get('refresh_error')
-                                or artifact.get('pr_state') != 'open' or artifact.get('draft') is not False
+                                or artifact.get('pr_state') != 'open'
+                                or (artifact.get('draft') is not False and not (artifact.get('draft') is True
+                                    and artifact.get('_activity_state') == 'ready'
+                                    and artifact.get('_activity_head') == artifact.get('head_sha')))
                                 or artifact.get('checks_state') != 'passed' or not artifact.get('head_sha')
                                 or artifact['head_sha'] in self._pr_reviewed_heads(artifact)):
                             continue
@@ -171,7 +176,7 @@ class PullRequestReviews:
                         self._advance_input(task)
                         task.update(status='queued', updated_at=now(), summary='Checking merge readiness.',
                             _conversation_epoch=epoch,
-                            _pr_review={k: artifact[k] for k in ('url', 'head_sha', 'checked_at')},
+                            _pr_review={k: artifact[k] for k in ('url', 'head_sha', 'checked_at', 'draft')},
                             _background_return_after=now(), _background_return_id=uid())
                         artifact['_reviewed_heads'] = sorted(self._pr_reviewed_heads(artifact) | {artifact['head_sha']})
                         artifact['_reviewed_head'] = artifact['head_sha']

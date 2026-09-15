@@ -92,6 +92,23 @@ class PRReviewTests(unittest.TestCase):
         self.green(observed=False,detail='No access')
         self.assertEqual(self.service._get('tasks',self.child_id)['status'],'completed')
 
+    def test_verified_draft_readiness_wakes_owner_and_produces_a_merge_card(self):
+        self.green(draft=True)
+        artifact = self.service._get('artifacts', self.artifact_id)
+        artifact.update(_activity_state='ready', _activity_head=artifact['head_sha'])
+        self.service._put('artifacts', artifact)
+        self.service._queue_pr_reviews()
+        self.assertEqual(self.service._get('tasks', self.child_id)['status'], 'queued')
+        self.service._run_task(self.child_id)
+        self.assertTrue(self.provider.starts[-1]['_pr_review']['draft'])
+        self.service._drain_returns()
+        for task in self.service._all('tasks'):
+            if task.get('_is_return') and task['status'] == 'queued':
+                self.service._run_task(task['id'])
+        self.assertEqual(self.service.snapshot()['decisions'][0]['status'], 'pending')
+        self.service._queue_pr_reviews()
+        self.assertEqual(len(self.service.snapshot()['decisions']), 1)
+
     def test_pending_decision_defers_review(self):
         with self.service.transaction():
             task=self.service._get('tasks',self.child_id);task['status']='needs_you';self.service._put('tasks',task)
