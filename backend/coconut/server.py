@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -232,6 +233,9 @@ def main(argv=None):
     def stop(signum, frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)
+    if hasattr(signal, 'SIGUSR1'):
+        # Local diagnostics show thread stacks without stopping active work.
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
     try:
         server.serve_forever(poll_interval=.2)
     except KeyboardInterrupt:
