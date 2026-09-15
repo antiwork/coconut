@@ -81,9 +81,21 @@ class WorkProgress:
         return any(t['status'] in ('pending', 'in_progress') for t in items)
 
     def _exchange_peers(self, task):
-        """Other tasks of this exchange in the current conversation. Reading them registers nothing."""
-        return {t['id']: t for t in self._all('tasks')
-                if t['id'] != task['id'] and t['exchange_id'] == task['exchange_id']
+        """Read tasks in this exchange and a recovery's recorded Work history."""
+        tasks = {t['id']: t for t in self._all('tasks')}
+        linked = set()
+        if task.get('_self_recovery') and task.get('_work_context_id'):
+            item = self._canonical_work(self._get('artifacts', task['_work_context_id']))
+            if not item.get('_hidden') and not self._setting('work.cancelled.' + self._work_identity(item)):
+                records = self._pending_completion_receipts()
+                identities = [item.get(key) for key in ('task_id', '_work_origin_task_id', '_review_task_id', '_activity_task_id')]
+                recovery = task['_self_recovery']
+                identities += [recovery.get('previous_task_id')] + [t['id'] for t in recovery.get('saved_tasks', [])]
+                for identity in identities + item.get('_work_previous_task_ids', []):
+                    if identity in tasks:
+                        linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
+        return {t['id']: t for t in tasks.values()
+                if t['id'] != task['id'] and (t['exchange_id'] == task['exchange_id'] or t['id'] in linked)
                 and t['conversation_bot_id'] == task['conversation_bot_id']
                 and not self._get('bots', t['bot_id']).get('_deleted')
                 and t['session_id'] == self._get('bots', t['bot_id'])['session_id']
@@ -122,7 +134,8 @@ class WorkProgress:
             for record in self._all('native_receipts'):
                 process_id = subscription(record)
                 owner = process_owners.get(record['task_id'])
-                if process_id and owner and owner['bot_id'] == task['bot_id']:
+                if (process_id and owner and owner['bot_id'] == task['bot_id']
+                        and owner['status'] != 'cancelled' and not self._get('exchanges', owner['exchange_id']).get('cancelled')):
                     processes[process_id] = record
             if payload.get('process_id'):
                 process_id = require_text(payload, 'process_id', 100)
@@ -220,6 +233,9 @@ class WorkProgress:
         if decision:
             return None if self._decision_wait_pending(decision) else self._decision_wait_result(decision)
         if source:
+            if (not source.get('_completion_text') and (target['status'] == 'cancelled'
+                    or self._get('exchanges', target['exchange_id']).get('cancelled'))):
+                return 'The process owner was cancelled. Check its saved result before repeating work.'
             return source.get('_completion_text') or (
                 'The process finished earlier. Its output is unavailable in this saved record. Check the existing result before repeating work.'
                 if source.get('_process_delivery') else None)

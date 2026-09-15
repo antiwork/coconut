@@ -42,7 +42,10 @@ class WorkStatus:
     def _work_chain(self, root, tasks, records, *, include_continuations=False):
         """Follow recorded callbacks, including replies that assign further work."""
         linked = {}
+        explicit_waits = {}
         for record in records:
+            if record.get('_wait_task_id') and not record.get('_process_delivery'):
+                explicit_waits.setdefault(record['task_id'], set()).add(record['_wait_task_id'])
             for key in ('_relay_task_id', '_wait_task_id'):
                 if record.get(key) and not record.get('_process_delivery'):
                     linked.setdefault(record['task_id'], set()).add(record[key])
@@ -75,7 +78,8 @@ class WorkStatus:
                     continue
                 # A human reply can change the parent's exchange while its saved wait remains valid.
                 if (include_continuations and tasks[child].get('exchange_id') != task.get('exchange_id')
-                        and child not in task.get('_waiting_on', [])):
+                        and child not in task.get('_waiting_on', [])
+                        and child not in explicit_waits.get(identity, set())):
                     continue
                 pending.append((child, depth + 1))
         return found

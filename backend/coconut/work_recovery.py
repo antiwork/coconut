@@ -10,6 +10,8 @@ RECOVERY_INSTRUCTIONS = (
     'An absent receipt does not mean the action failed. Never repeat a write while its effect remains unknown. '
     'Continue unfinished work within the recorded approval. Reuse existing processes, conversations, and decisions. '
     'Use coconut_wait when another task or process owns the next step. '
+    'Call coconut_wait without arguments to find owners from this Work item. '
+    'For a process owned by another bot, wait for its owning task instead of its process. '
     'Use coconut_ask when a concrete human decision or missing input prevents progress. '
     'Give that card the work title, verified facts, the missing input, options, and the material risk. '
     'Update each attached Work item with its existing key. Record completion evidence when its outcome is verified. '
