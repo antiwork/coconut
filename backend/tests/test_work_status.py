@@ -97,6 +97,14 @@ class WorkStatusTests(unittest.TestCase):
         with self.service.transaction(): self.service._put('artifacts', artifact)
         self.assertNotEqual(self.row()['activity'], 'Review needs changes')
 
+    def test_queued_retry_replaces_the_previous_blocked_report(self):
+        self.artifact('Review needs changes', 'blocked')
+        self.status('queued')
+        row = self.row()
+        self.assertEqual(row['work_state'], 'queued')
+        self.assertEqual(row['activity'], 'Queued')
+        self.assertEqual(row['work_queue_position'], 1)
+
     def test_failed_turn_overrides_bot_ready_report(self):
         self.artifact('Ready to merge', 'ready')
         self.status('failed')

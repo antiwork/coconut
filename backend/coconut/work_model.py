@@ -91,6 +91,8 @@ class WorkModel:
                    and p.get('_activity_turn') == tasks[p['_activity_task_id']].get('_native_turn_id')]
         blockers = []
         for task in attempts:
+            if task['status'] in ('queued', 'scheduled'):
+                continue
             report = next((p for p in sorted(reports, key=lambda p: p.get('_activity_at', ''), reverse=True)
                            if p['_activity_task_id'] == task['id']), {})
             if task['status'] == 'failed' and any(r['task_id'] == task['id'] and subscription(r)
