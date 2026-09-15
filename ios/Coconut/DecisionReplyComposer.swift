@@ -7,7 +7,7 @@ struct DecisionReplyComposer: View {
     var onSend: () -> Void = {}
     @State private var sendingReply = false
     @State private var responseError: String?
-    private var canRespond: Bool { store.connection == .connected || store.isDemo }
+    private var canRespond: Bool { store.canSubmitDecision }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {

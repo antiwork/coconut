@@ -61,6 +61,7 @@ final class AppStore {
     @ObservationIgnored private var snapshotRequest: (id: UUID, generation: UUID, epoch: UUID, client: APIClient, task: Task<StateSnapshot, Error>)?
 
     var hasPairing: Bool { pairing != nil }
+    var canSubmitDecision: Bool { isDemo || hasPairing }
     var isBusy: Bool { writeCount > 0 }
     var pendingDecisions: [Decision] { decisions.filter(\.isPending) }
     var inboxBadgeCount: Int { pendingDecisions.filter { !answeringDecisionIds.contains($0.id) }.count }
@@ -656,11 +657,11 @@ final class AppStore {
             }
             return true
         }
-        let generation = connectionGeneration
+        let deviceId = pairing?.deviceId
         let recorded: Decision? = await write("decisions/\(decision.id)/answer", payload: AnswerRequest(choice: choice, revision: decision.revision, correction: correction, optionId: optionId, draftHash: decision.draftHash), as: Decision.self, quiet: true, refreshInBackground: true, onFailure: { failure in
-            if generation == self.connectionGeneration { self.report(failure) }
+            if deviceId == self.pairing?.deviceId { self.report(failure) }
         }, onSuccess: { receipt in
-            guard generation == self.connectionGeneration else { return }
+            guard deviceId == self.pairing?.deviceId else { return }
             self.snapshotEpoch = UUID()
             self.snapshotRequest = nil
             if let index = self.decisions.firstIndex(where: { $0.id == receipt.id }),

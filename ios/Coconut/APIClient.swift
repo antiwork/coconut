@@ -121,7 +121,7 @@ final class APIClient: @unchecked Sendable {
         config.urlCache = nil
         config.httpCookieStorage = nil
         config.httpShouldSetCookies = false
-        config.waitsForConnectivity = false
+        config.waitsForConnectivity = true
         session = URLSession(configuration: config, delegate: PinDelegate(host: host, fingerprint: pin), delegateQueue: nil)
     }
 

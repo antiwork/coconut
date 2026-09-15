@@ -18,7 +18,7 @@ struct DecisionCard: View {
     @State private var responseError: String?
     @State private var showsEarlierReplies = false
     @State private var editingDraft: Decision?
-    private var canRespond: Bool { store.connection == .connected || store.isDemo }
+    private var canRespond: Bool { store.canSubmitDecision }
     private var showsSelection: Bool { !decision.isPending || dismissing }
     private var isDismissed: Bool { dismissing || decision.status == "dismissed" }
     private var selectionLabel: String {
@@ -110,7 +110,7 @@ struct DecisionCard: View {
                 else if !decision.cardOptions.isEmpty { choices }
                 if showsBot { inlineReplies }
                 if !canRespond {
-                    Text("Reconnect to respond.").font(.caption).foregroundStyle(.secondary)
+                    Text("Pair with your Mac to respond.").font(.caption).foregroundStyle(.secondary)
                 }
                 if let responseError {
                     Text(responseError).font(.caption).foregroundStyle(BoardStyle.accent)

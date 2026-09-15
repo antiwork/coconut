@@ -40,7 +40,7 @@ struct DecisionInboxView: View {
         return pending.first { $0.id == id }
     }
     private var sorting: InboxSort { InboxSort(rawValue: sort) ?? .recommended }
-    private var canRespond: Bool { store.connection == .connected || store.isDemo }
+    private var canRespond: Bool { store.canSubmitDecision }
 
     var body: some View {
         Group {

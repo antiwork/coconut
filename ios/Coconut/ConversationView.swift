@@ -45,10 +45,9 @@ struct ConversationView: View {
                 && !messages.contains { $0.taskId == task.id && $0.streaming && !$0.text.isEmpty }
         }
     }
-    private var waitingBotIds: [String] {
-        var seen = Set<String>()
-        let pending = store.outgoingMessages.filter { $0.botId == botId && $0.expectsResponse }.flatMap(\.executorIds)
-        return (waitingForResponse.map(\.botId) + pending).filter { seen.insert($0).inserted }
+    private var showsActivity: Bool {
+        !waitingForResponse.isEmpty
+            || store.outgoingMessages.contains { $0.botId == botId && $0.expectsResponse }
     }
     private var activeTask: AgentTask? {
         store.tasks.last { $0.chatBotId == botId && ["working", "running"].contains($0.status) }
@@ -101,8 +100,8 @@ struct ConversationView: View {
                                 }).id(decision.id)
                                     .modifier(MessageTimestamp(createdAt: decision.createdAt))
                             }
-                            ForEach(waitingBotIds, id: \.self) { id in
-                                BotWorkingIndicator(botId: id)
+                            if showsActivity {
+                                BotWorkingIndicator(botId: botId)
                             }
                             Color.clear.frame(height: 1).id("conversation-bottom")
                         }
@@ -139,7 +138,7 @@ struct ConversationView: View {
                             proxy.scrollTo("conversation-bottom", anchor: .bottom)
                         }
                     }
-                    .onChange(of: waitingBotIds) { _, _ in
+                    .onChange(of: showsActivity) { _, _ in
                         if nearBottom { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onChange(of: messages.last?.id) { _, _ in
