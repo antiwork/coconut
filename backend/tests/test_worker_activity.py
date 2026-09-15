@@ -188,6 +188,35 @@ class WorkProgressProjectionTests(unittest.TestCase):
         self.assertEqual(self.row()['activity'], 'Waiting for worker output · 3 min without an update')
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'waiting')
 
+    def test_saved_todo_expires_and_notifies_phone_once(self):
+        import threading
+        self.artifact()
+        self.status('working')
+        with self.service.transaction():
+            artifact = self.service._all('artifacts')[0]
+            artifact.pop('_activity_task_id', None)
+            self.service._put('artifacts', artifact)
+            task = self.service._get('tasks', self.task['id'])
+            old = datetime.fromtimestamp(time.time() - 181, timezone.utc).isoformat()
+            task['_work_progress_at'] = old
+            task['_work_todos'] = {'todos': [{'id': 'edit', 'content': 'Editing old files', 'status': 'in_progress'}]}
+            self.service._put('tasks', task)
+        self.service.running[self.task['id']] = threading.current_thread()
+        try:
+            self.assertEqual(self.row()['activity'], 'Waiting for a progress update')
+            before = self.service.db.execute('select count(*) from events').fetchone()[0]
+            self.service._expire_work_descriptions()
+            self.assertEqual(self.service.db.execute('select count(*) from events').fetchone()[0], before + 1)
+            self.service._expire_work_descriptions()
+            self.assertEqual(self.service.db.execute('select count(*) from events').fetchone()[0], before + 1)
+            with self.service.transaction():
+                task = self.service._get('tasks', self.task['id'])
+                task['_work_progress_at'] = datetime.now(timezone.utc).isoformat()
+                self.service._put('tasks', task)
+            self.assertEqual(self.row()['activity'], 'Editing old files')
+        finally:
+            self.service.running.clear()
+
 
 class WorkerBridgeTests(unittest.TestCase):
     def test_adapter_preserves_original_receipt_for_recovery(self):

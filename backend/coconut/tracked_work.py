@@ -355,6 +355,9 @@ class TrackedWork:
             # Audits report progress without replacing the task doing the work.
             if not report_only:
                 item.update(task_id=task_id, _work_turn=task.get('_native_turn_id'))
+            description_owner = self._get('tasks', item['task_id'])
+            description_owner['_work_progress_at'] = now()
+            self._put('tasks', description_owner)
             item.update(title=title, activity=activity, status=state,
                         observed_at=now(), _work_key=key, _automatic_work=False, _hidden=False)
             item.update(details)

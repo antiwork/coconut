@@ -263,10 +263,14 @@ class WorkProgress:
             return
         state = snapshot(payload['_work_todos'])
         assignment = self._assignment(task)
+        from .service import now
+        if task.get('_work_todos') != state:
+            task['_work_progress_at'] = now()
         task['_work_todos'] = state
         self._put('tasks', task)
         if assignment['id'] != task['id']:
             assignment['_work_todos'] = state
+            assignment['_work_progress_at'] = task.get('_work_progress_at', task['created_at'])
             self._put('tasks', assignment)
 
     def _continue_unfinished_work(self, task):

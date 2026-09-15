@@ -68,9 +68,29 @@ class BackgroundProcesses:
         while not self.stopping.is_set():
             try:
                 self._drain_process_completions()
+                self._expire_work_descriptions()
             except Exception:
                 logging.getLogger(__name__).exception('Could not deliver a Hermes process result.')
             self.stopping.wait(1)
+
+    def _expire_work_descriptions(self):
+        from datetime import datetime, timezone
+        from .worker_activity import FRESH_SECONDS
+        current = datetime.now(timezone.utc)
+        with self.transaction():
+            rows = self.db.execute("SELECT data FROM tasks WHERE json_extract(data, '$.status') IN ('working','waiting') "
+                                   "AND json_extract(data, '$._expired_work_description') IS NOT "
+                                   "COALESCE(json_extract(data, '$._work_progress_at'), json_extract(data, '$.created_at'))").fetchall()
+            for row in rows:
+                task = json.loads(row[0])
+                stamp = task.get('_work_progress_at', task['created_at'])
+                if task.get('_expired_work_description') == stamp:
+                    continue
+                if (current - datetime.fromisoformat(stamp.replace('Z', '+00:00'))).total_seconds() <= FRESH_SECONDS:
+                    continue
+                task['_expired_work_description'] = stamp
+                self._put('tasks', task)
+                self._event('task.updated', self._public(task), task['bot_id'], task['id'])
 
     def _process_observation_current(self, task, bot):
         return (not bot.get('_deleted') and not bot['archived'] and task['status'] != 'cancelled'

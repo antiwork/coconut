@@ -40,7 +40,7 @@ class WorkFollowupTests(unittest.TestCase):
 
     def test_live_followup_without_activity_report(self):
         self.prepare()
-        self.assertEqual(self.row()['activity'], 'In progress')
+        self.assertEqual(self.row()['activity'], 'Waiting for worker output')
         self.assertEqual(self.row()['activity_state'], 'working')
         self.assertEqual(self.service._tracked_work_input(self.followup), [fixtures.URL])
 
@@ -49,7 +49,7 @@ class WorkFollowupTests(unittest.TestCase):
         self.process.update(task_id=self.root['id'], turn_id='review-turn')
         with self.service.transaction():
             self.service._put('native_receipts', self.process)
-        self.assertEqual(self.row()['activity'], 'In progress')
+        self.assertEqual(self.row()['activity'], 'Waiting for worker output')
 
     def test_stale_completed_and_previous_turn_processes_are_not_live(self):
         self.prepare()
@@ -76,7 +76,7 @@ class WorkFollowupTests(unittest.TestCase):
         self.followup['_waiting_on'] = [self.root['id']]
         with self.service.transaction():
             self.service._put('tasks', self.followup)
-        self.assertEqual(self.row()['activity'], 'In progress')
+        self.assertEqual(self.row()['activity'], 'Waiting for worker output')
 
     def test_completed_followup_needs_outcome_evidence(self):
         self.prepare()

@@ -17,6 +17,8 @@ class WorkStatus:
             raise ServiceError(400, 'Use one short activity and a working, ready, or blocked state.')
         if not task.get('id'):
             raise ServiceError(400, 'Only the bot doing this task can report its activity.')
+        task['_work_progress_at'] = now()
+        self._put('tasks', task)
         artifact.update(_activity=text, _activity_state=state, _activity_task_id=task['id'],
                         _activity_head=artifact.get('head_sha'), _activity_turn=task.get('_native_turn_id'), _activity_at=now())
         self._put('artifacts', artifact)

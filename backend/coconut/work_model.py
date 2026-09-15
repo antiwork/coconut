@@ -135,19 +135,23 @@ class WorkModel:
         else:
             label = item.get('activity') if item['kind'] == 'work' and item.get('status') in ('ready', 'blocked') else None
             state, activity, next_step = 'needs_recovery', label or 'Needs recovery', item.get('next_step') or 'Ask for progress'
+        description_at = None
         if state == 'working' and not live_reply:
             reports = [p for p in peers if p.get('_activity_task_id') in {t['id'] for t in live}
                        and p.get('_activity_head') == item.get('head_sha')
                        and p.get('_activity_turn') == tasks[p['_activity_task_id']].get('_native_turn_id')]
             if reports:
-                activity = max(reports, key=lambda p: p.get('_activity_at', ''))['_activity']
+                report = max(reports, key=lambda p: p.get('_activity_at', ''))
+                activity, description_at = report['_activity'], report.get('_activity_at')
             elif owner in live and item.get('_work_turn') == owner.get('_native_turn_id') and not item.get('_automatic_work') and not item.get('_work_resuming'):
-                activity = item['activity']
+                activity, description_at = item['activity'], item.get('observed_at')
             else:
-                activity = next((todo['content'] for task in reversed(live)
-                                 for todo in task.get('_work_todos', {}).get('todos', [])
-                                 if todo.get('status') == 'in_progress' and todo.get('id') != 'coconut-assignment'
-                                 and todo.get('content')), activity)
+                description = next(((todo['content'], task.get('_work_progress_at', task['created_at']))
+                                    for task in reversed(live) for todo in task.get('_work_todos', {}).get('todos', [])
+                                    if todo.get('status') == 'in_progress' and todo.get('id') != 'coconut-assignment'
+                                    and todo.get('content')), None)
+                if description:
+                    activity, description_at = description
         if state == 'working':
             # Process health cannot renew a model's old description of its work.
             from .worker_activity import FRESH_SECONDS
@@ -158,10 +162,9 @@ class WorkModel:
                 from .worker_activity import progress_label
                 process = max(processes, key=lambda r: (r.get('_worker_progress', {}).get('at', 0), r.get('created_at', '')))
                 activity = progress_label(process, timestamp)
-            elif reports:
+            elif description_at:
                 from datetime import datetime
-                latest = max(reports, key=lambda p: p.get('_activity_at', ''))
-                reported = datetime.fromisoformat(latest['_activity_at'].replace('Z', '+00:00'))
+                reported = datetime.fromisoformat(description_at.replace('Z', '+00:00'))
                 if (timestamp - reported).total_seconds() > FRESH_SECONDS:
                     activity = 'Waiting for a progress update'
         actor = owner.get('bot_id') or item['bot_id']
