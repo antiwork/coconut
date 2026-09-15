@@ -742,8 +742,8 @@ class ProviderTests(unittest.TestCase):
             if kind == 'native_bot_message':
                 raise RuntimeError('PRIVATE_SERVICE_DETAIL')
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            with self.assertRaisesRegex(RuntimeError, 'exit code 74'):
-                provider.start_task(self.task, self.bot, [], emit)
+            provider.start_task(self.task, self.bot, [], emit)
+        self.assertEqual(events[-1][0], 'failed')
         output = ''.join(data['text'] for kind, data in events if kind == 'text_delta')
         self.assertEqual(output, '')
         self.assertNotIn('PRIVATE_SERVICE_DETAIL', output)

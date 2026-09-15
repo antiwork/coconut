@@ -130,7 +130,7 @@ def reset_connections():
     reprobe_tool_availability()
 
 
-def refresh_inheritance(default_root):
+def refresh_inheritance(default_root, *, allow_reset=True):
     """Refresh native MCP connections between turns without stopping terminal processes."""
     global _original_loader, _shared, _signature
     default = Path(default_root)
@@ -159,10 +159,12 @@ def refresh_inheritance(default_root):
                 return {}
             return dict(deepcopy(_shared), **_original_loader())
         mcp_tool_config._load_mcp_config = inherited
-    _shared = shared
     local = _original_loader()
     signature = hashlib.sha256(json.dumps([str(get_hermes_home()), shared, local], sort_keys=True).encode()).hexdigest()
     if _signature is not None and _signature != signature:
+        if not allow_reset:
+            return list(_shared)
         reset_connections()
+    _shared = shared
     _signature = signature
     return list(shared)

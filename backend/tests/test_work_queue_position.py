@@ -25,15 +25,15 @@ class WorkQueuePositionTests(unittest.TestCase):
         return self.write('POST', f'/v1/bots/{(bot or self.bot)["id"]}/messages',
                           dict(text='Inspect the next issue', mode='queue', **fields))
 
-    def test_position_matches_dispatch_order_and_excludes_other_bot_and_future_work(self):
+    def test_position_matches_global_dispatch_order_and_excludes_future_work(self):
         self.update(self.task, status='queued')
         future = self.send(scheduled_at='2099-01-01T00:00:00Z')
         other = self.write('POST', '/v1/bots', dict(name='Other'))
         independent = self.send(other)
         next_task = self.send()
-        self.assertEqual(self.positions(), {self.task['id']: 1, independent['id']: 1, next_task['id']: 2})
+        self.assertEqual(self.positions(), {self.task['id']: 1, independent['id']: 2, next_task['id']: 3})
         self.update(self.task, status='working')
-        self.assertEqual(self.positions()[next_task['id']], 1)
+        self.assertEqual(self.positions()[next_task['id']], 2)
         self.assertNotIn(future['id'], self.positions())
         self.update(next_task, _work_status_only=True)
         self.assertNotIn(next_task['id'], self.positions())

@@ -147,6 +147,7 @@ class HermesProvider(FixtureProvider):
         self._closed = False
         self._input_lock = threading.Lock()
         self._runtime_envs = {}
+        self._transports = {}
 
     @property
     def ready(self):
@@ -208,34 +209,33 @@ class HermesProvider(FixtureProvider):
                                   homes={bot['id']: str(self.catalog._profile_home(bot['id'])) for bot in bots}, **payload)
 
     def process_completions(self, bot, processes):
-        import select
+        import queue
+        from .worker_transport import WorkerTransport
+        request = dict(operation='process_completions', bot=bot, processes=processes)
         with self._lock:
-            lock = self._bot_locks.setdefault(bot['id'], threading.Lock())
-        if not lock.acquire(blocking=False):
-            return []
-        try:
-            request = dict(operation='process_completions', bot=bot, processes=processes)
-            with self._lock:
-                if self._closed:
-                    return []
-                process = self._runtimes.get(bot['id'])
-            if process is not None and process.poll() is None:
+            if self._closed:
+                return []
+            process = self._runtimes.get(bot['id'])
+            transport = self._transports.get(process)
+        if process is not None and process.poll() is None and transport is not None:
+            identity, channel, request = transport.open(request)
+            try:
                 self._send(process, request)
-                if not select.select([process.stdout], [], [], 10)[0]:
-                    raise RuntimeError('Hermes did not return its process status.')
-                frame = json.loads(process.stdout.readline(MAX_EVENT_CHARACTERS + 1))
-                if frame.get('type') != 'process_completions':
-                    raise RuntimeError('Hermes returned an invalid process status.')
-                if frame['data'].get('error'):
-                    raise RuntimeError(frame['data']['error'])
+                frame = channel.get(timeout=10)
+                if isinstance(frame, BaseException):
+                    raise frame
+                if frame.get('type') != 'process_completions' or frame['data'].get('error'):
+                    raise RuntimeError('Hermes could not return its process status.')
                 return frame['data']['results']
-            env, cwd = self.environment(bot['id'])
-            result = subprocess.run([self.python, str(Path(__file__).with_name('native_processes.py'))],
-                                    input=json.dumps(request), text=True, capture_output=True,
-                                    cwd=cwd, env=env, timeout=15, check=True)
-            return json.loads(result.stdout)
-        finally:
-            lock.release()
+            except queue.Empty:
+                return []
+            finally:
+                transport.release(identity)
+        env, cwd = self.environment(bot['id'])
+        result = subprocess.run([self.python, str(Path(__file__).with_name('native_processes.py'))],
+                                input=json.dumps(request), text=True, capture_output=True,
+                                cwd=cwd, env=env, timeout=15, check=True)
+        return json.loads(result.stdout)
 
     def set_bot_settings(self, bot, changes):
         return self.native_settings('update_profile', [bot], bot_id=bot['id'], changes=changes)
@@ -308,7 +308,8 @@ class HermesProvider(FixtureProvider):
         if task.get('_work_status_only'):
             return self._run_turn(operation, task, bot, history, emit, isolated=True, **extra)
         with self._lock:
-            lock = self._bot_locks.setdefault(bot['id'], threading.Lock())
+            from .work_capacity import execution_key
+            lock = self._bot_locks.setdefault(execution_key(task), threading.Lock())
         with lock:
             self._run_turn(operation, task, bot, history, emit, **extra)
 
@@ -333,8 +334,10 @@ class HermesProvider(FixtureProvider):
             if self._closed or task_id in self._cancelled:
                 return
             process = None if isolated else self._runtimes.get(bot['id'])
-            epoch = (bot['session_id'], task.get('_conversation_epoch'))
-            if process is None or process.poll() is not None or self._runtime_epochs.get(bot['id']) != epoch:
+            # Work sessions apply their own conversation epoch without stopping peer turns.
+            epoch = (bot['session_id'], None if task.get('_execution_session_id') else task.get('_conversation_epoch'))
+            if (process is None or process.poll() is not None or self._runtime_epochs.get(bot['id']) != epoch
+                    or (self._transports.get(process) is not None and self._transports[process].closed)):
                 if process is not None:
                     self._terminate(process)
                 process = subprocess.Popen([self.python, str(Path(__file__).with_name('hermes_worker.py'))], cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
@@ -344,6 +347,11 @@ class HermesProvider(FixtureProvider):
                     self._runtime_epochs[bot['id']] = epoch
             if operation != 'context':
                 self._paused_processes.pop(task_id, None)
+            from .worker_transport import WorkerTransport, events
+            transport = self._transports.get(process)
+            if transport is None:
+                transport = self._transports[process] = WorkerTransport(process, MAX_EVENT_CHARACTERS)
+            channel_id, channel, request = transport.open(request)
             self._processes[task_id] = process
         reusable = False
         deferred = None
@@ -352,10 +360,7 @@ class HermesProvider(FixtureProvider):
             self._send(process, request)
             # Keep stdin open. EOF lets the worker stop if the service disappears.
             terminal_received = False
-            for line in iter(lambda: process.stdout.readline(MAX_EVENT_CHARACTERS + 1), ''):
-                if len(line) > MAX_EVENT_CHARACTERS:
-                    raise RuntimeError('Hermes returned an oversized event.')
-                event = json.loads(line)
+            for event in events(channel):
                 if event.get('type') == 'process_completions':
                     continue  # A timed-out status request can finish before this turn.
                 if event.get('type') == 'turn_end':
@@ -421,7 +426,11 @@ class HermesProvider(FixtureProvider):
             code = process.wait(timeout=5)
             if code and not terminal_received and task_id not in self._cancelled:
                 raise RuntimeError(f'Hermes worker stopped with exit code {code}.')
+        except RuntimeError:
+            if task_id not in self._cancelled:
+                raise
         finally:
+            transport.release(channel_id)
             if isolated:
                 reusable = False
             with self._lock:
@@ -430,6 +439,7 @@ class HermesProvider(FixtureProvider):
                 if self._processes.get(task_id) is process:
                     del self._processes[task_id]
                 self._paused_processes = {key: value for key, value in self._paused_processes.items() if value.poll() is None}
+                # A failed transport affects every turn; a model failure ends only its own turn.
                 if not reusable and self._runtimes.get(bot['id']) is process:
                     del self._runtimes[bot['id']]
             if not reusable:
@@ -451,6 +461,7 @@ class HermesProvider(FixtureProvider):
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait(timeout=2)
+        self._transports.pop(process, None)
         environment = self._runtime_envs.pop(process, None)
         if environment is not None and process.returncode != 0:
             # Hermes checks PID identity before reaping children after a forced exit.
@@ -467,8 +478,21 @@ class HermesProvider(FixtureProvider):
             self._cancelled.add(task_id)
             process = self._processes.get(task_id)
             paused = self._paused_processes.pop(task_id, None)
-        if process is not None:
-            self._terminate(process)
+        if process is not None and process.poll() is None:
+            self._send(process, {'cancel_task': task_id})
+            def reap_cancelled():
+                # Escalate only after every active turn in this runtime is cancelled.
+                while process.poll() is None:
+                    threading.Event().wait(1)
+                    with self._lock:
+                        owners = {key for key, value in self._processes.items() if value is process}
+                        owners.update(key for key, value in self._paused_processes.items() if value is process)
+                        if task_id not in owners:
+                            return
+                        if owners <= self._cancelled:
+                            self._terminate(process)
+                            return
+            threading.Thread(target=reap_cancelled, daemon=True, name='cancelled-runtime').start()
         elif paused is not None and paused.poll() is None:
             # Another turn can now own this runtime. Stop only the paused task's children.
             self._send(paused, {'cancel_task': task_id})

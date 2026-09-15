@@ -301,6 +301,10 @@ def check() -> None:
     run([str(PYTHON), "-c", CHECK_CODE], cwd=HERMES / "check-home", env=env)
     if check_source(env) != revision:
         raise SystemExit('The Hermes source changed during its compatibility check.')
+    run([str(PYTHON), str(ROOT / "scripts/test_concurrent_hermes.py"),
+         "--source", str(SOURCE), "--python", str(PYTHON)], cwd=HERMES / "check-home", env=env)
+    if check_source(env) != revision:
+        raise SystemExit("The Hermes source changed during its concurrency check.")
     print(f"Hermes commit: {revision}")
     print(f"Runtime: {HERMES}")
     print("Remove the runtime and local data: python3 scripts/cleanup.py --yes")

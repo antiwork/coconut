@@ -96,18 +96,23 @@ class DecisionBurstTests(unittest.TestCase):
         self.assertEqual(Counter(self.provider.received), Counter(expected))
         self.assertEqual(len({task_id for task_id, _, _ in expected}), 10)
 
-    def test_rapid_answers_wait_for_busy_bot_and_resume_once_each(self):
+    def test_rapid_answers_fill_available_slots_and_resume_once_each(self):
         cards = self.cards()
+        self.service.mutate('PUT', '/v1/settings/work-capacity', {'limit': 2}, str(uuid4()))
         self.answer(cards[0])
         self.service.start()
         self.assertTrue(self.provider.entered.wait(2))
         with ThreadPoolExecutor(max_workers=4) as pool:
             list(pool.map(self.answer, cards[1:]))
-        self.assertEqual(len(self.provider.received), 1)
+        deadline = time.monotonic() + 2
+        while len(self.provider.received) < 2 and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertEqual(len(self.provider.received), 2)
+        started = {task_id for task_id, _, _ in self.provider.received}
         for card in cards[1:]:
             saved = self.service._get('decisions', card['id'])
             task = self.service._get('tasks', saved.get('_execution_task_id', saved['task_id']))
-            self.assertEqual(task['status'], 'queued')
+            self.assertEqual(task['status'], 'working' if task['id'] in started else 'queued')
         self.provider.release.set()
         self.assert_drained(cards)
 

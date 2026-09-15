@@ -78,10 +78,10 @@ def verify_contract():
         'max_tokens', 'max_iterations', 'run_budget_seconds', 'load_soul_identity', 'gateway_session_key', 'clarify_callback', 'disabled_toolsets', 'session_db',
     })
     require_keywords(AIAgent.run_conversation, {'conversation_history', 'task_id', 'stream_callback', 'persist_user_message', 'persist_user_platform_id'})
-    for name in ('close', 'release_clients'):
+    for name in ('close', 'release_clients', 'hard_interrupt'):
         if not callable(getattr(AIAgent, name, None)):
             raise ValueError('Hermes removed native conversation cleanup.')
-    for name in ('get_meta', 'set_meta', 'set_session_title', 'create_session', 'replace_messages', 'resolve_resume_session_id', 'get_resume_conversations', 'get_session', 'end_session', 'close'):
+    for name in ('resolve_session_by_title', 'get_meta', 'set_meta', 'set_session_title', 'create_session', 'replace_messages', 'resolve_resume_session_id', 'get_resume_conversations', 'get_session', 'end_session', 'close'):
         if not callable(getattr(SessionDB, name, None)):
             raise ValueError('Hermes removed a required conversation storage interface: ' + name)
     require_keywords(SessionDB.replace_messages, {'archive_dropped', 'reject_active_turn_lease'})
@@ -116,7 +116,11 @@ def verify_contract():
         if not callable(function):
             raise ValueError('Hermes removed a required native settings interface.')
 
-    from tools.bot_relay import write_remote_roster, claim_pending_envelopes, write_reply
+    from agent.interrupt_scope import InterruptScope, bind_interrupt_scope
+    require_keywords(InterruptScope.cancel, {'reason'})
+    require_keywords(bind_interrupt_scope, {'scope'})
+    from tools.bot_relay import enqueue_envelope, write_remote_roster, claim_pending_envelopes, write_reply
+    require_keywords(enqueue_envelope, {'root', 'target', 'message', 'sender_profile', 'sender_handle'})
     from tools.bot_mode_probe import BOT_CHAT_TITLE
     from tools.bot_mode_dm import message_agent_tool_schema, message_agent_tool
     from utils import atomic_yaml_write

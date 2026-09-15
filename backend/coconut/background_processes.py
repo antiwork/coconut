@@ -105,7 +105,8 @@ class BackgroundProcesses:
                         task = self._get('tasks', record['task_id'])
                         if record.get('_delegation_ack_pending'):
                             processes.append(dict(id=record['id'], task_id=task['id'],
-                                                  delegation_ids=delegation_ids(record), epoch=task.get('_conversation_epoch'), acknowledge=True))
+                                                  delegation_ids=delegation_ids(record), epoch=task.get('_conversation_epoch'),
+                                                  execution_session_id=task.get('_execution_session_id'), acknowledge=True))
                             continue
                         if not self._process_observation_current(task, bot):
                             continue
@@ -115,7 +116,8 @@ class BackgroundProcesses:
                                 cached.append(dict(id=record['id'], text=record['_completion_text']))
                             continue
                         processes.append(dict(id=record['id'], session_id=subscription(record), task_id=task['id'],
-                                              epoch=task.get('_conversation_epoch'), delegation_ids=delegation_ids(record)))
+                                              epoch=task.get('_conversation_epoch'), execution_session_id=task.get('_execution_session_id'),
+                                              delegation_ids=delegation_ids(record)))
                 if not processes and not cached:
                     continue
                 results = cached + (self.provider.process_completions(bot, processes) if processes else [])

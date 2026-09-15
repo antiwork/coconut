@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import json
 import sys
-from uuid import UUID, uuid5
+if __package__:
+    from .native_conversation import session_root
+else:
+    from native_conversation import session_root
 
 
 def delegation_completion(item, *, session_id=None, resolve_session=None):
@@ -47,9 +50,7 @@ def completions(request):
     db = SessionDB()
     try:
         for item in request['processes']:
-            root = request['bot']['session_id']
-            if item.get('epoch'):
-                root = str(uuid5(UUID(root), item['epoch']))
+            root = session_root(request['bot'], execution=item.get('execution_session_id'), epoch=item.get('epoch'))
             session_id = db.resolve_resume_session_id(root)
             if item.get('delegation_ids'):
                 results.extend(delegation_completion(item, session_id=session_id,

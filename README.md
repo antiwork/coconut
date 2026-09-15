@@ -41,3 +41,22 @@ See [architecture](docs/architecture.md), [Hermes integration](docs/hermes-integ
 
 On the execution Mac, run `python3 scripts/cleanup.py --yes` to remove Coconut's service, runtime, and stored work.
 Delete the source folder separately. The uninstaller leaves Tailscale and Apple's tools installed.
+
+### Concurrent work
+
+Settings → Parallel work has two limits:
+
+- **Concurrent work** sets how many independent work items Coconut runs across all bots. Automatic uses the Mac hardware.
+- **Helpers per work item** sets the native Hermes delegation limit. Each bot can override this limit.
+
+Each work item uses a separate native Hermes session. Follow-ups for the same work item run in order.
+Coconut keeps one Hermes runtime per bot and routes each result to its source task. Cancelling one task preserves other tasks.
+Reducing the limit lets active tasks finish before Coconut starts more work. Queue positions use the shared queue.
+
+The adapter does not change Hermes source. To check concurrency against an installed runtime without spending model tokens, run:
+
+```sh
+python scripts/test_concurrent_hermes.py --source /path/to/hermes/source --python /path/to/hermes/venv/bin/python
+```
+
+The check uses a local model stub with native Hermes sessions, tools, bot relay, delegation results, and cancellation.

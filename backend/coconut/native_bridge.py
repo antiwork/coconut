@@ -77,9 +77,11 @@ class NativeBridge:
                         consumed.append(process.id)
                 confirmed = self.receipt('native_result', dict(id=record['id'], result=result, consumed_process_ids=consumed))
                 if confirmed.get('status') != 'recorded':
-                    # End the worker before the native middleware can swallow this failure.
-                    import os
-                    os._exit(74)
+                    if __package__:
+                        from .native_turn_scope import stop_unconfirmed
+                    else:
+                        from native_turn_scope import stop_unconfirmed
+                    stop_unconfirmed()
                 return result
             finally:
                 self.local.call = None
@@ -93,7 +95,23 @@ class NativeBridge:
                 active.clear()
                 self.execution_scope.reset(token)
 
+        if __package__:
+            from .native_turn_scope import current as turn_context
+        else:
+            from native_turn_scope import current as turn_context
+        requires_scope = turn_context.get() is not None
         def serialized(tool_name, args, next_call, **kwargs):
+            if __package__:
+                from .native_turn_scope import current
+            else:
+                from native_turn_scope import current
+            scope = current.get()
+            if requires_scope and scope is None:
+                return json.dumps({'error': 'The native tool lost its work session. The tool did not run.'})
+            if scope is not None and scope.task_id != self.session_key:
+                return next_call(args)
+            if scope is not None and scope.cancelled.is_set():
+                raise TurnPaused()
             owner = kwargs.get('task_id') or self.execution_owner.get()
             if owner != self.session_key:
                 # Native children keep their own execution history. Their durable
@@ -119,11 +137,18 @@ class NativeBridge:
                             return json.dumps({'error': 'This routine no longer owns its native execution claim.'})
                         return scoped(tool_name, args, next_call, **kwargs)
                 return scoped(tool_name, args, next_call, **kwargs)
+        if self.request['task'].get('_execution_session_id'):
+            self.model_registration = PluginContext(PluginManifest(name='coconut-model-tools', version='1'), get_plugin_manager()).register_middleware(
+                'llm_request', turn_context.get().model_request)
+        self.recorded = recorded
         self.registration = PluginContext(PluginManifest(name='coconut-runtime', version='1'), get_plugin_manager()).register_middleware(TOOL_EXECUTION_MIDDLEWARE, serialized)
 
     def close(self):
         from tools.approval import unregister_gateway_notify
         unregister_gateway_notify(self.session_key)
+        model_registration = getattr(self, 'model_registration', None)
+        if model_registration is not None:
+            model_registration.dispose()
         registration = getattr(self, 'registration', None)
         if registration is not None:
             registration.dispose()

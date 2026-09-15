@@ -84,6 +84,7 @@ from .work_progress import WorkProgress, work_enabled
 from .routine_coordinator import NativeRoutines
 from .approval_updates import ApprovalUpdates
 from .parallel_work_updates import ParallelWorkUpdates
+from .work_capacity import execution_key, state as capacity_state
 
 
 from .service_restart import ServiceRestart
@@ -582,7 +583,7 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                 bots = [self._bot_view(dict(b, **{key: value for key, value in observed.get(b['id'], {}).items() if key in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'worker_limit', 'model_override', '_native_effective_model', '_model_error')}), catalog) for b in self._all('bots') if not b.get('_deleted')]
                 visible = {b['id'] for b in bots}
                 visible_task_ids = {task['id'] for task in self._all('tasks') if task['bot_id'] in visible and task['conversation_bot_id'] in visible}
-                state = {'bots': bots}
+                state = {'bots': bots, 'work_capacity': capacity_state(self._setting('work_capacity'))}
                 for table in self.TABLES[1:]:
                     state[table] = [self._public(o) for o in self._all(table) if o['bot_id'] in visible and o.get('conversation_bot_id', o['bot_id']) in visible and not o.get('_deleted') and not o.get('_hidden') and (table not in ('decisions', 'artifacts') or not o.get('task_id') or o['task_id'] in visible_task_ids)]
                 state['artifacts'] = [self._public(a) for a in self._work_projection([self._get('artifacts', a['id']) for a in state['artifacts']])]
@@ -967,6 +968,17 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
             return self._cancel_work(parts[3], callbacks)
         if method == 'POST' and len(parts) == 5 and parts[:3] == ['v1', 'work', 'items'] and parts[4] == 'resume':
             return self._resume_work(parts[3])
+        if parts == ['v1', 'settings', 'work-capacity'] and method == 'PUT':
+            if set(data) != {'limit'}:
+                raise ServiceError(400, 'Specify a work limit, or null for Automatic.')
+            try:
+                result = capacity_state(data['limit'])
+            except ValueError as error:
+                raise ServiceError(400, str(error)) from None
+            self.db.execute('INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                            ('work_capacity', encoded(data['limit'])))
+            self._event('settings.updated', {'work_capacity': result})
+            return result
         if parts == ['v1', 'device', 'push']:
             if method == 'PUT':
                 return self.push.registration(device, data)
@@ -2095,26 +2107,56 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                 return
             self.running = {k: v for k, v in self.running.items() if v.is_alive()}
             self.context_threads = {k: v for k, v in self.context_threads.items() if v.is_alive()}
+            capacity = capacity_state(self._setting('work_capacity'))['effective_limit']
+            active = {execution_key(self._get('tasks', identity)) for identity in self.running}
+            active.update(execution_key(self._get('tasks', self._get('contexts', identity)['task_id']))
+                          for identity in self.context_threads)
+            status_running = sum(bool(self._get('tasks', identity).get('_work_status_only')) for identity in self.running)
+            slots = len(self.running) - status_running + len(self.context_threads)
             for context in self._all('contexts'):
-                if (context['status'] == 'queued' and context['id'] not in self.context_threads
-                        and not self._task_paused(self._get('tasks', context['task_id']))):
-                    self._start_context(context['id'])
-            active_bots = {self._get('tasks', task_id)['bot_id'] for task_id in self.running
-                           if not self._get('tasks', task_id).get('_work_status_only')}
+                task = self._get('tasks', context['task_id'])
+                if context['status'] != 'queued' or context['id'] in self.context_threads or self._task_paused(task):
+                    continue
+                self._ensure_execution_session(task)
+                key = execution_key(task)
+                if slots >= capacity or key in active:
+                    continue
+                self._start_context(context['id'])
+                active.add(key)
+                slots += 1
             for task in self._all('tasks'):
                 bot = self._get('bots', task['bot_id'])
-                if bot['archived'] or bot.get('_deleted'):
-                    continue
-                if task['bot_id'] in active_bots and not task.get('_work_status_only'):
+                if bot['archived'] or bot.get('_deleted') or task['id'] in self.running:
                     continue
                 if not self._dispatch_eligible(task, time.time()):
                     continue
+                self._ensure_execution_session(task)
+                key = execution_key(task)
+                status_only = task.get('_work_status_only')
+                if key in active or (status_running >= 1 if status_only else slots >= capacity):
+                    continue
                 worker = threading.Thread(target=self._run_task, args=(task['id'],), daemon=True, name=f'task-{task["id"][:8]}')
                 self.running[task['id']] = worker
-                if not task.get('_work_status_only'):
-                    active_bots.add(task['bot_id'])
+                active.add(key)
+                if status_only:
+                    status_running += 1
+                else:
+                    slots += 1
                 worker.start()
             self.changed.wait(.2)
+
+    def _ensure_execution_session(self, task):
+        if task.get('_execution_session_id'):
+            return
+        owner = self._assignment(task)
+        if task.get('_work_context_id') and not task.get('_work_status_only'):
+            artifact = self._get('artifacts', task['_work_context_id'])
+            if artifact.get('task_id'):
+                candidate = self._get('tasks', artifact['task_id'])
+                if candidate['bot_id'] == task['bot_id']:
+                    owner = self._assignment(candidate)
+        task['_execution_session_id'] = owner.get('_execution_session_id') or owner['id']
+        self._put('tasks', task)
 
     def _dispatch_eligible(self, task, timestamp):
         if task['status'] not in ('queued', 'scheduled'):
@@ -2124,14 +2166,12 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
         return not self._task_paused(task) and not self._continuation_blocked(task)
 
     def _queue_positions(self, tasks, timestamp):
-        positions, counts = {}, {}
+        positions = {}
         # Dictionary insertion order matches the dispatcher's durable row order.
         for task in tasks.values():
             if task.get('_work_status_only') or not self._dispatch_eligible(task, timestamp):
                 continue
-            bot_id = task['bot_id']
-            counts[bot_id] = counts.get(bot_id, 0) + 1
-            positions[task['id']] = counts[bot_id]
+            positions[task['id']] = len(positions) + 1
         return positions
 
 
@@ -2161,7 +2201,7 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
     def _run_task(self, task_id: str):
         with self.lock:
             task = self._get('tasks', task_id)
-            bot_lock = self.bot_locks.setdefault(task['id'] if task.get('_work_status_only') else task['bot_id'], threading.Lock())
+            bot_lock = self.bot_locks.setdefault(execution_key(task), threading.Lock())
         with bot_lock:
             reaction_feedback = []
             try:
@@ -2216,7 +2256,7 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                     if task['status'] != 'working' or self.stopping.is_set():
                         return
                     history = self._history(bot['id'])
-                provider_task = self._public(task)
+                provider_task = self._public(task) | {'_execution_session_id': task.get('_execution_session_id')}
                 for field in ('_work_todos', '_work_resume', '_source_audit_prompt', '_self_recovery'):
                     if field in task:
                         provider_task[field] = task[field]
@@ -2672,7 +2712,7 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                 context = self._get('contexts', context_id)
                 task = self._get('tasks', context['task_id'])
                 bot = self._get('bots', task['bot_id'])
-                bot_lock = self.bot_locks.setdefault(bot['id'], threading.Lock())
+                bot_lock = self.bot_locks.setdefault(execution_key(task), threading.Lock())
             with bot_lock:
                 with self.transaction():
                     context = self._get('contexts', context_id)
@@ -2697,7 +2737,7 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                     self._refresh_bot(bot['id'])
                     history = self._history(bot['id'])
                     decision = self._get('decisions', context['decision_id'])
-                    provider_task = self._public(task)
+                    provider_task = self._public(task) | {'_execution_session_id': task.get('_execution_session_id')}
                     provider_task['_conversation_epoch'] = context.get('_conversation_epoch', task.get('_conversation_epoch', self._setting('conversation_epoch')))
                     if task.get('_native_job'):
                         provider_task['_native_job'] = task['_native_job']

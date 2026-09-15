@@ -23,8 +23,29 @@ class NativeRelay:
         meta['ui_meta'] = ui
         atomic_yaml_write(self.home / 'profile.yaml', meta, sort_keys=False)
         conversation.db.create_session(conversation.session_id, source='coconut', model=self.request['model'])
-        conversation.db.set_session_title(conversation.session_id, BOT_CHAT_TITLE)
+        if self.request['task'].get('_execution_session_id'):
+            # Bot Mode has one canonical chat. Work uses separate native sessions.
+            canonical = conversation.db.resolve_session_by_title(BOT_CHAT_TITLE)
+            if canonical is None:
+                canonical = conversation.db.resolve_resume_session_id(self.request['bot']['session_id'])
+                conversation.db.create_session(canonical, source='coconut', model=self.request['model'])
+                conversation.db.set_session_title(canonical, BOT_CHAT_TITLE)
+            conversation.db.set_session_title(conversation.session_id, 'Work ' + self.request['task']['_execution_session_id'])
+        else:
+            conversation.db.set_session_title(conversation.session_id, BOT_CHAT_TITLE)
         self.sync_roster()
+
+    def enqueue(self, arguments):
+        from tools.bot_relay import enqueue_envelope, read_remote_roster, resolve_remote_target
+        target = resolve_remote_target(arguments['target'], read_remote_roster(self.home))
+        if not isinstance(target, dict) or target['connection_id'] not in self.peers:
+            return json.dumps({'error': 'Choose a bot from the current contact list.'})
+        text = arguments.get('message', '')
+        if not isinstance(text, str) or not text.strip() or len(text) > 16000:
+            return json.dumps({'error': 'Write a message between 1 and 16000 characters.'})
+        enqueue_envelope(self.home, target=target, message=text,
+                         sender_profile=self.request['bot']['id'], sender_handle=self.request['bot']['id'])
+        return json.dumps({'status': 'queued'})
 
     def sync_roster(self):
         from tools.bot_relay import write_remote_roster
@@ -42,6 +63,10 @@ class NativeRelay:
         self.sync_roster()
 
     def deliver(self, arguments, next_call, call_id):
+        if __package__:
+            from .native_turn_scope import stop_unconfirmed
+        else:
+            from native_turn_scope import stop_unconfirmed
         from tools.bot_relay import claim_pending_envelopes
         target = str(arguments.get('target', '')).lstrip('@').split('@')[0]
         if self.request['operation'] == 'context' or target not in self.peers:
@@ -58,12 +83,12 @@ class NativeRelay:
                 if not matching and (value.get('error') or value.get('status') not in ('sent', 'queued')):
                     return result
                 # Do not let native middleware turn an uncertain delivery into a success.
-                os._exit(74)
+                stop_unconfirmed()
             intent['envelope'] = matching[0]
             save_intent(self.home, intent)
             confirmed = self.receipt('native_bot_message', delivery_payload(intent))
             if confirmed.get('status') not in ('queued', 'duplicate', 'paused'):
-                os._exit(74)
+                stop_unconfirmed()
             return json.dumps(confirmed, sort_keys=True)
 
 

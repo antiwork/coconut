@@ -21,6 +21,7 @@ final class AppStore {
     @ObservationIgnored private var workMutationIds: [String: UUID] = [:]
     var approvals: ApprovalSettings?
     var parallelWork: ParallelWorkSettings?
+    var workCapacity: ParallelWorkSettings?
     var routines: [Routine] = []
     var learning: [LearningGroup] = []
     var connection: ConnectionState = .unconfigured
@@ -812,6 +813,17 @@ final class AppStore {
         return result
     }
 
+    func setWorkCapacity(_ value: Int?) async {
+        if isDemo {
+            let automatic = workCapacity?.automaticLimit ?? 4
+            workCapacity = ParallelWorkSettings(limit: value, effectiveLimit: value ?? automatic, automaticLimit: automatic)
+            return
+        }
+        let _: ParallelWorkSettings? = await write("settings/work-capacity", method: "PUT",
+            payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self,
+            onSuccess: { self.workCapacity = $0 })
+    }
+
     func setWorkerLimit(_ value: Int?, botId: String? = nil) async {
         if isDemo {
             if let botId, let index = bots.firstIndex(where: { $0.id == botId }) {
@@ -1123,7 +1135,9 @@ final class AppStore {
         if decisions != snapshot.decisions { decisions = snapshot.decisions }
         if artifacts != snapshot.artifacts { artifacts = snapshot.artifacts }
         approvals = snapshot.approvals
+        workCapacity = snapshot.workCapacity
         parallelWork = snapshot.parallelWork
+        if isDemo && workCapacity == nil { workCapacity = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4) }
         if isDemo && parallelWork == nil { parallelWork = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4) }
         mcpServers = snapshot.mcpServers ?? []
         if routines != snapshot.routines ?? [] { routines = snapshot.routines ?? [] }

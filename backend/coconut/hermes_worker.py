@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack, nullcontext
 import base64
 import json
 import os
@@ -18,6 +19,7 @@ from uuid import UUID, uuid4
 if __package__:
     from .native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn
     from .native_bridge import TurnPaused
+    from .native_turn_scope import TurnScope, current as current_turn, setup_lock, active_scopes, TurnUnconfirmed
     from .pull_request_reviews import PR_REVIEW_INSTRUCTIONS
     from .work_progress import NativeWork, WORK_INSTRUCTIONS
     from .tracked_work import TRACK_WORK_SCHEMA
@@ -26,6 +28,7 @@ if __package__:
 else:
     from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn
     from native_bridge import TurnPaused
+    from native_turn_scope import TurnScope, current as current_turn, setup_lock, active_scopes, TurnUnconfirmed
     from pull_request_reviews import PR_REVIEW_INSTRUCTIONS
     from work_progress import NativeWork, WORK_INSTRUCTIONS
     from tracked_work import TRACK_WORK_SCHEMA
@@ -660,10 +663,17 @@ def main():
     receipt_lock = threading.Lock()
     pending_receipts = {}
     next_request_id = 0
+    active = {}
+    cancelled = set()
+    active_lock = threading.Lock()
+    output_turn = threading.local()
 
     def emit(kind, data):
         with output_lock:
-            output.write(event_frame(kind, data))
+            frame = dict(type=kind, data=data)
+            if getattr(output_turn, 'identity', None):
+                frame['turn_id'] = output_turn.identity
+            output.write(json.dumps(frame, ensure_ascii=False) + '\n')
             output.flush()
 
     def request_receipt(kind, data):
@@ -674,7 +684,7 @@ def main():
             pending_receipts[request_id] = response = queue.Queue(maxsize=1)
         try:
             with output_lock:
-                output.write(json.dumps({'type': kind, 'data': data, 'request_id': request_id}, ensure_ascii=False) + '\n')
+                output.write(json.dumps({'type': kind, 'data': data, 'request_id': request_id, 'turn_id': getattr(output_turn, 'identity', None)}, ensure_ascii=False) + '\n')
                 output.flush()
             try:
                 return response.get(timeout=30)
@@ -707,6 +717,15 @@ def main():
                 if not isinstance(frame, dict):
                     continue
                 if isinstance(frame.get('cancel_task'), str):
+                    with active_lock:
+                        cancelled.add(frame['cancel_task'])
+                        scope = active.get(frame['cancel_task'])
+                    if scope is not None:
+                        scope.cancelled.set()
+                        if scope.interrupt_scope is not None:
+                            scope.interrupt_scope.cancel('Cancelled in Coconut.')
+                        elif scope.agent is not None and hasattr(scope.agent, 'hard_interrupt'):
+                            scope.agent.hard_interrupt('Cancelled in Coconut.')
                     stop_native_processes(frame['cancel_task'])
                     continue
                 if 'operation' in frame:
@@ -724,19 +743,55 @@ def main():
     threading.Thread(target=watch_parent, daemon=True, name='service-liveness').start()
     from native_settings import install_approval_inheritance
     install_approval_inheritance(os.environ['COCONUT_DEFAULT_HOME'])
+    def execute(request):
+        identity = request.get('turn_id')
+        scope = TurnScope(request['task']['id']) if request.get('task') else None
+        token = current_turn.set(scope)
+        outcome_sent = False
+        def send(kind, data):
+            nonlocal outcome_sent
+            outcome_sent = outcome_sent or kind in ('completed', 'failed', 'decision', 'native_approval', 'native_question')
+            output_turn.identity = identity
+            emit(kind, data)
+        def receipt(kind, data):
+            nonlocal outcome_sent
+            output_turn.identity = identity
+            result = request_receipt(kind, data)
+            outcome_sent = outcome_sent or (kind == 'native_question' and result.get('status') != 'validation_failed')
+            return result
+        try:
+            if request['operation'] == 'process_completions':
+                from native_processes import completions
+                try:
+                    send('process_completions', {'results': completions(request)})
+                except Exception:
+                    send('process_completions', {'results': [], 'error': 'Could not read native process results.'})
+                return
+            with active_lock:
+                active[scope.task_id] = scope
+                if scope.task_id in cancelled:
+                    scope.cancelled.set()
+            try:
+                run_turn(request, send, receipt)
+            except BaseException:
+                # A cleanup failure must still release the service's queue slot.
+                scope.cancelled.set()
+                scope.handlers.clear()
+                if scope.interrupt_scope is not None:
+                    scope.interrupt_scope.cancel('The Coconut turn stopped unexpectedly.')
+                if not outcome_sent:
+                    send('failed', {'summary': 'This work stopped unexpectedly. Coconut will check its saved results.'})
+            finally:
+                send('turn_end', {'reusable': True})
+        finally:
+            if scope:
+                with active_lock:
+                    active.pop(scope.task_id, None)
+            current_turn.reset(token)
+
     while True:
         request = requests.get()
-        if request['operation'] == 'process_completions':
-            from native_processes import completions
-            try:
-                emit('process_completions', {'results': completions(request)})
-            except Exception:
-                emit('process_completions', {'results': [], 'error': 'Could not read native process results.'})
-            continue
-        code = run_turn(request, emit, request_receipt)
-        emit('turn_end', {'reusable': code == 0})
-        if code:
-            return code
+        threading.Thread(target=execute, args=(request,), daemon=True, name='native-turn').start()
 
 
 def run_turn(request, emit, request_receipt):
@@ -747,6 +802,13 @@ def run_turn(request, emit, request_receipt):
     routine_scope = None
     allowed = set()
     work = NativeWork(request)
+    scope = current_turn.get() or TurnScope(request['task']['id'])
+    scope_token = current_turn.set(scope)
+    setup_lock.acquire()
+    preparing = True
+    active_scopes.add(scope)
+    interrupt_binding = nullcontext()
+    session_tokens = None
     raw_emit, raw_receipt = emit, request_receipt
     def emit(kind, payload):
         if kind in ('completed', 'failed', 'native_question', 'native_approval'):
@@ -757,6 +819,13 @@ def run_turn(request, emit, request_receipt):
             payload = dict(payload, **work.payload(agent))
         return raw_receipt(kind, payload)
     try:
+        if request['task'].get('_execution_session_id'):
+            from agent.interrupt_scope import InterruptScope, bind_interrupt_scope
+            scope.interrupt_scope = InterruptScope()
+            interrupt_binding = bind_interrupt_scope(scope.interrupt_scope)
+        interrupt_binding.__enter__()
+        if scope.cancelled.is_set():
+            raise InterruptedError('The task was cancelled.')
         if request['task'].get('_work_status_only'):
             from run_agent import AIAgent
             from toolsets import create_custom_toolset
@@ -775,6 +844,9 @@ def run_turn(request, emit, request_receipt):
                             skip_background_review=True, save_trajectories=False)
             if getattr(agent, 'tools', None):
                 raise RuntimeError('The work update must run without tools.')
+            scope.agent = agent
+            setup_lock.release()
+            preparing = False
             result = agent.run_conversation(json.dumps(request['task']['_work_context']), conversation_history=[],
                                             task_id=request['task']['id'])
             if result.get('completed') is not True or result.get('failed'):
@@ -795,7 +867,7 @@ def run_turn(request, emit, request_receipt):
         mcp_names = []
         if os.environ.get('COCONUT_DEFAULT_HOME'):
             from native_mcp import refresh_inheritance
-            mcp_names = refresh_inheritance(os.environ['COCONUT_DEFAULT_HOME'])
+            mcp_names = refresh_inheritance(os.environ['COCONUT_DEFAULT_HOME'], allow_reset=len(active_scopes) == 1)
         from tools.skills_sync import sync_skills
         sync_skills(quiet=True)
         from run_agent import AIAgent
@@ -803,8 +875,8 @@ def run_turn(request, emit, request_receipt):
             from tools.mcp_tool_discovery import discover_mcp_tools
             discover_mcp_tools(allowed_mcp_names=mcp_names)
         from hermes_state import SessionDB
-        from tools.registry import registry
-        from toolsets import create_custom_toolset
+        from tools.registry import registry as native_registry
+        registry = scope
 
         operation = request['operation']
         proposed = False
@@ -914,11 +986,13 @@ def run_turn(request, emit, request_receipt):
             allowed.add(SUGGEST_SCHEMA['name'])
         if request['task'].get('_decision_reply') or request['task'].get('_pending_decisions'):
             schema = REPLY_SCHEMA
-            if operation != 'context':
+            if operation != 'context' or request['task'].get('_execution_session_id'):
                 schema = dict(REPLY_SCHEMA, parameters=dict(REPLY_SCHEMA['parameters'],
                     properties=dict(REPLY_SCHEMA['parameters']['properties'],
-                        decision_id={'type': 'string'}, decision_revision={'type': 'integer'}, source_message_id={'type': 'string'}),
-                    required=REPLY_SCHEMA['parameters']['required'] + ['decision_id', 'decision_revision', 'source_message_id']))
+                        decision_id={'type': 'string', 'description': 'Required for an answer from chat. Omit when replying within the current card.'},
+                        decision_revision={'type': 'integer', 'description': 'Required with decision_id. Use the supplied current revision.'},
+                        source_message_id={'type': 'string', 'description': 'Required with decision_id. Use the supplied human message ID.'}),
+                    required=REPLY_SCHEMA['parameters']['required'] + ([] if request['task'].get('_execution_session_id') else ['decision_id', 'decision_revision', 'source_message_id'])))
             registry.register(name=REPLY_SCHEMA['name'], toolset='coconut', schema=schema,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('decision_response', arguments)))
             allowed.add(REPLY_SCHEMA['name'])
@@ -949,7 +1023,13 @@ def run_turn(request, emit, request_receipt):
             registry.register(name='coconut_wait', toolset='coconut', schema=wait_schema,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('work_wait', arguments)))
             allowed.add('coconut_wait')
-        create_custom_toolset('coconut', 'Native Coconut actions', tools=sorted(allowed))
+        if request['task'].get('_execution_session_id') and operation != 'context':
+            from tools.bot_mode_dm import message_agent_tool_schema
+            relay_schema = dict(message_agent_tool_schema()['function'], name='coconut_message_bot')
+            registry.register(name='coconut_message_bot', toolset='coconut', schema=relay_schema,
+                              handler=lambda arguments, **kwargs: bridge.recorded('message_agent', arguments, bridge.relay.enqueue))
+            allowed.add('coconut_message_bot')
+        coconut_toolset = scope.toolset(allowed)
 
         def stream_delta(text):
             if isinstance(text, str) and text and not creation_errors and not deletion_errors:
@@ -1020,6 +1100,8 @@ def run_turn(request, emit, request_receipt):
         instructions += DECISION_INSTRUCTIONS
         if work.enabled:
             instructions += WORK_INSTRUCTIONS
+        if request['task'].get('_execution_session_id'):
+            instructions += ' For this work session, contact bots with coconut_message_bot. Coconut routes it through the native Hermes relay. Use a separate git worktree for this work item before editing code. Keep other work items and their files unchanged. '
         instructions += CONVERSATION_INSTRUCTIONS
         instructions += BOT_ROLE_INSTRUCTIONS
         instructions += '\nYour current identity, confirmed by the service:\n' + json.dumps({
@@ -1035,7 +1117,8 @@ def run_turn(request, emit, request_receipt):
             raise ValueError('The selected model has no configured key on this Mac.')
         from native_settings import raw_config
         os.environ['HERMES_GATEWAY_SESSION'] = '1'
-        os.environ['HERMES_SESSION_KEY'] = request['task']['id']
+        from gateway.session_context import set_session_vars, clear_session_vars
+        session_tokens = set_session_vars(session_key=request['task']['id'], platform='coconut')
         profile_config = raw_config(os.environ['HERMES_HOME'])
         from native_routine_execution import job_context
         routine_scope = job_context(request, config, profile_config)
@@ -1052,19 +1135,26 @@ def run_turn(request, emit, request_receipt):
         relay.install(conversation)
         bridge.relay = relay
         agent = AIAgent(model=request['model'], **config, reasoning_config=reasoning_configuration(request.get('reasoning_effort')),
-                        enabled_toolsets=list(dict.fromkeys(toolsets + mcp_names + ['coconut'] + (['todo'] if work.enabled else []))), disabled_toolsets=disabled, quiet_mode=True,
+                        enabled_toolsets=list(dict.fromkeys(toolsets + mcp_names + [coconut_toolset] + (['todo'] if work.enabled else []))), disabled_toolsets=disabled, quiet_mode=True,
                         ephemeral_system_prompt=instructions, session_id=conversation.session_id, session_db=conversation.db,
                         platform='coconut', gateway_session_key=request['task']['id'], clarify_callback=bridge.clarify,
                         skip_context_files=False, load_soul_identity=True, skip_memory=False, skip_background_review=False,
                         save_trajectories=False, run_budget_seconds=None)
+        scope.agent = agent
+        if scope.cancelled.is_set():
+            raise InterruptedError('The task was cancelled.')
         work.restore(agent)
         bridge.install(registry)
         prompt, _ = conversation_input(request)
         current = current_message(request) if operation == 'start' else None
+        setup_lock.release()
+        preparing = False
         result = agent.run_conversation(prompt, conversation_history=conversation.history, task_id=request['task']['id'],
                                         stream_callback=stream_delta,
                                         persist_user_message=current['text'] if current else request.get('question'),
                                         persist_user_platform_id='coconut:' + current['id'] if current else None)
+        if scope.unconfirmed:
+            raise TurnUnconfirmed()
         if result.get('completed') is not True or result.get('failed') or result.get('interrupted'):
             raise RuntimeError('Hermes could not finish this turn.')
         if creation_errors:
@@ -1093,25 +1183,39 @@ def run_turn(request, emit, request_receipt):
                 elif reaction_only_turn(request):
                     completion['reaction_silent'] = True
             emit('completed', completion)
-    except TurnPaused:
+    except (TurnPaused, TurnUnconfirmed):
+        if scope.unconfirmed:
+            emit('failed', {'summary': 'Coconut must confirm the last tool result before this work continues.'})
+            return 1
         return 0
     except Exception as error:
         # Model libraries can include request bodies or keys in exception strings.
         emit('failed', {'summary': f'Hermes could not finish ({type(error).__name__}). Check the model configuration on the Mac.'})
         return 1
     finally:
-        if agent is not None:
-            # Native gateway eviction retains terminals, browsers, and process handles.
-            agent.release_clients()
-        if bridge is not None:
-            bridge.close()
-        if registry is not None:
-            for name in allowed:
-                registry.deregister(name)
-        if conversation is not None:
-            conversation.close()
-        if routine_scope is not None:
-            routine_scope.__exit__(None, None, None)
+        def clear_scope():
+            with setup_lock:
+                active_scopes.discard(scope)
+            scope.handlers.clear()
+            scope.agent = None
+            current_turn.reset(scope_token)
+        # Run every cleanup even if one native client fails to close.
+        with ExitStack() as cleanup:
+            if session_tokens is not None:
+                cleanup.callback(clear_session_vars, session_tokens)
+            if routine_scope is not None:
+                cleanup.callback(routine_scope.__exit__, None, None, None)
+            if conversation is not None:
+                cleanup.callback(conversation.close)
+            cleanup.callback(clear_scope)
+            cleanup.callback(interrupt_binding.__exit__, None, None, None)
+            if preparing:
+                cleanup.callback(setup_lock.release)
+            if bridge is not None:
+                cleanup.callback(bridge.close)
+            if agent is not None:
+                # Native gateway eviction retains terminals and process handles.
+                cleanup.callback(agent.release_clients)
     return 0
 
 

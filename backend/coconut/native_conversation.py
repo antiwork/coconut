@@ -97,11 +97,21 @@ def seed_messages(request):
     return result
 
 
+def session_root(bot, *, execution=None, epoch=None):
+    root = bot['session_id']
+    if execution:
+        root = str(uuid5(UUID(root), 'work:' + execution))
+    return str(uuid5(UUID(root), epoch)) if epoch else root
+
+
 class NativeConversation:
     def __init__(self, request, db):
         self.db = db
         bot = request['bot']
         root = bot['session_id']
+        execution = request['task'].get('_execution_session_id')
+        if execution:
+            root = session_root(bot, execution=execution, epoch=request['task'].get('_conversation_epoch'))
         marker = 'coconut.history-context.' + root
         # Repair the earlier searchable-only import inside the existing native conversation.
         if db.get_meta(marker) != 'complete':
@@ -114,8 +124,8 @@ class NativeConversation:
                 db.replace_messages(target, prefix + active, archive_dropped=True, reject_active_turn_lease=True)
             db.set_meta(marker, 'complete')
         epoch = request['task'].get('_conversation_epoch')
-        if epoch:
-            root = str(uuid5(UUID(root), epoch))
+        if epoch and not execution:
+            root = session_root(bot, epoch=epoch)
         self.session_id = db.resolve_resume_session_id(root)
         self.history = db.get_resume_conversations(self.session_id)[0] if db.get_session(self.session_id) else []
 

@@ -414,6 +414,7 @@ struct StateSnapshot: Codable, Sendable {
     var modelCatalog: ModelCatalog? = nil
     var approvals: ApprovalSettings? = nil
     var parallelWork: ParallelWorkSettings? = nil
+    var workCapacity: ParallelWorkSettings? = nil
     var mcpServers: [MCPServer]? = nil
     var pushConfigured: Bool? = nil
 }

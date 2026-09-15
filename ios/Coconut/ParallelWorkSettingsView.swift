@@ -11,6 +11,7 @@ struct ParallelWorkSettingsView: View {
     var botId: String? = nil
     @State private var saving = false
     @State private var customLimit = 4
+    @State private var workLimit = 4
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
     private var limit: Int? { botId == nil ? store.parallelWork?.limit : bot?.workerLimit }
@@ -18,6 +19,28 @@ struct ParallelWorkSettingsView: View {
 
     var body: some View {
         List {
+            if botId == nil, let capacity = store.workCapacity {
+                Section {
+                    Toggle("Automatic", isOn: Binding(
+                        get: { capacity.limit == nil },
+                        set: { saveCapacity($0 ? nil : capacity.effectiveLimit) }
+                    ))
+                    .tint(BoardStyle.green)
+                    .accessibilityIdentifier("automatic-work-items")
+                    if capacity.limit != nil {
+                        Stepper("Work items: \(workLimit)", value: $workLimit, in: 1...64)
+                            .accessibilityIdentifier("work-item-limit")
+                        Button("Save work limit") { saveCapacity(workLimit) }
+                            .disabled(workLimit == capacity.limit)
+                    } else {
+                        LabeledContent("Work items", value: "\(capacity.effectiveLimit)")
+                    }
+                } header: {
+                    Text("Concurrent work")
+                } footer: {
+                    Text("Runs up to \(capacity.effectiveLimit) work items across all bots. Automatic uses your Mac’s processors and memory. Lowering the limit leaves running work intact.")
+                }
+            }
             if let settings = store.parallelWork {
                 Section {
                     Toggle(botId == nil ? "Automatic" : "Use default", isOn: Binding(
@@ -28,21 +51,23 @@ struct ParallelWorkSettingsView: View {
                     .accessibilityIdentifier("automatic-workers")
                     if limit != nil {
                         Stepper(value: $customLimit, in: 1...max(64, effectiveLimit)) {
-                            LabeledContent("Workers", value: "\(customLimit)")
+                            LabeledContent("Helpers", value: "\(customLimit)")
                         }
                         .accessibilityIdentifier("worker-limit")
                         Button("Save limit") { save(customLimit) }
                             .disabled(customLimit == limit)
                     } else {
-                        LabeledContent("Workers", value: "\(effectiveLimit)")
+                        LabeledContent("Helpers", value: "\(effectiveLimit)")
                     }
+                } header: {
+                    Text("Helpers per work item")
                 } footer: {
                     Text(botId == nil
-                         ? "Automatic allows up to \(settings.automaticLimit) workers per session, based on your Mac’s processors and memory."
-                         : "This bot uses the default of \(settings.effectiveLimit) workers unless you choose a limit.")
+                         ? "Automatic allows up to \(settings.automaticLimit) helpers per work item, based on your Mac’s processors and memory."
+                         : "This bot uses the default of \(settings.effectiveLimit) helpers unless you choose a limit.")
                 }
                 Section {} footer: {
-                    Text("Hermes can delegate independent steps to workers. The limit applies to each session. More workers use more memory and model allowance.\n\nBots read the default on their next turn. Running workers continue.")
+                    Text("Hermes can split a work item among helpers. Higher limits use more memory and model allowance. Changes apply to new turns.")
                 }
             } else {
                 Text("Connect to an updated Mac host to change parallel work.").foregroundStyle(.secondary)
@@ -54,7 +79,19 @@ struct ParallelWorkSettingsView: View {
         .background(BoardStyle.paper)
         .navigationTitle("Parallel work")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { customLimit = effectiveLimit }
+        .onAppear {
+            customLimit = effectiveLimit
+            workLimit = store.workCapacity?.effectiveLimit ?? 4
+        }
+    }
+
+    private func saveCapacity(_ value: Int?) {
+        saving = true
+        Task {
+            await store.setWorkCapacity(value)
+            workLimit = store.workCapacity?.effectiveLimit ?? 4
+            saving = false
+        }
     }
 
     private func save(_ value: Int?) {
