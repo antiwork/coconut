@@ -148,6 +148,22 @@ class WorkModel:
                                  for todo in task.get('_work_todos', {}).get('todos', [])
                                  if todo.get('status') == 'in_progress' and todo.get('id') != 'coconut-assignment'
                                  and todo.get('content')), activity)
+        if state == 'working':
+            # Process health cannot renew a model's old description of its work.
+            from .worker_activity import FRESH_SECONDS
+            processes = [r for r in current_records if subscription(r) and not r.get('_process_delivery')
+                         and r.get('_process_status') == 'running'
+                         and self._work_live(tasks[r['task_id']], [r], timestamp)]
+            if processes:
+                from .worker_activity import progress_label
+                process = max(processes, key=lambda r: (r.get('_worker_progress', {}).get('at', 0), r.get('created_at', '')))
+                activity = progress_label(process, timestamp)
+            elif reports:
+                from datetime import datetime
+                latest = max(reports, key=lambda p: p.get('_activity_at', ''))
+                reported = datetime.fromisoformat(latest['_activity_at'].replace('Z', '+00:00'))
+                if (timestamp - reported).total_seconds() > FRESH_SECONDS:
+                    activity = 'Waiting for a progress update'
         actor = owner.get('bot_id') or item['bot_id']
         if state == 'needs_recovery' and blockers:
             actor = blockers[-1][0]['bot_id']

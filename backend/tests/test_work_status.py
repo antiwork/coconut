@@ -52,7 +52,7 @@ class WorkStatusTests(unittest.TestCase):
                       turn_id=self.service._get('tasks', self.task['id']).get('_native_turn_id'),
                       _process_status='running', _process_observed_at=now())
         with self.service.transaction(): self.service._put('native_receipts', record)
-        self.assertEqual(self.row()['activity'], 'Reviewing with Fable')
+        self.assertEqual(self.row()['activity'], 'Waiting for worker output')
         record['_process_observed_at'] = '2000-01-01T00:00:00Z'
         with self.service.transaction(): self.service._put('native_receipts', record)
         self.assertEqual(self.row()['work_state'], 'waiting')

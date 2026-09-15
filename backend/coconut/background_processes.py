@@ -140,7 +140,19 @@ class BackgroundProcesses:
                         if 'observation' in result:
                             from .service import now
                             record.update(_process_status=result['observation'], _process_observed_at=now())
+                            from .worker_activity import LABELS
+                            progress = result.get('progress')
+                            if (isinstance(progress, dict) and progress.get('phase') in LABELS
+                                    and isinstance(progress.get('at'), (int, float))):
+                                record['_worker_progress'] = progress
+                            from datetime import datetime, timezone
+                            from .worker_activity import progress_label
+                            label = progress_label(record, datetime.now(timezone.utc))
+                            changed = record.get('_worker_display') != label
+                            record['_worker_display'] = label
                             self._put('native_receipts', record)
+                            if changed:
+                                self._event('task.updated', self._public(task), task['bot_id'], task['id'])
                             continue
                         if result.get('consumed'):
                             record['_process_delivery'] = 'consumed'

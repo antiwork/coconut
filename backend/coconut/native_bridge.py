@@ -65,7 +65,14 @@ class NativeBridge:
             self.local.call = dict(id=record['id'], action=action)
             try:
                 relay = getattr(self, 'relay', None)
-                result = relay.deliver(args, next_call, record['id']) if name == 'message_agent' and relay else next_call(args)
+                execution_args = args
+                if name == 'terminal':
+                    if __package__:
+                        from .worker_activity import instrument
+                    else:
+                        from worker_activity import instrument
+                    execution_args = instrument(args, record['id'])
+                result = relay.deliver(args, next_call, record['id']) if name == 'message_agent' and relay else next_call(execution_args)
                 if name == 'cronjob_manage':
                     from native_routine_execution import scheduler_result
                     result = scheduler_result(result, record)

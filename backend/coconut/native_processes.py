@@ -65,7 +65,12 @@ def completions(request):
                     continue
                 status = registry.poll(process.id)
                 if status.get('status') != 'exited':
-                    results.append(dict(id=item['id'], session_id=process.id, observation=status.get('status')))
+                    if __package__:
+                        from .worker_activity import read_progress
+                    else:
+                        from worker_activity import read_progress
+                    results.append(dict(id=item['id'], session_id=process.id,
+                                        observation=status.get('status'), progress=read_progress(item['id'])))
                     continue
                 consumed = registry.is_completion_consumed(process.id)
                 event = dict(type='completion', session_id=process.id, owner_task_id=item['task_id'],
