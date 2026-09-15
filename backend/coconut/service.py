@@ -75,7 +75,7 @@ def decision_correction(data: dict) -> str:
 
 from .work_sources import WorkSources
 from .work_status import WorkStatus
-from .background_processes import BackgroundProcesses
+from .background_processes import BackgroundProcesses, PENDING_COMPLETIONS
 from .native_execution import NativeExecution
 from .decision_inbox import DecisionInbox
 from .pull_request_reviews import PullRequestReviews
@@ -152,6 +152,7 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
             WHERE json_extract(data, '$.status') IN ('needs_you', 'paused');
         CREATE TABLE IF NOT EXISTS receipts (decision_id TEXT PRIMARY KEY, state TEXT NOT NULL, artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL, detail TEXT NOT NULL);
         ''')
+        self.db.execute('CREATE INDEX IF NOT EXISTS native_receipts_pending_completion ON native_receipts (id) WHERE ' + PENDING_COMPLETIONS)
         self._request_device_id = None
         self._request_key = None
         self._message_interaction = None

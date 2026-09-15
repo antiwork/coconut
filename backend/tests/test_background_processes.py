@@ -86,6 +86,26 @@ class BackgroundProcessTests(unittest.TestCase):
             self.service._put('tasks', child)
         self.assertTrue(self.service._background_pending(task_id))
 
+    def test_completion_delivery_does_not_decode_finished_tool_history(self):
+        task_id = self.start()
+        original = self.service._all('native_receipts')[0]
+        with self.service.transaction():
+            for index in range(100):
+                self.service._put('native_receipts', dict(original, id=f'finished-{index}',
+                    _process_delivery='consumed'))
+                self.service._put('native_receipts', dict(original, id=f'foreground-{index}',
+                    result=json.dumps({'status': 'exited', 'output': 'Finished'})))
+                self.service._put('native_receipts', dict(original, id=f'plain-{index}', result='Tool unavailable'))
+        self.provider.results['proc_test'] = 'Verified result'
+        with patch('coconut.background_processes.json.loads', wraps=json.loads) as reads:
+            self.service._drain_process_completions()
+            self.assertLess(reads.call_count, 100, 'Finished history must not increase notification read cost.')
+        self.assertEqual(self.service._get('tasks', task_id)['status'], 'queued')
+        self.service._run_task(task_id)
+        self.assertIn('Verified result', self.provider.starts[-1][0]['_background_completion'][0])
+        self.service._drain_process_completions()
+        self.assertEqual(len(self.provider.starts), 2)
+
     def test_delivery_survives_restart_before_model_continuation(self):
         task_id = self.start()
         self.provider.results['proc_test'] = 'Completed'

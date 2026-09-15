@@ -6,6 +6,23 @@ import logging
 import threading
 
 
+PENDING_COMPLETIONS = """
+    (COALESCE(json_extract(data, '$._process_delivery'), '') IN ('', 0)
+     OR json_extract(data, '$._delegation_ack_pending')=1)
+    AND ((json_extract(data, '$.state')='completed'
+          AND CASE WHEN json_valid(json_extract(data, '$.result')) THEN
+            ((json_extract(data, '$.action.name')='terminal'
+              AND json_extract(json_extract(data, '$.result'), '$.notify_on_complete')=1)
+             OR (json_extract(data, '$.action.name')='delegate_task'
+                 AND json_extract(json_extract(data, '$.result'), '$.status')='dispatched'))
+          ELSE 0 END)
+         OR json_extract(data, '$._relay_task_id') IS NOT NULL
+         OR json_extract(data, '$._wait_task_id') IS NOT NULL
+         OR json_extract(data, '$._wait_process_receipt') IS NOT NULL
+         OR json_extract(data, '$._wait_decision_id') IS NOT NULL)
+"""
+
+
 def result_value(record):
     try:
         value = record.get('result', {})
@@ -70,6 +87,12 @@ class BackgroundProcesses:
                     or any(t['id'] != finishing_task_id and t.get('_background_completion')
                            and t['status'] in ('queued', 'working', 'needs_you', 'paused') for t in turns))
 
+    def _pending_completion_receipts(self):
+        with self.lock:
+            return [json.loads(row[0]) for row in self.db.execute(
+                'SELECT data FROM native_receipts INDEXED BY native_receipts_pending_completion WHERE '
+                + PENDING_COMPLETIONS + ' ORDER BY rowid')]
+
     def _poll_processes(self):
         while not self.stopping.is_set():
             try:
@@ -110,7 +133,7 @@ class BackgroundProcesses:
         if not hasattr(self.provider, 'process_completions'):
             return
         with self.lock:
-            bot_ids = {self._get('tasks', r['task_id'])['bot_id'] for r in self._all('native_receipts')
+            bot_ids = {self._get('tasks', r['task_id'])['bot_id'] for r in self._pending_completion_receipts()
                        if subscription(r) and (not r.get('_process_delivery') or r.get('_delegation_ack_pending'))}
         for bot_id in bot_ids:
             with self.lock:
@@ -124,7 +147,7 @@ class BackgroundProcesses:
                     bot = self._get('bots', bot_id)
                     if bot.get('_deleted') or bot['archived']:
                         continue
-                    records = [r for r in self._all('native_receipts') if subscription(r) and (not r.get('_process_delivery') or r.get('_delegation_ack_pending'))
+                    records = [r for r in self._pending_completion_receipts() if subscription(r) and (not r.get('_process_delivery') or r.get('_delegation_ack_pending'))
                                and self._get('tasks', r['task_id'])['bot_id'] == bot_id]
                     processes, cached = [], []
                     for record in records:
@@ -236,7 +259,7 @@ class BackgroundProcesses:
         # The recipient receipt is durable. It also covers a restart after Hermes
         # queues an envelope but before Coconut receives the waiter process ID.
         with self.lock:
-            bot_ids = {self._get('tasks', r['task_id'])['bot_id'] for r in self._all('native_receipts')
+            bot_ids = {self._get('tasks', r['task_id'])['bot_id'] for r in self._pending_completion_receipts()
                        if r.get('_relay_task_id') and not r.get('_process_delivery')}
         for bot_id in bot_ids:
             with self.lock:
@@ -248,7 +271,7 @@ class BackgroundProcesses:
                     if self.stopping.is_set() or self.restart_pending:
                         return
                     grouped = {}
-                    for record in self._all('native_receipts'):
+                    for record in self._pending_completion_receipts():
                         if not record.get('_relay_task_id') or record.get('_process_delivery'):
                             continue
                         task = self._get('tasks', record['task_id'])
@@ -338,8 +361,11 @@ class BackgroundProcesses:
         if (action.get('name') in ('process', 'process_manage') and isinstance(value, dict)
                 and value.get('status') in ('exited', 'killed')):
             consumed.append(action.get('arguments', {}).get('session_id'))
+        consumed = [identity for identity in consumed if isinstance(identity, str) and identity]
+        if not consumed:
+            return
         bot_id = self._get('tasks', record['task_id'])['bot_id']
-        for original in self._all('native_receipts'):
+        for original in self._pending_completion_receipts():
             if (not original.get('_process_delivery') and subscription(original) in consumed
                     and self._get('tasks', original['task_id'])['bot_id'] == bot_id):
                 original['_process_delivery'] = 'consumed'

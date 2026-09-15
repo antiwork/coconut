@@ -231,7 +231,7 @@ class WorkProgress:
 
     def _drain_task_completions(self):
         with self.lock:
-            bot_ids = {self._get('tasks', r['task_id'])['bot_id'] for r in self._all('native_receipts')
+            bot_ids = {self._get('tasks', r['task_id'])['bot_id'] for r in self._pending_completion_receipts()
                        if (r.get('_wait_task_id') or r.get('_wait_process_receipt') or r.get('_wait_decision_id')) and not r.get('_process_delivery')}
         for bot_id in bot_ids:
             with self.lock:
@@ -243,7 +243,7 @@ class WorkProgress:
                     if self.stopping.is_set() or self.restart_pending:
                         return
                     grouped = {}
-                    for record in self._all('native_receipts'):
+                    for record in self._pending_completion_receipts():
                         if not (record.get('_wait_task_id') or record.get('_wait_process_receipt') or record.get('_wait_decision_id')) or record.get('_process_delivery'):
                             continue
                         task = self._get('tasks', record['task_id'])
