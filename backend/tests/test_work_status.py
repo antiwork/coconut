@@ -32,12 +32,12 @@ class WorkStatusTests(unittest.TestCase):
     def test_finished_turn_cannot_keep_claiming_review_runs(self):
         self.artifact()
         self.assertNotEqual(self.row()['activity'], 'Reviewing with Fable')
-        self.assertEqual(self.row()['activity_state'], 'idle')
+        self.assertEqual(self.row()['work_state'], 'needs_recovery')
 
     def test_bot_report_requires_execution_evidence(self):
         self.artifact()
         self.status('working')
-        self.assertEqual(self.row()['activity'], 'Activity unconfirmed')
+        self.assertEqual(self.row()['activity'], 'Needs recovery')
         self.service.running[self.task['id']] = threading.current_thread()
         try:
             self.assertEqual(self.row()['activity'], 'Reviewing with Fable')
@@ -55,7 +55,7 @@ class WorkStatusTests(unittest.TestCase):
         self.assertEqual(self.row()['activity'], 'Reviewing with Fable')
         record['_process_observed_at'] = '2000-01-01T00:00:00Z'
         with self.service.transaction(): self.service._put('native_receipts', record)
-        self.assertEqual(self.row()['activity'], 'Activity unconfirmed')
+        self.assertEqual(self.row()['work_state'], 'waiting')
 
     def test_verified_outcome_survives_turn_but_not_changed_head(self):
         artifact = self.artifact('Review needs changes', 'blocked')
@@ -67,7 +67,7 @@ class WorkStatusTests(unittest.TestCase):
     def test_failed_turn_overrides_bot_ready_report(self):
         self.artifact('Ready to merge', 'ready')
         self.status('failed')
-        self.assertEqual(self.row()['activity'], 'Needs attention')
+        self.assertEqual(self.row()['activity'], 'Needs recovery')
 
     def test_repeated_track_updates_activity_without_github_read(self):
         artifact = self.artifact()
@@ -102,7 +102,7 @@ class WorkStatusTests(unittest.TestCase):
         self.service._bind_pr_review(artifact, task, transfer=True)
         self.service.running[task['id']] = threading.current_thread()
         try:
-            self.assertEqual(self.row()['activity'], 'Working')
+            self.assertEqual(self.row()['activity'], 'In progress')
             self.assertEqual(self.row()['activity_state'], 'working')
         finally:
             self.service.running.clear()

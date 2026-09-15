@@ -40,7 +40,9 @@ def work_enabled(operation, task):
     """One predicate decides native todo restoration and the dependency prompt for a turn."""
     return operation != 'context' and not task.get('_pr_review') and bool(
         task.get('_work_todos') or (task.get('source_bot_id') and not task.get('_is_return'))
-        or task.get('_handoff_assignment', {}).get('return_to_bot_id'))
+        or task.get('_handoff_assignment', {}).get('return_to_bot_id')
+        or (task.get('conversation_bot_id') and not task.get('source_bot_id')
+            and not any(task.get(k) for k in ('_native_job', '_source_audit_prompt', '_work_status_only', '_is_return'))))
 
 
 class NativeWork:
@@ -204,6 +206,29 @@ class WorkProgress:
                                     | {'status': 'waiting' if pending and target['status'] == 'completed' else target['status']})
             return dependencies
 
+    def _wait_completion(self, record, task):
+        source = self._get('native_receipts', record['_wait_process_receipt']) if record.get('_wait_process_receipt') else None
+        decision = self._get('decisions', record['_wait_decision_id']) if record.get('_wait_decision_id') else None
+        target = self._get('tasks', decision['task_id'] if decision else source['task_id'] if source else record['_wait_task_id'])
+        target_bot = self._get('bots', target['bot_id'])
+        reset = (target_bot.get('_deleted') or target['session_id'] != target_bot['session_id']
+                 or target['session_id'] != record['_wait_session_id']
+                 or (target.get('_conversation_epoch') is not None
+                     and target.get('_conversation_epoch') != task.get('_conversation_epoch')))
+        if reset:
+            return 'The task you waited for is no longer in the current conversation.'
+        if decision:
+            return None if self._decision_wait_pending(decision) else self._decision_wait_result(decision)
+        if source:
+            return source.get('_completion_text') or (
+                'The process finished earlier. Its output is unavailable in this saved record. Check the existing result before repeating work.'
+                if source.get('_process_delivery') else None)
+        if target['status'] in ('failed', 'cancelled'):
+            return f"Task {target['id']} {target['status']}: {target['summary']}"
+        if target['status'] == 'completed' and not self._background_pending(target['id']) and not target.get('_waiting_on'):
+            return f"Task {target['id']} completed: {target['summary']}"
+        return None
+
     def _drain_task_completions(self):
         with self.lock:
             bot_ids = {self._get('tasks', r['task_id'])['bot_id'] for r in self._all('native_receipts')
@@ -224,31 +249,8 @@ class WorkProgress:
                         task = self._get('tasks', record['task_id'])
                         if task['bot_id'] != bot_id or not self._can_resume_process(task, self._get('bots', bot_id)):
                             continue
-                        source = self._get('native_receipts', record['_wait_process_receipt']) if record.get('_wait_process_receipt') else None
-                        decision = self._get('decisions', record['_wait_decision_id']) if record.get('_wait_decision_id') else None
-                        target = self._get('tasks', decision['task_id'] if decision else source['task_id'] if source else record['_wait_task_id'])
-                        target_bot = self._get('bots', target['bot_id'])
-                        reset = (target_bot.get('_deleted') or target['session_id'] != target_bot['session_id']
-                                 or target['session_id'] != record['_wait_session_id']
-                                 or (target.get('_conversation_epoch') is not None
-                                     and target.get('_conversation_epoch') != task.get('_conversation_epoch')))
-                        if reset:
-                            text = 'The task you waited for is no longer in the current conversation.'
-                        elif decision:
-                            if self._decision_wait_pending(decision):
-                                continue
-                            text = self._decision_wait_result(decision)
-                        elif source:
-                            text = source.get('_completion_text')
-                            if not text and source.get('_process_delivery'):
-                                text = 'The process finished earlier. Its output is unavailable in this saved record. Check the existing result before repeating work.'
-                            if not text:
-                                continue
-                        elif target['status'] in ('failed', 'cancelled'):
-                            text = f"Task {target['id']} {target['status']}: {target['summary']}"
-                        elif target['status'] == 'completed' and not self._background_pending(target['id']) and not target.get('_waiting_on'):
-                            text = f"Task {target['id']} completed: {target['summary']}"
-                        else:
+                        text = self._wait_completion(record, task)
+                        if text is None:
                             continue
                         grouped.setdefault(task['id'], []).append((record, text))
                     for task_id, completions in grouped.items():

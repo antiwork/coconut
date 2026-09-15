@@ -31,10 +31,11 @@ def main():
     def pr(number, title, checks, **extra):
         return dict(id=str(uuid4()), bot_id=bot['id'], task_id=task['id'], kind='pr',
                     title=title, status='preparing', preview='', url=f'https://github.com/example/project/pull/{number}',
+                    activity='Reviewing the change', activity_state='working', work_state='working', activity_observed_at=stamp,
                     created_at=stamp, checked_at=stamp, observed_at=stamp, draft=True, pr_state='open', checks_state=checks, **extra)
     first = pr(42, 'Fix the refund email', 'running')
     duplicate = dict(first, id=str(uuid4()))
-    closed = pr(45, 'Already merged', 'passed'); closed['pr_state'] = 'merged'
+    closed = pr(45, 'Already merged', 'passed'); closed.update(pr_state='merged', work_state='completed')
     decision.update(status='pending')
     state.update(bots=[bot], tasks=[task], decisions=[decision], messages=[],
                  artifacts=[first, duplicate, pr(43, 'Restore failed downloads', 'failed'),
@@ -43,7 +44,7 @@ def main():
     state['artifacts'] += [
         dict(id='export-active', bot_id=bot['id'], task_id=task['id'], kind='work',
              title='Export account data', status='working', preview='', url=None, created_at=stamp,
-             activity='Preparing the export', activity_state='working', activity_observed_at=stamp),
+             work_state='working', activity='Preparing the export', activity_state='working', activity_observed_at=stamp),
         dict(id='report-complete', bot_id=bot['id'], task_id=task['id'], kind='work',
              title='Prepare the weekly report', status='completed', preview='', url=None, created_at=stamp,
              activity='Report saved', activity_state='completed', activity_observed_at=stamp),
@@ -67,7 +68,12 @@ def main():
             url = urlsplit(self.path)
             if url.path == '/test/work-state':
                 item = next(a for a in state['artifacts'] if a['id'] == 'export-active')
-                item.update(status=body['status'], activity_state=body['status'], activity=body['activity'])
+                item.update(status=body['status'], work_state=body['status'], activity_state=body['status'], activity=body['activity'])
+                if body['status'] == 'needs_decision':
+                    item['work_decision_id'] = decision['id']
+                    state['decisions'] = [decision]
+                else:
+                    item.pop('work_decision_id', None)
                 if body.get('resolved'): state['decisions'] = []
                 self.respond(dict(ok=True))
             elif url.path == '/test/complete':

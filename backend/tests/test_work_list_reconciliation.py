@@ -31,7 +31,7 @@ class WorkListReconciliationTests(unittest.TestCase):
 
     def test_result_callback_replaces_the_old_blocked_status(self):
         self.callback_chain()
-        self.assertEqual(self.row()['activity'], 'Waiting for another bot')
+        self.assertEqual(self.row()['activity'], 'Queued')
         self.assertEqual(self.row()['activity_state'], 'waiting')
 
     def test_callback_receives_the_existing_work_as_its_current_item(self):

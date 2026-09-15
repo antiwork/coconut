@@ -40,7 +40,7 @@ class WorkFollowupTests(unittest.TestCase):
 
     def test_live_followup_without_activity_report(self):
         self.prepare()
-        self.assertEqual(self.row()['activity'], 'Working')
+        self.assertEqual(self.row()['activity'], 'In progress')
         self.assertEqual(self.row()['activity_state'], 'working')
         self.assertEqual(self.service._tracked_work_input(self.followup), [fixtures.URL])
 
@@ -49,7 +49,7 @@ class WorkFollowupTests(unittest.TestCase):
         self.process.update(task_id=self.root['id'], turn_id='review-turn')
         with self.service.transaction():
             self.service._put('native_receipts', self.process)
-        self.assertEqual(self.row()['activity'], 'Working')
+        self.assertEqual(self.row()['activity'], 'In progress')
 
     def test_stale_completed_and_previous_turn_processes_are_not_live(self):
         self.prepare()
@@ -76,18 +76,20 @@ class WorkFollowupTests(unittest.TestCase):
         self.followup['_waiting_on'] = [self.root['id']]
         with self.service.transaction():
             self.service._put('tasks', self.followup)
-        self.assertEqual(self.row()['activity'], 'Working')
+        self.assertEqual(self.row()['activity'], 'In progress')
 
-    def test_completed_followup_reports_finished(self):
+    def test_completed_followup_needs_outcome_evidence(self):
         self.prepare()
         self.root['status'] = 'completed'
         self.followup['status'] = 'completed'
         self.process['_process_delivery'] = 'delivered'
+        self.relay['_process_delivery'] = 'delivered'
         with self.service.transaction():
+            self.service._put('native_receipts', self.relay)
             self.service._put('tasks', self.root)
             self.service._put('tasks', self.followup)
             self.service._put('native_receipts', self.process)
-        self.assertEqual(self.row()['activity'], 'Work finished')
+        self.assertEqual(self.row()['work_state'], 'needs_recovery')
 
     def test_new_queued_task_has_no_epoch_until_execution(self):
         self.prepare()
@@ -109,6 +111,7 @@ class WorkFollowupTests(unittest.TestCase):
     def test_old_deeper_completion_cannot_hide_a_pending_decision(self):
         self.prepare()
         self.callback['status'] = 'needs_you'
+        self.service._put('decisions', dict(id='pending-card', task_id=self.callback['id'], bot_id=self.bot['id'], status='pending'))
         self.followup['status'] = 'completed'
         with self.service.transaction():
             self.service._put('tasks', self.callback)
@@ -122,7 +125,7 @@ class WorkFollowupTests(unittest.TestCase):
         with self.service.transaction():
             self.service._put('tasks', self.root)
             self.service._put('tasks', self.followup)
-        self.assertEqual(self.row()['activity'], 'Needs attention')
+        self.assertEqual(self.row()['activity'], 'Needs recovery')
 
     def test_next_provider_turn_gets_tracked_pr_context(self):
         self.prepare()

@@ -87,10 +87,11 @@ from .approval_updates import ApprovalUpdates
 
 from .service_restart import ServiceRestart
 from .tracked_work import TrackedWork
+from .work_model import WorkModel
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
-class Service(WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
+class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ServiceRestart):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8

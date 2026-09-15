@@ -980,7 +980,10 @@ def run_turn(request, emit, request_receipt):
                              + json.dumps(request['task']['_tracked_prs'])
                              + '. Before starting work or a background process, call coconut_track_pr with the current short activity. '
                              'Update it when the phase changes and when returning the verified result. This continues existing tracking.')
-        instructions += ('Use coconut_track_work for substantial non-PR work that the person needs to follow. '
+        instructions += ('Work tracks the requested outcome across attempts. Coconut derives its state from execution, saved waits, and decisions. '
+                         'Report one concrete progress sentence and the next step. Include completion_evidence when the outcome is complete. '
+                         'A needs_recovery state means no running attempt, saved dependency, decision, or completed outcome explains the pause. '
+                         'Use coconut_track_work for substantial non-PR work that the person needs to follow. '
                          'Reuse its key across turns; update the activity at phase changes and record completed only after verifying the result. '
                          'When existing work belongs to this request, update that row before returning. '
                          'A later stage of the same result keeps the same work key, including after a decision. '

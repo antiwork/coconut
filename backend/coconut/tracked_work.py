@@ -7,6 +7,7 @@ WORK_STATES = ('working', 'waiting', 'ready', 'blocked', 'completed', 'cancelled
 TRACK_WORK_SCHEMA = {
     'name': 'coconut_track_work',
     'description': 'Track a substantial task in Work when you start it or the person asks to follow it. '
+        'Track the requested outcome. Preserve its completion condition across replies and handoffs. '
         'Use coconut_track_pr for PRs. Do not track quick replies, routine checks, or every delegated step. '
         'Reuse the same key for updates. This reports progress; it does not start work or grant permission.',
     'parameters': {'type': 'object', 'additionalProperties': False, 'properties': {
@@ -14,6 +15,9 @@ TRACK_WORK_SCHEMA = {
         'title': {'type': 'string', 'maxLength': 120, 'description': 'The intended result in plain words.'},
         'activity': {'type': 'string', 'maxLength': 80, 'description': 'One short current activity or verified result. No counts, hashes, or jargon.'},
         'status': {'type': 'string', 'enum': list(WORK_STATES), 'description': 'Use completed only after verifying the requested result. Ready means ready for review. Waiting does not schedule a wake-up.'},
+        'completion_condition': {'type': 'string', 'maxLength': 500, 'description': 'The observable result that completes this outcome. Preserve it across handoffs.'},
+        'completion_evidence': {'type': 'string', 'maxLength': 2000, 'description': 'Required for completed work. Name the verified result and its evidence. Finishing a reply is not completion.'},
+        'next_step': {'type': 'string', 'maxLength': 160, 'description': 'The next concrete step. This description does not queue work or grant permission.'},
     }, 'required': ['key', 'title', 'activity', 'status']},
 }
 
@@ -131,6 +135,8 @@ class TrackedWork:
                        and m['role'] == 'user'), None)
         return dict(id=item['id'], title=item['title'], url=item.get('url'),
                     status=latest['status'], activity_state=projected.get('activity_state'), activity=projected.get('activity'),
+                    **{k: projected.get(k) for k in ('work_state', 'work_next_step', 'completion_condition', 'completion_evidence',
+                                                   'work_decision_id', 'work_attempts', 'work_dependencies')},
                     pull_request={k: latest.get(k) for k in ('pr_state', 'checks_state', 'head_sha', 'draft',
                                   'observed_at', 'checked_at', 'refresh_error', 'preview')} if item['kind'] == 'pr' else None,
                     source_message=dict(id=source['id'], text=source['text'][:1000]) if source else None,
@@ -159,22 +165,10 @@ class TrackedWork:
                      work_id=updates[m['task_id']]['_work_context_id']) for m in messages[-3:]]
 
     def _automatic_work_state(self, root, tasks, records, timestamp):
-        chain = self._work_chain(root, tasks, records, include_continuations=True)
-        turns = [t for t, _ in chain.values()] or [root]
-        active = [t for t in turns if t['status'] in ('queued', 'working', 'waiting', 'needs_you')]
-        if any(t['status'] == 'needs_you' for t in active):
-            return 'waiting', 'Waiting for your decision'
-        if any(self._work_live(t, records, timestamp) for t in active):
-            return 'working', 'In progress'
-        if any(t.get('_waiting_on') for t in active):
-            return 'waiting', 'Waiting for another bot'
-        if active:
-            return 'waiting', 'Queued' if all(t['status'] == 'queued' for t in active) else 'Waiting'
-        if root['status'] == 'completed':
-            return 'completed', 'Completed'
-        if root['status'] == 'cancelled':
-            return 'cancelled', 'Stopped'
-        return 'blocked', 'Needs attention'
+        item = dict(id=root['id'], task_id=root['id'], bot_id=root['bot_id'], kind='work',
+                    title=root['title'], status='working', activity='', _automatic_work=True)
+        outcome = self._work_outcome(item, tasks, records, self._all('decisions'), self._all('contexts'), timestamp)
+        return outcome['activity_state'], outcome['activity']
 
     def _resume_tracked_work(self, tasks, artifacts):
         """Keep a failed request's row when a human continues that request."""
@@ -324,6 +318,12 @@ class TrackedWork:
             if item is None:
                 item = next((a for a in self._all('artifacts') if a.get('_automatic_work') and a.get('task_id') == task_id), None)
             created = item is None
+            details = {}
+            for field, limit in (('completion_condition', 500), ('next_step', 160), ('completion_evidence', 2000)):
+                if field in payload:
+                    details[field] = require_text(payload, field, limit)
+            if state == 'completed' and not details.get('completion_evidence'):
+                raise ServiceError(400, 'State the verified result before completing this work.')
             report_only = bool(item and self._assignment(task).get('_source_audit_prompt'))
             if item:
                 owner = self._get('tasks', item['task_id'])
@@ -342,6 +342,10 @@ class TrackedWork:
                 item.update(task_id=task_id, _work_turn=task.get('_native_turn_id'))
             item.update(title=title, activity=activity, status=state,
                         observed_at=now(), _work_key=key, _automatic_work=False, _hidden=False)
+            item.update(details)
+            item.setdefault('completion_condition', title)
+            if state != 'completed':
+                item.pop('completion_evidence', None)
             if state not in ('completed', 'cancelled'):
                 self.db.execute('DELETE FROM settings WHERE key=?', ('work.dismissed.work:' + item['id'],))
             self._put('artifacts', item)
@@ -363,47 +367,7 @@ class TrackedWork:
         items = self._work_projection(items)
         items.sort(key=lambda a: (a['status'] not in ('completed', 'cancelled'), a['observed_at']), reverse=True)
         return [dict(key=a['_work_key'], title=a['title'], status=a['status'], activity=a.get('activity'),
-                     task_id=a['task_id'], current_task=a['id'] in owned,
+                     task_id=a['task_id'], current_task=a['id'] in owned, work_state=a.get('work_state'),
+                     completion_condition=a.get('completion_condition'), completion_evidence=a.get('completion_evidence'),
+                     next_step=a.get('work_next_step'),
                      dismissed=bool(self._setting('work.dismissed.work:' + a['id']))) for a in items[:30]]
-
-    def _project_tracked_items(self, artifacts, tasks, records, timestamp):
-        for item in artifacts:
-            if item['kind'] != 'work':
-                continue
-            task = tasks.get(item.get('task_id'))
-            state, activity = item['status'], item['activity']
-            if item.get('_automatic_work') and task:
-                state, activity = self._automatic_work_state(task, tasks, records, timestamp)
-            elif item.get('_work_resuming') and task:
-                state, activity = self._automatic_work_state(task, tasks, records, timestamp)
-                if state == 'completed':
-                    state, activity = 'blocked', 'Needs attention'
-            elif state not in ('completed', 'cancelled'):
-                chain = self._work_chain(task, tasks, records, include_continuations=True) if task else {}
-                active = [t for t, _ in chain.values() if t['id'] != task['id']
-                          and t['status'] in ('queued', 'working', 'waiting', 'needs_you')]
-                if active and task['status'] in ('completed', 'failed', 'waiting'):
-                    if any(t['status'] == 'needs_you' for t in active):
-                        state, activity = 'waiting', 'Waiting for your decision'
-                    elif any(self._work_live(t, records, timestamp) for t in active):
-                        state, activity = 'working', 'In progress'
-                    else:
-                        state, activity = 'waiting', 'Waiting for another bot'
-                elif not task or task['status'] in ('failed', 'paused'):
-                    state, activity = 'blocked', 'Needs attention'
-                elif task['status'] == 'cancelled':
-                    state, activity = 'cancelled', 'Stopped'
-                elif task['status'] == 'needs_you':
-                    state, activity = 'waiting', 'Waiting for your decision'
-                elif state == 'working':
-                    if task['status'] == 'completed':
-                        state, activity = 'blocked', 'Needs attention'
-                    elif task['status'] == 'queued':
-                        state, activity = 'waiting', 'Queued'
-                    elif task.get('_waiting_on'):
-                        state, activity = 'waiting', 'Waiting for another bot'
-                    elif item.get('_work_turn') != task.get('_native_turn_id') or not self._work_live(task, records, timestamp):
-                        state, activity = 'waiting', 'Activity unconfirmed'
-            item.update(status=state, activity=activity, activity_state=state,
-                        activity_bot_id=item['bot_id'], activity_observed_at=timestamp.isoformat(),
-                        work_dismissal_id=self._setting('work.dismissed.work:' + item['id']))

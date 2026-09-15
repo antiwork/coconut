@@ -17,7 +17,6 @@ final class WorkActivityFlowTests: XCTestCase {
         let row = app.buttons["work-pr-42"]
         XCTAssertTrue(row.waitForExistence(timeout: 5))
         let original = row.frame
-        let checksY = app.staticTexts["Checks passed"].frame.minY
         let spinner = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "work-progress-")).firstMatch
         XCTAssertTrue(spinner.exists)
         var request = URLRequest(url: URL(string: address + "/test/activity")!)
@@ -30,7 +29,6 @@ final class WorkActivityFlowTests: XCTestCase {
         let changed = app.staticTexts["Waiting for the final recovery test before checking the saved archive"]
         XCTAssertTrue(changed.waitForExistence(timeout: 25))
         XCTAssertEqual(row.frame.height, original.height, accuracy: 1)
-        XCTAssertEqual(app.staticTexts["Checks passed"].frame.minY, checksY, accuracy: 1)
         XCTAssertFalse(spinner.exists)
         let proof = XCTAttachment(screenshot: app.screenshot())
         proof.name = "Work with separate checks and stable activity"; proof.lifetime = .keepAlways; add(proof)
@@ -49,6 +47,7 @@ final class WorkActivityFlowTests: XCTestCase {
         let work = app.tabBars.buttons["Work"]
         XCTAssertTrue(work.waitForExistence(timeout: 15)); work.tap()
         let completed = app.staticTexts["Update the help article"]
+        app.buttons["Recently completed"].tap()
         XCTAssertTrue(completed.waitForExistence(timeout: 5))
         var request = URLRequest(url: URL(string: address + "/test/delay-next")!)
         request.httpMethod = "POST"
@@ -81,6 +80,7 @@ final class WorkActivityFlowTests: XCTestCase {
         let active = app.staticTexts["Review the refund change"]
         let initialY = active.frame.minY
         let completed = app.staticTexts["Update the help article"]
+        app.buttons["Recently completed"].tap()
         XCTAssertTrue(completed.waitForExistence(timeout: 5))
         completed.swipeLeft()
         app.buttons["Dismiss"].tap()

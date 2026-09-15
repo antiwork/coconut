@@ -26,6 +26,16 @@ final class TrackedWorkItemTests: XCTestCase {
         XCTAssertEqual(row.activity(at: date.addingTimeInterval(61)), "Status unavailable")
     }
 
+    func testProjectedActivityExpiresAfterDisconnect() throws {
+        var artifact = item()
+        artifact.workState = "working"
+        let row = try XCTUnwrap(TrackedWorkItem.tracked(in: [artifact]).first)
+        let date = try XCTUnwrap(artifact.createdAt.apiDate)
+        XCTAssertTrue(row.isWorking(at: date))
+        XCTAssertFalse(row.isWorking(at: date.addingTimeInterval(61)))
+        XCTAssertEqual(row.activity(at: date.addingTimeInterval(61)), "Status unavailable")
+    }
+
     @MainActor
     func testDismissUndoAndRepeatedDismissUseStableItemIdentity() async throws {
         let store = AppStore(demo: true)

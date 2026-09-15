@@ -4,7 +4,10 @@ struct TrackedWorkItem: Identifiable {
     let artifact: Artifact
     let pullRequest: TrackedPullRequest?
     var id: String { pullRequest?.id ?? "work:" + artifact.id }
-    var isFinished: Bool { pullRequest?.isFinished ?? ["completed", "cancelled"].contains(artifact.status) }
+    var isFinished: Bool {
+        if let state = artifact.workState { return ["completed", "cancelled"].contains(state) }
+        return pullRequest?.isFinished ?? ["completed", "cancelled"].contains(artifact.status)
+    }
 
     static func tracked(in artifacts: [Artifact], visibility: [String: Bool] = [:]) -> [Self] {
         let requests = TrackedPullRequest.tracked(in: artifacts, visibility: visibility)
@@ -18,6 +21,7 @@ struct TrackedWorkItem: Identifiable {
     }
 
     func activity(at date: Date) -> String {
+        if isFinished { return (artifact.workState ?? artifact.status) == "cancelled" ? "Stopped" : "Completed" }
         if artifact.status == "completed" { return "Completed" }
         if artifact.status == "cancelled" { return "Stopped" }
         guard let observed = artifact.activityObservedAt?.apiDate, date.timeIntervalSince(observed) < 60 else {
@@ -27,7 +31,7 @@ struct TrackedWorkItem: Identifiable {
     }
 
     func isWorking(at date: Date) -> Bool {
-        guard !isFinished, artifact.activityState == "working",
+        guard !isFinished, (artifact.workState ?? artifact.activityState) == "working",
               let observed = artifact.activityObservedAt?.apiDate else { return false }
         return date.timeIntervalSince(observed) < 60
     }

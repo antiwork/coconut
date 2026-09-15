@@ -359,6 +359,11 @@ struct Artifact: Codable, Identifiable, Equatable, Sendable {
     var activityObservedAt: String? = nil
     var activityBotId: String? = nil
     var workDismissalId: String? = nil
+    var workState: String? = nil
+    var workNextStep: String? = nil
+    var workDecisionId: String? = nil
+    var completionCondition: String? = nil
+    var completionEvidence: String? = nil
 }
 
 

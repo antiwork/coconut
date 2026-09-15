@@ -31,7 +31,7 @@ class WorkReportContinuationTests(unittest.TestCase):
 
     def test_completed_report_does_not_hide_waiting_work(self):
         self.setup_continuation()
-        self.assertEqual(self.row()['activity_state'], 'waiting')
+        self.assertEqual(self.row()['work_state'], 'needs_recovery')
         self.assertNotEqual(self.row()['activity'], 'Work finished')
         self.assertNotEqual(self.row()['activity'], 'Reviewing with Fable')
 
@@ -40,6 +40,6 @@ class WorkReportContinuationTests(unittest.TestCase):
         self.service.running[original['id']] = threading.current_thread()
         try:
             self.assertEqual(self.row()['activity_state'], 'working')
-            self.assertEqual(self.row()['activity'], 'Working')
+            self.assertEqual(self.row()['activity'], 'In progress')
         finally:
             self.service.running.clear()

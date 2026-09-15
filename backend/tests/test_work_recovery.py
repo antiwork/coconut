@@ -33,8 +33,8 @@ class WorkRecoveryTests(unittest.TestCase):
         self.task = retry
         self.start(status='needs_you')
         self.service.running.clear()
-        self.assertEqual(self.sync()[0]['activity'], 'Waiting for your decision')
-        self.start(status='completed')
+        self.assertEqual(self.sync()[0]['work_state'], 'needs_recovery')
+        self.start(status='completed', _work_todos={'todos': [dict(id='coconut-assignment', status='completed', content='Verified the requested result.')]})
         self.service.running.clear()
         self.assertEqual(self.sync()[0]['status'], 'completed')
 
@@ -53,7 +53,7 @@ class WorkRecoveryTests(unittest.TestCase):
         self.assertEqual(rows[0]['activity'], 'In progress')
         self.assertEqual(self.service._get('tasks', original['id'])['status'], 'failed')
         self.assertTrue(self.service._get('artifacts', duplicate['id'])['_hidden'])
-        self.start(status='completed')
+        self.start(status='completed', _work_todos={'todos': [dict(id='coconut-assignment', status='completed', content='Verified the requested result.')]})
         self.service.running.clear()
         self.sync()
         self.write('POST', f'/v1/work/items/{row["id"]}/dismiss', {'dismissal_id': 'done'})
@@ -67,7 +67,7 @@ class WorkRecoveryTests(unittest.TestCase):
         duplicate.update(id='dismissed-duplicate', task_id=retry['id'], status='completed', activity='Completed')
         self.service._put('artifacts', duplicate)
         self.task = retry
-        self.start(status='completed')
+        self.start(status='completed', _work_todos={'todos': [dict(id='coconut-assignment', status='completed', content='Verified the requested result.')]})
         self.service.running.clear()
         self.write('POST', '/v1/work/items/dismissed-duplicate/dismiss', {'dismissal_id': 'dismissed'})
         rows = self.sync()
@@ -162,14 +162,14 @@ class WorkRecoveryTests(unittest.TestCase):
         self.start()
         self.assertEqual(self.sync()[0]['activity'], 'In progress')
         updated = self.service._register_work(retry['id'], dict(key='export', title='Export account data',
-            activity='Export saved', status='completed'))
+            activity='Export saved', status='completed', completion_evidence='Read the saved export; all records are present.'))
         self.assertEqual(updated['id'], row['id'])
         self.assertEqual(self.sync()[0]['status'], 'completed')
 
     def test_completed_requests_and_separate_tasks_do_not_combine(self):
         self.start()
         original = self.sync()[0]
-        self.start(status='completed')
+        self.start(status='completed', _work_todos={'todos': [dict(id='coconut-assignment', status='completed', content='Verified the requested result.')]})
         self.service.running.clear()
         self.sync()
         self.task = self.write('POST', f'/v1/tasks/{self.task["id"]}/replies', {'text': 'Investigate another issue'})

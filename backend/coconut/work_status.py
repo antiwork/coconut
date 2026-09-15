@@ -67,7 +67,8 @@ class WorkStatus:
         if worker and worker.is_alive():
             return True
         return any(r['task_id'] == task['id'] and subscription(r) and not r.get('_process_delivery')
-                   and r.get('turn_id') == task.get('_native_turn_id')
+                   and (r.get('turn_id') == task.get('_native_turn_id')
+                        or (self._completion_context(r) and self._can_resume_completion(task, self._get('bots', task['bot_id']), r)))
                    and r.get('_process_status') == 'running' and r.get('_process_observed_at')
                    and (timestamp - datetime.fromisoformat(r['_process_observed_at'].replace('Z', '+00:00'))).total_seconds() < 45
                    for r in records)
@@ -85,102 +86,8 @@ class WorkStatus:
         return sorted(urls)
 
     def _work_projection(self, artifacts):
-        groups = {}
-        tasks = {t['id']: t for t in self._all('tasks')}
-        records = self._all('native_receipts')
-        decisions = self._all('decisions')
-        timestamp = datetime.now(timezone.utc)
-        for artifact in artifacts:
-            if artifact['kind'] == 'pr':
-                groups.setdefault(artifact['url'].lower(), []).append(artifact)
-        for url, peers in groups.items():
-            owner = self._pr_review_owner(peers)
-            reported = [a for a in peers if a.get('_activity') and self._pr_review_source_current(a)]
-            source = max(reported, key=lambda a: a['_activity_at']) if reported else owner
-            if owner and tasks[owner['_review_task_id']]['status'] in ('queued', 'working', 'waiting', 'needs_you'):
-                source = owner
-            activity, state = None, None
-            task = tasks.get((source or {}).get('_review_task_id'))
-            if task:
-                chain = self._work_chain(task, tasks, records)
-                latest = max(peers, key=lambda a: (a.get('observed_at') or a['created_at'], a.get('checked_at') or a['created_at'], a['id']))
-                active_states = ('queued', 'working', 'waiting', 'needs_you')
-                current_reports = [a for a in reported if a.get('_activity_task_id') in tasks
-                                   and a['_activity_at'] >= task['created_at']
-                                   and not self._get('exchanges', tasks[a['_activity_task_id']]['exchange_id']).get('cancelled')
-                                   and a.get('_activity_head') == latest.get('head_sha')
-                                   and (a.get('_activity_turn') == tasks[a['_activity_task_id']].get('_native_turn_id')
-                                        or tasks[a['_activity_task_id']]['status'] in active_states)
-                                   and tasks[a['_activity_task_id']]['status'] != 'cancelled'
-                                   and self._work_chain(tasks[a['_activity_task_id']], tasks, records)]
-                if current_reports:
-                    # A completed status report cannot replace unfinished work on the same PR.
-                    active_report = max(current_reports, key=lambda a:
-                        (tasks[a['_activity_task_id']]['status'] in active_states, a['_activity_at']))
-                    reported_task = tasks[active_report['_activity_task_id']]
-                    # Reporting a new phase changes presentation, not the review's return route.
-                    if reported_task['exchange_id'] != task['exchange_id']:
-                        chain = {}
-                    chain.update(self._work_chain(reported_task, tasks, records))
-                def report(candidate):
-                    matches = [a for a in peers if a.get('_activity')
-                               and a.get('_activity_task_id') == candidate['id']
-                               and a.get('_activity_turn') == candidate.get('_native_turn_id')
-                               and a.get('_activity_head') == latest.get('head_sha')]
-                    return max(matches, key=lambda a: a['_activity_at']) if matches else {}
-                def priority(pair):
-                    candidate, depth = pair
-                    phase = report(candidate).get('_activity_state')
-                    blocked = candidate['status'] == 'failed' or phase == 'blocked'
-                    descendants = self._work_chain(candidate, tasks, records) if blocked else {}
-                    progressing = any(t['id'] != candidate['id'] and t['status'] in ('queued', 'working', 'waiting', 'needs_you')
-                                      for t, _ in descendants.values())
-                    urgent = 4 if candidate['status'] == 'needs_you' else 3 if blocked and not progressing else 0
-                    live = candidate['status'] in ('working', 'waiting') and self._work_live(candidate, records, timestamp)
-                    return (max(urgent, 2 if live else 0),
-                            candidate['status'] in ('queued', 'working', 'waiting', 'needs_you', 'paused', 'failed'),
-                            depth, candidate['updated_at'], candidate['id'])
-                if chain:
-                    task, _ = max(chain.values(), key=priority)
-                status = task['status']
-                selected = report(task)
-                label = selected.get('_activity')
-                phase = selected.get('_activity_state', 'working')
-                current = bool(selected)
-                live = self._work_live(task, records, timestamp)
-                if status == 'needs_you':
-                    activity, state = 'Waiting for your decision', 'waiting'
-                elif status == 'failed':
-                    activity, state = 'Needs attention', 'blocked'
-                elif status == 'cancelled':
-                    activity, state = 'Stopped', 'blocked'
-                elif label and current and phase == 'blocked':
-                    activity, state = label, 'blocked'
-                elif live and status in ('working', 'waiting'):
-                    activity, state = (label if label and current else 'Working'), 'working'
-                elif status == 'queued':
-                    activity, state = 'Queued', 'waiting'
-                elif status == 'waiting':
-                    waits = [r for r in records if r['task_id'] == task['id'] and r.get('_wait_task_id') and not r.get('_process_delivery')]
-                    reason = waits[-1]['action']['arguments']['reason'] if waits else None
-                    activity, state = (reason or ('Waiting for another bot' if task.get('_waiting_on') else 'Activity unconfirmed')), 'waiting'
-                elif status == 'completed':
-                    if phase == 'ready':
-                        observed = latest.get('observed_at')
-                        current &= bool(observed and latest.get('checks_state') == 'passed' and not latest.get('refresh_error')
-                                        and (timestamp - datetime.fromisoformat(observed.replace('Z', '+00:00'))).total_seconds() < 120)
-                    activity = label if label and current and phase in ('ready', 'blocked') else ('Review finished' if task.get('_pr_review') else 'Work finished')
-                    state = phase if label and current and phase in ('ready', 'blocked') else 'idle'
-                else:
-                    activity, state = 'Activity unconfirmed', 'waiting'
-            if any(d['status'] == 'pending' and (d.get('merge_pr_url') or '').lower() == url for d in decisions):
-                activity, state = 'Waiting for your decision', 'waiting'
-            dismissed = self._setting('work.dismissed.' + url)
-            for artifact in peers:
-                artifact.update(activity=activity, activity_state=state, activity_observed_at=timestamp.isoformat(),
-                                activity_bot_id=task['bot_id'] if task else None,
-                                work_dismissal_id=dismissed)
-        self._project_tracked_items(artifacts, tasks, records, timestamp)
+        self._project_work_outcomes(artifacts, {t['id']: t for t in self._all('tasks')},
+                                    self._all('native_receipts'), self._all('decisions'), datetime.now(timezone.utc))
         return artifacts
 
     def _restore_active_work(self, artifact):

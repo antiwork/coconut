@@ -34,7 +34,7 @@ class TrackedWorkTests(unittest.TestCase):
 
     def test_working_label_requires_live_execution(self):
         self.track()
-        self.assertEqual(self.row()['activity'], 'Activity unconfirmed')
+        self.assertEqual(self.row()['activity'], 'Needs recovery')
         self.service.running[self.task['id']] = threading.current_thread()
         try:
             self.assertEqual(self.row()['activity'], 'Preparing the export')
@@ -44,11 +44,11 @@ class TrackedWorkTests(unittest.TestCase):
             task = self.service._get('tasks', self.task['id'])
             task['status'] = 'completed'
             self.service._put('tasks', task)
-        self.assertEqual(self.row()['activity'], 'Needs attention')
+        self.assertEqual(self.row()['activity'], 'Needs recovery')
         self.assertNotEqual(self.row()['status'], 'completed')
 
     def test_completion_dismissal_and_undo_persist(self):
-        item = self.track(status='completed', activity='Export saved')
+        item = self.track(status='completed', activity='Export saved', completion_evidence='Read the saved export; all records are present.')
         path = f'/v1/work/items/{item["id"]}/dismiss'
         self.write('POST', path, dict(dismissal_id='first'))
         self.assertEqual(self.row()['work_dismissal_id'], 'first')
@@ -80,7 +80,7 @@ class TrackedWorkTests(unittest.TestCase):
         self.assertEqual(self.service._get('artifacts', item['id'])['activity'], 'Saving the export')
 
     def test_generic_dismissal_with_prs_in_the_same_list(self):
-        item = self.track(status='completed', activity='Export saved')
+        item = self.track(status='completed', activity='Export saved', completion_evidence='Read the saved export; all records are present.')
         self.service._register_pr_artifact(self.task['id'], dict(url='https://github.com/example/project/pull/42'))
         result = self.write('POST', f'/v1/work/items/{item["id"]}/dismiss', dict(dismissal_id='one'))
         self.assertTrue(result['ok'])
@@ -105,12 +105,13 @@ class DelegatedTrackedWorkTests(unittest.TestCase):
         return child
 
     def test_native_handoff_keeps_reported_work_waiting(self):
-        self.delegated()
+        self.delegated(status='queued')
         self.assertEqual(self.row()['status'], 'waiting')
-        self.assertEqual(self.row()['activity'], 'Waiting for another bot')
+        self.assertEqual(self.row()['activity'], 'Queued')
 
     def test_child_decision_reaches_reported_work(self):
-        self.delegated(status='needs_you')
+        child = self.delegated(status='needs_you')
+        self.service._put('decisions', dict(id='pending-card', task_id=child['id'], bot_id=self.bot['id'], status='pending'))
         self.assertEqual(self.row()['activity'], 'Waiting for your decision')
 
     def test_finished_or_unrelated_child_does_not_claim_progress(self):
@@ -118,4 +119,4 @@ class DelegatedTrackedWorkTests(unittest.TestCase):
                         dict(exchange_id='other'), dict(_is_return=True)):
             with self.subTest(changes=changes):
                 self.delegated(**changes)
-                self.assertEqual(self.row()['activity'], 'Needs attention')
+                self.assertEqual(self.row()['activity'], 'Needs recovery')

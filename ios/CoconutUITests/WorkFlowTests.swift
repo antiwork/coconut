@@ -15,7 +15,11 @@ final class WorkFlowTests: XCTestCase {
         XCTAssertTrue(task.waitForExistence(timeout: 5))
         XCTAssertTrue(pr.waitForExistence(timeout: 5))
         XCTAssertEqual(task.frame.height, pr.frame.height, accuracy: 1)
+        XCTAssertLessThanOrEqual(task.frame.height, 80)
         let completed = app.buttons["work-item-report-complete"]
+        let disclosure = app.buttons["Recently completed"]
+        if !disclosure.isHittable { app.collectionViews.firstMatch.swipeUp() }
+        XCTAssertTrue(disclosure.waitForExistence(timeout: 5)); disclosure.tap()
         if !completed.isHittable { app.collectionViews.firstMatch.swipeUp() }
         XCTAssertTrue(completed.isHittable)
         let start = completed.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5))
@@ -50,6 +54,15 @@ final class WorkFlowTests: XCTestCase {
             XCTAssertTrue(app.staticTexts[activity].waitForExistence(timeout: 25))
             XCTAssertTrue(item.exists)
         }
+        var decisionRequest = URLRequest(url: URL(string: address + "/test/work-state")!)
+        decisionRequest.httpMethod = "POST"
+        decisionRequest.httpBody = try JSONSerialization.data(withJSONObject: ["status": "needs_decision", "activity": "Waiting for your decision"])
+        _ = try await URLSession.shared.data(for: decisionRequest)
+        let review = app.buttons["work-decision-export-active"]
+        XCTAssertTrue(review.waitForExistence(timeout: 25)); review.tap()
+        XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.tabBars.buttons["Work"].isSelected)
         let proof = XCTAttachment(screenshot: app.screenshot())
         proof.name = "Persistent Work and pending Inbox badge"; proof.lifetime = .keepAlways; add(proof)
         var request = URLRequest(url: URL(string: address + "/test/work-state")!)
@@ -77,14 +90,14 @@ final class WorkFlowTests: XCTestCase {
         work.tap()
         XCTAssertTrue(app.staticTexts["Fix the refund email"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.staticTexts.matching(identifier: "Fix the refund email").count, 1)
-        XCTAssertTrue(app.staticTexts["Checks running"].exists)
-        XCTAssertTrue(app.staticTexts["Checks failed"].exists)
-        XCTAssertTrue(app.staticTexts["Status out of date"].exists)
-        XCTAssertTrue(app.staticTexts["Already merged"].exists)
-        XCTAssertTrue(app.staticTexts["Merged"].exists)
+        XCTAssertFalse(app.staticTexts["Checks running"].exists)
+        XCTAssertFalse(app.staticTexts["Already merged"].exists)
         XCTAssertTrue(app.staticTexts["Export account data"].exists)
         XCTAssertTrue(app.staticTexts["Preparing the export"].exists)
         let completed = app.buttons["work-item-report-complete"]
+        let disclosure = app.buttons["Recently completed"]
+        if !disclosure.isHittable { app.collectionViews.firstMatch.swipeUp() }
+        XCTAssertTrue(disclosure.waitForExistence(timeout: 5)); disclosure.tap()
         if !completed.isHittable { app.collectionViews.firstMatch.swipeUp() }
         XCTAssertTrue(completed.waitForExistence(timeout: 5))
         completed.swipeLeft()
@@ -109,7 +122,7 @@ final class WorkFlowTests: XCTestCase {
         request.httpMethod = "POST"
         let (_, response) = try await URLSession.shared.data(for: request)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
-        XCTAssertTrue(app.staticTexts["No tracked work"].waitForExistence(timeout: 25))
+        XCTAssertTrue(app.staticTexts["All caught up"].waitForExistence(timeout: 25))
         XCTAssertTrue(work.exists)
         let emptyProof = XCTAttachment(screenshot: app.screenshot())
         emptyProof.name = "Work uses a uniform empty background"

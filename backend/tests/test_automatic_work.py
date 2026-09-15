@@ -55,7 +55,7 @@ class AutomaticWorkTests(unittest.TestCase):
         self.service.running.clear()
         waiting = self.sync()[0]
         self.assertEqual(waiting['id'], item['id'])
-        self.assertEqual(waiting['status'], 'waiting')
+        self.assertEqual(waiting['work_state'], 'needs_recovery')
         self.start(_native_turn_id='next-turn')
         self.assertEqual(self.sync()[0]['id'], item['id'])
         self.assertEqual(self.sync()[0]['status'], 'working')
@@ -63,7 +63,7 @@ class AutomaticWorkTests(unittest.TestCase):
     def test_completion_can_be_dismissed_and_stays_dismissed(self):
         self.start()
         item = self.sync()[0]
-        self.start(status='completed')
+        self.start(status='completed', _work_todos={'todos': [dict(id='coconut-assignment', status='completed', content='Verified the requested result.')]})
         self.service.running.clear()
         self.assertEqual(self.sync()[0]['status'], 'completed')
         self.write('POST', f'/v1/work/items/{item["id"]}/dismiss', dict(dismissal_id='dismiss'))
@@ -127,8 +127,8 @@ class AutomaticWorkTests(unittest.TestCase):
     def test_existing_key_replaces_new_automatic_entry(self):
         self.start()
         original = self.service._register_work(self.task['id'], dict(key='investigation', title='Investigate logs',
-            activity='Findings ready', status='completed'))
-        self.start(status='completed')
+            activity='Findings ready', status='completed', completion_evidence='Verified the log findings.'))
+        self.start(status='completed', _work_todos={'todos': [dict(id='coconut-assignment', status='completed', content='Verified the requested result.')]})
         self.service.running.clear()
         self.task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Continue the investigation', 'mode': 'queue'})
         self.start()

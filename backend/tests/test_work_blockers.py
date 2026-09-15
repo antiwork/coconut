@@ -25,7 +25,7 @@ class WorkBlockerTests(unittest.TestCase):
 
     def test_live_watcher_cannot_hide_failed_work(self):
         self.prepare(); blocked = self.blocker()
-        self.assertEqual(self.row()['activity'], 'Needs attention')
+        self.assertEqual(self.row()['activity'], 'Needs recovery')
         self.assertEqual(self.row()['activity_state'], 'blocked')
         self.assertEqual(self.row()['activity_bot_id'], blocked['bot_id'])
 
@@ -64,3 +64,14 @@ class WorkBlockerTests(unittest.TestCase):
             self.assertEqual(self.service._all('artifacts')[0]['_review_task_id'], self.root['id'])
         finally:
             self.service.running.clear()
+
+    def test_recovery_routes_to_the_failed_bot_instead_of_the_watcher(self):
+        self.prepare()
+        bot = dict(self.service._get('bots', self.bot['id']), id=str(uuid4()))
+        bot['profile_id'] = bot['id']
+        self.service._put('bots', bot)
+        blocked = self.blocker()
+        blocked['bot_id'] = bot['id']
+        self.service._put('tasks', blocked)
+        self.assertEqual(self.row()['work_state'], 'needs_recovery')
+        self.assertEqual(self.row()['activity_bot_id'], bot['id'])

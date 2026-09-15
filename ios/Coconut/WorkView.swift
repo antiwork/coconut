@@ -87,43 +87,41 @@ struct WorkView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let isVisible: Bool
     let openConversation: (ConversationRoute) -> Void
-    @ScaledMetric(relativeTo: .body) private var titleHeight: CGFloat = 42
-    @ScaledMetric(relativeTo: .caption) private var detailHeight: CGFloat = 36
+    @ScaledMetric(relativeTo: .body) private var contentHeight: CGFloat = 64
     @State private var requestingUpdates: Set<String> = []
+    @State private var showCompleted = false
     private var items: [TrackedWorkItem] { TrackedWorkItem.tracked(in: store.artifacts, visibility: store.workVisibility) }
 
     var body: some View {
         List {
-            if items.isEmpty {
-                Text("No tracked work")
+            if items.allSatisfy(\.isFinished) {
+                Text("All caught up")
                     .font(.body).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 220)
                     .listRowBackground(BoardStyle.paper)
                     .listRowSeparator(.hidden)
                     .accessibilityIdentifier("work-empty")
             }
-            ForEach(items) { item in
-                workRow(item)
-                    .contextMenu {
-                        Button("Get update", systemImage: "arrow.clockwise") { getUpdate(item.artifact) }
-                            .disabled(requestingUpdates.contains(item.artifact.id))
-                        if let pr = item.pullRequest {
-                            Link(destination: pr.url) { Label("Open pull request", systemImage: "arrow.up.right") }
-                        }
-                    }
-                    .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
-                    .listRowBackground(BoardStyle.paper)
-                    .listRowSeparator(.hidden)
-                    .navigationLinkIndicatorVisibility(.hidden)
-                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        if item.isFinished {
-                            Button(role: .destructive) {
-                                store.dismissWork(item)
-                            } label: { Label("Dismiss", systemImage: "xmark") }
-                            .tint(.gray)
-                        }
-                    }
+            ForEach(items.filter { !$0.isFinished }) { item in
+                row(item)
+            }
+            if items.contains(where: \.isFinished) {
+                Button {
+                    withAnimation(reduceMotion ? nil : .smooth(duration: 0.22)) { showCompleted.toggle() }
+                } label: {
+                    HStack {
+                        Text("Recently completed")
+                        Spacer()
+                        Image(systemName: "chevron.right").rotationEffect(.degrees(showCompleted ? 90 : 0))
+                    }.frame(minHeight: 44)
+                }
+                .font(.subheadline).foregroundStyle(.secondary)
+                .listRowBackground(BoardStyle.paper).listRowSeparator(.hidden)
+                .accessibilityIdentifier("work-completed")
+                .accessibilityValue(showCompleted ? "Expanded" : "Collapsed")
+                if showCompleted {
+                    ForEach(items.filter(\.isFinished)) { item in row(item) }
+                }
             }
         }
         .listStyle(.plain)
@@ -178,64 +176,89 @@ struct WorkView: View {
         }
     }
 
-    @ViewBuilder
-    private func workRow(_ item: TrackedWorkItem) -> some View {
-        Button { openWork(item.artifact) } label: {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(item.artifact.title).font(.body.weight(.semibold))
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
-                    .foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
-                    .frame(minHeight: dynamicTypeSize.isAccessibilitySize ? nil : titleHeight, alignment: .bottomLeading)
-                TimelineView(.periodic(from: .now, by: 15)) { context in
-                    VStack(alignment: .leading, spacing: 5) {
-                        if let pr = item.pullRequest {
-                            HStack(spacing: 6) {
-                                Text("\(pr.repository) #\(pr.number)" + (!pr.isFinished && pr.artifact.draft == true ? " · Draft" : ""))
-                                    .foregroundStyle(.secondary)
-                                Text("·").foregroundStyle(.tertiary).accessibilityHidden(true)
-                                Text(pr.checksLabel(at: context.date))
-                                    .foregroundStyle(pr.checksColor(at: context.date, scheme: colorScheme))
-                                    .layoutPriority(1)
-                            }.font(.caption).lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            if !pr.isFinished {
-                                activity(pr.activityLabel(at: context.date) ?? "No activity reported", item: item, at: context.date, lines: 1)
-                            }
-                        } else {
-                            activity(item.activity(at: context.date), item: item, at: context.date)
-                        }
-                    }
-                    .frame(minHeight: dynamicTypeSize.isAccessibilitySize ? nil : detailHeight, alignment: .top)
+    private func row(_ item: TrackedWorkItem) -> some View {
+        workRow(item)
+            .contextMenu {
+                Button("Ask for progress", systemImage: "arrow.clockwise") { getUpdate(item.artifact) }
+                    .disabled(requestingUpdates.contains(item.artifact.id))
+                if let pr = item.pullRequest {
+                    Link(destination: pr.url) { Label("Open pull request", systemImage: "arrow.up.right") }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 12)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(.primary.opacity(0.10)).frame(height: 0.5)
-                    .accessibilityHidden(true)
+            .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
+            .listRowBackground(BoardStyle.paper)
+            .listRowSeparator(.hidden)
+            .navigationLinkIndicatorVisibility(.hidden)
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                if item.isFinished {
+                    Button(role: .destructive) { store.dismissWork(item) } label: {
+                        Label("Dismiss", systemImage: "xmark")
+                    }.tint(.gray)
+                }
             }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityHint("Opens the bot conversation")
-        .accessibilityIdentifier(item.pullRequest.map { "work-pr-\($0.number)" } ?? "work-item-\(item.artifact.id)")
     }
 
-    private func activity(_ label: String, item: TrackedWorkItem, at date: Date, lines: Int = 2) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(label).font(.caption)
-                .foregroundStyle(item.color(at: date, scheme: colorScheme))
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : lines)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            // Reserve the indicator's space while activity changes.
-            ZStack {
-                if item.isWorking(at: date) {
-                    ProgressView().controlSize(.mini)
-                        .accessibilityLabel("Working")
-                        .accessibilityIdentifier("work-progress-\(item.artifact.id)")
+    private func workRow(_ item: TrackedWorkItem) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            Button { openWork(item.artifact) } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.artifact.title).font(.body.weight(.medium))
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    TimelineView(.periodic(from: .now, by: 15)) { context in
+                        Text(item.activity(at: context.date))
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-            }.frame(width: 16, height: 16)
+                .frame(maxWidth: .infinity, minHeight: dynamicTypeSize.isAccessibilitySize ? nil : contentHeight, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Discusses this work with its context attached")
+            .accessibilityIdentifier(item.pullRequest.map { "work-pr-\($0.number)" } ?? "work-item-\(item.artifact.id)")
+            if let id = item.artifact.workDecisionId,
+               let decision = store.decisions.first(where: { $0.id == id && $0.isPending }) {
+                Button {
+                    openConversation(store.decisionChatRoute(for: decision))
+                } label: {
+                    Image(systemName: "arrow.right.circle")
+                        .font(.title3).frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Review decision")
+                .accessibilityIdentifier("work-decision-\(item.artifact.id)")
+            } else {
+                Menu {
+                    if let pr = item.pullRequest {
+                        Text("\(pr.repository) #\(pr.number)")
+                        Link(destination: pr.url) { Label("Open pull request", systemImage: "arrow.up.right") }
+                    }
+                    Button("Ask for progress", systemImage: "arrow.clockwise") { getUpdate(item.artifact) }
+                        .disabled(requestingUpdates.contains(item.artifact.id))
+                } label: {
+                    TimelineView(.periodic(from: .now, by: 15)) { context in
+                        ZStack {
+                            if item.isWorking(at: context.date) {
+                                ProgressView().controlSize(.mini)
+                                    .accessibilityIdentifier("work-progress-\(item.artifact.id)")
+                            } else {
+                                Image(systemName: "ellipsis").font(.body)
+                            }
+                        }.frame(width: 44, height: 44)
+                    }
+                }
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Work actions")
+                .accessibilityIdentifier("work-actions-\(item.artifact.id)")
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(.primary.opacity(0.10)).frame(height: 0.5).accessibilityHidden(true)
         }
     }
 }
