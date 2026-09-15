@@ -171,11 +171,11 @@ class NativeBridge:
 
 QUESTION_SCHEMA = {'name': 'coconut_ask', 'description': 'Create a required decision card in chat and Inbox, then wait for the human answer. Use for choices, permission, confirmation, missing information, and manual-step results. Never ask for these only in prose. The person can choose an option or type a reply. Honor standing preferences. Do not duplicate an existing pending card.',
                   'parameters': {'type': 'object', 'properties': {
-                      'title': {'type': 'string', 'description': 'One plain question about the outcome, usually eight words or fewer.'},
+                      'title': {'type': 'string', 'description': 'A short question naming the specific action and affected thing. Use Simplified Technical English. Example: Correct refunds in the tax report?'},
                       'explanation': {'type': 'string', 'description': 'Optional supporting detail for chat. Put only facts that change the choice in context or option explanations.'},
                       'options': {'type': 'array', 'minItems': 1, 'maxItems': 8,
-                                  'items': {'type': 'object', 'properties': {'id': {'type': 'string'}, 'label': {'type': 'string'},
-                                      'explanation': {'type': 'string', 'maxLength': 500, 'description': 'Plain effect of this choice, usually fifteen words or fewer. Keep important limits. Omit hashes, tool names, process steps, and repeated context.'}}, 'required': ['id', 'label', 'explanation']}},
+                                  'items': {'type': 'object', 'properties': {'id': {'type': 'string'}, 'label': {'type': 'string', 'description': 'A specific, neutral action. Prefer Fix the PR or Leave unchanged to Fix or Leave blocked.'},
+                                      'explanation': {'type': 'string', 'maxLength': 500, 'description': 'One short sentence adding the consequence or tradeoff of this option. Use an empty string if the label is sufficient. Preserve material limits; omit process steps and repeated context.'}}, 'required': ['id', 'label', 'explanation']}},
                       'recommended_option_id': {'type': 'string', 'description': 'Optional. Recommend one choice only when evidence and the user goal favor it. State the decisive reason once in context or that option explanation. Omit when no choice has a clear advantage. When revising, omit this field to remove the recommendation; do not send an empty ID.'}, 'predicted_option_id': {'type': 'string'}},
                   'required': ['title', 'context', 'options']}}
 
@@ -183,10 +183,10 @@ QUESTION_SCHEMA = {'name': 'coconut_ask', 'description': 'Create a required deci
 QUESTION_SCHEMA['parameters']['properties'].update({
     'previous_decision_id': {'type': 'string', 'description': 'For a follow-up question, the answered card ID from this conversation, including an approved draft or a completed earlier task. This links context only; it does not approve the new card. Explain the check result and why this next choice is needed in context. Coconut links the answer automatically during its immediate continuation.'},
     'merge_pr_url': {'type': 'string', 'description': 'Required for a question whose only action is whether to merge one PR. Use its full GitHub URL after coconut_track_pr. Coconut closes this card after a verified external merge. Omit for reviews, releases, or choices with other actions.'},
-    'context': {'type': 'string', 'description': 'Name the affected project or task and explain why this choice is needed. State the practical approval scope, including publishing limits. The card must make sense without nearby messages. Use short plain sentences; keep technical evidence in chat.'},
+    'context': {'type': 'string', 'description': 'Usually two or three short sentences: identify the work, explain the problem and its effect, then state what approval changes. Disclose public changes, external messages, cost, and other material limits in plain words. Keep process steps and detailed evidence in chat. Do not repeat risk or uncertainty.'},
     'evidence': {'type': 'string', 'description': 'One short sentence naming the decisive check or linking its source. Do not repeat context or invent checks.'},
-    'uncertainty': {'type': 'string', 'description': 'The material unknown that could change the choice. The card shows this text. State when original records remain unverified. Omit if none.'},
-    'risk': {'type': 'string', 'description': 'One short sentence: the material risk or recovery limit. Omit if none.'},
+    'uncertainty': {'type': 'string', 'description': 'One short sentence naming a remaining unknown that could change this decision. Resolve allowed checks before asking. Omit unrelated future caveats and unknowns already stated elsewhere.'},
+    'risk': {'type': 'string', 'description': 'One short sentence stating what could go wrong with the proposed action and who or what it affects. Add a verified impact or recovery limit when useful. Omit if there is no material risk. Do not invent reassurance or a risk rating.'},
 })
 try:
     from .message_drafts import DRAFT_SCHEMA
