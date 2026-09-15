@@ -3,7 +3,7 @@ from .background_processes import subscription
 
 
 class WorkModel:
-    def _work_outcome(self, item, tasks, records, decisions, contexts, timestamp, peers=None):
+    def _work_outcome(self, item, tasks, records, decisions, contexts, timestamp, peers=None, queue_positions=None):
         peers = peers or [item]
         linked = {}
         owner = tasks.get(item.get('task_id'), {})
@@ -108,7 +108,7 @@ class WorkModel:
             root = next((t for t in owner.get('_work_todos', {}).get('todos', []) if t['id'] == 'coconut-assignment'), None)
             if root and root['status'] == 'completed':
                 evidence = owner.get('summary') or root['content']
-        if item['kind'] == 'work' and (owner.get('status') == 'cancelled' or item['status'] == 'cancelled'):
+        if self._setting('work.cancelled.' + self._work_identity(item)) or (item['kind'] == 'work' and (owner.get('status') == 'cancelled' or item['status'] == 'cancelled')):
             state, activity, next_step = 'cancelled', 'Stopped', None
         elif evidence and item['kind'] == 'pr':
             state, activity, next_step = 'completed', 'Completed', None
@@ -143,6 +143,11 @@ class WorkModel:
                 activity = max(reports, key=lambda p: p.get('_activity_at', ''))['_activity']
             elif owner in live and item.get('_work_turn') == owner.get('_native_turn_id') and not item.get('_automatic_work') and not item.get('_work_resuming'):
                 activity = item['activity']
+            else:
+                activity = next((todo['content'] for task in reversed(live)
+                                 for todo in task.get('_work_todos', {}).get('todos', [])
+                                 if todo.get('status') == 'in_progress' and todo.get('id') != 'coconut-assignment'
+                                 and todo.get('content')), activity)
         actor = owner.get('bot_id') or item['bot_id']
         if state == 'needs_recovery' and blockers:
             actor = blockers[-1][0]['bot_id']
@@ -154,8 +159,15 @@ class WorkModel:
             actor = live[-1]['bot_id']
         elif queued:
             actor = queued[-1]['bot_id']
+        queue_position = None
+        if state == 'queued' and queue_positions is not None:
+            candidates = [task for task in queued if task['id'] in queue_positions]
+            if candidates:
+                next_task = min(candidates, key=lambda task: (queue_positions[task['id']], task['created_at'], task['id']))
+                queue_position, actor = queue_positions[next_task['id']], next_task['bot_id']
         return dict(work_state=state, activity=activity, work_next_step=next_step,
                     work_decision_id=pending[0]['id'] if pending and state == 'needs_decision' else None,
+                    work_queue_position=queue_position,
                     completion_condition=item.get('completion_condition') or item['title'], completion_evidence=evidence,
                     work_attempts=[dict(id=t['id'], state=t['status']) for t in attempts],
                     work_dependencies=dependencies,
@@ -165,6 +177,7 @@ class WorkModel:
 
     def _project_work_outcomes(self, artifacts, tasks, records, decisions, timestamp):
         contexts = self._all('contexts')
+        queue_positions = self._queue_positions(tasks, timestamp.timestamp())
         groups = {}
         for item in artifacts:
             if item['kind'] in ('pr', 'work'):
@@ -172,7 +185,7 @@ class WorkModel:
                 groups.setdefault(identity, []).append(item)
         for identity, peers in groups.items():
             latest = max(peers, key=lambda p: (p.get('observed_at') or p['created_at'], p.get('checked_at') or '', p['id']))
-            outcome = self._work_outcome(latest, tasks, records, decisions, contexts, timestamp, peers)
+            outcome = self._work_outcome(latest, tasks, records, decisions, contexts, timestamp, peers, queue_positions)
             for item in peers:
                 item.update(outcome)
                 if item['kind'] == 'work':

@@ -49,6 +49,10 @@ def main():
              title='Prepare the weekly report', status='completed', preview='', url=None, created_at=stamp,
              activity='Report saved', activity_state='completed', activity_observed_at=stamp),
     ]
+    state['artifacts'].append(dict(id='long-queued', bot_id=bot['id'], task_id=task['id'], kind='work',
+        title='Detect failed UPI purchases with late payments and verify that recovery does not charge the buyer again',
+        status='waiting', work_state='queued', activity='Queued', work_queue_position=3, activity_bot_id=bot['id'],
+        activity_state='waiting', activity_observed_at=stamp, preview='', created_at=stamp))
     device = str(uuid4())
 
     class Handler(BaseHTTPRequestHandler):
@@ -82,6 +86,10 @@ def main():
             elif url.path.startswith('/v1/work/items/') and url.path.endswith('/dismiss'):
                 item = next(a for a in state['artifacts'] if a['id'] == url.path.split('/')[-2])
                 item['work_dismissal_id'] = None if body.get('undo') else body['dismissal_id']
+                self.respond(dict(ok=True))
+            elif url.path.startswith('/v1/work/items/') and url.path.endswith('/cancel'):
+                item = next(a for a in state['artifacts'] if a['id'] == url.path.split('/')[-2])
+                item.update(status='cancelled', work_state='cancelled', activity='Stopped', activity_state='cancelled')
                 self.respond(dict(ok=True))
             elif url.path == '/v1/work/refresh':
                 self.respond(dict(ok=True))

@@ -962,6 +962,10 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
             raise ServiceError(400, 'Send a JSON object to a v1 route.')
         if method == 'POST' and len(parts) == 5 and parts[:2] == ['v1', 'work'] and parts[2] in ('pull-requests', 'items') and parts[4] == 'dismiss':
             return self._dismiss_work(parts[3], data)
+        if method == 'POST' and len(parts) == 5 and parts[:3] == ['v1', 'work', 'items'] and parts[4] == 'cancel':
+            return self._cancel_work(parts[3], callbacks)
+        if method == 'POST' and len(parts) == 5 and parts[:3] == ['v1', 'work', 'items'] and parts[4] == 'resume':
+            return self._resume_work(parts[3])
         if parts == ['v1', 'device', 'push']:
             if method == 'PUT':
                 return self.push.registration(device, data)
@@ -1555,7 +1559,9 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
             if blocked:
                 thread_id, parent_task_id = blocked['thread_id'], blocked['id']
         status = 'scheduled' if scheduled else 'queued'
-        task = dict(id=task_id, thread_id=thread_id or task_id, parent_task_id=parent_task_id, bot_id=bot['id'], conversation_bot_id=conversation_bot_id, session_id=bot['session_id'], source_bot_id=source_task['bot_id'] if source_task else None, source_task_id=source_task['id'] if source_task else None, exchange_id=exchange_id or self._new_exchange(), exchange_depth=source_task.get('exchange_depth', 0) + 1 if source_task else 0, title=text[:72], status=status, summary='Waiting for its scheduled time.' if scheduled else 'Queued', created_at=now(), updated_at=now(), scheduled_at=scheduled, _attachment_ids=attachments)
+        parent = self._get('tasks', parent_task_id) if parent_task_id and not source_task else None
+        title = work_item['title'] if work_item else (parent['title'] if parent and parent['status'] == 'failed' else text[:72])
+        task = dict(id=task_id, thread_id=thread_id or task_id, parent_task_id=parent_task_id, bot_id=bot['id'], conversation_bot_id=conversation_bot_id, session_id=bot['session_id'], source_bot_id=source_task['bot_id'] if source_task else None, source_task_id=source_task['id'] if source_task else None, exchange_id=exchange_id or self._new_exchange(), exchange_depth=source_task.get('exchange_depth', 0) + 1 if source_task else 0, title=title, status=status, summary='Waiting for its scheduled time.' if scheduled else 'Queued', created_at=now(), updated_at=now(), scheduled_at=scheduled, _attachment_ids=attachments)
         if work_item:
             task.update(_work_context_id=work_item['id'], _work_status_only=data.get('work_status_only', False))
         if self._task_paused(task):
@@ -1725,8 +1731,8 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
         for task_id in related - {task['id']}:
             self._cancel_one(self._get('tasks', task_id), callbacks)
 
-    def _cancel_one(self, task: dict, callbacks: list):
-        if task['status'] not in self.ACTIVE:
+    def _cancel_one(self, task: dict, callbacks: list, *, include_finished=False):
+        if task['status'] == 'cancelled' or (task['status'] not in self.ACTIVE and not include_finished):
             return
         task.pop('_return_pending', None)
         task.update(status='cancelled', summary='Cancelled. An action already executing may have finished.', updated_at=now())
@@ -1987,8 +1993,7 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
                                 checked_at=observation.checked_at, observed_at=observation.checked_at,
                                 refresh_error=None, pr_state=observation.pr_state,
                                 draft=observation.draft, checks_state=observation.checks_state)
-                if review_task and (not self._pr_review_source_current(existing) or (task_id is None and payload.get('review_task_id'))):
-                    existing['_review_task_id'] = review_task['id']
+                self._bind_pr_review(existing, review_task, transfer=task_id is None and bool(payload.get('review_task_id')))
                 self._set_work_activity(existing, task, payload)
                 self._put('artifacts', existing)
                 self._event('artifact.updated', self._public(existing), existing['bot_id'], existing['task_id'])
@@ -2091,11 +2096,9 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
                 bot = self._get('bots', task['bot_id'])
                 if bot['archived'] or bot.get('_deleted'):
                     continue
-                if task['status'] not in ('queued', 'scheduled') or (task['bot_id'] in active_bots and not task.get('_work_status_only')):
+                if task['bot_id'] in active_bots and not task.get('_work_status_only'):
                     continue
-                if task.get('scheduled_at') and datetime.fromisoformat(task['scheduled_at'].replace('Z', '+00:00')).timestamp() > time.time():
-                    continue
-                if self._task_paused(task) or self._continuation_blocked(task):
+                if not self._dispatch_eligible(task, time.time()):
                     continue
                 worker = threading.Thread(target=self._run_task, args=(task['id'],), daemon=True, name=f'task-{task["id"][:8]}')
                 self.running[task['id']] = worker
@@ -2103,6 +2106,24 @@ class Service(WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, 
                     active_bots.add(task['bot_id'])
                 worker.start()
             self.changed.wait(.2)
+
+    def _dispatch_eligible(self, task, timestamp):
+        if task['status'] not in ('queued', 'scheduled'):
+            return False
+        if task.get('scheduled_at') and datetime.fromisoformat(task['scheduled_at'].replace('Z', '+00:00')).timestamp() > timestamp:
+            return False
+        return not self._task_paused(task) and not self._continuation_blocked(task)
+
+    def _queue_positions(self, tasks, timestamp):
+        positions, counts = {}, {}
+        # Dictionary insertion order matches the dispatcher's durable row order.
+        for task in tasks.values():
+            if task.get('_work_status_only') or not self._dispatch_eligible(task, timestamp):
+                continue
+            bot_id = task['bot_id']
+            counts[bot_id] = counts.get(bot_id, 0) + 1
+            positions[task['id']] = counts[bot_id]
+        return positions
 
 
     def _history(self, bot_id: str) -> list[dict]:

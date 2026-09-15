@@ -2,7 +2,7 @@ import XCTest
 
 final class WorkFlowTests: XCTestCase {
     @MainActor
-    func testConsistentRowsAndFullSwipeDismissal() throws {
+    func testWrappingRowsAndFullSwipeDismissal() throws {
         guard let address = ProcessInfo.processInfo.environment["COCONUT_WORK_TEST_URL"] else { throw XCTSkip("Run the Work fixture.") }
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -14,10 +14,16 @@ final class WorkFlowTests: XCTestCase {
         let pr = app.buttons["work-pr-42"]
         XCTAssertTrue(task.waitForExistence(timeout: 5))
         XCTAssertTrue(pr.waitForExistence(timeout: 5))
-        XCTAssertEqual(task.frame.height, pr.frame.height, accuracy: 1)
-        XCTAssertLessThanOrEqual(task.frame.height, 80)
+        let long = app.buttons["work-item-long-queued"]
+        if !long.isHittable { app.collectionViews.firstMatch.swipeUp() }
+        XCTAssertTrue(long.waitForExistence(timeout: 5))
+        let title = app.staticTexts["Detect failed UPI purchases with late payments and verify that recovery does not charge the buyer again"]
+        XCTAssertGreaterThan(title.frame.height, 45)
+        XCTAssertGreaterThan(long.frame.height, task.frame.height)
+        XCTAssertFalse(app.activityIndicators["work-progress-long-queued"].exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "3rd in")).firstMatch.exists)
         let completed = app.buttons["work-item-report-complete"]
-        let disclosure = app.buttons["Recently completed"]
+        let disclosure = app.buttons["work-completed"]
         if !disclosure.isHittable { app.collectionViews.firstMatch.swipeUp() }
         XCTAssertTrue(disclosure.waitForExistence(timeout: 5)); disclosure.tap()
         if !completed.isHittable { app.collectionViews.firstMatch.swipeUp() }
@@ -30,8 +36,14 @@ final class WorkFlowTests: XCTestCase {
         app.buttons["work-undo"].tap()
         XCTAssertTrue(completed.waitForExistence(timeout: 5))
         let proof = XCTAttachment(screenshot: app.screenshot())
-        proof.name = "Consistent Work rows after swipe and undo"
+        proof.name = "Work with full titles after swipe and undo"
         proof.lifetime = .keepAlways; add(proof)
+        let menu = app.buttons["work-menu-long-queued"]
+        if !menu.isHittable { app.collectionViews.firstMatch.swipeDown() }
+        menu.tap()
+        app.buttons["Cancel work"].tap()
+        XCTAssertTrue(long.staticTexts["Stopped"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["work-item-export-active"].exists)
     }
 
     @MainActor
@@ -58,8 +70,10 @@ final class WorkFlowTests: XCTestCase {
         decisionRequest.httpMethod = "POST"
         decisionRequest.httpBody = try JSONSerialization.data(withJSONObject: ["status": "needs_decision", "activity": "Waiting for your decision"])
         _ = try await URLSession.shared.data(for: decisionRequest)
-        let review = app.buttons["work-decision-export-active"]
-        XCTAssertTrue(review.waitForExistence(timeout: 25)); review.tap()
+        let question = app.staticTexts["Needs you"]
+        XCTAssertTrue(question.waitForExistence(timeout: 25))
+        XCTAssertLessThan(item.frame.minY, app.buttons["work-pr-42"].frame.minY)
+        item.tap()
         XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.tabBars.buttons["Work"].isSelected)
@@ -79,7 +93,7 @@ final class WorkFlowTests: XCTestCase {
     }
 
     @MainActor
-    func testWorkListAndConversationNavigation() async throws {
+    func testZWorkListAndConversationNavigation() async throws {
         guard let address = ProcessInfo.processInfo.environment["COCONUT_WORK_TEST_URL"] else { throw XCTSkip("Run the Work fixture.") }
         continueAfterFailure = false
         let app = XCUIApplication()
@@ -95,7 +109,7 @@ final class WorkFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Export account data"].exists)
         XCTAssertTrue(app.staticTexts["Preparing the export"].exists)
         let completed = app.buttons["work-item-report-complete"]
-        let disclosure = app.buttons["Recently completed"]
+        let disclosure = app.buttons["work-completed"]
         if !disclosure.isHittable { app.collectionViews.firstMatch.swipeUp() }
         XCTAssertTrue(disclosure.waitForExistence(timeout: 5)); disclosure.tap()
         if !completed.isHittable { app.collectionViews.firstMatch.swipeUp() }

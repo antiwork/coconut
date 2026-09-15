@@ -65,7 +65,7 @@ class PullRequestReviews:
 
     def _migrate_pr_review_sources(self):
         for artifact in self._all('artifacts'):
-            if artifact['kind'] != 'pr' or artifact.get('_review_task_id') or not artifact.get('task_id'):
+            if artifact['kind'] != 'pr' or '_review_task_id' in artifact or not artifact.get('task_id'):
                 continue
             task = self._pr_review_source(artifact['bot_id'], artifact['task_id'])
             artifact['_review_task_id'] = task['id']
@@ -83,7 +83,7 @@ class PullRequestReviews:
         return task
 
     def _pr_review_source_current(self, artifact):
-        if not artifact.get('_review_task_id'):
+        if self._setting('work.cancelled.' + self._work_identity(artifact)) or not artifact.get('_review_task_id'):
             return False
         task = self._get('tasks', artifact['_review_task_id'])
         bot = self._get('bots', task['bot_id'])
@@ -96,7 +96,18 @@ class PullRequestReviews:
                 and task['session_id'] == bot['session_id']
                 and task.get('_conversation_epoch') == self._setting('conversation_epoch'))
 
+    def _pr_report_superseded(self, artifact, task):
+        for peer in self._all('artifacts'):
+            if peer['kind'] == 'pr' and peer.get('url', '').lower() == artifact['url'].lower() and peer.get('_review_task_id'):
+                owner = self._get('tasks', peer['_review_task_id'])
+                if owner.get('_work_context_id') and owner['created_at'] > task.get('created_at', ''):
+                    return True
+        return False
+
     def _bind_pr_review(self, artifact, task, *, transfer=False):
+        # A late report cannot replace an explicit resume from the person.
+        if task and not transfer and self._pr_report_superseded(artifact, task):
+            return
         if task and (transfer or not self._pr_review_source_current(artifact)) and artifact.get('_review_task_id') != task['id']:
             with self.transaction():
                 artifact['_review_task_id'] = task['id']
@@ -144,7 +155,8 @@ class PullRequestReviews:
                             continue
                         # One outstanding review per PR, even when several bots register it.
                         peers = [a for a in self._all('artifacts') if a['kind'] == 'pr' and a.get('url', '').lower() == artifact['url'].lower()]
-                        if self._pr_review_owner(peers)['id'] != artifact['id']:
+                        owner = self._pr_review_owner(peers)
+                        if not owner or owner['id'] != artifact['id']:
                             continue
                         if any(artifact['head_sha'] in self._pr_reviewed_heads(a) for a in peers):
                             continue

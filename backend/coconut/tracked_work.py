@@ -23,6 +23,13 @@ TRACK_WORK_SCHEMA = {
 
 
 class TrackedWork:
+    def _work_title(self, task):
+        parent = self._get('tasks', task['parent_task_id']) if task.get('parent_task_id') else None
+        fallback = parent['title'] if parent and parent['status'] == 'failed' else task['title']
+        return next((todo['content'] for todo in task.get('_work_todos', {}).get('todos', [])
+                     if todo.get('id') == 'coconut-assignment' and todo.get('content')
+                     and len(todo['content']) <= 120), fallback)
+
     def _canonical_work(self, item):
         seen = set()
         while item.get('_work_replaced_by') and item['id'] not in seen:
@@ -254,7 +261,7 @@ class TrackedWork:
                 if covered.intersection(chain):
                     continue
                 item = dict(id=uid(), bot_id=bot['id'], task_id=task['id'], kind='work', url=None, preview='',
-                            title=task['title'][:120], activity='In progress', status='working',
+                            title=self._work_title(task), activity='In progress', status='working',
                             created_at=now(), observed_at=now(), _work_key='task-' + task['id'], _automatic_work=True)
                 artifacts.append(item)
                 covered.add(task['id'])
@@ -264,6 +271,12 @@ class TrackedWork:
                 if not item.get('_automatic_work') or item.get('_hidden') or item.get('task_id') not in tasks:
                     continue
                 task = tasks[item['task_id']]
+                if not item.get('_work_resuming'):
+                    title = self._work_title(task)
+                    if title != item['title'] and item['title'] == task['title']:
+                        item['title'] = title
+                        self._put('artifacts', item)
+                        self._event('artifact.updated', self._public(item), item['bot_id'], task['id'])
                 if task.get('_source_audit_prompt'):
                     item['_hidden'] = True
                     self._put('artifacts', item)
@@ -317,6 +330,8 @@ class TrackedWork:
                     self._carry_work_history(item, dict(item))
             if item is None:
                 item = next((a for a in self._all('artifacts') if a.get('_automatic_work') and a.get('task_id') == task_id), None)
+            if item and self._setting('work.cancelled.' + self._work_identity(item)):
+                raise ServiceError(409, 'The person cancelled this work. Start new work only if they request it.')
             created = item is None
             details = {}
             for field, limit in (('completion_condition', 500), ('next_step', 160), ('completion_evidence', 2000)):

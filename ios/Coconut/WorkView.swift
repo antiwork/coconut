@@ -83,46 +83,76 @@ struct WorkView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let isVisible: Bool
     let openConversation: (ConversationRoute) -> Void
-    @ScaledMetric(relativeTo: .body) private var contentHeight: CGFloat = 64
     @State private var requestingUpdates: Set<String> = []
     @State private var showCompleted = false
+    @State private var cancellingItems: Set<String> = []
     private var items: [TrackedWorkItem] { TrackedWorkItem.tracked(in: store.artifacts, visibility: store.workVisibility) }
+
+    @State private var displayedOrder: [String] = []
+    @State private var isInteracting = false
+
+    private var proposedOrder: [String] {
+        var result: [String] = []
+        let decisions = items.filter { !$0.isFinished && $0.needsDecision }
+        let active = items.filter { !$0.isFinished && !$0.needsDecision }
+        if !decisions.isEmpty { result += ["heading:needs-you"] + decisions.map(\.id) }
+        if !active.isEmpty { result += ["heading:active"] + active.map(\.id) }
+        if decisions.isEmpty && active.isEmpty { result.append("empty") }
+        if items.contains(where: \.isFinished) {
+            result.append("completed-toggle")
+            if showCompleted { result += items.filter(\.isFinished).map(\.id) }
+        }
+        return result
+    }
+
+    private func updateOrder(animated: Bool = true) {
+        guard !isInteracting else { return }
+        withAnimation(animated && !reduceMotion ? .spring(response: 0.35, dampingFraction: 1) : nil) {
+            displayedOrder = proposedOrder
+        }
+    }
 
     var body: some View {
         List {
-            if items.allSatisfy(\.isFinished) {
-                Text("All caught up")
-                    .font(.body).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 220)
-                    .listRowBackground(BoardStyle.paper)
-                    .listRowSeparator(.hidden)
-                    .accessibilityIdentifier("work-empty")
-            }
-            ForEach(items.filter { !$0.isFinished }) { item in
-                row(item)
-            }
-            if items.contains(where: \.isFinished) {
-                Button {
-                    withAnimation(reduceMotion ? nil : .smooth(duration: 0.22)) { showCompleted.toggle() }
-                } label: {
-                    HStack {
-                        Text("Recently completed")
-                        Spacer()
-                        Image(systemName: "chevron.right").rotationEffect(.degrees(showCompleted ? 90 : 0))
-                    }.frame(minHeight: 44)
+            ForEach(displayedOrder, id: \.self) { identity in
+                if identity.hasPrefix("heading:") {
+                    Text(identity == "heading:needs-you" ? "Needs you" : "Active")
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                        .padding(.top, 12).padding(.bottom, 4)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
+                        .listRowBackground(BoardStyle.paper).listRowSeparator(.hidden)
+                } else if identity == "empty" {
+                    Text("All caught up")
+                        .font(.body).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 220)
+                        .listRowBackground(BoardStyle.paper).listRowSeparator(.hidden)
+                        .accessibilityIdentifier("work-empty")
+                } else if identity == "completed-toggle" {
+                    Button { showCompleted.toggle() } label: {
+                        HStack {
+                            Text("Completed")
+                            Spacer()
+                            Image(systemName: "chevron.right").rotationEffect(.degrees(showCompleted ? 90 : 0))
+                        }.frame(minHeight: 44)
+                    }
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .listRowBackground(BoardStyle.paper).listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
+                    .accessibilityIdentifier("work-completed")
+                    .accessibilityValue(showCompleted ? "Expanded" : "Collapsed")
+                } else if let item = items.first(where: { $0.id == identity }) {
+                    row(item)
                 }
-                .font(.subheadline).foregroundStyle(.secondary)
-                .listRowBackground(BoardStyle.paper).listRowSeparator(.hidden)
-                .accessibilityIdentifier("work-completed")
-                .accessibilityValue(showCompleted ? "Expanded" : "Collapsed")
-                if showCompleted {
-                    ForEach(items.filter(\.isFinished)) { item in row(item) }
-                }
             }
+        }
+        .onAppear { updateOrder(animated: false) }
+        .onChange(of: proposedOrder) { updateOrder() }
+        .onScrollPhaseChange { _, phase in
+            isInteracting = phase != .idle
+            if !isInteracting { updateOrder() }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -134,7 +164,7 @@ struct WorkView: View {
                 ToolbarItem(placement: .topBarTrailing) { undoButton }
             }
         }
-        .onDisappear { store.workUndo = [] }
+        .onDisappear { store.workUndo = []; isInteracting = false }
         .background(BoardStyle.paper)
         .refreshable { await store.refreshWork() }
         .task(id: isVisible && scenePhase == .active) {
@@ -178,13 +208,7 @@ struct WorkView: View {
 
     private func row(_ item: TrackedWorkItem) -> some View {
         workRow(item)
-            .contextMenu {
-                Button("Ask for progress", systemImage: "arrow.clockwise") { getUpdate(item.artifact) }
-                    .disabled(requestingUpdates.contains(item.artifact.id))
-                if let pr = item.pullRequest {
-                    Link(destination: pr.url) { Label("Open pull request", systemImage: "arrow.up.right") }
-                }
-            }
+            .contextMenu { workActions(item) }
             .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
             .listRowBackground(BoardStyle.paper)
             .listRowSeparator(.hidden)
@@ -198,65 +222,97 @@ struct WorkView: View {
             }
     }
 
+    @ViewBuilder
+    private func workActions(_ item: TrackedWorkItem) -> some View {
+        Button("Ask for progress", systemImage: "arrow.clockwise") { getUpdate(item.artifact) }
+            .disabled(requestingUpdates.contains(item.artifact.id))
+        if let pr = item.pullRequest {
+            Link(destination: pr.url) { Label("Open pull request", systemImage: "arrow.up.right") }
+        }
+        if item.artifact.workState == "cancelled" {
+            Button("Resume work", systemImage: "play") { Task { await store.resumeWork(item) } }
+        } else if !item.isFinished {
+            Button("Cancel work", systemImage: "stop.circle", role: .destructive) {
+                guard cancellingItems.insert(item.id).inserted else { return }
+                Task {
+                    defer { cancellingItems.remove(item.id) }
+                    await store.cancelWork(item)
+                }
+            }
+            .disabled(cancellingItems.contains(item.id))
+            .accessibilityIdentifier("work-cancel-\(item.artifact.id)")
+        }
+    }
+
+    private func decision(for item: TrackedWorkItem) -> Decision? {
+        guard item.needsDecision, let identity = item.artifact.workDecisionId else { return nil }
+        return store.decisions.first { $0.id == identity && $0.isPending }
+    }
+
+    private func statusLabel(_ item: TrackedWorkItem, at date: Date) -> String {
+        if let decision = decision(for: item) { return decision.title }
+        let botName = store.bots.first { $0.id == (item.artifact.activityBotId ?? item.artifact.botId) }?.name ?? "this bot"
+        let label = item.activity(at: date)
+        guard label != "Status unavailable" else { return label }
+        if let queue = item.queueLabel(botName: botName) { return queue }
+        if label == "In progress" { return "Working on the next step" }
+        if label == "Needs recovery" { return "Stopped before finishing" }
+        return label
+    }
+
     private func workRow(_ item: TrackedWorkItem) -> some View {
-        HStack(alignment: .center, spacing: 8) {
-            Button { openWork(item.artifact) } label: {
-                VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .top, spacing: 4) {
+        Button {
+            if let decision = decision(for: item) {
+                openConversation(store.decisionChatRoute(for: decision))
+            } else {
+                openWork(item.artifact)
+            }
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(item.artifact.title).font(.body.weight(.medium))
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                         .foregroundStyle(.primary)
                         .fixedSize(horizontal: false, vertical: true)
                     TimelineView(.periodic(from: .now, by: 15)) { context in
-                        Text(item.activity(at: context.date))
-                            .font(.caption).foregroundStyle(.secondary)
-                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .frame(maxWidth: .infinity, minHeight: dynamicTypeSize.isAccessibilitySize ? nil : contentHeight, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Discusses this work with its context attached")
-            .accessibilityIdentifier(item.pullRequest.map { "work-pr-\($0.number)" } ?? "work-item-\(item.artifact.id)")
-            if let id = item.artifact.workDecisionId,
-               let decision = store.decisions.first(where: { $0.id == id && $0.isPending }) {
-                Button {
-                    openConversation(store.decisionChatRoute(for: decision))
-                } label: {
-                    Image(systemName: "arrow.right.circle")
-                        .font(.title3).frame(width: 44, height: 44)
-                }
-                .accessibilityLabel("Review decision")
-                .accessibilityIdentifier("work-decision-\(item.artifact.id)")
-            } else {
-                Menu {
-                    if let pr = item.pullRequest {
-                        Text("\(pr.repository) #\(pr.number)")
-                        Link(destination: pr.url) { Label("Open pull request", systemImage: "arrow.up.right") }
-                    }
-                    Button("Ask for progress", systemImage: "arrow.clockwise") { getUpdate(item.artifact) }
-                        .disabled(requestingUpdates.contains(item.artifact.id))
-                } label: {
-                    TimelineView(.periodic(from: .now, by: 15)) { context in
-                        ZStack {
+                        HStack(alignment: .center, spacing: 6) {
                             if item.isWorking(at: context.date) {
-                                ProgressView().controlSize(.mini)
+                                ProgressView().controlSize(.mini).frame(width: 14, height: 14)
                                     .accessibilityIdentifier("work-progress-\(item.artifact.id)")
-                            } else {
-                                Image(systemName: "ellipsis").font(.body)
+                            } else if item.isFinished {
+                                Image(systemName: item.artifact.workState == "cancelled" ? "stop.circle" : "checkmark")
                             }
-                        }.frame(width: 44, height: 44)
+                            Text(statusLabel(item, at: context.date))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(decision(for: item) != nil ? Color.accentColor : .secondary)
                     }
                 }
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("Work actions")
-                .accessibilityIdentifier("work-actions-\(item.artifact.id)")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if decision(for: item) != nil {
+                    Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                }
             }
+            .padding(.vertical, 16)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityHint(decision(for: item) != nil ? "Opens the decision card" : "Discusses this work with its context attached")
+        .accessibilityIdentifier(item.pullRequest.map { "work-pr-\($0.number)" } ?? "work-item-\(item.artifact.id)")
+        .accessibilityAction(named: "Ask for progress") { getUpdate(item.artifact) }
+        Menu { workActions(item) } label: {
+            Image(systemName: "ellipsis")
+                .font(.body).foregroundStyle(.secondary)
+                .frame(width: 44, height: 44).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 4)
+        .accessibilityLabel("Work options")
+        .accessibilityIdentifier("work-menu-\(item.artifact.id)")
+        }
         .overlay(alignment: .bottom) {
             Rectangle().fill(.primary.opacity(0.10)).frame(height: 0.5).accessibilityHidden(true)
         }

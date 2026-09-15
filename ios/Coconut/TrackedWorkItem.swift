@@ -4,6 +4,8 @@ struct TrackedWorkItem: Identifiable {
     let artifact: Artifact
     let pullRequest: TrackedPullRequest?
     var id: String { pullRequest?.id ?? "work:" + artifact.id }
+    var needsDecision: Bool { artifact.workState == "needs_decision" && artifact.workDecisionId != nil }
+    var groupOrder: Int { isFinished ? 2 : needsDecision ? 0 : 1 }
     var isFinished: Bool {
         if let state = artifact.workState { return ["completed", "cancelled"].contains(state) }
         return pullRequest?.isFinished ?? ["completed", "cancelled"].contains(artifact.status)
@@ -15,9 +17,19 @@ struct TrackedWorkItem: Identifiable {
         let tasks = artifacts.filter { $0.kind == "work" && !(visibility["work:" + $0.id] ?? ($0.workDismissalId != nil)) }
             .map { Self(artifact: $0, pullRequest: nil) }
         return (requests + tasks).sorted {
-            if $0.isFinished != $1.isFinished { return !$0.isFinished }
-            return ($0.artifact.createdAt, $0.id) > ($1.artifact.createdAt, $1.id)
+            if $0.groupOrder != $1.groupOrder { return $0.groupOrder < $1.groupOrder }
+            return ($0.artifact.createdAt, $0.id) < ($1.artifact.createdAt, $1.id)
         }
+    }
+
+    func queueLabel(botName: String) -> String? {
+        guard artifact.workState == "queued", let position = artifact.workQueuePosition, position > 0 else { return nil }
+        if position == 1 { return "Next for \(botName)" }
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .ordinal
+        formatter.locale = Locale(identifier: "en_US")
+        let ordinal = formatter.string(from: NSNumber(value: position)) ?? String(position)
+        return "\(ordinal) in \(botName)’s queue"
     }
 
     func activity(at date: Date) -> String {

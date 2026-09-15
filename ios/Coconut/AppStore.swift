@@ -577,6 +577,28 @@ final class AppStore {
         return result != nil
     }
 
+    func resumeWork(_ item: TrackedWorkItem) async {
+        if isDemo {
+            for index in artifacts.indices where artifacts[index].id == item.artifact.id {
+                artifacts[index].workState = "queued"
+                artifacts[index].activity = "Queued"
+            }
+            return
+        }
+        let _: Acknowledgement? = await write("work/items/\(item.artifact.id)/resume", payload: EmptyRequest(), as: Acknowledgement.self)
+    }
+
+    func cancelWork(_ item: TrackedWorkItem) async {
+        if isDemo {
+            for index in artifacts.indices where artifacts[index].id == item.artifact.id {
+                artifacts[index].workState = "cancelled"
+                artifacts[index].activity = "Stopped"
+            }
+            return
+        }
+        let _: Acknowledgement? = await write("work/items/\(item.artifact.id)/cancel", payload: EmptyRequest(), as: Acknowledgement.self)
+    }
+
     func cancel(_ task: AgentTask) async {
         if isDemo {
             if let index = tasks.firstIndex(where: { $0.id == task.id }) { tasks[index].status = "cancelled"; tasks[index].summary = "You stopped this task." }

@@ -503,7 +503,12 @@ def conversation_input(request):
                        + json.dumps({'background_results': request['task']['_background_completion']}))
     elif operation == 'resume':
         decision = request['decision']
-        if decision.get('status') == 'resolved' and decision.get('merge_pr_url'):
+        if decision.get('status') == 'resolved' and decision.get('resolution') == 'work_scope_changed':
+            prompt = decision['resolution_context'] + '\nWithdrawal is not approval or rejection of the remaining work.\n'
+        elif decision.get('status') == 'resolved' and decision.get('resolution') == 'cancelled':
+            prompt = ('The person cancelled this work. Coconut closed its decision. Do not execute the cancelled action. '
+                      'Continue only other requested work. Cancellation does not confirm that a PR merged.\n')
+        elif decision.get('status') == 'resolved' and decision.get('merge_pr_url'):
             prompt = ('GitHub confirms this PR already merged. Coconut closed the pending merge question. '
                       'The person did not select an option or authorize other work. Do not merge again or ask this question again. '
                       'Continue the original assignment from this verified result and report it to its requester if needed.\n')
@@ -992,6 +997,10 @@ def run_turn(request, emit, request_receipt):
                          'A later stage of the same result keeps the same work key, including after a decision. '
                          'Replace an automatic chat-message title with the intended result in plain words. '
                          'Clear an old blocked or waiting activity when evidence resolves it. '
+                         'Name the current action in the activity, such as Reviewing with Fable or Checking refund eligibility. '
+                         'Inspect recoverable failures and continue within the recorded approval. '
+                         'If the person must decide, create or reuse a concrete coconut_ask card for this work. '
+                         'Do not ask for approval when you can continue safely without it. '
                          'Do not create a work item for routine checks, brief replies, or each delegated step. '
                          'A waiting status does not register a dependency; use coconut_wait or native scheduling for that. '
                          'Do not reopen completed or dismissed work unless the person requests more work. ')
