@@ -119,6 +119,11 @@ def worker(request, default_home):
             from profiles import _write
             _write(marker, '{"version":1}\n', home)
         return {'ok': True}
+    if op == 'snapshot_read':
+        from native_routines import worker as routines
+        result = worker(dict(request, native_operation='read'), default_home)
+        result.update(routines('routines_read', request, homes))
+        return result
     if op == 'read':
         from native_mcp import public_servers
         from parallel_work import state as parallel_state

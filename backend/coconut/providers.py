@@ -245,10 +245,14 @@ class HermesProvider(FixtureProvider):
     def observe_bot(self, bot):
         return self.observe_bots([bot])[bot['id']]
 
-    def observe_bots(self, bots):
-        from .profiles import HermesProfiles
+    def observe_state(self, bots):
+        settings = self.native_settings('snapshot_read', bots)
+        return self.observe_bots(bots, settings=settings['profiles']), settings
+
+    def observe_bots(self, bots, *, settings=None):
         native = self.catalog.read_profiles([bot['id'] for bot in bots])
-        settings = self.native_settings(bots=bots)['profiles']
+        if settings is None:
+            settings = self.native_settings(bots=bots)['profiles']
         result = {}
         for bot in bots:
             observed = dict(bot)

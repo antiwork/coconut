@@ -29,6 +29,24 @@ def example_catalog():
 
 
 class ModelSelectionTests(unittest.TestCase):
+    def test_combined_native_response_preserves_both_read_budgets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            source.mkdir()
+            (source / 'run_agent.py').touch()
+            catalog = HermesModelCatalog(directory, source=source, python=sys.executable)
+            expected = {'profiles': {'instructions': 'x' * 2_500_000},
+                        'routines': [{'prompt': 'y' * 2_000_000}]}
+            response = json.dumps({'result': expected})
+            with patch.object(model_catalog.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, response, '')):
+                self.assertEqual(catalog._call('native', native_operation='snapshot_read'), expected)
+                with self.assertRaises(ModelCatalogError):
+                    catalog._call('native', native_operation='read')
+            oversized = json.dumps({'routines': 'x' * 8_000_000})
+            with patch.object(model_catalog.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, oversized, '')):
+                with self.assertRaises(ModelCatalogError):
+                    catalog._call('native', native_operation='snapshot_read')
+
     def check_large_native_text(self, operation, field):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'source'

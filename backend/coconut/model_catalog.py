@@ -337,7 +337,9 @@ class HermesModelCatalog:
                                         input=serialized, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                                         env=environment, cwd=self.private_home,
                                         timeout=30 if operation in ('get', 'runtime', 'native') else 5)
-            if result.returncode or len(result.stdout) > 4_000_000:
+            # The snapshot combines settings and routines, each with a separate response budget.
+            response_limit = 8_000_000 if operation == 'native' and payload.get('native_operation') == 'snapshot_read' else 4_000_000
+            if result.returncode or len(result.stdout) > response_limit:
                 raise ModelCatalogError('Hermes could not read its model settings.')
             response = json.loads(result.stdout)
         except subprocess.TimeoutExpired:

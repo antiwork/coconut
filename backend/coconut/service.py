@@ -272,11 +272,21 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
 
     def _all(self, table: str) -> list[dict]:
         with self.lock:
+            cache = getattr(self, '_read_cache', None)
+            table_key = ('table', table)
+            if cache is not None and table_key in cache:
+                return json.loads(cache[table_key])
             # One SQLite result avoids a Python thread handoff for every stored row.
             try:
                 row = self.db.execute(f"SELECT '[' || group_concat(data, ',') || ']' "
                                       f'FROM (SELECT data FROM {table} ORDER BY rowid)').fetchone()
-                return json.loads(row[0] or '[]')
+                data = row[0] or '[]'
+                objects = json.loads(data)
+                if cache is not None:
+                    cache[table_key] = data
+                    for obj in objects:
+                        cache[(f'SELECT data FROM {table} WHERE id=?', (obj['id'],))] = (encoded(obj),)
+                return objects
             except sqlite3.DataError as error:
                 if error.sqlite_errorcode != sqlite3.SQLITE_TOOBIG:
                     raise
@@ -615,20 +625,26 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
             stored_bots = [bot for bot in self._all('bots') if not bot.get('_deleted')]
             catalog = self._model_catalog()
             measured('models')
-            if hasattr(self.provider, 'observe_bots'):
-                observed = self.provider.observe_bots(stored_bots)
+            if hasattr(self.provider, 'observe_state'):
+                observed, native = self.provider.observe_state(stored_bots)
+                routines = native['routines']
+                measured('native')
             else:
-                observed = {bot['id']: dict(bot, instructions=self.profiles.read_instructions(bot)) for bot in stored_bots}
-            measured('bots')
-            routines = (self.provider.native_settings('routines_read', stored_bots)['routines']
-                        if hasattr(self.provider, 'native_settings') else None)
-            measured('routines')
-            native = self.provider.native_settings() if hasattr(self.provider, 'native_settings') else None
-            measured('settings')
+                if hasattr(self.provider, 'observe_bots'):
+                    observed = self.provider.observe_bots(stored_bots)
+                else:
+                    observed = {bot['id']: dict(bot, instructions=self.profiles.read_instructions(bot)) for bot in stored_bots}
+                measured('bots')
+                routines = (self.provider.native_settings('routines_read', stored_bots)['routines']
+                            if hasattr(self.provider, 'native_settings') else None)
+                measured('routines')
+                native = self.provider.native_settings() if hasattr(self.provider, 'native_settings') else None
+                measured('settings')
             with self._read_transaction():
                 if self.db.execute("SELECT 1 FROM events WHERE seq>? AND "
                                    "(type IN ('settings.updated','bot.created','bot.deleted') OR type LIKE 'routine.%') LIMIT 1", (settings_cursor,)).fetchone():
                     continue
+                self._all('exchanges')
                 bots = [self._bot_view(dict(b, **{key: value for key, value in observed.get(b['id'], {}).items() if key in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'worker_limit', 'model_override', '_native_effective_model', '_model_error')}), catalog) for b in self._all('bots') if not b.get('_deleted')]
                 visible = {b['id'] for b in bots}
                 visible_task_ids = {task['id'] for task in self._all('tasks') if task['bot_id'] in visible and task['conversation_bot_id'] in visible}

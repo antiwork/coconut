@@ -61,6 +61,53 @@ class RequestResponsivenessTests(unittest.TestCase):
             with view._read_transaction():
                 self.assertEqual(view._get('bots', bot['id'])['name'], 'Updated Desk')
 
+    def test_table_read_reuses_rows_without_sharing_mutable_values(self):
+        item = dict(id='first', detail={'text': 'Original'})
+        with self.service.transaction():
+            self.service._put('artifacts', item)
+        with self.service._read_view() as view:
+            queries = []
+            view.db.set_trace_callback(queries.append)
+            with view._read_transaction():
+                view._all('artifacts')[0]['detail']['text'] = 'Changed copy'
+                for _ in range(3):
+                    self.assertEqual(view._get('artifacts', item['id']), item)
+                    self.assertEqual(view._all('artifacts'), [item])
+                selects = [query for query in queries if query.startswith('SELECT')]
+                self.assertEqual(len(selects), 1, 'Reuse rows already loaded by this snapshot.')
+                with self.service.transaction():
+                    updated = dict(item, detail={'text': 'Updated'})
+                    self.service._put('artifacts', updated)
+                self.assertEqual(view._all('artifacts'), [item])
+            with view._read_transaction():
+                self.assertEqual(view._all('artifacts'), [updated])
+                self.assertEqual(view._get('artifacts', item['id']), updated)
+
+    def test_snapshot_batches_native_reads_and_observes_later_changes(self):
+        from types import SimpleNamespace
+        from coconut.providers import HermesProvider
+        bot = self.service.mutate('POST', '/v1/bots', {'name': 'Desk'}, str(uuid4()))
+        native = {'profiles': {bot['id']: {'name': 'Native Desk', 'instructions': 'Current instructions'}},
+                  'approvals': {'default': 'off'}, 'parallel_work': {'effective_limit': 5},
+                  'mcp_servers': [], 'routines': []}
+        provider = object.__new__(HermesProvider)
+        calls = []
+        def read(operation, **payload):
+            calls.append((operation, payload['native_operation']))
+            return native
+        provider.catalog = SimpleNamespace(_call=read, _profile_home=lambda identity: self.service.root / identity,
+                                           read_profiles=lambda identities: {})
+        self.service.provider.observe_state = provider.observe_state
+        first = self.service.snapshot()
+        self.assertEqual(calls, [('native', 'snapshot_read')])
+        self.assertEqual(first['bots'][0]['name'], 'Native Desk')
+        self.assertEqual(first['approvals'], native['approvals'])
+        self.assertEqual(first['parallel_work'], native['parallel_work'])
+        native['profiles'][bot['id']]['name'] = 'Updated Desk'
+        second = self.service.snapshot()
+        self.assertEqual(second['bots'][0]['name'], 'Updated Desk')
+        self.assertEqual(len(calls), 2, 'Each snapshot must read current Hermes settings.')
+
     def test_task_context_reads_do_not_block_another_tools_receipt(self):
         service = self.service
         bot = service.mutate('POST', '/v1/bots', {'name': 'Desk', 'role': ''}, str(uuid4()))
