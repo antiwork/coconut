@@ -1,4 +1,9 @@
 import copy
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 
 import test_automatic_work as fixtures
@@ -275,3 +280,21 @@ class WorkSelfRecoveryTests(unittest.TestCase):
         self.assertEqual(len(recovery['_self_recovery']['work']), 1)
         self.recover()
         self.assertEqual(len(self.service._all('tasks')), count + 1)
+
+
+class WorkerRecoveryLaunchTests(unittest.TestCase):
+    def test_recovery_prompt_loads_in_worker_script_environment(self):
+        worker_directory = Path(__file__).resolve().parents[1] / 'coconut'
+        program = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from hermes_worker import conversation_input
+prompt, _ = conversation_input(dict(operation='start', history=[],
+    task=dict(title='Resume existing work', _self_recovery=dict(previous_status='failed'))))
+assert 'Saved recovery context:' in prompt
+assert 'Never repeat a write while its effect remains unknown.' in prompt
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            environment = dict(os.environ, PYTHONPATH=directory)
+            subprocess.run([sys.executable, '-c', program, str(worker_directory)],
+                cwd=directory, env=environment, check=True, capture_output=True, text=True)

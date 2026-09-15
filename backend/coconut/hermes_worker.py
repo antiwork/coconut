@@ -556,7 +556,10 @@ def conversation_input(request):
                      'A question does not restart, duplicate, approve, or resume the attached assignment. '
                      'Leave pending decisions unchanged unless the person explicitly answers that decision.')
     if request['task'].get('_self_recovery'):
-        from coconut.work_recovery import RECOVERY_INSTRUCTIONS
+        if __package__:
+            from .work_recovery import RECOVERY_INSTRUCTIONS
+        else:
+            from work_recovery import RECOVERY_INSTRUCTIONS
         recovery = RECOVERY_INSTRUCTIONS + '\nSaved recovery context:\n' + json.dumps(request['task']['_self_recovery'])
         prompt += '\n' + recovery
         if request['task'].get('_work_context'):
