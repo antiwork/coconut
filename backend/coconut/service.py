@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import copy
 import fcntl
 import hashlib
 import hmac
@@ -512,8 +513,8 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
         return result
 
     def authenticate(self, token: str) -> str:
-        with self.lock:
-            row = self.db.execute('SELECT id FROM devices WHERE token_hash=?', (digest(token),)).fetchone()
+        with self._read_view() as view:
+            row = view.db.execute('SELECT id FROM devices WHERE token_hash=?', (digest(token),)).fetchone()
         if not row:
             raise ServiceError(401, 'Pair this phone with the Mac to continue.')
         return row[0]
@@ -555,7 +556,29 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
             raise ServiceError(400, str(error)) from None
         return selection
 
+    @contextlib.contextmanager
+    def _read_view(self):
+        # WAL readers see committed data without waiting for worker bookkeeping.
+        with contextlib.closing(sqlite3.connect((self.root / 'coconut.sqlite3').as_uri() + '?mode=ro',
+                                               uri=True, isolation_level=None)) as db:
+            view = copy.copy(self)
+            view.db = db
+            view.lock = threading.RLock()
+            yield view
+
+    @contextlib.contextmanager
+    def _read_transaction(self):
+        self.db.execute('BEGIN')
+        try:
+            yield
+        finally:
+            self.db.execute('ROLLBACK')
+
     def snapshot(self, *, timings=None) -> dict:
+        with self._read_view() as view:
+            return view._snapshot(timings=timings)
+
+    def _snapshot(self, *, timings=None) -> dict:
         started = time.perf_counter()
         def measured(name):
             nonlocal started
@@ -563,24 +586,24 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
             if timings is not None:
                 timings[name] = (stamp - started) * 1000
             started = stamp
-        self.refresh_native_routines()
-        measured('routines')
-        catalog = self._model_catalog()
-        measured('models')
-        with self.lock:
-            stored_bots = [bot for bot in self._all('bots') if not bot.get('_deleted')]
-        if hasattr(self.provider, 'observe_bots'):
-            observed = self.provider.observe_bots(stored_bots)
-        else:
-            observed = {bot['id']: dict(bot, instructions=self.profiles.read_instructions(bot)) for bot in stored_bots}
-        measured('bots')
         for _ in range(3):
-            with self.lock:
-                settings_cursor = self._cursor()
+            settings_cursor = self._cursor()
+            stored_bots = [bot for bot in self._all('bots') if not bot.get('_deleted')]
+            catalog = self._model_catalog()
+            measured('models')
+            if hasattr(self.provider, 'observe_bots'):
+                observed = self.provider.observe_bots(stored_bots)
+            else:
+                observed = {bot['id']: dict(bot, instructions=self.profiles.read_instructions(bot)) for bot in stored_bots}
+            measured('bots')
+            routines = (self.provider.native_settings('routines_read', stored_bots)['routines']
+                        if hasattr(self.provider, 'native_settings') else None)
+            measured('routines')
             native = self.provider.native_settings() if hasattr(self.provider, 'native_settings') else None
             measured('settings')
-            with self.transaction():
-                if self.db.execute("SELECT 1 FROM events WHERE seq>? AND type='settings.updated' LIMIT 1", (settings_cursor,)).fetchone():
+            with self._read_transaction():
+                if self.db.execute("SELECT 1 FROM events WHERE seq>? AND "
+                                   "(type IN ('settings.updated','bot.created','bot.deleted') OR type LIKE 'routine.%') LIMIT 1", (settings_cursor,)).fetchone():
                     continue
                 bots = [self._bot_view(dict(b, **{key: value for key, value in observed.get(b['id'], {}).items() if key in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'worker_limit', 'model_override', '_native_effective_model', '_model_error')}), catalog) for b in self._all('bots') if not b.get('_deleted')]
                 visible = {b['id'] for b in bots}
@@ -588,6 +611,10 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                 state = {'bots': bots, 'work_capacity': capacity_state(self._setting('work_capacity'))}
                 for table in self.TABLES[1:]:
                     state[table] = [self._public(o) for o in self._all(table) if o['bot_id'] in visible and o.get('conversation_bot_id', o['bot_id']) in visible and not o.get('_deleted') and not o.get('_hidden') and (table not in ('decisions', 'artifacts') or not o.get('task_id') or o['task_id'] in visible_task_ids)]
+                if routines is not None:
+                    previous = {r['id']: r.get('last_task_id') for r in state['routines']}
+                    state['routines'] = [dict(self._public(r), last_task_id=previous.get(r['id']))
+                                         for r in routines if r['bot_id'] in visible and not r.get('_deleted')]
                 state['artifacts'] = [self._public(a) for a in self._work_projection([self._get('artifacts', a['id']) for a in state['artifacts']])]
                 replying = {c['decision_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
                 histories = {}
@@ -622,15 +649,16 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
         if after < 0:
             raise ServiceError(400, 'The event cursor must be zero or greater.')
         deadline = time.monotonic() + min(max(wait, 0), 25)
-        with self.changed:
-            while self._cursor() <= after and not self.stopping.is_set():
+        with self._read_view() as view:
+            while view._cursor() <= after and not self.stopping.is_set():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
-                self.changed.wait(remaining)
-            rows = self.db.execute('SELECT seq,type,bot_id,task_id,data,created_at FROM events WHERE seq>? ORDER BY seq LIMIT 500', (after,)).fetchall()
-            result = [dict(seq=r[0], type=r[1], bot_id=r[2], task_id=r[3], data=json.loads(r[4]), created_at=r[5]) for r in rows]
-            return dict(events=result, cursor=result[-1]['seq'] if result else max(after, self._cursor()), server_time=now())
+                self.stopping.wait(min(remaining, .1))
+            with view._read_transaction():
+                rows = view.db.execute('SELECT seq,type,bot_id,task_id,data,created_at FROM events WHERE seq>? ORDER BY seq LIMIT 500', (after,)).fetchall()
+                result = [dict(seq=r[0], type=r[1], bot_id=r[2], task_id=r[3], data=json.loads(r[4]), created_at=r[5]) for r in rows]
+                return dict(events=result, cursor=result[-1]['seq'] if result else max(after, view._cursor()), server_time=now())
 
     def _setting(self, key: str, default: Any = None) -> Any:
         with self.lock:

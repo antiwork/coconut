@@ -47,7 +47,19 @@ class NativeRoutines:
                 raise ServiceError(409, 'Restore this bot before creating a routine.')
             result = self.provider.native_settings('routine_create', [bot], bot_id=bot['id'], changes=data, request_key=key)
         else:
-            routine = self._get('routines', parts[2])
+            try:
+                routine = self._get('routines', parts[2])
+            except ServiceError as error:
+                if error.status != 404:
+                    raise
+                # The app can observe a native routine before the scheduler imports it.
+                bots = [b for b in self._all('bots') if not b.get('_deleted')]
+                routines = self.provider.native_settings('routines_read', bots)['routines']
+                routine = next((r for r in routines if r['id'] == parts[2]
+                                and r['bot_id'] in {b['id'] for b in bots} and not r.get('_deleted')), None)
+                if routine is None:
+                    raise error
+                self._put('routines', routine)
             bot = self._get('bots', routine['bot_id'])
             if bot.get('_deleted'):
                 raise ServiceError(404, 'This bot was deleted.')

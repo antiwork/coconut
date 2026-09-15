@@ -30,6 +30,26 @@ class SchedulerIntegrationTests(unittest.TestCase):
             with self.subTest(field=field):
                 self.assertIn(field, native_routines.unsupported(dict(self.job, **{field: 'configured'})))
 
+    def test_newly_observed_routine_can_be_changed_before_scheduler_import(self):
+        routine = dict(id=str(uuid4()), bot_id=self.bot['id'], name='Refresh', enabled=True,
+                       _native_id=self.job['id'], next_run_at='2000-01-01T00:00:00Z')
+        calls = []
+        def native(operation='read', bots=(), **arguments):
+            calls.append(operation)
+            if operation == 'routines_read':
+                return {'routines': [routine]}
+            if operation == 'read':
+                return {'approvals': {}}
+            if operation == 'routine_update':
+                return dict(routine, **arguments['changes'])
+            raise AssertionError(operation)
+        self.service.provider.native_settings = native
+        self.assertEqual(self.service.snapshot()['routines'][0]['id'], routine['id'])
+        self.assertEqual(self.service._all('routines'), [])
+        updated = self.service.mutate('PATCH', f"/v1/routines/{routine['id']}", {'enabled': False}, str(uuid4()))
+        self.assertFalse(updated['enabled'])
+        self.assertIn('routine_update', calls)
+
     def test_due_job_creates_one_durable_task_and_survives_restart(self):
         identity = str(uuid4())
         routine = dict(id=identity, bot_id=self.bot['id'], name='Refresh', enabled=True,
