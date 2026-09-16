@@ -234,6 +234,8 @@ class WorkProgress:
                 or any(r['task_id'] in turn_ids and target_id in (r.get('_relay_task_id'), r.get('_wait_task_id'))
                        and not r.get('_process_delivery') for r in self._all('native_receipts')))
             if existing_dependency:
+                assignment['_explicit_work_waits'] = list(dict.fromkeys(assignment.get('_explicit_work_waits', []) + [target_id]))
+                self._put('tasks', assignment)
                 return {'status': 'waiting', 'task_id': target_id, 'reason': reason}
             identity = digest(json.dumps([task_id, task.get('_native_turn_id'), target_id]))
             existing = next((r for r in self._all('native_receipts') if r['id'] == identity), None)

@@ -12,6 +12,7 @@ TRACK_WORK_SCHEMA = {
         'Reuse the same key for updates. This reports progress; it does not start work or grant permission.',
     'parameters': {'type': 'object', 'additionalProperties': False, 'properties': {
         'key': {'type': 'string', 'maxLength': 80, 'description': 'A stable key for this bot, such as account-export. Reuse it across turns.'},
+        'same_outcome_as': {'type': 'string', 'description': 'Existing parent Work ID when this delegated report tracks the same requested outcome. Keep distinct diagnostic outcomes separate.'},
         'title': {'type': 'string', 'maxLength': 120, 'description': 'The intended result in plain words.'},
         'activity': {'type': 'string', 'maxLength': 80, 'description': 'One short current activity or verified result. No counts, hashes, or jargon.'},
         'status': {'type': 'string', 'enum': list(WORK_STATES), 'description': 'Use completed only after verifying the requested result. Ready means ready for review. Waiting does not schedule a wake-up.'},
@@ -282,29 +283,36 @@ class TrackedWork:
             task = tasks.get(task.get('_assignment_task_id'), task)
             source = task.get('source_task_id')
             source_assignment = tasks.get(source, {}).get('_assignment_task_id', source)
-            parent = next((a for a in artifacts if source and a['kind'] == 'work'
+            explicit_parent = by_id.get(item.get('_same_outcome_as'))
+            parent = explicit_parent or next((a for a in artifacts if source and a['kind'] == 'work'
                 and a['id'] != item['id'] and a.get('_work_key') == item['_work_key']
                 and {source, source_assignment}.intersection([a.get('task_id'), a.get('_work_origin_task_id'), *a.get('_work_previous_task_ids', [])])), None)
             seen = {item['id']}
             while parent and parent.get('_hidden') and parent['id'] not in seen:
                 seen.add(parent['id'])
                 parent = by_id.get(parent.get('_work_parent_id') or parent.get('_work_replaced_by'))
+            # Existing links keep cancellation attached to earlier reports.
             if parent and (parent['id'] in seen or parent.get('_hidden')
-                           or parent.get('_work_key') != item['_work_key'] or parent.get('status') == 'cancelled'):
+                           or parent.get('status') == 'cancelled'
+                           or (self._setting('work.cancelled.' + self._work_identity(parent))
+                               and item.get('_work_parent_id') != parent['id'])):
                 parent = None
             if parent:
                 owner = tasks.get(parent.get('task_id'))
                 if owner:
                     owner = tasks.get(owner.get('_assignment_task_id'), owner)
-                if owner and owner['id'] not in chains:
-                    chains[owner['id']] = self._work_chain(owner, tasks, records, include_continuations=True)
+                if owner and parent['id'] not in chains:
+                    chains[parent['id']] = self._work_report_chain(parent, tasks, records)
                 completed_handoff = (owner and item.get('_work_parent_id') == parent['id']
                     and task.get('status') in ('completed', 'cancelled')
                     and (owner['id'] == item.get('_work_parent_task_id', source_assignment)
                          or (owner.get('_self_recovery') and item.get('_work_parent_task_id', source_assignment) in parent.get('_work_previous_task_ids', []))))
-                if not owner or (task.get('id') not in chains[owner['id']] and not completed_handoff):
+                if not owner or (task.get('id') not in chains[parent['id']] and not completed_handoff):
                     parent = None
-            if parent and (not item.get('_hidden') or item.get('_work_parent_id') != parent['id']):
+            inherited_alias = parent and parent.get('_work_key') != item['_work_key'] and item.get('_same_outcome_as') != parent['id']
+            if parent and (not item.get('_hidden') or item.get('_work_parent_id') != parent['id'] or inherited_alias):
+                if inherited_alias:
+                    item['_same_outcome_as'] = parent['id']
                 item.update(_hidden=True, _work_parent_id=parent['id'], _work_parent_task_id=owner['id'])
                 self._put('artifacts', item)
                 self._event('artifact.updated', dict(self._public(item), _hidden=True), item['bot_id'], item['task_id'])
@@ -449,6 +457,23 @@ class TrackedWork:
                     self._carry_work_history(item, dict(item))
             else:
                 item = dict(id=uid(), bot_id=bot['id'], kind='work', url=None, preview='', created_at=now(), _work_key=key)
+            if item.get('_same_outcome_as') and item.get('task_id') != task_id and not report_only and not payload.get('same_outcome_as'):
+                parent = self._get('artifacts', item['_same_outcome_as'])
+                tasks = {t['id']: t for t in self._all('tasks')}
+                if task_id not in self._work_report_chain(parent, tasks, self._pending_completion_receipts()):
+                    item.pop('_same_outcome_as')
+            if payload.get('same_outcome_as') is not None:
+                parent = self._get('artifacts', require_text(payload, 'same_outcome_as', 100))
+                tasks = {t['id']: t for t in self._all('tasks')}
+                parent_owner = tasks.get(parent.get('task_id'), {})
+                parent_owner = tasks.get(parent_owner.get('_assignment_task_id'), parent_owner)
+                parent_state = self._work_projection([dict(parent)])[0].get('work_state')
+                if (parent['kind'] != 'work' or parent['id'] == item['id'] or parent.get('_hidden')
+                        or parent_state in ('completed', 'cancelled') or not parent_owner
+                        or self._setting('work.cancelled.' + self._work_identity(parent))
+                        or task['id'] not in self._work_report_chain(parent, tasks, self._pending_completion_receipts())):
+                    raise ServiceError(409, 'Choose an active parent Work item that delegates this task.')
+                item['_same_outcome_as'] = parent['id']
             previous_tasks = self._followup_task_ids(task, self._all('decisions'))
             if previous_tasks:
                 item['_work_previous_task_ids'] = list(dict.fromkeys(item.get('_work_previous_task_ids', []) + previous_tasks))
@@ -494,12 +519,14 @@ class TrackedWork:
             return dict(self._public(item), key=key)
 
     def _tracked_items_input(self, task):
-        items = [a for a in self._all('artifacts') if a['kind'] == 'work' and a['bot_id'] == task['bot_id']
+        items = [a for a in self._all('artifacts') if a['kind'] == 'work'
                  and (not a.get('_hidden') or a.get('_work_parent_id'))]
         tasks = {t['id']: t for t in self._all('tasks')}
         records = self._all('native_receipts')
         owned = {a['id'] for a in items if a.get('task_id') in tasks
-                 and task['id'] in self._work_chain(tasks[a['task_id']], tasks, records, include_continuations=True)}
+                 and task['id'] in self._work_report_chain(a, tasks, records)}
+        items = [a for a in items if a['bot_id'] == task['bot_id']
+                 or (a['id'] in owned and not task.get('_native_job') and not self._assignment(task).get('_native_job'))]
         job_id = (tasks.get(task.get('_assignment_task_id'), task).get('_native_job') or {}).get('id')
         scheduled = {a['id'] for a in items if job_id and self._external_work_routine(a)
                      and a['external_wait']['job_id'] == job_id
@@ -521,7 +548,7 @@ class TrackedWork:
         items = [a for a in items if not a.get('_hidden') or a['id'] in scheduled | active_checks]
         items.sort(key=lambda a: (a['status'] not in ('completed', 'cancelled'), a['observed_at']), reverse=True)
         selected = [a for a in items if a['id'] in scheduled | active_checks] + [a for a in items if a['id'] not in scheduled | active_checks][:30]
-        return [dict(key=a['_work_key'], title=a['title'], status=a['status'], activity=a.get('activity'),
+        return [dict(id=a['id'], bot_id=a['bot_id'], key=a['_work_key'], title=a['title'], status=a['status'], activity=a.get('activity'),
                      task_id=a['task_id'], current_task=a['id'] in owned, work_state=a.get('work_state'),
                      completion_condition=a.get('completion_condition'), completion_evidence=a.get('completion_evidence'),
                      next_step=a.get('work_next_step'), external_wait=a.get('external_wait'),

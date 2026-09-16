@@ -89,18 +89,17 @@ struct WorkView: View {
     @State private var requestingUpdates: Set<String> = []
     @State private var showCompleted = false
     @State private var cancellingItems: Set<String> = []
-    private var items: [TrackedWorkItem] { TrackedWorkItem.tracked(in: store.artifacts, visibility: store.workVisibility) }
+    @State private var orderingDate = Date()
+    private var items: [TrackedWorkItem] { TrackedWorkItem.tracked(in: store.artifacts, visibility: store.workVisibility, at: orderingDate) }
 
     @State private var displayedOrder: [String] = []
     @State private var isInteracting = false
 
     private var proposedOrder: [String] {
         var result: [String] = []
-        let decisions = items.filter { !$0.isFinished && $0.needsDecision }
-        let active = items.filter { !$0.isFinished && !$0.needsDecision }
-        if !decisions.isEmpty { result += ["heading:needs-you"] + decisions.map(\.id) }
-        if !active.isEmpty { result += ["heading:active"] + active.map(\.id) }
-        if decisions.isEmpty && active.isEmpty { result.append("empty") }
+        let active = items.filter { !$0.isFinished }
+        result += active.map(\.id)
+        if active.isEmpty { result.append("empty") }
         if items.contains(where: \.isFinished) {
             result.append("completed-toggle")
             if showCompleted { result += items.filter(\.isFinished).map(\.id) }
@@ -118,13 +117,7 @@ struct WorkView: View {
     var body: some View {
         List {
             ForEach(displayedOrder, id: \.self) { identity in
-                if identity.hasPrefix("heading:") {
-                    Text(identity == "heading:needs-you" ? "Needs you" : "Active")
-                        .font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                        .padding(.top, 12).padding(.bottom, 4)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 24, bottom: 0, trailing: 24))
-                        .listRowBackground(BoardStyle.paper).listRowSeparator(.hidden)
-                } else if identity == "empty" {
+                if identity == "empty" {
                     Text("All caught up")
                         .font(.body).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, minHeight: 220)
@@ -171,6 +164,7 @@ struct WorkView: View {
             guard isVisible && scenePhase == .active else { return }
             while !Task.isCancelled {
                 await store.refreshWork()
+                orderingDate = Date()
                 do { try await Task.sleep(for: .seconds(15)) }
                 catch { return }
             }

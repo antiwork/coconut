@@ -1122,6 +1122,8 @@ def run_turn(request, emit, request_receipt):
                          'Reuse its key across turns; update the activity at phase changes and record completed only after verifying the result. '
                          'When existing work belongs to this request, update that row before returning. '
                          'A later stage of the same result keeps the same work key, including after a decision. '
+                         'For delegated work with the same outcome, reuse the parent key or set same_outcome_as to its existing Work ID. '
+                         'This keeps one visible outcome. Keep a separate diagnosis or independent deliverable distinct. '
                          'Replace an automatic chat-message title with the intended result in plain words. '
                          'Clear an old blocked or waiting activity when evidence resolves it. '
                          'Name the current action in the activity, such as Reviewing with Fable or Checking refund eligibility. '

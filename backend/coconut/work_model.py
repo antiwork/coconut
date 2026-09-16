@@ -22,7 +22,8 @@ class WorkModel:
                            and not (owner_active and (tasks.get(p.get('_activity_task_id'), {}).get('_is_return')
                                or tasks.get(p.get('_activity_task_id'), {}).get('_source_audit_prompt')))]
         else:
-            identities = list(dict.fromkeys([owner.get('id'), item.get('task_id')]))
+            identities = list(dict.fromkeys(identity for peer in peers for identity in
+                (peer.get('task_id'), tasks.get(peer.get('task_id'), {}).get('_assignment_task_id'))))
         if item['kind'] == 'pr' and owner:
             replacements = [tasks[i] for i in identities if i in tasks and i != owner['id']
                             and tasks[i]['exchange_id'] != owner['exchange_id']
@@ -75,9 +76,9 @@ class WorkModel:
                                      state='ready' if ready else 'waiting',
                                      reason=record.get('action', {}).get('arguments', {}).get('reason')))
         for task in attempts:
-            if task['status'] != 'waiting':
-                continue
             for target in task.get('_waiting_on', []):
+                if task['status'] != 'waiting' and target not in task.get('_explicit_work_waits', []):
+                    continue
                 if target in tasks and not any(d['kind'] == 'task' and d['target_id'] == target for d in dependencies):
                     dependencies.append(dict(id=task['id'] + ':' + target, kind='task', target_id=target,
                         state='ready' if (tasks[target]['status'] in ('failed', 'cancelled') or
@@ -137,6 +138,28 @@ class WorkModel:
             root = next((t for t in owner.get('_work_todos', {}).get('todos', []) if t['id'] == 'coconut-assignment'), None)
             if root and root['status'] == 'completed':
                 evidence = owner.get('summary') or root['content']
+        reporter = tasks.get(item.get('task_id'), {})
+        report_roots = {tasks.get(p.get('task_id'), {}).get('_assignment_task_id', p.get('task_id')) for p in peers}
+        report_tasks = {t['id'] for t in attempts if t['id'] in report_roots
+                        or t.get('_assignment_task_id') in report_roots}
+        explicit_waits = {target for identity in report_tasks for target in tasks[identity].get('_explicit_work_waits', [])}
+        delegated_tasks = {identity for identity in report_tasks if identity != owner.get('id')
+                           and tasks[identity].get('_assignment_task_id') != owner.get('id')}
+        completion_blocked = item['kind'] == 'work' and (
+            any(d['task_id'] in report_tasks for d in pending)
+            or any(c['task_id'] in report_tasks for c in replies)
+            or any(t['id'] in delegated_tasks for t in live + queued)
+            or any(d['kind'] == 'task' and d['target_id'] in explicit_waits | report_tasks for d in dependencies)
+            or any(r['task_id'] in report_tasks and (r.get('state') == 'executing'
+                or ((subscription(r) or any(r.get(k) for k in ('_wait_process_receipt', '_wait_task_id', '_wait_decision_id')))
+                    and not r.get('_process_delivery'))) for r in current_records))
+        completed_report = (item['kind'] == 'work' and item['status'] == 'completed'
+            and bool(item.get('completion_evidence')) and not item.get('_work_resuming')
+            and any(t.get('id') == 'coconut-assignment' and t.get('status') == 'completed'
+                    for t in reporter.get('_work_todos', {}).get('todos', []))
+            and any(t.get('id') == 'coconut-assignment' and t.get('status') == 'completed'
+                    for t in owner.get('_work_todos', {}).get('todos', [])))
+        # A delivered diagnosis ends its own scope even while the requester continues implementation.
         # Completing the bot's assignment can leave a PR waiting on its author or checks.
         awaiting_pr = (item['kind'] == 'pr' and attempts and all(t['status'] == 'completed' for t in attempts)
                        and any(t['id'] == 'coconut-assignment' and t['status'] == 'completed'
@@ -146,7 +169,7 @@ class WorkModel:
             state, activity, next_step = 'cancelled', 'Stopped', None
         elif evidence and item['kind'] == 'pr':
             state, activity, next_step = 'completed', 'Completed', None
-        elif evidence and not dependencies and not pending and not replies:
+        elif not completion_blocked and (completed_report or (evidence and not dependencies and not pending and not replies)):
             state, activity, next_step = 'completed', 'Completed', None
         elif pending and not live_reply and not replies and not ready_reply and not live:
             state, activity, next_step = 'needs_decision', 'Waiting for your decision', 'Review decision'
@@ -166,7 +189,7 @@ class WorkModel:
             state, activity, next_step = 'queued', 'Continuing with the result', 'Read the result and update this work'
         elif dependencies:
             state, activity, next_step = 'waiting', next((d['reason'] for d in dependencies if d.get('reason')), 'Waiting for another bot' if any(d['kind'] == 'task' for d in dependencies) else 'Waiting for a result'), 'Continue when the result arrives'
-        elif evidence:
+        elif evidence and not completion_blocked:
             state, activity, next_step = 'completed', 'Completed', None
         else:
             label = item.get('activity') if item['kind'] == 'work' and item.get('status') in ('ready', 'blocked') else None
@@ -175,10 +198,12 @@ class WorkModel:
         if state == 'working' and not live_reply:
             work_reports = [p for p in peers if p['kind'] == 'work' and p.get('task_id') in {t['id'] for t in live}
                             and p.get('_work_turn') == tasks[p['task_id']].get('_native_turn_id')
+                            and p.get('status') != 'blocked'
                             and not p.get('_automatic_work') and not p.get('_work_resuming')]
             reports = [p for p in peers if p.get('_activity_task_id') in {t['id'] for t in live}
                        and p.get('_activity_head') == item.get('head_sha')
                        and p.get('_activity_turn') == tasks[p['_activity_task_id']].get('_native_turn_id')]
+            reports = [p for p in reports if p.get('_activity_state') != 'blocked']
             if reports:
                 report = max(reports, key=lambda p: p.get('_activity_at', ''))
                 activity, description_at = report['_activity'], report.get('_activity_at')

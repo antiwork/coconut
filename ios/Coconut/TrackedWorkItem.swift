@@ -5,19 +5,35 @@ struct TrackedWorkItem: Identifiable {
     let pullRequest: TrackedPullRequest?
     var id: String { pullRequest?.id ?? "work:" + artifact.id }
     var needsDecision: Bool { artifact.workState == "needs_decision" && artifact.workDecisionId != nil }
-    var groupOrder: Int { isFinished ? 2 : needsDecision ? 0 : 1 }
+    func groupOrder(at date: Date) -> Int {
+        if isFinished { return 5 }
+        switch artifact.workState ?? artifact.activityState ?? artifact.status {
+        case "working": return isWorking(at: date) ? 0 : 4
+        case "queued": return 1
+        case "waiting": return 2
+        case "needs_decision": return 3
+        default: return 4
+        }
+    }
     var isFinished: Bool {
         if let state = artifact.workState { return ["completed", "cancelled"].contains(state) }
         return pullRequest?.isFinished ?? ["completed", "cancelled"].contains(artifact.status)
     }
 
-    static func tracked(in artifacts: [Artifact], visibility: [String: Bool] = [:]) -> [Self] {
+    static func tracked(in artifacts: [Artifact], visibility: [String: Bool] = [:], at date: Date = Date()) -> [Self] {
         let requests = TrackedPullRequest.tracked(in: artifacts, visibility: visibility)
             .map { Self(artifact: $0.artifact, pullRequest: $0) }
         let tasks = artifacts.filter { $0.kind == "work" && !(visibility["work:" + $0.id] ?? ($0.workDismissalId != nil)) }
             .map { Self(artifact: $0, pullRequest: nil) }
         return (requests + tasks).sorted {
-            if $0.groupOrder != $1.groupOrder { return $0.groupOrder < $1.groupOrder }
+            let firstGroup = $0.groupOrder(at: date)
+            let secondGroup = $1.groupOrder(at: date)
+            if firstGroup != secondGroup { return firstGroup < secondGroup }
+            if firstGroup == 1 {
+                let first = $0.artifact.workQueuePosition ?? Int.max
+                let second = $1.artifact.workQueuePosition ?? Int.max
+                if first != second { return first < second }
+            }
             return ($0.artifact.createdAt, $0.id) < ($1.artifact.createdAt, $1.id)
         }
     }
@@ -34,8 +50,6 @@ struct TrackedWorkItem: Identifiable {
 
     func activity(at date: Date) -> String {
         if isFinished { return (artifact.workState ?? artifact.status) == "cancelled" ? "Stopped" : "Completed" }
-        if artifact.status == "completed" { return "Completed" }
-        if artifact.status == "cancelled" { return "Stopped" }
         guard let observed = artifact.activityObservedAt?.apiDate, date.timeIntervalSince(observed) < 60 else {
             return "Status unavailable"
         }

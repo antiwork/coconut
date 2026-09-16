@@ -70,7 +70,15 @@ def main():
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
             url = urlsplit(self.path)
-            if url.path == '/test/work-state':
+            if url.path == '/test/order':
+                for item in state['artifacts']:
+                    if item['kind'] == 'pr' and item.get('pr_state') == 'open':
+                        item.update(work_state='queued' if body['export_working'] else 'working',
+                                    work_queue_position=1 if body['export_working'] else None)
+                    if item['id'] == 'export-active':
+                        item.update(work_state='working', status='working', activity='Export moved into execution' if body['export_working'] else 'Preparing the export')
+                self.respond(dict(ok=True))
+            elif url.path == '/test/work-state':
                 item = next(a for a in state['artifacts'] if a['id'] == 'export-active')
                 item.update(status=body['status'], work_state=body['status'], activity_state=body['status'], activity=body['activity'])
                 if body['status'] == 'needs_decision':

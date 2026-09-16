@@ -77,7 +77,8 @@ class WorkStatus:
             parent_task = tasks.get(parent.get('task_id'), {})
             assignment = tasks.get(parent_task.get('_assignment_task_id'), parent_task)
             if (parent_task and owner.get('status') == 'completed' and item.get('_hidden')
-                    and item.get('_work_key') == parent.get('_work_key')
+                    and (item.get('_work_key') == parent.get('_work_key')
+                         or item.get('_same_outcome_as') == parent.get('id'))
                     and (item.get('_work_parent_task_id') == assignment.get('id')
                          or (assignment.get('_self_recovery') and item.get('_work_parent_task_id') in parent.get('_work_previous_task_ids', [])))):
                 edges.append((parent_task['id'], owner['id']))
@@ -121,6 +122,14 @@ class WorkStatus:
                     continue
                 pending.append((child, depth + 1))
         return found
+
+    def _work_report_chain(self, item, tasks, records):
+        reporter = tasks.get(item.get('task_id'), {})
+        linked = {}
+        for identity in {reporter.get('id'), reporter.get('_assignment_task_id')}:
+            if identity in tasks:
+                linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
+        return linked
 
     def _work_live(self, task, records, timestamp):
         from .background_processes import subscription

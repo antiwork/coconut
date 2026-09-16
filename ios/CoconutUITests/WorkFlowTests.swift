@@ -2,6 +2,35 @@ import XCTest
 
 final class WorkFlowTests: XCTestCase {
     @MainActor
+    func testActiveWorkMovesToTopWhenItsStateChanges() async throws {
+        guard let address = ProcessInfo.processInfo.environment["COCONUT_WORK_TEST_URL"] else { throw XCTSkip("Run the Work fixture.") }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "work-test"]
+        app.launch()
+        let work = app.tabBars.buttons["Work"]
+        XCTAssertTrue(work.waitForExistence(timeout: 15)); work.tap()
+        let item = app.buttons["work-item-export-active"]
+        let pr = app.buttons["work-pr-42"]
+        XCTAssertTrue(item.waitForExistence(timeout: 5))
+        var request = URLRequest(url: URL(string: address + "/test/order")!)
+        request.httpMethod = "POST"
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["export_working": true])
+        _ = try await URLSession.shared.data(for: request)
+        XCTAssertTrue(app.staticTexts["Export moved into execution"].waitForExistence(timeout: 25))
+        let top = NSPredicate { _, _ in item.frame.minY < pr.frame.minY }
+        let moved = XCTNSPredicateExpectation(predicate: top, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: 5), .completed)
+        XCTAssertTrue(app.activityIndicators["work-progress-export-active"].exists)
+        XCTAssertFalse(app.staticTexts["Needs you"].exists)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Running work moves above queued work"; proof.lifetime = .keepAlways; add(proof)
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["export_working": false])
+        _ = try await URLSession.shared.data(for: request)
+        XCTAssertTrue(app.staticTexts["Preparing the export"].waitForExistence(timeout: 25))
+    }
+
+    @MainActor
     func testWrappingRowsAndFullSwipeDismissal() throws {
         guard let address = ProcessInfo.processInfo.environment["COCONUT_WORK_TEST_URL"] else { throw XCTSkip("Run the Work fixture.") }
         continueAfterFailure = false
@@ -70,9 +99,11 @@ final class WorkFlowTests: XCTestCase {
         decisionRequest.httpMethod = "POST"
         decisionRequest.httpBody = try JSONSerialization.data(withJSONObject: ["status": "needs_decision", "activity": "Waiting for your decision"])
         _ = try await URLSession.shared.data(for: decisionRequest)
-        let question = app.staticTexts["Needs you"]
-        XCTAssertTrue(question.waitForExistence(timeout: 25))
-        XCTAssertLessThan(item.frame.minY, app.buttons["work-pr-42"].frame.minY)
+        let waiting = item.staticTexts["Save the retry fix?"]
+        if !item.isHittable { app.collectionViews.firstMatch.swipeUp() }
+        XCTAssertTrue(waiting.waitForExistence(timeout: 25))
+        XCTAssertFalse(app.staticTexts["Needs you"].exists)
+        if !item.isHittable { app.collectionViews.firstMatch.swipeUp() }
         item.tap()
         XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))
         app.navigationBars.buttons.element(boundBy: 0).tap()
