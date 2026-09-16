@@ -671,14 +671,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                                          for r in routines if r['bot_id'] in visible and not r.get('_deleted')]
                 state['artifacts'] = [self._public(a) for a in self._work_projection([self._get('artifacts', a['id']) for a in state['artifacts']])]
                 replying = {c['decision_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working') and not c.get('_decision_refresh')}
-                histories = {}
                 for decision in state['decisions']:
                     decision['reply_pending'] = decision['id'] in replying
                     if not decision.get('request_text') and decision.get('task_id'):
                         task = self._get('tasks', decision['task_id'])
-                        if task['bot_id'] not in histories:
-                            histories[task['bot_id']] = self._history(task['bot_id'])
-                        decision.update(self.decision_origin(task, messages=histories[task['bot_id']]))
+                        decision.update(self.decision_origin(task))
                 state.update(cursor=self._cursor(), server_time=now(), provider=getattr(self.provider, 'name', 'unknown'), push_configured=self.push.configured)
                 if catalog is not None:
                     default = catalog.get('default', {})

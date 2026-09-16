@@ -133,7 +133,11 @@ class WorkProgress:
         # A manual routine run returns its own exchange. Its saved receipt links the caller.
         callers = linked | {t['id'] for t in tasks.values()
                             if (t.get('_assignment_task_id') or t['id']) == assignment['id']}
-        for record in self._all('native_receipts'):
+        rows = self.db.execute("SELECT data FROM native_receipts WHERE json_extract(data, '$.task_id') IN "
+            "(SELECT value FROM json_each(?)) AND json_extract(data, '$.state')='completed' "
+            "AND json_extract(data, '$.action.name')='cronjob_manage' ORDER BY rowid", (json.dumps(sorted(callers)),))
+        for row in rows:
+            record = json.loads(row[0])
             action = record.get('action', {})
             arguments = action.get('arguments', {})
             if (record['task_id'] not in callers or record['state'] != 'completed'
@@ -264,7 +268,7 @@ class WorkProgress:
         # A listing is read-only. The wait-registration guard applies only to an explicit coconut_wait.
         with self.lock:
             tasks = {t['id']: t for t in self._all('tasks')}
-            records = self._all('native_receipts')
+            records = self._work_receipts()
             dependencies = []
             for target in self._exchange_peers(task).values():
                 pending = self._background_pending(target['id'])

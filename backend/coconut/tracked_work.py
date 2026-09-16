@@ -166,10 +166,11 @@ class TrackedWork:
         return item
 
     def work_context_input(self, item_id):
+        import json
         item = self._canonical_work(self._get('artifacts', item_id))
         item_id = item['id']
         tasks = {t['id']: t for t in self._all('tasks')}
-        records = self._all('native_receipts')
+        records = self._work_receipts()
         peers = [a for a in self._all('artifacts') if a['id'] == item_id or
                  (item['kind'] == 'pr' and a['kind'] == 'pr' and a['url'].lower() == item['url'].lower())
                  or a.get('_work_parent_id') == item_id]
@@ -179,6 +180,10 @@ class TrackedWork:
             for identity in identities + peer.get('_work_previous_task_ids', []):
                 if identity in tasks:
                     linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
+        recent = [json.loads(row[0]) for row in self.db.execute(
+            "SELECT data FROM native_receipts WHERE json_extract(data, '$.task_id') IN "
+            "(SELECT value FROM json_each(?)) AND json_extract(data, '$.state')='completed' "
+            "ORDER BY rowid DESC LIMIT 3", (json.dumps(sorted(linked)),))]
         projected = next(a for a in self._work_projection(peers) if a['id'] == item_id)
         latest = max((a for a in peers if a['id'] == item_id or not a.get('_work_parent_id')), key=lambda a: (a.get('observed_at') or a['created_at'], a.get('checked_at') or a['created_at'], a['id']))
         updates = [m for m in self._all('messages') if m.get('task_id') in linked
@@ -202,7 +207,7 @@ class TrackedWork:
                                          delivered=bool(r.get('_process_delivery')),
                                          completed_at=r.get('completed_at'), process_status=r.get('_process_status'),
                                          process_observed_at=r.get('_process_observed_at'))
-                                    for r in [r for r in records if r['task_id'] in linked and r['state'] == 'completed'][-3:]],
+                                    for r in reversed(recent)],
                     decisions=[dict(id=d['id'], title=d['title'], context=d.get('context', ''))
                                for d in self._all('decisions') if d['task_id'] in linked and d['status'] == 'pending'])
 
@@ -327,7 +332,7 @@ class TrackedWork:
         from .service import now, uid
         with self.transaction():
             tasks = {t['id']: t for t in self._all('tasks')}
-            records = self._all('native_receipts')
+            records = self._work_receipts()
             artifacts = self._all('artifacts')
             timestamp = datetime.now(timezone.utc)
             self._sync_followup_work(tasks, artifacts)
@@ -524,7 +529,7 @@ class TrackedWork:
         items = [a for a in self._all('artifacts') if a['kind'] == 'work'
                  and (not a.get('_hidden') or a.get('_work_parent_id'))]
         tasks = {t['id']: t for t in self._all('tasks')}
-        records = self._all('native_receipts')
+        records = self._work_receipts()
         owned = {a['id'] for a in items if a.get('task_id') in tasks
                  and task['id'] in self._work_report_chain(a, tasks, records)}
         items = [a for a in items if a['bot_id'] == task['bot_id']

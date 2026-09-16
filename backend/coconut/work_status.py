@@ -262,7 +262,7 @@ class WorkStatus:
 
     def _tracked_work_input(self, task):
         tasks = {t['id']: t for t in self._all('tasks')}
-        records = self._all('native_receipts')
+        records = self._work_receipts()
         urls = set()
         for artifact in self._all('artifacts'):
             if artifact['kind'] != 'pr' or not self._pr_review_source_current(artifact):
@@ -276,6 +276,16 @@ class WorkStatus:
         self._project_work_outcomes(artifacts, {t['id']: t for t in self._all('tasks')},
                                     self._pending_completion_receipts(), self._all('decisions'), datetime.now(timezone.utc))
         return artifacts
+
+    def _work_receipts(self):
+        import json
+        with self.lock:
+            # Queue reads need unresolved actions and waits, not old tool output.
+            records = {r['id']: r for r in self._pending_completion_receipts()}
+            for row in self.db.execute("SELECT data FROM native_receipts WHERE json_extract(data, '$.state')='executing'"):
+                record = json.loads(row[0])
+                records[record['id']] = record
+            return list(records.values())
 
     def _restore_active_work(self, artifact):
         if (artifact.get('pr_state') == 'open' and artifact.get('observed_at') and not artifact.get('refresh_error')

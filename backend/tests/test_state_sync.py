@@ -94,6 +94,28 @@ class StateSyncTests(unittest.TestCase):
         with self.assertRaises(ServiceError):
             self.service.card(decision['id'])
 
+    def test_card_origins_share_one_history_read_and_refresh_after_changes(self):
+        task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Original request'})
+        with self.service.transaction():
+            for _ in range(5):
+                self.service._put('decisions', dict(id=str(uuid4()), bot_id=self.bot['id'],
+                    task_id=task['id'], status='pending', revision=1))
+        original = Service._history
+        calls = []
+        def read(view, bot_id):
+            calls.append(bot_id)
+            return original(view, bot_id)
+        with patch.object(Service, '_history', read):
+            state = self.service.snapshot(content_only=True)
+        self.assertEqual(calls, [self.bot['id']])
+        self.assertEqual({d['request_text'] for d in state['decisions']}, {'Original request'})
+        with self.service.transaction():
+            source = self.service._get('messages', state['decisions'][0]['request_message_id'])
+            source['text'] = 'Corrected request'
+            self.service._put('messages', source)
+        self.assertEqual({d['request_text'] for d in self.service.snapshot(content_only=True)['decisions']},
+                         {'Corrected request'})
+
     def test_delegated_history_stays_in_its_conversation(self):
         delegate = self.write('POST', '/v1/bots', {'name': 'Dev'})
         task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})
