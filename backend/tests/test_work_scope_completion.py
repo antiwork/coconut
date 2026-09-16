@@ -92,6 +92,47 @@ class WorkScopeCompletionTests(unittest.TestCase):
         self.service._put('tasks', task)
         self.assertEqual(self.row()['work_attempts'], [])
 
+    def test_old_failed_attempt_does_not_hide_current_execution(self):
+        from coconut.service import now
+        self.track()
+        owner = self.service._get('tasks', self.task['id'])
+        owner['status'] = 'waiting'
+        old = dict(owner, id='old-failure', status='failed', _assignment_task_id=owner['id'])
+        current = dict(owner, id='current-attempt', status='working', _assignment_task_id=owner['id'],
+                       updated_at=now(), _turn_started_at=now())
+        for task in (owner, old, current):
+            self.service._put('tasks', task)
+        self.service.running[current['id']] = threading.current_thread()
+        try:
+            self.assertEqual(self.row()['work_state'], 'working')
+        finally:
+            self.service.running.clear()
+        current['status'] = 'queued'
+        self.service._put('tasks', current)
+        self.assertEqual(self.row()['work_state'], 'queued')
+        current['status'] = 'completed'
+        self.service._put('tasks', current)
+        self.assertEqual(self.row()['work_state'], 'needs_recovery')
+
+    def test_new_blocker_report_keeps_priority_over_a_running_sibling(self):
+        from coconut.service import now
+        item = self.track()
+        owner = self.service._get('tasks', self.task['id'])
+        owner['status'] = 'waiting'
+        reporter = dict(owner, id='blocker-report', status='completed', _native_turn_id='report-turn',
+                        _assignment_task_id=owner['id'])
+        current = dict(owner, id='current-attempt', status='working', _assignment_task_id=owner['id'],
+                       updated_at=now(), _turn_started_at=now())
+        for task in (owner, reporter, current):
+            self.service._put('tasks', task)
+        self.service._set_work_activity(item, reporter, dict(activity='Export verification failed', activity_state='blocked'))
+        self.service.running[current['id']] = threading.current_thread()
+        try:
+            self.assertEqual(self.row()['work_state'], 'needs_recovery')
+            self.assertEqual(self.row()['activity'], 'Export verification failed')
+        finally:
+            self.service.running.clear()
+
     def test_later_callback_reopens_the_same_assignment(self):
         item, owner = self.completed_diagnosis()
         first = dict(owner, id='first-callback', status='completed', _assignment_task_id=owner['id'])

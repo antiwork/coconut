@@ -129,6 +129,11 @@ class WorkModel:
                 continue
             blockers.append((task, report.get('_activity') if report.get('_activity_state') == 'blocked' else None))
         queued = [t for t in attempts if t['status'] in ('queued', 'scheduled')]
+        # A newer native turn can address an old failure. A background watcher cannot.
+        resumed = queued + [t for t in live if self.running.get(t['id']) and self.running[t['id']].is_alive()]
+        blockers = [(task, label) for task, label in blockers if task['status'] != 'failed' or label or not any(
+            (current.get('updated_at') if current in queued else current.get('_turn_started_at', current['created_at']))
+            > task.get('updated_at', task['created_at']) for current in resumed)]
         evidence = item.get('completion_evidence')
         if not evidence and item['status'] == 'completed' and not item.get('_automatic_work'):
             evidence = item.get('activity')
