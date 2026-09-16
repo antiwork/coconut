@@ -53,16 +53,12 @@ class DecisionFreshness:
                 and not m.get('_hidden') and not m.get('_deleted') and m['created_at'] >= assignment['created_at']
                 and task['bot_id'] in m.get('recipient_bot_ids', [])]
 
-    def _decision_evidence(self, decision, tasks, records, artifacts, *, ignore_context_id=None):
-        from .service import digest, encoded
-        from .background_processes import subscription
+    def _decision_scope(self, decision, tasks, records, artifacts):
         task = tasks[decision['task_id']]
         assignment = tasks.get(task.get('_assignment_task_id'), task)
         chain = self._work_chain(assignment, tasks, records, include_continuations=True)
         chain.update(self._work_chain(task, tasks, records, include_continuations=True))
         ids = set(chain) | {task['id']}
-        contexts = self._all('contexts')
-        refresh_turns = {c['id'] for c in contexts if c.get('_decision_refresh')}
         work = [a for a in artifacts if not a.get('_hidden') and (a.get('task_id') in ids
                 or a.get('_review_task_id') in ids or a['id'] in decision.get('_recovery_work_ids', [])
                 or a['id'] in (task.get('_work_context_id'), assignment.get('_work_context_id'))
@@ -72,6 +68,28 @@ class DecisionFreshness:
             for identity in roots + item.get('_work_previous_task_ids', []):
                 if identity in tasks:
                     ids.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
+        return ids, work
+
+    def _decision_records(self, decision, tasks, artifacts):
+        links = self._pending_completion_receipts()
+        identities, _ = self._decision_scope(decision, tasks, links, artifacts)
+        identities = sorted(identities)
+        clauses = ["json_extract(data,'$.task_id') IN (" + ','.join('?' for _ in identities) + ')']
+        values = list(identities)
+        if links:
+            clauses.append('id IN (' + ','.join('?' for _ in links) + ')')
+            values.extend(r['id'] for r in links)
+        # Fingerprints retain the journal order across delivery changes and restarts.
+        return [json.loads(row[0]) for row in self.db.execute(
+            'SELECT data FROM native_receipts WHERE ' + ' OR '.join(clauses) + ' ORDER BY rowid', values)]
+
+    def _decision_evidence(self, decision, tasks, records, artifacts, *, ignore_context_id=None):
+        from .service import digest, encoded
+        from .background_processes import subscription
+        task = tasks[decision['task_id']]
+        ids, work = self._decision_scope(decision, tasks, records, artifacts)
+        contexts = self._all('contexts')
+        refresh_turns = {c['id'] for c in contexts if c.get('_decision_refresh')}
         visible = {d['id'] for d in self._all('decisions')
                    if d['status'] == 'pending' and self._decision_visible_to_task(d, task)}
         facts = dict(revision=decision['revision'], human_messages=self._decision_human_messages(task),
@@ -92,8 +110,10 @@ class DecisionFreshness:
     def _initialize_decision_freshness(self, decision):
         if decision['action_type'] not in ('question', 'draft_message'):
             return
-        fingerprint, _ = self._decision_evidence(decision, {t['id']: t for t in self._all('tasks')},
-                                                 self._all('native_receipts'), self._all('artifacts'))
+        tasks = {t['id']: t for t in self._all('tasks')}
+        artifacts = self._all('artifacts')
+        fingerprint, _ = self._decision_evidence(decision, tasks,
+            self._decision_records(decision, tasks, artifacts), artifacts)
         decision['_freshness'] = dict(fingerprint=fingerprint, checked_at=decision['created_at'])
         self._put('decisions', decision)
 
@@ -199,7 +219,6 @@ class DecisionFreshness:
             contexts = self._all('contexts')
             if any(c.get('_decision_refresh') and c['status'] in ('queued', 'working') for c in contexts):
                 return
-            records = None
             artifacts = self._all('artifacts')
             current = datetime.now(timezone.utc)
             for decision in sorted(decisions, key=lambda d: d.get('_freshness', {}).get('queued_at', d['created_at'])):
@@ -210,8 +229,7 @@ class DecisionFreshness:
                         or self._human_reply_pending(task, contexts) or self._refresh_session_busy(task)
                         or any(c['decision_id'] == decision['id'] and c['status'] in ('queued', 'working') for c in contexts)):
                     continue
-                if records is None:
-                    records = self._all('native_receipts')
+                records = self._decision_records(decision, tasks, artifacts)
                 fingerprint, work = self._decision_evidence(decision, tasks, records, artifacts)
                 previous = decision.get('_freshness', {})
                 if age(previous.get('queued_at'), current) < RETRY_SECONDS:
@@ -257,7 +275,8 @@ class DecisionFreshness:
                     or not self._process_observation_current(task, self._get('bots', task['bot_id']))):
                 raise ServiceError(409, 'This check no longer matches the pending question.')
             tasks = {t['id']: t for t in self._all('tasks')}
-            records, artifacts = self._all('native_receipts'), self._all('artifacts')
+            artifacts = self._all('artifacts')
+            records = self._decision_records(decision, tasks, artifacts)
             fingerprint, _ = self._decision_evidence(decision, tasks, records, artifacts, ignore_context_id=context_id)
             if context['_evidence_fingerprint'] != fingerprint:
                 raise ServiceError(409, 'The work changed during this check. Stop this check; a later check will read the current evidence.')

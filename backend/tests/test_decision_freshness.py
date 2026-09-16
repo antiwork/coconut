@@ -42,6 +42,35 @@ class DecisionFreshnessTests(unittest.TestCase):
         context['status'] = 'completed'
         self.service._put('contexts', context)
 
+    def test_scoped_receipts_keep_journal_order_when_delivery_is_acknowledged(self):
+        decision = self.question()
+        records = [dict(id='earlier', task_id=self.task['id'], state='completed', action={'name': 'terminal'}, result='{}'),
+                   dict(id='later', task_id=self.task['id'], state='completed', action={'name': 'delegate_task'},
+                        result=json.dumps({'status': 'dispatched', 'delegation_id': 'native-worker'}),
+                        _process_delivery='consumed', _delegation_ack_pending=True)]
+        for record in records:
+            self.service._put('native_receipts', record)
+        tasks = {t['id']: t for t in self.service._all('tasks')}
+        artifacts = self.service._all('artifacts')
+        before = self.service._decision_records(decision, tasks, artifacts)
+        fingerprint, _ = self.service._decision_evidence(decision, tasks, before, artifacts)
+        records[1]['_delegation_ack_pending'] = False
+        self.service._put('native_receipts', records[1])
+        after = self.service._decision_records(decision, tasks, artifacts)
+        self.assertEqual([r['id'] for r in before], [r['id'] for r in after])
+        self.assertEqual(fingerprint, self.service._decision_evidence(decision, tasks, after, artifacts)[0])
+
+    def test_card_checks_read_only_related_tool_history(self):
+        original = self.service._all
+        def scoped(table):
+            self.assertNotEqual(table, 'native_receipts', 'A card check must not read the full tool journal')
+            return original(table)
+        with patch.object(self.service, '_all', side_effect=scoped):
+            self.question()
+            context = self.refresh()
+            self.service.refresh_decision(context['id'], dict(status='current', evidence='The original choice still needs an answer.'))
+        self.assertTrue(self.service._get('contexts', context['id'])['_refresh_recorded'])
+
     def test_old_card_queues_one_silent_check_without_a_human_message(self):
         self.question()
         messages = self.service._all('messages')

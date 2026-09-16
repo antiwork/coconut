@@ -212,7 +212,8 @@ class BackgroundProcesses:
                             and self._get('tasks', r['task_id'])['bot_id'] == bot_id
                             and r.get('action', {}).get('name') in ('process', 'process_manage')
                             and r['action'].get('arguments', {}).get('session_id') == subscription(record)
-                            for r in self._all('native_receipts'))
+                            for identity in {c['task_id'] for c in self._all('contexts') if c['id'] in maintenance}
+                            for r in self._native_task_receipts(identity))
                         if result.get('consumed') and not read_by_maintenance:
                             record['_process_delivery'] = 'consumed'
                             record['_completion_text'] = result.get('text', 'The process result was already received.')
@@ -267,9 +268,11 @@ class BackgroundProcesses:
             record.update(_completion_text=text, _process_delivery=context['id'])
             self._put('native_receipts', record)
         if context.get('_decision_refresh'):
-            self._set_refresh_recovery(context, source, self._all('contexts'), self._all('native_receipts'))
             tasks = {t['id']: t for t in self._all('tasks')}
-            fingerprint, work = self._decision_evidence(decision, tasks, self._all('native_receipts'), self._all('artifacts'))
+            artifacts = self._all('artifacts')
+            records = self._decision_records(decision, tasks, artifacts)
+            self._set_refresh_recovery(context, source, self._all('contexts'), records)
+            fingerprint, work = self._decision_evidence(decision, tasks, records, artifacts)
             task = tasks[context['task_id']]
             context.update(_evidence_fingerprint=fingerprint,
                            _human_input_ids=[m['id'] for m in self._decision_human_messages(task)],
