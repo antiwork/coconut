@@ -374,7 +374,8 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
         except (OSError, ValueError, ssl.SSLError):
             raise DeployError('The saved certificate cannot validate the service.') from None
         parsed = urlsplit(address)
-        deadline = time.monotonic() + 20
+        # Startup migrations can exceed 20 seconds on an active host.
+        deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             connection = http.client.HTTPConnection(parsed.hostname, parsed.port or 443, timeout=2)
             raw = None
@@ -471,6 +472,20 @@ def reconcile(root, operations):
         path = safe_path(root / name, root)
         if path.exists() and (not path.is_file() or sha256(path.read_bytes()) not in {old['files'].get(name), record['new_files'].get(name)}):
             raise DeployError('Source changed outside the interrupted update. Recovery stopped to preserve those changes.')
+    if record['phase'] == 'code_restored' and old['files'] and marker == old and all(
+            (root / name).is_file() and sha256((root / name).read_bytes()) == expected
+            for name, expected in old['files'].items()) and not any(
+                (root / name).exists() for name in set(record['new_files']) - set(old['files'])) and operations.inspect(root) == record['service_state']:
+        try:
+            if record['service_state']['mode'] != 'stopped':
+                operations.health(root, old['address'])
+            else:
+                operations.assert_stopped(root)
+        except DeployError:
+            pass
+        else:
+            remove_journal(root, record)
+            return
     try:
         if (root / 'scripts/host.py').is_file():
             operations.stop(root)

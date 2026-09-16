@@ -283,6 +283,18 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.assertGreaterEqual(operations.stop_count, 2)
         self.assertIn(('restore', self.target, operations.state), operations.calls)
 
+    def test_recovery_accepts_restored_service_that_started_after_deadline(self):
+        self.receive()
+        with self.assertRaises(deploy.DeployError):
+            self.receive(files=package_files(**{'README.md': b'New code.\n'}),
+                         operations=FakeOperations(mode='managed', fail='health'))
+        journal = self.target / '.runtime/deploy/update.json'
+        self.assertEqual(json.loads(journal.read_text())['phase'], 'code_restored')
+        operations = FakeOperations(mode='managed')
+        deploy.reconcile(self.target, operations)
+        self.assertEqual([call[0] for call in operations.calls], ['inspect', 'health'])
+        self.assertFalse(journal.exists())
+
     def test_failed_stop_does_not_replace_code(self):
         self.receive()
         before = (self.target / 'README.md').read_bytes()
@@ -553,7 +565,7 @@ class DeploymentCommandTests(unittest.TestCase):
 
 
 class DeploymentHealthTests(unittest.TestCase):
-    def assert_health_uses_installed_trust(self, peer_certificate):
+    def assert_health_uses_installed_trust(self, peer_certificate, *, delayed=False):
         saved_certificate = b'The saved certificate DER bytes.'
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -572,7 +584,8 @@ class DeploymentHealthTests(unittest.TestCase):
             response.read.return_value = b'{"ok":true,"api_version":1}'
             with patch.object(deploy, 'load_host', return_value=installed_host) as load_host, \
                  patch.object(deploy.socket, 'create_connection', return_value=raw) as connect, \
-                 patch.object(deploy.http.client, 'HTTPConnection', return_value=connection) as http:
+                 patch.object(deploy.http.client, 'HTTPConnection', return_value=connection) as http, \
+                 patch.object(deploy.time, 'monotonic', side_effect=[0, 21] if delayed else [0, 0]):
                 if peer_certificate != saved_certificate:
                     with self.assertRaisesRegex(deploy.DeployError, 'certificate does not match'):
                         deploy.Operations().health(root, 'https://mini.example.ts.net:9000')
@@ -595,3 +608,6 @@ class DeploymentHealthTests(unittest.TestCase):
 
     def test_health_rejects_a_different_certificate_before_the_http_request(self):
         self.assert_health_uses_installed_trust(b'A different certificate.')
+
+    def test_health_accepts_startup_after_twenty_seconds(self):
+        self.assert_health_uses_installed_trust(b'The saved certificate DER bytes.', delayed=True)
