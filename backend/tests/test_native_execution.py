@@ -65,7 +65,8 @@ class NativeExecutionTests(unittest.TestCase):
         self.restart()
         self.service._run_task(self.task['id'])
         messages = self.service.snapshot()['messages']
-        self.assertEqual(next(m for m in messages if m['id'] == partial['id'])['text'], partial['text'])
+        self.assertNotIn(partial['id'], [m['id'] for m in messages])
+        self.assertEqual(self.service._get('messages', partial['id'])['text'], partial['text'])
         self.assertFalse(any(m['streaming'] for m in messages))
         self.assertNotEqual(messages[-1]['id'], partial['id'])
 

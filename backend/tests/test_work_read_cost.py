@@ -85,3 +85,25 @@ class WorkReadCostTests(unittest.TestCase):
         self.assertEqual(self.service._get('messages', unrelated['id'])['text'], 'Other task output')
         plan = self.service.db.execute("EXPLAIN QUERY PLAN SELECT data FROM messages WHERE json_extract(data, '$.task_id')=?", (task['id'],)).fetchall()
         self.assertIn('messages_task', str(plan))
+
+    def test_context_reuses_graphs_only_within_the_current_read(self):
+        self.track()
+        task = self.service._get('tasks', self.task['id'])
+        with self.service._read_view() as view:
+            original = view._work_links
+            with patch.object(view, '_work_links', wraps=original) as links:
+                with view._read_transaction():
+                    tasks = {t['id']: t for t in view._all('tasks')}
+                    records = view._work_receipts()
+                    first = view._work_chain(task, tasks, records, include_continuations=True)
+                    second = view._work_chain(task, tasks, records, include_continuations=True)
+                    self.assertEqual(first, second)
+                    self.assertEqual(links.call_count, 1)
+                with self.service.transaction():
+                    task['_waiting_on'] = ['new-dependency']
+                    self.service._put('tasks', task)
+                with view._read_transaction():
+                    tasks = {t['id']: t for t in view._all('tasks')}
+                    view._work_chain(tasks[task['id']], tasks, view._work_receipts(), include_continuations=True)
+                    self.assertEqual(tasks[task['id']]['_waiting_on'], ['new-dependency'])
+                    self.assertEqual(links.call_count, 2)

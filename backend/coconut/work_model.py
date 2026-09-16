@@ -275,7 +275,8 @@ class WorkModel:
 
     def _project_work_outcomes(self, artifacts, tasks, records, decisions, timestamp):
         previous = getattr(self, '_work_graphs', None)
-        self._work_graphs = {}
+        if previous is None:
+            self._work_graphs = {}
         try:
             self._project_work_outcomes_inner(artifacts, tasks, records, decisions, timestamp)
         finally:

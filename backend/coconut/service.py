@@ -605,6 +605,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
     @contextlib.contextmanager
     def _read_transaction(self):
         self.db.execute('BEGIN')
+        previous_graphs = getattr(self, '_work_graphs', None)
+        self._work_graphs = {}
         if hasattr(self, '_read_cache'):
             self._read_cache = {}
         try:
@@ -612,6 +614,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         finally:
             if hasattr(self, '_read_cache'):
                 self._read_cache = None
+            self._work_graphs = previous_graphs
             self.db.execute('ROLLBACK')
 
     def snapshot(self, *, timings=None, content_only=False) -> dict:
@@ -2646,7 +2649,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     self._advance_input(task)
                 else:
                     task['_preference_source_ids'] = []
-                    results = [message for message in reversed(self._all('messages')) if message['task_id'] == task_id and message.get('sender_bot_id') == task['bot_id'] and message['kind'] in ('text', 'artifact') and not message.get('_hidden') and not message.get('recipient_bot_ids')]
+                    results = [message for message in reversed(self._task_messages(task_id)) if message['task_id'] == task_id and message.get('sender_bot_id') == task['bot_id'] and message['kind'] in ('text', 'artifact') and not message.get('_hidden') and not message.get('recipient_bot_ids')]
                     result = next((message for message in results if message['kind'] == 'text'), results[0] if results else None)
                     result_text = result['text'] if result and kind == 'completed' else task['summary']
                     if result and result['kind'] == 'artifact' and kind == 'completed':
@@ -2662,7 +2665,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     pass
                 elif generic_completion:
                     turn_started_at = task.get('_turn_started_at', task['created_at'])
-                    result = next((message for message in reversed(self._all('messages')) if message['task_id'] == task_id and message['role'] == 'assistant' and message['kind'] in ('text', 'artifact') and not message.get('_hidden') and message['created_at'] >= turn_started_at and message['text'].strip()), None)
+                    result = next((message for message in reversed(self._task_messages(task_id)) if message['task_id'] == task_id and message['role'] == 'assistant' and message['kind'] in ('text', 'artifact') and not message.get('_hidden') and message['created_at'] >= turn_started_at and message['text'].strip()), None)
                     if result:
                         bot = self._get('bots', task['bot_id'] if task.get('source_bot_id') else task['conversation_bot_id'])
                         bot['last_message'] = result['text'][:160]

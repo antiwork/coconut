@@ -207,13 +207,14 @@ class WorkStatus:
         graphs = getattr(self, '_work_graphs', None)
         key = (id(tasks), id(records), include_continuations)
         if graphs is not None and key in graphs:
-            linked, explicit_waits = graphs[key]
+            _, _, linked, explicit_waits = graphs[key]
         else:
             linked, explicit_waits = self._work_links(tasks, records, include_continuations)
             if include_continuations:
                 self._link_external_work(tasks, linked, explicit_waits)
             if graphs is not None:
-                graphs[key] = linked, explicit_waits
+                # Keep inputs alive so Python cannot reuse their IDs within this read.
+                graphs[key] = tasks, records, linked, explicit_waits
         found, pending = {}, deque([(root['id'], 0)])
         while pending:
             identity, depth = pending.popleft()

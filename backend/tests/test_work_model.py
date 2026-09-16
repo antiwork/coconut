@@ -248,11 +248,13 @@ class AutomaticOutcomeCompletionTests(unittest.TestCase):
     start = fixtures.AutomaticWorkTests.start
     sync = fixtures.AutomaticWorkTests.sync
 
-    def test_user_request_has_native_completion_without_explicit_tracking(self):
+    def test_native_checklist_completes_the_tracked_outcome(self):
         from coconut.work_progress import NativeWork, ROOT_ID
         task = self.start()
         item = self.sync()[0]
         class Store:
+            def __init__(self):
+                self.todos, self.revision = [], 0
             def restore(self, todos, revision):
                 self.todos, self.revision = todos, revision
             def snapshot(self):
@@ -261,10 +263,11 @@ class AutomaticOutcomeCompletionTests(unittest.TestCase):
             _todo_store = Store()
         agent = Agent()
         work = NativeWork(dict(operation='start', task=task))
-        self.assertTrue(work.enabled)
+        self.assertFalse(work.enabled)
         work.restore(agent)
-        root = next(t for t in agent._todo_store.todos if t['id'] == ROOT_ID)
-        root.update(status='completed', content='Verified that all requested records appear in the saved file.')
+        self.assertEqual(agent._todo_store.todos, [])
+        agent._todo_store.restore([dict(id='export', status='completed',
+            content='Verified that all requested records appear in the saved file.')], revision=1)
         self.service.emit(task['id'], 'completed', dict(summary='Verified the export.', **work.payload(agent)))
         self.service.running.clear()
         row = self.sync()[0]
