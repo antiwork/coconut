@@ -30,6 +30,7 @@ open ios/Coconut.xcodeproj
 Run tests without installing Hermes:
 
 ```sh
+python3 -m pip install Pillow==12.3.0  # The image decoder also ships with Hermes.
 PYTHONPATH=backend python3 -m unittest discover -s backend/tests
 (cd relay && npm ci && npm test)
 ```

@@ -9,6 +9,7 @@ struct DecisionCard: View {
     var replyFocus: FocusState<Bool>.Binding? = nil
     var confirmingOptionId: String? = nil
     var onRespond: () -> Void = {}
+    var onPreviewFrameChange: (CGRect) -> Void = { _ in }
     var onViewPrevious: ((String) -> Void)? = nil
     var onChoose: ((String, String?) -> Void)? = nil
     @State private var dismissing = false
@@ -17,6 +18,7 @@ struct DecisionCard: View {
     @State private var submittingOptionId: String?
     @State private var responseError: String?
     @State private var showsEarlierReplies = false
+    @State private var loadedPreviewIds: Set<String> = []
     @State private var editingDraft: Decision?
     private var canRespond: Bool { store.canSubmitDecision }
     private var showsSelection: Bool { !decision.isPending || dismissing }
@@ -104,6 +106,10 @@ struct DecisionCard: View {
                     .accessibilityIdentifier("dismiss-card-\(decision.id)")
                 }
             }
+            if let previews = decision.previews, !previews.isEmpty {
+                DecisionPreviewStrip(previews: previews, loadedIds: $loadedPreviewIds, onFrameChange: onPreviewFrameChange)
+                    .id(decision.previewsHash)
+            }
             if let draft = decision.draft { MessageDraftContent(draft: draft) }
             if !showsSelection {
                 if decision.draft != nil { draftActions }
@@ -182,7 +188,8 @@ struct DecisionCard: View {
                     DecisionChoiceContent(option: option, isRecommended: decision.recommendedOptionId == option.id, isSending: submittingOptionId == option.id, isSelected: confirmingOptionId == option.id, isCompact: showsBot)
                 }
                 .buttonStyle(HomePressStyle())
-                .disabled(!canRespond || submitting || store.answeringDecisionIds.contains(decision.id))
+                .disabled(!canRespond || submitting || store.answeringDecisionIds.contains(decision.id)
+                    || (option.answer == "approve" && (decision.previews ?? []).contains { !loadedPreviewIds.contains($0.id) }))
                 .accessibilityIdentifier("decision-option-\(option.id)")
                 .accessibilityLabel(option.label + (decision.recommendedOptionId == option.id ? ", Recommended" : ""))
                 .accessibilityHint("Submits this choice. " + option.explanation)
@@ -247,6 +254,10 @@ struct DecisionCard: View {
     }
 
     private func answer(_ choice: String, optionId: String? = nil) {
+        if choice == "approve", (decision.previews ?? []).contains(where: { !loadedPreviewIds.contains($0.id) }) {
+            responseError = "Wait for the previews to load before choosing this option."
+            return
+        }
         guard decision.isPending, canRespond, !submitting else { return }
         if let onChoose { onChoose(choice, optionId); return }
         onRespond()

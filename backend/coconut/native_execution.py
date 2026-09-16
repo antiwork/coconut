@@ -168,6 +168,8 @@ class NativeExecution:
                             _proposal_key=payload.get('key') if optional else None,
                             _action=action, _action_hash=digest(encoded(action)), _native=True,
                             _predicted_option_id=payload.get('predicted_option_id'), _receipt_id=payload.get('receipt_id'), _answers=[])
+            from .decision_previews import attach_previews
+            attach_previews(self, decision, payload)
             if draft is not None:
                 decision['draft'] = draft
                 decision['draft_hash'] = digest(encoded(draft))
@@ -208,6 +210,8 @@ class NativeExecution:
         choice = option['answer'] if option else data.get('choice')
         if choice not in ('approve', 'reject', 'modify') or (choice == 'approve' and not option):
             raise ServiceError(400, 'Choose one of the current options.')
+        if decision.get('previews') and choice == 'approve' and data.get('previews_hash') != decision.get('previews_hash'):
+            raise ServiceError(409, 'Review the images in the latest app before choosing this option.')
         if decision.get('draft') is not None and choice == 'approve' and data.get('draft_hash') != decision.get('draft_hash'):
             raise ServiceError(409, 'Open the full draft in the latest app before selecting Send.')
         if decision.get('draft') is not None and choice == 'modify':

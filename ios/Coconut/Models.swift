@@ -268,6 +268,8 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     var revision: Int
     var draft: MessageDraft? = nil
     var draftHash: String? = nil
+    var previews: [DecisionPreview]? = nil
+    var previewsHash: String? = nil
     var proposalPreview: String? = nil
     var proposalHash: String? = nil
     var decidedByName: String? = nil
@@ -317,6 +319,14 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
 
     var isProposal: Bool { inboxKind == "proposal" }
     var isPending: Bool { status == "pending" }
+}
+
+struct DecisionPreview: Codable, Identifiable, Equatable, Sendable {
+    var artifactId: String
+    var caption: String
+    var width: Int
+    var height: Int
+    var id: String { artifactId }
 }
 
 struct DecisionOption: Codable, Identifiable, Equatable, Sendable {

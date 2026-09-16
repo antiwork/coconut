@@ -24,6 +24,8 @@ struct DecisionInboxView: View {
     @State private var updatingIds: Set<String> = []
     @State private var overviewOpen = false
     @State private var selectedId: String?
+    @State private var previewFrame: CGRect = .zero
+    @State private var previewDecisionId: String?
     @State private var offset: CGFloat = 0
     @State private var horizontalDrag = false
     @State private var verticalDrag = false
@@ -188,7 +190,7 @@ struct DecisionInboxView: View {
                     .offset(y: 10 * (1 - progress))
                     .allowsHitTesting(false).accessibilityHidden(true)
             }
-            DecisionCard(decision: decision, showsBot: true, replyFocus: $replyFocused, confirmingOptionId: confirmingChoice?.optionId, onRespond: clearUndo, onChoose: { choice, optionId in
+            DecisionCard(decision: decision, showsBot: true, replyFocus: $replyFocused, confirmingOptionId: confirmingChoice?.optionId, onRespond: clearUndo, onPreviewFrameChange: { previewFrame = $0; previewDecisionId = decision.id }, onChoose: { choice, optionId in
                 choose(decision, choice: choice, optionId: optionId)
             })
                 .id(decision.id)
@@ -302,11 +304,11 @@ struct DecisionInboxView: View {
     }
 
     private func swipe(_ decision: Decision, width: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 18)
+        DragGesture(minimumDistance: 18, coordinateSpace: .global)
             .updating($dragging) { _, active, _ in active = true }
             .onChanged { value in
                 guard !exiting, restoringDecision == nil, canRespond, !replyFocused, !updatingIds.contains(decision.id) else { return }
-                guard !verticalDrag else { return }
+                guard !(previewDecisionId == decision.id && previewFrame.contains(value.startLocation)), !verticalDrag else { return }
                 if !horizontalDrag {
                     guard abs(value.translation.width) > abs(value.translation.height) * 1.5 else {
                         verticalDrag = true

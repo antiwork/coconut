@@ -211,11 +211,15 @@ class DecisionInbox:
         # Native approval is bound to an exact action and requires its visible choice.
         if decision['action_type'] == 'native_approval' and payload.get('choice') != 'reject':
             return {'status': 'pending', 'error': 'Ask the person to select the exact action on its card. Do not execute it from this follow-up.'}
+        if decision.get('previews') and payload.get('choice') == 'approve':
+            return {'status': 'pending', 'error': 'Ask the person to review the images and select a choice on the card.'}
         if decision['action_type'] == 'draft_message':
             if payload.get('choice') == 'approve':
                 return {'status': 'pending', 'error': 'Ask the person to select Send on the exact draft.'}
             if payload.get('choice') == 'modify':
                 revision = payload.get('revision', {})
+                from .decision_previews import attach_previews
+                attach_previews(self, decision, revision)
                 result = self.edit_message_draft(decision, task,
                     dict(revision=decision['revision'], draft=revision.get('draft')), context['_reply_device'])
                 return {'status': 'recorded', 'decision': result}
@@ -263,6 +267,8 @@ class DecisionInbox:
             if not isinstance(value, str) or len(value) > limit:
                 raise ServiceError(400, 'Use concise text for decision details.')
             decision[field] = value
+        from .decision_previews import attach_previews
+        attach_previews(self, decision, revision)
         decision.setdefault('_answers', []).append({'choice': 'revise', 'correction': reason, 'decided_by': actor})
         self._put('decisions', decision)
         self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
@@ -288,7 +294,7 @@ DECISION_INSTRUCTIONS = (
     'Do not tell the person to remind each bot to use cards or save these app rules in each bot memory. '
     'If the person must type an answer, ask through coconut_ask with meaningful choices when available; the card accepts a typed reply. '
     'For a manual step, explain the required step and ask for its result in a card. Never invent a completed result. '
-    'For visual approval, provide the actual preview in chat before presenting the approval card. '
+    'For visual approval, attach the actual PNG or JPEG images in the card previews field with short captions. Text, file paths in chat, and claims about captures do not substitute for visible previews. When the appearance changes, attach new captures in revision.previews. '
     'Do not ask again for work already authorized. Native Hermes approval checks still apply. '
     'For an authorized code change, handle ordinary local setup and debugging yourself. '
     'Use separate git worktrees and disposable OrbStack containers with task-owned databases, caches, and storage. '

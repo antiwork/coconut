@@ -679,7 +679,7 @@ final class AppStore {
             return true
         }
         let deviceId = pairing?.deviceId
-        let recorded: Decision? = await write("decisions/\(decision.id)/answer", payload: AnswerRequest(choice: choice, revision: decision.revision, correction: correction, optionId: optionId, draftHash: decision.draftHash), as: Decision.self, quiet: true, refreshInBackground: true, onFailure: { failure in
+        let recorded: Decision? = await write("decisions/\(decision.id)/answer", payload: AnswerRequest(choice: choice, revision: decision.revision, correction: correction, optionId: optionId, draftHash: decision.draftHash, previewsHash: decision.previewsHash), as: Decision.self, quiet: true, refreshInBackground: true, onFailure: { failure in
             if deviceId == self.pairing?.deviceId { self.report(failure, updateConnection: false) }
         }, onSuccess: { receipt in
             guard deviceId == self.pairing?.deviceId else { return }
@@ -980,6 +980,11 @@ final class AppStore {
         } catch {
             // Keep observed PR data. Its timestamp marks stale status in Work.
         }
+    }
+
+    func decisionPreviewData(id: String) async throws -> Data {
+        guard let client else { throw ServiceError.configuration("Connect to your Mac to load the previews.") }
+        return try await client.artifactContent(id: id)
     }
 
     func downloadArtifact(_ artifact: Artifact) async -> URL? {
@@ -1598,7 +1603,7 @@ struct OutgoingMessage: Codable, Identifiable {
     }
 }
 private struct OutgoingCache: Codable { let deviceId: String; let messages: [OutgoingMessage] }
-private struct AnswerRequest: Encodable { let choice: String; let revision: Int; let correction: String?; let optionId: String?; let draftHash: String? }
+private struct AnswerRequest: Encodable { let choice: String; let revision: Int; let correction: String?; let optionId: String?; let draftHash: String?; let previewsHash: String? }
 private struct DraftEditRequest: Encodable { let revision: Int; let draft: MessageDraft }
 private struct InboxRequest: Encodable { let action: String; let revision: Int; let swipeId: String? }
 private struct DecisionReplyRequest: Encodable { let text: String; let revision: Int }

@@ -270,6 +270,7 @@ def no_network(event, arguments):
     if event in {'socket.connect', 'socket.getaddrinfo'}:
         raise RuntimeError('The Hermes compatibility check cannot use the network.')
 sys.addaudithook(no_network)
+from PIL import Image
 from coconut.hermes_contract import verify_contract
 print(json.dumps(verify_contract()))
 """
