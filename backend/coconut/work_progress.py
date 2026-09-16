@@ -96,6 +96,24 @@ class WorkProgress:
                 for identity in identities + item.get('_work_previous_task_ids', []):
                     if identity in tasks:
                         linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
+        # A manual routine run returns its own exchange. Its saved receipt links the caller.
+        callers = linked | {t['id'] for t in tasks.values()
+                            if (t.get('_assignment_task_id') or t['id']) == assignment['id']}
+        for record in self._all('native_receipts'):
+            action = record.get('action', {})
+            arguments = action.get('arguments', {})
+            if (record['task_id'] not in callers or record['state'] != 'completed'
+                    or action.get('name') != 'cronjob_manage'
+                    or str(arguments.get('action', '')).strip().lower() not in ('run', 'run_now', 'trigger')):
+                continue
+            try:
+                result = json.loads(record.get('result', '{}'))
+            except (TypeError, ValueError):
+                continue
+            target = tasks.get(result.get('task_id')) if isinstance(result, dict) else None
+            if (target and result.get('success') is True and target['bot_id'] == task['bot_id']
+                    and target.get('_native_job', {}).get('id') == arguments.get('job_id')):
+                linked.add(target['id'])
         return {t['id']: t for t in tasks.values()
                 if t['id'] != task['id'] and (t['exchange_id'] == task['exchange_id'] or t['id'] in linked)
                 and t['conversation_bot_id'] == task['conversation_bot_id']
