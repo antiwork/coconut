@@ -9,11 +9,18 @@ Errors use `{error: string}`. UUIDs do not encode host names or filesystem paths
 
 - `GET /health` outside `/v1` reports service health.
 - `GET /state` returns bots, tasks, messages, decisions, artifacts, routines, cursor, server time, model catalog, and approvals.
+- `GET /state` with `X-Coconut-State: content` omits native settings and returns recent messages with history cursors.
+- `GET /state/settings` returns native bot settings, model catalog, approvals, worker settings, MCP servers, and routines.
+- `GET /updates?after=N&wait=20` returns changed tasks and messages, current decisions and Work, or a content reset.
+- `GET /cards/{id}` returns the current decision, task, conversation bot, owner, and cursor.
+- `GET /history/{bot_id}?before=N` returns an older message page, its referenced tasks, and the next history cursor.
+- `GET /search?q=text` searches stored message text and returns matching bot IDs.
 - `GET /events?after=N&wait=20` returns ordered events, a cursor, and server time.
 - `GET /artifacts/{id}/content` returns authenticated artifact bytes.
 - `GET /learning` returns agreement groups by bot and action type.
 
-The client refreshes state after events and retains the snapshot cursor.
+The content response advertises `sync_version: 1`. The client then applies contiguous update batches and retains their cursor.
+Older servers ignore the content header. The client retains support for their full snapshots and event stream.
 Snapshot data includes native settings read from Hermes. Native files and SQLite do not share one atomic transaction.
 A disconnected client displays cached state and connection health separately from task state.
 

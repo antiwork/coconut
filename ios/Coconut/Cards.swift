@@ -143,7 +143,7 @@ struct DecisionCard: View {
     private var replies: [Message] {
         store.messages.filter {
             $0.decisionId == decision.id && $0.kind == "text" && !$0.text.isEmpty
-        }
+        }.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
     }
 
     private var inlineReplies: some View {

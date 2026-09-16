@@ -58,6 +58,14 @@ final class AppStore {
     @ObservationIgnored private var cachedState: StateSnapshot?
     @ObservationIgnored private var cacheTask: Task<Void, Never>?
     @ObservationIgnored private let cacheQueue = DispatchQueue(label: "coconut.display-cache", qos: .utility)
+    @ObservationIgnored private var nativeSettingsTask: Task<Void, Never>?
+    @ObservationIgnored private var nativeSettingsReadAt: Date?
+    @ObservationIgnored private var nativeSettingsAttemptAt: Date?
+    @ObservationIgnored private var nativeSettingsPending = false
+    @ObservationIgnored private var nativeSettingsRequiredCursor = 0
+    var historyLoading: Set<String> = []
+    var remoteSearchQuery = ""
+    var remoteSearchBotIds: Set<String> = []
     @ObservationIgnored private var snapshotEpoch = UUID()
     @ObservationIgnored private var snapshotRequest: (id: UUID, generation: UUID, epoch: UUID, client: APIClient, task: Task<StateSnapshot, Error>)?
 
@@ -157,6 +165,9 @@ final class AppStore {
         connectionGeneration = UUID()
         pollTask?.cancel()
         pollTask = nil
+        nativeSettingsPending = false
+        nativeSettingsTask?.cancel()
+        nativeSettingsTask = nil
         snapshotRequest?.task.cancel()
         snapshotRequest = nil
     }
@@ -196,6 +207,7 @@ final class AppStore {
             let candidate = try APIClient(serverURL: address, fingerprint: pin, token: nil)
             let response: PairResponse = try await candidate.request("pair", method: "POST", body: APIJSON.encode(
                 PairRequest(code: pairCode.trimmingCharacters(in: .whitespacesAndNewlines), deviceName: UIDevice.current.name)), retryTransient: false)
+            disconnect()
             try PairingToken.save(response.token)
             let configuration = PairingConfiguration(serverURL: address, fingerprint: pin, deviceId: response.deviceId)
             try ProtectedCache.write(configuration, name: "pairing.json")
@@ -262,12 +274,19 @@ final class AppStore {
         cacheQueue.sync { ProtectedCache.remove("snapshot.json") }
         bots = []; tasks = []; messages = []; decisions = []; artifacts = []; learning = []
         routines = []
+        approvals = nil; parallelWork = nil; workCapacity = nil; mcpServers = []
+        reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
         cursor = 0
         lastSync = nil
         model = ""
         modelBaseURL = ""
         modelConfigured = false
         modelCatalog = nil
+        nativeSettingsReadAt = nil
+        nativeSettingsAttemptAt = nil
+        nativeSettingsRequiredCursor = 0
+        remoteSearchQuery = ""
+        remoteSearchBotIds = []
         provider = ""
         pairCode = ""
         connection = .unconfigured
@@ -661,7 +680,7 @@ final class AppStore {
         }
         let deviceId = pairing?.deviceId
         let recorded: Decision? = await write("decisions/\(decision.id)/answer", payload: AnswerRequest(choice: choice, revision: decision.revision, correction: correction, optionId: optionId, draftHash: decision.draftHash), as: Decision.self, quiet: true, refreshInBackground: true, onFailure: { failure in
-            if deviceId == self.pairing?.deviceId { self.report(failure) }
+            if deviceId == self.pairing?.deviceId { self.report(failure, updateConnection: false) }
         }, onSuccess: { receipt in
             guard deviceId == self.pairing?.deviceId else { return }
             self.snapshotEpoch = UUID()
@@ -767,7 +786,11 @@ final class AppStore {
             if hasPairing { await reconnect() }
             return
         }
-        do { try await refresh(using: client) }
+        do {
+            try await refresh(using: client)
+            refreshNativeSettings(using: client, force: true)
+            while let pending = nativeSettingsTask { await pending.value }
+        }
         catch is CancellationError { }
         catch let error as URLError where error.code == .cancelled && Task.isCancelled { }
         catch { recordSyncFailure(error) }
@@ -810,7 +833,6 @@ final class AppStore {
 
     func updateMCP(_ request: MCPRequest) async -> MCPResponse? {
         let result: MCPResponse? = await write("settings/mcp", payload: request, as: MCPResponse.self)
-        if let result { mcpServers = result.servers }
         return result
     }
 
@@ -821,8 +843,7 @@ final class AppStore {
             return
         }
         let _: ParallelWorkSettings? = await write("settings/work-capacity", method: "PUT",
-            payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self,
-            onSuccess: { self.workCapacity = $0 })
+            payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self)
     }
 
     func setWorkerLimit(_ value: Int?, botId: String? = nil) async {
@@ -835,13 +856,9 @@ final class AppStore {
             return
         }
         if let botId {
-            let _: Bot? = await write("bots/\(botId)", method: "PATCH", payload: WorkerLimitRequest(limit: value, bot: true), as: Bot.self,
-                                      onSuccess: { result in
-                                          if let index = self.bots.firstIndex(where: { $0.id == botId }) { self.bots[index].workerLimit = result.workerLimit }
-                                      })
+            let _: Bot? = await write("bots/\(botId)", method: "PATCH", payload: WorkerLimitRequest(limit: value, bot: true), as: Bot.self)
         } else {
-            let _: ParallelWorkSettings? = await write("settings/parallel-work", method: "PUT", payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self,
-                                                       onSuccess: { self.parallelWork = $0 })
+            let _: ParallelWorkSettings? = await write("settings/parallel-work", method: "PUT", payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self)
         }
     }
 
@@ -1005,28 +1022,108 @@ final class AppStore {
             if !quiet { error = "Pair with your Mac in Settings to continue." }
             return nil
         }
+        func belongsToPairing() -> Bool {
+            self.pairing?.deviceId == pairing.deviceId && self.pairing?.serverURL == pairing.serverURL
+                && self.pairing?.fingerprint == pairing.fingerprint
+        }
         writeCount += 1
         defer { writeCount -= 1 }
         var signature: String?
+        let generation = connectionGeneration
+        var requestClient: APIClient?
         do {
             if client == nil { client = try APIClient(serverURL: pairing.serverURL, fingerprint: pairing.fingerprint, token: token) }
             guard let client else { return nil }
+            requestClient = client
             let body = try APIJSON.encode(payload)
             let requestSignature = method + " " + path + " " + SHA256.hash(data: body).description
             signature = requestSignature
             let key = idempotencyKey ?? uncertainWriteKeys[requestSignature] ?? UUID().uuidString
             if idempotencyKey == nil { uncertainWriteKeys[requestSignature] = key }
+            let receiptModel = model
+            let receiptBaseURL = modelBaseURL
+            let receiptCatalog = modelCatalog
+            let receiptApproval = approvals?.defaults
+            let receiptMCP = mcpServers
+            let receiptCapacityLimit = workCapacity?.limit
+            let receiptParallelLimit = parallelWork?.limit
+            let receiptMessages = messages
+            let receiptDecisions = decisions
+            let receiptArtifacts = artifacts
+            let receiptBots = bots
+            let receiptRoutines = routines
+            let receiptNativeReadAt = nativeSettingsReadAt
+            let receiptCursor = cachedState?.cursor
+            let receiptEpoch = snapshotEpoch
             let result: Response = try await client.request(path, method: method, body: body, idempotencyKey: key)
+            guard belongsToPairing() else { return nil }
             uncertainWriteKeys.removeValue(forKey: requestSignature)
             if !quiet { error = nil }
-            onSuccess?(result)
+            let updatesNativeSettings = path.hasPrefix("settings/") || path.contains("routines") || (path.hasPrefix("bots/") && method == "PATCH")
+            let receiptIsCurrent = cachedState?.cursor == receiptCursor && snapshotEpoch == receiptEpoch
+            if updatesNativeSettings {
+                snapshotEpoch = UUID()
+                nativeSettingsTask?.cancel()
+            }
+            if let bot = result as? Bot {
+                if let previous = receiptBots.first(where: { $0.id == bot.id }), let current = bots.first(where: { $0.id == bot.id }) {
+                    bots = StateUpdates.merge([StateUpdates.mergeBotReceipt(bot, original: previous, current: current)], into: bots)
+                } else if receiptIsCurrent { bots = StateUpdates.merge([bot], into: bots) }
+                cachedState?.bots = bots
+            } else if let routine = result as? Routine {
+                if bots.contains(where: { $0.id == routine.botId }) {
+                    let previous = receiptRoutines.first { $0.id == routine.id }
+                    let current = routines.first { $0.id == routine.id }
+                    if let previous, let current {
+                        routines = StateUpdates.merge([StateUpdates.mergeRoutineReceipt(routine, original: previous, current: current)], into: routines)
+                    } else if previous == nil, current == nil, receiptNativeReadAt == nativeSettingsReadAt {
+                        routines.append(routine)
+                    }
+                    cachedState?.routines = routines
+                }
+            }
+            if let settings = result as? ModelResponse, model == receiptModel, modelBaseURL == receiptBaseURL, modelCatalog == receiptCatalog {
+                model = settings.model; modelConfigured = settings.modelConfigured
+                modelBaseURL = settings.baseUrl ?? ""; modelCatalog = settings.modelCatalog
+                for index in bots.indices where bots[index].modelOverride == nil {
+                    bots[index].effectiveModel = settings.modelCatalog?.defaults.selection
+                }
+            } else if let settings = result as? ApprovalSettings, approvals?.defaults == receiptApproval { approvals = settings }
+            else if let settings = result as? MCPResponse, mcpServers == receiptMCP { mcpServers = settings.servers }
+            else if let settings = result as? ParallelWorkSettings {
+                if path == "settings/work-capacity", workCapacity?.limit == receiptCapacityLimit {
+                    workCapacity = settings; cachedState?.workCapacity = settings
+                } else if path == "settings/parallel-work", parallelWork?.limit == receiptParallelLimit { parallelWork = settings }
+            }
+            if method == "DELETE", path.hasPrefix("routines/"),
+               StateUpdates.sameRoutineSettings(receiptRoutines.first(where: { "routines/" + $0.id == path }), routines.first(where: { "routines/" + $0.id == path })) {
+                routines.removeAll { "routines/" + $0.id == path }
+                cachedState?.routines = routines
+            }
+            var callbackIsCurrent = receiptIsCurrent
+            if let receipt = result as? Message {
+                callbackIsCurrent = receiptMessages.first(where: { $0.id == receipt.id })?.reactions == messages.first(where: { $0.id == receipt.id })?.reactions
+            } else if let receipt = result as? Decision {
+                callbackIsCurrent = receiptDecisions.first(where: { $0.id == receipt.id }) == decisions.first(where: { $0.id == receipt.id })
+            } else if result is WorkRefreshResponse, path.hasSuffix("/dismiss") {
+                let identity = path.split(separator: "/").dropFirst(2).first.map(String.init)
+                callbackIsCurrent = receiptArtifacts.first(where: { $0.id == identity })?.workDismissalId == artifacts.first(where: { $0.id == identity })?.workDismissalId
+            }
+            if callbackIsCurrent { onSuccess?(result) }
             if refreshInBackground {
                 Task { await refreshAfterWrite(using: client) }
             } else {
                 await refreshAfterWrite(using: client)
+                guard belongsToPairing() else { return nil }
+                guard self.client === client, connectionGeneration == generation else { return result }
+                if cachedState?.syncVersion == 1 && updatesNativeSettings {
+                    refreshNativeSettings(using: client, force: true)
+                }
             }
             return result
         } catch {
+            guard belongsToPairing() else { return nil }
+            let transportIsCurrent = connectionGeneration == generation && (requestClient == nil || self.client === requestClient)
             onFailure?(error)
             if let signature, let serviceError = error as? ServiceError,
                case .response(let status, _) = serviceError, (400..<500).contains(status) {
@@ -1034,19 +1131,22 @@ final class AppStore {
             }
             if quiet {
                 // An HTTP error confirms reachability even when the action fails.
-                if let serviceError = error as? ServiceError, case .response = serviceError {} else { recordSyncFailure(error) }
+                if let serviceError = error as? ServiceError, case .response = serviceError {} else if transportIsCurrent { recordSyncFailure(error) }
             }
             else {
-                report(error)
-                if error is URLError { recordSyncFailure(error) }
+                report(error, updateConnection: transportIsCurrent)
+                if error is URLError && transportIsCurrent { recordSyncFailure(error) }
             }
             return nil
         }
     }
 
     private func refreshAfterWrite(using client: APIClient) async {
+        let generation = connectionGeneration
+        guard self.client === client else { return }
         do { try await refresh(using: client) }
         catch {
+            guard self.client === client, connectionGeneration == generation else { return }
             recordSyncFailure(error)
             beginPolling()
         }
@@ -1069,6 +1169,22 @@ final class AppStore {
                     if needsSnapshot || self.connection != .connected {
                         try await self.refresh(using: client)
                         needsSnapshot = false
+                    }
+                    if self.cachedState?.syncVersion == 1 {
+                        let epoch = self.snapshotEpoch
+                        let page: StateUpdates = try await client.request("updates?after=\(self.cursor)&wait=20")
+                        try Task.checkCancellation()
+                        guard self.connectionGeneration == generation else { break }
+                        if epoch == self.snapshotEpoch, let state = self.cachedState, let next = page.applying(to: state) {
+                            if page.reset != nil || page.removedMessages?.isEmpty == false { self.snapshotEpoch = UUID() }
+                            self.apply(next, persist: page.reset != nil || page.cursor > page.after)
+                            self.connection = .connected
+                            self.syncIssue = nil
+                            failures = 0
+                            self.refreshNativeSettings(using: client, force: page.settingsChanged == true || page.reset != nil)
+                            Task { await self.syncPushRegistration() }
+                        }
+                        continue
                     }
                     let page: EventPage = try await client.request("events?after=\(self.cursor)&wait=20")
                     try Task.checkCancellation()
@@ -1105,6 +1221,31 @@ final class AppStore {
     func refresh(using client: APIClient) async throws {
         guard self.client === client else { throw CancellationError() }
         let generation = connectionGeneration
+        if cachedState?.syncVersion == 1 {
+            let epoch = snapshotEpoch
+            do {
+                let page: StateUpdates = try await client.request("updates?after=\(cursor)")
+                guard self.client === client, generation == connectionGeneration, epoch == snapshotEpoch else { return }
+                if page.after != cursor { return }
+                if let cachedState, let next = page.applying(to: cachedState) {
+                    if page.reset != nil || page.removedMessages?.isEmpty == false { snapshotEpoch = UUID() }
+                    apply(next, persist: true)
+                    connection = .connected
+                    syncIssue = nil
+                    refreshNativeSettings(using: client, force: page.settingsChanged == true || page.reset != nil)
+                    Task { await self.syncPushRegistration() }
+                    return
+                }
+            } catch let error as ServiceError {
+                switch error {
+                case .response(404, _), .invalidResponse: break
+                default: throw error
+                }
+            } catch is DecodingError {
+                // A previous server can return a different synchronization format.
+            }
+            guard self.client === client, generation == connectionGeneration, epoch == snapshotEpoch else { return }
+        }
         if snapshotRequest == nil || snapshotRequest?.generation != generation || snapshotRequest?.client !== client {
             snapshotRequest = (UUID(), generation, snapshotEpoch, client, Task { try await client.request("state") })
         }
@@ -1123,10 +1264,23 @@ final class AppStore {
         connection = .connected
         syncIssue = nil
         Task { await syncPushRegistration() }
+        refreshNativeSettings(using: client)
     }
 
-    private func apply(_ snapshot: StateSnapshot, persist: Bool) {
-        let confirmed = Set(snapshot.messages.compactMap(\.clientRequestId))
+    private func apply(_ incoming: StateSnapshot, persist: Bool) {
+        var snapshot = incoming
+        if snapshot.contentOnly == true && cachedState != nil {
+            snapshot.model = model
+            snapshot.modelConfigured = modelConfigured
+            snapshot.baseUrl = modelBaseURL
+            snapshot.modelCatalog = modelCatalog
+            snapshot.approvals = approvals
+            snapshot.parallelWork = parallelWork
+            snapshot.mcpServers = mcpServers
+            snapshot.routines = routines
+            snapshot.bots = preservingNativeSettings(in: snapshot.bots)
+        }
+        let confirmed = Set(snapshot.messages.compactMap(\.clientRequestId) + (snapshot.confirmedRequestIds ?? []))
         if outgoingMessages.contains(where: { confirmed.contains($0.id) }) {
             outgoingMessages.removeAll { confirmed.contains($0.id) }
             try? saveOutgoing()
@@ -1217,12 +1371,145 @@ final class AppStore {
         }
     }
 
+    private func preservingNativeSettings(in incoming: [Bot]) -> [Bot] {
+        var values = incoming
+        let previous = Dictionary(uniqueKeysWithValues: bots.map { ($0.id, $0) })
+        for index in values.indices {
+            if let native = previous[values[index].id] {
+                values[index].name = native.name
+                values[index].role = native.role
+                values[index].instructions = native.instructions
+                values[index].modelOverride = native.modelOverride
+                values[index].effectiveModel = native.effectiveModel
+                values[index].approvalOverride = native.approvalOverride
+                values[index].effectiveApproval = native.effectiveApproval
+                values[index].workerLimit = native.workerLimit
+                values[index].modelError = native.modelError
+            }
+        }
+        return values
+    }
+
+    private func refreshNativeSettings(using client: APIClient, force: Bool = false) {
+        guard cachedState?.syncVersion == 1 else { return }
+        if force {
+            nativeSettingsRequiredCursor = cursor
+            if nativeSettingsTask != nil { nativeSettingsPending = true }
+        }
+        guard nativeSettingsTask == nil,
+              force || (nativeSettingsReadAt.map({ Date().timeIntervalSince($0) > 60 }) ?? true)
+                && (nativeSettingsAttemptAt.map({ Date().timeIntervalSince($0) > 5 }) ?? true) else { return }
+        nativeSettingsAttemptAt = Date()
+        let generation = connectionGeneration
+        nativeSettingsTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.connectionGeneration == generation {
+                    self.nativeSettingsTask = nil
+                    if self.nativeSettingsPending {
+                        self.nativeSettingsPending = false
+                        if let current = self.client { self.refreshNativeSettings(using: current, force: true) }
+                    }
+                }
+            }
+            do {
+                let native: NativeSnapshot = try await client.request("state/settings")
+                guard !Task.isCancelled, self.client === client, generation == self.connectionGeneration else { return }
+                guard native.cursor >= self.nativeSettingsRequiredCursor else { self.nativeSettingsPending = true; return }
+                let values = Dictionary(uniqueKeysWithValues: native.bots.map { ($0.id, $0) })
+                for index in self.bots.indices {
+                    guard let bot = values[self.bots[index].id] else { continue }
+                    self.bots[index].name = bot.name
+                    self.bots[index].role = bot.role
+                    self.bots[index].instructions = bot.instructions
+                    self.bots[index].modelOverride = bot.modelOverride
+                    self.bots[index].effectiveModel = bot.effectiveModel
+                    self.bots[index].approvalOverride = bot.approvalOverride
+                    self.bots[index].effectiveApproval = bot.effectiveApproval
+                    self.bots[index].workerLimit = bot.workerLimit
+                    self.bots[index].modelError = bot.modelError
+                }
+                self.modelCatalog = native.modelCatalog
+                self.model = native.modelCatalog?.defaults.model ?? ""
+                self.modelBaseURL = native.modelCatalog?.defaults.baseUrl ?? ""
+                self.modelConfigured = native.modelConfigured
+                self.approvals = native.approvals
+                self.parallelWork = native.parallelWork
+                self.mcpServers = native.mcpServers ?? []
+                self.routines = native.routines ?? []
+                if let configured = native.pushConfigured { self.pushConfigured = configured }
+                self.nativeSettingsReadAt = Date()
+                if var state = self.cachedState {
+                    state.bots = self.bots
+                    state.pushConfigured = self.pushConfigured
+                    self.apply(state, persist: true)
+                    Task { await self.syncPushRegistration() }
+                }
+            } catch { /* Content remains usable while native settings are unavailable. */ }
+        }
+    }
+
+    func searchConversations(_ text: String) async {
+        remoteSearchQuery = text
+        remoteSearchBotIds = []
+        guard cachedState?.syncVersion == 1, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let client else { return }
+        do {
+            try await Task.sleep(for: .milliseconds(200))
+            var query = URLComponents()
+            query.queryItems = [URLQueryItem(name: "q", value: text)]
+            struct SearchResult: Decodable, Sendable { let botIds: [String] }
+            let result: SearchResult = try await client.request("search?" + (query.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B"))
+            guard !Task.isCancelled, self.client === client, remoteSearchQuery == text else { return }
+            remoteSearchBotIds = Set(result.botIds)
+        } catch { /* Keep local search results when the Mac is unavailable. */ }
+    }
+
+    func hasOlderMessages(_ botId: String) -> Bool { cachedState?.historyBefore?[botId] != nil }
+
+    @discardableResult
+    func loadOlderMessages(_ botId: String) async -> Bool {
+        guard let client, let before = cachedState?.historyBefore?[botId], !historyLoading.contains(botId) else { return false }
+        let generation = connectionGeneration
+        let epoch = snapshotEpoch
+        historyLoading.insert(botId)
+        defer { historyLoading.remove(botId) }
+        do {
+            let page: HistoryPage = try await client.request("history/\(botId)?before=\(before)")
+            guard self.client === client, generation == connectionGeneration, epoch == snapshotEpoch,
+                  var state = cachedState, state.historyBefore?[botId] == before else { return false }
+            // Current messages win if replay updates a row while its history request runs.
+            state.messages = StateUpdates.merge(state.messages, into: page.messages)
+            state.tasks = StateUpdates.merge(state.tasks, into: page.tasks ?? [])
+            state.historyBefore?[botId] = page.before
+            apply(state, persist: true)
+            return page.before != before
+        } catch { report(error); return false }
+    }
+
     func notificationDestination(_ target: NotificationTarget) async -> NotificationDestination? {
         guard acceptsNotification(target) else { return nil }
         if target.decisionId == nil { return .conversation(target.conversationRoute) }
         guard let client else { return nil }
         let epoch = snapshotEpoch
         do {
+            if cachedState?.syncVersion == 1, let identity = target.decisionId {
+                let card: CardSnapshot = try await client.request("cards/\(identity)")
+                guard self.client === client, acceptsNotification(target), epoch == snapshotEpoch else { return nil }
+                if card.cursor >= cursor {
+                    // Discard responses that started before this card read. Replay still uses the unchanged cursor.
+                    snapshotEpoch = UUID()
+                    if let replies = card.messages { messages = StateUpdates.merge(replies, into: messages).sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) } }
+                    cachedState?.messages = messages
+                    decisions = StateUpdates.merge([card.decision], into: decisions)
+                    tasks = StateUpdates.merge([card.task], into: tasks)
+                    bots = StateUpdates.merge(preservingNativeSettings(in: card.bot.id == card.owner.id ? [card.bot] : [card.bot, card.owner]), into: bots)
+                    cachedState?.decisions = decisions
+                    cachedState?.tasks = tasks
+                    cachedState?.bots = bots
+                }
+                return target.destination(pendingDecisionIds: Set(decisions.filter(\.isPending).map(\.id)), snapshotReady: true)
+            }
             // Fetch after the tap. A cached card can already be answered on another phone.
             let snapshot: StateSnapshot = try await client.request("state")
             guard self.client === client, acceptsNotification(target), epoch == snapshotEpoch else { return nil }
@@ -1235,10 +1522,10 @@ final class AppStore {
         target.deviceId == pairing?.deviceId
     }
 
-    private func report(_ error: Error) {
+    private func report(_ error: Error, updateConnection: Bool = true) {
         if let error = error as? URLError {
             self.error = "Couldn't complete this request. Try again."
-            syncIssue = ConnectionFailure.message(for: error, serverURL: serverURL)
+            if updateConnection { syncIssue = ConnectionFailure.message(for: error, serverURL: serverURL) }
             #if DEBUG
             NSLog("Coconut connection: %@", ConnectionFailure.diagnostic(for: error))
             #endif

@@ -209,6 +209,14 @@ class WorkModel:
                     activity_state={'needs_decision': 'waiting', 'queued': 'waiting', 'needs_recovery': 'blocked'}.get(state, state))
 
     def _project_work_outcomes(self, artifacts, tasks, records, decisions, timestamp):
+        previous = getattr(self, '_work_graphs', None)
+        self._work_graphs = {}
+        try:
+            self._project_work_outcomes_inner(artifacts, tasks, records, decisions, timestamp)
+        finally:
+            self._work_graphs = previous
+
+    def _project_work_outcomes_inner(self, artifacts, tasks, records, decisions, timestamp):
         contexts = self._all('contexts')
         queue_positions = self._queue_positions(tasks, timestamp.timestamp())
         groups = {}

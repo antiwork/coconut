@@ -42,6 +42,7 @@ struct MCPConnectionView: View {
     var server: MCPServer? = nil
     @State private var name = ""
     @State private var address = ""
+    @State private var loadedAddress = ""
     @State private var token = ""
     @State private var removeAuthentication = false
     @State private var busy = false
@@ -114,7 +115,12 @@ struct MCPConnectionView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
         }
-        .onAppear { if let server { name = server.id; address = server.url } }
+        .onAppear { if let server { name = server.id; address = server.url; loadedAddress = server.url } }
+        .onChange(of: store.mcpServers.first { $0.id == server?.id }) { _, current in
+            guard let current else { return }
+            if address == loadedAddress { address = current.url }
+            loadedAddress = current.url
+        }
         .onDisappear { token = "" }
     }
 

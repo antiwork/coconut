@@ -80,6 +80,19 @@ struct BotExchangeView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    if route.botIds.contains(where: store.hasOlderMessages) {
+                        Button("Load earlier messages") {
+                            let anchor = messages.first?.id
+                            nearBottom = false
+                            Task {
+                                for botId in route.botIds { await store.loadOlderMessages(botId) }
+                                await Task.yield()
+                                if let anchor { proxy.scrollTo(anchor, anchor: .top) }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .disabled(route.botIds.contains { store.historyLoading.contains($0) })
+                    }
                     ForEach(messages) { message in
                         VStack(alignment: .leading, spacing: 5) {
                             HStack(spacing: 6) {

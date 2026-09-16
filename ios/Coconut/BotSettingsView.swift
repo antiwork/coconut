@@ -57,7 +57,7 @@ struct BotSettingsView: View {
                         Task {
                             await store.updateBot(draft, comparedTo: original)
                             saving = false
-                            if store.error == nil { self.original = draft }
+                            if store.error == nil, let current = store.bots.first(where: { $0.id == botId }) { refreshDraft(current) }
                         }
                     }.disabled(saving || draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .accessibilityIdentifier("save-bot")
@@ -76,6 +76,9 @@ struct BotSettingsView: View {
         .onAppear {
             if draft == nil { draft = store.bots.first { $0.id == botId }; original = draft }
         }
+        .onChange(of: store.bots.first { $0.id == botId }) { _, current in
+            if let current { refreshDraft(current) }
+        }
         .sheet(isPresented: $appearanceOpen) {
             NavigationStack {
                 Form { BotAppearancePicker(avatar: field(\.avatar), color: field(\.color), identity: botId) }
@@ -89,6 +92,19 @@ struct BotSettingsView: View {
                 if let draft { Task { await store.deleteBot(draft); if store.error == nil { dismiss() } } }
             }
         }
+    }
+
+    private func refreshDraft(_ current: Bot) {
+        var updated = current
+        if let draft, let original {
+            let fields: [WritableKeyPath<Bot, String>] = [\.name, \.instructions, \.avatar, \.color]
+            for field in fields where draft[keyPath: field] != original[keyPath: field] {
+                updated[keyPath: field] = draft[keyPath: field]
+            }
+            if draft.notifications != original.notifications { updated.notifications = draft.notifications }
+        }
+        draft = updated
+        original = current
     }
 
     private func field(_ path: WritableKeyPath<Bot, String>) -> Binding<String> {
@@ -180,6 +196,13 @@ private struct RoutineEditorView: View {
             guard !loaded else { return }
             loaded = true
             if let current { name = current.name; prompt = current.prompt; schedule = current.cron; enabled = current.enabled }
+        }
+        .onChange(of: current) { previous, current in
+            guard loaded, let previous, let current else { return }
+            if name == previous.name { name = current.name }
+            if prompt == previous.prompt { prompt = current.prompt }
+            if schedule == previous.cron { schedule = current.cron }
+            if enabled == previous.enabled { enabled = current.enabled }
         }
         .confirmationDialog("Delete this routine?", isPresented: $deleteOpen, titleVisibility: .visible) {
             Button("Delete routine", role: .destructive) {

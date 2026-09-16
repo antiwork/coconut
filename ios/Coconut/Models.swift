@@ -399,6 +399,10 @@ struct LearningGroup: Codable, Identifiable, Equatable, Sendable {
 }
 
 struct StateSnapshot: Codable, Sendable {
+    var syncVersion: Int? = nil
+    var contentOnly: Bool? = nil
+    var historyBefore: [String: Int]? = nil
+    var confirmedRequestIds: [String]? = nil
     var bots: [Bot]
     var tasks: [AgentTask]
     var messages: [Message]

@@ -55,6 +55,17 @@ struct ConversationView: View {
     }
 
 
+    @MainActor
+    private func loadAndScrollToMessage(_ id: String, proxy: ScrollViewProxy) async {
+        nearBottom = false
+        while !store.messages.contains(where: { $0.id == id || ($0.kind == "decision" && $0.decisionId == id) }) && store.hasOlderMessages(botId) && !Task.isCancelled {
+            if !(await store.loadOlderMessages(botId)) { break }
+        }
+        await Task.yield()
+        guard !Task.isCancelled else { return }
+        proxy.scrollTo(store.displayedMessageId(for: id), anchor: .top)
+    }
+
     var body: some View {
         let messages = messages
         Group {
@@ -63,6 +74,26 @@ struct ConversationView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 10) {
                             conversationHeader(bot: bot)
+                            if store.hasOlderMessages(botId) {
+                                Button {
+                                    let anchor = TranscriptEntry.grouped(messages, botId: botId).first?.message.id
+                                    nearBottom = false
+                                    Task {
+                                        await store.loadOlderMessages(botId)
+                                        await Task.yield()
+                                        if let anchor, let entry = TranscriptEntry.grouped(self.messages, botId: botId).first(where: { $0.messages.contains { $0.id == anchor } }) {
+                                            let target = entry.message.kind == "decision" ? (entry.message.decisionId ?? entry.id) : entry.id
+                                            proxy.scrollTo(target, anchor: .top)
+                                        }
+                                    }
+                                } label: {
+                                    if store.historyLoading.contains(botId) { ProgressView() }
+                                    else { Text("Load earlier messages").font(.caption) }
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .disabled(store.historyLoading.contains(botId))
+                                .accessibilityIdentifier("load-earlier-messages")
+                            }
                             ForEach(store.tasks.filter {
                                 $0.botId == botId && $0.sourceBotId == nil && ($0.conversationBotId ?? botId) != botId
                             }) { task in
@@ -81,8 +112,7 @@ struct ConversationView: View {
                                     BotExchangeRow(messages: entry.messages, botId: botId)
                                 } else {
                                 transcriptRow(message) { id in
-                                    nearBottom = false
-                                    proxy.scrollTo(id, anchor: .top)
+                                    Task { await loadAndScrollToMessage(id, proxy: proxy) }
                                 }
                                 }
                                 }
@@ -92,11 +122,11 @@ struct ConversationView: View {
                             }
                             ForEach(store.decisions.filter { decision in
                                 store.conversationBotId(for: decision) == botId
+                                    && (decision.isPending || decision.id == focusDecisionId)
                                     && !messages.contains { $0.kind == "decision" && $0.decisionId == decision.id }
                             }) { decision in
                                 DecisionCard(decision: decision, onViewPrevious: { id in
-                                    nearBottom = false
-                                    proxy.scrollTo(id, anchor: .top)
+                                    Task { await loadAndScrollToMessage(id, proxy: proxy) }
                                 }).id(decision.id)
                                     .modifier(MessageTimestamp(createdAt: decision.createdAt))
                             }
@@ -145,7 +175,7 @@ struct ConversationView: View {
                         if nearBottom { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onChange(of: messages.last(where: { $0.role == "user" })?.id) { _, messageId in
-                        guard messageId != nil else { return }
+                        guard let messageId, messages.last?.id == messageId else { return }
                         nearBottom = true
                         proxy.scrollTo("conversation-bottom", anchor: .bottom)
                     }
@@ -154,6 +184,12 @@ struct ConversationView: View {
                     }
                     .background(BoardStyle.paper)
                     .task { await store.markRead(bot) }
+                    .task(id: "\(focusMessageId ?? ""):\(store.connection.rawValue):\(store.hasOlderMessages(botId))") {
+                        guard store.connection == .connected || store.isDemo else { return }
+                        while focusMessageId != nil && !focusTargetExists && store.hasOlderMessages(botId) && !Task.isCancelled {
+                            if !(await store.loadOlderMessages(botId)) { break }
+                        }
+                    }
                     .task(id: focusTargetExists) {
                         guard let focusTarget, !didFocusDecision, focusTargetExists else { return }
                         nearBottom = false
@@ -327,7 +363,7 @@ struct MessageBubble: View {
                         .accessibilityIdentifier("message-work-context")
                 }
                 if let reference = message.replyTo {
-                    Button { scrollToDecision(store.displayedMessageId(for: reference.messageId)) } label: {
+                    Button { scrollToDecision(reference.messageId) } label: {
                         MessageQuote(reference: reference)
                     }.buttonStyle(.plain).accessibilityLabel("View replied message from \(reference.author)")
                         .accessibilityIdentifier("message-quote-\(message.id)")

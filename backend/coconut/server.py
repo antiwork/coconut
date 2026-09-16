@@ -122,7 +122,28 @@ class Handler(BaseHTTPRequestHandler):
             self.timings = {'auth': (time.perf_counter() - started) * 1000}
             if method == 'GET':
                 if url.path == '/v1/state':
-                    self._json(200, service.snapshot(timings=self.timings))
+                    self._json(200, service.snapshot(timings=self.timings, content_only=self.headers.get('X-Coconut-State') == 'content'))
+                elif url.path == '/v1/search':
+                    self._json(200, service.search_conversations(parse_qs(url.query).get('q', [''])[0]))
+                elif url.path == '/v1/state/settings':
+                    self._json(200, service.native_snapshot())
+                elif url.path.startswith('/v1/cards/'):
+                    self._json(200, service.card(url.path.removeprefix('/v1/cards/')))
+                elif url.path.startswith('/v1/history/'):
+                    query = parse_qs(url.query)
+                    try:
+                        before = int(query['before'][0]) if 'before' in query else None
+                    except ValueError:
+                        raise ServiceError(400, 'before must contain a number.')
+                    self._json(200, service.message_page(url.path.removeprefix('/v1/history/'), before))
+                elif url.path == '/v1/updates':
+                    query = parse_qs(url.query)
+                    try:
+                        after = int(query.get('after', ['0'])[0])
+                        wait = float(query.get('wait', ['0'])[0])
+                    except ValueError:
+                        raise ServiceError(400, 'after and wait must contain numbers.')
+                    self._json(200, service.updates(after, wait))
                 elif url.path == '/v1/settings/google':
                     self._json(200, service.google_connection('status', {}, device))
                 elif url.path == '/v1/push/config':

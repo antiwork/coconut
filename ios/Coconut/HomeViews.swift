@@ -58,6 +58,7 @@ struct HomeLaunchView: View {
                 .padding(.horizontal, 24).padding(.top, 14)
             }
             .padding(.top, pinned.isEmpty ? 16 : 0)
+            .task(id: searchText) { await store.searchConversations(searchText) }
             .padding(.bottom, 20)
         }
         .background(BoardStyle.paper)
@@ -100,6 +101,7 @@ struct HomeLaunchView: View {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return true }
         if [bot.name, bot.role, bot.lastMessage].contains(where: { $0.localizedCaseInsensitiveContains(query) }) { return true }
+        if store.remoteSearchQuery == searchText && store.remoteSearchBotIds.contains(bot.id) { return true }
         return store.messages.contains { $0.botId == bot.id && $0.kind == "text" && $0.text.localizedCaseInsensitiveContains(query) }
     }
     private func lastActivity(_ bot: Bot) -> Date {

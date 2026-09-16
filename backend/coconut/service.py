@@ -24,6 +24,7 @@ from .pr_tracking import GitHubPRTracker, PRTrackingError, parse_pr_url
 from .routines import validate_schedule, next_run
 from .native_conversation import reaction_only_turn
 from .profiles import HermesProfiles, ProfileError, profile_id
+from .state_sync import StateSync
 
 
 class ServiceError(Exception):
@@ -95,7 +96,7 @@ from .work_recovery import WorkRecovery
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
-class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart):
+class Service(StateSync, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -608,11 +609,11 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                 self._read_cache = None
             self.db.execute('ROLLBACK')
 
-    def snapshot(self, *, timings=None) -> dict:
+    def snapshot(self, *, timings=None, content_only=False) -> dict:
         with self._read_view() as view:
-            return view._snapshot(timings=timings)
+            return view._snapshot(timings=timings, content_only=content_only)
 
-    def _snapshot(self, *, timings=None) -> dict:
+    def _snapshot(self, *, timings=None, content_only=False, after=None) -> dict:
         started = time.perf_counter()
         def measured(name):
             nonlocal started
@@ -623,9 +624,11 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
         for _ in range(3):
             settings_cursor = self._cursor()
             stored_bots = [bot for bot in self._all('bots') if not bot.get('_deleted')]
-            catalog = self._model_catalog()
+            catalog = None if content_only else self._model_catalog()
             measured('models')
-            if hasattr(self.provider, 'observe_state'):
+            if content_only:
+                observed, native, routines = {}, None, None
+            elif hasattr(self.provider, 'observe_state'):
                 observed, native = self.provider.observe_state(stored_bots)
                 routines = native['routines']
                 measured('native')
@@ -650,7 +653,14 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                 visible_task_ids = {task['id'] for task in self._all('tasks') if task['bot_id'] in visible and task['conversation_bot_id'] in visible}
                 state = {'bots': bots, 'work_capacity': capacity_state(self._setting('work_capacity'))}
                 for table in self.TABLES[1:]:
+                    if content_only and table == 'messages':
+                        state[table], history = self._recent_messages(visible)
+                        state['history_before'] = history
+                        continue
                     state[table] = [self._public(o) for o in self._all(table) if o['bot_id'] in visible and o.get('conversation_bot_id', o['bot_id']) in visible and not o.get('_deleted') and not o.get('_hidden') and (table not in ('decisions', 'artifacts') or not o.get('task_id') or o['task_id'] in visible_task_ids)]
+                if content_only and after is None:
+                    referenced = {o.get('task_id') for name in ('messages', 'decisions', 'artifacts') for o in state[name]}
+                    state['tasks'] = [t for t in state['tasks'] if t['status'] in self.ACTIVE or t['id'] in referenced]
                 if routines is not None:
                     previous = {r['id']: r.get('last_task_id') for r in state['routines']}
                     state['routines'] = [dict(self._public(r), last_task_id=previous.get(r['id']))
@@ -669,12 +679,20 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                 if catalog is not None:
                     default = catalog.get('default', {})
                     state.update(model_catalog=catalog, model=default.get('model') or '', base_url=default.get('base_url') or '', model_configured=bool(catalog.get('default_configured', False)))
+                elif content_only:
+                    state.update(model='', base_url='', model_configured=False, content_only=True, sync_version=1)
+                    receipts = self.db.execute("SELECT json_group_array(DISTINCT json_extract(data,'$.client_request_id')) FROM messages "
+                        "WHERE json_type(data,'$.client_request_id')='text' AND EXISTS(SELECT 1 FROM bots "
+                        "WHERE id=json_extract(messages.data,'$.bot_id') AND NOT COALESCE(json_extract(bots.data,'$._deleted'),0))").fetchone()
+                    state['confirmed_request_ids'] = json.loads(receipts[0])
                 else:
                     state.update(model=self._setting('model', getattr(self.provider, 'model', '') or ''), base_url=self._setting('base_url', getattr(self.provider, 'base_url', '') or ''), model_configured=bool(getattr(self.provider, 'ready', False)))
                 if native is not None:
                     state['approvals'] = native['approvals']
                     state['parallel_work'] = native.get('parallel_work')
                     state['mcp_servers'] = native.get('mcp_servers', [])
+                if after is not None:
+                    state = self._state_changes(state, after)
             break
         else:
             raise ServiceError(503, 'Settings changed during this request. Try again.')
@@ -1088,6 +1106,7 @@ class Service(WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork
                 self._sync_profile(bot)
                 self._put('bots', bot)
                 self._event('bot.updated', bot, bot['id'])
+                self._event('settings.updated', {'bot_id': bot['id']}, bot['id'])
                 return self._bot_view(bot, self._request_model_catalog)
             if len(parts) == 3 and method == 'DELETE':
                 self._delete_bot(bot, callbacks, audit={'deleted_by': device})

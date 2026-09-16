@@ -6,8 +6,10 @@ Network changes trigger a new attempt. Failed reads retry with a short, capped d
 Connection details and diagnostic text stay in Settings. Failed user actions keep their normal error feedback.
 
 Each paired session has one event loop. A generation check rejects responses from an older connection attempt.
-Concurrent reads share a snapshot request. Ordered message updates change the transcript without requesting a full snapshot.
-Gaps, unknown messages, hidden messages, and structural changes require canonical state from the Mac.
+Concurrent reads share a snapshot request. Current servers send changed tasks and messages with current decisions and Work.
+Idle responses refresh Work observations without advancing the event cursor.
+Hidden messages use explicit removal IDs. Cursor gaps, unknown events, and structural changes return a content reset.
+Older servers retain the full snapshot and event path.
 The app advances its cursor only after it applies the complete batch or snapshot.
 Display cache writes run off the main thread and combine rapid updates.
 
@@ -18,3 +20,19 @@ Connection loss does not change the stored task status or imply that execution s
 The simulator regression uses `scripts/test_state_sync.py` with a signed simulator build from `build-for-testing`.
 It checks network loss, returning to the app, retained drafts, quiet recovery, and streaming without full-state requests.
 The test server runs only on loopback and starts no Hermes process.
+
+## Content, settings, and history
+
+Initial content includes 60 recent messages per bot and the discussion for each pending card. Earlier messages load on demand with stable database cursors.
+History reads cannot replace newer records already present in the app. Search still covers stored history.
+Confirmed send IDs travel separately from messages, so pagination cannot leave accepted sends waiting.
+The conversation keeps its position after earlier messages load.
+
+Native settings load separately. The app retries failed settings reads while content remains usable.
+Confirmed settings writes update the app from their response. A failed refresh does not turn a saved change into a failed mutation.
+Native routine results retain their recorded task links.
+
+Notifications fetch the selected card directly. Card reads do not advance the shared event cursor.
+The app rejects older responses that started before the card read.
+Task relationship indexes exist only during one Work projection. Later projections rebuild them from current records.
+Hermes remains the owner of native settings and execution. These changes do not alter Hermes source.

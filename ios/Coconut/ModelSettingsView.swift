@@ -164,6 +164,9 @@ struct ModelSettingsView: View {
         .onChange(of: store.modelCatalog) { _, _ in
             if !loaded || (!edited && !saving) { load() }
         }
+        .onChange(of: bot?.modelOverride) { _, _ in
+            if !loaded || (!edited && !saving) { load() }
+        }
     }
 
     private func chooseModel(_ key: String) {

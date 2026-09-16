@@ -83,6 +83,12 @@ struct ParallelWorkSettingsView: View {
             customLimit = effectiveLimit
             workLimit = store.workCapacity?.effectiveLimit ?? 4
         }
+        .onChange(of: effectiveLimit) { previous, current in
+            if customLimit == previous { customLimit = current }
+        }
+        .onChange(of: store.workCapacity?.effectiveLimit) { previous, current in
+            if workLimit == (previous ?? 4) { workLimit = current ?? 4 }
+        }
     }
 
     private func saveCapacity(_ value: Int?) {

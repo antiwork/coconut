@@ -1,0 +1,123 @@
+import Foundation
+
+struct StateUpdates: Decodable, Sendable {
+    let after: Int
+    let cursor: Int
+    let serverTime: String
+    var reset: StateSnapshot?
+    var bots: [Bot]?
+    var tasks: [AgentTask]?
+    var messages: [Message]?
+    var removedMessages: [String]?
+    var decisions: [Decision]?
+    var artifacts: [Artifact]?
+    var workCapacity: ParallelWorkSettings?
+    var settingsChanged: Bool?
+    var confirmedRequestIds: [String]?
+
+    func applying(to snapshot: StateSnapshot) -> StateSnapshot? {
+        guard after == snapshot.cursor else { return nil }
+        if let reset { return reset.cursor == cursor ? reset : nil }
+        guard cursor >= after else { return nil }
+        var result = snapshot
+        if let bots { result.bots = bots }
+        if let tasks { result.tasks = Self.merge(tasks, into: result.tasks) }
+        if let messages { result.messages = Self.merge(messages, into: result.messages) }
+        let removed = Set(removedMessages ?? [])
+        result.messages.removeAll { removed.contains($0.id) }
+        result.messages.sort { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
+        if let decisions { result.decisions = decisions }
+        if let artifacts { result.artifacts = artifacts }
+        if let workCapacity { result.workCapacity = workCapacity }
+        if let confirmedRequestIds { result.confirmedRequestIds = confirmedRequestIds }
+        result.cursor = cursor
+        result.serverTime = serverTime
+        return result
+    }
+
+    static func mergeBotReceipt(_ receipt: Bot, original: Bot, current: Bot) -> Bot {
+        guard original.sessionId == current.sessionId else { return current }
+        var result = current
+        func update<Value: Equatable>(_ field: WritableKeyPath<Bot, Value>) {
+            if current[keyPath: field] == original[keyPath: field] { result[keyPath: field] = receipt[keyPath: field] }
+        }
+        update(\.name)
+        update(\.role)
+        update(\.avatar)
+        update(\.color)
+        update(\.instructions)
+        update(\.archived)
+        update(\.memory)
+        update(\.pinned)
+        update(\.preferences)
+        update(\.modelOverride)
+        update(\.effectiveModel)
+        update(\.notifications)
+        update(\.approvalOverride)
+        update(\.effectiveApproval)
+        update(\.workerLimit)
+        update(\.modelError)
+        return result
+    }
+
+    static func mergeRoutineReceipt(_ receipt: Routine, original: Routine, current: Routine) -> Routine {
+        var result = current
+        func update<Value: Equatable>(_ field: WritableKeyPath<Routine, Value>) {
+            if current[keyPath: field] == original[keyPath: field] { result[keyPath: field] = receipt[keyPath: field] }
+        }
+        update(\.name)
+        update(\.prompt)
+        update(\.cron)
+        update(\.timezone)
+        update(\.enabled)
+        update(\.nextRunAt)
+        update(\.lastRunAt)
+        update(\.lastTaskId)
+        update(\.updatedAt)
+        update(\.error)
+        return result
+    }
+
+    static func sameRoutineSettings(_ left: Routine?, _ right: Routine?) -> Bool {
+        guard let left, let right else { return left == nil && right == nil }
+        return left.id == right.id && left.botId == right.botId
+            && (left.name, left.prompt, left.cron, left.timezone, left.enabled) == (right.name, right.prompt, right.cron, right.timezone, right.enabled)
+    }
+
+    static func merge<T: Identifiable>(_ updates: [T], into values: [T]) -> [T] where T.ID: Hashable {
+        var result = values
+        var positions = Dictionary(uniqueKeysWithValues: values.enumerated().map { ($0.element.id, $0.offset) })
+        for value in updates {
+            if let index = positions[value.id] { result[index] = value }
+            else { positions[value.id] = result.count; result.append(value) }
+        }
+        return result
+    }
+}
+
+struct HistoryPage: Decodable, Sendable {
+    let messages: [Message]
+    let tasks: [AgentTask]?
+    let before: Int?
+}
+
+struct CardSnapshot: Decodable, Sendable {
+    let decision: Decision
+    let task: AgentTask
+    let bot: Bot
+    let owner: Bot
+    let messages: [Message]?
+    let cursor: Int
+}
+
+struct NativeSnapshot: Decodable, Sendable {
+    let cursor: Int
+    let bots: [Bot]
+    let modelCatalog: ModelCatalog?
+    let modelConfigured: Bool
+    let approvals: ApprovalSettings?
+    let parallelWork: ParallelWorkSettings?
+    let mcpServers: [MCPServer]?
+    let routines: [Routine]?
+    let pushConfigured: Bool?
+}

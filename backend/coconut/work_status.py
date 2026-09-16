@@ -39,8 +39,8 @@ class WorkStatus:
         self._put('artifacts', artifact)
         self._event('artifact.updated', self._public(artifact), artifact['bot_id'], artifact.get('task_id'))
 
-    def _work_chain(self, root, tasks, records, *, include_continuations=False):
-        """Follow recorded callbacks, including replies that assign further work."""
+    @staticmethod
+    def _work_links(tasks, records, include_continuations):
         linked = {}
         explicit_waits = {}
         for record in records:
@@ -59,6 +59,18 @@ class WorkStatus:
                 if task.get(field):
                     linked.setdefault(task[field], set()).add(task['id'])
             linked.setdefault(task['id'], set()).update(task.get('_waiting_on', []))
+        return linked, explicit_waits
+
+    def _work_chain(self, root, tasks, records, *, include_continuations=False):
+        """Follow recorded callbacks, including replies that assign further work."""
+        graphs = getattr(self, '_work_graphs', None)
+        key = (id(tasks), id(records), include_continuations)
+        if graphs is not None and key in graphs:
+            linked, explicit_waits = graphs[key]
+        else:
+            linked, explicit_waits = self._work_links(tasks, records, include_continuations)
+            if graphs is not None:
+                graphs[key] = linked, explicit_waits
         found, pending = {}, deque([(root['id'], 0)])
         while pending:
             identity, depth = pending.popleft()
