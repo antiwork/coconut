@@ -74,6 +74,7 @@ def get_plugin_manager(): return None
     (source / 'hermes_cli/tools_config.py').write_text("def _get_platform_tools(config, platform): return config.get('platform_toolsets', {}).get(platform, ['hermes-cli'])\n")
     (source / 'agent').mkdir(exist_ok=True)
     (source / 'agent/__init__.py').write_text('')
+    (source / 'agent/delegation_context.py').write_text('from contextlib import nullcontext\nnon_dispatcher_owned_context = nullcontext\n')
     (source / 'agent/skill_utils.py').write_text('def parse_config_string_list(value): return value or []\n')
     (source / 'cron').mkdir(exist_ok=True)
     (source / 'cron/__init__.py').write_text('')
