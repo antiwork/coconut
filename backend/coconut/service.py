@@ -1447,6 +1447,7 @@ class Service(StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources
         task['summary'] += ' Your follow-up is saved. Reply to continue.'
 
     def _drain_returns(self):
+        self._restore_saved_delegation_results()
         with self.lock:
             native_replies = [(task['id'], task['_native_reply_pending']) for task in self._all('tasks') if task.get('_native_reply_pending')]
         for task_id, reply in native_replies:

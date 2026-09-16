@@ -3,6 +3,7 @@ import copy
 import json
 import re
 import threading
+import time
 
 ROOT_ID = 'coconut-assignment'
 WORK_INSTRUCTIONS = (
@@ -79,6 +80,39 @@ class WorkProgress:
         if root and root['status'] in ('completed', 'cancelled'):
             return False
         return any(t['status'] in ('pending', 'in_progress') for t in items)
+
+    def _restore_saved_delegation_results(self):
+        """Deliver a saved final result when only an earlier progress reply reached its owner."""
+        from .service import digest, encoded
+        with self.transaction():
+            if self.stopping.is_set() or self.restart_pending:
+                return
+            if time.monotonic() < getattr(self, '_saved_return_check_at', 0):
+                return
+            self._saved_return_check_at = time.monotonic() + 60
+            tasks = {t['id']: t for t in self._all('tasks')}
+            for parent in tasks.values():
+                if parent['status'] != 'waiting' or not self._process_observation_current(parent, self._get('bots', parent['bot_id'])):
+                    continue
+                for identity in parent.get('_waiting_on', []):
+                    child = tasks.get(identity)
+                    result = child.get('_native_relay_result') if child else None
+                    if (not child or child['status'] not in ('completed', 'failed') or not result or not result.get('text')
+                            or result.get('sender_bot_id') != parent['bot_id'] or child.get('_return_pending')
+                            or bool(result.get('failed')) != (child['status'] == 'failed')
+                            or not self._process_observation_current(child, self._get('bots', child['bot_id']))
+                            or (child['status'] == 'completed' and self._unfinished_work(child))
+                            or self._background_pending(child['id'])):
+                        continue
+                    owner = tasks.get(child.get('_reply_to_task_id') or child.get('source_task_id'), {})
+                    if owner.get('_assignment_task_id', owner.get('id')) != parent['id']:
+                        continue
+                    if any(t.get('_resolved_dependency_id') == child['id'] and t.get('_assignment_task_id') == parent['id']
+                           and t['created_at'] >= child.get('_background_return_after', '') for t in tasks.values()):
+                        continue
+                    child['_return_pending'] = dict(target_bot_id=parent['bot_id'], text=result['text'],
+                        result_status=child['status'], return_id='saved-final:' + digest(encoded(result)))
+                    self._put('tasks', child)
 
     def _exchange_peers(self, task):
         """Read tasks in this exchange and the assignment's recorded Work history."""
