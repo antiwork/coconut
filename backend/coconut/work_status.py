@@ -61,6 +61,30 @@ class WorkStatus:
             linked.setdefault(task['id'], set()).update(task.get('_waiting_on', []))
         return linked, explicit_waits
 
+    def _link_external_work(self, tasks, linked, explicit_waits):
+        artifacts = {a['id']: a for a in self._all('artifacts') if a['kind'] == 'work'}
+        for item in artifacts.values():
+            if item.get('_work_resuming') or not item.get('external_wait'):
+                continue
+            owner = tasks.get(item.get('task_id'), {})
+            checking = tasks.get(item.get('_external_wait_task_id'), {})
+            routine = tasks.get(checking.get('_assignment_task_id'), checking)
+            edges = []
+            if (owner and checking and checking['bot_id'] == item['bot_id']
+                    and (routine.get('_native_job') or {}).get('id') == item['external_wait'].get('job_id')):
+                edges.extend(((owner['id'], routine['id']), (owner['id'], checking['id'])))
+            parent = artifacts.get(item.get('_work_parent_id'), {})
+            parent_task = tasks.get(parent.get('task_id'), {})
+            assignment = tasks.get(parent_task.get('_assignment_task_id'), parent_task)
+            if (parent_task and owner.get('status') == 'completed' and item.get('_hidden')
+                    and item.get('_work_key') == parent.get('_work_key')
+                    and (item.get('_work_parent_task_id') == assignment.get('id')
+                         or (assignment.get('_self_recovery') and item.get('_work_parent_task_id') in parent.get('_work_previous_task_ids', [])))):
+                edges.append((parent_task['id'], owner['id']))
+            for source, target in edges:
+                linked.setdefault(source, set()).add(target)
+                explicit_waits.setdefault(source, set()).add(target)
+
     def _work_chain(self, root, tasks, records, *, include_continuations=False):
         """Follow recorded callbacks, including replies that assign further work."""
         graphs = getattr(self, '_work_graphs', None)
@@ -69,6 +93,8 @@ class WorkStatus:
             linked, explicit_waits = graphs[key]
         else:
             linked, explicit_waits = self._work_links(tasks, records, include_continuations)
+            if include_continuations:
+                self._link_external_work(tasks, linked, explicit_waits)
             if graphs is not None:
                 graphs[key] = linked, explicit_waits
         found, pending = {}, deque([(root['id'], 0)])
@@ -150,6 +176,9 @@ class WorkStatus:
                  and self._work_identity(a) == identity]
         fields = ('task_id',) if item['kind'] == 'work' else ('_review_task_id', '_activity_task_id')
         owned = {p.get(field) for p in peers for field in fields} & tasks.keys()
+        checks = {a.get('_external_wait_task_id') for a in self._all('artifacts')
+                  if a['kind'] == 'work' and (self._work_identity(a) == identity or a.get('_work_parent_id') == item['id'])}
+        owned |= checks & tasks.keys()
         owned |= {t['id'] for t in tasks.values() if t.get('_work_context_id') in {p['id'] for p in peers}}
         owned |= {tasks[i]['_assignment_task_id'] for i in list(owned)
                   if tasks[i].get('_assignment_task_id') in tasks}
@@ -166,11 +195,15 @@ class WorkStatus:
         others = [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr') and not a.get('_hidden')
                   and self._work_identity(a) != identity
                   and not self._setting('work.cancelled.' + self._work_identity(a))]
-        shared = set()
+        # Native intake routines serve other sources too. Steer the cancelled outcome only.
+        shared = {i for i in checks & tasks.keys() if self._assignment(tasks[i]).get('_native_job')}
+        shared |= {self._assignment(tasks[i])['id'] for i in list(shared)}
+        for routine_task_id in list(shared):
+            shared.update(self._work_chain(tasks[routine_task_id], tasks, self._all('native_receipts'), include_continuations=True))
         for other in self._work_projection(others):
             if other['work_state'] in ('completed', 'cancelled'):
                 continue
-            for field in ('task_id', '_review_task_id', '_activity_task_id'):
+            for field in ('task_id', '_review_task_id', '_activity_task_id', '_external_wait_task_id'):
                 root = tasks.get(other.get(field))
                 if root:
                     shared.update(self._work_chain(root, tasks, self._all('native_receipts'), include_continuations=True))

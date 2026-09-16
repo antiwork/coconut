@@ -17,12 +17,51 @@ TRACK_WORK_SCHEMA = {
         'status': {'type': 'string', 'enum': list(WORK_STATES), 'description': 'Use completed only after verifying the requested result. Ready means ready for review. Waiting does not schedule a wake-up.'},
         'completion_condition': {'type': 'string', 'maxLength': 500, 'description': 'The observable result that completes this outcome. Preserve it across handoffs.'},
         'completion_evidence': {'type': 'string', 'maxLength': 2000, 'description': 'Required for completed work. Name the verified result and its evidence. Finishing a reply is not completion.'},
+        'external_wait': {'type': 'object', 'additionalProperties': False, 'properties': {
+            'job_id': {'type': 'string', 'description': 'Existing enabled Hermes routine in this bot that checks this source. Use its native job_id.'},
+            'source': {'type': 'string', 'maxLength': 500, 'description': 'The exact issue, thread, or other source to check for the missing evidence. Read-only checks only.'},
+        }, 'required': ['job_id', 'source'], 'description': 'Use with waiting when an external result is pending. Coconut includes this Work item in each run of the existing routine. This grants no new permission.'},
         'next_step': {'type': 'string', 'maxLength': 160, 'description': 'The next concrete step. This description does not queue work or grant permission.'},
     }, 'required': ['key', 'title', 'activity', 'status']},
 }
 
 
 class TrackedWork:
+    def _external_work_routine(self, item):
+        wait = item.get('external_wait')
+        if not isinstance(wait, dict) or item.get('_work_resuming') or item.get('status') != 'waiting':
+            return None
+        if item.get('_work_parent_id'):
+            parent = self._get('artifacts', item['_work_parent_id'])
+            if parent.get('status') in ('completed', 'cancelled') or self._setting('work.cancelled.' + self._work_identity(parent)):
+                return None
+            if self._external_work_routine(parent):
+                return None
+        if item.get('task_id'):
+            owner = self._get('tasks', item['task_id'])
+            if (owner['status'] == 'cancelled' or self._get('exchanges', owner['exchange_id']).get('cancelled')
+                    or self._setting('work.cancelled.' + self._work_identity(item))):
+                return None
+        return next((r for r in self._all('routines') if r.get('_native_id') == wait.get('job_id')
+                     and r['bot_id'] == item['bot_id'] and r.get('enabled') and not r.get('error')
+                     and r.get('next_run_at') and not r.get('_deleted')), None)
+
+    def _retire_recovered_checks(self, item, task):
+        recovery = self._assignment(task).get('_self_recovery') or {}
+        known = {t['id'] for t in recovery.get('saved_tasks', [])}
+        for child in self._all('artifacts'):
+            identity = child.get('_external_wait_task_id')
+            if child.get('_work_parent_id') != item['id'] or identity not in known:
+                continue
+            checking = self._get('tasks', identity)
+            if checking['status'] not in ('completed', 'failed') or self._background_pending(self._assignment(checking)['id']):
+                continue
+            child['_work_previous_task_ids'] = list(dict.fromkeys(child.get('_work_previous_task_ids', [])
+                + [self._assignment(checking)['id'], identity]))
+            child.pop('_external_wait_task_id', None)
+            child.update(status='waiting', activity=item['activity'])
+            self._put('artifacts', child)
+
     def _work_title(self, task):
         parent = self._get('tasks', task['parent_task_id']) if task.get('parent_task_id') else None
         fallback = parent['title'] if parent and parent['status'] == 'failed' else task['title']
@@ -81,8 +120,11 @@ class TrackedWork:
         if item.get('_work_origin_task_id'):
             origins.append(item['_work_origin_task_id'])
         item['_work_origin_task_id'] = min(origins, key=lambda identity: (self._get('tasks', identity)['created_at'], identity))
+        checking = self._get('tasks', previous['_external_wait_task_id']) if previous.get('_external_wait_task_id') else None
+        check_ids = [self._assignment(checking)['id'], checking['id']] if checking else []
         item['_work_previous_task_ids'] = list(dict.fromkeys(previous.get('_work_previous_task_ids', [])
-            + [previous['task_id']] + item.get('_work_previous_task_ids', [])))
+            + [previous['task_id']] + check_ids
+            + item.get('_work_previous_task_ids', [])))
 
     def _sync_followup_work(self, tasks, artifacts):
         decisions = self._all('decisions')
@@ -127,7 +169,8 @@ class TrackedWork:
         tasks = {t['id']: t for t in self._all('tasks')}
         records = self._all('native_receipts')
         peers = [a for a in self._all('artifacts') if a['id'] == item_id or
-                 (item['kind'] == 'pr' and a['kind'] == 'pr' and a['url'].lower() == item['url'].lower())]
+                 (item['kind'] == 'pr' and a['kind'] == 'pr' and a['url'].lower() == item['url'].lower())
+                 or a.get('_work_parent_id') == item_id]
         linked = {}
         for peer in peers:
             identities = [peer.get(key) for key in ('task_id', '_work_origin_task_id', '_review_task_id', '_activity_task_id')]
@@ -135,7 +178,7 @@ class TrackedWork:
                 if identity in tasks:
                     linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
         projected = next(a for a in self._work_projection(peers) if a['id'] == item_id)
-        latest = max(peers, key=lambda a: (a.get('observed_at') or a['created_at'], a.get('checked_at') or a['created_at'], a['id']))
+        latest = max((a for a in peers if a['id'] == item_id or not a.get('_work_parent_id')), key=lambda a: (a.get('observed_at') or a['created_at'], a.get('checked_at') or a['created_at'], a['id']))
         updates = [m for m in self._all('messages') if m.get('task_id') in linked
                    and m['role'] == 'assistant' and m['kind'] == 'text' and not m.get('streaming')]
         source = next((m for m in self._all('messages') if m.get('task_id') == item.get('_work_origin_task_id', item.get('task_id'))
@@ -146,6 +189,8 @@ class TrackedWork:
                                                    'work_decision_id', 'work_attempts', 'work_dependencies')},
                     pull_request={k: latest.get(k) for k in ('pr_state', 'checks_state', 'head_sha', 'draft',
                                   'observed_at', 'checked_at', 'refresh_error', 'preview')} if item['kind'] == 'pr' else None,
+                    related_work=[{k: a.get(k) for k in ('id', 'title', 'completion_evidence', 'external_wait')}
+                                  for a in peers if a.get('_work_parent_id') == item_id],
                     source_message=dict(id=source['id'], text=source['text'][:1000]) if source else None,
                     updates=[dict(id=m['id'], text=m['text'][:1000], created_at=m['created_at']) for m in updates[-3:]],
                     tasks=[dict(id=t['id'], status=t['status'], summary=t['summary'][:200])
@@ -255,7 +300,8 @@ class TrackedWork:
                     chains[owner['id']] = self._work_chain(owner, tasks, records, include_continuations=True)
                 completed_handoff = (owner and item.get('_work_parent_id') == parent['id']
                     and task.get('status') in ('completed', 'cancelled')
-                    and owner['id'] == item.get('_work_parent_task_id', source_assignment))
+                    and (owner['id'] == item.get('_work_parent_task_id', source_assignment)
+                         or (owner.get('_self_recovery') and item.get('_work_parent_task_id', source_assignment) in parent.get('_work_previous_task_ids', []))))
                 if not owner or (task.get('id') not in chains[owner['id']] and not completed_handoff):
                     parent = None
             if parent and (not item.get('_hidden') or item.get('_work_parent_id') != parent['id']):
@@ -373,7 +419,8 @@ class TrackedWork:
                     self._carry_work_history(item, dict(item))
             if item is None:
                 item = next((a for a in self._all('artifacts') if a.get('_automatic_work') and a.get('task_id') == task_id), None)
-            if item and self._setting('work.cancelled.' + self._work_identity(item)):
+            if item and (self._setting('work.cancelled.' + self._work_identity(item))
+                         or (item.get('_work_parent_id') and self._setting('work.cancelled.work:' + item['_work_parent_id']))):
                 raise ServiceError(409, 'The person cancelled this work. Start new work only if they request it.')
             created = item is None
             details = {}
@@ -382,7 +429,18 @@ class TrackedWork:
                     details[field] = require_text(payload, field, limit)
             if state == 'completed' and not details.get('completion_evidence'):
                 raise ServiceError(400, 'State the verified result before completing this work.')
-            report_only = bool(item and self._assignment(task).get('_source_audit_prompt'))
+            external_wait = payload.get('external_wait')
+            if external_wait is not None:
+                if state != 'waiting' or not isinstance(external_wait, dict):
+                    raise ServiceError(400, 'Use external_wait only with waiting work.')
+                external_wait = dict(job_id=require_text(external_wait, 'job_id', 100),
+                                     source=require_text(external_wait, 'source', 500))
+                if not self._external_work_routine(dict(bot_id=bot['id'], status=state, external_wait=external_wait)):
+                    raise ServiceError(409, 'Choose an enabled, synchronized Hermes routine with a next run in this bot.')
+            binding = item.get('external_wait') if item else None
+            routine_report = bool(binding and
+                (self._assignment(task).get('_native_job') or {}).get('id') == binding['job_id'])
+            report_only = bool(item and (self._assignment(task).get('_source_audit_prompt') or routine_report))
             if item:
                 owner = self._get('tasks', item['task_id'])
                 if owner['id'] != task_id and owner['created_at'] >= task['created_at']:
@@ -404,6 +462,19 @@ class TrackedWork:
             item.update(title=title, activity=activity, status=state,
                         observed_at=now(), _work_key=key, _automatic_work=False, _hidden=bool(item.get('_work_parent_id')))
             item.update(details)
+            if routine_report and state == 'completed':
+                item['_work_previous_task_ids'] = list(dict.fromkeys(item.get('_work_previous_task_ids', []) + [self._assignment(task)['id'], task_id]))
+            item.pop('_external_wait_task_id', None)
+            if routine_report and state not in ('completed', 'cancelled'):
+                item['external_wait'] = external_wait or binding
+                if state != 'waiting' or external_wait is None:
+                    item['_external_wait_task_id'] = task_id
+            else:
+                item.pop('external_wait', None)
+                if external_wait:
+                    item['external_wait'] = external_wait
+            if external_wait or state == 'completed':
+                self._retire_recovered_checks(item, task)
             item.setdefault('completion_condition', title)
             if state != 'completed':
                 item.pop('completion_evidence', None)
@@ -423,15 +494,36 @@ class TrackedWork:
             return dict(self._public(item), key=key)
 
     def _tracked_items_input(self, task):
-        items = [a for a in self._all('artifacts') if a['kind'] == 'work' and not a.get('_hidden') and a['bot_id'] == task['bot_id']]
+        items = [a for a in self._all('artifacts') if a['kind'] == 'work' and a['bot_id'] == task['bot_id']
+                 and (not a.get('_hidden') or a.get('_work_parent_id'))]
         tasks = {t['id']: t for t in self._all('tasks')}
         records = self._all('native_receipts')
         owned = {a['id'] for a in items if a.get('task_id') in tasks
                  and task['id'] in self._work_chain(tasks[a['task_id']], tasks, records, include_continuations=True)}
+        job_id = (tasks.get(task.get('_assignment_task_id'), task).get('_native_job') or {}).get('id')
+        scheduled = {a['id'] for a in items if job_id and self._external_work_routine(a)
+                     and a['external_wait']['job_id'] == job_id
+                     and not self._setting('work.cancelled.' + self._work_identity(a))}
+        assignment_id = tasks.get(task.get('_assignment_task_id'), task)['id']
+        active_checks = set()
+        for item in items:
+            checking = tasks.get(item.get('_external_wait_task_id'), {})
+            checking = tasks.get(checking.get('_assignment_task_id'), checking)
+            if (job_id and checking.get('id') == assignment_id and not item.get('_work_resuming')
+                    and (item.get('external_wait') or {}).get('job_id') == job_id
+                    and not self._setting('work.cancelled.' + self._work_identity(item))
+                    and not (item.get('_work_parent_id') and self._setting('work.cancelled.work:' + item['_work_parent_id']))):
+                active_checks.add(item['id'])
         items = self._work_projection(items)
+        active_checks &= {a['id'] for a in items if a.get('work_state') not in ('cancelled', 'completed')}
+        owned |= active_checks
+        scheduled &=  {a['id'] for a in items if a.get('work_state') == 'waiting'}
+        items = [a for a in items if not a.get('_hidden') or a['id'] in scheduled | active_checks]
         items.sort(key=lambda a: (a['status'] not in ('completed', 'cancelled'), a['observed_at']), reverse=True)
+        selected = [a for a in items if a['id'] in scheduled | active_checks] + [a for a in items if a['id'] not in scheduled | active_checks][:30]
         return [dict(key=a['_work_key'], title=a['title'], status=a['status'], activity=a.get('activity'),
                      task_id=a['task_id'], current_task=a['id'] in owned, work_state=a.get('work_state'),
                      completion_condition=a.get('completion_condition'), completion_evidence=a.get('completion_evidence'),
-                     next_step=a.get('work_next_step'),
-                     dismissed=bool(self._setting('work.dismissed.work:' + a['id']))) for a in items[:30]]
+                     next_step=a.get('work_next_step'), external_wait=a.get('external_wait'),
+                     routine_check=a['id'] in scheduled,
+                     dismissed=bool(self._setting('work.dismissed.work:' + a['id']))) for a in selected]

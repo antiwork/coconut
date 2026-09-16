@@ -1128,6 +1128,12 @@ def run_turn(request, emit, request_receipt):
                          'Do not create a work item for routine checks, brief replies, or each delegated step. '
                          'A waiting status does not register a dependency; use coconut_wait or native scheduling for that. '
                          'Do not reopen completed or dismissed work unless the person requests more work. ')
+        instructions += ('For an external result, report waiting with external_wait naming an existing enabled Hermes routine and the exact source. '
+                         'Finish the verification checklist while preserving the unresolved Work outcome. '
+                         'Use coconut_wait for an active task or process instead. '
+                         'During a routine, check each Work item marked routine_check within existing read-only permissions. '
+                         'Update the same key with evidence. Retain external_wait if the source has not changed. '
+                         'Unchanged external evidence is a normal wait, not a recovery failure or a new human decision. ')
         if request['task'].get('_tracked_work'):
             instructions += '\nExisting work for this bot: ' + json.dumps(request['task']['_tracked_work'])
         instructions += DECISION_INSTRUCTIONS

@@ -123,7 +123,7 @@ class WorkRecovery:
             try:
                 self.native_event(task['id'], 'native_question', {
                     'title': 'Retry recovery for ' + items[0]['title'][:110] + '?',
-                    'context': 'The bot could not finish two recovery attempts. ' + task['summary'][:700],
+                    'context': 'Coconut could not confirm the next step after two checks. The work remains unfinished.',
                     'risk': 'A tool may have completed without returning its result. Check its effect before repeating an action.',
                     'options': [dict(id='retry', label='Try recovery again', explanation='Check saved results and continue within existing approval.'),
                                 dict(id='stop', label='Stop this work', explanation='Cancel the attached work without repeating its actions.')],

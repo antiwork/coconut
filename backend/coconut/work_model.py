@@ -83,6 +83,13 @@ class WorkModel:
                         state='ready' if (tasks[target]['status'] in ('failed', 'cancelled') or
                             (tasks[target]['status'] == 'completed' and not self._background_pending(target)
                              and not tasks[target].get('_waiting_on'))) else 'waiting', reason=None))
+        for report in peers:
+            routine = self._external_work_routine(report) if report['kind'] == 'work' else None
+            reporting_task = tasks.get(report.get('task_id'), {})
+            if (routine and reporting_task.get('id') in identities and reporting_task.get('status') == 'completed'
+                    and not any(r.get('state') == 'executing' and r['task_id'] in identities for r in records)):
+                dependencies.append(dict(id=report['id'] + ':external', kind='routine', target_id=routine['id'],
+                                         state='waiting', reason=report['activity']))
         live = [t for t in attempts if t['status'] in ('working', 'waiting')
                 and self._work_live(t, current_records, timestamp)]
         live_reply = any(c['status'] == 'working' and self.context_threads.get(c['id'])
@@ -94,7 +101,18 @@ class WorkModel:
                    and p.get('_activity_head') == item.get('head_sha')
                    and p.get('_activity_turn') == tasks[p['_activity_task_id']].get('_native_turn_id')]
         blockers = []
+        recovering = owner.get('_self_recovery', {})
+        prior_failures = {t['id'] for t in recovering.get('saved_tasks', [])}
+        recovery_turns = {t['id'] for t in attempts if t['id'] not in prior_failures
+                          and (t['id'] == owner.get('id') or t.get('_assignment_task_id') == owner.get('id'))}
+        recovery_receipts = {r['id'] for r in current_records if r['task_id'] in recovery_turns}
+        if not (any(t['id'] in recovery_turns and t['status'] in ('queued', 'scheduled') for t in attempts)
+                or any(t['id'] in recovery_turns for t in live)
+                or any(d['id'] in recovery_receipts or d['id'].split(':', 1)[0] in recovery_turns for d in dependencies)):
+            prior_failures = set()
         for task in attempts:
+            if task['id'] in prior_failures:
+                continue
             if task['status'] in ('queued', 'scheduled'):
                 continue
             report = next((p for p in sorted(reports, key=lambda p: p.get('_activity_at', ''), reverse=True)
