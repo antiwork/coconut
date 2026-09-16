@@ -133,6 +133,7 @@ class HermesProvider(FixtureProvider):
     """Retain native Hermes runtimes with structured JSONL transport."""
 
     name = 'hermes'
+    supports_native_outcomes = True
 
     def __init__(self, data_dir, *, python=None, hermes_root=None, model=None, base_url=None, catalog=None):
         super().__init__(data_dir)
@@ -315,6 +316,9 @@ class HermesProvider(FixtureProvider):
         env.update(prepare_profile(root / 'home'))
         env['COCONUT_GOOGLE_HOME'] = str(self.data_dir / 'connections' / 'google' / 'home')
         env.update(HERMES_HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), PYTHONPATH=str(self.hermes_root), PYTHONUNBUFFERED='1', COCONUT_BROWSER_PROFILE=str(root / 'browser'), HERMES_DISABLE_TELEMETRY='1', HOMEBREW_XDG_CONFIG_HOME=str(shared_config))
+        env.update(HERMES_KANBAN_DB=str(self.data_dir / 'kanban/kanban.db'),
+                   HERMES_KANBAN_BOARD='default', HERMES_TENANT=bot_id,
+                   HERMES_KANBAN_WORKSPACES_ROOT=str(self.data_dir / 'kanban/kanban/workspaces'))
         return env, root / 'workspace'
 
     def prepare_kanban_worker(self, identity, bot, workspace, execution_id):
@@ -434,7 +438,11 @@ class HermesProvider(FixtureProvider):
                        reasoning_effort=selection.get('reasoning_effort'), runtime_config=runtime_config, **extra)
         if task.get('_kanban_external_id'):
             from .work_workspace import preferred
-            request['workspace'] = str(preferred(self.data_dir / 'workspaces', task['_execution_session_id']))
+            from .work_capacity import execution_key
+            workspace = preferred(self.data_dir / 'workspaces', execution_key(task))
+            explicit = workspace != self.data_dir / 'workspaces' / execution_key(task)
+            request['workspace'] = str(workspace if explicit else
+                task.get('_kanban_workspace') or task.get('_native_outcome', {}).get('workspace') or workspace)
         with self._lock:
             prepared = self._prepared.pop(task.get('_kanban_external_id'), None)
             if self._closed or task_id in self._cancelled or task.get('_context_id') in self._cancelled_contexts:

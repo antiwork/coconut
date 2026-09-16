@@ -46,6 +46,17 @@ class NativeBridge:
                                 reasoning_effort=args.get('reasoning_effort') or self.request.get('reasoning_effort'))
                 from native_routine_execution import create_native_job
                 next_call = lambda arguments: create_native_job(arguments, self.session_key)
+            if name == 'kanban_create':
+                # Bind native intake to the authenticated conversation and make creation replayable.
+                input_id = self.request['task'].get('_native_turn_id') or self.session_key
+                intake_key = fingerprint([input_id, args])
+                args = dict(args, assignee='default', tenant=self.request['bot']['id'],
+                    session_id=self.request['task']['id'], initial_status='blocked',
+                    idempotency_key='coconut:' + self.session_key + ':' + intake_key)
+                if not args.get('workspace_kind') or args['workspace_kind'] == 'scratch':
+                    from hermes_cli.kanban_db import workspaces_root
+                    args.update(workspace_kind='dir', workspace_path=str(workspaces_root() /
+                        ('coconut-' + fingerprint([self.session_key, intake_key]))))
             action = dict(name=name, arguments=args)
             key = fingerprint(action)
             pending = self.request['task'].get('pending_decision', {})

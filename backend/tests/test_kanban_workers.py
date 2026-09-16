@@ -29,6 +29,18 @@ class KanbanWorkerTests(unittest.TestCase):
         self.provider.environment = lambda bot: (dict(os.environ, HERMES_HOME=str(self.profile),
             PYTHONPATH=os.pathsep.join((str(BACKEND), SOURCE)), HERMES_DISABLE_TELEMETRY='1'), self.root)
 
+    def test_chat_context_resolves_workspace_without_a_work_session(self):
+        from unittest.mock import patch
+        bot = {'id': str(uuid4()), 'session_id': str(uuid4())}
+        task = {'id': str(uuid4()), 'bot_id': bot['id'], '_execution_session_id': None,
+                '_kanban_external_id': str(uuid4())}
+        self.provider.catalog.resolve_runtime = lambda *args, **kwargs: {}
+        with patch.object(self.provider, 'observe_bot', return_value=bot), patch.object(
+                self.provider, 'resolve_task_model', return_value={'model': 'test', 'provider': 'custom'}):
+            # Workspace resolution must reach the claim check for a conversation context.
+            with self.assertRaisesRegex(RuntimeError, 'no prepared worker'):
+                self.provider._run_turn('context', task, bot, [], lambda *args: None, isolated=True)
+
     def spawn_background(self):
         env, cwd = self.provider.environment('same-bot')
         env['COCONUT_PROCESS_HOME'] = str(self.root / str(uuid4()))

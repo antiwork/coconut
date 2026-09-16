@@ -1357,14 +1357,39 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         progress_only = not returning and target_id == assignment.get('source_bot_id') and (
             self._unfinished_work(assignment) or bool(assignment.get('_waiting_on')) or self._background_pending(assignment['id']))
         target = self._get('bots', target_id)
-        task = self._send(target, {'text': text, 'mode': 'queue'}, thread_id=source['thread_id'], parent_task_id=source['id'], conversation_bot_id=origin['id'], exchange_id=source['exchange_id'], source_task=source, record_message=False, text_limit=None if returning else 20000)
-        task = self._get('tasks', task['id'])
         sender = self._get('bots', source['bot_id'])
-        task['_bot_messages'] = [{'sender_bot_id': sender['id'], 'sender_name': sender['name'], 'text': text, 'result_status': payload.get('result_status'), 'progress_only': progress_only}]
-        assignment = self._assignment(source)
-        task['_is_return'] = returning or target_id == assignment.get('source_bot_id')
         owner_id = assignment.get('_reply_to_task_id') or assignment.get('source_task_id')
-        if target_id == assignment.get('source_bot_id') and owner_id:
+        owner = self._assignment(self._get('tasks', owner_id)) if target_id == assignment.get('source_bot_id') and owner_id else None
+        # Helper questions retain a separate callback while the native owner waits for that helper.
+        native_return = bool(owner and owner.get('_native_outcome_id') and not progress_only)
+        bot_message = {'sender_bot_id': sender['id'], 'sender_name': sender['name'], 'text': text, 'result_status': payload.get('result_status'), 'progress_only': progress_only}
+        if native_return:
+            # A dependency result resumes the native owner, including its claim and workspace.
+            task = owner
+            task.setdefault('_bot_messages', []).append(bot_message)
+            if not progress_only:
+                task['_waiting_on'] = [identity for identity in task.get('_waiting_on', []) if identity != assignment['id']]
+            native = self.kanban.tasks.get(task['id'], {})
+            if task['status'] not in ('cancelled', 'paused', 'needs_you') and native.get('status') not in ('done', 'archived'):
+                if task['status'] == 'working':
+                    task.setdefault('_steering', []).append(sender['name'] + ': ' + text)
+                elif not self._automatic_work_is_paused(task) and not self._continuation_blocked(task) and not any(
+                        d['task_id'] == task['id'] and d['status'] == 'pending' for d in self._all('decisions')):
+                    if task['status'] != 'queued':
+                        self._advance_input(task)
+                    task.update(status='queued', summary='Continuing with the result.')
+            task['updated_at'] = now()
+            self._put('tasks', task)
+            self._event('task.updated', self._public(task), task['bot_id'], task['id'])
+            self._refresh_bot(task['bot_id'])
+        else:
+            task = self._send(target, {'text': text, 'mode': 'queue'}, thread_id=source['thread_id'], parent_task_id=source['id'], conversation_bot_id=origin['id'], exchange_id=source['exchange_id'], source_task=source, record_message=False, text_limit=None if returning else 20000)
+            task = self._get('tasks', task['id'])
+            task['_bot_messages'] = [bot_message]
+            task['_is_return'] = returning or target_id == assignment.get('source_bot_id')
+        if native_return:
+            pass
+        elif target_id == assignment.get('source_bot_id') and owner_id:
             owner = self._assignment(self._get('tasks', owner_id))
             task.update(_is_return=True, _assignment_task_id=owner['id'])
             if assignment.get('_requester_reply_task_id'):
@@ -1395,7 +1420,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             exchange['deliveries'] += 1
         self._put('exchanges', exchange)
         receipt = {'task_id': task['id'], 'target_bot_id': target_id, 'thread_id': task['thread_id'], 'status': 'paused' if task['status'] == 'paused' else 'queued'}
-        self._event('bot_message.delivered', {'source_task_id': source['id'], 'source_bot_id': sender['id'], 'target_bot_id': target_id, 'task_id': task['id'], 'thread_id': task['thread_id'], 'conversation_bot_id': origin['id'], 'exchange_id': exchange['id'], 'deliveries': exchange['deliveries'], 'is_return': task['_is_return']}, origin['id'], task['id'])
+        self._event('bot_message.delivered', {'source_task_id': source['id'], 'source_bot_id': sender['id'], 'target_bot_id': target_id, 'task_id': task['id'], 'thread_id': task['thread_id'], 'conversation_bot_id': origin['id'], 'exchange_id': exchange['id'], 'deliveries': exchange['deliveries'], 'is_return': native_return or task.get('_is_return', False)}, origin['id'], task['id'])
         self._put('deliveries', dict(id=delivery_id, source_task_id=source['id'], target_bot_id=target_id, text=text, receipt=receipt, created_at=now(), _progress_only=progress_only))
         return receipt
 
@@ -1642,10 +1667,16 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 raise ServiceError(400, 'Mentioned bots receive separate messages.')
             return self._dispatch_user(origin, data, recipients, thread_id=thread_id, parent_task_id=parent_task_id)
         attachments = self._validate_attachments(conversation_bot_id, data.get('attachment_ids', []))
+        if work_item and work_item.get('_native_outcome_id') and not data.get('work_status_only'):
+            owner = self._get('tasks', work_item['task_id'])
+            native = self.kanban.tasks.get(owner['id'], {}) if self.kanban else {}
+            if owner['status'] != 'cancelled' and native.get('status') not in ('done', 'archived'):
+                return self._reply(owner, data)
         if mode == 'auto' and not data.get('scheduled_at'):
             # Route from current server state. A bot exchange never owns a new human message.
             current = next((task for task in reversed(self._all('tasks'))
                             if task['bot_id'] == bot['id'] and task['conversation_bot_id'] == conversation_bot_id
+                            and (not getattr(self.provider, 'supports_native_outcomes', False) or task.get('_chat_session'))
                             and not task.get('source_bot_id') and not task.get('scheduled_at') and not task.get('_work_status_only')
                             and not task.get('_source_audit_prompt') and not task.get('_native_job')
                             and task['status'] in ('working', 'queued', 'waiting')), None)
@@ -1690,11 +1721,19 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         parent = self._get('tasks', parent_task_id) if parent_task_id and not source_task else None
         title = work_item['title'] if work_item else (parent['title'] if parent and parent['status'] == 'failed' else text[:72])
         task = dict(id=task_id, thread_id=thread_id or task_id, parent_task_id=parent_task_id, bot_id=bot['id'], conversation_bot_id=conversation_bot_id, session_id=bot['session_id'], source_bot_id=source_task['bot_id'] if source_task else None, source_task_id=source_task['id'] if source_task else None, exchange_id=exchange_id or self._new_exchange(), exchange_depth=source_task.get('exchange_depth', 0) + 1 if source_task else 0, title=title, status=status, summary='Waiting for its scheduled time.' if scheduled else 'Queued', created_at=now(), updated_at=now(), scheduled_at=scheduled, _attachment_ids=attachments)
+        if (getattr(self.provider, 'supports_native_outcomes', False) and human_authored
+                and not work_item and not source_task and (not parent or parent.get('_chat_session')) and not scheduled):
+            task['_chat_session'] = True
         if work_item:
             task.update(_work_context_id=work_item['id'], _work_status_only=data.get('work_status_only', False))
             # Capture the owner before recovery transfers the visible work item to this task.
             self._ensure_execution_session(task)
-        elif parent and parent['status'] == 'failed' and parent['bot_id'] == task['bot_id']:
+            if work_item.get('_native_outcome_id') and not data.get('work_status_only'):
+                task['_native_outcome_id'] = work_item['_native_outcome_id']
+                self._carry_work_history(work_item, dict(work_item))
+                work_item.update(task_id=task['id'], status='waiting', activity='Queued', _work_resuming=True)
+                self._put('artifacts', work_item)
+        elif parent and not parent.get('_chat_session') and parent['status'] == 'failed' and parent['bot_id'] == task['bot_id']:
             self._ensure_execution_session(parent)
             task['_execution_session_id'] = parent['_execution_session_id']
         if self._task_paused(task):
@@ -1817,6 +1856,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             result = self._steer_task(task, text, attachments, origin['id'])
             result['reply_status'] = 'next_safe_turn'
             return result
+        if task.get('_native_outcome_id'):
+            native = self.kanban.tasks.get(task['id'], {}) if self.kanban else {}
+            if (native.get('status') in ('blocked', 'triage')
+                    or task['status'] in ('completed', 'failed') and native.get('status') not in ('done', 'archived')):
+                task['status'] = 'waiting'
         if task['status'] in ('queued', 'paused', 'scheduled', 'waiting'):
             was_waiting = task['status'] == 'waiting'
             if was_waiting:
@@ -1840,7 +1884,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             return self._public(task) | {'reply_status': 'queued'}
         if task['status'] == 'needs_you':
             raise ServiceError(409, 'Refresh this thread before replying.')
-        result = self._send(bot, dict(text=text, mode='queue', attachment_ids=attachments), thread_id=task['thread_id'], parent_task_id=task['id'], conversation_bot_id=task['conversation_bot_id'])
+        if task.get('_native_outcome_id') and task.get('_work_context_id'):
+            result = self._send(bot, dict(text=text, mode='queue', attachment_ids=attachments),
+                conversation_bot_id=task['conversation_bot_id'], work_item=self._get('artifacts', task['_work_context_id']))
+        else:
+            result = self._send(bot, dict(text=text, mode='queue', attachment_ids=attachments), thread_id=task['thread_id'], parent_task_id=task['id'], conversation_bot_id=task['conversation_bot_id'])
         return result | {'reply_status': 'queued_continuation'}
 
     def _record_attachments(self, bot_id: str, task: dict, artifact_ids: list[str], *, recipient_bot_ids: list[str] | None = None):
@@ -2284,7 +2332,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             self.changed.wait(.2)
 
     def _ensure_execution_session(self, task):
-        if task.get('_execution_session_id'):
+        if task.get('_execution_session_id') or task.get('_chat_session'):
             return
         owner = self._assignment(task)
         if task.get('_work_context_id') and not task.get('_work_status_only'):
@@ -2473,11 +2521,14 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         return
                     history = self._history(bot['id'])
                 timing.mark('history')
-                provider_task = self._public(task) | {'_execution_session_id': task.get('_execution_session_id'),
-                                                       '_kanban_external_id': task.get('_kanban_claim', {}).get('external_id')}
-                for field in ('_work_todos', '_work_resume', '_source_audit_prompt', '_self_recovery'):
+                provider_task = self._public(task) | {'_native_turn_id': task['_native_turn_id'], '_execution_session_id': task.get('_execution_session_id'),
+                                                       '_kanban_external_id': task.get('_kanban_claim', {}).get('external_id'),
+                                                       '_kanban_workspace': task.get('_kanban_claim', {}).get('workspace')}
+                for field in ('_work_todos', '_work_resume', '_source_audit_prompt', '_self_recovery', '_chat_session', '_native_outcome_id'):
                     if field in task:
                         provider_task[field] = task[field]
+                if task.get('_native_outcome_id'):
+                    provider_task['_native_outcome'] = task['_kanban_claim']
                 reaction_feedback = task.get('_reaction_feedback', [])
                 provider_task['_reaction_feedback'] = reaction_feedback
                 provider_task['_turn_message_ids'] = task['_turn_message_ids']
@@ -2497,12 +2548,13 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 timing.mark('receipts')
                 with self._read_view() as view, view._read_transaction():
                     bot = view._get('bots', task['bot_id'])
-                    provider_task['_tracked_prs'] = view._tracked_work_input(task)
-                    provider_task['_tracked_work'] = view._tracked_items_input(task)
+                    if not task.get('_chat_session') and not task.get('_native_outcome_id'):
+                        provider_task['_tracked_prs'] = view._tracked_work_input(task)
+                        provider_task['_tracked_work'] = view._tracked_items_input(task)
                     if not task.get('_work_status_only'):
                         provider_task['_recent_work_updates'] = view.recent_work_updates(task)
                     work_id = task.get('_work_context_id') or assignment.get('_work_context_id')
-                    if work_id:
+                    if work_id and not task.get('_native_outcome_id'):
                         provider_task['_work_context'] = view.work_context_input(work_id)
                         provider_task['_work_status_only'] = task.get('_work_status_only', False)
                     provider_task.update(view.decision_chat_input(task))
@@ -2996,8 +3048,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     self._refresh_bot(bot['id'])
                     history = self._history(bot['id'])
                     decision = self._get('decisions', context['decision_id'])
-                    provider_task = self._public(task) | {'_execution_session_id': task.get('_execution_session_id'),
-                                                           '_kanban_external_id': context.get('_kanban_claim', {}).get('external_id')}
+                    provider_task = self._public(task) | {'_native_turn_id': task['_native_turn_id'], '_execution_session_id': task.get('_execution_session_id'),
+                                                           '_kanban_external_id': context.get('_kanban_claim', {}).get('external_id'),
+                                                           '_kanban_workspace': context.get('_kanban_claim', {}).get('workspace')}
                     provider_task['_conversation_epoch'] = context.get('_conversation_epoch', task.get('_conversation_epoch', self._setting('conversation_epoch')))
                     # Replies and maintenance use their own contexts, outside the source routine's execution claim.
                     provider_task['_native_receipts'] = self._native_task_receipts(task['id'], turn_id=context_id, state='completed')

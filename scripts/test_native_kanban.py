@@ -37,19 +37,28 @@ def check(source, python):
                         return
                     messages = request['messages']
                     results = [m for m in messages if m.get('role') == 'tool']
-                    if len(results) > 6:
+                    if len(results) > 12:
                         raise AssertionError('Unexpected tool retry: ' + results[-1]['content'][:1000])
-                    if not results:
+                    chat = 'Use this persistent conversation for direct replies' in json.dumps(messages[:1])
+                    if chat:
+                        last_user = max(i for i, m in enumerate(messages) if m['role'] == 'user')
+                        recent = messages[last_user:]
+                        if any(m.get('role') == 'tool' for m in recent):
+                            name, arguments = None, None
+                        else:
+                            name, arguments = 'kanban_create', dict(title=messages[last_user]['content'][-120:],
+                                body='Write proof.txt in an isolated worktree. Ask whether to accept the result. Verify the file after the answer.',
+                                assignee='default')
+                    elif not results:
                         barrier.wait(30)
                         name, arguments = 'coconut_workspace', {'repository': str(repo)}
                     elif 'human-accepted-probe' in json.dumps([m for m in messages if m.get('role') == 'user']):
-                        if any('coconut-assignment' in m.get('content', '') and 'completed' in m.get('content', '') for m in results):
+                        if any('"ok": true' in m.get('content', '') and '"run_id":' in m.get('content', '') for m in results):
                             name, arguments = None, None
                         elif not any('workspace-restored' in m.get('content', '') for m in results):
                             name, arguments = 'terminal', {'command': "test -f proof.txt && printf 'workspace-restored\\n'"}
                         else:
-                            name, arguments = 'todo_list', {'merge': True, 'todos': [{'id': 'coconut-assignment',
-                                'content': 'Verify the isolated local file and receive the answer.', 'status': 'completed'}]}
+                            name, arguments = 'kanban_complete', {'summary': 'Verified proof.txt in the isolated worktree after the person accepted the result.'}
                     elif len(results) == 1:
                         binding = json.loads(results[-1]['content'])
                         assert 'path' in binding, binding
@@ -59,6 +68,8 @@ def check(source, python):
                             'context': 'The local worker wrote proof.txt in its own Git worktree.',
                             'options': [{'id': 'accept', 'label': 'human-accepted-probe', 'explanation': 'Complete this local check.'}]}
                     calls.append(name or 'finish')
+                    if os.environ.get('COCONUT_TEST_TRACE'):
+                        print(json.dumps(dict(chat=chat, call=name, results=len(results), last=results[-1] if results else None)), flush=True)
                     if name:
                         offered = {t.get('function', t).get('name') for t in request.get('tools', [])}
                         if name not in offered:
@@ -116,7 +127,12 @@ def check(source, python):
             service.mutate('PUT', '/v1/settings/work-capacity', {'limit': 2}, str(uuid4()))
             tasks = [write('/v1/bots/' + bot['id'] + '/messages', {'text': 'Check local worktree ' + str(i), 'mode': 'queue'}) for i in range(2)]
             settle(lambda: len(service._all('decisions')) == 2 and all(n['status'] == 'review' for n in service.kanban.tasks.values()))
-            assert len({service._get('tasks', t['id'])['_kanban_claim']['pid'] for t in tasks}) == 2
+            chats = tasks
+            assert all(service._get('tasks', t['id']).get('_chat_session') for t in chats)
+            assert all(not service._get('tasks', t['id']).get('_execution_session_id') for t in chats)
+            tasks = [t for t in service._all('tasks') if t.get('_native_outcome_id')]
+            assert len(tasks) == 2
+            assert len({t['_kanban_claim']['pid'] for t in tasks}) == 2
             bindings = json.loads((home / 'data/workspaces/worktrees.json').read_text())
             assert len(bindings) == 2
             assert len({b['path'] for b in bindings.values()}) == 2
@@ -134,6 +150,9 @@ def check(source, python):
                 result = write(path, payload, key)
                 assert write(path, payload, key) == result
             settle(lambda: all(t['status'] == 'completed' for t in service._all('tasks')))
+            settle(lambda: all(n['status'] == 'done' for n in service.kanban.tasks.values()))
+            assert calls.count('kanban_create') == 2, calls
+            assert calls.count('kanban_complete') == 2, calls
             assert calls.count('terminal') == 4, calls
             assert not failures, failures
             print(json.dumps(dict(passed=True, native_workers=2, worktrees=2, isolated_tool_writes=2,

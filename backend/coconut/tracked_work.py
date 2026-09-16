@@ -340,7 +340,7 @@ class TrackedWork:
             self._sync_delegated_work(tasks, artifacts)
             covered = {a.get('task_id') for a in artifacts if a['kind'] in ('work', 'pr')}
             for task in tasks.values():
-                if (task['id'] in covered or task.get('source_bot_id')
+                if (task['id'] in covered or task.get('_chat_session') or task.get('_native_outcome_id') or task.get('source_bot_id')
                         or task.get('_native_job') or task.get('_source_audit_prompt')
                         or task.get('_assignment_task_id') or task.get('_work_context_id')
                         or task['status'] not in ('working', 'waiting', 'needs_you')):

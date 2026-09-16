@@ -23,6 +23,22 @@ class RelayWakeupTests(unittest.TestCase):
         self.service.emit(self.child, 'completed', {'summary': 'Complete.', '_work_todos': progress()})
         return call['id'], receipt['task_id']
 
+    def test_native_owner_answers_helper_without_losing_its_callback(self):
+        with self.service.transaction():
+            parent = self.service._get('tasks', self.parent['id'])
+            parent['_native_outcome_id'] = 'native-owner'
+            self.service._put('tasks', parent)
+        record_id, reply_id = self.send_back()
+        self.assertNotEqual(reply_id, self.parent['id'])
+        self.service._run_task(reply_id)
+        self.service._drain_returns()
+        self.service._drain_process_completions()
+        helper = self.service._get('tasks', self.child)
+        self.assertEqual(helper['status'], 'queued')
+        self.assertIn('Received the current result.', helper['_background_completion'][0])
+        self.assertEqual(self.service._get('tasks', self.parent['id'])['status'], 'waiting')
+        self.assertEqual(self.service._get('native_receipts', record_id)['_process_delivery'], helper['_native_turn_id'])
+
     def test_requester_reply_waits_without_retries_then_resumes_once(self):
         record_id, reply_id = self.send_back()
         task = self.service._get('tasks', self.child)

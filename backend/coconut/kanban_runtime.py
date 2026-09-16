@@ -34,12 +34,50 @@ class Board:
         self.conn = kanban_db_connect.connect()
         self.conn.execute('CREATE TABLE IF NOT EXISTS coconut_bindings '
                           '(external_id TEXT PRIMARY KEY, native_id TEXT NOT NULL UNIQUE, intent TEXT NOT NULL)')
+        self.conn.execute('CREATE TABLE IF NOT EXISTS coconut_outcomes (native_id TEXT PRIMARY KEY, initialized INTEGER NOT NULL DEFAULT 0)')
+        if 'input_id' not in {r[1] for r in self.conn.execute('PRAGMA table_info(coconut_outcomes)')}:
+            self.conn.execute("ALTER TABLE coconut_outcomes ADD COLUMN input_id TEXT NOT NULL DEFAULT ''")
 
     def sync(self, rows):
         for row in rows:
             old = self.conn.execute('SELECT native_id,intent FROM coconut_bindings WHERE external_id=?',
                                     (row['id'],)).fetchone()
             intent = fingerprint({k: row[k] for k in ('state', 'input')})
+            if row.get('native_id'):
+                task = self.kb.get_task(self.conn, old[0] if old else row['native_id'])
+                previous_input = self.conn.execute('SELECT input_id FROM coconut_outcomes WHERE native_id=?', (task.id,)).fetchone()
+                new_input = not old or bool(previous_input and previous_input[0] and previous_input[0] != row['input'])
+                if task.status in ('done', 'archived') and row['state'] in ('ready', 'scheduled') and new_input:
+                    # Native terminal results stay immutable. New input owns a durable successor.
+                    identity = self.kb.create_task(self.conn, title=row['title'], body=task.body,
+                        assignee='default', created_by='coconut', tenant=row['bot_id'],
+                        workspace_kind='dir', workspace_path=row['workspace'], parents=[task.id],
+                        priority=row['priority'], initial_status='blocked',
+                        idempotency_key='coconut-followup:' + row['id'] + ':' + row['input'])
+                    with self.kb.write_txn(self.conn):
+                        self.conn.execute('INSERT INTO coconut_bindings VALUES (?,?,?) ON CONFLICT(external_id) '
+                            'DO UPDATE SET native_id=excluded.native_id,intent=excluded.intent', (row['id'], identity, ''))
+                    task = self.kb.get_task(self.conn, identity)
+                self.bind(task.id, row['id'])
+                task = self.kb.get_task(self.conn, task.id)
+                old = self.conn.execute('SELECT native_id,intent FROM coconut_bindings WHERE external_id=?', (row['id'],)).fetchone()
+                if row.get('workspace_changed') and Path(row['workspace']).is_dir() and task.workspace_path != row['workspace']:
+                    self.workspace.set_workspace_path(self.conn, task.id, row['workspace'])
+                # Only new input or cancellation can change a native-owned lifecycle here.
+                if row['state'] == 'archived' and task.status != 'archived':
+                    self.kb.archive_task(self.conn, task.id)
+                elif task.status == 'ready' and row['state'] in ('scheduled', 'review'):
+                    self.kb.schedule_task(self.conn, task.id, reason=row.get('summary') or 'Waiting for delivery.')
+                elif old[1] and old[1] != intent and row['state'] == 'ready':
+                    if task.status == 'review':
+                        self.kb.reopen_review_task(self.conn, task.id)
+                    elif task.status in ('scheduled', 'blocked'):
+                        self.kb.unblock_task(self.conn, task.id)
+                    elif task.status == 'triage':
+                        self.kb.specify_triage_task(self.conn, task.id, author='coconut')
+                self.conn.execute('UPDATE coconut_bindings SET intent=? WHERE external_id=?', (intent, row['id']))
+                self.conn.execute('UPDATE coconut_outcomes SET input_id=? WHERE native_id=?', (row['input'], task.id))
+                continue
             if old:
                 existing = self.kb.get_task(self.conn, old[0])
                 if existing.title != row['title'] or existing.priority != row['priority']:
@@ -94,10 +132,31 @@ class Board:
                                   'DO UPDATE SET native_id=excluded.native_id,intent=excluded.intent',
                                   (row['id'], identity, intent))
 
+    def bind(self, identity, external_id):
+        if not self.kb.get_task(self.conn, identity):
+            raise ValueError('The native outcome does not exist.')
+        with self.kb.write_txn(self.conn):
+            self.conn.execute('INSERT OR IGNORE INTO coconut_bindings VALUES (?,?,?)', (external_id, identity, ''))
+            binding = self.conn.execute('SELECT native_id FROM coconut_bindings WHERE external_id=?', (external_id,)).fetchone()
+            if not binding or binding[0] != identity:
+                raise ValueError('The request already owns another native outcome.')
+            self.conn.execute('INSERT OR IGNORE INTO coconut_outcomes(native_id) VALUES (?)', (identity,))
+        if not self.conn.execute('SELECT initialized FROM coconut_outcomes WHERE native_id=?', (identity,)).fetchone()[0]:
+            # Intake stays blocked until the phone record exists. Replay either committed half after a crash.
+            if self.kb.get_task(self.conn, identity).status == 'blocked':
+                self.kb.unblock_task(self.conn, identity)
+            self.conn.execute('UPDATE coconut_outcomes SET initialized=1 WHERE native_id=?', (identity,))
+
     def finish(self, identity, run_id, state, summary):
         task = self.kb.get_task(self.conn, identity)
         if not task or task.current_run_id != run_id or task.status != 'running':
             return False
+        owned = self.conn.execute('SELECT 1 FROM coconut_outcomes WHERE native_id=?', (identity,)).fetchone()
+        if owned and state in ('done', 'blocked'):
+            # Hermes retries a stopped worker. A Coconut reply cannot complete the outcome.
+            self.dispatch._record_task_failure(self.conn, identity, summary or 'The worker stopped without an outcome.',
+                outcome='worker_protocol_violation' if state == 'done' else 'worker_failed', release_claim=True, end_run=True)
+            return True
         if state == 'done':
             return self.kb.complete_task(self.conn, identity, summary=summary, expected_run_id=run_id)
         if state == 'review':
@@ -116,11 +175,20 @@ class Board:
         result = []
         for binding in self.conn.execute(
                 'SELECT external_id,native_id FROM coconut_bindings b JOIN tasks t ON t.id=b.native_id '
-                "WHERE t.status NOT IN ('done','archived') OR b.rowid IN "
+                "WHERE t.status NOT IN ('done','archived') OR t.id IN (SELECT native_id FROM coconut_outcomes) OR b.rowid IN "
                 '(SELECT rowid FROM coconut_bindings ORDER BY rowid DESC LIMIT 32) ORDER BY b.rowid'):
             task = self.kb.get_task(self.conn, binding[1])
             blocker = self.dispatch.check_respawn_guard(self.conn, task.id) if task.status == 'ready' else None
-            result.append(dict(external_id=binding[0], dispatch_blocker=blocker, **asdict(task)))
+            progress = self.conn.execute(
+                "SELECT json_extract(payload,'$.note') FROM task_events WHERE task_id=? AND run_id=? "
+                "AND kind='heartbeat' AND json_extract(payload,'$.note') IS NOT NULL ORDER BY id DESC LIMIT 1",
+                (task.id, task.current_run_id)).fetchone()
+            accepted = self.conn.execute('SELECT input_id FROM coconut_outcomes WHERE native_id=?', (task.id,)).fetchone()
+            result.append(dict(external_id=binding[0], dispatch_blocker=blocker, input_id=accepted[0] if accepted else None,
+                progress_note=progress[0] if progress else None, outcome_summary=self.kb.latest_summary(self.conn, task.id), **asdict(task)))
+        for row in self.conn.execute('SELECT id FROM tasks WHERE id NOT IN (SELECT native_id FROM coconut_bindings) AND id NOT IN (SELECT native_id FROM coconut_outcomes)'):
+            task = self.kb.get_task(self.conn, row[0])
+            result.append(dict(external_id='native:' + task.id, unbound=True, **asdict(task)))
         return result
 
     def tick(self, rows, capacity, spawn):
@@ -140,8 +208,10 @@ def main():
         binding = board.conn.execute('SELECT external_id FROM coconut_bindings WHERE native_id=?', (task.id,)).fetchone()
         if binding is None:
             raise ValueError('No Coconut request owns this task.')
+        owned = board.conn.execute('SELECT 1 FROM coconut_outcomes WHERE native_id=?', (task.id,)).fetchone()
         send({'spawn': {'external_id': binding[0], 'native_id': task.id,
-                        'run_id': task.current_run_id, 'workspace': workspace}})
+                        'run_id': task.current_run_id, 'claim_lock': task.claim_lock, 'workspace': workspace,
+                        'context': board.kb.build_worker_context(board.conn, task.id) if owned else ''}})
         reply = json.loads(sys.stdin.readline())
         if reply.get('error'):
             raise ValueError(reply['error'])
@@ -154,6 +224,9 @@ def main():
                     result = board.tick(request['rows'], request['capacity'], spawn)
                 elif request['op'] == 'finish':
                     result = {'ok': board.finish(request['id'], request['run_id'], request['state'], request['summary'])}
+                elif request['op'] == 'bind':
+                    board.bind(request['id'], request['external_id'])
+                    result = {'ok': True}
                 elif request['op'] == 'snapshot':
                     result = {'tasks': board.snapshot()}
                 else:

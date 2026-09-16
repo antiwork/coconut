@@ -104,7 +104,10 @@ def native_state(status):
             'completed': 'done', 'cancelled': 'archived', 'needs_you': 'review'}.get(status, 'blocked')
 
 
-class NativeKanban:
+from .native_outcomes import NativeOutcomes
+
+
+class NativeKanban(NativeOutcomes):
     def _init_kanban(self):
         self._kanban_visible = None
         self.kanban = (KanbanScheduler(self.provider, self.root)
@@ -135,11 +138,15 @@ class NativeKanban:
                     refresh_active |= bool(context.get('_decision_refresh'))
             rows.append(self._kanban_row(context, task, state, priority=30))
         for task in self._dispatch_order(tasks):
-            if task.get('_work_status_only'):
+            if task.get('_work_status_only') or task.get('_chat_session'):
                 continue
             if task['status'] not in self.ACTIVE and known.get(task['id'], {}).get('status', 'done') in ('done', 'archived'):
                 continue
             self._ensure_execution_session(task)
+            if task.get('_native_outcome_id') and not task.get('_native_turn_id'):
+                from .service import uid
+                task['_native_turn_id'] = uid()
+                self._put('tasks', task)
             key = execution_key(task)
             state = native_state(task['status'])
             if task['status'] in ('queued', 'scheduled'):
@@ -154,7 +161,7 @@ class NativeKanban:
 
     def _dispatch_status_request(self):
         # A read-only progress question keeps its own bounded session when work capacity is full.
-        if any(self._get('tasks', identity).get('_work_status_only') for identity in self.running):
+        if any(self._get('tasks', identity).get('_work_status_only') or self._get('tasks', identity).get('_chat_session') for identity in self.running):
             return
         for task in self._all('tasks'):
             if not task.get('_work_status_only') or not self._dispatch_eligible(task, time.time()):
@@ -170,10 +177,16 @@ class NativeKanban:
         from .work_workspace import preferred
         # Read a path hint here. The provider verifies Git outside the service lock before execution.
         workspace = preferred(self.root / 'workspaces', execution_key(task), verify=False)
+        changed = workspace != self.root / 'workspaces' / execution_key(task)
+        native = self.kanban.tasks.get(task['id']) or next((n for n in self.kanban.tasks.values()
+            if n['id'] == task.get('_native_outcome_id')), {})
+        if task.get('_native_outcome_id') and native.get('workspace_path') and not changed:
+            workspace = Path(native['workspace_path'])
         return dict(id=source['id'], bot_id=task['bot_id'], title=task['title'], state=state,
                     input=str(source.get('_native_turn_id') or source.get('_message_id') or source['id']),
-                    workspace=str(workspace), priority=priority, summary=source.get('summary', ''),
-                    execution_id=execution_key(task), created_at=source.get('created_at', task.get('created_at', '')))
+                    workspace=str(workspace), workspace_changed=changed, priority=priority, summary=source.get('summary', ''),
+                    execution_id=execution_key(task), native_id=task.get('_native_outcome_id') if source['id'] == task['id'] else None,
+                    created_at=source.get('created_at', task.get('created_at', '')))
 
     def _dispatch_kanban(self):
         from .work_capacity import execution_key, state as capacity_state
@@ -181,6 +194,7 @@ class NativeKanban:
         self._drain_returns()
         # Read committed claims first. A lost adapter response cannot create another turn.
         self.kanban.call({'op': 'snapshot'})
+        self._adopt_native_outcomes()
         self._reconcile_kanban()
         with self.changed:
             if self.restart_pending or self.stopping.is_set():
@@ -190,6 +204,8 @@ class NativeKanban:
             self.running = {k: v for k, v in self.running.items() if v.is_alive()}
             self.context_threads = {k: v for k, v in self.context_threads.items() if v.is_alive()}
             self._dispatch_status_request()
+            capacity = capacity_state(self._setting('work_capacity'))['effective_limit']
+            self._dispatch_chat(capacity)
             rows = self._kanban_rows()
             by_id = {r['id']: r for r in rows}
             contexts = {c['id']: c for c in self._all('contexts')}
@@ -229,6 +245,7 @@ class NativeKanban:
             self.changed.wait(1)
 
     def _reconcile_kanban(self):
+        from .service import now
         finishes = []
         with self.changed:
             for table, workers in (('tasks', self.running), ('contexts', self.context_threads)):
@@ -240,9 +257,32 @@ class NativeKanban:
                     if item is None:
                         continue
                     claim = item.get('_kanban_claim')
+                    if item.get('_native_outcome_id'):
+                        if item['_native_outcome_id'] != native['id']:
+                            item['_native_outcome_id'] = native['id']
+                            self._put(table, item)
+                            for artifact in self._all('artifacts'):
+                                if artifact.get('_native_outcome_id') and artifact.get('task_id') == identity:
+                                    artifact['_native_outcome_id'] = native['id']
+                                    self._put('artifacts', artifact)
+                                    self._event('artifact.updated', self._public(artifact), artifact['bot_id'], identity)
+                        accepted = str(item.get('_native_turn_id') or item.get('_message_id') or item['id'])
+                        if (native['status'] in ('done', 'archived') and native.get('input_id') == accepted
+                                and item['status'] not in ('completed', 'cancelled')):
+                            if native['status'] == 'done' and item.get('_steering'):
+                                self._advance_input(item)
+                                item.update(status='queued', summary='Applying your follow-up')
+                            else:
+                                item.update(status='completed' if native['status'] == 'done' else 'cancelled',
+                                    summary=native.get('outcome_summary') or 'Completed')
+                            item['updated_at'] = now()
+                            self._put(table, item)
+                            self._event('task.updated', self._public(item), item['bot_id'], identity)
+                            self._refresh_bot(item['bot_id'])
+                        self._native_retry(item, native)
                     refused = native.get('dispatch_blocker') == 'blocker_auth'
                     failed = native['status'] in ('blocked', 'triage') and native.get('consecutive_failures', 0)
-                    if (refused or failed) and item['status'] in ('queued', 'scheduled'):
+                    if not item.get('_native_outcome_id') and (refused or failed) and item['status'] in ('queued', 'scheduled'):
                         item.update(status='failed', summary='The worker could not start. Coconut will check the saved task before retrying.', error_code='native_dispatch_failed')
                         if table == 'tasks':
                             self._finish_assignment_turn(item, 'Task failed: ' + item['summary'], 'failed')
@@ -288,6 +328,15 @@ class NativeKanban:
         # The durable Coconut result is the outbox. Retry a lost finish acknowledgement on the next tick.
         for request in finishes:
             self.kanban.call(request)
+        if finishes:
+            self.kanban.call({'op': 'snapshot'})
+            with self.transaction():
+                for identity, native in self.kanban.tasks.items():
+                    row = self.db.execute('SELECT data FROM tasks WHERE id=?', (identity,)).fetchone()
+                    if native['status'] == 'ready' and row:
+                        task = json.loads(row[0])
+                        if task.get('_native_outcome_id'):
+                            self._native_retry(task, native)
 
     def _kanban_finished(self):
         with self.changed:

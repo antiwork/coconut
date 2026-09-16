@@ -82,6 +82,8 @@ class NativeExecution:
                 action = {'name': payload['name'], 'arguments': payload['arguments']}
                 record = dict(id=str(uuid4()), task_id=task_id, turn_id=context_id or task.get('_native_turn_id'), action=action, action_hash=digest(encoded(action)),
                               state='executing', created_at=now())
+                if action['name'] == 'kanban_create':
+                    record['_attachment_ids'] = list(task.get('_turn_attachment_ids', task.get('_attachment_ids', [])))
                 self._put('native_receipts', record)
                 result = {'status': 'recorded', 'id': record['id']}
                 if action['name'] == 'cronjob_manage':

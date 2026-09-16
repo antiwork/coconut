@@ -869,6 +869,7 @@ def run_turn(request, emit, request_receipt):
     preparing = True
     active_scopes.add(scope)
     interrupt_binding = nullcontext()
+    board_binding = nullcontext()
     session_tokens = None
     raw_emit, raw_receipt = emit, request_receipt
     def emit(kind, payload):
@@ -887,6 +888,17 @@ def run_turn(request, emit, request_receipt):
             scope.interrupt_scope = InterruptScope()
             interrupt_binding = bind_interrupt_scope(scope.interrupt_scope)
         interrupt_binding.__enter__()
+        native_owner = bool(request['task'].get('_native_outcome')) and request['operation'] != 'context'
+        os.environ['HERMES_KANBAN_STOP_NUDGE'] = '1' if native_owner else '0'
+        if request['operation'] == 'context' or (not native_owner and os.environ.get('HERMES_KANBAN_TASK')):
+            # Reused workers must not lend their earlier claim to a helper callback.
+            from agent.delegation_context import non_dispatcher_owned_context
+            board_binding = non_dispatcher_owned_context()
+        board_binding.__enter__()
+        if request['task'].get('_native_outcome'):
+            claim = request['task']['_native_outcome']
+            os.environ.update(HERMES_KANBAN_TASK=claim['native_id'], HERMES_KANBAN_RUN_ID=str(claim['run_id']),
+                              HERMES_KANBAN_CLAIM_LOCK=claim['claim_lock'])
         if scope.cancelled.is_set():
             raise InterruptedError('The task was cancelled.')
         from native_fallback import for_turn
@@ -1084,9 +1096,10 @@ def run_turn(request, emit, request_receipt):
             registry.register(name=pr_schema['name'], toolset='coconut', schema=pr_schema,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('artifact', dict(kind='pr', url=arguments.get('url'), **{k: arguments[k] for k in ('activity', 'activity_state', 'paused_by_decision_id') if k in arguments}))))
             allowed.add(pr_schema['name'])
-            registry.register(name=TRACK_WORK_SCHEMA['name'], toolset='coconut', schema=TRACK_WORK_SCHEMA,
-                              handler=lambda arguments, **kwargs: json.dumps(request_receipt('artifact', dict(arguments, kind='work'))))
-            allowed.add(TRACK_WORK_SCHEMA['name'])
+            if not request['task'].get('_chat_session') and not request['task'].get('_native_outcome_id'):
+                registry.register(name=TRACK_WORK_SCHEMA['name'], toolset='coconut', schema=TRACK_WORK_SCHEMA,
+                                  handler=lambda arguments, **kwargs: json.dumps(request_receipt('artifact', dict(arguments, kind='work'))))
+                allowed.add(TRACK_WORK_SCHEMA['name'])
         if operation != 'context':
             wait_schema = {'name': 'coconut_wait', 'description':
                 'Wait for existing work. Call without arguments to list tasks, decisions, and background processes in this exchange. '
@@ -1176,37 +1189,44 @@ def run_turn(request, emit, request_receipt):
                              + json.dumps(request['task']['_tracked_prs'])
                              + '. Before starting work or a background process, call coconut_track_pr with the current short activity. '
                              'Update it when the phase changes and when returning the verified result. This continues existing tracking.')
-        instructions += ('Work tracks the requested outcome across attempts. Coconut derives its state from execution, saved waits, and decisions. '
-                         'Report one concrete progress sentence and the next step. Include completion_evidence when the outcome is complete. '
-                         'A needs_recovery state means no running attempt, saved dependency, decision, or completed outcome explains the pause. '
-                         'Use coconut_track_work for substantial non-PR work that the person needs to follow. '
-                         'Reuse its key across turns; update the activity at phase changes and record completed only after verifying the result. '
-                         'When existing work belongs to this request, update that row before returning. '
-                         'A later stage of the same result keeps the same work key, including after a decision. '
-                         'For delegated work with the same outcome, reuse the parent key or set same_outcome_as to its existing Work ID. '
-                         'This keeps one visible outcome. Keep a separate diagnosis or independent deliverable distinct. '
-                         'Replace an automatic chat-message title with the intended result in plain words. '
-                         'Clear an old blocked or waiting activity when evidence resolves it. '
-                         'Name the current action in the activity, such as Reviewing with Fable or Checking refund eligibility. '
-                         'Inspect recoverable failures and continue within the recorded approval. '
-                         'If the person must decide, create or reuse a concrete coconut_ask card for this work. '
-                         'Do not ask for approval when you can continue safely without it. '
-                         'Do not create a work item for routine checks, brief replies, or each delegated step. '
-                         'A waiting status does not register a dependency; use coconut_wait or native scheduling for that. '
-                         'Do not reopen completed or dismissed work unless the person requests more work. ')
-        instructions += ('For an external result, report waiting with external_wait naming an existing enabled Hermes routine and the exact source. '
-                         'Finish the verification checklist while preserving the unresolved Work outcome. '
-                         'Use coconut_wait for an active task or process instead. '
-                         'During a routine, check each Work item marked routine_check within existing read-only permissions. '
-                         'Update the same key with evidence. Retain external_wait if the source has not changed. '
-                         'Unchanged external evidence is a normal wait, not a recovery failure or a new human decision. ')
-        if request['task'].get('_tracked_work'):
-            instructions += '\nExisting work for this bot: ' + json.dumps(request['task']['_tracked_work'])
+        if not request['task'].get('_chat_session') and not request['task'].get('_native_outcome'):
+            instructions += ('Work tracks the requested outcome across attempts. Coconut derives its state from execution, saved waits, and decisions. '
+                             'Report one concrete progress sentence and the next step. Include completion_evidence when the outcome is complete. '
+                             'A needs_recovery state means no running attempt, saved dependency, decision, or completed outcome explains the pause. '
+                             'Use coconut_track_work for substantial non-PR work that the person needs to follow. '
+                             'Reuse its key across turns; update the activity at phase changes and record completed only after verifying the result. '
+                             'When existing work belongs to this request, update that row before returning. '
+                             'A later stage of the same result keeps the same work key, including after a decision. '
+                             'For delegated work with the same outcome, reuse the parent key or set same_outcome_as to its existing Work ID. '
+                             'This keeps one visible outcome. Keep a separate diagnosis or independent deliverable distinct. '
+                             'Replace an automatic chat-message title with the intended result in plain words. '
+                             'Clear an old blocked or waiting activity when evidence resolves it. '
+                             'Name the current action in the activity, such as Reviewing with Fable or Checking refund eligibility. '
+                             'Inspect recoverable failures and continue within the recorded approval. '
+                             'If the person must decide, create or reuse a concrete coconut_ask card for this work. '
+                             'Do not ask for approval when you can continue safely without it. '
+                             'Do not create a work item for routine checks, brief replies, or each delegated step. '
+                             'A waiting status does not register a dependency; use coconut_wait or native scheduling for that. '
+                             'Do not reopen completed or dismissed work unless the person requests more work. ')
+            instructions += ('For an external result, report waiting with external_wait naming an existing enabled Hermes routine and the exact source. '
+                             'Finish the verification checklist while preserving the unresolved Work outcome. '
+                             'Use coconut_wait for an active task or process instead. '
+                             'During a routine, check each Work item marked routine_check within existing read-only permissions. '
+                             'Update the same key with evidence. Retain external_wait if the source has not changed. '
+                             'Unchanged external evidence is a normal wait, not a recovery failure or a new human decision. ')
+            if request['task'].get('_tracked_work'):
+                instructions += '\nExisting work for this bot: ' + json.dumps(request['task']['_tracked_work'])
         instructions += DECISION_INSTRUCTIONS
         if work.enabled:
             instructions += WORK_INSTRUCTIONS
         if request['task'].get('_execution_session_id'):
             instructions += ' For this work session, contact bots with coconut_message_bot. Coconut routes it through the native Hermes relay. When coconut_workspace is available, call it with the local repository before editing code. Otherwise use a separate Git worktree. For existing changes, supply existing_worktree to retain the files and branch. Reuse its returned path for commands, replies, reviews, and recovery. Keep other work items and their files unchanged. '
+        if request['task'].get('_chat_session'):
+            from native_outcomes import CHAT_INSTRUCTIONS
+            instructions += CHAT_INSTRUCTIONS
+        if request['task'].get('_native_outcome'):
+            from native_outcomes import WORK_INSTRUCTIONS as NATIVE_WORK_INSTRUCTIONS
+            instructions += NATIVE_WORK_INSTRUCTIONS + '\n' + request['task']['_native_outcome']['context']
         instructions += CONVERSATION_INSTRUCTIONS
         instructions += BOT_ROLE_INSTRUCTIONS
         instructions += '\nYour current identity, confirmed by the service:\n' + json.dumps({
@@ -1236,7 +1256,11 @@ def run_turn(request, emit, request_receipt):
         from hermes_cli.tools_config import _get_platform_tools
         from agent.skill_utils import parse_config_string_list
         toolsets = sorted(_get_platform_tools(profile_config, 'cli'))
+        if request['task'].get('_chat_session') or request['task'].get('_native_outcome'):
+            toolsets.append('kanban')
         disabled = parse_config_string_list((profile_config.get('agent') or {}).get('disabled_toolsets'))
+        if operation == 'context':
+            disabled = list(disabled) + ['kanban']
         conversation = NativeConversation(request, SessionDB())
         timing.mark('instructions_and_history')
         from native_relay import NativeRelay
@@ -1322,6 +1346,7 @@ def run_turn(request, emit, request_receipt):
                 cleanup.callback(conversation.close)
             cleanup.callback(clear_scope)
             cleanup.callback(interrupt_binding.__exit__, None, None, None)
+            cleanup.callback(board_binding.__exit__, None, None, None)
             if preparing:
                 cleanup.callback(setup_lock.release)
             if bridge is not None:

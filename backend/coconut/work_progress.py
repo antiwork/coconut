@@ -39,7 +39,7 @@ def snapshot(value):
 
 def work_enabled(operation, task):
     """One predicate decides native todo restoration and the dependency prompt for a turn."""
-    return operation != 'context' and not task.get('_pr_review') and bool(
+    return operation != 'context' and not task.get('_native_outcome_id') and not task.get('_pr_review') and bool(
         task.get('_work_todos') or (task.get('source_bot_id') and not task.get('_is_return'))
         or task.get('_handoff_assignment', {}).get('return_to_bot_id'))
 
@@ -48,7 +48,7 @@ class NativeWork:
     def __init__(self, request):
         task = request['task']
         self.enabled = work_enabled(request['operation'], task)
-        self.capture = request['operation'] != 'context' and not task.get('_pr_review')
+        self.capture = request['operation'] != 'context' and not task.get('_native_outcome_id') and not task.get('_pr_review')
         self.saved = task.get('_work_todos')
         self.request = (task.get('_handoff_assignment', {}).get('request')
                         or '\n'.join(m['text'] for m in task.get('_bot_messages', []) if m.get('text'))
@@ -84,6 +84,8 @@ class NativeWork:
 class WorkProgress:
     @staticmethod
     def _unfinished_work(task):
+        if task.get('_native_outcome_id'):
+            return False
         items = task.get('_work_todos', {}).get('todos', [])
         root = next((t for t in items if t['id'] == ROOT_ID), None)
         if root and root['status'] in ('completed', 'cancelled'):

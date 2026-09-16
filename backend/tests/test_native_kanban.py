@@ -70,6 +70,376 @@ class NativeKanbanTests(unittest.TestCase):
                 return
         self.fail('The native queue did not settle.')
 
+    def native_program(self, program, *args):
+        result = subprocess.run([PYTHON, '-c', "import sys\nfrom coconut.kanban_runtime import Board\nboard = Board(sys.argv[1])\n" + program,
+            str(self.service.root / 'kanban'), *args],
+            env=dict(os.environ, PYTHONPATH=os.pathsep.join((str(Path(__file__).resolve().parents[1]), SOURCE))),
+            capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def test_service_forwards_each_accepted_input_to_native_intake(self):
+        self.provider.supports_native_outcomes = True
+        task = self.task('Start an outcome')
+        captured = []
+        def receive(request, bot, history, emit):
+            captured.append(request['_native_turn_id'])
+            self.assertEqual(request['_native_turn_id'], self.service._get('tasks', task['id'])['_native_turn_id'])
+            emit('completed', {'summary': 'Complete.'})
+        with patch.object(self.provider, 'start_task', side_effect=receive):
+            self.service._run_task(task['id'])
+            with self.service.transaction():
+                current = self.service._get('tasks', task['id'])
+                self.service._advance_input(current)
+                current['status'] = 'queued'
+                self.service._put('tasks', current)
+            self.service._run_task(task['id'])
+        self.assertEqual(len(captured), 2)
+        self.assertNotEqual(captured[0], captured[1])
+
+    def test_native_intake_is_idempotent_and_followup_keeps_owner(self):
+        origin = self.task('Fix two separate defects')
+        with self.service.transaction():
+            stored = self.service._get('tasks', origin['id'])
+            stored['_turn_attachment_ids'] = ['accepted-file']
+            stored['_attachment_ids'] = ['accepted-file', 'later-file']
+            stored['status'] = 'working'
+            self.service._put('tasks', stored)
+        for title in ('First defect', 'Second defect'):
+            self.service.native_event(origin['id'], 'native_call',
+                {'name': 'kanban_create', 'arguments': {'idempotency_key': title}})
+        with self.service.transaction():
+            stored = self.service._get('tasks', origin['id'])
+            self.service._advance_input(stored)
+            stored['status'] = 'completed'
+            self.service._put('tasks', stored)
+        ids = self.native_program("""
+for title in ('First defect', 'Second defect'):
+    print(board.kb.create_task(board.conn, title=title, body='Accepted scope', assignee='default',
+        tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked', idempotency_key=title))
+""", self.bot['id'], origin['id']).splitlines()
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._adopt_native_outcomes()
+        self.service._adopt_native_outcomes()
+        owned = [t for t in self.service._all('tasks') if t.get('_native_outcome_id')]
+        self.assertEqual(len(owned), 2)
+        self.assertTrue(all(t['_attachment_ids'] == ['accepted-file'] for t in owned))
+        self.assertEqual({t['_native_outcome_id'] for t in owned}, set(ids))
+        self.assertNotEqual(owned[0]['exchange_id'], owned[1]['exchange_id'])
+        self.assertNotEqual(owned[0]['thread_id'], owned[1]['thread_id'])
+        task = owned[0]
+        item = self.service._get('artifacts', task['_work_context_id'])
+        with self.service.transaction():
+            task['status'] = 'failed'
+            self.service._put('tasks', task)
+            reply = self.service._send(self.service._get('bots', self.bot['id']),
+                {'text': 'Continue using the saved result'}, work_item=item)
+        self.assertEqual(reply['id'], task['id'])
+        self.assertEqual(len(self.service._all('tasks')), 3)
+        self.assertEqual(self.service._get('tasks', task['id'])['_native_outcome_id'], task['_native_outcome_id'])
+        context_row = self.service._kanban_row({'id': str(uuid4())}, task, 'ready', 30)
+        self.assertIsNone(context_row['native_id'])
+        with self.service.transaction():
+            self.service._cancel(self.service._get('tasks', task['id']), [])
+        self.assertEqual(self.service._get('tasks', owned[1]['id'])['status'], 'queued')
+
+    def test_native_bot_result_resumes_same_owner_and_native_task(self):
+        import json
+        origin = self.task('Delegate one check')
+        identity = self.native_program("""
+print(board.kb.create_task(board.conn, title='Check result', body='Verify the result', assignee='default',
+    tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked'))
+""", self.bot['id'], origin['id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._adopt_native_outcomes()
+        owner = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
+        helper = self.write('/v1/bots', {'name': 'Helper', 'role': ''})
+        with self.service.transaction():
+            owner['status'] = 'working'
+            self.service._put('tasks', owner)
+            result = self.service._store_bot_message(owner['id'], {'target_bot_id': helper['id'], 'text': 'Verify it'})
+            owner = self.service._get('tasks', owner['id'])
+            owner['status'] = 'waiting'
+            self.service._put('tasks', owner)
+            child = self.service._get('tasks', result['task_id'])
+            child['status'] = 'completed'
+            self.service._put('tasks', child)
+            row = next(r for r in self.service._kanban_rows() if r['id'] == owner['id'])
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+        self.service.kanban.call({'op': 'snapshot'})
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'scheduled')
+        count = len(self.service._all('tasks'))
+        payload = {'target_bot_id': self.bot['id'], 'text': 'Verified the result.', 'return_id': 'result-one'}
+        receipt = self.service._deliver_bot_message(child['id'], payload, returning=True)
+        duplicate = self.service._deliver_bot_message(child['id'], payload, returning=True)
+        self.assertEqual(receipt['task_id'], owner['id'])
+        self.assertEqual(duplicate['status'], 'duplicate')
+        self.assertEqual(len(self.service._all('tasks')), count)
+        resumed = self.service._get('tasks', owner['id'])
+        self.assertEqual(resumed['status'], 'queued')
+        self.assertFalse(resumed['_waiting_on'])
+        self.assertEqual(len(resumed['_bot_messages']), 1)
+        with self.service.transaction():
+            resumed['_background_completion'] = ['Saved process output']
+            resumed['_resume_decision'] = 'answered-card'
+            self.service._put('tasks', resumed)
+        self.service._deliver_bot_message(child['id'], dict(payload, return_id='result-two', text='Second result'), returning=True)
+        again = self.service._get('tasks', owner['id'])
+        self.assertEqual(again['_native_turn_id'], resumed['_native_turn_id'])
+        self.assertEqual(again['_background_completion'], ['Saved process output'])
+        self.assertEqual(again['_resume_decision'], 'answered-card')
+        row = self.service._kanban_row(resumed, resumed, 'ready', 10)
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+        self.service.kanban.call({'op': 'snapshot'})
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'ready')
+        self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='Verified')", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._reconcile_kanban()
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'completed')
+
+    def test_default_native_intake_retains_files_after_completion(self):
+        self.native_program("""
+import json
+from pathlib import Path
+from coconut.native_bridge import NativeBridge
+bridge = NativeBridge({'operation': 'start', 'bot': {'id': 'bot'}, 'task': {'id': 'origin'}},
+    lambda *args: None, lambda *args: {'status': 'recorded', 'id': 'receipt'})
+bridge.install(None)
+try:
+    result = bridge.recorded('kanban_create', {'title': 'Write report', 'body': 'Save the report'},
+        lambda args: board.kb.create_task(board.conn, **args))
+    task = board.kb.get_task(board.conn, result)
+    directory = board.workspace.resolve_workspace(task)
+    report = directory / 'report.txt'
+    report.write_text('Verified evidence')
+    board.kb.complete_task(board.conn, result, summary='Report saved')
+    assert report.read_text() == 'Verified evidence'
+    assert task.workspace_kind == 'dir'
+    repeated = bridge.recorded('kanban_create', {'title': 'Write report', 'body': 'Save the report'},
+        lambda args: board.kb.create_task(board.conn, **args))
+    assert repeated == result
+    bridge.request['task']['_native_turn_id'] = 'second-input'
+    next_task = bridge.recorded('kanban_create', {'title': 'Write report', 'body': 'Save the report'},
+        lambda args: board.kb.create_task(board.conn, **args))
+    assert next_task != result
+finally:
+    bridge.close()
+""")
+
+    def test_native_completion_survives_restart_and_keeps_saved_followup(self):
+        import json
+        for followup in (False, True):
+            origin = self.task('Finish one outcome')
+            identity = self.native_program("""
+print(board.kb.create_task(board.conn, title='Verified outcome', body='Acceptance', assignee='default',
+    tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked'))
+""", self.bot['id'], origin['id'])
+            self.service.kanban.call({'op': 'snapshot'})
+            self.service._adopt_native_outcomes()
+            owner = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
+            with self.service.transaction():
+                row = next(r for r in self.service._kanban_rows() if r['id'] == owner['id'])
+                owner = self.service._get('tasks', owner['id'])
+                owner['_kanban_claim'] = {}
+                self.service._put('tasks', owner)
+            self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+            def complete_then_stop(task, bot, history, emit):
+                if followup:
+                    with self.service.transaction():
+                        self.service._reply(self.service._get('tasks', task['id']), {'text': 'Also verify the second case.'})
+                self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='Verified once')", identity)
+                self.service.stopping.set()
+                raise RuntimeError('Service stops after native completion')
+            with patch.object(self.provider, 'start_task', side_effect=complete_then_stop):
+                self.service._run_task(owner['id'])
+            self.assertTrue(self.service.stopping.is_set())
+            self.service.stopping.clear()
+            with self.service.transaction():
+                self.service._recover()
+            self.service.kanban.call({'op': 'snapshot'})
+            cursor = self.service._cursor()
+            self.service._reconcile_kanban()
+            page = self.service.updates(cursor)
+            self.assertIn(owner['id'], [t['id'] for t in page['tasks']])
+            recovered = self.service._get('tasks', owner['id'])
+            self.assertEqual(recovered['status'], 'queued' if followup else 'completed')
+            self.assertEqual(bool(recovered.get('_steering')), followup)
+            row = self.service._kanban_row(recovered, recovered, 'ready' if followup else 'done', 10)
+            self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+            self.service.kanban.call({'op': 'snapshot'})
+            self.assertEqual(self.service.kanban.tasks[owner['id']]['id'] == identity, not followup)
+
+    def test_native_context_preserves_workspace_and_blocked_reply_advances_input(self):
+        origin = self.task('Keep the outcome workspace')
+        workspace = Path(self.tmp.name) / 'native-scratch'
+        workspace.mkdir()
+        (workspace / 'receipt.txt').write_text('Saved result')
+        identity = self.native_program("""
+print(board.kb.create_task(board.conn, title='Workspace outcome', body='Acceptance', assignee='default',
+    tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked', workspace_kind='dir', workspace_path=sys.argv[4]))
+""", self.bot['id'], origin['id'], str(workspace))
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._adopt_native_outcomes()
+        owner = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
+        context = self.service._kanban_row({'id': str(uuid4())}, owner, 'ready', 30)
+        self.assertEqual(context['workspace'], str(workspace))
+        successor = dict(owner, id=str(uuid4()))
+        next_row = self.service._kanban_row(successor, successor, 'ready', 10)
+        self.assertEqual(next_row['workspace'], str(workspace))
+        import json
+        row = self.service._kanban_row(owner, owner, 'ready', 10)
+        self.native_program("""
+import json
+board.sync([json.loads(sys.argv[2]), json.loads(sys.argv[3])])
+board.kb.block_task(board.conn, sys.argv[4], reason='Worker setup failed')
+""", json.dumps(row), json.dumps(context), identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['workspace_path'], str(workspace))
+        with self.service.transaction():
+            self.service._reply(owner, {'text': 'Setup is fixed. Continue.'})
+        owner = self.service._get('tasks', owner['id'])
+        self.assertNotEqual(owner['_native_turn_id'], row['input'])
+        row = self.service._kanban_row(owner, owner, 'ready', 10)
+        self.native_program("import json; board.sync([json.loads(sys.argv[2])])", json.dumps(row))
+        self.service.kanban.call({'op': 'snapshot'})
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'ready')
+        self.assertEqual((workspace / 'receipt.txt').read_text(), 'Saved result')
+        # Use the real native triage state to check an explicit continuation.
+        self.native_program("with board.kb.write_txn(board.conn): board.conn.execute(\"UPDATE tasks SET status='triage' WHERE id=?\", (sys.argv[2],))", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        with self.service.transaction():
+            self.service._reply(self.service._get('tasks', owner['id']), {'text': 'Continue with the corrected setup.'})
+        owner = self.service._get('tasks', owner['id'])
+        row = self.service._kanban_row(owner, owner, 'ready', 10)
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+        self.service.kanban.call({'op': 'snapshot'})
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'ready')
+
+    def test_native_reply_cannot_complete_outcome_and_retry_keeps_identity(self):
+        origin = self.task('Complete an outcome')
+        identity = self.native_program("""
+print(board.kb.create_task(board.conn, title='Real outcome', body='Verify the result', assignee='default',
+    tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked'))
+""", self.bot['id'], origin['id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._adopt_native_outcomes()
+        task = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
+        self.native_program("""
+board.kb.claim_task(board.conn, sys.argv[2], claimer='default')
+task = board.kb.get_task(board.conn, sys.argv[2])
+board.finish(task.id, task.current_run_id, 'done', 'I will do this next')
+assert board.kb.get_task(board.conn, task.id).status != 'done'
+""", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        native = self.service.kanban.tasks[task['id']]
+        self.assertEqual(native['consecutive_failures'], 1)
+        with self.service.transaction():
+            task['status'] = 'completed'
+            self.service._put('tasks', task)
+            self.service._native_retry(task, native)
+        self.assertEqual(task['status'], 'queued')
+        self.assertEqual(task['_native_outcome_id'], identity)
+        self.assertEqual(task['_self_recovery']['attempt'], 1)
+
+    def test_dispatcher_retries_native_failure_without_scheduling_it(self):
+        origin = self.task('Deliver a verified outcome')
+        identity = self.native_program("""
+print(board.kb.create_task(board.conn, title='Verify the result', body='Check evidence', assignee='default',
+    tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked'))
+""", self.bot['id'], origin['id'])
+        with self.service.transaction():
+            task = self.service._get('tasks', origin['id'])
+            task['status'] = 'completed'
+            self.service._put('tasks', task)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._adopt_native_outcomes()
+        owner = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
+        self.settle(lambda: self.provider.started.count(owner['id']) >= 2)
+        self.assertEqual(self.service._get('tasks', owner['id'])['_native_outcome_id'], identity)
+        self.assertNotEqual(self.service.kanban.tasks[owner['id']]['status'], 'scheduled')
+
+    def test_only_one_foreground_conversation_uses_the_reserved_slot(self):
+        self.provider.supports_native_outcomes = True
+        second = self.write('/v1/bots', {'name': 'Second bot', 'role': ''})
+        tasks = [self.task('Answer first'), self.write('/v1/bots/' + second['id'] + '/messages', {'text': 'Answer second'})]
+        self.provider.release.clear()
+        with self.service.lock:
+            self.service._dispatch_chat(2)
+            self.service._dispatch_chat(2)
+            self.assertEqual(set(self.service.running), {tasks[0]['id']})
+        self.provider.release.set()
+
+    def test_chat_failure_and_completion_keep_persistent_conversation(self):
+        self.provider.supports_native_outcomes = True
+        for status in ('failed', 'completed'):
+            task = self.service._get('tasks', self.task('Direct conversation')['id'])
+            self.assertTrue(task['_chat_session'])
+            with self.service.transaction():
+                task['status'] = status
+                self.service._put('tasks', task)
+                reply = self.service._reply(task, {'text': 'Continue the conversation'})
+            stored = self.service._get('tasks', reply['id'])
+            self.assertTrue(stored['_chat_session'])
+            self.assertNotIn('_execution_session_id', stored)
+
+    def test_native_completion_and_cancel_resume_rebind_successors(self):
+        origin = self.task('An outcome with a follow-up')
+        identity = self.native_program("""
+print(board.kb.create_task(board.conn, title='Follow-up outcome', body='Keep the accepted scope', assignee='default',
+    tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked'))
+""", self.bot['id'], origin['id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._adopt_native_outcomes()
+        task = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
+        row = self.service._kanban_row(task, task, 'ready', 10)
+        import json
+        self.native_program('import json; board.sync(json.loads(sys.argv[2]))', json.dumps([row]))
+        self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='Verified original result')", identity)
+        with self.service.transaction():
+            task.update(status='working')
+            self.service._put('tasks', task)
+            self.service._reply(task, {'text': 'Also verify the follow-up'})
+            task = self.service._get('tasks', task['id'])
+            self.service._advance_input(task)
+            task['status'] = 'queued'
+            self.service._put('tasks', task)
+        row = self.service._kanban_row(task, task, 'ready', 10)
+        self.native_program('import json; board.sync(json.loads(sys.argv[2]))', json.dumps([row]))
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._reconcile_kanban()
+        rebound = self.service._get('tasks', task['id'])
+        successor = rebound['_native_outcome_id']
+        self.assertNotEqual(successor, identity)
+        item = self.service._get('artifacts', task['_work_context_id'])
+        self.assertEqual(item['_native_outcome_id'], successor)
+        # Coconut cancellation commits before the native cache observes it.
+        with self.service.transaction():
+            self.service._cancel_one(rebound, [])
+            reply = self.service._send(self.service._get('bots', self.bot['id']), {'text': 'Resume this outcome'}, work_item=item)
+        resumed = self.service._get('tasks', reply['id'])
+        self.assertNotEqual(resumed['id'], task['id'])
+        cancelled = self.service._get('tasks', task['id'])
+        rows = [self.service._kanban_row(cancelled, cancelled, 'archived', 10),
+                self.service._kanban_row(resumed, resumed, 'ready', 10)]
+        self.native_program('import json; board.sync(json.loads(sys.argv[2]))', json.dumps(rows))
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._reconcile_kanban()
+        resumed = self.service._get('tasks', resumed['id'])
+        item = self.service._get('artifacts', item['id'])
+        self.assertNotEqual(resumed['_native_outcome_id'], successor)
+        self.assertEqual(item['_native_outcome_id'], resumed['_native_outcome_id'])
+        self.assertEqual(self.service._work_projection([dict(item)])[0]['work_state'], 'queued')
+        self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='Verified successor')", resumed['_native_outcome_id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        with self.service.transaction():
+            resumed['status'] = 'completed'
+            self.service._put('tasks', resumed)
+            reply = self.service._reply(resumed, {'text': 'Make one further change'})
+        further = self.service._get('tasks', reply['id'])
+        self.assertEqual(further['_work_context_id'], item['id'])
+        self.assertEqual(further['_native_outcome_id'], resumed['_native_outcome_id'])
+
+
     def test_review_reply_resumes_same_claimed_task_once(self):
         task = self.task('Draft a note.md')
         self.settle(lambda: self.service.kanban.tasks.get(task['id'], {}).get('status') == 'review')

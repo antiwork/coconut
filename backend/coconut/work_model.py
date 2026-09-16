@@ -5,6 +5,8 @@ from .background_processes import subscription
 
 class WorkModel:
     def _work_outcome(self, item, tasks, records, decisions, contexts, timestamp, peers=None, queue_positions=None):
+        if item.get('_native_outcome_id'):
+            return self._native_outcome_projection(item, tasks, decisions, timestamp, queue_positions)
         peers = peers or [item]
         linked = {}
         owner = tasks.get(item.get('task_id'), {})

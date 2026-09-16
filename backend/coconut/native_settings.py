@@ -91,6 +91,10 @@ def worker(request, default_home):
             _write(marker, '{"version":1}\n', marker.parent)
         for home in homes.values():
             config = raw_config(home)
+            if not (home / '.coconut-kanban-tools').exists():
+                config['toolsets'] = list(dict.fromkeys(config.get('toolsets', []) + ['kanban']))
+                save_config(home, config)
+                (home / '.coconut-kanban-tools').write_text('1\n')
             delegation = config.setdefault('delegation', {})
             if 'max_concurrent_children' not in delegation:
                 # Null selects Hermes's environment fallback instead of its merged default.
