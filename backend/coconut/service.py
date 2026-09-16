@@ -618,7 +618,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         with self._read_view() as view:
             return view._snapshot(timings=timings, content_only=content_only)
 
-    def _snapshot(self, *, timings=None, content_only=False, after=None) -> dict:
+    def _snapshot(self, *, timings=None, content_only=False) -> dict:
         started = time.perf_counter()
         def measured(name):
             nonlocal started
@@ -663,7 +663,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         state['history_before'] = history
                         continue
                     state[table] = [self._public(o) for o in self._all(table) if o['bot_id'] in visible and o.get('conversation_bot_id', o['bot_id']) in visible and not o.get('_deleted') and not o.get('_hidden') and (table not in ('decisions', 'artifacts') or not o.get('task_id') or o['task_id'] in visible_task_ids)]
-                if content_only and after is None:
+                if content_only:
                     referenced = {o.get('task_id') for name in ('messages', 'decisions', 'artifacts') for o in state[name]}
                     state['tasks'] = [t for t in state['tasks'] if t['status'] in self.ACTIVE or t['id'] in referenced]
                 if routines is not None:
@@ -694,8 +694,6 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     state['parallel_work'] = native.get('parallel_work')
                     state['api_fallback'] = native.get('api_fallback')
                     state['mcp_servers'] = native.get('mcp_servers', [])
-                if after is not None:
-                    state = self._state_changes(state, after)
             break
         else:
             raise ServiceError(503, 'Settings changed during this request. Try again.')

@@ -64,6 +64,56 @@ class StateSyncTests(unittest.TestCase):
             self.service._event('task.updated', {})
         self.assertIn('reset', self.service.updates(initial['cursor']))
 
+    def test_text_replay_does_not_build_history_work_or_decisions(self):
+        task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})
+        with self.service.transaction():
+            stored = self.service._get('tasks', task['id'])
+            stored['status'] = 'working'
+            self.service._put('tasks', stored)
+        cursor = self.service._cursor()
+        self.service.emit(task['id'], 'text_delta', {'text': 'First words'})
+        timestamp = self.service.db.execute('SELECT created_at FROM events WHERE seq=?', (cursor,)).fetchone()[0]
+        with patch('coconut.service.now', return_value=timestamp), \
+             patch.object(Service, '_snapshot', side_effect=AssertionError('Replay must not build a snapshot')), \
+             patch.object(Service, '_recent_messages', side_effect=AssertionError('Replay must not read history')), \
+             patch.object(Service, '_work_projection', side_effect=AssertionError('Text must not rebuild Work')):
+            page = self.service.updates(cursor)
+        self.assertEqual([m['text'] for m in page['messages']], ['First words'])
+        self.assertEqual([t['id'] for t in page['tasks']], [task['id']])
+        self.assertNotIn('artifacts', page)
+        self.assertNotIn('decisions', page)
+
+    def test_continuous_text_refreshes_time_dependent_work(self):
+        task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})
+        with self.service.transaction():
+            stored = self.service._get('tasks', task['id'])
+            stored['status'] = 'working'
+            self.service._put('tasks', stored)
+        cursor = self.service._cursor()
+        with self.service.transaction():
+            self.service.db.execute('UPDATE events SET created_at=? WHERE seq=?', ('2026-09-16T12:00:00Z', cursor))
+        self.service.emit(task['id'], 'text_delta', {'text': 'More words'})
+        observation = {'id': 'work', 'activity_observed_at': 'current'}
+        with patch('coconut.service.now', return_value='2026-09-16T12:00:16Z'), \
+             patch.object(Service, '_work_projection', return_value=[observation]):
+            page = self.service.updates(cursor)
+        self.assertEqual(page['artifacts'], [observation])
+        self.assertEqual(page['messages'][0]['text'], 'More words')
+
+    def test_structural_replay_keeps_complete_replacement_collections(self):
+        initial = self.service.snapshot(content_only=True)
+        task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})
+        with self.service.transaction():
+            for i in range(2):
+                decision = dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=task['id'], status='pending', revision=1)
+                self.service._put('decisions', decision)
+                self.service._event('decision.created', decision, self.bot['id'], task['id'])
+        page = self.service.updates(initial['cursor'])
+        current = self.service.snapshot(content_only=True)
+        self.assertEqual(page['decisions'], current['decisions'])
+        self.assertEqual(page['confirmed_request_ids'], current['confirmed_request_ids'])
+        self.assertEqual(page['bots'], current['bots'])
+
     def test_missing_event_inside_a_batch_resets_content(self):
         initial = self.service.snapshot(content_only=True)
         with self.service.transaction():

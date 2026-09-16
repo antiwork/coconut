@@ -117,7 +117,7 @@ class StateSync:
         raise ServiceError(503, 'Settings changed during this request. Try again.')
 
     def updates(self, after, wait=0):
-        from .service import ServiceError, now
+        from .service import ServiceError
         if after < 0:
             raise ServiceError(400, 'The event cursor must be zero or greater.')
         deadline = time.monotonic() + min(max(wait, 0), 25)
@@ -127,25 +127,33 @@ class StateSync:
                 if remaining <= 0:
                     break
                 self.stopping.wait(min(remaining, .1))
-            return view._snapshot(content_only=True, after=after)
+            with view._read_transaction():
+                result = view._replay_changes(after)
+            if result is not None:
+                return result
+            state = view._snapshot(content_only=True)
+            return dict(after=after, cursor=state['cursor'], server_time=state['server_time'], reset=state)
 
-    def _state_changes(self, state, after):
+    def _replay_changes(self, after):
         import json
+        from .service import now
+        from .work_capacity import state as capacity_state
+        cursor = self._cursor()
         rows = self.db.execute('SELECT seq,type,task_id,data FROM events WHERE seq>? AND seq<=? ORDER BY seq LIMIT 1001',
-                               (after, state['cursor'])).fetchall()
-        if after == state['cursor']:
-            return dict(after=after, cursor=after, server_time=state['server_time'], bots=state['bots'],
-                        artifacts=state['artifacts'], work_capacity=state['work_capacity'])
+                               (after, cursor)).fetchall()
         known = set("""message.created message.updated task.created task.updated task.cancelled task.recovered task.steered
             decision.created decision.updated decision.answered artifact.created artifact.updated context.queued context.cancelled
             context.completed context.failed execution.started execution.completed execution.uncertain work.updated work.recovery_queued
             bot.read bot.updated bot.settings_pending bot_message.delivered bots.addressed settings.updated settings.pending
             settings.update_unconfirmed model_catalog.updated routine.created routine.updated routine.deleted routine.triggered
             routine.reconciliation_required routines.unavailable google.updated device.paired""".split())
-        if (after > state['cursor'] or len(rows) > 1000 or len(rows) != state['cursor'] - after
+        if (after > cursor or len(rows) > 1000 or len(rows) != cursor - after
                 or any(row[0] != after + index + 1 for index, row in enumerate(rows))
                 or any(r[1] not in known for r in rows)):
-            return dict(after=after, cursor=state['cursor'], server_time=state['server_time'], reset=state)
+            return None
+        bots = [self._bot_view(b, None) for b in self._all('bots') if not b.get('_deleted')]
+        visible = {b['id'] for b in bots}
+        result = dict(after=after, cursor=cursor, server_time=now(), bots=bots)
         task_ids, message_ids = set(), set()
         for _, kind, task_id, data in rows:
             value = json.loads(data)
@@ -155,17 +163,55 @@ class StateSync:
                 task_ids.add(value['id'])
             if kind.startswith('message.') and value.get('id'):
                 message_ids.add(value['id'])
-        messages, removed = [], []
-        visible = {b['id'] for b in state['bots']}
-        for identity in sorted(message_ids):
-            row = self._read_one('SELECT data FROM messages WHERE id=?', (identity,))
-            value = json.loads(row[0]) if row else None
-            if value is None or value.get('_hidden') or value.get('_deleted') or value['bot_id'] not in visible:
-                removed.append(identity)
-            else:
-                messages.append(self._public(value))
-        return dict(after=after, cursor=state['cursor'], server_time=state['server_time'], bots=state['bots'],
-                    tasks=[t for t in state['tasks'] if t['id'] in task_ids], messages=sorted(messages, key=lambda m: (m['created_at'], m['id'])), removed_messages=removed,
-                    decisions=state['decisions'], artifacts=state['artifacts'], work_capacity=state['work_capacity'],
-                    confirmed_request_ids=state['confirmed_request_ids'],
-                    settings_changed=any(r[1].startswith(('settings.', 'model_catalog.', 'routine.', 'routines.')) for r in rows))
+        def visible_row(value):
+            return (value and not value.get('_hidden') and not value.get('_deleted')
+                    and value.get('bot_id') in visible and value.get('conversation_bot_id', value.get('bot_id')) in visible)
+        if rows:
+            tasks = []
+            for identity in sorted(task_ids):
+                row = self._read_one('SELECT data FROM tasks WHERE id=?', (identity,))
+                value = json.loads(row[0]) if row else None
+                if visible_row(value):
+                    tasks.append(self._public(value))
+            messages, removed = [], []
+            for identity in sorted(message_ids):
+                row = self._read_one('SELECT data FROM messages WHERE id=?', (identity,))
+                value = json.loads(row[0]) if row else None
+                if not visible_row(value):
+                    removed.append(identity)
+                else:
+                    messages.append(self._public(value))
+            result.update(tasks=tasks, messages=sorted(messages, key=lambda m: (m['created_at'], m['id'])), removed_messages=removed,
+                          settings_changed=any(r[1].startswith(('settings.', 'model_catalog.', 'routine.', 'routines.')) for r in rows))
+            if any(m.get('client_request_id') for m in messages):
+                receipts = self.db.execute("SELECT json_group_array(DISTINCT json_extract(data,'$.client_request_id')) FROM messages "
+                    "WHERE json_type(data,'$.client_request_id')='text' AND EXISTS(SELECT 1 FROM bots "
+                    "WHERE id=json_extract(messages.data,'$.bot_id') AND NOT COALESCE(json_extract(bots.data,'$._deleted'),0))").fetchone()
+                result['confirmed_request_ids'] = json.loads(receipts[0])
+        # Refresh age-based activity every 15 seconds, even during continuous text delivery.
+        from datetime import datetime
+        previous = self._read_one('SELECT created_at FROM events WHERE seq=?', (after,))
+        refresh_activity = (previous is None or
+            int(datetime.fromisoformat(previous[0].replace('Z', '+00:00')).timestamp() // 15) !=
+            int(datetime.fromisoformat(result['server_time'].replace('Z', '+00:00')).timestamp() // 15))
+        structural = not rows or refresh_activity or any(r[1] not in ('message.created', 'message.updated', 'bot.read', 'bot.updated') for r in rows)
+        if structural:
+            tasks = {t['id']: t for t in self._all('tasks') if visible_row(t)}
+            def visible_owned(value):
+                return visible_row(value) and (not value.get('task_id') or value['task_id'] in tasks)
+            artifacts = [a for a in self._all('artifacts') if visible_owned(a)]
+            result['artifacts'] = [self._public(a) for a in self._work_projection(artifacts)]
+            result['work_capacity'] = capacity_state(self._setting('work_capacity'))
+            if rows:
+                replying = {c['decision_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working') and not c.get('_decision_refresh')}
+                decisions = []
+                for decision in self._all('decisions'):
+                    if not visible_owned(decision):
+                        continue
+                    decision = self._public(decision)
+                    decision['reply_pending'] = decision['id'] in replying
+                    if not decision.get('request_text') and decision.get('task_id'):
+                        decision.update(self.decision_origin(tasks[decision['task_id']]))
+                    decisions.append(decision)
+                result['decisions'] = decisions
+        return result
