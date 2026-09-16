@@ -180,6 +180,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         elif hasattr(self.provider, 'configure') and self._setting('model'):
             self.provider.configure(model=self._setting('model'), base_url=self._setting('base_url') or None)
         try:
+            self._index_message_audience()
             with self.transaction():
                 self._migrate_threads()
                 self._migrate_bot_exchanges()
@@ -2304,11 +2305,53 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         return positions
 
 
+    def _index_message_audience(self):
+        # Membership changes commit with the message, including direct imports and deletions.
+        self.db.executescript("""
+        CREATE TABLE IF NOT EXISTS message_audience (
+            bot_id TEXT NOT NULL, message_id TEXT NOT NULL, PRIMARY KEY (bot_id, message_id));
+        CREATE INDEX IF NOT EXISTS message_audience_message ON message_audience (message_id);
+        CREATE TRIGGER IF NOT EXISTS message_audience_insert AFTER INSERT ON messages BEGIN
+            DELETE FROM message_audience WHERE message_id=NEW.id;
+            INSERT OR IGNORE INTO message_audience
+                SELECT json_extract(NEW.data, '$.sender_bot_id'), NEW.id
+                WHERE json_type(NEW.data, '$.sender_bot_id')='text';
+            INSERT OR IGNORE INTO message_audience
+                SELECT value, NEW.id FROM json_each(NEW.data, '$.recipient_bot_ids') WHERE type='text';
+        END;
+        CREATE TRIGGER IF NOT EXISTS message_audience_update AFTER UPDATE OF data ON messages
+        WHEN json_extract(OLD.data, '$.sender_bot_id') IS NOT json_extract(NEW.data, '$.sender_bot_id')
+          OR json_extract(OLD.data, '$.recipient_bot_ids') IS NOT json_extract(NEW.data, '$.recipient_bot_ids')
+        BEGIN
+            DELETE FROM message_audience WHERE message_id=OLD.id;
+            INSERT OR IGNORE INTO message_audience
+                SELECT json_extract(NEW.data, '$.sender_bot_id'), NEW.id
+                WHERE json_type(NEW.data, '$.sender_bot_id')='text';
+            INSERT OR IGNORE INTO message_audience
+                SELECT value, NEW.id FROM json_each(NEW.data, '$.recipient_bot_ids') WHERE type='text';
+        END;
+        CREATE TRIGGER IF NOT EXISTS message_audience_delete AFTER DELETE ON messages BEGIN
+            DELETE FROM message_audience WHERE message_id=OLD.id;
+        END;
+        """)
+        with self.transaction():
+            if self._setting('message_audience_indexed'):
+                return
+            self.db.execute("INSERT OR IGNORE INTO message_audience "
+                            "SELECT json_extract(data, '$.sender_bot_id'), id FROM messages "
+                            "WHERE json_type(data, '$.sender_bot_id')='text'")
+            self.db.execute("INSERT OR IGNORE INTO message_audience "
+                            "SELECT j.value, m.id FROM messages m, json_each(m.data, '$.recipient_bot_ids') j "
+                            "WHERE j.type='text'")
+            self.db.execute("INSERT INTO settings VALUES ('message_audience_indexed','true')")
+
     def _history(self, bot_id: str) -> list[dict]:
         # Threads organize Inbox decisions. They never restrict a bot's own recall.
-        return [self._public(message) for message in self._all('messages')
-                if not message.get('_hidden') and not message.get('_deleted')
-                and (message.get('sender_bot_id') == bot_id or bot_id in message.get('recipient_bot_ids', []))]
+        row = self.db.execute("SELECT json_group_array(json(data)) FROM (SELECT m.data FROM "
+            "message_audience a JOIN messages m ON m.id=a.message_id WHERE a.bot_id=? "
+            "AND COALESCE(json_extract(m.data, '$._hidden'),0)=0 "
+            "AND COALESCE(json_extract(m.data, '$._deleted'),0)=0 ORDER BY m.rowid)", (bot_id,)).fetchone()
+        return [self._public(message) for message in json.loads(row[0])]
 
     def _task_messages(self, task_id):
         row = self.db.execute("SELECT json_group_array(json(data)) FROM (SELECT data FROM messages "

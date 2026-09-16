@@ -42,6 +42,42 @@ class ReceiptLookupTests(unittest.TestCase):
         finally:
             service.db.set_progress_handler(None, 0)
 
+    def test_history_reads_only_the_bots_messages_and_tracks_audience_changes(self):
+        service = self.service
+        with service.transaction():
+            for index in range(5000):
+                service._put('messages', dict(id=str(index), sender_bot_id='other', text='Unrelated.'))
+            service._put('messages', dict(id='first', sender_bot_id='desk', recipient_bot_ids=['desk', 'dev'], text='One'))
+            service._put('messages', dict(id='second', sender_bot_id=None, recipient_bot_ids=['desk'], text='Two'))
+            service._put('messages', dict(id='hidden', recipient_bot_ids=['desk'], _hidden=True, text='Hidden'))
+        service.db.set_progress_handler(lambda: 1, 2000)
+        try:
+            self.assertEqual([m['text'] for m in service._history('desk')], ['One', 'Two'])
+        finally:
+            service.db.set_progress_handler(None, 0)
+        service._put('messages', dict(id='first', sender_bot_id='dev', recipient_bot_ids=[], text='Moved'))
+        self.assertEqual([m['text'] for m in service._history('desk')], ['Two'])
+        service._put('messages', dict(id='hidden', recipient_bot_ids=['desk'], _hidden=False, text='Visible'))
+        service.db.execute("DELETE FROM messages WHERE id='second'")
+        self.assertEqual([m['text'] for m in service._history('desk')], ['Visible'])
+        import json
+        service.db.execute('INSERT OR REPLACE INTO messages VALUES (?,?)',
+            ('hidden', json.dumps(dict(id='hidden', recipient_bot_ids=['dev'], text='Replaced'))))
+        self.assertEqual(service._history('desk'), [])
+        self.assertEqual([m['text'] for m in service._history('dev')], ['Moved', 'Replaced'])
+
+    def test_history_index_migrates_existing_messages_once(self):
+        service = self.service
+        for name in ('insert', 'update', 'delete'):
+            service.db.execute('DROP TRIGGER message_audience_' + name)
+        service.db.execute('DROP TABLE message_audience')
+        service.db.execute("DELETE FROM settings WHERE key='message_audience_indexed'")
+        service._put('messages', dict(id='old', sender_bot_id='desk', recipient_bot_ids=['dev'], text='Before upgrade'))
+        service._index_message_audience()
+        self.assertEqual([m['text'] for m in service._history('dev')], ['Before upgrade'])
+        service._index_message_audience()
+        self.assertEqual(len(service._history('desk')), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
