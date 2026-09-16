@@ -306,6 +306,10 @@ def check() -> None:
          "--source", str(SOURCE), "--python", str(PYTHON)], cwd=HERMES / "check-home", env=env)
     if check_source(env) != revision:
         raise SystemExit("The Hermes source changed during its concurrency check.")
+    run([str(PYTHON), str(ROOT / "scripts/test_native_kanban.py"),
+         "--source", str(SOURCE), "--python", str(PYTHON)], cwd=HERMES / "check-home", env=env)
+    if check_source(env) != revision:
+        raise SystemExit("The Hermes source changed during its Kanban check.")
     print(f"Hermes commit: {revision}")
     print(f"Runtime: {HERMES}")
     print("Remove the runtime and local data: python3 scripts/cleanup.py --yes")

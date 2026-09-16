@@ -138,7 +138,7 @@ class HermesProfiles:
             _safe(config, self.root)
             if not config.exists():
                 _write(config, _json({'terminal': {'cwd': str(home.parent / 'workspace')},
-                                      'delegation': {'max_concurrent_children': None}}), self.root)
+                                      'delegation': {'max_concurrent_children': None, 'worktree_isolation': True}}), self.root)
             meta = home / 'profile.yaml'
             _safe(meta, self.root)
             if not meta.exists():

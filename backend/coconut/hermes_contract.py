@@ -17,6 +17,14 @@ def require_keywords(function, names):
 
 def verify_contract():
     import mcp
+    from hermes_cli import kanban_db, kanban_db_connect, kanban_db_dispatch, kanban_db_workspace
+    require_keywords(kanban_db_dispatch.dispatch_once, {'conn', 'spawn_fn', 'max_spawn', 'max_in_progress', 'reconcile_orphans'})
+    require_keywords(kanban_db_dispatch.check_respawn_guard, {'conn', 'task_id'})
+    require_keywords(kanban_db.create_task, {'conn', 'title', 'initial_status', 'idempotency_key', 'tenant', 'workspace_kind', 'workspace_path'})
+    for operation in (kanban_db.complete_task, kanban_db.request_review, kanban_db.block_task, kanban_db.schedule_task):
+        require_keywords(operation, {'conn', 'task_id', 'expected_run_id'})
+    require_keywords(kanban_db_workspace.resolve_workspace, {'task'})
+    assert callable(kanban_db_connect.connect) and callable(kanban_db.reopen_review_task)
     from hermes_cli.mcp_config import _probe_single_server, _save_bearer_auth_token
     from tools.mcp_tool_config import _load_mcp_config
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
@@ -26,6 +34,14 @@ def verify_contract():
     from hermes_state import SessionDB
     from tools.registry import registry
     from tools.process_registry import process_registry
+    from tools.process_registry import CHECKPOINT_PATH
+    if not isinstance(CHECKPOINT_PATH, Path):
+        raise ValueError('Hermes changed the native process checkpoint path.')
+    from tools import browser_tool
+    if not isinstance(browser_tool._active_sessions, dict) or not hasattr(browser_tool._cleanup_lock, '__enter__'):
+        raise ValueError('Hermes changed the native browser session registry.')
+    from tools.terminal_tool import register_task_env_overrides
+    require_keywords(register_task_env_overrides, {'task_id', 'overrides'})
     from toolsets import create_custom_toolset, get_toolset
     from hermes_cli import auth, config, models, profiles, runtime_provider, model_switch_providers
     from hermes_constants import (parse_reasoning_effort, resolve_reasoning_config,

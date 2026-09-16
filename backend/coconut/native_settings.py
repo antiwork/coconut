@@ -96,6 +96,9 @@ def worker(request, default_home):
                 # Null selects Hermes's environment fallback instead of its merged default.
                 delegation['max_concurrent_children'] = None
                 save_config(home, config)
+            if 'worktree_isolation' not in delegation:
+                delegation['worktree_isolation'] = True
+                save_config(home, config)
             marker = home / '.coconut-native-config.json'
             if marker.exists():
                 continue

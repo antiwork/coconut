@@ -641,6 +641,27 @@ def conversation_input(request):
     return prompt, history
 
 
+def runtime_state():
+    from tools.process_registry import process_registry
+    browser = sys.modules.get('tools.browser_tool')
+    with browser._cleanup_lock if browser else nullcontext():
+        live_browsers = bool(browser._active_sessions) if browser else False
+    return dict(live_processes=any(p['status'] == 'running' for p in process_registry.list_sessions()),
+                live_browsers=live_browsers)
+
+
+def configure_process_checkpoint():
+    home = os.environ.get('COCONUT_PROCESS_HOME')
+    if not home:
+        return
+    from tools import process_registry
+    # Hermes pins this file at import time. Each process needs its own crash record.
+    # Keep HERMES_HOME unchanged so config, memory, and sessions retain the bot profile.
+    path = Path(home)
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    process_registry.CHECKPOINT_PATH = path / 'processes.json'
+
+
 def stop_native_processes(task_id=None, *, recover=False):
     module = sys.modules.get('tools.process_registry')
     if recover:
@@ -782,6 +803,9 @@ def main():
             outcome_sent = outcome_sent or (kind == 'native_question' and result.get('status') != 'validation_failed')
             return result
         try:
+            if request['operation'] == 'runtime_state':
+                send('runtime_state', runtime_state())
+                return
             if request['operation'] == 'process_completions':
                 from native_processes import completions
                 try:
@@ -1062,6 +1086,19 @@ def run_turn(request, emit, request_receipt):
             registry.register(name='coconut_message_bot', toolset='coconut', schema=relay_schema,
                               handler=lambda arguments, **kwargs: bridge.recorded('message_agent', arguments, bridge.relay.enqueue))
             allowed.add('coconut_message_bot')
+        if os.environ.get('COCONUT_WORKSPACE_OUTCOME'):
+            from work_workspace import SCHEMA as workspace_schema, acquire as acquire_workspace
+            def workspace(arguments, **kwargs):
+                try:
+                    binding = acquire_workspace(os.environ['COCONUT_WORKSPACE_ROOT'],
+                        os.environ['COCONUT_WORKSPACE_OUTCOME'], **arguments)
+                    from tools.terminal_tool import register_task_env_overrides
+                    register_task_env_overrides(request['task']['id'], {'cwd': binding['path']})
+                    return json.dumps(binding)
+                except (ValueError, OSError) as error:
+                    return json.dumps({'error': str(error)})
+            registry.register(name=workspace_schema['name'], toolset='coconut', schema=workspace_schema, handler=workspace)
+            allowed.add(workspace_schema['name'])
         coconut_toolset = scope.toolset(allowed)
 
         def stream_delta(text):
@@ -1145,7 +1182,7 @@ def run_turn(request, emit, request_receipt):
         if work.enabled:
             instructions += WORK_INSTRUCTIONS
         if request['task'].get('_execution_session_id'):
-            instructions += ' For this work session, contact bots with coconut_message_bot. Coconut routes it through the native Hermes relay. Use a separate git worktree for this work item before editing code. Keep other work items and their files unchanged. '
+            instructions += ' For this work session, contact bots with coconut_message_bot. Coconut routes it through the native Hermes relay. When coconut_workspace is available, call it with the local repository before editing code. Otherwise use a separate Git worktree. For existing changes, supply existing_worktree to retain the files and branch. Reuse its returned path for commands, replies, reviews, and recovery. Keep other work items and their files unchanged. '
         instructions += CONVERSATION_INSTRUCTIONS
         instructions += BOT_ROLE_INSTRUCTIONS
         instructions += '\nYour current identity, confirmed by the service:\n' + json.dumps({
@@ -1162,7 +1199,10 @@ def run_turn(request, emit, request_receipt):
         from native_settings import raw_config
         os.environ['HERMES_GATEWAY_SESSION'] = '1'
         from gateway.session_context import set_session_vars, clear_session_vars
-        session_tokens = set_session_vars(session_key=request['task']['id'], platform='coconut')
+        session_tokens = set_session_vars(session_key=request['task']['id'], platform='coconut', cwd=request.get('workspace', ''))
+        if request.get('workspace'):
+            from tools.terminal_tool import register_task_env_overrides
+            register_task_env_overrides(request['task']['id'], {'cwd': request['workspace']})
         profile_config = raw_config(os.environ['HERMES_HOME'])
         from native_routine_execution import job_context
         routine_scope = job_context(request, config, profile_config)
@@ -1264,6 +1304,7 @@ def run_turn(request, emit, request_receipt):
 
 
 if __name__ == '__main__':
+    configure_process_checkpoint()
     if sys.argv[1:] == ['--cleanup']:
         stop_native_processes(recover=True)
     else:

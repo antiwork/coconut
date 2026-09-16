@@ -39,3 +39,32 @@ jobs:
         env:
           PYTHONPATH: backend:backend/tests
         run: python -m unittest test_provider.ProviderTests.test_delayed_service_receipts_do_not_abandon_or_repeat_tools test_provider.ProviderTests.test_worker_exits_when_the_service_pipe_closes test_provider.ProviderTests.test_cancel_stops_a_blocked_model_call
+
+  native-kanban:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: Install the pinned Hermes runtime without source changes
+        run: |
+          python -m pip install uv==0.12.10
+          revision=$(python -c 'import sys; sys.path.insert(0, "scripts"); from hermes import REVISION; print(REVISION)')
+          git init .runtime/hermes-source
+          git -C .runtime/hermes-source fetch --depth=1 https://github.com/NousResearch/hermes-agent.git "$revision"
+          git -C .runtime/hermes-source checkout --detach FETCH_HEAD
+          uv sync --project .runtime/hermes-source --frozen --no-dev --extra anthropic --extra mcp --python 3.11
+      - name: Check native claims, recovery, and worktrees
+        run: |
+          export COCONUT_HERMES_ROOT="$PWD/.runtime/hermes-source"
+          export COCONUT_HERMES_PYTHON="$COCONUT_HERMES_ROOT/.venv/bin/python"
+          export PYTHONPATH=backend
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_kanban.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_work_workspace.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_kanban_workers.py
+          "$COCONUT_HERMES_PYTHON" scripts/test_native_kanban.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON"
+          test -z "$(git -C .runtime/hermes-source status --porcelain --untracked-files=no)"

@@ -87,6 +87,7 @@ from .routine_coordinator import NativeRoutines
 from .approval_updates import ApprovalUpdates
 from .parallel_work_updates import ParallelWorkUpdates
 from .work_capacity import execution_key, state as capacity_state
+from .kanban_scheduler import NativeKanban
 
 
 from .service_restart import ServiceRestart
@@ -97,7 +98,7 @@ from .decision_freshness import DecisionFreshness
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
-class Service(StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart):
+class Service(NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -116,6 +117,7 @@ class Service(StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources
         self.files = self.root / 'artifacts'
         self.files.mkdir(exist_ok=True, mode=0o700)
         self.provider = provider
+        self._init_kanban()
         self.profiles = HermesProfiles(self.root)
         self.pr_tracker = pr_tracker
         self.pr_refresh_requested = threading.Event()
@@ -1668,6 +1670,11 @@ class Service(StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources
         task = dict(id=task_id, thread_id=thread_id or task_id, parent_task_id=parent_task_id, bot_id=bot['id'], conversation_bot_id=conversation_bot_id, session_id=bot['session_id'], source_bot_id=source_task['bot_id'] if source_task else None, source_task_id=source_task['id'] if source_task else None, exchange_id=exchange_id or self._new_exchange(), exchange_depth=source_task.get('exchange_depth', 0) + 1 if source_task else 0, title=title, status=status, summary='Waiting for its scheduled time.' if scheduled else 'Queued', created_at=now(), updated_at=now(), scheduled_at=scheduled, _attachment_ids=attachments)
         if work_item:
             task.update(_work_context_id=work_item['id'], _work_status_only=data.get('work_status_only', False))
+            # Capture the owner before recovery transfers the visible work item to this task.
+            self._ensure_execution_session(task)
+        elif parent and parent['status'] == 'failed' and parent['bot_id'] == task['bot_id']:
+            self._ensure_execution_session(parent)
+            task['_execution_session_id'] = parent['_execution_session_id']
         if self._task_paused(task):
             task['status'] = 'paused'
         if blocked:
@@ -2197,6 +2204,8 @@ class Service(StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources
                 self.stopping.wait(1)
 
     def _dispatch_pending(self):
+        if self.kanban is not None:
+            return self._dispatch_kanban()
         self.finish_inbox_swipes()
         self._drain_returns()
         with self.changed:
@@ -2278,6 +2287,8 @@ class Service(StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources
         return sorted(tasks, key=priority)
 
     def _queue_positions(self, tasks, timestamp):
+        if self.kanban is not None:
+            return self._native_queue_positions(tasks, timestamp)
         positions = {}
         for task in self._dispatch_order(list(tasks.values())):
             if task.get('_work_status_only') or not self._dispatch_eligible(task, timestamp):
@@ -2367,7 +2378,8 @@ class Service(StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources
                     if task['status'] != 'working' or self.stopping.is_set():
                         return
                     history = self._history(bot['id'])
-                provider_task = self._public(task) | {'_execution_session_id': task.get('_execution_session_id')}
+                provider_task = self._public(task) | {'_execution_session_id': task.get('_execution_session_id'),
+                                                       '_kanban_external_id': task.get('_kanban_claim', {}).get('external_id')}
                 for field in ('_work_todos', '_work_resume', '_source_audit_prompt', '_self_recovery'):
                     if field in task:
                         provider_task[field] = task[field]
@@ -2836,7 +2848,7 @@ class Service(StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources
                     context['bot_id'], context['task_id'])
         return True
 
-    def _start_context(self, context_id: str):
+    def _start_context(self, context_id: str, completed=None):
         def run():
             with self.lock:
                 context = self._get('contexts', context_id)
@@ -2876,7 +2888,8 @@ class Service(StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources
                     self._refresh_bot(bot['id'])
                     history = self._history(bot['id'])
                     decision = self._get('decisions', context['decision_id'])
-                    provider_task = self._public(task) | {'_execution_session_id': task.get('_execution_session_id')}
+                    provider_task = self._public(task) | {'_execution_session_id': task.get('_execution_session_id'),
+                                                           '_kanban_external_id': context.get('_kanban_claim', {}).get('external_id')}
                     provider_task['_conversation_epoch'] = context.get('_conversation_epoch', task.get('_conversation_epoch', self._setting('conversation_epoch')))
                     # Replies and maintenance use their own contexts, outside the source routine's execution claim.
                     provider_task['_native_receipts'] = [r for r in self._all('native_receipts') if r['task_id'] == task['id'] and r.get('turn_id') == context_id and r['state'] == 'completed']
@@ -2931,7 +2944,13 @@ class Service(StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources
                     if not context.get('_decision_refresh'):
                         self._message(bot['id'], answer, task_id=task['id'], decision_id=context['decision_id'])
                     self._event('context.completed' if status == 'completed' else 'context.failed', {'id': context_id, 'decision_id': context['decision_id'], 'status': status, 'error_code': context.get('error_code')}, bot['id'], task['id'])
-        thread = threading.Thread(target=run, daemon=True, name='decision-context')
+        def finish_run():
+            try:
+                run()
+            finally:
+                if completed:
+                    completed()
+        thread = threading.Thread(target=finish_run, daemon=True, name='decision-context')
         self.context_threads[context_id] = thread
         thread.start()
 
@@ -2959,6 +2978,8 @@ class Service(StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources
             self.provider.close()
         for thread in list(self.running.values()) + list(self.context_threads.values()):
             thread.join(timeout=3)
+        if self.kanban is not None:
+            self.kanban.close()
         # A provider must honor cancellation before its connection can close.
         if not any(thread.is_alive() for thread in list(self.running.values()) + list(self.context_threads.values())):
             with self.lock:

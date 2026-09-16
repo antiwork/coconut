@@ -1,0 +1,135 @@
+import os
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+from uuid import uuid4
+import test_work_self_recovery as recovery_fixtures
+
+from coconut.work_workspace import acquire, git, preferred
+
+SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
+
+
+@unittest.skipUnless(SOURCE, 'Set COCONUT_HERMES_ROOT for the native workspace integration check.')
+class WorkWorkspaceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.repo = self.root / 'repo'
+        self.repo.mkdir()
+        git(self.repo, 'init')
+        git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-m', 'Initial')
+        self.saved = self.root / 'coconut'
+        self.old_path = list(sys.path)
+        sys.path.insert(0, SOURCE)
+        self.addCleanup(lambda: sys.path.__setitem__(slice(None), self.old_path))
+
+    def test_native_worktrees_are_distinct_and_dirty_changes_survive_resume(self):
+        first, second = str(uuid4()), str(uuid4())
+        one = acquire(self.saved, first, str(self.repo))
+        two = acquire(self.saved, second, str(self.repo))
+        self.assertNotEqual(one['path'], two['path'])
+        self.assertNotEqual(one['branch'], two['branch'])
+        note = Path(one['path']) / 'changes.txt'
+        note.write_text('Uncommitted work')
+        self.assertEqual(acquire(self.saved, first, str(self.repo)), one)
+        self.assertEqual(note.read_text(), 'Uncommitted work')
+        self.assertFalse((Path(two['path']) / note.name).exists())
+        self.assertEqual(preferred(self.saved, first), Path(one['path']))
+        git(one['path'], 'switch', '-c', 'unexpected')
+        with self.assertRaisesRegex(ValueError, 'changed branches'):
+            acquire(self.saved, first, str(self.repo))
+        with self.assertRaisesRegex(ValueError, 'changed branches'):
+            preferred(self.saved, first)
+        git(one['path'], 'switch', one['branch'])
+        git(self.repo, 'worktree', 'move', one['path'], str(self.root / 'moved-worktree'))
+        with self.assertRaisesRegex(ValueError, 'missing'):
+            preferred(self.saved, first)
+
+    def test_existing_worktree_is_adopted_once_without_moving_its_branch(self):
+        path = self.root / 'existing'
+        git(self.repo, 'worktree', 'add', '-b', 'existing-pr', str(path))
+        (path / 'pending.txt').write_text('Earlier work')
+        outcome = str(uuid4())
+        result = acquire(self.saved, outcome, str(self.repo), str(path))
+        self.assertEqual(result['path'], str(path.resolve()))
+        self.assertEqual(result['branch'], 'existing-pr')
+        self.assertEqual((path / 'pending.txt').read_text(), 'Earlier work')
+        with self.assertRaisesRegex(ValueError, 'Another outcome'):
+            acquire(self.saved, str(uuid4()), str(self.repo), str(path))
+        with self.assertRaisesRegex(ValueError, 'linked worktree'):
+            acquire(self.saved, str(uuid4()), str(self.repo), str(self.repo))
+
+    def test_multiple_repositories_validate_every_saved_branch(self):
+        other = self.root / 'other'
+        other.mkdir()
+        git(other, 'init')
+        git(other, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-m', 'Initial')
+        outcome = str(uuid4())
+        one = acquire(self.saved, outcome, str(self.repo))
+        acquire(self.saved, outcome, str(other))
+        self.assertEqual(preferred(self.saved, outcome), self.saved / outcome)
+        git(one['path'], 'switch', '-c', 'unexpected')
+        with self.assertRaisesRegex(ValueError, 'changed branches'):
+            preferred(self.saved, outcome)
+
+    def test_retry_cannot_take_a_worktree_adopted_after_an_interrupted_save(self):
+        first, second = str(uuid4()), str(uuid4())
+        one = acquire(self.saved, first, str(self.repo))
+        # Reproduce interruption after Git creation but before the registry commit.
+        manifest = self.saved / 'worktrees.json'
+        manifest.write_text('{}')
+        adopted = acquire(self.saved, second, str(self.repo), one['path'])
+        with self.assertRaisesRegex(ValueError, 'Another outcome'):
+            acquire(self.saved, first, str(self.repo))
+        self.assertEqual(list(json.loads(manifest.read_text()).values()), [adopted])
+
+
+class RecoveryWorkspaceTests(unittest.TestCase):
+    setUp = recovery_fixtures.WorkSelfRecoveryTests.setUp
+    tearDown = recovery_fixtures.WorkSelfRecoveryTests.tearDown
+    start = recovery_fixtures.WorkSelfRecoveryTests.start
+    sync = recovery_fixtures.WorkSelfRecoveryTests.sync
+    write = recovery_fixtures.WorkSelfRecoveryTests.write
+    stranded = recovery_fixtures.WorkSelfRecoveryTests.stranded
+    recover = recovery_fixtures.WorkSelfRecoveryTests.recover
+
+    def test_recovery_keeps_execution_owner_before_replacing_task(self):
+        original = self.service._get('tasks', self.task['id'])
+        self.service._ensure_execution_session(original)
+        item = self.stranded()
+        recovered = self.recover()
+        self.assertNotEqual(recovered['id'], original['id'])
+        self.assertEqual(self.service._get('artifacts', item['id'])['task_id'], recovered['id'])
+        self.service._ensure_execution_session(recovered)
+        self.assertEqual(recovered['_execution_session_id'], original['_execution_session_id'])
+
+    def test_cancel_and_resume_keeps_execution_owner(self):
+        self.start()
+        item = self.sync()[0]
+        original = self.service._get('tasks', self.task['id'])
+        self.service._ensure_execution_session(original)
+        self.write('POST', '/v1/work/items/' + item['id'] + '/cancel', {})
+        self.service.running.clear()
+        self.write('POST', '/v1/work/items/' + item['id'] + '/resume', {})
+        resumed = self.service._all('tasks')[-1]
+        self.assertNotEqual(resumed['id'], original['id'])
+        self.assertEqual(resumed['_execution_session_id'], original['_execution_session_id'])
+
+    def test_chat_reply_to_failed_work_keeps_execution_owner(self):
+        self.stranded()
+        original = self.service._get('tasks', self.task['id'])
+        self.service._ensure_execution_session(original)
+        reply = self.write('POST', '/v1/tasks/' + original['id'] + '/replies', {'text': 'Continue the existing change'})
+        continued = self.service._get('tasks', reply['id'])
+        self.service._ensure_execution_session(continued)
+        self.assertNotEqual(continued['id'], original['id'])
+        self.assertEqual(continued['_execution_session_id'], original['_execution_session_id'])
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 from .worker_protocol import MAX_EVENT_CHARACTERS
 
 Emit = Callable[[str, dict], Optional[dict]]
@@ -126,7 +126,7 @@ class FixtureProvider:
 
 
 class HermesProvider(FixtureProvider):
-    """One retained Hermes runtime per bot, using structured JSONL only."""
+    """Retain native Hermes runtimes with structured JSONL transport."""
 
     name = 'hermes'
 
@@ -151,6 +151,10 @@ class HermesProvider(FixtureProvider):
         self._input_lock = threading.Lock()
         self._runtime_envs = {}
         self._transports = {}
+        self._prepared = {}
+        self._kanban_runtimes = {}
+        self._runtime_bots = {}
+        self._stopped_bots = set()
 
     @property
     def ready(self):
@@ -212,13 +216,20 @@ class HermesProvider(FixtureProvider):
                                   homes={bot['id']: str(self.catalog._profile_home(bot['id'])) for bot in bots}, **payload)
 
     def process_completions(self, bot, processes):
+        groups = {}
+        for item in processes:
+            groups.setdefault(item.get('execution_session_id'), []).append(item)
+        return [result for execution, items in groups.items()
+                for result in self._process_completions(bot, items, execution)]
+
+    def _process_completions(self, bot, processes, execution):
         import queue
         from .worker_transport import WorkerTransport
         request = dict(operation='process_completions', bot=bot, processes=processes)
         with self._lock:
             if self._closed:
                 return []
-            process = self._runtimes.get(bot['id'])
+            process = self._kanban_runtimes.get(execution) or self._runtimes.get(bot['id'])
             transport = self._transports.get(process)
         if process is not None and process.poll() is None and transport is not None:
             identity, channel, request = transport.open(request)
@@ -302,6 +313,81 @@ class HermesProvider(FixtureProvider):
         env.update(HERMES_HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), PYTHONPATH=str(self.hermes_root), PYTHONUNBUFFERED='1', COCONUT_BROWSER_PROFILE=str(root / 'browser'), HERMES_DISABLE_TELEMETRY='1', HOMEBREW_XDG_CONFIG_HOME=str(shared_config))
         return env, root / 'workspace'
 
+    def prepare_kanban_worker(self, identity, bot, workspace, execution_id):
+        """Start a dedicated process before Hermes records its claim PID."""
+        with self._lock:
+            if self._closed or bot['id'] in self._stopped_bots:
+                raise RuntimeError('This bot stopped before worker preparation.')
+            previous = self._kanban_runtimes.get(execution_id)
+            if (previous is not None and previous.poll() is None
+                    and not getattr(self._transports.get(previous), 'closed', False)):
+                self._prepared[identity] = previous
+                return previous.pid
+        if previous is not None:
+            self._terminate(previous)
+        env, _ = self.environment(bot['id'])
+        env['COCONUT_DEFAULT_HOME'] = str(self.catalog.root)
+        env['TERMINAL_CWD'] = workspace
+        env['COCONUT_WORKSPACE_ROOT'] = str(self.data_dir / 'workspaces')
+        env['COCONUT_WORKSPACE_OUTCOME'] = execution_id
+        env['COCONUT_PROCESS_HOME'] = str(self.data_dir / 'runtimes' / execution_id / str(uuid4()))
+        process = subprocess.Popen([self.python, str(Path(__file__).with_name('hermes_worker.py'))],
+                                   cwd=workspace, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+        with self._lock:
+            self._runtime_envs[process] = (env, Path(workspace))
+            stopped = self._closed or bot['id'] in self._stopped_bots
+            if not stopped:
+                self._prepared[identity] = process
+                self._kanban_runtimes[execution_id] = process
+                self._runtime_bots[process] = bot['id']
+        if stopped:
+            self._terminate(process)
+            raise RuntimeError('This bot stopped during worker preparation.')
+        return process.pid
+
+    def trim_kanban_workers(self, keep):
+        with self._lock:
+            busy = set(self._processes.values()) | set(self._prepared.values())
+            idle = [(key, process) for key, process in self._kanban_runtimes.items()
+                    if key not in keep and process not in busy]
+        removed = [(key, process) for key, process in idle[:-1] if not self._has_live_resources(process)]
+        with self._lock:
+            busy = set(self._processes.values()) | set(self._prepared.values())
+            removed = [(key, process) for key, process in removed
+                       if self._kanban_runtimes.get(key) is process and process not in busy]
+            for key, process in removed:
+                self._kanban_runtimes.pop(key, None)
+                self._paused_processes = {k: p for k, p in self._paused_processes.items() if p is not process}
+        for _, process in removed:
+            self._terminate(process)
+
+    def _has_live_resources(self, process):
+        if process.poll() is not None:
+            return False
+        from .worker_transport import WorkerTransport
+        with self._lock:
+            transport = self._transports.get(process)
+            if transport is None:
+                transport = self._transports[process] = WorkerTransport(process, MAX_EVENT_CHARACTERS)
+        identity = None
+        try:
+            identity, channel, request = transport.open(dict(operation='runtime_state'))
+            self._send(process, request)
+            frame = channel.get(timeout=1)
+            return not (isinstance(frame, dict) and frame.get('type') == 'runtime_state'
+                        and frame.get('data', {}).get('live_processes') is False
+                        and frame.get('data', {}).get('live_browsers') is False)
+        except Exception:
+            return True
+        finally:
+            if identity is not None:
+                transport.release(identity)
+
+    def release_kanban_preparation(self, identity):
+        with self._lock:
+            return self._prepared.pop(identity, None)
+
     def start_task(self, task, bot, history, emit):
         self._run('start', task, bot, history, emit)
 
@@ -337,13 +423,21 @@ class HermesProvider(FixtureProvider):
         request = dict(operation=operation, task=task, bot=bot, history=history,
                        model=selection['model'], provider=selection['provider'], base_url=selection.get('base_url'),
                        reasoning_effort=selection.get('reasoning_effort'), runtime_config=runtime_config, **extra)
+        if task.get('_kanban_external_id'):
+            from .work_workspace import preferred
+            request['workspace'] = str(preferred(self.data_dir / 'workspaces', task['_execution_session_id']))
         with self._lock:
+            prepared = self._prepared.pop(task.get('_kanban_external_id'), None)
             if self._closed or task_id in self._cancelled or task.get('_context_id') in self._cancelled_contexts:
                 return
-            process = None if isolated else self._runtimes.get(bot['id'])
+            if task.get('_kanban_external_id') and prepared is None:
+                raise RuntimeError('The native claim has no prepared worker.')
+            process = prepared or (None if isolated else self._runtimes.get(bot['id']))
+            if prepared:
+                isolated = False
             # Work sessions apply their own conversation epoch without stopping peer turns.
             epoch = (bot['session_id'], None if task.get('_execution_session_id') else task.get('_conversation_epoch'))
-            if (process is None or process.poll() is not None or self._runtime_epochs.get(bot['id']) != epoch
+            if not prepared and (process is None or process.poll() is not None or self._runtime_epochs.get(bot['id']) != epoch
                     or (self._transports.get(process) is not None and self._transports[process].closed)):
                 if process is not None:
                     self._terminate(process)
@@ -475,6 +569,7 @@ class HermesProvider(FixtureProvider):
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait(timeout=2)
         self._transports.pop(process, None)
+        self._runtime_bots.pop(process, None)
         environment = self._runtime_envs.pop(process, None)
         if environment is not None and process.returncode != 0:
             # Hermes checks PID identity before reaping children after a forced exit.
@@ -498,6 +593,8 @@ class HermesProvider(FixtureProvider):
             self._cancelled.add(task_id)
             process = self._processes.get(task_id)
             paused = self._paused_processes.pop(task_id, None)
+            prepared = self._prepared.pop(task_id, None)
+            process = process or prepared
         if process is not None and process.poll() is None:
             self._send(process, {'cancel_task': task_id})
             def reap_cancelled():
@@ -519,16 +616,24 @@ class HermesProvider(FixtureProvider):
 
     def stop_bot(self, bot_id):
         with self._lock:
+            self._stopped_bots.add(bot_id)
             process = self._runtimes.pop(bot_id, None)
+            processes = {p for p, owner in self._runtime_bots.items() if owner == bot_id}
+            if process is not None:
+                processes.add(process)
             self._runtime_epochs.pop(bot_id, None)
-            self._paused_processes = {key: value for key, value in self._paused_processes.items() if value is not process}
-        if process is not None:
-            self._terminate(process)
+            self._kanban_runtimes = {k: p for k, p in self._kanban_runtimes.items() if p not in processes}
+            self._prepared = {k: p for k, p in self._prepared.items() if p not in processes}
+            self._paused_processes = {k: p for k, p in self._paused_processes.items() if p not in processes}
+        for runtime in processes:
+            self._terminate(runtime)
 
     def close(self):
         with self._lock:
             self._closed = True
-            processes = list(self._runtimes.values())
+            processes = list(set(self._runtimes.values()) | set(self._prepared.values()) | set(self._kanban_runtimes.values()))
+            self._kanban_runtimes.clear()
+            self._prepared.clear()
             self._runtimes.clear()
             self._paused_processes.clear()
             self._runtime_epochs.clear()
