@@ -116,7 +116,7 @@ class StateSync:
         from .service import ServiceError
         raise ServiceError(503, 'Settings changed during this request. Try again.')
 
-    def updates(self, after, wait=0):
+    def updates(self, after, wait=0, *, collection_deltas=False):
         from .service import ServiceError
         if after < 0:
             raise ServiceError(400, 'The event cursor must be zero or greater.')
@@ -128,13 +128,13 @@ class StateSync:
                     break
                 self.stopping.wait(min(remaining, .1))
             with view._read_transaction():
-                result = view._replay_changes(after)
+                result = view._replay_changes(after, collection_deltas=collection_deltas)
             if result is not None:
                 return result
             state = view._snapshot(content_only=True)
             return dict(after=after, cursor=state['cursor'], server_time=state['server_time'], reset=state)
 
-    def _replay_changes(self, after):
+    def _replay_changes(self, after, *, collection_deltas=False):
         import json
         from .service import now
         from .work_capacity import state as capacity_state
@@ -154,7 +154,9 @@ class StateSync:
         bots = [self._bot_view(b, None) for b in self._all('bots') if not b.get('_deleted')]
         visible = {b['id'] for b in bots}
         result = dict(after=after, cursor=cursor, server_time=now(), bots=bots)
-        task_ids, message_ids = set(), set()
+        task_ids, message_ids, decision_ids, artifact_ids = set(), set(), set(), set()
+        if collection_deltas:
+            result['collection_deltas'] = True
         for _, kind, task_id, data in rows:
             value = json.loads(data)
             if task_id:
@@ -163,6 +165,16 @@ class StateSync:
                 task_ids.add(value['id'])
             if kind.startswith('message.') and value.get('id'):
                 message_ids.add(value['id'])
+            if kind.startswith('decision.') and value.get('id'):
+                decision_ids.add(value['id'])
+            if value.get('decision_id'):
+                decision_ids.add(value['decision_id'])
+            if kind.startswith('artifact.') and value.get('id'):
+                artifact_ids.add(value['id'])
+            if kind.startswith('context.') and value.get('id'):
+                context = self._read_one('SELECT data FROM contexts WHERE id=?', (value['id'],))
+                if context:
+                    decision_ids.add(json.loads(context[0])['decision_id'])
         def visible_row(value):
             return (value and not value.get('_hidden') and not value.get('_deleted')
                     and value.get('bot_id') in visible and value.get('conversation_bot_id', value.get('bot_id')) in visible)
@@ -199,19 +211,31 @@ class StateSync:
             tasks = {t['id']: t for t in self._all('tasks') if visible_row(t)}
             def visible_owned(value):
                 return visible_row(value) and (not value.get('task_id') or value['task_id'] in tasks)
-            artifacts = [a for a in self._all('artifacts') if visible_owned(a)]
+            stored_artifacts = self._all('artifacts')
+            artifacts = [a for a in stored_artifacts if visible_owned(a)
+                         and (not collection_deltas or a['kind'] in ('pr', 'work') or a['id'] in artifact_ids)]
+            if collection_deltas:
+                present = {a['id'] for a in stored_artifacts if visible_owned(a)}
+                result['removed_artifacts'] = sorted((artifact_ids - present) |
+                    {a['id'] for a in stored_artifacts if not visible_owned(a)})
             result['artifacts'] = [self._public(a) for a in self._work_projection(artifacts)]
             result['work_capacity'] = capacity_state(self._setting('work_capacity'))
             if rows:
                 replying = {c['decision_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working') and not c.get('_decision_refresh')}
-                decisions = []
+                decisions, removed_decisions = [], set(decision_ids)
                 for decision in self._all('decisions'):
-                    if not visible_owned(decision):
+                    if collection_deltas and decision['id'] not in decision_ids and decision['task_id'] not in task_ids:
                         continue
+                    if not visible_owned(decision):
+                        removed_decisions.add(decision['id'])
+                        continue
+                    removed_decisions.discard(decision['id'])
                     decision = self._public(decision)
                     decision['reply_pending'] = decision['id'] in replying
                     if not decision.get('request_text') and decision.get('task_id'):
                         decision.update(self.decision_origin(tasks[decision['task_id']]))
                     decisions.append(decision)
                 result['decisions'] = decisions
+                if collection_deltas:
+                    result['removed_decisions'] = sorted(removed_decisions)
         return result

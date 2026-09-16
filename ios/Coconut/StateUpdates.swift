@@ -22,6 +22,9 @@ struct StateUpdates: Decodable, Sendable {
     var removedMessages: [String]?
     var decisions: [Decision]?
     var artifacts: [Artifact]?
+    var collectionDeltas: Bool?
+    var removedDecisions: [String]?
+    var removedArtifacts: [String]?
     var workCapacity: ParallelWorkSettings?
     var settingsChanged: Bool?
     var confirmedRequestIds: [String]?
@@ -37,8 +40,17 @@ struct StateUpdates: Decodable, Sendable {
         let removed = Set(removedMessages ?? [])
         result.messages.removeAll { removed.contains($0.id) }
         result.messages.sort { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
-        if let decisions { result.decisions = decisions }
-        if let artifacts { result.artifacts = artifacts }
+        if collectionDeltas == true {
+            if let decisions { result.decisions = Self.merge(decisions, into: result.decisions) }
+            if let artifacts { result.artifacts = Self.merge(artifacts, into: result.artifacts) }
+            let removedCards = Set(removedDecisions ?? [])
+            let removedFiles = Set(removedArtifacts ?? [])
+            result.decisions.removeAll { removedCards.contains($0.id) }
+            result.artifacts.removeAll { removedFiles.contains($0.id) }
+        } else {
+            if let decisions { result.decisions = decisions }
+            if let artifacts { result.artifacts = artifacts }
+        }
         if let workCapacity { result.workCapacity = workCapacity }
         if let confirmedRequestIds { result.confirmedRequestIds = confirmedRequestIds }
         result.cursor = cursor

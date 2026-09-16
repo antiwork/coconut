@@ -152,6 +152,7 @@ final class APIClient: @unchecked Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = method
         if path == "state" { request.setValue("content", forHTTPHeaderField: "X-Coconut-State") }
+        if path.hasPrefix("updates?") { request.setValue("2", forHTTPHeaderField: "X-Coconut-Updates") }
         request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }

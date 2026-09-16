@@ -26,6 +26,32 @@ final class StateUpdatesTests: XCTestCase {
         XCTAssertNil(page.applying(to: updated), "A repeated response cannot replace newer state.")
     }
 
+    func testCollectionDeltasKeepUnchangedCardsAndRemoveHiddenRecords() throws {
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10
+        var kept = state.decisions[0]
+        kept.id = "kept"
+        var removed = kept
+        removed.id = "removed"
+        var revised = kept
+        revised.id = "revised"
+        state.decisions = [kept, removed, revised]
+        var file = state.artifacts[0]
+        file.id = "removed-file"
+        var keptFile = file
+        keptFile.id = "kept-file"
+        state.artifacts = [file, keptFile]
+        revised.title = "Current question"
+        revised.revision += 1
+        let page = StateUpdates(after: 10, cursor: 12, serverTime: state.serverTime,
+            decisions: [revised], artifacts: [], collectionDeltas: true,
+            removedDecisions: [removed.id], removedArtifacts: [file.id])
+        let updated = try XCTUnwrap(page.applying(to: state))
+        XCTAssertEqual(updated.decisions, [kept, revised])
+        XCTAssertEqual(updated.artifacts, [keptFile])
+        XCTAssertNil(page.applying(to: updated))
+    }
+
     func testReplayGapRequiresCurrentStateAndResetUsesMatchingCursor() throws {
         var state = try PreviewStateFixture.load()
         state.cursor = 10

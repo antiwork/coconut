@@ -114,6 +114,54 @@ class StateSyncTests(unittest.TestCase):
         self.assertEqual(page['confirmed_request_ids'], current['confirmed_request_ids'])
         self.assertEqual(page['bots'], current['bots'])
 
+    def test_collection_deltas_preserve_old_cards_and_remove_hidden_records(self):
+        records = []
+        for index in range(3):
+            task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': f'Outcome {index}', 'mode': 'queue'})
+            decision = dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=task['id'], status='approved', revision=1)
+            with self.service.transaction():
+                self.service._put('decisions', decision)
+            records.append(decision)
+        artifact = dict(id='visible-file', bot_id=self.bot['id'], task_id=records[0]['task_id'], kind='file', title='Evidence')
+        with self.service.transaction():
+            self.service._put('artifacts', artifact)
+        before = self.service.snapshot(content_only=True)
+        with self.service.transaction():
+            records[1].update(title='Current question', revision=2, status='pending')
+            self.service._put('decisions', records[1])
+            self.service._event('decision.updated', records[1], self.bot['id'], records[1]['task_id'])
+        page = self.service.updates(before['cursor'], collection_deltas=True)
+        self.assertTrue(page['collection_deltas'])
+        self.assertEqual([d['id'] for d in page['decisions']], [records[1]['id']])
+        self.assertEqual(page['artifacts'], [])
+        legacy = self.service.updates(before['cursor'])
+        self.assertEqual(len(legacy['decisions']), 3)
+        self.assertNotIn('collection_deltas', legacy)
+        with self.service.transaction():
+            records[1]['_hidden'] = True
+            self.service._put('decisions', records[1])
+            self.service._event('decision.updated', records[1], self.bot['id'], records[1]['task_id'])
+            artifact['_hidden'] = True
+            self.service._put('artifacts', artifact)
+            self.service._event('artifact.updated', artifact, self.bot['id'], artifact['task_id'])
+        removed = self.service.updates(page['cursor'], collection_deltas=True)
+        self.assertEqual(removed['removed_decisions'], [records[1]['id']])
+        self.assertEqual(removed['removed_artifacts'], [artifact['id']])
+        self.assertNotIn(records[1]['id'], [d['id'] for d in removed['decisions']])
+
+    def test_collection_delta_context_event_updates_card_reply_state(self):
+        task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})
+        decision = dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=task['id'], status='pending', revision=1)
+        with self.service.transaction():
+            self.service._put('decisions', decision)
+        cursor = self.service._cursor()
+        with self.service.transaction():
+            context = dict(id=str(uuid4()), task_id=task['id'], decision_id=decision['id'], status='queued')
+            self.service._put('contexts', context)
+            self.service._event('context.queued', {'id': context['id']}, self.bot['id'])
+        page = self.service.updates(cursor, collection_deltas=True)
+        self.assertEqual([(d['id'], d['reply_pending']) for d in page['decisions']], [(decision['id'], True)])
+
     def test_stream_reconciliation_updates_one_message_and_withdraws_failed_text(self):
         task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})
         with self.service.transaction():
