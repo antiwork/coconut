@@ -99,6 +99,10 @@ class FixtureProvider:
         })
 
     def resume_task(self, task, bot, history, decision, emit):
+        if decision['status'] == 'replied':
+            emit('text_delta', {'text': 'Fixture reply: I received your message. No action ran.'})
+            emit('completed', {'summary': 'Reply handled.'})
+            return
         if decision['status'] == 'modified':
             action = decision['action']
             content = action['content'] + '\nRequested change: ' + (decision.get('correction') or '') + '\n'

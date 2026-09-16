@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 from collections import deque
 
-PAUSE_DECISION_STATES = ('approved', 'rejected', 'modified', 'executed', 'failed')
+PAUSE_DECISION_STATES = ('approved', 'rejected', 'modified', 'replied', 'executed', 'failed')
 
 
 class WorkStatus:

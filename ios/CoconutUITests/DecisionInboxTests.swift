@@ -383,46 +383,72 @@ final class DecisionInboxTests: XCTestCase {
     }
 
     @MainActor
-    func testInlineReplyAndContextUseOneDecision() throws {
+    func testTextReplyClosesCardAndContinuesInChat() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
         let inbox = app.tabBars.buttons["Inbox"]
-        XCTAssertTrue(inbox.waitForExistence(timeout: 10))
-        inbox.tap()
+        XCTAssertTrue(inbox.waitForExistence(timeout: 10)); inbox.tap()
         let context = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "inbox-context-")).firstMatch
         XCTAssertTrue(context.waitForExistence(timeout: 5))
         let id = String(context.identifier.dropFirst("inbox-context-".count))
-        let reply = app.textViews["decision-reply-" + id]
+        let title = "Save the retry fix?"
         let field = app.textFields["decision-reply-" + id]
-        let input = reply.exists ? reply : field
-        for _ in 0..<4 where !input.isHittable { app.swipeUp() }
-        XCTAssertTrue(input.isHittable)
-        input.tap()
-        XCTAssertFalse(app.tabBars.buttons["Inbox"].isHittable)
-        input.typeText("What did you verify?")
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap(); field.typeText("What did you verify?")
         app.buttons["send-decision-reply-" + id].tap()
-        let answer = app.staticTexts["What did you verify?"]
-        for _ in 0..<4 where !answer.isHittable { app.swipeUp() }
-        XCTAssertTrue(answer.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "decision-option-")).firstMatch.exists)
-        input.tap()
-        input.typeText("Which files changed?")
+        XCTAssertTrue(app.buttons["inbox-context-" + id].waitForNonExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["What did you verify?"].exists)
+        XCTAssertFalse(app.buttons["decision-earlier-replies"].exists)
+        app.tabBars.buttons["Bots"].tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Forge")).firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["What did you verify?"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts[title].exists)
+        XCTAssertFalse(app.buttons["View decision"].exists)
+    }
+
+    @MainActor
+    func testTextReplyThroughAPIClosesCardAndShowsFreshFollowup() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let address = env["COCONUT_CARD_REPLY_URL"], let code = env["COCONUT_CARD_REPLY_CODE"],
+              let id = env["COCONUT_CARD_REPLY_ID"] else { throw XCTSkip("Run scripts/test_card_text_response.py.") }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": code]
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Inbox"].tap()
+        var field = app.textFields["decision-reply-" + id]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap(); field.typeText("What did you verify?")
         app.buttons["send-decision-reply-" + id].tap()
-        let earlier = app.buttons["decision-earlier-replies"]
-        for _ in 0..<4 where !earlier.isHittable { app.swipeUp() }
-        XCTAssertTrue(earlier.waitForExistence(timeout: 5))
-        earlier.tap()
-        XCTAssertTrue(answer.exists)
-        let shot = XCTAttachment(screenshot: app.screenshot())
-        shot.name = "Inbox with inline reply"; shot.lifetime = .keepAlways; add(shot)
-        for _ in 0..<6 where !context.isHittable { app.swipeDown() }
-        context.tap()
-        XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.tabBars.buttons["Inbox"].isHittable)
-        XCTAssertTrue(app.textViews["message-input"].exists || app.textFields["message-input"].exists)
-        XCTAssertFalse(app.buttons["Reply target"].exists)
+        XCTAssertTrue(app.buttons["Dismiss error"].waitForExistence(timeout: 8))
+        field = app.textFields["decision-reply-" + id]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertEqual(field.value as? String, "What did you verify?")
+        app.buttons["Dismiss error"].tap()
+        app.buttons["send-decision-reply-" + id].tap()
+        XCTAssertTrue(app.staticTexts["All caught up"].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.staticTexts["What did you verify?"].exists)
+        app.terminate()
+        app.launchEnvironment.removeValue(forKey: "COCONUT_PAIR_CODE")
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.staticTexts["All caught up"].waitForExistence(timeout: 5))
+        var request = URLRequest(url: URL(string: address + "/test/continue")!)
+        request.httpMethod = "POST"
+        _ = try await URLSession.shared.data(for: request)
+        XCTAssertTrue(app.staticTexts["Save the verified report?"].waitForExistence(timeout: 25))
+        XCTAssertFalse(app.buttons["inbox-context-" + id].exists)
+        XCTAssertFalse(app.staticTexts["What did you verify?"].exists)
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "inbox-context-")).firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["What did you verify?"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Save the report?"].exists)
+        XCTAssertTrue(app.staticTexts["I verified the local report."].exists)
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Text reply continues in the normal conversation"; proof.lifetime = .keepAlways; add(proof)
     }
 
     @MainActor
@@ -518,10 +544,12 @@ final class DecisionInboxTests: XCTestCase {
         app.buttons["inbox-review-later"].tap()
         let field = app.textFields.matching(NSPredicate(format: "identifier BEGINSWITH %@", "decision-reply-")).firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 5))
+        let id = String(field.identifier.dropFirst("decision-reply-".count))
         field.tap(); field.typeText("What changes?")
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "send-decision-reply-")).firstMatch.tap()
         XCTAssertFalse(app.buttons["undo-inbox-dismiss"].exists)
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "decision-option-")).firstMatch.exists)
+        XCTAssertTrue(app.buttons["inbox-context-" + id].waitForNonExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["What changes?"].exists)
     }
 
     @MainActor

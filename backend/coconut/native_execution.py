@@ -208,7 +208,7 @@ class NativeExecution:
         if option and data.get('choice') is not None and data['choice'] != option['answer']:
             raise ServiceError(400, 'The response does not match this option.')
         choice = option['answer'] if option else data.get('choice')
-        if choice not in ('approve', 'reject', 'modify') or (choice == 'approve' and not option):
+        if choice not in ('approve', 'reject', 'modify', 'reply') or (choice == 'approve' and not option):
             raise ServiceError(400, 'Choose one of the current options.')
         if decision.get('previews') and choice == 'approve' and data.get('previews_hash') != decision.get('previews_hash'):
             raise ServiceError(409, 'Review the images in the latest app before choosing this option.')
@@ -217,15 +217,19 @@ class NativeExecution:
         if decision.get('draft') is not None and choice == 'modify':
             raise ServiceError(400, 'Edit the draft before selecting Send.')
         correction = decision_correction(data)
-        if choice == 'modify' and not correction.strip():
-            raise ServiceError(400, 'Describe the change.')
-        decision.update(status={'approve': 'approved', 'reject': 'rejected', 'modify': 'modified'}[choice],
+        if choice in ('modify', 'reply') and not correction.strip():
+            raise ServiceError(400, 'Enter a reply or choose an option.')
+        decision.update(status={'approve': 'approved', 'reject': 'rejected', 'modify': 'modified', 'reply': 'replied'}[choice],
                         selected_option_id=option_id, selected_option_label=option['label'] if option else None,
                         correction=correction, decided_at=now(), decided_by=device, decided_by_name=self._actor_name(device),
                         outcome='Answer recorded. Hermes will continue.')
         decision['_answers'].append(dict(choice=choice, option_id=option_id, correction=correction,
                                           predicted_option_id=decision.get('_predicted_option_id'), decided_by=device))
-        if decision.get('draft') is not None:
+        if choice == 'reply':
+            decision['outcome'] = 'Reply received. The bot will continue.'
+            self._record_decision_correction(task, decision, correction)
+            self._put('tasks', task)
+        if decision.get('draft') is not None and choice != 'reply':
             decision['outcome'] = 'Approved for sending.' if choice == 'approve' else 'Draft discarded. Nothing was sent.'
             decision['_answers'][-1].update(draft=decision['draft'], revision=decision['revision'])
         self._put('decisions', decision)
@@ -257,7 +261,7 @@ class NativeExecution:
         if task.get('_self_recovery') and (not decision.get('_recovery_work_ids') or option_id == 'retry'):
             task['_self_recovery']['attempt'] = 0
         task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
-        if correction.strip():
+        if correction.strip() and choice != 'reply':
             self._record_decision_correction(task, decision, correction)
         self._put('tasks', task)
         self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])

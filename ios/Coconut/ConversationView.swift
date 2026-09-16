@@ -35,7 +35,7 @@ struct ConversationView: View {
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
     private var messages: [Message] {
-        TranscriptPresentation.visibleMessages(store.conversationMessages(for: botId), artifacts: store.artifacts)
+        TranscriptPresentation.visibleMessages(store.conversationMessages(for: botId), artifacts: store.artifacts, decisions: store.decisions)
             .filter { $0.kind != "activity" }
     }
     private var waitingForResponse: [AgentTask] {
@@ -368,7 +368,8 @@ struct MessageBubble: View {
                     }.buttonStyle(.plain).accessibilityLabel("View replied message from \(reference.author)")
                         .accessibilityIdentifier("message-quote-\(message.id)")
                 }
-                if let decisionId = message.decisionId {
+                if let decisionId = message.decisionId,
+                   store.decisions.first(where: { $0.id == decisionId })?.status != "replied" {
                     Button { scrollToDecision(decisionId) } label: {
                         Label("View decision", systemImage: "arrow.turn.up.left")
                             .font(.caption.weight(.medium)).foregroundStyle(.secondary)

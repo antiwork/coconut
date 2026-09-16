@@ -485,7 +485,7 @@ class BotConversationTests(unittest.TestCase):
         decision = self.service.snapshot()['decisions'][0]
         key = str(uuid4())
         route = f'/v1/decisions/{decision["id"]}/answer'
-        answer = {'choice': 'modify', 'correction': correction}
+        answer = {'choice': 'modify', 'correction': correction, 'revision': decision['revision']}
         self.write('POST', route, answer, key)
         self.service.close()
         self.service = Service(self.temp.name, self.provider, start_workers=False)
@@ -541,7 +541,7 @@ class BotConversationTests(unittest.TestCase):
         self.provider.answer_context = lambda task, bot, history, question, emit: epochs.append(task['_conversation_epoch'])
         self.service._start_context(context['id'])
         self.service.context_threads[context['id']].join(timeout=2)
-        self.write('POST', f'/v1/decisions/{decision["id"]}/answer', {'option_id': 'short'})
+        self.write('POST', f'/v1/decisions/{decision["id"]}/answer', {'option_id': 'short', 'revision': decision['revision']})
 
         def resume(task, bot, history, decision, emit):
             epochs.append(task['_conversation_epoch'])

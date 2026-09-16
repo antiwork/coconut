@@ -1966,9 +1966,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 correction = correction or option['modification']
         elif choice == 'approve' and decision.get('options'):
             raise ServiceError(400, 'Select a file choice before approval.')
-        if choice not in ('approve', 'reject', 'modify'):
+        if choice not in ('approve', 'reject', 'modify', 'reply'):
             raise ServiceError(400, 'Choose approve, reject, modify, or a decision option.')
-        if choice == 'modify' and not correction:
+        if choice in ('modify', 'reply') and not correction:
             raise ServiceError(400, 'Describe the change before modifying this decision.')
         if choice == 'approve':
             if self._task_paused(task):
@@ -1978,8 +1978,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         response_record = dict(choice=choice, option_id=option_id, option_label=option['label'] if option else None, correction=correction, decided_by=device, decided_by_name=actor_name, decided_at=now(), prediction=decision.get('_prediction'), predicted_option_id=decision.get('_predicted_option_id'), revision=decision['revision'], action_hash=decision['_action_hash'], original_action_hash=digest(encoded(decision.get('_proposal_action', decision['_action']))))
         decision.setdefault('_answers', []).append(response_record)
         decision.update(decided_at=response_record['decided_at'], decided_by=device, decided_by_name=actor_name, correction=correction, selected_option_id=option_id, selected_option_label=option['label'] if option else None)
-        if choice == 'modify':
-            decision.update(status='modified', outcome='Changes requested. The bot will prepare a new decision.')
+        if choice in ('modify', 'reply'):
+            decision.update(status='replied' if choice == 'reply' else 'modified',
+                            outcome='Reply received. The bot will continue.' if choice == 'reply' else 'Changes requested. The bot will prepare a new decision.')
             task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
             self._record_decision_correction(task, decision, correction, human_authored=bool(data.get('correction')))
         elif choice == 'reject':
@@ -2540,7 +2541,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 prior_id = task.get('_resume_decision')
                 if prior_id:
                     prior = self._get('decisions', prior_id)
-                    if prior['status'] == 'modified':
+                    if prior['status'] in ('modified', 'replied'):
                         decision['replaces_decision_id'] = prior_id
                         prior['replaced_by_decision_id'] = decision['id']
                         prior['outcome'] = 'The bot prepared a new proposal with your requested changes.'

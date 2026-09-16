@@ -53,12 +53,18 @@ class NativeBridge:
                 return json.dumps({'error': 'This action is still awaiting a decision.'})
             if self.completed.get(key):
                 return self.completed[key].pop(0)
+            needs_new_approval = (self.decision.get('action_type') == 'native_approval'
+                                  and fingerprint(self.decision['action']) == key and self.decision['status'] == 'replied')
             if self.decision.get('action_type') == 'native_approval' and fingerprint(self.decision['action']) == key:
-                if self.decision['status'] != 'approved':
+                if self.decision['status'] != 'approved' and not needs_new_approval:
                     return json.dumps({'error': 'The person did not approve this action.', 'correction': self.decision.get('correction')})
             record = self.receipt('native_call', action)
             if record.get('status') != 'recorded':
                 return json.dumps({'error': 'The Mac did not persist the tool intent. The tool did not run.'})
+            if needs_new_approval:
+                # A text reply closes the old card without granting its exact tool permission.
+                self.pause('native_approval', dict(receipt_id=record['id'], title=self.decision['title'],
+                    explanation=self.decision.get('explanation', ''), resource=self.decision.get('resource', '')))
             if 'routine_result' in record:
                 # Coconut records the queued run atomically. Do not start a second native runner.
                 return record['routine_result']

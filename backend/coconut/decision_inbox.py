@@ -47,7 +47,7 @@ class DecisionInbox:
                  and previous_task.get('conversation_bot_id', previous_task['bot_id'])
                  == task.get('conversation_bot_id', task['bot_id'])
                  and previous.get('action_type') in ('question', 'draft_message', 'native_approval')
-                 and previous['status'] in ('approved', 'rejected', 'modified', 'executed', 'failed')
+                 and previous['status'] in ('approved', 'rejected', 'modified', 'replied', 'executed', 'failed')
                  and bool(previous.get('selected_option_label') or previous.get('correction')))
         if not valid:
             if explicit is not None:
@@ -309,6 +309,8 @@ DECISION_INSTRUCTIONS = (
     'When a delegated task needs a human answer, create its card; do not relay a prose question for another bot to repeat. '
     'If a card already asks the same question, refer to it without creating another card. '
     'When answering a question about an existing card, explain in chat and leave that card pending. '
+    'A text response with status replied closes its card and resumes the task. Apply the response in the normal conversation. '
+    'Create a new card only if a human choice is still needed. Include the answer and current evidence in that card. '
     'Before ending a turn, check whether your reply asks the human to choose or offers optional work. '
     'Use the appropriate card tool first. Ordinary answers, progress reports, and completed results stay in chat. '
     'Write decision cards in Simplified Technical English. Use familiar words, active voice, and one idea per sentence. '

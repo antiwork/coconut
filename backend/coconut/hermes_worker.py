@@ -511,7 +511,14 @@ def conversation_input(request):
             prompt += '\n' + request['task']['_context_recovery']
     elif operation == 'resume':
         decision = request['decision']
-        if decision.get('status') == 'resolved' and decision.get('resolution') == 'work_scope_changed':
+        if decision.get('status') == 'replied':
+            prompt = ('The person replied with text. Coconut closed the old card. '
+                      'Use the reply and original proposal to continue the task in the normal conversation. '
+                      'Answer questions and apply requested changes. Create a new card only if a human choice is still needed. '
+                      'Include the answer and current evidence in that card. Do not repeat the old question unchanged. '
+                      'A question does not approve an action. A native approval still requires its exact choice. '
+                      'A message draft still requires Send on the current draft. Do not repeat completed tools.\n')
+        elif decision.get('status') == 'resolved' and decision.get('resolution') == 'work_scope_changed':
             prompt = decision['resolution_context'] + '\nWithdrawal is not approval or rejection of the remaining work.\n'
         elif decision.get('status') == 'resolved' and decision.get('resolution') == 'cancelled':
             prompt = ('The person cancelled this work. Coconut closed its decision. Do not execute the cancelled action. '

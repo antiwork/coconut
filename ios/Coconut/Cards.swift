@@ -1,6 +1,5 @@
 import SwiftUI
 import QuickLook
-import MarkdownUI
 
 struct DecisionCard: View {
     @Environment(AppStore.self) private var store
@@ -17,7 +16,6 @@ struct DecisionCard: View {
     @State private var submitting = false
     @State private var submittingOptionId: String?
     @State private var responseError: String?
-    @State private var showsEarlierReplies = false
     @State private var loadedPreviewIds: Set<String> = []
     @State private var editingDraft: Decision?
     private var canRespond: Bool { store.canSubmitDecision }
@@ -39,18 +37,12 @@ struct DecisionCard: View {
                 VStack(spacing: 0) {
                     botHeader.padding(.horizontal, 16)
                     Divider()
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            cardContent.padding(16)
-                            Color.clear.frame(height: 1).id("reply-bottom")
-                        }
-                        .scrollDismissesKeyboard(.interactively)
-                        .accessibilityIdentifier("inbox-card-scroll")
-                        .simultaneousGesture(TapGesture().onEnded { replyFocus?.wrappedValue = false })
-                        .onChange(of: replies.last?.id) { _, _ in
-                            proxy.scrollTo("reply-bottom", anchor: .bottom)
-                        }
+                    ScrollView {
+                        cardContent.padding(16)
                     }
+                    .scrollDismissesKeyboard(.interactively)
+                    .accessibilityIdentifier("inbox-card-scroll")
+                    .simultaneousGesture(TapGesture().onEnded { replyFocus?.wrappedValue = false })
                     if let replyFocus {
                         DecisionReplyComposer(decision: decision, focused: replyFocus, onSend: onRespond)
                             .padding(12)
@@ -66,7 +58,8 @@ struct DecisionCard: View {
 
     private var cardContent: some View {
         VStack(alignment: .leading, spacing: showsBot ? 10 : 14) {
-            if let previousId = decision.previousDecisionId {
+            if let previousId = decision.previousDecisionId,
+               store.decisions.first(where: { $0.id == previousId })?.status != "replied" {
                 let previous = store.decisions.first { $0.id == previousId }
                 let label = previous?.selectedOptionLabel.map { "Earlier choice: \($0)" } ?? "View earlier answer"
                 Group {
@@ -114,7 +107,6 @@ struct DecisionCard: View {
             if !showsSelection {
                 if decision.draft != nil { draftActions }
                 else if !decision.cardOptions.isEmpty { choices }
-                if showsBot { inlineReplies }
                 if !canRespond {
                     Text("Pair with your Mac to respond.").font(.caption).foregroundStyle(.secondary)
                 }
@@ -144,34 +136,6 @@ struct DecisionCard: View {
             .accessibilityIdentifier("inbox-context-\(decision.id)")
             .accessibilityLabel("Open this card in chat")
             .simultaneousGesture(TapGesture().onEnded { replyFocus?.wrappedValue = false; onRespond() })
-    }
-
-    private var replies: [Message] {
-        store.messages.filter {
-            $0.decisionId == decision.id && $0.kind == "text" && !$0.text.isEmpty
-        }.sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
-    }
-
-    private var inlineReplies: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if replies.count > 2 {
-                Button(showsEarlierReplies ? "Hide earlier replies" : "Earlier replies") {
-                    showsEarlierReplies.toggle()
-                }.font(.subheadline).foregroundStyle(.secondary).frame(minHeight: 44)
-                    .accessibilityIdentifier("decision-earlier-replies")
-            }
-            ForEach(showsEarlierReplies ? replies : Array(replies.suffix(2))) { message in
-                HStack {
-                    if message.role == "user" { Spacer(minLength: 24) }
-                    Markdown(message.text).markdownTextStyle { FontSize(15) }
-                        .textSelection(.enabled)
-                        .padding(message.role == "user" ? 12 : 0)
-                        .background(message.role == "user" ? BoardStyle.paper : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 16))
-                    if message.role != "user" { Spacer(minLength: 0) }
-                }
-            }
-        }
     }
 
     private var draftActions: some View {

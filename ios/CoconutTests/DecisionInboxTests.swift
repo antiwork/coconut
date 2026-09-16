@@ -2,6 +2,20 @@ import XCTest
 @testable import Coconut
 
 final class DecisionInboxTests: XCTestCase {
+    @MainActor
+    func testTextReplyRemovesCardAndKeepsMessage() async throws {
+        let store = AppStore(demo: true)
+        let decision = try XCTUnwrap(store.decisions.first)
+        let before = store.inboxBadgeCount
+        let sent = await store.replyToDecision(decision, text: "What did you verify?")
+        XCTAssertTrue(sent)
+        XCTAssertEqual(store.inboxBadgeCount, before - 1)
+        XCTAssertEqual(store.decisions.first { $0.id == decision.id }?.status, "replied")
+        let visible = TranscriptPresentation.visibleMessages(store.messages, artifacts: store.artifacts, decisions: store.decisions)
+        XCTAssertFalse(visible.contains { $0.kind == "decision" && $0.decisionId == decision.id })
+        XCTAssertEqual(visible.filter { $0.role == "user" && $0.decisionId == decision.id }.map(\.text), ["What did you verify?"])
+    }
+
     func testSwipesOnlyOrganizeAndRespectCancellation() {
         XCTAssertNil(InboxSwipeAction.resolve(translation: 12, projected: 500, width: 390, isProposal: true))
         XCTAssertNil(InboxSwipeAction.resolve(translation: -40, projected: -50, width: 390, isProposal: true))

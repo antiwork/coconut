@@ -25,13 +25,13 @@ struct DecisionReplyComposer: View {
                 }
                 .buttonStyle(.plain).accessibilityLabel("Send reply")
                 .accessibilityIdentifier("send-decision-reply-\(decision.id)")
-                .disabled(!canRespond || sendingReply || decision.replyPending == true ||
+                .disabled(!canRespond || sendingReply ||
                           (store.decisionReplyDrafts[decision.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).stroke(BoardStyle.line))
-            if sendingReply || decision.replyPending == true {
-                Text("Waiting for reply").font(.caption).foregroundStyle(.secondary)
+            if sendingReply {
+                Text("Sending…").font(.caption).foregroundStyle(.secondary)
             }
             if let responseError {
                 Text(responseError).font(.caption).foregroundStyle(.secondary)

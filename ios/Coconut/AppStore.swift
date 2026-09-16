@@ -653,7 +653,7 @@ final class AppStore {
 
     @discardableResult
     func answer(_ decision: Decision, choice: String, correction: String? = nil, optionId: String? = nil) async -> Bool {
-        guard ["approve", "reject", "modify"].contains(choice) else { return false }
+        guard ["approve", "reject", "modify", "reply"].contains(choice) else { return false }
         guard !answeringDecisionIds.contains(decision.id) else { return false }
         answeringDecisionIds.insert(decision.id)
         defer { answeringDecisionIds.remove(decision.id) }
@@ -665,7 +665,7 @@ final class AppStore {
                 return false
             }
             if let option, option.answer != choice { error = "This option requires a different response."; return false }
-            decisions[index].status = choice == "modify" ? "modified" : choice == "approve" ? (decision.draft == nil ? "executed" : "approved") : "rejected"
+            decisions[index].status = choice == "reply" ? "replied" : choice == "modify" ? "modified" : choice == "approve" ? (decision.draft == nil ? "executed" : "approved") : "rejected"
             decisions[index].correction = correction ?? option?.modification
             decisions[index].selectedOptionId = option?.id
             decisions[index].selectedOptionLabel = option?.label
@@ -675,12 +675,18 @@ final class AppStore {
             }
             decisions[index].decidedBy = "You (preview)"
             decisions[index].decidedAt = Self.now
-            decisions[index].outcome = choice == "modify" ? "Preview: the bot would prepare a new proposal. No revised action is approved." : choice == "approve" ? "Preview result saved. No real action ran." : "You rejected the action."
+            decisions[index].outcome = choice == "reply" ? "Reply received. The bot will continue." : choice == "modify" ? "Preview: the bot would prepare a new proposal. No revised action is approved." : choice == "approve" ? "Preview result saved. No real action ran." : "You rejected the action."
             if let taskIndex = tasks.firstIndex(where: { $0.id == decision.taskId }) {
-                tasks[taskIndex].status = choice == "modify" ? "queued" : "completed"
+                tasks[taskIndex].status = ["modify", "reply"].contains(choice) ? "queued" : "completed"
                 tasks[taskIndex].summary = decisions[index].outcome ?? ""
             }
-            if let botIndex = bots.firstIndex(where: { $0.id == decision.botId }) { bots[botIndex].status = choice == "modify" ? "working" : "idle" }
+            if let botIndex = bots.firstIndex(where: { $0.id == decision.botId }) { bots[botIndex].status = ["modify", "reply"].contains(choice) ? "working" : "idle" }
+            if choice == "reply", let correction {
+                let task = tasks.first { $0.id == decision.taskId }
+                messages.append(Message(id: UUID().uuidString, botId: task?.conversationBotId ?? decision.botId,
+                    taskId: decision.taskId, role: "user", kind: "text", text: correction,
+                    decisionId: decision.id, artifactId: nil, createdAt: Self.now, streaming: false, threadId: task?.threadId))
+            }
             if choice == "approve" && decision.draft == nil {
                 let task = tasks.first { $0.id == decision.taskId }
                 let conversationBotId = task?.conversationBotId ?? decision.botId
@@ -768,13 +774,9 @@ final class AppStore {
     }
 
     func replyToDecision(_ decision: Decision, text: String) async -> Bool {
-        if isDemo {
-            await requestContext(decision, question: text)
-            return true
-        }
-        let recorded: Message? = await write("decisions/\(decision.id)/reply",
-            payload: DecisionReplyRequest(text: text, revision: decision.revision), as: Message.self)
-        return recorded != nil
+        let reply = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reply.isEmpty else { return false }
+        return await answer(decision, choice: "reply", correction: reply)
     }
 
     func requestContext(_ decision: Decision, question: String) async {
@@ -1636,7 +1638,6 @@ private struct OutgoingCache: Codable { let deviceId: String; let messages: [Out
 private struct AnswerRequest: Encodable { let choice: String; let revision: Int; let correction: String?; let optionId: String?; let draftHash: String?; let previewsHash: String? }
 private struct DraftEditRequest: Encodable { let revision: Int; let draft: MessageDraft }
 private struct InboxRequest: Encodable { let action: String; let revision: Int; let swipeId: String? }
-private struct DecisionReplyRequest: Encodable { let text: String; let revision: Int }
 private struct ReplyRequest: Encodable { let text: String; let attachmentIds: [String]; let decisionId: String?; let mentionedBotIds: [String] }
 private struct ContextRequest: Encodable { let question: String }
 

@@ -7,9 +7,11 @@ enum TranscriptPresentation {
         "done", "complete", "completed", "task complete", "task completed", "work complete", "work completed"
     ]
 
-    static func visibleMessages(_ messages: [Message], artifacts: [Artifact]) -> [Message] {
+    static func visibleMessages(_ messages: [Message], artifacts: [Artifact], decisions: [Decision] = []) -> [Message] {
         let byID = Dictionary(artifacts.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        let replied = Set(decisions.filter { $0.status == "replied" }.map(\.id))
         return messages.filter { message in
+            if message.kind == "decision", let id = message.decisionId, replied.contains(id) { return false }
             if message.reactionEvent != nil || isSilenceControl(message) { return false }
             if isSettingsNotice(message) { return false }
             let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
