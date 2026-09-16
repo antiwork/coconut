@@ -736,6 +736,13 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
     def _setting(self, key: str, default: Any = None) -> Any:
         with self.lock:
+            cache = getattr(self, '_read_cache', None)
+            if cache is not None:
+                if 'settings' not in cache:
+                    row = self.db.execute('SELECT json_group_object(key,value) FROM settings').fetchone()
+                    cache['settings'] = json.loads(row[0])
+                value = cache['settings'].get(key)
+                return json.loads(value) if value is not None else default
             row = self._read_one('SELECT value FROM settings WHERE key=?', (key,))
         return json.loads(row[0]) if row else default
 

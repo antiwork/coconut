@@ -12,6 +12,28 @@ class WorkReadCostTests(unittest.TestCase):
     track = fixtures.TrackedWorkTests.track
     write = fixtures.TrackedWorkTests.write
 
+    def test_work_snapshot_reads_settings_once_and_reloads_on_next_snapshot(self):
+        for index in range(8):
+            self.track(key='work-' + str(index), title='Work ' + str(index))
+        self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', ('probe', json.dumps({'value': 1})))
+        with self.service._read_view() as view, view._read_transaction():
+            queries = []
+            view.db.set_trace_callback(queries.append)
+            items = view._work_projection(view._all('artifacts'))
+            self.assertEqual(len(items), 8)
+            value = view._setting('probe')
+            value['value'] = 99
+            self.assertEqual(view._setting('probe'), {'value': 1})
+            self.assertEqual(view._setting('missing', 'default'), 'default')
+            settings_reads = [q for q in queries if 'FROM settings' in q]
+            self.assertEqual(len(settings_reads), 1)
+        self.service.db.execute('UPDATE settings SET value=? WHERE key=?', (json.dumps({'value': 2}), 'probe'))
+        with self.service._read_view() as view, view._read_transaction():
+            self.assertEqual(view._setting('probe'), {'value': 2})
+        with self.service.transaction():
+            self.service.db.execute('UPDATE settings SET value=? WHERE key=?', (json.dumps({'value': 3}), 'probe'))
+            self.assertEqual(self.service._setting('probe'), {'value': 3})
+
     def test_work_reads_keep_completed_tool_history_in_storage(self):
         item = self.track()
         with self.service.transaction():
