@@ -934,13 +934,16 @@ def run_turn(request, emit, request_receipt):
         if os.environ.get('COCONUT_DEFAULT_HOME'):
             from native_mcp import refresh_inheritance
             mcp_names = refresh_inheritance(os.environ['COCONUT_DEFAULT_HOME'], allow_reset=len(active_scopes) == 1)
+        timing.mark('mcp_inheritance')
         from tools.skills_sync import sync_skills
         sync_skills(quiet=True)
+        timing.mark('skills_sync')
         from run_agent import AIAgent
+        timing.mark('agent_import')
         if mcp_names:
             from tools.mcp_tool_discovery import discover_mcp_tools
             discover_mcp_tools(allowed_mcp_names=mcp_names)
-        timing.mark('tools')
+        timing.mark('mcp_discovery')
         from hermes_state import SessionDB
         from tools.registry import registry as native_registry
         registry = scope

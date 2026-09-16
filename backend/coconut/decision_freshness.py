@@ -194,12 +194,13 @@ class DecisionFreshness:
             if self.stopping.is_set() or self.restart_pending:
                 return
             tasks = {t['id']: t for t in self._all('tasks')}
-            records, artifacts = self._all('native_receipts'), self._all('artifacts')
             decisions, contexts = self._all('decisions'), self._all('contexts')
             self._cancel_stale_decision_refreshes()
             contexts = self._all('contexts')
             if any(c.get('_decision_refresh') and c['status'] in ('queued', 'working') for c in contexts):
                 return
+            records = None
+            artifacts = self._all('artifacts')
             current = datetime.now(timezone.utc)
             for decision in sorted(decisions, key=lambda d: d.get('_freshness', {}).get('queued_at', d['created_at'])):
                 task = tasks[decision['task_id']]
@@ -209,6 +210,8 @@ class DecisionFreshness:
                         or self._human_reply_pending(task, contexts) or self._refresh_session_busy(task)
                         or any(c['decision_id'] == decision['id'] and c['status'] in ('queued', 'working') for c in contexts)):
                     continue
+                if records is None:
+                    records = self._all('native_receipts')
                 fingerprint, work = self._decision_evidence(decision, tasks, records, artifacts)
                 previous = decision.get('_freshness', {})
                 if age(previous.get('queued_at'), current) < RETRY_SECONDS:

@@ -43,6 +43,29 @@ class WorkReadCostTests(unittest.TestCase):
                          [{'output': '3'}, {'output': '4'}, {'session_id': 'process-1', 'notify_on_complete': True}])
         self.assertEqual(len(original('native_receipts')), 6)
 
+    def test_work_wait_and_cancel_do_not_scan_completed_tool_history(self):
+        item = self.track()
+        self.track(key='second-outcome', title='Keep the second outcome')
+        with self.service.transaction():
+            task = self.service._get('tasks', self.task['id'])
+            self.service._put('native_receipts', dict(id='completed-history', task_id='unrelated',
+                turn_id='old', state='completed', created_at=now(), action={'name': 'terminal', 'arguments': {}},
+                result=json.dumps({'output': 'A retained tool result'})))
+            self.service._put('native_receipts', dict(id='current-process', task_id=task['id'],
+                turn_id=task.get('_native_turn_id'), state='completed', created_at=now(),
+                action={'name': 'terminal', 'arguments': {}},
+                result=json.dumps({'session_id': 'current-test', 'notify_on_complete': True})))
+        original = self.service._all
+        def read(table):
+            self.assertNotEqual(table, 'native_receipts', 'A work action must not decode unrelated tool history.')
+            return original(table)
+        with patch.object(self.service, '_all', side_effect=read):
+            result = self.service.wait_for_task(task['id'], dict(process_id='current-test', reason='Waiting for tests'))
+            self.assertEqual(result['status'], 'waiting')
+            self.write('POST', '/v1/work/items/' + item['id'] + '/cancel', {})
+        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'working')
+        self.assertEqual(self.service._get('native_receipts', 'completed-history')['state'], 'completed')
+
     def test_work_receipts_preserve_unknown_results_and_pending_deliveries(self):
         with self.service.transaction():
             for identity, state, fields in [

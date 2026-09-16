@@ -272,6 +272,6 @@ class NativeExecution:
     def _advance_recovery_input(self, task):
         unknown = task['_self_recovery'].get('unknown_tools', [])
         unknown += [{k: r.get(k) for k in ('id', 'task_id', 'turn_id', 'action', 'created_at')}
-                    for r in self._all('native_receipts') if r['task_id'] == task['id'] and r['state'] == 'executing']
+                    for r in self._native_task_receipts(task['id'], state='executing')]
         task['_self_recovery']['unknown_tools'] = list({r['id']: r for r in unknown}.values())
         self._advance_input(task)

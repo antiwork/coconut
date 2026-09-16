@@ -170,7 +170,7 @@ class WorkRecovery:
                                and not c.get('_decision_refresh')
                                and c['status'] in ('queued', 'working', 'completed', 'failed') for c in contexts[index + 1:])):
                     continue
-                records = [r for r in self._all('native_receipts') if r['turn_id'] == old['id'] and r['state'] == 'executing']
+                records = self._native_task_receipts(task['id'], turn_id=old['id'], state='executing')
                 records = old.get('_recovery_unknown_tools', []) + records
                 question = old['question']
                 context = dict(old, id=uid(), status='queued',

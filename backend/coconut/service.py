@@ -220,7 +220,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
     @contextlib.contextmanager
     def transaction(self):
-        with self.lock:
+        import sys
+        from .turn_timings import timed_lock
+        with timed_lock(self.lock, sys._getframe(2).f_code.co_name):
             self.db.execute('BEGIN IMMEDIATE')
             self._profile_pending = {}
             try:
@@ -308,6 +310,15 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         if key not in cache:
             cache[key] = self.db.execute(statement, parameters).fetchone()
         return cache[key]
+
+    def _native_task_receipts(self, task_id, *, turn_id=None, state=None):
+        clauses, values = ["json_extract(data,'$.task_id')=?"], [task_id]
+        for field, value in (('turn_id', turn_id), ('state', state)):
+            if value is not None:
+                clauses.append(f"json_extract(data,'$.{field}')=?")
+                values.append(value)
+        return [json.loads(row[0]) for row in self.db.execute(
+            'SELECT data FROM native_receipts WHERE ' + ' AND '.join(clauses) + ' ORDER BY rowid', values)]
 
     def _get(self, table: str, object_id: str) -> dict:
         with self.lock:
@@ -2982,7 +2993,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                                                            '_kanban_external_id': context.get('_kanban_claim', {}).get('external_id')}
                     provider_task['_conversation_epoch'] = context.get('_conversation_epoch', task.get('_conversation_epoch', self._setting('conversation_epoch')))
                     # Replies and maintenance use their own contexts, outside the source routine's execution claim.
-                    provider_task['_native_receipts'] = [r for r in self._all('native_receipts') if r['task_id'] == task['id'] and r.get('turn_id') == context_id and r['state'] == 'completed']
+                    provider_task['_native_receipts'] = self._native_task_receipts(task['id'], turn_id=context_id, state='completed')
                     if context.get('_background_completion'):
                         provider_task['_background_completion'] = context['_background_completion']
                     provider_task['_decision_reply'] = context.get('_reply_device') is not None

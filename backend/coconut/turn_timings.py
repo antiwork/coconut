@@ -20,3 +20,23 @@ class TurnTimings:
 
     def report(self):
         logging.getLogger(__name__).warning('coconut.turn_timing %s', json.dumps(self.payload()))
+
+
+from contextlib import contextmanager
+import threading
+
+
+@contextmanager
+def timed_lock(lock, operation):
+    started = time.perf_counter()
+    acquired = started
+    try:
+        with lock:
+            acquired = time.perf_counter()
+            yield
+    finally:
+        ended = time.perf_counter()
+        if ended - started >= 1:
+            logging.getLogger(__name__).warning('coconut.transaction_timing %s', json.dumps(dict(
+                operation=operation, thread=threading.current_thread().name,
+                wait_ms=round((acquired - started) * 1000, 1), hold_ms=round((ended - acquired) * 1000, 1))))

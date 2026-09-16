@@ -107,7 +107,7 @@ class WorkStatus:
                 if parent and parent not in roots:
                     roots.add(parent)
                     pending.append(parent)
-        records = self._all('native_receipts')
+        records = self._pending_completion_receipts()
         for identity in list(roots):
             if identity in tasks:
                 roots.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
@@ -138,7 +138,7 @@ class WorkStatus:
                             and (record.get('completed_at') or record.get('created_at', '')) > max(newer)
                             and (record.get('action', {}).get('name') in ('terminal', 'process', 'execute_code')
                                  or record.get('action', {}).get('name', '').startswith('mcp__'))
-                            for record in self._all('native_receipts'))
+                            for record in self._native_task_receipts(task['id']))
                 if not fresh:
                     return
         text = require_text(payload, 'activity', 80)
@@ -337,17 +337,18 @@ class WorkStatus:
         # Native intake routines serve other sources too. Steer the cancelled outcome only.
         shared = {i for i in checks & tasks.keys() if self._assignment(tasks[i]).get('_native_job')}
         shared |= {self._assignment(tasks[i])['id'] for i in list(shared)}
+        records = self._pending_completion_receipts()
         for routine_task_id in list(shared):
-            shared.update(self._work_chain(tasks[routine_task_id], tasks, self._all('native_receipts'), include_continuations=True))
+            shared.update(self._work_chain(tasks[routine_task_id], tasks, records, include_continuations=True))
         for other in self._work_projection(others):
             if other['work_state'] in ('completed', 'cancelled'):
                 continue
             for field in ('task_id', '_review_task_id', '_activity_task_id', '_external_wait_task_id'):
                 root = tasks.get(other.get(field))
                 if root:
-                    shared.update(self._work_chain(root, tasks, self._all('native_receipts'), include_continuations=True))
+                    shared.update(self._work_chain(root, tasks, records, include_continuations=True))
                     root = tasks.get(root.get('_assignment_task_id'), root)
-                    shared.update(self._work_chain(root, tasks, self._all('native_receipts'), include_continuations=True))
+                    shared.update(self._work_chain(root, tasks, records, include_continuations=True))
         for task_id in sorted(owned):
             task = tasks[task_id]
             if task_id in shared:

@@ -189,7 +189,7 @@ class WorkProgress:
                 if not self._decision_wait_pending(decision):
                     return {'status': 'completed', 'decision_id': identity, 'result': self._decision_wait_result(decision)}
                 receipt_id = digest(json.dumps([task_id, task.get('_native_turn_id'), 'decision', identity]))
-                if not any(r['id'] == receipt_id for r in self._all('native_receipts')):
+                if not self.db.execute('SELECT 1 FROM native_receipts WHERE id=?', (receipt_id,)).fetchone():
                     action = {'name': 'coconut_wait', 'arguments': {'decision_id': identity, 'reason': reason}}
                     self._put('native_receipts', dict(id=receipt_id, task_id=task_id, turn_id=task.get('_native_turn_id'),
                         action=action, action_hash=digest(encoded(action)), state='completed', result='{}',
@@ -199,7 +199,7 @@ class WorkProgress:
             from .background_processes import subscription
             processes = {}
             maintenance = {c['id'] for c in self._all('contexts') if c.get('_decision_refresh')}
-            for record in self._all('native_receipts'):
+            for record in (r for identity in process_owners for r in self._native_task_receipts(identity)):
                 process_id = subscription(record)
                 owner = process_owners.get(record['task_id'])
                 if (record.get('turn_id') not in maintenance and process_id and owner and owner['bot_id'] == task['bot_id']
@@ -212,7 +212,8 @@ class WorkProgress:
                     raise ServiceError(400, 'Choose one process from this exchange and give one short reason.')
                 source = processes[process_id]
                 identity = digest(json.dumps([task_id, source['id']]))
-                existing = next((r for r in self._all('native_receipts') if r['id'] == identity), None)
+                row = self.db.execute('SELECT data FROM native_receipts WHERE id=?', (identity,)).fetchone()
+                existing = json.loads(row[0]) if row else None
                 if source.get('_completion_text') or (existing and existing.get('_process_delivery')):
                     return {'status': 'completed', 'process_id': process_id,
                             'result': source.get('_completion_text') or (existing or {}).get('_completion_text', 'The result was already received.')}
@@ -239,19 +240,20 @@ class WorkProgress:
                 raise ServiceError(400, 'Choose a task from this exchange and give one short reason.')
             target = peers[target_id]
             tasks = {t['id']: t for t in self._all('tasks')}
-            if task_id in self._work_chain(target, tasks, self._all('native_receipts'), include_continuations=True):
+            records = self._pending_completion_receipts()
+            if task_id in self._work_chain(target, tasks, records, include_continuations=True):
                 raise ServiceError(409, 'This task already depends on your result. Do not create a circular wait.')
             assignment = self._assignment(task)
             turn_ids = {t['id'] for t in tasks.values() if self._assignment(t)['id'] == assignment['id']}
             existing_dependency = (target_id in assignment.get('_waiting_on', [])
                 or any(r['task_id'] in turn_ids and target_id in (r.get('_relay_task_id'), r.get('_wait_task_id'))
-                       and not r.get('_process_delivery') for r in self._all('native_receipts')))
+                       and not r.get('_process_delivery') for r in records))
             if existing_dependency:
                 assignment['_explicit_work_waits'] = list(dict.fromkeys(assignment.get('_explicit_work_waits', []) + [target_id]))
                 self._put('tasks', assignment)
                 return {'status': 'waiting', 'task_id': target_id, 'reason': reason}
             identity = digest(json.dumps([task_id, task.get('_native_turn_id'), target_id]))
-            existing = next((r for r in self._all('native_receipts') if r['id'] == identity), None)
+            existing = self.db.execute('SELECT 1 FROM native_receipts WHERE id=?', (identity,)).fetchone()
             if not existing:
                 action = {'name': 'coconut_wait', 'arguments': {'task_id': target_id, 'reason': reason}}
                 self._put('native_receipts', dict(id=identity, task_id=task_id, turn_id=task.get('_native_turn_id'),
