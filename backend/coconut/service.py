@@ -93,10 +93,11 @@ from .service_restart import ServiceRestart
 from .tracked_work import TrackedWork
 from .work_model import WorkModel
 from .work_recovery import WorkRecovery
+from .decision_freshness import DecisionFreshness
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
-class Service(StateSync, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart):
+class Service(StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -666,7 +667,7 @@ class Service(StateSync, WorkRecovery, WorkModel, WorkSources, SilentResponses, 
                     state['routines'] = [dict(self._public(r), last_task_id=previous.get(r['id']))
                                          for r in routines if r['bot_id'] in visible and not r.get('_deleted')]
                 state['artifacts'] = [self._public(a) for a in self._work_projection([self._get('artifacts', a['id']) for a in state['artifacts']])]
-                replying = {c['decision_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
+                replying = {c['decision_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working') and not c.get('_decision_refresh')}
                 histories = {}
                 for decision in state['decisions']:
                     decision['reply_pending'] = decision['id'] in replying
@@ -2166,6 +2167,7 @@ class Service(StateSync, WorkRecovery, WorkModel, WorkSources, SilentResponses, 
     def _dispatch(self):
         next_routine_tick = 0
         next_recovery_tick = 0
+        next_decision_tick = 0
         while not self.stopping.is_set():
             if time.monotonic() >= next_routine_tick:
                 next_routine_tick = time.monotonic() + 1
@@ -2181,6 +2183,12 @@ class Service(StateSync, WorkRecovery, WorkModel, WorkSources, SilentResponses, 
                     self._queue_context_recoveries()
                 except Exception:
                     logging.getLogger(__name__).exception('Work recovery failed; the next scan will retry.')
+            if time.monotonic() >= next_decision_tick:
+                next_decision_tick = time.monotonic() + 60
+                try:
+                    self._queue_decision_refreshes()
+                except Exception:
+                    logging.getLogger(__name__).exception('Decision refresh failed; the next scan will retry.')
             try:
                 self._dispatch_pending()
             except Exception:
@@ -2194,6 +2202,7 @@ class Service(StateSync, WorkRecovery, WorkModel, WorkSources, SilentResponses, 
             if self.restart_pending:
                 self.changed.wait(timeout=.2)
                 return
+            self._cancel_stale_decision_refreshes()
             self.running = {k: v for k, v in self.running.items() if v.is_alive()}
             self.context_threads = {k: v for k, v in self.context_threads.items() if v.is_alive()}
             capacity = capacity_state(self._setting('work_capacity'))['effective_limit']
@@ -2202,8 +2211,11 @@ class Service(StateSync, WorkRecovery, WorkModel, WorkSources, SilentResponses, 
                           for identity in self.context_threads)
             status_running = sum(bool(self._get('tasks', identity).get('_work_status_only')) for identity in self.running)
             slots = len(self.running) - status_running + len(self.context_threads)
+            refresh_active = any(self._get('contexts', identity).get('_decision_refresh') for identity in self.context_threads)
             for context in self._all('contexts'):
                 task = self._get('tasks', context['task_id'])
+                if context.get('_decision_refresh') and refresh_active:
+                    continue
                 if context['status'] != 'queued' or context['id'] in self.context_threads or self._task_paused(task):
                     continue
                 self._ensure_execution_session(task)
@@ -2211,6 +2223,7 @@ class Service(StateSync, WorkRecovery, WorkModel, WorkSources, SilentResponses, 
                 if slots >= capacity or key in active:
                     continue
                 self._start_context(context['id'])
+                refresh_active = refresh_active or bool(context.get('_decision_refresh'))
                 active.add(key)
                 slots += 1
             for task in self._dispatch_order(self._all('tasks')):
@@ -2379,8 +2392,9 @@ class Service(StateSync, WorkRecovery, WorkModel, WorkSources, SilentResponses, 
                     provider_task['_tracked_work'] = view._tracked_items_input(task)
                     if not task.get('_work_status_only'):
                         provider_task['_recent_work_updates'] = view.recent_work_updates(task)
-                    if task.get('_work_context_id'):
-                        provider_task['_work_context'] = view.work_context_input(task['_work_context_id'])
+                    work_id = task.get('_work_context_id') or assignment.get('_work_context_id')
+                    if work_id:
+                        provider_task['_work_context'] = view.work_context_input(work_id)
                         provider_task['_work_status_only'] = task.get('_work_status_only', False)
                     provider_task.update(view.decision_chat_input(task))
                     provider_task.update(view._bot_deletion_input(task))
@@ -2813,9 +2827,10 @@ class Service(StateSync, WorkRecovery, WorkModel, WorkSources, SilentResponses, 
             return False
         context.update(status='failed', error_code='tool_result_unknown')
         self._put('contexts', context)
-        self._message(context['bot_id'],
-                      'A tool stopped without a result. Check its result on the Mac before trying again. The decision remains available.',
-                      task_id=context['task_id'], decision_id=context['decision_id'])
+        if not context.get('_decision_refresh'):
+            self._message(context['bot_id'],
+                          'A tool stopped without a result. Check its result on the Mac before trying again. The decision remains available.',
+                          task_id=context['task_id'], decision_id=context['decision_id'])
         self._event('context.failed', {key: context[key] for key in ('id', 'decision_id', 'status', 'error_code')},
                     context['bot_id'], context['task_id'])
         return True
@@ -2834,6 +2849,15 @@ class Service(StateSync, WorkRecovery, WorkModel, WorkSources, SilentResponses, 
                     bot = self._get('bots', task['bot_id'])
                     if context['status'] != 'queued' or task['status'] == 'cancelled' or self._task_paused(task) or self.stopping.is_set():
                         return
+                    if context.get('_decision_refresh'):
+                        decision = self._get('decisions', context['decision_id'])
+                        if (decision['status'] != 'pending' or decision['revision'] != context['_decision_revision']
+                                or context.get('_conversation_epoch') != task.get('_conversation_epoch')):
+                            context['status'] = 'cancelled'
+                            self._put('contexts', context)
+                            self._refresh_bot(bot['id'])
+                            self._event('context.cancelled', {'id': context_id, 'decision_id': decision['id']}, bot['id'], task['id'])
+                            return
                     if context.get('_background_completion'):
                         decision = self._get('decisions', context['decision_id'])
                         if (decision['status'] != 'pending'
@@ -2853,12 +2877,13 @@ class Service(StateSync, WorkRecovery, WorkModel, WorkSources, SilentResponses, 
                     decision = self._get('decisions', context['decision_id'])
                     provider_task = self._public(task) | {'_execution_session_id': task.get('_execution_session_id')}
                     provider_task['_conversation_epoch'] = context.get('_conversation_epoch', task.get('_conversation_epoch', self._setting('conversation_epoch')))
-                    if task.get('_native_job'):
-                        provider_task['_native_job'] = task['_native_job']
+                    # Replies and maintenance use their own contexts, outside the source routine's execution claim.
                     provider_task['_native_receipts'] = [r for r in self._all('native_receipts') if r['task_id'] == task['id'] and r.get('turn_id') == context_id and r['state'] == 'completed']
                     if context.get('_background_completion'):
                         provider_task['_background_completion'] = context['_background_completion']
                     provider_task['_decision_reply'] = context.get('_reply_device') is not None
+                    provider_task['_decision_refresh'] = bool(context.get('_decision_refresh'))
+                    provider_task['_context_id'] = context_id
                     provider_task['_context_message_id'] = context.get('_message_id')
                     if context.get('_recovery_attempt'):
                         provider_task['_context_recovery'] = context['_context_recovery']
@@ -2868,6 +2893,8 @@ class Service(StateSync, WorkRecovery, WorkModel, WorkSources, SilentResponses, 
                 context_failure = {}
                 def emit(kind, payload):
                     if kind == 'decision_response':
+                        if context.get('_decision_refresh'):
+                            return self.refresh_decision(context_id, payload)
                         return self.resolve_decision_reply(context_id, payload)
                     if kind in ('native_call', 'native_result'):
                         return self.native_event(task['id'], kind, payload, context_id=context_id)
@@ -2892,12 +2919,16 @@ class Service(StateSync, WorkRecovery, WorkModel, WorkSources, SilentResponses, 
                     context = self._get('contexts', context_id)
                     if context['status'] == 'cancelled' or self._get('tasks', task['id'])['status'] == 'cancelled':
                         return
+                    if context.get('_decision_refresh') and not context.get('_refresh_recorded'):
+                        status = 'failed'
+                        context['error_code'] = 'decision_refresh_incomplete'
                     context['status'] = status
                     if context_failure:
                         context['error_code'] = context_failure['error_code']
                     self._put('contexts', context)
                     self._refresh_bot(bot['id'])
-                    self._message(bot['id'], answer, task_id=task['id'], decision_id=context['decision_id'])
+                    if not context.get('_decision_refresh'):
+                        self._message(bot['id'], answer, task_id=task['id'], decision_id=context['decision_id'])
                     self._event('context.completed' if status == 'completed' else 'context.failed', {'id': context_id, 'decision_id': context['decision_id'], 'status': status, 'error_code': context.get('error_code')}, bot['id'], task['id'])
         thread = threading.Thread(target=run, daemon=True, name='decision-context')
         self.context_threads[context_id] = thread

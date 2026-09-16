@@ -232,34 +232,41 @@ class DecisionInbox:
             revision = payload.get('revision')
             if not isinstance(revision, dict):
                 return {'status': 'pending', 'error': 'Supply the revised question and choices, or ask for clarification.'}
-            options = decision_options(revision.get('options'))
-            title = revision.get('title')
-            if not isinstance(title, str) or not title.strip() or len(title) > 160:
-                raise ServiceError(400, 'Supply the revised question.')
-            recommended = revision.get('recommended_option_id')
-            if recommended is not None and recommended not in {o['id'] for o in options}:
-                raise ServiceError(400, 'Recommend a current choice.')
-            if 'previous_decision_id' in revision:
-                decision.update(self.decision_followup(task, revision))
-            decision.update(title=title, options=options,
-                            merge_pr_url=self._merge_decision_url(revision, task),
-                            recommended_option_id=recommended, revision=decision['revision'] + 1,
-                            inbox_deferred_at=None)
-            for field, limit in (('context', 2000), ('explanation', 2000), ('evidence', 8000), ('uncertainty', 2000), ('risk', 2000)):
-                value = revision.get(field, '')
-                if not isinstance(value, str) or len(value) > limit:
-                    raise ServiceError(400, 'Use concise text for decision details.')
-                decision[field] = value
-            decision.setdefault('_answers', []).append({'choice': 'revise', 'correction': context['question'], 'decided_by': context['_reply_device']})
-            self._put('decisions', decision)
-            self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
-            return {'status': 'recorded', 'decision': self._public(decision)}
+            return self._revise_question(decision, task, revision, context['question'], context['_reply_device'])
         result = self.answer_native(decision, task, {
             'choice': choice, 'option_id': payload.get('option_id'),
             'correction': context['question'] if choice == 'modify' else '',
             'revision': decision['revision'],
         }, context['_reply_device'], callbacks)
         return {'status': 'recorded', 'decision': result}
+
+    def _revise_question(self, decision, task, revision, reason, actor=None):
+        from .service import ServiceError
+        options = decision_options(revision.get('options'))
+        if decision.get('_recovery_work_ids') and options != decision_options(decision['options']):
+            raise ServiceError(400, 'Recovery actions are fixed. Keep the existing options, or withdraw an obsolete recovery question.')
+        title = revision.get('title')
+        if not isinstance(title, str) or not title.strip() or len(title) > 160:
+            raise ServiceError(400, 'Supply the revised question.')
+        recommended = revision.get('recommended_option_id')
+        if recommended is not None and recommended not in {o['id'] for o in options}:
+            raise ServiceError(400, 'Recommend a current choice.')
+        if 'previous_decision_id' in revision:
+            decision.update(self.decision_followup(task, revision))
+        merge_url = self._merge_decision_url({'merge_pr_url': revision.get('merge_pr_url', decision.get('merge_pr_url'))}, task)
+        decision.update(title=title, options=options,
+                        merge_pr_url=merge_url, _merge_pr_head=self._merge_decision_head(merge_url, task),
+                        recommended_option_id=recommended, revision=decision['revision'] + 1,
+                        inbox_deferred_at=None)
+        for field, limit in (('context', 2000), ('explanation', 2000), ('evidence', 8000), ('uncertainty', 2000), ('risk', 2000)):
+            value = revision.get(field, '')
+            if not isinstance(value, str) or len(value) > limit:
+                raise ServiceError(400, 'Use concise text for decision details.')
+            decision[field] = value
+        decision.setdefault('_answers', []).append({'choice': 'revise', 'correction': reason, 'decided_by': actor})
+        self._put('decisions', decision)
+        self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
+        return {'status': 'recorded', 'decision': self._public(decision)}
 
 
 DECISION_INSTRUCTIONS = (
@@ -283,6 +290,12 @@ DECISION_INSTRUCTIONS = (
     'For a manual step, explain the required step and ask for its result in a card. Never invent a completed result. '
     'For visual approval, provide the actual preview in chat before presenting the approval card. '
     'Do not ask again for work already authorized. Native Hermes approval checks still apply. '
+    'For an authorized code change, handle ordinary local setup and debugging yourself. '
+    'Use separate git worktrees and disposable OrbStack containers with task-owned databases, caches, and storage. '
+    'Install pinned public dependencies, inspect local diagnostics, and run local tests within that request. '
+    'Do not turn each setup step, missing package, failed test, or recovery attempt into a human decision. '
+    'Preserve explicit human limits. Ask only for missing credentials, material cost, destructive shared changes, '
+    'production access, or a real product choice that the person has not already settled. '
     'When a delegated task needs a human answer, create its card; do not relay a prose question for another bot to repeat. '
     'If a card already asks the same question, refer to it without creating another card. '
     'When answering a question about an existing card, explain in chat and leave that card pending. '

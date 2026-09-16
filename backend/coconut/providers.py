@@ -142,6 +142,7 @@ class HermesProvider(FixtureProvider):
         self._lock = threading.Lock()
         self._processes: dict[str, subprocess.Popen] = {}
         self._cancelled: set[str] = set()
+        self._cancelled_contexts: set[str] = set()
         self._runtimes: dict[str, subprocess.Popen] = {}
         self._paused_processes: dict[str, subprocess.Popen] = {}
         self._runtime_epochs: dict[str, tuple] = {}
@@ -337,7 +338,7 @@ class HermesProvider(FixtureProvider):
                        model=selection['model'], provider=selection['provider'], base_url=selection.get('base_url'),
                        reasoning_effort=selection.get('reasoning_effort'), runtime_config=runtime_config, **extra)
         with self._lock:
-            if self._closed or task_id in self._cancelled:
+            if self._closed or task_id in self._cancelled or task.get('_context_id') in self._cancelled_contexts:
                 return
             process = None if isolated else self._runtimes.get(bot['id'])
             # Work sessions apply their own conversation epoch without stopping peer turns.
@@ -484,6 +485,13 @@ class HermesProvider(FixtureProvider):
         for pipe in (process.stdin, process.stdout):
             if pipe:
                 pipe.close()
+
+    def cancel_context(self, task_id, context_id):
+        with self._lock:
+            self._cancelled_contexts.add(context_id)
+            process = self._processes.get(task_id)
+        if process is not None and process.poll() is None:
+            self._send(process, {'cancel_context': context_id})
 
     def cancel_task(self, task_id):
         with self._lock:

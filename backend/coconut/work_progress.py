@@ -81,15 +81,17 @@ class WorkProgress:
         return any(t['status'] in ('pending', 'in_progress') for t in items)
 
     def _exchange_peers(self, task):
-        """Read tasks in this exchange and a recovery's recorded Work history."""
+        """Read tasks in this exchange and the assignment's recorded Work history."""
         tasks = {t['id']: t for t in self._all('tasks')}
         linked = set()
-        if task.get('_self_recovery') and task.get('_work_context_id'):
-            item = self._canonical_work(self._get('artifacts', task['_work_context_id']))
+        assignment = self._assignment(task)
+        work_id = task.get('_work_context_id') or assignment.get('_work_context_id')
+        if work_id:
+            item = self._canonical_work(self._get('artifacts', work_id))
             if not item.get('_hidden') and not self._setting('work.cancelled.' + self._work_identity(item)):
                 records = self._pending_completion_receipts()
                 identities = [item.get(key) for key in ('task_id', '_work_origin_task_id', '_review_task_id', '_activity_task_id')]
-                recovery = task['_self_recovery']
+                recovery = task.get('_self_recovery') or assignment.get('_self_recovery') or {}
                 identities += [recovery.get('previous_task_id')] + [t['id'] for t in recovery.get('saved_tasks', [])]
                 for identity in identities + item.get('_work_previous_task_ids', []):
                     if identity in tasks:
@@ -131,10 +133,11 @@ class WorkProgress:
                 return {'status': 'waiting', 'decision_id': identity, 'reason': reason}
             from .background_processes import subscription
             processes = {}
+            maintenance = {c['id'] for c in self._all('contexts') if c.get('_decision_refresh')}
             for record in self._all('native_receipts'):
                 process_id = subscription(record)
                 owner = process_owners.get(record['task_id'])
-                if (process_id and owner and owner['bot_id'] == task['bot_id']
+                if (record.get('turn_id') not in maintenance and process_id and owner and owner['bot_id'] == task['bot_id']
                         and owner['status'] != 'cancelled' and not self._get('exchanges', owner['exchange_id']).get('cancelled')):
                     processes[process_id] = record
             if payload.get('process_id'):

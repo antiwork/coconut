@@ -31,7 +31,25 @@ Decision research can continue while its card remains pending. A saved research 
 The dispatcher records delivery once. Research cannot approve the card or repeat an external action.
 
 The reducer does not call a model, start work, change permissions, or write records. Existing dispatch and recovery code owns those actions.
-No supervisor bot or additional polling model is required.
+The reducer does not use tokens. Hermes uses normal context turns to check pending questions.
 
 The iPhone shows one progress sentence. A compact action opens a decision when needed. The row menu provides progress requests and PR links. Completed work retains native swipe dismissal.
 Client fields are optional so an older host can run during a rolling update.
+
+Pending native questions receive a background check after one hour or when linked evidence changes.
+The queue runs one automatic check at a time and waits at least five minutes between attempts for the same card.
+Hermes reads the source and keeps, revises, or withdraws the existing question. These checks cannot approve actions.
+Coconut rejects results when the card revision or linked evidence changes during the check.
+Unchanged checks and failed checks do not add chat messages.
+Native tool approvals and message drafts keep their separate approval rules.
+
+An explicit handoff that uses the same Work key shows the parent's row.
+The child keeps its task and progress records. Similar titles do not establish a duplicate.
+Routine local setup belongs to the authorized code change. Bots use worktrees and isolated local services without creating setup approval cards.
+Explicit human limits and native Hermes approval checks still apply.
+
+A follow-up uses its original assignment's Work context when it lists or waits for dependencies.
+This preserves the existing process owner without allowing waits across unrelated conversations.
+
+A passing PR gets another readiness check when its previous check is over one hour old and no live work, decision, or dependency owns the next step.
+This check reuses the existing task and cannot merge the PR.

@@ -56,10 +56,11 @@ class BackgroundProcesses:
     def _migrate_process_deliveries(self):
         records = self._all('native_receipts')
         tasks = {task['id']: task for task in self._all('tasks')}
+        maintenance = {c['id'] for c in self._all('contexts') if c.get('_decision_refresh')}
         observed = set()
         for record in records:
             value = result_value(record)
-            if (record['state'] == 'completed' and record['action']['name'] in ('process', 'process_manage')
+            if (record.get('turn_id') not in maintenance and record['state'] == 'completed' and record['action']['name'] in ('process', 'process_manage')
                     and isinstance(value, dict) and value.get('status') in ('exited', 'killed')
                     and tasks[record['task_id']]['status'] in ('completed', 'waiting')):
                 identity = value.get('session_id') or record['action']['arguments'].get('session_id')
@@ -80,7 +81,9 @@ class BackgroundProcesses:
                 (task_id, task_id))]
             receipts = self.db.execute("""SELECT data FROM native_receipts
                 WHERE json_extract(data, '$.task_id') IN
-                    (SELECT id FROM tasks WHERE id=? OR json_extract(data, '$._assignment_task_id')=?)""",
+                    (SELECT id FROM tasks WHERE id=? OR json_extract(data, '$._assignment_task_id')=?)
+                AND NOT EXISTS (SELECT 1 FROM contexts WHERE contexts.id=json_extract(native_receipts.data, '$.turn_id')
+                    AND json_extract(contexts.data, '$._decision_refresh')=1)""",
                 (task_id, task_id))
             return (any((subscription(r) or r.get('_relay_task_id') or r.get('_wait_task_id') or r.get('_wait_process_receipt') or r.get('_wait_decision_id')) and not r.get('_process_delivery')
                         for r in (json.loads(row[0]) for row in receipts))
@@ -203,7 +206,13 @@ class BackgroundProcesses:
                             if changed:
                                 self._event('task.updated', self._public(task), task['bot_id'], task['id'])
                             continue
-                        if result.get('consumed'):
+                        maintenance = {c['id'] for c in self._all('contexts') if c.get('_decision_refresh')}
+                        read_by_maintenance = any(r.get('turn_id') in maintenance and r.get('turn_id') != record.get('turn_id')
+                            and self._get('tasks', r['task_id'])['bot_id'] == bot_id
+                            and r.get('action', {}).get('name') in ('process', 'process_manage')
+                            and r['action'].get('arguments', {}).get('session_id') == subscription(record)
+                            for r in self._all('native_receipts'))
+                        if result.get('consumed') and not read_by_maintenance:
                             record['_process_delivery'] = 'consumed'
                             record['_completion_text'] = result.get('text', 'The process result was already received.')
                             self._put('native_receipts', record)
@@ -241,17 +250,30 @@ class BackgroundProcesses:
                 and not self._has_uncertain_receipt(task['id'], context['id']))
 
     def _resume_process_context(self, context_id, completions):
-        from .service import uid
+        from .service import uid, now
         source = self._get('contexts', context_id)
         decision = self._get('decisions', source['decision_id'])
         # Keep the human source separate from tool output and keep the task behind its decision.
         context = dict(source, id=uid(), status='queued', _decision_revision=decision['revision'],
                        _background_completion=[text for _, text in completions])
         context.pop('error_code', None)
-        self._put('contexts', context)
+        context.pop('_refresh_recorded', None)
+        if context.get('_decision_refresh'):
+            context['_refresh_origin_id'] = source.get('_refresh_origin_id', source['id'])
+            decision['_freshness'] = dict(decision.get('_freshness', {}), context_id=context['id'], queued_at=now())
+            self._put('decisions', decision)
         for record, text in completions:
             record.update(_completion_text=text, _process_delivery=context['id'])
             self._put('native_receipts', record)
+        if context.get('_decision_refresh'):
+            self._set_refresh_recovery(context, source, self._all('contexts'), self._all('native_receipts'))
+            tasks = {t['id']: t for t in self._all('tasks')}
+            fingerprint, work = self._decision_evidence(decision, tasks, self._all('native_receipts'), self._all('artifacts'))
+            task = tasks[context['task_id']]
+            context.update(_evidence_fingerprint=fingerprint,
+                           _human_input_ids=[m['id'] for m in self._decision_human_messages(task)],
+                           question=self._decision_refresh_prompt(task, work, self._all('decisions')))
+        self._put('contexts', context)
         self._event('context.queued', {'id': context['id'], 'decision_id': context['decision_id']},
                     context['bot_id'], context['task_id'])
 
@@ -365,9 +387,12 @@ class BackgroundProcesses:
         if not consumed:
             return
         bot_id = self._get('tasks', record['task_id'])['bot_id']
+        context = next((c for c in self._all('contexts') if c['id'] == record.get('turn_id')), {})
         for original in self._pending_completion_receipts():
             if (not original.get('_process_delivery') and subscription(original) in consumed
                     and self._get('tasks', original['task_id'])['bot_id'] == bot_id):
-                original['_process_delivery'] = 'consumed'
+                if not context.get('_decision_refresh') or original.get('turn_id') == record.get('turn_id'):
+                    original['_process_delivery'] = 'consumed'
+                # Hermes may consume its notification on read. Keep the result for the owner.
                 original['_completion_text'] = json.dumps(value)
                 self._put('native_receipts', original)

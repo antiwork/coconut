@@ -75,7 +75,7 @@ class StateSync:
             if decision.get('_hidden') or decision.get('_deleted') or bot.get('_deleted') or owner.get('_deleted'):
                 raise ServiceError(404, 'This card was removed.')
             public = view._public(decision)
-            public['reply_pending'] = any(c['decision_id'] == identity and c['status'] in ('queued', 'working')
+            public['reply_pending'] = any(c['decision_id'] == identity and c['status'] in ('queued', 'working') and not c.get('_decision_refresh')
                                           for c in view._all('contexts'))
             if not public.get('request_text'):
                 public.update(view.decision_origin(task))

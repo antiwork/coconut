@@ -489,7 +489,10 @@ def conversation_input(request):
         prompt = ('Respond only to this follow-up. The pending proposal is context. Do not execute it. '
                   'If the follow-up only changes a standing preference, save it and give one short confirmation. '
                   'Do not restate the proposal or its choices unless the person asks about them.\n')
-        if request['task'].get('_decision_reply'):
+        if request['task'].get('_decision_refresh'):
+            prompt = ('Check the current evidence for this pending question. Use coconut_refresh_decision to keep it current. '
+                      'This is a service check, not a human reply. Do not approve or execute the proposed action.\n')
+        elif request['task'].get('_decision_reply'):
             prompt += ('Interpret this reply in the context of the pending decision. A question asks for information and leaves the decision pending. '
                        'If the person clearly selects an option or rejects it, call coconut_resolve_reply with their exact words. '
                        'If they change the scope, use modify with a revised question and choices. This updates the same pending card without authorizing work. '
@@ -664,6 +667,8 @@ def main():
     pending_receipts = {}
     next_request_id = 0
     active = {}
+    context_scopes = {}
+    cancelled_contexts = set()
     cancelled = set()
     active_lock = threading.Lock()
     output_turn = threading.local()
@@ -722,6 +727,17 @@ def main():
                 frame = json.loads(line)
                 if not isinstance(frame, dict):
                     continue
+                if isinstance(frame.get('cancel_context'), str):
+                    with active_lock:
+                        cancelled_contexts.add(frame['cancel_context'])
+                        scope = context_scopes.get(frame['cancel_context'])
+                    if scope is not None:
+                        scope.cancelled.set()
+                        if scope.interrupt_scope is not None:
+                            scope.interrupt_scope.cancel('The card changed.')
+                        elif scope.agent is not None and hasattr(scope.agent, 'hard_interrupt'):
+                            scope.agent.hard_interrupt('The card changed.')
+                    continue
                 if isinstance(frame.get('cancel_task'), str):
                     with active_lock:
                         cancelled.add(frame['cancel_task'])
@@ -775,7 +791,10 @@ def main():
                 return
             with active_lock:
                 active[scope.task_id] = scope
-                if scope.task_id in cancelled:
+                context_id = request['task'].get('_context_id')
+                if context_id:
+                    context_scopes[context_id] = scope
+                if scope.task_id in cancelled or context_id in cancelled_contexts:
                     scope.cancelled.set()
             try:
                 run_turn(request, send, receipt)
@@ -793,6 +812,7 @@ def main():
             if scope:
                 with active_lock:
                     active.pop(scope.task_id, None)
+                    context_scopes.pop(request['task'].get('_context_id'), None)
             current_turn.reset(token)
 
     while True:
@@ -990,6 +1010,13 @@ def run_turn(request, emit, request_receipt):
             registry.register(name=SUGGEST_SCHEMA['name'], toolset='coconut', schema=SUGGEST_SCHEMA,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('native_proposal', arguments)))
             allowed.add(SUGGEST_SCHEMA['name'])
+        if operation == 'context' and request['task'].get('_decision_refresh'):
+            from decision_freshness import REFRESH_SCHEMA
+            refresh_schema = dict(REFRESH_SCHEMA, parameters=dict(REFRESH_SCHEMA['parameters'],
+                properties=dict(REFRESH_SCHEMA['parameters']['properties'], revision=QUESTION_SCHEMA['parameters'])))
+            registry.register(name=REFRESH_SCHEMA['name'], toolset='coconut', schema=refresh_schema,
+                              handler=lambda arguments, **kwargs: json.dumps(request_receipt('decision_response', arguments)))
+            allowed.add(REFRESH_SCHEMA['name'])
         if request['task'].get('_decision_reply') or request['task'].get('_pending_decisions'):
             schema = REPLY_SCHEMA
             if operation != 'context' or request['task'].get('_execution_session_id'):

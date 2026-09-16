@@ -151,6 +151,8 @@ class WorkStatus:
         fields = ('task_id',) if item['kind'] == 'work' else ('_review_task_id', '_activity_task_id')
         owned = {p.get(field) for p in peers for field in fields} & tasks.keys()
         owned |= {t['id'] for t in tasks.values() if t.get('_work_context_id') in {p['id'] for p in peers}}
+        owned |= {tasks[i]['_assignment_task_id'] for i in list(owned)
+                  if tasks[i].get('_assignment_task_id') in tasks}
         while True:
             # Wait targets can belong to other work. Only follow owned attempts.
             expanded = owned | {t['id'] for t in tasks.values()
@@ -171,6 +173,8 @@ class WorkStatus:
             for field in ('task_id', '_review_task_id', '_activity_task_id'):
                 root = tasks.get(other.get(field))
                 if root:
+                    shared.update(self._work_chain(root, tasks, self._all('native_receipts'), include_continuations=True))
+                    root = tasks.get(root.get('_assignment_task_id'), root)
                     shared.update(self._work_chain(root, tasks, self._all('native_receipts'), include_continuations=True))
         for task_id in sorted(owned):
             task = tasks[task_id]

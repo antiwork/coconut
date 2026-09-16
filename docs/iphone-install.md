@@ -106,3 +106,13 @@ Review this declaration if the app adds cryptography outside Apple's operating s
 See [Apple’s encryption guidance](https://developer.apple.com/documentation/security/complying-with-encryption-export-regulations).
 
 The `archive` and `export` commands remain available for local preparation without upload.
+
+## App Store Connect API credentials
+
+Before requiring an Xcode account, check `.runtime/appstoreconnect/config.json` in the primary checkout.
+A release worktree may not contain this ignored directory.
+The config records the upload key ID, issuer ID, team, and bundle ID.
+The adjacent `AuthKey_<upload_key_id>.p8` file supplies the private key.
+Use Xcode's `-authenticationKeyPath`, `-authenticationKeyID`, and `-authenticationKeyIssuerID` export arguments with the existing TestFlight export options.
+These credentials work while the Mac is locked. Keep them outside Git.
+After upload, verify the build state and internal tester access through App Store Connect.

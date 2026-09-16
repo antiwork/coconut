@@ -226,6 +226,48 @@ class TrackedWork:
                 self._put('artifacts', duplicate)
                 self._event('artifact.updated', dict(self._public(duplicate), _hidden=True), duplicate['bot_id'], task['id'])
 
+    def _sync_delegated_work(self, tasks, artifacts):
+        # An explicit handoff with the same outcome key belongs in the parent's row.
+        by_id = {a['id']: a for a in artifacts}
+        records, chains = self._pending_completion_receipts(), {}
+        for item in artifacts:
+            if item['kind'] != 'work' or not item.get('_work_key'):
+                continue
+            task = tasks.get(item.get('task_id'), {})
+            task = tasks.get(task.get('_assignment_task_id'), task)
+            source = task.get('source_task_id')
+            source_assignment = tasks.get(source, {}).get('_assignment_task_id', source)
+            parent = next((a for a in artifacts if source and a['kind'] == 'work'
+                and a['id'] != item['id'] and a.get('_work_key') == item['_work_key']
+                and {source, source_assignment}.intersection([a.get('task_id'), a.get('_work_origin_task_id'), *a.get('_work_previous_task_ids', [])])), None)
+            seen = {item['id']}
+            while parent and parent.get('_hidden') and parent['id'] not in seen:
+                seen.add(parent['id'])
+                parent = by_id.get(parent.get('_work_parent_id') or parent.get('_work_replaced_by'))
+            if parent and (parent['id'] in seen or parent.get('_hidden')
+                           or parent.get('_work_key') != item['_work_key'] or parent.get('status') == 'cancelled'):
+                parent = None
+            if parent:
+                owner = tasks.get(parent.get('task_id'))
+                if owner:
+                    owner = tasks.get(owner.get('_assignment_task_id'), owner)
+                if owner and owner['id'] not in chains:
+                    chains[owner['id']] = self._work_chain(owner, tasks, records, include_continuations=True)
+                completed_handoff = (owner and item.get('_work_parent_id') == parent['id']
+                    and task.get('status') in ('completed', 'cancelled')
+                    and owner['id'] == item.get('_work_parent_task_id', source_assignment))
+                if not owner or (task.get('id') not in chains[owner['id']] and not completed_handoff):
+                    parent = None
+            if parent and (not item.get('_hidden') or item.get('_work_parent_id') != parent['id']):
+                item.update(_hidden=True, _work_parent_id=parent['id'], _work_parent_task_id=owner['id'])
+                self._put('artifacts', item)
+                self._event('artifact.updated', dict(self._public(item), _hidden=True), item['bot_id'], item['task_id'])
+            elif not parent and item.pop('_work_parent_id', None):
+                item.pop('_work_parent_task_id', None)
+                item['_hidden'] = False
+                self._put('artifacts', item)
+                self._event('artifact.updated', self._public(item), item['bot_id'], item['task_id'])
+
     def _sync_automatic_work(self):
         from .service import now, uid
         with self.transaction():
@@ -235,6 +277,7 @@ class TrackedWork:
             timestamp = datetime.now(timezone.utc)
             self._sync_followup_work(tasks, artifacts)
             self._resume_tracked_work(tasks, artifacts)
+            self._sync_delegated_work(tasks, artifacts)
             covered = {a.get('task_id') for a in artifacts if a['kind'] in ('work', 'pr')}
             for task in tasks.values():
                 if (task['id'] in covered or task.get('source_bot_id')
@@ -359,7 +402,7 @@ class TrackedWork:
             description_owner['_work_progress_at'] = now()
             self._put('tasks', description_owner)
             item.update(title=title, activity=activity, status=state,
-                        observed_at=now(), _work_key=key, _automatic_work=False, _hidden=False)
+                        observed_at=now(), _work_key=key, _automatic_work=False, _hidden=bool(item.get('_work_parent_id')))
             item.update(details)
             item.setdefault('completion_condition', title)
             if state != 'completed':
@@ -373,7 +416,10 @@ class TrackedWork:
                     automatic['_hidden'] = True
                     self._put('artifacts', automatic)
                     self._event('artifact.updated', dict(self._public(automatic), _hidden=True), bot['id'], task_id)
-            self._event('artifact.created' if created else 'artifact.updated', self._public(item), bot['id'], task_id)
+            self._sync_delegated_work({t['id']: t for t in self._all('tasks')}, self._all('artifacts'))
+            item = self._get('artifacts', item['id'])
+            self._event('artifact.created' if created else 'artifact.updated',
+                        dict(self._public(item), _hidden=bool(item.get('_hidden'))), bot['id'], task_id)
             return dict(self._public(item), key=key)
 
     def _tracked_items_input(self, task):

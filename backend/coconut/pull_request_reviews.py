@@ -1,4 +1,4 @@
-"""Deliver a passing PR head once to the bot that owns its work."""
+"""Continue PR review through the bot that owns its work."""
 import json
 import threading
 
@@ -34,6 +34,11 @@ class PullRequestReviews:
                    and a['url'].lower() == url.lower() for a in self._all('artifacts')):
             raise ServiceError(400, 'Track this PR with coconut_track_pr before creating its merge decision.')
         return url
+
+    def _merge_decision_head(self, url, task):
+        return next((a.get('head_sha') for a in self._all('artifacts')
+                     if url and a['kind'] == 'pr' and a['bot_id'] == task['bot_id']
+                     and a['url'].lower() == url.lower()), None)
 
     def _resolve_merged_pr_decisions(self):
         from .service import now
@@ -152,8 +157,7 @@ class PullRequestReviews:
                                 or (artifact.get('draft') is not False and not (artifact.get('draft') is True
                                     and artifact.get('_activity_state') == 'ready'
                                     and artifact.get('_activity_head') == artifact.get('head_sha')))
-                                or artifact.get('checks_state') != 'passed' or not artifact.get('head_sha')
-                                or artifact['head_sha'] in self._pr_reviewed_heads(artifact)):
+                                or artifact.get('checks_state') != 'passed' or not artifact.get('head_sha')):
                             continue
                         task = self._get('tasks', artifact['_review_task_id'])
                         if not self._can_resume_process(task, bot) or self._task_paused(task):
@@ -164,7 +168,24 @@ class PullRequestReviews:
                         if not owner or owner['id'] != artifact['id']:
                             continue
                         if any(artifact['head_sha'] in self._pr_reviewed_heads(a) for a in peers):
-                            continue
+                            from datetime import datetime, timezone
+                            from .decision_freshness import age
+                            checked = max((a.get('_review_checked_at') or self._get('tasks', a['_review_task_id']).get('updated_at', '')
+                                           for a in peers if a.get('_review_task_id')), default='')
+                            recorded_check = max((a.get('_review_checked_at', '') for a in peers), default='')
+                            # Preserve unknown legacy choices until a new head receives a recorded review.
+                            if any(d.get('merge_pr_url', '').lower() == artifact['url'].lower()
+                                   and d['status'] in ('approved', 'rejected', 'executed', 'dismissed')
+                                   and (d.get('_merge_pr_head') == artifact['head_sha']
+                                        or (not d.get('_merge_pr_head') and (not recorded_check
+                                            or (d.get('decided_at') or d['created_at']) >= recorded_check)))
+                                   for d in self._all('decisions') if d.get('merge_pr_url')):
+                                continue
+                            if age(checked, datetime.now(timezone.utc)) < 3600:
+                                continue
+                            projected = next(a for a in self._work_projection([dict(p) for p in peers]) if a['id'] == artifact['id'])
+                            if projected['work_state'] not in ('waiting', 'needs_recovery') or projected['work_dependencies']:
+                                continue
                         assignment = self._assignment(task)
                         if assignment.get('_waiting_on') or self._background_pending(assignment['id']):
                             continue
@@ -180,6 +201,7 @@ class PullRequestReviews:
                             _background_return_after=now(), _background_return_id=uid())
                         artifact['_reviewed_heads'] = sorted(self._pr_reviewed_heads(artifact) | {artifact['head_sha']})
                         artifact['_reviewed_head'] = artifact['head_sha']
+                        artifact['_review_checked_at'] = now()
                         self._put('artifacts', artifact)
                         self._put('tasks', task)
                         self._event('task.updated', self._public(task), task['bot_id'], task['id'])

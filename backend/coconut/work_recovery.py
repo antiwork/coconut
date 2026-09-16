@@ -12,6 +12,8 @@ RECOVERY_INSTRUCTIONS = (
     'Use coconut_wait when another task or process owns the next step. '
     'Call coconut_wait without arguments to find owners from this Work item. '
     'For a process owned by another bot, wait for its owning task instead of its process. '
+    'If an external source has no native task or process, schedule a bounded read-only recheck with native Hermes scheduling. '
+    'Reuse an existing scheduled check and preserve rejected contact or escalation requests. '
     'Use coconut_ask when a concrete human decision or missing input prevents progress. '
     'Give that card the work title, verified facts, the missing input, options, and the material risk. '
     'Update each attached Work item with its existing key. Record completion evidence when its outcome is verified. '
@@ -136,7 +138,7 @@ class WorkRecovery:
                 return
             contexts = self._all('contexts')
             for index, old in enumerate(contexts):
-                if old['status'] != 'failed' or old.get('_recovery_context_id') or old.get('_recovery_attempt', 0) >= 2:
+                if old.get('_decision_refresh') or old['status'] != 'failed' or old.get('_recovery_context_id') or old.get('_recovery_attempt', 0) >= 2:
                     continue
                 task = self._get('tasks', old['task_id'])
                 bot = self._get('bots', task['bot_id'])
@@ -145,6 +147,7 @@ class WorkRecovery:
                         or decision['status'] != 'pending' or old.get('_decision_revision') != decision['revision']
                         or old.get('_conversation_epoch') != task.get('_conversation_epoch')
                         or any(c['decision_id'] == old['decision_id'] and c['id'] != old['id']
+                               and not c.get('_decision_refresh')
                                and c['status'] in ('queued', 'working', 'completed', 'failed') for c in contexts[index + 1:])):
                     continue
                 records = [r for r in self._all('native_receipts') if r['turn_id'] == old['id'] and r['state'] == 'executing']

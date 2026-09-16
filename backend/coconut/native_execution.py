@@ -70,7 +70,11 @@ class NativeExecution:
             active = context['status'] == 'working' and context['task_id'] == task_id if context else task['status'] == 'working'
             if recovery_work_ids and kind == 'native_question' and not context:
                 active = task['status'] in ('completed', 'failed', 'waiting')
-            if not active or self._task_paused(task):
+            late_result = False
+            if context and context.get('_decision_refresh') and context['status'] == 'cancelled' and kind == 'native_result':
+                receipt = self._get('native_receipts', payload['id'])
+                late_result = receipt['task_id'] == task_id and receipt.get('turn_id') == context_id
+            if (not active or self._task_paused(task)) and not late_result:
                 raise ServiceError(409, 'This task cannot execute a tool now.')
             if not context:
                 self._save_work_progress(task, payload)
@@ -174,13 +178,16 @@ class NativeExecution:
                 decision.update(self.decision_followup(task, payload))
             if not approval and draft is None:
                 decision['merge_pr_url'] = self._merge_decision_url(payload, task)
+                decision['_merge_pr_head'] = self._merge_decision_head(decision['merge_pr_url'], task)
             self._put('decisions', decision)
             if optional:
+                self._initialize_decision_freshness(decision)
                 self._message(task['bot_id'], decision['title'], task_id=task_id, kind='decision', decision_id=decision['id'])
                 self._event('decision.created', self._public(decision), task['bot_id'], task_id)
                 return {'status': 'recorded', 'decision_id': decision['id']}
             task.update(status='needs_you', summary=decision['title'])
             self._put('tasks', task)
+            self._initialize_decision_freshness(decision)
             self._message(task['bot_id'], decision['title'], task_id=task_id, kind='decision', decision_id=decision['id'])
             self._event('decision.created', self._public(decision), task['bot_id'], task_id)
             self._refresh_bot(task['bot_id'])
@@ -242,11 +249,7 @@ class NativeExecution:
                     self._cancel_work(identity, callbacks)
                 self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
                 return self._public(decision)
-            unknown = task['_self_recovery'].get('unknown_tools', [])
-            unknown += [{k: r.get(k) for k in ('id', 'task_id', 'turn_id', 'action', 'created_at')}
-                        for r in self._all('native_receipts') if r['task_id'] == task['id'] and r['state'] == 'executing']
-            task['_self_recovery']['unknown_tools'] = list({r['id']: r for r in unknown}.values())
-            self._advance_input(task)
+            self._advance_recovery_input(task)
         if task.get('_self_recovery') and (not decision.get('_recovery_work_ids') or option_id == 'retry'):
             task['_self_recovery']['attempt'] = 0
         task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
@@ -257,3 +260,10 @@ class NativeExecution:
         self._event('task.updated', self._public(task), task['bot_id'], task['id'])
         self._refresh_bot(task['bot_id'])
         return self._public(decision)
+
+    def _advance_recovery_input(self, task):
+        unknown = task['_self_recovery'].get('unknown_tools', [])
+        unknown += [{k: r.get(k) for k in ('id', 'task_id', 'turn_id', 'action', 'created_at')}
+                    for r in self._all('native_receipts') if r['task_id'] == task['id'] and r['state'] == 'executing']
+        task['_self_recovery']['unknown_tools'] = list({r['id']: r for r in unknown}.values())
+        self._advance_input(task)
