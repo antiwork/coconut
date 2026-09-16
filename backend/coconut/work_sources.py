@@ -114,8 +114,8 @@ class WorkSources:
                 with self.transaction():
                     if self.stopping.is_set() or self.restart_pending:
                         return
-                    tasks, decisions, receipts = ({r['id']: r for r in self._all(table)}
-                                                  for table in ('tasks', 'decisions', 'native_receipts'))
+                    tasks, decisions = ({r['id']: r for r in self._all(table)} for table in ('tasks', 'decisions'))
+                    receipts = {r['id']: r for r in self._pending_completion_receipts()}
                     audit_owners = {}
                     epoch = self._setting('conversation_epoch')
                     for task in tasks.values():

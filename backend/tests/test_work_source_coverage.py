@@ -36,6 +36,16 @@ class WorkSourceTests(unittest.TestCase):
             self.service.audit_work_sources()
         return self.service._setting('work-source:assigned')
 
+    def test_source_audit_does_not_read_completed_tool_history(self):
+        original = self.service._all
+        def scoped(table):
+            self.assertNotEqual(table, 'native_receipts')
+            return original(table)
+        with patch.object(self.service, '_all', side_effect=scoped):
+            state = self.audit()
+        self.assertEqual(state['missing'], [self.item['id']])
+        self.assertEqual(self.service._get('tasks', state['task_id'])['status'], 'queued')
+
     def test_unchanged_assignment_gets_one_retry_with_full_hidden_context(self):
         state = self.audit()
         task = self.service._get('tasks', state['task_id'])
