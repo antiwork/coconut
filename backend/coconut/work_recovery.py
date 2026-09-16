@@ -22,12 +22,55 @@ RECOVERY_INSTRUCTIONS = (
 
 
 class WorkRecovery:
+    def _retire_obsolete_recovery_questions(self):
+        from .service import encoded, now
+        decisions = self._all('decisions')
+        pending = [d for d in decisions if d.get('_recovery_work_ids') and d['status'] == 'pending' and d['revision'] == 1]
+        if not pending:
+            return
+        contexts = self._all('contexts')
+        artifacts = {a['id']: a for a in self._all('artifacts')}
+        for decision in pending:
+            identities = decision['_recovery_work_ids']
+            task = self._get('tasks', decision['task_id'])
+            if (task['status'] != 'needs_you' or not task.get('_self_recovery')
+                    or (self.running.get(task['id']) and self.running[task['id']].is_alive())
+                    or self._background_pending(task['id'])
+                    or any(c['decision_id'] == decision['id'] and (not c.get('_decision_refresh')
+                           or c['status'] in ('queued', 'working')) for c in contexts)):
+                continue
+            items = [artifacts.get(identity, {}) for identity in identities]
+            if any(a.get('kind') != 'work' or a.get('task_id') == task['id']
+                   or not self._external_work_routine(a)
+                   or self._get('tasks', a['task_id'])['status'] != 'completed' for a in items):
+                continue
+            if any(a['work_state'] != 'waiting' for a in self._work_projection(items)):
+                continue
+            evidence = 'Work now waits for external evidence through its existing Hermes routine.'
+            response = evidence + ' No option was selected and no new approval was given.'
+            decision.update(status='resolved', resolution='work_scope_changed', outcome=evidence,
+                            resolution_context=response, resolved_at=now(), revision=decision['revision'] + 1)
+            if decision.get('_receipt_id'):
+                receipt = self._get('native_receipts', decision['_receipt_id'])
+                if receipt['state'] == 'awaiting_answer':
+                    receipt.update(state='completed', completed_at=now(),
+                                   result=encoded(dict(response=response, resolution='withdrawn')))
+                    self._put('native_receipts', receipt)
+            self._put('decisions', decision)
+            self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
+            if not any(d['id'] != decision['id'] and d['task_id'] == task['id'] and d['status'] == 'pending' for d in decisions):
+                task.update(status='completed', summary='A newer task recorded the next step.', updated_at=now())
+                self._put('tasks', task)
+                self._event('task.updated', self._public(task), task['bot_id'], task['id'])
+            self._refresh_bot(task['bot_id'])
+
     def _queue_work_recoveries(self):
         from .service import now
         exhausted = []
         with self.transaction():
             if self.stopping.is_set() or self.restart_pending:
                 return
+            self._retire_obsolete_recovery_questions()
             items = [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr') and not a.get('_hidden')]
             tasks = {t['id']: t for t in self._all('tasks')}
             items = [a for a in items if a['kind'] == 'pr' or (a.get('status') not in ('completed', 'cancelled')
