@@ -451,6 +451,19 @@ def stop_for_update() -> dict:
     return state
 
 
+def write_agent(path: Path, payload: dict) -> None:
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as temporary:
+        name = Path(temporary.name)
+        try:
+            os.fchmod(temporary.fileno(), 0o600)
+            plistlib.dump(payload, temporary)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            os.replace(name, path)
+        finally:
+            name.unlink(missing_ok=True)
+
+
 def restore_after_update(state: dict) -> None:
     if (not isinstance(state, dict) or state.get("project") != str(ROOT) or state.get("data_dir") != str(DEFAULT_DATA)
             or state.get("mode") not in {"manual", "managed", "stopped"}):
@@ -464,6 +477,10 @@ def restore_after_update(state: dict) -> None:
             return
         if not path.exists() or current:
             raise SystemExit("Coconut cannot restore its LaunchAgent while its file is missing or a manual process is running.")
+        payload = plistlib.loads(path.read_bytes())
+        if payload.get('ProcessType') != 'Interactive':
+            payload['ProcessType'] = 'Interactive'
+            write_agent(path, payload)
         result = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)], capture_output=True, text=True)
         if result.returncode:
             raise SystemExit("launchctl could not restore Coconut. Its LaunchAgent file and data remain available.")
@@ -514,12 +531,12 @@ def install(args: argparse.Namespace) -> None:
     payload = {
         "Label": LABEL, "ProgramArguments": command, "WorkingDirectory": str(ROOT / "backend"),
         "EnvironmentVariables": environment, "RunAtLoad": True, "KeepAlive": True,
-        "ThrottleInterval": 5, "ProcessType": "Background",
+        # The phone waits for this service over HTTPS, without XPC priority propagation.
+        "ThrottleInterval": 5, "ProcessType": "Interactive",
         "StandardOutPath": str(args.data_dir / "logs/service.log"),
         "StandardErrorPath": str(args.data_dir / "logs/error.log"),
     }
-    plist.write_bytes(plistlib.dumps(payload))
-    plist.chmod(0o600)
+    write_agent(plist, payload)
     result = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], check=False)
     if result.returncode:
         raise SystemExit(f"The service file exists at {plist}, but launchctl did not start it.")

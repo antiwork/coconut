@@ -264,6 +264,7 @@ class HostToolsTests(unittest.TestCase):
             command = payload['ProgramArguments']
             self.assertNotIn('--port', command)
             self.assertTrue(payload['KeepAlive'])
+            self.assertEqual(payload['ProcessType'], 'Interactive')
             self.assertEqual(json.loads((root / 'connection.json').read_text())['address'], args.address)
             changed = self.arguments(directory, address='https://mini.example.ts.net:9001')
             host.connection_certificate(changed)
@@ -547,6 +548,17 @@ class HostLifecycleTests(unittest.TestCase):
                 host.restore_after_update(self.state('managed'))
         self.assertTrue(self.path.exists())
         self.assertEqual(sentinel.read_bytes(), b'Preserve host history.')
+
+    def test_restore_migrates_background_priority_without_changing_service_options(self):
+        self.write_agent()
+        original = plistlib.loads(self.path.read_bytes())
+        original.update(ProcessType='Background', KeepAlive=True, EnvironmentVariables={'PATH': '/usr/bin'})
+        self.path.write_bytes(plistlib.dumps(original))
+        with patch.object(host, 'owned_agent', side_effect=[(self.path, False), (self.path, True)]), \
+             patch.object(host, 'owned_process', return_value=None), \
+             patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')):
+            host.restore_after_update(self.state('managed'))
+        self.assertEqual(plistlib.loads(self.path.read_bytes()), dict(original, ProcessType='Interactive'))
 
     def test_restore_rejects_state_from_another_project(self):
         state = self.state('managed')
