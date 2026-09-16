@@ -365,11 +365,10 @@ class ExternalWorkWaitTests(unittest.TestCase):
         item = self.report_wait()
         failed = self.start(status='failed', _self_recovery={'attempt': 2})
         self.service.running.clear()
-        self.service._recovery_decision(failed, [item])
+        from test_work_self_recovery import legacy_recovery_card
+        legacy_recovery_card(self.service, failed, [item])
         decision = self.service._all('decisions')[-1]
         self.assertEqual(decision['status'], 'pending')
-        self.service._queue_work_recoveries()
-        self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'pending')
         sent = self.write('POST', '/v1/bots/' + self.bot['id'] + '/messages',
             dict(text='Repair the existing wait record', mode='queue', work_artifact_id=item['id']))
         repair = self.service._get('tasks', sent['id'])
@@ -397,7 +396,7 @@ class ExternalWorkWaitTests(unittest.TestCase):
         self.assertEqual(self.sync()[0]['work_state'], 'waiting')
         self.assertIsNone(self.sync()[0]['completion_evidence'])
 
-    def test_recovery_card_stays_when_any_attached_work_lacks_a_valid_wait(self):
+    def test_legacy_recovery_card_retires_even_without_an_external_wait(self):
         item, decision, repair = self.repaired_recovery_card()
         other = dict(self.service._get('artifacts', item['id']), id=str(uuid4()),
                      _work_key='another-outcome', external_wait=None, status='blocked')
@@ -405,14 +404,7 @@ class ExternalWorkWaitTests(unittest.TestCase):
         decision['_recovery_work_ids'].append(other['id'])
         self.service._put('decisions', decision)
         self.service._retire_obsolete_recovery_questions()
-        self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'pending')
-        decision['_recovery_work_ids'] = [item['id']]
-        self.service._put('decisions', decision)
-        routine = self.service._get('routines', 'intake')
-        routine['enabled'] = False
-        self.service._put('routines', routine)
-        self.service._retire_obsolete_recovery_questions()
-        self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'pending')
+        self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'resolved')
 
     def test_ordinary_and_revised_questions_do_not_use_automatic_retirement(self):
         item, decision, repair = self.repaired_recovery_card()

@@ -2,14 +2,129 @@
 from datetime import datetime, timezone
 from collections import deque
 
+PAUSE_DECISION_STATES = ('approved', 'rejected', 'modified', 'executed', 'failed')
+
 
 class WorkStatus:
+    def _work_pause_peers(self, item):
+        artifacts = {a['id']: a for a in self._all('artifacts')}
+        artifacts[item['id']] = item
+        def identity(value):
+            seen = set()
+            while value['kind'] == 'work' and value['id'] not in seen:
+                seen.add(value['id'])
+                parent = value.get('_same_outcome_as') or (value.get('_work_parent_id') if value.get('_hidden') else None)
+                if parent not in artifacts:
+                    break
+                value = artifacts[parent]
+            return self._work_identity(value)
+        key = identity(item)
+        return [a for a in artifacts.values() if a['kind'] in ('pr', 'work') and identity(a) == key]
+
+    def _work_pause(self, item, decisions=None, peers=None):
+        if peers is None:
+            peers = self._work_pause_peers(item)
+        identities = {p.get('paused_by_decision_id') for p in peers}
+        return next((d for d in (decisions if decisions is not None else self._all('decisions'))
+                     if d['id'] in identities and d.get('decided_by')
+                     and d['status'] in PAUSE_DECISION_STATES), None)
+
+    def _save_work_pause(self, item, identity):
+        from .service import now
+        # Delegates and PR observers share the pause of their outcome.
+        peers = [a for a in self._work_pause_peers(item) if a['id'] != item['id']]
+        recorded_at = min((p['_work_pause_at'] for p in [item] + peers
+                           if p.get('paused_by_decision_id') == identity and p.get('_work_pause_at')), default=now())
+        for peer in [item] + peers:
+            if identity:
+                peer['paused_by_decision_id'] = identity
+                peer['_work_pause_at'] = recorded_at
+            else:
+                peer.pop('paused_by_decision_id', None)
+                peer.pop('_work_pause_at', None)
+        for peer in peers:
+            self._put('artifacts', peer)
+
+    def _work_has_new_direction(self, task, pause, item):
+        tasks = {t['id']: t for t in self._all('tasks')}
+        roots, pending = set(), [task['id']]
+        while pending:
+            identity = pending.pop()
+            if identity in roots or identity not in tasks:
+                continue
+            roots.add(identity)
+            pending.extend(tasks[identity].get(key) for key in ('parent_task_id', 'source_task_id', '_assignment_task_id'))
+        if any(tasks[identity].get('_work_status_only') for identity in roots):
+            return False
+        after = max((p.get('_work_pause_at', '') for p in self._work_pause_peers(item)), default='')
+        after = after or pause.get('decided_at') or pause['created_at']
+        return (any(m.get('task_id') in roots and m.get('_human_device_id') and m['role'] == 'user'
+                    and m.get('decision_id') != pause['id'] and m['created_at'] > after
+                    for m in self._all('messages'))
+                or any(d['task_id'] in roots and d['id'] != pause['id'] and d.get('decided_by')
+                       and d['status'] in ('approved', 'modified') and d.get('decided_at', '') > after
+                       for d in self._all('decisions')))
+
+    def _task_work_items(self, task):
+        identities = {task['id'], task.get('_assignment_task_id')} - {None}
+        return [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr')
+                and (not a.get('_hidden') or a.get('_work_parent_id'))
+                and (a['status'] not in ('completed', 'cancelled') if a['kind'] == 'work'
+                     else a.get('pr_state') not in ('closed', 'merged'))
+                and not self._setting('work.cancelled.' + self._work_identity(a))
+                and (identities.intersection(a.get(key) for key in ('task_id', '_review_task_id', '_activity_task_id'))
+                     or a['id'] == task.get('_work_context_id'))]
+
+    def _task_work_is_paused(self, task):
+        items = self._task_work_items(task)
+        return bool(items) and all(self._work_pause(item) for item in items)
+
+    def _automatic_work_is_paused(self, task):
+        if not any(task.get(key) for key in ('_self_recovery', '_pr_review', '_work_resume')):
+            return False
+        items = self._task_work_items(task)
+        return bool(items) and all((pause := self._work_pause(item))
+                                  and not self._work_has_new_direction(task, pause, item) for item in items)
+
+    def _apply_work_pause(self, item, task, payload, state):
+        from .service import ServiceError, require_text
+        identity = payload.get('paused_by_decision_id')
+        if identity is None:
+            pause = self._work_pause(item)
+            if state != 'blocked' and pause and self._work_has_new_direction(task, pause, item):
+                self._save_work_pause(item, None)
+            return
+        decision = self._get('decisions', require_text(payload, 'paused_by_decision_id', 100))
+        tasks = {t['id']: t for t in self._all('tasks')}
+        roots = {task['id'], task.get('_assignment_task_id'), item.get('task_id'),
+                 item.get('_review_task_id'), item.get('_work_origin_task_id'), *item.get('_work_previous_task_ids', [])}
+        # Recovery replaces the owner. Follow its recorded parents to retain decisions made by a delegate.
+        pending = list(roots)
+        while pending:
+            previous = tasks.get(pending.pop(), {})
+            for key in ('parent_task_id', '_assignment_task_id'):
+                parent = previous.get(key)
+                if parent and parent not in roots:
+                    roots.add(parent)
+                    pending.append(parent)
+        records = self._all('native_receipts')
+        for identity in list(roots):
+            if identity in tasks:
+                roots.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
+        if (state != 'blocked' or not decision.get('decided_by')
+                or decision['status'] not in PAUSE_DECISION_STATES
+                or decision['task_id'] not in roots):
+            raise ServiceError(409, 'Link an answered human decision from this Work item before pausing it.')
+        self._save_work_pause(item, decision['id'])
+
     def _set_work_activity(self, artifact, task, payload):
         from .service import ServiceError, now, require_text
         if task.get('id') and self._pr_report_superseded(artifact, task):
             return
         self._restore_active_work(artifact)
         if 'activity' not in payload:
+            if payload.get('paused_by_decision_id') is not None:
+                raise ServiceError(400, 'Include activity text when recording a pause.')
             return
         if task.get('_is_return'):
             newer = [peer.get('_activity_at', '') for peer in self._all('artifacts')
@@ -32,6 +147,7 @@ class WorkStatus:
             raise ServiceError(400, 'Use one short activity and a working, ready, or blocked state.')
         if not task.get('id'):
             raise ServiceError(400, 'Only the bot doing this task can report its activity.')
+        self._apply_work_pause(artifact, task, payload, state)
         task['_work_progress_at'] = now()
         self._put('tasks', task)
         artifact.update(_activity=text, _activity_state=state, _activity_task_id=task['id'],

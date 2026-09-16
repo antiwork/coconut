@@ -1,4 +1,9 @@
 """Queue a verification turn when tracked work has no next owner."""
+from datetime import datetime, timedelta, timezone
+
+
+def retry_delay(attempt):
+    return 0 if attempt < 2 else min(3600, 300 * 2 ** min(attempt - 2, 4))
 
 
 RECOVERY_INSTRUCTIONS = (
@@ -14,7 +19,9 @@ RECOVERY_INSTRUCTIONS = (
     'For a process owned by another bot, wait for its owning task instead of its process. '
     'If an external source has no native task or process, schedule a bounded read-only recheck with native Hermes scheduling. '
     'Reuse an existing scheduled check and preserve rejected contact or escalation requests. '
-    'Use coconut_ask when a concrete human decision or missing input prevents progress. '
+    'Do not ask permission to retry, recover, plan tests, or repair routine local setup. '
+    'If a recorded human decision pauses this outcome, report blocked with paused_by_decision_id and stop. '
+    'Use coconut_ask only when a concrete human decision or missing input prevents progress. '
     'Give that card the work title, verified facts, the missing input, options, and the material risk. '
     'Update each attached Work item with its existing key. Record completion evidence when its outcome is verified. '
     'Do not stop at a recovery plan or ask the person to request another status update.'
@@ -40,13 +47,9 @@ class WorkRecovery:
                            or c['status'] in ('queued', 'working')) for c in contexts)):
                 continue
             items = [artifacts.get(identity, {}) for identity in identities]
-            if any(a.get('kind') != 'work' or a.get('task_id') == task['id']
-                   or not self._external_work_routine(a)
-                   or self._get('tasks', a['task_id'])['status'] != 'completed' for a in items):
+            if any(a.get('kind') not in ('work', 'pr') for a in items):
                 continue
-            if any(a['work_state'] != 'waiting' for a in self._work_projection(items)):
-                continue
-            evidence = 'Work now waits for external evidence through its existing Hermes routine.'
+            evidence = 'Coconut now checks unfinished work automatically and preserves recorded human pauses.'
             response = evidence + ' No option was selected and no new approval was given.'
             decision.update(status='resolved', resolution='work_scope_changed', outcome=evidence,
                             resolution_context=response, resolved_at=now(), revision=decision['revision'] + 1)
@@ -59,14 +62,15 @@ class WorkRecovery:
             self._put('decisions', decision)
             self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
             if not any(d['id'] != decision['id'] and d['task_id'] == task['id'] and d['status'] == 'pending' for d in decisions):
-                task.update(status='completed', summary='A newer task recorded the next step.', updated_at=now())
+                owns_work = any(a.get('task_id') == task['id'] or a.get('_review_task_id') == task['id'] for a in items)
+                task.update(status='failed' if owns_work else 'completed',
+                            summary='Automatic check pending' if owns_work else 'A newer task recorded the next step.', updated_at=now())
                 self._put('tasks', task)
                 self._event('task.updated', self._public(task), task['bot_id'], task['id'])
             self._refresh_bot(task['bot_id'])
 
     def _queue_work_recoveries(self):
         from .service import now
-        exhausted = []
         with self.transaction():
             if self.stopping.is_set() or self.restart_pending:
                 return
@@ -113,9 +117,8 @@ class WorkRecovery:
                             and (canonical[a['id']].get('_review_task_id') if a['kind'] == 'pr' else a.get('task_id')) == owner['id']]
                 handled.add(owner['id'])
                 previous = owner.get('_self_recovery', {})
-                if previous.get('attempt', 0) >= 2:
-                    exhausted.append((owner, affected))
-                    continue
+                delay = retry_delay(previous.get('attempt', 0))
+                scheduled = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat() if delay else None
                 context = dict(attempt=previous.get('attempt', 0) + 1,
                     previous_task_id=owner['id'], previous_turn_id=owner.get('_native_turn_id'),
                     previous_status=owner['status'], failure=owner['summary'],
@@ -124,15 +127,17 @@ class WorkRecovery:
                     unknown_tools=[{k: r.get(k) for k in ('id', 'task_id', 'turn_id', 'action', 'created_at')}
                                    for r in records if r['task_id'] in ids and r['state'] == 'executing'],
                     decisions=[self._public(d) for d in self._all('decisions') if d['task_id'] in ids])
-                context['unknown_tools'] = previous.get('unknown_tools', []) + context['unknown_tools']
+                context['decisions'] = list({d['id']: d for d in previous.get('decisions', [])
+                    + [d for work in context['work'] for d in work.get('decisions', [])] + context['decisions']}.values())
+                context['unknown_tools'] = list({r['id']: r for r in previous.get('unknown_tools', []) + context['unknown_tools']}.values())
                 context['saved_tasks'] = [dict(id=t['id'], title=t['title'], summary=t['summary'],
                     todos=t.get('_work_todos'), bot_messages=t.get('_bot_messages', [])) for t, _ in chain.values()]
-                task = self._send(bot, dict(text=item['title'], mode='queue'), thread_id=owner['thread_id'],
+                task = self._send(bot, dict(text=item['title'], mode='queue', scheduled_at=scheduled), thread_id=owner['thread_id'],
                     parent_task_id=owner['id'], conversation_bot_id=owner['conversation_bot_id'],
                     record_message=False, human_authored=False, work_item=item)
                 task = self._get('tasks', task['id'])
                 task.update(_self_recovery=context, _conversation_epoch=self._setting('conversation_epoch'),
-                            summary='Queued to check unfinished work')
+                            summary='Will retry automatically' if scheduled else 'Queued to check unfinished work')
                 self._put('tasks', task)
                 for target in affected:
                     if target['kind'] == 'work':
@@ -145,34 +150,6 @@ class WorkRecovery:
                     self._event('artifact.updated', self._work_projection([dict(target)])[0], target['bot_id'], task['id'])
                 self._event('work.recovery_queued', dict(task_id=task['id'], previous_task_id=owner['id'],
                     work_ids=[a['id'] for a in affected]), bot['id'], task['id'])
-
-        for task, affected in exhausted:
-            self._recovery_decision(task, affected)
-
-    def _recovery_decision(self, task, items):
-        from .service import YieldForDecision
-        with self.lock:
-            current = self._get('tasks', task['id'])
-            if current['status'] != task['status'] or self.stopping.is_set() or self._task_paused(current):
-                return
-            if not self._process_observation_current(current, self._get('bots', current['bot_id'])):
-                return
-            rows = self._work_projection([dict(self._get('artifacts', a['id'])) for a in items])
-            if any(a.get('work_state') != 'needs_recovery' for a in rows):
-                return
-            if any(d['task_id'] == task['id'] and d['status'] == 'pending' for d in self._all('decisions')):
-                return
-            # A failing provider cannot create its own card. Stop a repeated failure here.
-            try:
-                self.native_event(task['id'], 'native_question', {
-                    'title': 'Retry recovery for ' + items[0]['title'][:110] + '?',
-                    'context': 'Coconut could not confirm the next step after two checks. The work remains unfinished.',
-                    'risk': 'A tool may have completed without returning its result. Check its effect before repeating an action.',
-                    'options': [dict(id='retry', label='Try recovery again', explanation='Check saved results and continue within existing approval.'),
-                                dict(id='stop', label='Stop this work', explanation='Cancel the attached work without repeating its actions.')],
-                }, recovery_work_ids=[a['id'] for a in items])
-            except YieldForDecision:
-                pass
 
     def _queue_context_recoveries(self):
         from .service import uid, encoded

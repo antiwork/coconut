@@ -164,6 +164,8 @@ class PullRequestReviews:
                             continue
                         # One outstanding review per PR, even when several bots register it.
                         peers = [a for a in self._all('artifacts') if a['kind'] == 'pr' and a.get('url', '').lower() == artifact['url'].lower()]
+                        if self._work_pause(artifact, peers=peers):
+                            continue
                         owner = self._pr_review_owner(peers)
                         if not owner or owner['id'] != artifact['id']:
                             continue

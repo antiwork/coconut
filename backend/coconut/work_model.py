@@ -1,4 +1,5 @@
 """Derive outcome state from attempts, dependencies, and decisions."""
+from datetime import datetime
 from .background_processes import subscription
 
 
@@ -128,7 +129,7 @@ class WorkModel:
                    for t, _ in descendants.values()):
                 continue
             blockers.append((task, report.get('_activity') if report.get('_activity_state') == 'blocked' else None))
-        queued = [t for t in attempts if t['status'] in ('queued', 'scheduled')]
+        queued = [t for t in attempts if t['status'] in ('queued', 'scheduled') and not self._automatic_work_is_paused(t)]
         # A newer native turn can address an old failure. A background watcher cannot.
         resumed = queued + [t for t in live if self.running.get(t['id']) and self.running[t['id']].is_alive()]
         blockers = [(task, label) for task, label in blockers if task['status'] != 'failed' or label or not any(
@@ -173,6 +174,7 @@ class WorkModel:
                        and any(t['id'] == 'coconut-assignment' and t['status'] == 'completed'
                                for t in owner.get('_work_todos', {}).get('todos', []))
                        and not dependencies and not pending and not replies)
+        pause = self._work_pause(item, decisions, peers)
         if self._setting('work.cancelled.' + self._work_identity(item)) or (item['kind'] == 'work' and ((owner.get('status') == 'cancelled' and not evidence) or item['status'] == 'cancelled')):
             state, activity, next_step = 'cancelled', 'Stopped', None
         elif evidence and item['kind'] == 'pr':
@@ -181,6 +183,8 @@ class WorkModel:
             state, activity, next_step = 'completed', 'Completed', None
         elif pending and not live_reply and not replies and not ready_reply and not live:
             state, activity, next_step = 'needs_decision', 'Waiting for your decision', 'Review decision'
+        elif pause and not live and not live_reply and not replies and not queued and not item.get('_work_resuming'):
+            state, activity, next_step = 'waiting', 'Paused by your decision', item.get('next_step')
         elif awaiting_pr:
             state, activity, next_step = 'waiting', ('Waiting for the PR author' if item.get('draft') else 'Waiting for PR updates'), 'Continue when the PR changes'
         elif blockers and not live_reply and not replies:
@@ -191,6 +195,9 @@ class WorkModel:
             state, activity, next_step = 'queued', 'Continuing with the result', 'Read the result and update this work'
         elif pending:
             state, activity, next_step = 'needs_decision', 'Waiting for your decision', 'Review decision'
+        elif queued and all(t.get('_self_recovery') and t.get('scheduled_at')
+                and datetime.fromisoformat(t['scheduled_at'].replace('Z', '+00:00')) > timestamp for t in queued):
+            state, activity, next_step = 'waiting', 'Will retry automatically', 'Check saved results before continuing'
         elif queued:
             state, activity, next_step = 'queued', 'Queued', item.get('next_step') or 'Continue the next step'
         elif any(d['state'] == 'ready' for d in dependencies):
@@ -236,7 +243,6 @@ class WorkModel:
                 process = max(processes, key=lambda r: (r.get('_worker_progress', {}).get('at', 0), r.get('created_at', '')))
                 activity = progress_label(process, timestamp)
             elif description_at:
-                from datetime import datetime
                 reported = datetime.fromisoformat(description_at.replace('Z', '+00:00'))
                 if (timestamp - reported).total_seconds() > FRESH_SECONDS:
                     activity = 'Waiting for a progress update'

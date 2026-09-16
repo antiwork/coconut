@@ -351,6 +351,8 @@ class WorkProgress:
         state = task.get('_work_todos')
         if not state or task.get('_pr_review') or not self._unfinished_work(task):
             return None
+        if self._task_work_is_paused(task):
+            return None
         assignment = self._assignment(task)
         waiting_on = [identity for identity in assignment.get('_waiting_on', []) if identity != task.get('_resolved_dependency_id')]
         if waiting_on or self._background_pending(assignment['id'], finishing_task_id=task['id']):

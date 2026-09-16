@@ -1812,6 +1812,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 task['_preference_source_ids'].append(message['id'])
             self._record_attachments(bot['id'], task, attachments)
             task.update(updated_at=now(), summary='Your reply is queued with this task.', exchange_id=self._new_exchange(), exchange_depth=0)
+            if task['status'] == 'scheduled' and task.get('_self_recovery'):
+                task.update(status='queued', scheduled_at=None)
+                task['_self_recovery']['attempt'] = 0
             if task['status'] == 'paused' and not self._task_paused(task):
                 task['status'] = 'queued'
             self._put('tasks', task)
@@ -2279,7 +2282,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             return False
         if task.get('scheduled_at') and datetime.fromisoformat(task['scheduled_at'].replace('Z', '+00:00')).timestamp() > timestamp:
             return False
-        return not self._task_paused(task) and not self._continuation_blocked(task)
+        return not self._task_paused(task) and not self._continuation_blocked(task) and not self._automatic_work_is_paused(task)
 
     def _dispatch_order(self, tasks):
         # Consume results and decisions before starting more work.
@@ -2345,7 +2348,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         self._put('tasks', task)
                         self._event('task.updated', self._public(task), bot['id'], task_id)
                         return
-                    if self._task_paused(task) or self._continuation_blocked(task):
+                    if self._task_paused(task) or self._continuation_blocked(task) or self._automatic_work_is_paused(task):
                         return
                     if self._has_uncertain_receipt(task_id, task.get('_native_turn_id')):
                         task.update(status='failed', summary='A previous tool has no receipt. Check its result before starting new work.')

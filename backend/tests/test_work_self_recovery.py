@@ -10,6 +10,16 @@ import test_automatic_work as fixtures
 from coconut.hermes_worker import conversation_input
 from coconut.service import Service
 
+def legacy_recovery_card(service, task, items):
+    from coconut.service import YieldForDecision
+    try:
+        service.native_event(task['id'], 'native_question', {
+            'title': 'Retry recovery?', 'context': 'Legacy recovery question',
+            'options': [dict(id='retry', label='Try recovery again'), dict(id='stop', label='Stop this work')],
+        }, recovery_work_ids=[a['id'] for a in items])
+    except YieldForDecision:
+        pass
+
 
 class WorkSelfRecoveryTests(unittest.TestCase):
     setUp = fixtures.AutomaticWorkTests.setUp
@@ -228,42 +238,115 @@ class WorkSelfRecoveryTests(unittest.TestCase):
             task.update(status='failed', summary='Provider unavailable')
             self.service._put('tasks', task)
             task = self.recover()
-        self.assertEqual(len(self.service._all('decisions')), 1)
-        self.assertEqual(self.sync()[0]['work_state'], 'needs_decision')
+        self.assertEqual(self.service._all('decisions'), [])
+        self.assertEqual(task['status'], 'scheduled')
+        self.assertEqual(self.sync()[0]['activity'], 'Will retry automatically')
 
-    def test_restart_before_recovery_card_preserves_exhausted_attempts(self):
-        from unittest.mock import patch
-        self.stranded()
-        for _ in range(2):
-            task = self.recover()
-            task.update(status='working')
-            self.service._put('tasks', task)
-            self.service.native_event(task['id'], 'native_call',
-                dict(name='terminal', arguments={'command': 'git push'}))
-            task.update(status='failed')
-            self.service._put('tasks', task)
-        with patch.object(self.service, 'native_event', side_effect=RuntimeError('Service stopped')):
-            with self.assertRaises(RuntimeError):
-                self.recover()
-        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'failed')
-        self.service.close()
-        self.service = Service(self.temp.name, self.provider, start_workers=False, pr_tracker=self.tracker)
-        count = len(self.service._all('tasks'))
-        self.recover()
-        self.assertEqual(len(self.service._all('tasks')), count)
-        self.assertEqual(len(self.service._all('decisions')), 1)
-
-    def test_repeated_failure_creates_one_card_instead_of_loop(self):
+    def test_scheduled_retry_survives_restart_without_duplicates_or_cards(self):
         self.stranded()
         for _ in range(2):
             task = self.recover()
             task.update(status='failed', summary='Provider unavailable')
             self.service._put('tasks', task)
+        task = self.recover()
+        self.assertEqual(task['status'], 'scheduled')
+        self.assertEqual(task['_self_recovery']['attempt'], 3)
+        self.assertEqual(self.service._all('decisions'), [])
+        count = len(self.service._all('tasks'))
+        for _ in range(3):
+            self.recover()
+        self.service.close()
+        self.service = Service(self.temp.name, self.provider, start_workers=False, pr_tracker=self.tracker)
         self.recover()
-        self.assertEqual(self.sync()[0]['work_state'], 'needs_decision')
-        self.assertEqual(len(self.service._all('decisions')), 1)
+        self.assertEqual(len(self.service._all('tasks')), count)
+        self.assertEqual(self.service._get('tasks', task['id'])['scheduled_at'], task['scheduled_at'])
+        self.assertEqual(self.sync()[0]['activity'], 'Will retry automatically')
+
+    def test_retries_back_off_and_do_not_reserve_worker_capacity(self):
+        from datetime import datetime, timezone
+        from coconut.work_recovery import retry_delay
+        self.assertEqual([retry_delay(n) for n in range(8)], [0, 0, 300, 600, 1200, 2400, 3600, 3600])
+        self.stranded()
+        for attempt in range(2):
+            task = self.recover()
+            task.update(status='failed', summary='Provider unavailable')
+            self.service._put('tasks', task)
+        task = self.recover()
+        delay = (datetime.fromisoformat(task['scheduled_at']) - datetime.now(timezone.utc)).total_seconds()
+        self.assertTrue(290 < delay <= 300)
+        row = self.sync()[0]
+        self.assertEqual(row['work_state'], 'waiting')
+        self.assertIsNone(row['work_queue_position'])
+        self.assertEqual(self.service._all('decisions'), [])
+
+    def test_human_reply_resumes_scheduled_check_immediately(self):
+        self.stranded()
+        for _ in range(2):
+            task = self.recover()
+            task.update(status='failed')
+            self.service._put('tasks', task)
+        task = self.recover()
+        before = len(self.service._all('tasks'))
+        self.write('POST', '/v1/tasks/' + task['id'] + '/replies', dict(text='Continue now using the saved result'))
+        saved = self.service._get('tasks', task['id'])
+        self.assertEqual(saved['status'], 'queued')
+        self.assertIsNone(saved['scheduled_at'])
+        self.assertEqual(saved['_self_recovery']['attempt'], 0)
+        self.assertEqual(len(self.service._all('tasks')), before)
+
+    def test_recorded_pause_survives_recovery_and_retires_legacy_card(self):
+        from coconut.service import YieldForDecision
+        original = self.start()
+        item = self.sync()[0]
+        try:
+            self.service.native_event(original['id'], 'native_question', {
+                'title': 'Continue setup?', 'options': [dict(id='yes', label='Continue'), dict(id='no', label='Stop')],
+            })
+        except YieldForDecision:
+            pass
+        decision = self.service._all('decisions')[-1]
+        self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, choice='reject'))
+        original = self.service._get('tasks', original['id'])
+        original.update(status='failed')
+        self.service._put('tasks', original)
+        self.service.running.clear()
+        recovery = self.recover()
+        recovery.update(status='working')
+        self.service._put('tasks', recovery)
+        saved = self.service._get('artifacts', item['id'])
+        self.service._register_work(recovery['id'], dict(key=saved['_work_key'], title=item['title'],
+            status='blocked', activity='Preparation declined', paused_by_decision_id=decision['id']))
+        recovery.update(status='completed')
+        self.service._put('tasks', recovery)
+        self.assertEqual(self.sync()[0]['activity'], 'Paused by your decision')
+        legacy_recovery_card(self.service, recovery, [item])
+        before = len(self.service._all('tasks'))
+        for _ in range(3):
+            self.recover()
+        self.assertEqual(len(self.service._all('tasks')), before)
+        self.assertEqual(self.sync()[0]['work_state'], 'waiting')
+        self.assertEqual(self.sync()[0]['activity'], 'Paused by your decision')
+        self.assertEqual([d['status'] for d in self.service._all('decisions')], ['rejected', 'resolved'])
+        self.assertIsNone(self.sync()[0].get('completion_evidence'))
+        self.service.close()
+        self.service = Service(self.temp.name, self.provider, start_workers=False, pr_tracker=self.tracker)
         self.recover()
-        self.assertEqual(len(self.service._all('decisions')), 1)
+        self.assertEqual(len(self.service._all('tasks')), before)
+
+    def test_legacy_retry_card_becomes_scheduled_check_without_an_answer(self):
+        self.stranded()
+        for _ in range(2):
+            task = self.recover()
+            task.update(status='failed')
+            self.service._put('tasks', task)
+        legacy_recovery_card(self.service, task, self.sync())
+        decision = self.service._all('decisions')[-1]
+        retry = self.recover()
+        self.assertEqual(retry['status'], 'scheduled')
+        stored = self.service._get('decisions', decision['id'])
+        self.assertEqual(stored['status'], 'resolved')
+        self.assertIsNone(stored.get('selected_option_id'))
+        self.assertIsNone(stored.get('decided_by'))
 
     def test_recovery_prompt_keeps_verification_and_decision_instructions(self):
         self.stranded()
@@ -280,7 +363,7 @@ class WorkSelfRecoveryTests(unittest.TestCase):
             task = self.recover()
             task.update(status='failed', summary='Provider unavailable')
             self.service._put('tasks', task)
-        self.recover()
+        legacy_recovery_card(self.service, task, self.sync())
         decision = self.service._all('decisions')[-1]
         self.write('POST', '/v1/decisions/' + decision['id'] + '/answer',
                    dict(revision=decision['revision'], option_id='retry'))
@@ -289,7 +372,7 @@ class WorkSelfRecoveryTests(unittest.TestCase):
         self.assertEqual(retried['status'], 'queued')
         retried.update(status='failed', _self_recovery=dict(retried['_self_recovery'], attempt=2))
         self.service._put('tasks', retried)
-        self.recover()
+        legacy_recovery_card(self.service, retried, self.sync())
         decision = self.service._all('decisions')[-1]
         stopped = []
         def cancel(identity):
@@ -357,7 +440,7 @@ class WorkSelfRecoveryTests(unittest.TestCase):
         self.assertIn('Check the result', prompt)
         self.assertIn('Verify unknown receipt 456', prompt)
 
-    def test_manual_retry_keeps_receipt_from_failed_recovery_attempt(self):
+    def test_automatic_retry_keeps_receipt_from_failed_recovery_attempt(self):
         self.stranded()
         for _ in range(2):
             task = self.recover()
@@ -367,14 +450,12 @@ class WorkSelfRecoveryTests(unittest.TestCase):
                 dict(name='terminal', arguments={'command': 'git push'}))
             task.update(status='failed')
             self.service._put('tasks', task)
-        self.recover()
-        decision = self.service._all('decisions')[-1]
-        self.write('POST', '/v1/decisions/' + decision['id'] + '/answer',
-                   dict(revision=decision['revision'], option_id='retry'))
-        task = self.service._get('tasks', task['id'])
+        task = self.recover()
+        self.assertEqual(task['status'], 'scheduled')
+        self.assertEqual(self.service._all('decisions'), [])
         self.assertIn(receipt['id'], [r['id'] for r in task['_self_recovery']['unknown_tools']])
         self.assertEqual(self.service._get('native_receipts', receipt['id'])['state'], 'executing')
-        self.assertNotEqual(task['_native_turn_id'], 'recovery-turn')
+        self.assertNotEqual(task.get('_native_turn_id'), 'recovery-turn')
 
     def test_rejecting_recovery_card_stops_work_without_another_attempt(self):
         self.stranded()
@@ -382,7 +463,7 @@ class WorkSelfRecoveryTests(unittest.TestCase):
             task = self.recover()
             task.update(status='failed', summary='Provider unavailable')
             self.service._put('tasks', task)
-        self.recover()
+        legacy_recovery_card(self.service, task, self.sync())
         decision = self.service._all('decisions')[-1]
         self.write('POST', '/v1/decisions/' + decision['id'] + '/answer',
                    dict(revision=decision['revision'], choice='reject'))

@@ -18,6 +18,7 @@ TRACK_WORK_SCHEMA = {
         'status': {'type': 'string', 'enum': list(WORK_STATES), 'description': 'Use completed only after verifying the requested result. Ready means ready for review. Waiting does not schedule a wake-up.'},
         'completion_condition': {'type': 'string', 'maxLength': 500, 'description': 'The observable result that completes this outcome. Preserve it across handoffs.'},
         'completion_evidence': {'type': 'string', 'maxLength': 2000, 'description': 'Required for completed work. Name the verified result and its evidence. Finishing a reply is not completion.'},
+        'paused_by_decision_id': {'type': 'string', 'description': 'With blocked: the answered human decision that pauses this outcome. Preserve this link until later human direction changes the scope.'},
         'external_wait': {'type': 'object', 'additionalProperties': False, 'properties': {
             'job_id': {'type': 'string', 'description': 'Existing enabled Hermes routine in this bot that checks this source. Use its native job_id.'},
             'source': {'type': 'string', 'maxLength': 500, 'description': 'The exact issue, thread, or other source to check for the missing evidence. Read-only checks only.'},
@@ -184,7 +185,7 @@ class TrackedWork:
                    and m['role'] == 'assistant' and m['kind'] == 'text' and not m.get('streaming')]
         source = next((m for m in self._all('messages') if m.get('task_id') == item.get('_work_origin_task_id', item.get('task_id'))
                        and m['role'] == 'user'), None)
-        return dict(id=item['id'], title=item['title'], url=item.get('url'),
+        return dict(id=item['id'], title=item['title'], url=item.get('url'), paused_by_decision_id=item.get('paused_by_decision_id'),
                     status=latest['status'], activity_state=projected.get('activity_state'), activity=projected.get('activity'),
                     **{k: projected.get(k) for k in ('work_state', 'work_next_step', 'completion_condition', 'completion_evidence',
                                                    'work_decision_id', 'work_attempts', 'work_dependencies')},
@@ -487,6 +488,7 @@ class TrackedWork:
             item.update(title=title, activity=activity, status=state,
                         observed_at=now(), _work_key=key, _automatic_work=False, _hidden=bool(item.get('_work_parent_id')))
             item.update(details)
+            self._apply_work_pause(item, task, payload, state)
             if routine_report and state == 'completed':
                 item['_work_previous_task_ids'] = list(dict.fromkeys(item.get('_work_previous_task_ids', []) + [self._assignment(task)['id'], task_id]))
             item.pop('_external_wait_task_id', None)
@@ -551,6 +553,6 @@ class TrackedWork:
         return [dict(id=a['id'], bot_id=a['bot_id'], key=a['_work_key'], title=a['title'], status=a['status'], activity=a.get('activity'),
                      task_id=a['task_id'], current_task=a['id'] in owned, work_state=a.get('work_state'),
                      completion_condition=a.get('completion_condition'), completion_evidence=a.get('completion_evidence'),
-                     next_step=a.get('work_next_step'), external_wait=a.get('external_wait'),
+                     next_step=a.get('work_next_step'), external_wait=a.get('external_wait'), paused_by_decision_id=a.get('paused_by_decision_id'),
                      routine_check=a['id'] in scheduled,
                      dismissed=bool(self._setting('work.dismissed.work:' + a['id']))) for a in selected]
