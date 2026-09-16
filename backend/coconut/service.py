@@ -2312,6 +2312,25 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                               "WHERE json_extract(data, '$.task_id')=? ORDER BY rowid)", (task_id,)).fetchone()
         return json.loads(row[0])
 
+    def _withdraw_stream(self, task_id):
+        for message in self._task_messages(task_id):
+            if not message.get('streaming') or message.get('_hidden'):
+                continue
+            bot = self._get('bots', message['bot_id'])
+            visible = [json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM messages WHERE json_extract(data, '$.bot_id')=? "
+                "AND COALESCE(json_extract(data, '$._hidden'),0)=0 "
+                "AND COALESCE(json_extract(data, '$._deleted'),0)=0 ORDER BY rowid DESC", (bot['id'],))]
+            unread = [m['id'] for m in visible if m['role'] == 'assistant'][:bot['unread_count']]
+            if message['id'] in unread:
+                bot['unread_count'] -= 1
+            bot['last_message'] = next((m['text'][:160] for m in visible
+                if m['id'] != message['id'] and not m.get('reaction_event')), '')
+            message.update(_hidden=True, streaming=False)
+            self._put('messages', message)
+            self._put('bots', bot)
+            self._event('message.updated', message, bot['id'], task_id)
+
     @staticmethod
     def _advance_input(task):
         task['_native_turn_id'] = uid()
@@ -2522,8 +2541,14 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 raise YieldForDecision('This task no longer accepts provider output.')
             bot_id = task['bot_id']
             if kind == 'text_delta':
-                text = task.pop('_silence_candidate', '') + str(payload.get('text', payload.get('delta', '')))
+                candidate = task.pop('_silence_candidate', '')
+                replacing = payload.get('replace') is True
+                text = ('' if replacing else candidate) + str(payload.get('text', payload.get('delta', '')))
                 previous = next((m for m in reversed(self._task_messages(task_id)) if m['streaming']), None)
+                if replacing and not text:
+                    self._withdraw_stream(task_id)
+                    self._put('tasks', task)
+                    return
                 # A later chunk may turn the marker into an ordinary sentence.
                 if not previous and ('[SILENT]'.startswith(text.lstrip()) or is_silent_response(text)):
                     task['_silence_candidate'] = text
@@ -2531,9 +2556,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     return
                 self._put('tasks', task)
                 if previous:
-                    previous['text'] += text
+                    previous['text'] = text if replacing else previous['text'] + text
                     self._put('messages', previous)
-                    bot = self._get('bots', task['conversation_bot_id'])
+                    bot = self._get('bots', previous['bot_id'])
                     bot['last_message'] = previous['text'][:160]
                     self._put('bots', bot)
                     self._event('message.updated', previous, bot_id, task_id)
@@ -2581,6 +2606,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._message(bot_id, artifact['title'], task_id=task_id, kind='artifact', artifact_id=artifact['id'])
                 self._event('artifact.created', artifact, bot_id, task_id)
             elif kind in ('completed', 'failed'):
+                if kind == 'failed':
+                    self._withdraw_stream(task_id)
                 candidate = task.pop('_silence_candidate', '')
                 marker_silent = is_silent_response(candidate)
                 if candidate and not marker_silent:
@@ -2816,6 +2843,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._put('contexts', context)
         for task in self._all('tasks'):
             if task['status'] == 'working':
+                self._withdraw_stream(task['id'])
                 uncertain = self._has_uncertain_receipt(task['id'], task.get('_native_turn_id'))
                 task.update(status='failed' if uncertain else 'queued', summary='A tool stopped without a receipt. Check its result before starting new work.' if uncertain else 'Resuming after the Mac service restarted.', updated_at=now())
                 if uncertain:
@@ -2934,6 +2962,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     if kind not in ('text_delta', 'activity', 'completed'):
                         raise ServiceError(409, 'Context requests cannot propose or execute actions.')
                     text = str(payload.get('text', payload.get('summary', '')))
+                    if kind == 'text_delta' and payload.get('replace') is True:
+                        chunks.clear()
                     if kind != 'activity' and text:
                         chunks.append(text)
                 try:

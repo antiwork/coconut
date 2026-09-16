@@ -114,6 +114,24 @@ class StateSyncTests(unittest.TestCase):
         self.assertEqual(page['confirmed_request_ids'], current['confirmed_request_ids'])
         self.assertEqual(page['bots'], current['bots'])
 
+    def test_stream_reconciliation_updates_one_message_and_withdraws_failed_text(self):
+        task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})
+        with self.service.transaction():
+            stored = self.service._get('tasks', task['id'])
+            stored['status'] = 'working'
+            self.service._put('tasks', stored)
+        cursor = self.service._cursor()
+        self.service.emit(task['id'], 'text_delta', {'text': 'Draft'})
+        first = self.service.updates(cursor)
+        identity = first['messages'][0]['id']
+        self.service.emit(task['id'], 'text_delta', {'text': 'Verified result.', 'replace': True})
+        final = self.service.updates(first['cursor'])
+        self.assertEqual([(m['id'], m['text']) for m in final['messages']], [(identity, 'Verified result.')])
+        self.service.emit(task['id'], 'text_delta', {'text': '', 'replace': True})
+        removed = self.service.updates(final['cursor'])
+        self.assertEqual(removed['removed_messages'], [identity])
+        self.assertNotIn(identity, [m['id'] for m in self.service.message_page(self.bot['id'])['messages']])
+
     def test_missing_event_inside_a_batch_resets_content(self):
         initial = self.service.snapshot(content_only=True)
         with self.service.transaction():

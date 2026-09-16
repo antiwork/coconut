@@ -17,6 +17,57 @@ class SilentResponseTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'completed')
         self.assertEqual(self.service._get('bots', self.bot['id'])['unread_count'], unread)
 
+    def test_withdrawn_draft_restores_preview_and_unread(self):
+        bot = self.service._get('bots', self.bot['id'])
+        def output(task, bot, history, emit):
+            emit('text_delta', {'text': 'Draft reply'})
+            emit('text_delta', {'text': '', 'replace': True})
+            emit('completed', {'summary': 'Complete.', 'silent_response': True})
+        self.provider.start_task = output
+        self.service._run_task(self.task['id'])
+        after = self.service._get('bots', self.bot['id'])
+        self.assertEqual(after['last_message'], bot['last_message'])
+        self.assertEqual(after['unread_count'], bot['unread_count'])
+        self.assertNotIn('Draft reply', [m['text'] for m in self.service.snapshot()['messages']])
+
+    def test_worker_disconnection_withdraws_partial_reply(self):
+        def output(task, bot, history, emit):
+            emit('text_delta', {'text': 'Draft reply'})
+            raise ConnectionError('The worker disconnected.')
+        self.provider.start_task = output
+        self.service._run_task(self.task['id'])
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'failed')
+        self.assertNotIn('Draft reply', [m['text'] for m in self.service.snapshot()['messages']])
+        self.assertNotEqual(self.service._get('bots', self.bot['id'])['last_message'], 'Draft reply')
+
+    def test_service_restart_withdraws_interrupted_text(self):
+        bot = self.service._get('bots', self.bot['id'])
+        with self.service.transaction():
+            task = self.service._get('tasks', self.task['id'])
+            task['status'] = 'working'
+            self.service._put('tasks', task)
+        self.service.emit(task['id'], 'text_delta', {'text': 'Interrupted reply'})
+        self.service.close()
+        self.service = Service(self.temp.name, self.provider, start_workers=False, pr_tracker=self.tracker)
+        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'queued')
+        self.assertNotIn('Interrupted reply', [m['text'] for m in self.service.snapshot()['messages']])
+        self.assertEqual(self.service._get('bots', bot['id'])['last_message'], bot['last_message'])
+        self.assertEqual(self.service._get('bots', bot['id'])['unread_count'], bot['unread_count'])
+
+    def test_delegated_stream_only_updates_its_own_conversation(self):
+        peer = self.write('POST', '/v1/bots', {'name': 'Worker', 'role': ''})
+        bot = self.service._get('bots', self.bot['id'])
+        with self.service.transaction():
+            task = self.service._get('tasks', self.task['id'])
+            task.update(status='working', bot_id=peer['id'], source_bot_id=bot['id'])
+            self.service._put('tasks', task)
+        for text in ('Draft ', 'reply'):
+            self.service.emit(task['id'], 'text_delta', {'text': text})
+        self.assertEqual(self.service._get('bots', bot['id'])['last_message'], bot['last_message'])
+        self.assertEqual(self.service._get('bots', peer['id'])['last_message'], 'Draft reply')
+        self.service.emit(task['id'], 'text_delta', {'text': '', 'replace': True})
+        self.assertEqual(self.service._get('bots', peer['id'])['last_message'], '')
+
     def test_provider_marker_does_not_create_a_bubble_or_fallback(self):
         before = self.service.snapshot()['messages']
         def output(task, bot, history, emit):

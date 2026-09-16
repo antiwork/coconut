@@ -254,6 +254,7 @@ class ProviderTests(unittest.TestCase):
             from tools.registry import registry
             import json
             class TodoStore:
+                def __init__(self): self.todos, self.revision = [], 0
                 def restore(self, todos, revision): self.todos, self.revision = todos, revision
                 def snapshot(self): return {'todos': self.todos, 'revision': self.revision}
             class AIAgent:
@@ -587,7 +588,14 @@ class ProviderTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertTrue(path.exists(), 'The model did not reach the test checkpoint.')
 
-    def test_reply_stays_hidden_until_the_native_turn_finishes(self):
+    def test_silent_final_without_stream_does_not_emit_text(self):
+        provider = self.fake_hermes("return {'completed': True, 'final_response': '[SILENT]'}\n")
+        events = []
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+        self.assertEqual(events, [('completed', {'summary': 'Complete.', 'silent_response': True})])
+
+    def test_reply_streams_before_completion_and_reconciles_final_text(self):
         started, release = self.root / 'started', self.root / 'release'
         provider = self.fake_hermes(
             "from pathlib import Path\nimport time\n"
@@ -607,22 +615,26 @@ class ProviderTests(unittest.TestCase):
             thread.start()
             try:
                 self.wait_for_path(started)
-                self.assertEqual(events, [])
+                self.assertEqual(events, [('text_delta', {'text': 'An unfinished **'})])
             finally:
                 release.touch()
                 thread.join(timeout=3)
                 if thread.is_alive(): provider.cancel_task(self.task['id'])
         self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])
-        self.assertEqual(events, [('text_delta', {'text': 'The **finished reply**.'}),
+        self.assertEqual(events, [('text_delta', {'text': 'An unfinished **'}),
+                                  ('text_delta', {'text': 'draft'}),
+                                  ('text_delta', {'text': 'The **finished reply**.', 'replace': True}),
                                   ('completed', {'summary': 'Complete.'})])
 
-    def test_failed_turn_does_not_publish_an_unfinished_reply(self):
+    def test_failed_turn_withdraws_its_unfinished_reply(self):
         provider = self.fake_hermes("kwargs['stream_callback']('Unfinished answer')\nraise RuntimeError('failed')\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
-        self.assertEqual([kind for kind, _ in events], ['failed'])
+        self.assertEqual(events[:2], [('text_delta', {'text': 'Unfinished answer'}),
+                                     ('text_delta', {'text': '', 'replace': True})])
+        self.assertEqual(events[-1][0], 'failed')
 
     def configure_peer(self, *, budget=8):
         peer = {'id': str(uuid4()), 'name': 'Lin', 'role': 'Check calculations'}
@@ -757,7 +769,7 @@ class ProviderTests(unittest.TestCase):
 
     def test_zero_budget_keeps_native_tool_but_blocks_new_deliveries(self):
         self.configure_peer(budget=0)
-        provider = self.fake_hermes("assert set(registry.handlers) == {'coconut_propose_file', 'coconut_ask', 'coconut_suggest', 'coconut_restart_service', 'coconut_track_pr', 'message_agent'}\nreturn {'completed': True, 'final_response': 'No new bot deliveries.'}\n")
+        provider = self.fake_hermes("assert set(registry.handlers) == {'coconut_propose_file', 'coconut_ask', 'coconut_suggest', 'coconut_restart_service', 'coconut_track_pr', 'coconut_track_work', 'coconut_wait', 'message_agent'}\nreturn {'completed': True, 'final_response': 'No new bot deliveries.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))

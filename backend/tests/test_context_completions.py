@@ -14,6 +14,17 @@ class ContextCompletionTests(unittest.TestCase):
     question = inbox_tests.DecisionInboxTests.question
     restart = inbox_tests.DecisionInboxTests.restart
 
+    def test_context_uses_the_reconciled_final_reply(self):
+        decision = self.question()
+        self.write('POST', f"/v1/decisions/{decision['id']}/reply", dict(text='Explain this.', revision=1))
+        context = self.service._all('contexts')[-1]
+        def answer(task, bot, history, question, emit):
+            emit('text_delta', {'text': 'Draft explanation'})
+            emit('text_delta', {'text': 'Verified explanation.', 'replace': True})
+        with patch.object(self.service.provider, 'answer_context', answer):
+            self.run_context(context)
+        self.assertEqual(self.service._all('messages')[-1]['text'], 'Verified explanation.')
+
     def start_research(self):
         self.decision = self.question()
         self.write('POST', f"/v1/decisions/{self.decision['id']}/reply",

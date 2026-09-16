@@ -41,15 +41,14 @@ def work_enabled(operation, task):
     """One predicate decides native todo restoration and the dependency prompt for a turn."""
     return operation != 'context' and not task.get('_pr_review') and bool(
         task.get('_work_todos') or (task.get('source_bot_id') and not task.get('_is_return'))
-        or task.get('_handoff_assignment', {}).get('return_to_bot_id')
-        or (task.get('conversation_bot_id') and not task.get('source_bot_id')
-            and not any(task.get(k) for k in ('_native_job', '_source_audit_prompt', '_work_status_only', '_is_return'))))
+        or task.get('_handoff_assignment', {}).get('return_to_bot_id'))
 
 
 class NativeWork:
     def __init__(self, request):
         task = request['task']
         self.enabled = work_enabled(request['operation'], task)
+        self.capture = request['operation'] != 'context' and not task.get('_pr_review')
         self.saved = task.get('_work_todos')
         self.request = (task.get('_handoff_assignment', {}).get('request')
                         or '\n'.join(m['text'] for m in task.get('_bot_messages', []) if m.get('text'))
@@ -64,9 +63,19 @@ class NativeWork:
         return {'todos': [{'id': ROOT_ID, 'content': self.request, 'status': 'pending'}], 'revision': 1}
 
     def payload(self, agent):
-        if not self.enabled or agent is None:
+        if not self.capture or agent is None or not hasattr(agent, '_todo_store'):
             return {}
         state = snapshot(agent._todo_store.snapshot())
+        if not self.enabled:
+            if not state['todos']:
+                return {}
+            # Adopt a checklist Hermes actually created; a reply alone creates no assignment.
+            if not any(t['id'] == ROOT_ID for t in state['todos']):
+                root = self.initial()['todos'][0]
+                if all(t['status'] in ('completed', 'cancelled') for t in state['todos']):
+                    root['status'] = 'completed'
+                state['todos'] = [root] + state['todos'][:255]
+            return {'_work_todos': state}
         if not any(t['id'] == ROOT_ID for t in state['todos']):
             state['todos'] = self.initial()['todos'] + state['todos'][:255]
         return {'_work_todos': state}

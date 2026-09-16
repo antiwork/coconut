@@ -179,6 +179,25 @@ class NativeWorkTests(unittest.TestCase):
         self.assertTrue(work.enabled)
         self.assertEqual(work.initial()['todos'][0]['status'], 'pending')
 
+    def test_ordinary_conversation_does_not_create_unfinished_work(self):
+        class Store:
+            def snapshot(self): return {'todos': [], 'revision': 0}
+            def restore(self, *args, **kwargs): raise AssertionError('Chat must not seed pending work.')
+        class Agent: _todo_store = Store()
+        work = NativeWork({'operation': 'start', 'task': {'title': 'Hello', 'conversation_bot_id': 'desk'}})
+        self.assertFalse(work.enabled)
+        work.restore(Agent())
+        self.assertEqual(work.payload(Agent()), {})
+
+    def test_native_checklist_is_preserved_when_chat_becomes_work(self):
+        class Store:
+            def snapshot(self): return {'todos': [{'id': 'check', 'content': 'Check the result', 'status': 'completed'}], 'revision': 1}
+        class Agent: _todo_store = Store()
+        work = NativeWork({'operation': 'start', 'task': {'title': 'Check it', 'conversation_bot_id': 'desk'}})
+        state = work.payload(Agent())['_work_todos']
+        self.assertEqual(state['todos'][1]['id'], 'check')
+        self.assertEqual(state['todos'][0]['status'], 'completed')
+
     def test_context_and_read_only_review_do_not_resume_implementation(self):
         request = self.request(); request['operation'] = 'context'
         self.assertFalse(NativeWork(request).enabled)
