@@ -88,7 +88,7 @@ def verify_contract():
     from .model_catalog import _read_profile, _write_profile
 
     require_keywords(AIAgent.__init__, {
-        'model', 'provider', 'api_key', 'base_url', 'api_mode', 'reasoning_config',
+        'model', 'provider', 'api_key', 'base_url', 'api_mode', 'reasoning_config', 'fallback_model',
         'enabled_toolsets', 'quiet_mode', 'ephemeral_system_prompt', 'session_id',
         'skip_context_files', 'skip_memory', 'skip_background_review', 'save_trajectories',
         'max_tokens', 'max_iterations', 'run_budget_seconds', 'load_soul_identity', 'gateway_session_key', 'clarify_callback', 'disabled_toolsets', 'session_db',

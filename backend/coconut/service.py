@@ -86,6 +86,7 @@ from .work_progress import WorkProgress, work_enabled
 from .routine_coordinator import NativeRoutines
 from .approval_updates import ApprovalUpdates
 from .parallel_work_updates import ParallelWorkUpdates
+from .native_fallback_updates import NativeFallbackUpdates
 from .work_capacity import execution_key, state as capacity_state
 from .kanban_scheduler import NativeKanban
 
@@ -98,7 +99,7 @@ from .decision_freshness import DecisionFreshness
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
-class Service(NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart):
+class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -693,6 +694,7 @@ class Service(NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkMode
                 if native is not None:
                     state['approvals'] = native['approvals']
                     state['parallel_work'] = native.get('parallel_work')
+                    state['api_fallback'] = native.get('api_fallback')
                     state['mcp_servers'] = native.get('mcp_servers', [])
                 if after is not None:
                     state = self._state_changes(state, after)
@@ -752,6 +754,8 @@ class Service(NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkMode
             return {'ok': True}
         if method == 'POST' and path.startswith('/v1/settings/google/'):
             return self.google_connection(path.rsplit('/', 1)[1], data, device_id, key)
+        if method == 'PUT' and path == '/v1/settings/api-fallback' and hasattr(self.provider, 'native_settings'):
+            return self.mutate_native_fallback(data, key, fingerprint)
         if method == 'PUT' and path == '/v1/settings/parallel-work' and hasattr(self.provider, 'native_settings'):
             return self.mutate_parallel_work(data, key, fingerprint)
         if method == 'PUT' and path == '/v1/settings/approvals' and hasattr(self.provider, 'native_settings'):

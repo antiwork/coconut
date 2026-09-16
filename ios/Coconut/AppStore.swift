@@ -21,6 +21,7 @@ final class AppStore {
     @ObservationIgnored private var workMutationIds: [String: UUID] = [:]
     var approvals: ApprovalSettings?
     var parallelWork: ParallelWorkSettings?
+    var apiFallback: APIFallbackSettings?
     var workCapacity: ParallelWorkSettings?
     var routines: [Routine] = []
     var learning: [LearningGroup] = []
@@ -274,7 +275,7 @@ final class AppStore {
         cacheQueue.sync { ProtectedCache.remove("snapshot.json") }
         bots = []; tasks = []; messages = []; decisions = []; artifacts = []; learning = []
         routines = []
-        approvals = nil; parallelWork = nil; workCapacity = nil; mcpServers = []
+        approvals = nil; parallelWork = nil; apiFallback = nil; workCapacity = nil; mcpServers = []
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
         cursor = 0
         lastSync = nil
@@ -846,6 +847,15 @@ final class AppStore {
             payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self)
     }
 
+    func setAPIFallback(_ enabled: Bool) async {
+        if isDemo {
+            apiFallback?.enabled = enabled
+            return
+        }
+        let _: APIFallbackSettings? = await write("settings/api-fallback", method: "PUT",
+            payload: APIFallbackRequest(enabled: enabled), as: APIFallbackSettings.self)
+    }
+
     func setWorkerLimit(_ value: Int?, botId: String? = nil) async {
         if isDemo {
             if let botId, let index = bots.firstIndex(where: { $0.id == botId }) {
@@ -1052,6 +1062,7 @@ final class AppStore {
             let receiptMCP = mcpServers
             let receiptCapacityLimit = workCapacity?.limit
             let receiptParallelLimit = parallelWork?.limit
+            let receiptFallback = apiFallback
             let receiptMessages = messages
             let receiptDecisions = decisions
             let receiptArtifacts = artifacts
@@ -1094,6 +1105,7 @@ final class AppStore {
                     bots[index].effectiveModel = settings.modelCatalog?.defaults.selection
                 }
             } else if let settings = result as? ApprovalSettings, approvals?.defaults == receiptApproval { approvals = settings }
+            else if let settings = result as? APIFallbackSettings, apiFallback == receiptFallback { apiFallback = settings }
             else if let settings = result as? MCPResponse, mcpServers == receiptMCP { mcpServers = settings.servers }
             else if let settings = result as? ParallelWorkSettings {
                 if path == "settings/work-capacity", workCapacity?.limit == receiptCapacityLimit {
@@ -1281,6 +1293,7 @@ final class AppStore {
             snapshot.modelCatalog = modelCatalog
             snapshot.approvals = approvals
             snapshot.parallelWork = parallelWork
+            snapshot.apiFallback = apiFallback
             snapshot.mcpServers = mcpServers
             snapshot.routines = routines
             snapshot.bots = preservingNativeSettings(in: snapshot.bots)
@@ -1298,6 +1311,8 @@ final class AppStore {
         approvals = snapshot.approvals
         workCapacity = snapshot.workCapacity
         parallelWork = snapshot.parallelWork
+        apiFallback = snapshot.apiFallback
+        if isDemo && apiFallback == nil { apiFallback = APIFallbackSettings(enabled: false, available: true, model: "gpt-6-astra", canEnable: true) }
         if isDemo && workCapacity == nil { workCapacity = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4) }
         if isDemo && parallelWork == nil { parallelWork = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4) }
         mcpServers = snapshot.mcpServers ?? []
@@ -1440,6 +1455,7 @@ final class AppStore {
                 self.modelConfigured = native.modelConfigured
                 self.approvals = native.approvals
                 self.parallelWork = native.parallelWork
+                self.apiFallback = native.apiFallback
                 self.mcpServers = native.mcpServers ?? []
                 self.routines = native.routines ?? []
                 if let configured = native.pushConfigured { self.pushConfigured = configured }

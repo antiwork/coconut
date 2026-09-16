@@ -876,13 +876,15 @@ def run_turn(request, emit, request_receipt):
         interrupt_binding.__enter__()
         if scope.cancelled.is_set():
             raise InterruptedError('The task was cancelled.')
+        from native_fallback import for_turn
+        fallback = for_turn()
         if request['task'].get('_work_status_only'):
             from run_agent import AIAgent
             from toolsets import create_custom_toolset
             create_custom_toolset('coconut_work_update', 'Read saved work progress', tools=[])
             config = execution_configuration(request['model'], request.get('base_url'), provider=request.get('provider'),
                                              runtime_config=request.get('runtime_config'))
-            agent = AIAgent(model=request['model'], **config,
+            agent = AIAgent(model=request['model'], **config, fallback_model=fallback,
                             reasoning_config=reasoning_configuration(request.get('reasoning_effort')),
                             enabled_toolsets=['coconut_work_update'], disabled_toolsets=[], quiet_mode=True,
                             session_id='work-update-' + request['task']['id'], session_db=None,
@@ -1218,7 +1220,7 @@ def run_turn(request, emit, request_receipt):
         relay = NativeRelay(request, request_receipt)
         relay.install(conversation)
         bridge.relay = relay
-        agent = AIAgent(model=request['model'], **config, reasoning_config=reasoning_configuration(request.get('reasoning_effort')),
+        agent = AIAgent(model=request['model'], **config, fallback_model=fallback, reasoning_config=reasoning_configuration(request.get('reasoning_effort')),
                         enabled_toolsets=list(dict.fromkeys(toolsets + mcp_names + [coconut_toolset] + (['todo'] if work.enabled else []))), disabled_toolsets=disabled, quiet_mode=True,
                         ephemeral_system_prompt=instructions, session_id=conversation.session_id, session_db=conversation.db,
                         platform='coconut', gateway_session_key=request['task']['id'], clarify_callback=bridge.clarify,

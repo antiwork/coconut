@@ -126,6 +126,7 @@ struct ModelSettingsView: View {
                     }
                 }
             }
+            if !isBot { APIFallbackSection() }
             if !canEdit {
                 Section { Text("Connect to your Mac to save changes.").font(.footnote).foregroundStyle(.secondary) }
             }
@@ -216,5 +217,40 @@ enum ModelPresentation {
     static func effortName(_ value: String?) -> String {
         guard let value else { return "Auto" }
         return value == "none" ? "Off" : value.capitalized
+    }
+}
+
+private struct APIFallbackSection: View {
+    @Environment(AppStore.self) private var store
+    @State private var saving = false
+
+    var body: some View {
+        if let settings = store.apiFallback {
+            Section {
+                Toggle(isOn: Binding(get: { settings.enabled }, set: { enabled in
+                    saving = true
+                    Task { await store.setAPIFallback(enabled); saving = false }
+                })) {
+                    HStack {
+                        Text("Use OpenAI API fallback")
+                        if saving { ProgressView().controlSize(.small) }
+                    }
+                }
+                .tint(BoardStyle.green)
+                .disabled(saving || (!settings.enabled && !settings.canEnable) || (!store.isDemo && store.connection != .connected))
+                .accessibilityIdentifier("openai-api-fallback")
+                if let model = settings.model {
+                    LabeledContent("Fallback model", value: model)
+                }
+            } header: {
+                Text("Fallback")
+            } footer: {
+                Text(!settings.available
+                     ? "Save an OpenAI API key in Hermes on your Mac to enable fallback. The key stays on your Mac."
+                     : !settings.enabled && !settings.canEnable
+                     ? "Select an OpenAI model before enabling this fallback."
+                     : "Hermes uses this model if the primary provider fails or reaches its limit. API usage is billed separately. Changes save automatically and apply to new turns.")
+            }
+        }
     }
 }

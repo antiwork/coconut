@@ -428,6 +428,7 @@ struct StateSnapshot: Codable, Sendable {
     var modelCatalog: ModelCatalog? = nil
     var approvals: ApprovalSettings? = nil
     var parallelWork: ParallelWorkSettings? = nil
+    var apiFallback: APIFallbackSettings? = nil
     var workCapacity: ParallelWorkSettings? = nil
     var mcpServers: [MCPServer]? = nil
     var pushConfigured: Bool? = nil
@@ -525,4 +526,15 @@ struct MCPRequest: Encodable {
     let name: String
     var url: String? = nil
     var token: String? = nil
+}
+
+struct APIFallbackSettings: Codable, Equatable, Sendable {
+    var enabled: Bool
+    var available: Bool
+    var model: String?
+    var canEnable: Bool
+}
+
+struct APIFallbackRequest: Encodable {
+    let enabled: Bool
 }

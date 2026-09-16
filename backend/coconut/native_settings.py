@@ -127,11 +127,15 @@ def worker(request, default_home):
         result = worker(dict(request, native_operation='read'), default_home)
         result.update(routines('routines_read', request, homes))
         return result
+    if op == 'set_api_fallback':
+        from native_fallback import save
+        return save(default_home, request['enabled'])
     if op == 'read':
+        from native_fallback import state as fallback_state
         from native_mcp import public_servers
         from parallel_work import state as parallel_state
         return {'profiles': {identity: profile_state(home, default_home) for identity, home in homes.items()},
-                'approvals': approval_state(default_home), 'parallel_work': parallel_state(default_home), 'mcp_servers': public_servers(Path(request.get('settings_root', default_home)))}
+                'api_fallback': fallback_state(default_home), 'approvals': approval_state(default_home), 'parallel_work': parallel_state(default_home), 'mcp_servers': public_servers(Path(request.get('settings_root', default_home)))}
     if op == 'set_parallel_work':
         from parallel_work import save, state
         save(default_home, request['limit'])
