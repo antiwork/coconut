@@ -667,6 +667,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 if self.db.execute("SELECT 1 FROM events WHERE seq>? AND "
                                    "(type IN ('settings.updated','bot.created','bot.deleted') OR type LIKE 'routine.%') LIMIT 1", (settings_cursor,)).fetchone():
                     continue
+                data_started = time.perf_counter()
                 self._all('exchanges')
                 bots = [self._bot_view(dict(b, **{key: value for key, value in observed.get(b['id'], {}).items() if key in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'worker_limit', 'model_override', '_native_effective_model', '_model_error')}), catalog) for b in self._all('bots') if not b.get('_deleted')]
                 visible = {b['id'] for b in bots}
@@ -685,7 +686,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     previous = {r['id']: r.get('last_task_id') for r in state['routines']}
                     state['routines'] = [dict(self._public(r), last_task_id=previous.get(r['id']))
                                          for r in routines if r['bot_id'] in visible and not r.get('_deleted')]
+                rows_finished = time.perf_counter()
                 state['artifacts'] = [self._public(a) for a in self._work_projection([self._get('artifacts', a['id']) for a in state['artifacts']])]
+                work_finished = time.perf_counter()
                 replying = {c['decision_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working') and not c.get('_decision_refresh')}
                 for decision in state['decisions']:
                     decision['reply_pending'] = decision['id'] in replying
@@ -709,6 +712,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     state['parallel_work'] = native.get('parallel_work')
                     state['api_fallback'] = native.get('api_fallback')
                     state['mcp_servers'] = native.get('mcp_servers', [])
+                if timings is not None:
+                    timings.update(data_rows=(rows_finished - data_started) * 1000,
+                        data_work=(work_finished - rows_finished) * 1000,
+                        data_decisions=(time.perf_counter() - work_finished) * 1000)
             break
         else:
             raise ServiceError(503, 'Settings changed during this request. Try again.')
