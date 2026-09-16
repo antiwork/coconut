@@ -3048,7 +3048,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     self._refresh_bot(bot['id'])
                     history = self._history(bot['id'])
                     decision = self._get('decisions', context['decision_id'])
-                    provider_task = self._public(task) | {'_native_turn_id': task['_native_turn_id'], '_execution_session_id': task.get('_execution_session_id'),
+                    provider_task = self._public(task) | {'_execution_session_id': task.get('_execution_session_id'),
                                                            '_kanban_external_id': context.get('_kanban_claim', {}).get('external_id'),
                                                            '_kanban_workspace': context.get('_kanban_claim', {}).get('workspace')}
                     provider_task['_conversation_epoch'] = context.get('_conversation_epoch', task.get('_conversation_epoch', self._setting('conversation_epoch')))
