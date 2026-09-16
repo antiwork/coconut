@@ -107,7 +107,8 @@ class WorkStatus:
             if not include_continuations and task.get('exchange_id') != root.get('exchange_id'):
                 continue
             bot = self._get('bots', task['bot_id'])
-            unstarted = task['status'] == 'queued' and not task.get('_native_turn_id') and '_conversation_epoch' not in task
+            # _advance_input reserves a new turn ID before the queued turn starts.
+            unstarted = task['status'] == 'queued' and '_conversation_epoch' not in task
             if (bot.get('_deleted') or task.get('session_id') != bot.get('session_id')
                     or (not unstarted and task.get('_conversation_epoch') != self._setting('conversation_epoch'))):
                 continue

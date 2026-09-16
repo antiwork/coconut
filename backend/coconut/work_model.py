@@ -149,7 +149,10 @@ class WorkModel:
             any(d['task_id'] in report_tasks for d in pending)
             or any(c['task_id'] in report_tasks for c in replies)
             or any(t['id'] in delegated_tasks for t in live + queued)
-            or any(d['kind'] == 'task' and d['target_id'] in explicit_waits | report_tasks for d in dependencies)
+            or any(d['kind'] == 'task' and (d['target_id'] in explicit_waits
+                or (d['target_id'] in report_tasks and (d['state'] != 'ready'
+                    or tasks[d['target_id']]['status'] != 'completed'
+                    or self._unfinished_work(tasks[d['target_id']])))) for d in dependencies)
             or any(r['task_id'] in report_tasks and (r.get('state') == 'executing'
                 or ((subscription(r) or any(r.get(k) for k in ('_wait_process_receipt', '_wait_task_id', '_wait_decision_id')))
                     and not r.get('_process_delivery'))) for r in current_records))

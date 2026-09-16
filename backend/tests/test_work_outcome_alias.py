@@ -202,6 +202,32 @@ class WorkOutcomeAliasTests(unittest.TestCase):
         row = next(a for a in self.service.snapshot()['artifacts'] if a['id']==parent['id'])
         self.assertEqual(row['work_state'], 'queued')
 
+    def test_completed_alias_does_not_keep_an_acknowledged_outcome_open(self):
+        parent, task = self.completed_parent_with_delegate()
+        self.service._register_work(task['id'], dict(key='worker-export',
+            title='Export account data', activity='Export verified', status='completed',
+            completion_evidence='The exported file contains all records.'))
+        task.update(status='completed', _waiting_on=[],
+                    _work_todos={'todos': [dict(id='coconut-assignment', status='completed', content='Export data')]})
+        self.service._put('tasks', task)
+        owner = self.service._get('tasks', parent['task_id'])
+        owner['_waiting_on'] = [task['id']]
+        self.service._put('tasks', owner)
+        row = next(a for a in self.service.snapshot()['artifacts'] if a['id']==parent['id'])
+        self.assertEqual(row['work_state'], 'completed')
+
+    def test_ready_failed_delegate_does_not_complete_the_outcome(self):
+        parent, task = self.completed_parent_with_delegate()
+        owner = self.service._get('tasks', parent['task_id'])
+        owner['_waiting_on'] = [task['id']]
+        self.service._put('tasks', owner)
+        for status in ('failed', 'cancelled'):
+            with self.subTest(status=status):
+                task.update(status=status, _waiting_on=[])
+                self.service._put('tasks', task)
+                row = next(a for a in self.service.snapshot()['artifacts'] if a['id']==parent['id'])
+                self.assertNotEqual(row['work_state'], 'completed')
+
 
 class AliasedExternalWaitTests(unittest.TestCase):
     import test_external_work_waits as external

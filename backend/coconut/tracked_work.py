@@ -234,7 +234,7 @@ class TrackedWork:
                     or any(task.get(k) != parent.get(k) for k in ('bot_id', 'conversation_bot_id', 'session_id'))):
                 continue
             bot = self._get('bots', task['bot_id'])
-            unstarted = task['status'] == 'queued' and not task.get('_native_turn_id') and '_conversation_epoch' not in task
+            unstarted = task['status'] == 'queued' and '_conversation_epoch' not in task
             if (bot.get('_deleted') or bot.get('archived') or task['session_id'] != bot['session_id']
                     or parent.get('_conversation_epoch') != self._setting('conversation_epoch')
                     or (not unstarted and task.get('_conversation_epoch') != self._setting('conversation_epoch'))):

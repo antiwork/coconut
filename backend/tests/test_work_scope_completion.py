@@ -72,6 +72,26 @@ class WorkScopeCompletionTests(unittest.TestCase):
         finally:
             self.service.running.clear()
 
+    def test_reply_to_waiting_work_stays_in_the_queue_before_its_next_turn(self):
+        self.service.db.execute("INSERT INTO settings(key,value) VALUES ('conversation_epoch', ?)", (json.dumps('current-epoch'),))
+        self.track()
+        task = self.service._get('tasks', self.task['id'])
+        task.update(status='waiting', _native_turn_id='previous-turn',
+                    _conversation_epoch=self.service._setting('conversation_epoch'))
+        self.service._put('tasks', task)
+        self.write('POST', '/v1/tasks/' + task['id'] + '/replies', dict(text='Continue the export', mode='queue'))
+        row = self.row()
+        self.assertEqual(row['work_state'], 'queued')
+        self.assertEqual(row['work_queue_position'], 1)
+        self.assertIn(task['id'], [a['id'] for a in row['work_attempts']])
+
+    def test_queued_work_from_an_old_epoch_stays_excluded(self):
+        self.track()
+        task = self.service._get('tasks', self.task['id'])
+        task.update(status='queued', _native_turn_id='previous-turn', _conversation_epoch='old-epoch')
+        self.service._put('tasks', task)
+        self.assertEqual(self.row()['work_attempts'], [])
+
     def test_later_callback_reopens_the_same_assignment(self):
         item, owner = self.completed_diagnosis()
         first = dict(owner, id='first-callback', status='completed', _assignment_task_id=owner['id'])
