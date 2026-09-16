@@ -852,6 +852,8 @@ def main():
 
 
 def run_turn(request, emit, request_receipt):
+    from turn_timings import TurnTimings
+    timing = TurnTimings(request['task']['id'], 'worker')
     conversation = None
     agent = None
     bridge = None
@@ -862,6 +864,7 @@ def run_turn(request, emit, request_receipt):
     scope = current_turn.get() or TurnScope(request['task']['id'])
     scope_token = current_turn.set(scope)
     setup_lock.acquire()
+    timing.mark('setup_lock')
     preparing = True
     active_scopes.add(scope)
     interrupt_binding = nullcontext()
@@ -923,6 +926,7 @@ def run_turn(request, emit, request_receipt):
             prepare_turn(os.environ['COCONUT_DEFAULT_HOME'])
         from terminal_setup import configure_terminal
         configure_terminal(os.environ['HERMES_HOME'])
+        timing.mark('runtime_config')
         mcp_names = []
         if os.environ.get('COCONUT_DEFAULT_HOME'):
             from native_mcp import refresh_inheritance
@@ -933,6 +937,7 @@ def run_turn(request, emit, request_receipt):
         if mcp_names:
             from tools.mcp_tool_discovery import discover_mcp_tools
             discover_mcp_tools(allowed_mcp_names=mcp_names)
+        timing.mark('tools')
         from hermes_state import SessionDB
         from tools.registry import registry as native_registry
         registry = scope
@@ -1224,6 +1229,7 @@ def run_turn(request, emit, request_receipt):
         toolsets = sorted(_get_platform_tools(profile_config, 'cli'))
         disabled = parse_config_string_list((profile_config.get('agent') or {}).get('disabled_toolsets'))
         conversation = NativeConversation(request, SessionDB())
+        timing.mark('instructions_and_history')
         from native_relay import NativeRelay
         relay = NativeRelay(request, request_receipt)
         relay.install(conversation)
@@ -1241,6 +1247,8 @@ def run_turn(request, emit, request_receipt):
         bridge.install(registry)
         prompt, _ = conversation_input(request)
         current = current_message(request) if operation == 'start' else None
+        timing.mark('agent')
+        raw_emit('turn_timing', timing.payload())
         setup_lock.release()
         preparing = False
         result = agent.run_conversation(prompt, conversation_history=conversation.history, task_id=request['task']['id'],

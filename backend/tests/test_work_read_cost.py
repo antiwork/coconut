@@ -66,3 +66,22 @@ class WorkReadCostTests(unittest.TestCase):
             return original(value, *args, **kwargs)
         with patch('coconut.background_processes.json.loads', side_effect=decode):
             self.assertFalse(self.service._background_pending(self.task['id']))
+
+    def test_streaming_reads_only_the_current_task_messages(self):
+        with self.service.transaction():
+            task = self.service._get('tasks', self.task['id'])
+            task['status'] = 'working'
+            self.service._put('tasks', task)
+            unrelated = self.service._message(self.bot['id'], 'Other task output', streaming=True)
+        original = self.service._all
+        def read(table):
+            self.assertNotEqual(table, 'messages', 'A text chunk must not read the full transcript.')
+            return original(table)
+        with patch.object(self.service, '_all', side_effect=read):
+            self.service.emit(task['id'], 'text_delta', {'text': 'Hello '})
+            self.service.emit(task['id'], 'text_delta', {'text': 'again.'})
+        messages = [m for m in self.service._task_messages(task['id']) if m['streaming']]
+        self.assertEqual([m['text'] for m in messages], ['Hello again.'])
+        self.assertEqual(self.service._get('messages', unrelated['id'])['text'], 'Other task output')
+        plan = self.service.db.execute("EXPLAIN QUERY PLAN SELECT data FROM messages WHERE json_extract(data, '$.task_id')=?", (task['id'],)).fetchall()
+        self.assertIn('messages_task', str(plan))

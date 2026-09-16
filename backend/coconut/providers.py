@@ -411,18 +411,23 @@ class HermesProvider(FixtureProvider):
             self._run_turn(operation, task, bot, history, emit, **extra)
 
     def _run_turn(self, operation, task, bot, history, emit, *, isolated=False, **extra):
+        from .turn_timings import TurnTimings
+        timing = TurnTimings(task['id'], 'provider')
         if (self.hermes_root / '.env').exists() or (self.hermes_root / '.env').is_symlink():
             raise RuntimeError('The Hermes checkout contains a shared .env file. Use a clean checkout for Coconut.')
         if not Path(self.python).is_file() or not (self.hermes_root / 'run_agent.py').is_file():
             raise RuntimeError('Install the Coconut Hermes runtime before starting this bot.')
         bot = self.observe_bot(bot)
+        timing.mark('profile_read')
         selection = self.resolve_task_model(bot, task)
         runtime_config = self.catalog.resolve_runtime(selection, bot_id=bot['id'])
+        timing.mark('model_resolution')
         from .profiles import HermesProfiles
         if not isolated:
             HermesProfiles(self.data_dir).sync(bot)
         task_id = task['id']
         env, cwd = self.environment(bot['id'])
+        timing.mark('profile_sync')
         env['COCONUT_DEFAULT_HOME'] = str(self.catalog.root)
         request = dict(operation=operation, task=task, bot=bot, history=history,
                        model=selection['model'], provider=selection['provider'], base_url=selection.get('base_url'),
@@ -463,9 +468,14 @@ class HermesProvider(FixtureProvider):
         paused = False
         try:
             self._send(process, request)
+            timing.mark('worker_request')
+            timing.report()
             # Keep stdin open. EOF lets the worker stop if the service disappears.
             terminal_received = False
             for event in events(channel):
+                if event.get('type') == 'turn_timing':
+                    logging.getLogger(__name__).warning('coconut.turn_timing %s', json.dumps(event.get('data')))
+                    continue
                 if event.get('type') == 'process_completions':
                     continue  # A timed-out status request can finish before this turn.
                 if event.get('type') == 'turn_end':

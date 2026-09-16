@@ -152,6 +152,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             (json_extract(data, '$.task_id'), json_extract(data, '$.turn_id'))
             WHERE json_extract(data, '$.state')='executing';
         CREATE INDEX IF NOT EXISTS native_receipts_task ON native_receipts (json_extract(data, '$.task_id'));
+        CREATE INDEX IF NOT EXISTS messages_task ON messages (json_extract(data, '$.task_id'));
         CREATE INDEX IF NOT EXISTS tasks_assignment ON tasks (json_extract(data, '$._assignment_task_id'));
         CREATE INDEX IF NOT EXISTS tasks_blocked ON tasks (id)
             WHERE json_extract(data, '$.status') IN ('needs_you', 'paused');
@@ -2308,6 +2309,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 if not message.get('_hidden') and not message.get('_deleted')
                 and (message.get('sender_bot_id') == bot_id or bot_id in message.get('recipient_bot_ids', []))]
 
+    def _task_messages(self, task_id):
+        row = self.db.execute("SELECT json_group_array(json(data)) FROM (SELECT data FROM messages "
+                              "WHERE json_extract(data, '$.task_id')=? ORDER BY rowid)", (task_id,)).fetchone()
+        return json.loads(row[0])
+
     @staticmethod
     def _advance_input(task):
         task['_native_turn_id'] = uid()
@@ -2326,6 +2332,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                                           if source_id not in task.get('_turn_preference_source_ids', [])]
 
     def _run_task(self, task_id: str):
+        from .turn_timings import TurnTimings
+        timing = TurnTimings(task_id, 'service')
         with self.lock:
             task = self._get('tasks', task_id)
             bot_lock = self.bot_locks.setdefault(execution_key(task), threading.Lock())
@@ -2383,6 +2391,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     if task['status'] != 'working' or self.stopping.is_set():
                         return
                     history = self._history(bot['id'])
+                timing.mark('history')
                 provider_task = self._public(task) | {'_execution_session_id': task.get('_execution_session_id'),
                                                        '_kanban_external_id': task.get('_kanban_claim', {}).get('external_id')}
                 for field in ('_work_todos', '_work_resume', '_source_audit_prompt', '_self_recovery'):
@@ -2404,6 +2413,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         "AND json_extract(data, '$.turn_id')=? AND json_extract(data, '$.state')='completed' ORDER BY rowid",
                         (task_id, task.get('_native_turn_id')))]
                     provider_task.update(self._bot_creation_input(task))
+                timing.mark('receipts')
                 with self._read_view() as view, view._read_transaction():
                     bot = view._get('bots', task['bot_id'])
                     provider_task['_tracked_prs'] = view._tracked_work_input(task)
@@ -2435,6 +2445,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         provider_task['_work_dependencies'] = view.work_dependencies(task)
                     turn_ids = {t['id'] for t in view._all('tasks') if t['id'] == assignment['id'] or t.get('_assignment_task_id') == assignment['id']}
                     provider_task['_outgoing_bot_messages'] = [{'target_bot_id': delivery['target_bot_id'], 'text': delivery['text'], 'task_id': delivery['receipt']['task_id'], 'status': view._get('tasks', delivery['receipt']['task_id'])['status'] if delivery['receipt']['task_id'] else delivery['receipt']['status']} for delivery in view._all('deliveries') if delivery['source_task_id'] in turn_ids]
+                timing.mark('context')
                 with self.transaction():
                     current = self._get('tasks', task_id)
                     if (current['status'] != 'working' or self.stopping.is_set()
@@ -2445,6 +2456,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         self._put('tasks', current)
                         self._event('task.updated', self._public(current), current['bot_id'], task_id)
                         return
+                timing.mark('ready')
+                timing.report()
                 emit = lambda kind, payload: self.emit(task_id, kind, payload)
                 if decision:
                     self.provider.resume_task(provider_task, self._public(bot), history, self._public(decision) | {'action': decision.get('_action')}, emit)
@@ -2475,7 +2488,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             finally:
                 if not self.stopping.is_set():
                     with self.transaction():
-                        for message in self._all('messages'):
+                        for message in self._task_messages(task_id):
                             if message['task_id'] == task_id and message['streaming']:
                                 message['streaming'] = False
                                 self._put('messages', message)
@@ -2512,7 +2525,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             bot_id = task['bot_id']
             if kind == 'text_delta':
                 text = task.pop('_silence_candidate', '') + str(payload.get('text', payload.get('delta', '')))
-                previous = next((m for m in reversed(self._all('messages')) if m['task_id'] == task_id and m['streaming']), None)
+                previous = next((m for m in reversed(self._task_messages(task_id)) if m['streaming']), None)
                 # A later chunk may turn the marker into an ordinary sentence.
                 if not previous and ('[SILENT]'.startswith(text.lstrip()) or is_silent_response(text)):
                     task['_silence_candidate'] = text
