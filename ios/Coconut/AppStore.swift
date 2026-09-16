@@ -611,15 +611,29 @@ final class AppStore {
         let _: Acknowledgement? = await write("work/items/\(item.artifact.id)/resume", payload: EmptyRequest(), as: Acknowledgement.self)
     }
 
-    func cancelWork(_ item: TrackedWorkItem) async {
+    @discardableResult
+    func cancelWork(_ item: TrackedWorkItem) async -> String? {
         if isDemo {
             for index in artifacts.indices where artifacts[index].id == item.artifact.id {
                 artifacts[index].workState = "cancelled"
                 artifacts[index].activity = "Stopped"
             }
-            return
+            return nil
         }
-        let _: Acknowledgement? = await write("work/items/\(item.artifact.id)/cancel", payload: EmptyRequest(), as: Acknowledgement.self)
+        let generation = connectionGeneration
+        var failure: String?
+        let receipt = await write("work/items/\(item.artifact.id)/cancel", payload: EmptyRequest(), as: WorkCancellationReceipt.self,
+            refreshInBackground: true, onFailure: { failure = $0.localizedDescription })
+        guard let receipt, receipt.ok else { return failure ?? "Cancellation was not confirmed. Try again." }
+        guard generation == connectionGeneration else { return nil }
+        if let updated = receipt.applying(to: artifacts, after: cursor) {
+            // Discard reads that started before the cancellation receipt arrived.
+            snapshotEpoch = UUID()
+            snapshotRequest = nil
+            artifacts = updated
+            cachedState?.artifacts = updated
+        }
+        return nil
     }
 
     func cancel(_ task: AgentTask) async {

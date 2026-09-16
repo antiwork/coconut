@@ -2,6 +2,19 @@ import XCTest
 @testable import Coconut
 
 final class WorkTests: XCTestCase {
+    func testCancellationReceiptCannotOverwriteLaterResume() throws {
+        var current = artifact()
+        current.workState = "queued"
+        var stopped = current
+        stopped.workState = "cancelled"
+        let receipt = WorkCancellationReceipt(ok: true, artifacts: [stopped], cursor: 12)
+        XCTAssertEqual(receipt.applying(to: [current], after: 11)?.first?.workState, "cancelled")
+        XCTAssertNil(receipt.applying(to: [current], after: 13))
+        XCTAssertNil(receipt.applying(to: [current], after: 12))
+        let legacy = try JSONDecoder().decode(WorkCancellationReceipt.self, from: Data(#"{"ok":true}"#.utf8))
+        XCTAssertNil(legacy.applying(to: [current], after: 11))
+    }
+
     private func artifact(id: String = "a", bot: String = "bot-a", url: String = "https://github.com/team/repo/pull/42") -> Artifact {
         Artifact(id: id, botId: bot, title: "Fix retry", kind: "pr", status: "preparing", preview: "", url: url,
                  createdAt: "2026-09-13T00:00:00Z", checkedAt: "2026-09-13T00:00:00Z", observedAt: "2026-09-13T00:00:00Z",

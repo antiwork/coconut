@@ -54,13 +54,14 @@ def main():
         status='waiting', work_state='queued', activity='Queued', work_queue_position=3, activity_bot_id=bot['id'],
         activity_state='waiting', activity_observed_at=stamp, preview='', created_at=stamp))
     device = str(uuid4())
+    cancellation = dict(delay=0, refresh_delay=0, fail=False, requested=False)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args): pass
 
-        def respond(self, value):
+        def respond(self, value, status=200):
             data = json.dumps(value).encode()
-            self.send_response(200)
+            self.send_response(status)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(data)))
             self.end_headers()
@@ -70,7 +71,12 @@ def main():
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
             url = urlsplit(self.path)
-            if url.path == '/test/order':
+            if url.path == '/test/cancellation':
+                cancellation.update(body, requested=False)
+                item = next(a for a in state['artifacts'] if a['id'] == 'long-queued')
+                item.update(status='waiting', work_state='queued', activity='Queued', activity_state='waiting')
+                self.respond(dict(ok=True))
+            elif url.path == '/test/order':
                 for item in state['artifacts']:
                     if item['kind'] == 'pr' and item.get('pr_state') == 'open':
                         item.update(work_state='queued' if body['export_working'] else 'working',
@@ -96,9 +102,15 @@ def main():
                 item['work_dismissal_id'] = None if body.get('undo') else body['dismissal_id']
                 self.respond(dict(ok=True))
             elif url.path.startswith('/v1/work/items/') and url.path.endswith('/cancel'):
+                cancellation['requested'] = True
+                time.sleep(cancellation['delay'])
+                if cancellation['fail']:
+                    self.respond(dict(error='The Mac could not confirm cancellation. Try again.'), 503)
+                    return
                 item = next(a for a in state['artifacts'] if a['id'] == url.path.split('/')[-2])
                 item.update(status='cancelled', work_state='cancelled', activity='Stopped', activity_state='cancelled')
-                self.respond(dict(ok=True))
+                state['cursor'] += 1
+                self.respond(dict(ok=True, artifacts=[item], cursor=state['cursor']))
             elif url.path == '/v1/work/refresh':
                 self.respond(dict(ok=True))
             else:
@@ -112,7 +124,10 @@ def main():
                 observed = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
                 for item in state['artifacts']:
                     if item['kind'] == 'work': item['activity_observed_at'] = observed
-                self.respond(state)
+                snapshot = copy.deepcopy(state)
+                if cancellation['requested']:
+                    time.sleep(cancellation['refresh_delay'])
+                self.respond(snapshot)
 
         def do_PUT(self): self.respond(dict(registered=True, configured=False))
         def do_DELETE(self): self.respond(dict(registered=False, configured=False))

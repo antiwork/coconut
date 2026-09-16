@@ -293,7 +293,9 @@ class WorkStatus:
             raise ServiceError(400, 'This item does not appear in Work.')
         identity = self._work_identity(item)
         if self._setting('work.cancelled.' + identity):
-            return {'ok': True}
+            peers = [a for a in self._all('artifacts') if a['kind'] == item['kind']
+                     and self._work_identity(a) == identity]
+            return dict(ok=True, artifacts=[self._public(a) for a in self._work_projection(peers)], cursor=self._cursor())
         projected = self._work_projection([dict(item)])[0]
         if projected['work_state'] in ('completed', 'cancelled'):
             raise ServiceError(409, 'This work has already finished.')
@@ -373,9 +375,10 @@ class WorkStatus:
                 self._put('tasks', task)
                 self._event('task.updated', self._public(task), task['bot_id'], task['id'])
                 self._refresh_bot(task['bot_id'])
-        for peer in peers:
-            self._event('artifact.updated', self._work_projection([dict(peer)])[0], peer['bot_id'], peer.get('task_id'))
-        return {'ok': True}
+        projected = self._work_projection([dict(peer) for peer in peers])
+        for peer in projected:
+            self._event('artifact.updated', peer, peer['bot_id'], peer.get('task_id'))
+        return dict(ok=True, artifacts=[self._public(peer) for peer in projected], cursor=self._cursor())
 
     def _resume_work(self, artifact_id):
         from .service import ServiceError, now

@@ -129,6 +129,24 @@ class WorkQueuePositionTests(unittest.TestCase):
             self.track()
         self.assertEqual(self.row()['work_state'], 'cancelled')
 
+    def test_cancel_receipt_contains_confirmed_state_and_replays_without_stopping_again(self):
+        item = self.track()
+        self.update(self.task, status='failed')
+        stopped = []
+        self.provider.cancel_task = stopped.append
+        path = f'/v1/work/items/{item["id"]}/cancel'
+        result = self.write('POST', path, {})
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['artifacts'][0]['id'], item['id'])
+        self.assertEqual(result['artifacts'][0]['work_state'], 'cancelled')
+        self.assertEqual(result['artifacts'][0]['activity'], 'Stopped')
+        self.assertFalse(any(k.startswith('_') for k in result['artifacts'][0]))
+        self.assertEqual(result['cursor'], self.service._cursor())
+        again = self.write('POST', path, {})
+        self.assertEqual(again['artifacts'][0]['work_state'], 'cancelled')
+        self.assertEqual(again['cursor'], result['cursor'])
+        self.assertEqual(stopped, [self.task['id']])
+
     def test_shared_task_keeps_other_work_and_receives_scoped_stop(self):
         first = self.track()
         second = self.track(key='other-export', title='Export another account')

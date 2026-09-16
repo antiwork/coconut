@@ -1,5 +1,16 @@
 import Foundation
 
+struct WorkCancellationReceipt: Decodable, Sendable {
+    let ok: Bool
+    let artifacts: [Artifact]?
+    let cursor: Int?
+
+    func applying(to current: [Artifact], after appliedCursor: Int) -> [Artifact]? {
+        guard ok, let artifacts, let cursor, cursor > appliedCursor else { return nil }
+        return StateUpdates.merge(artifacts, into: current)
+    }
+}
+
 struct StateUpdates: Decodable, Sendable {
     let after: Int
     let cursor: Int

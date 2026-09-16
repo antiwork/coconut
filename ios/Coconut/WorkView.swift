@@ -84,11 +84,15 @@ struct WorkView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openURL) private var openURL
     let isVisible: Bool
     let openConversation: (ConversationRoute) -> Void
     @State private var requestingUpdates: Set<String> = []
     @State private var showCompleted = false
     @State private var cancellingItems: Set<String> = []
+    @State private var cancellationError: String?
+    @State private var actionItem: TrackedWorkItem?
+    @State private var showingActions = false
     @State private var orderingDate = Date()
     private var items: [TrackedWorkItem] { TrackedWorkItem.tracked(in: store.artifacts, visibility: store.workVisibility, at: orderingDate) }
 
@@ -159,6 +163,23 @@ struct WorkView: View {
         }
         .onDisappear { store.workUndo = []; isInteracting = false }
         .background(BoardStyle.paper)
+        .confirmationDialog("Work options", isPresented: $showingActions, presenting: actionItem) { item in
+            Button("Ask for progress") { getUpdate(item.artifact) }
+            if let pr = item.pullRequest {
+                Button("Open pull request") { openURL(pr.url) }
+            }
+            if item.artifact.workState == "cancelled" {
+                Button("Resume work") { Task { await store.resumeWork(item) } }
+            } else if !item.isFinished && !cancellingItems.contains(item.id) {
+                Button("Cancel work", role: .destructive) { cancelWork(item) }
+            }
+        }
+        .alert("Cancellation not confirmed", isPresented: Binding(
+            get: { cancellationError != nil }, set: { if !$0 { cancellationError = nil } })) {
+            Button("OK", role: .cancel) { cancellationError = nil }
+        } message: {
+            Text(cancellationError ?? "Try again.")
+        }
         .refreshable { await store.refreshWork() }
         .task(id: isVisible && scenePhase == .active) {
             guard isVisible && scenePhase == .active else { return }
@@ -218,23 +239,25 @@ struct WorkView: View {
 
     @ViewBuilder
     private func workActions(_ item: TrackedWorkItem) -> some View {
-        Button("Ask for progress", systemImage: "arrow.clockwise") { getUpdate(item.artifact) }
+        Button("Ask for progress") { getUpdate(item.artifact) }
             .disabled(requestingUpdates.contains(item.artifact.id))
         if let pr = item.pullRequest {
-            Link(destination: pr.url) { Label("Open pull request", systemImage: "arrow.up.right") }
+            Link("Open pull request", destination: pr.url)
         }
         if item.artifact.workState == "cancelled" {
-            Button("Resume work", systemImage: "play") { Task { await store.resumeWork(item) } }
+            Button("Resume work") { Task { await store.resumeWork(item) } }
         } else if !item.isFinished {
-            Button("Cancel work", systemImage: "stop.circle", role: .destructive) {
-                guard cancellingItems.insert(item.id).inserted else { return }
-                Task {
-                    defer { cancellingItems.remove(item.id) }
-                    await store.cancelWork(item)
-                }
-            }
+            Button("Cancel work", role: .destructive) { cancelWork(item) }
             .disabled(cancellingItems.contains(item.id))
             .accessibilityIdentifier("work-cancel-\(item.artifact.id)")
+        }
+    }
+
+    private func cancelWork(_ item: TrackedWorkItem) {
+        guard cancellingItems.insert(item.id).inserted else { return }
+        Task {
+            defer { cancellingItems.remove(item.id) }
+            if let error = await store.cancelWork(item) { cancellationError = error }
         }
     }
 
@@ -244,6 +267,7 @@ struct WorkView: View {
     }
 
     private func statusLabel(_ item: TrackedWorkItem, at date: Date) -> String {
+        if cancellingItems.contains(item.id) { return "Cancelling…" }
         if let decision = decision(for: item) { return decision.title }
         let botName = store.bots.first { $0.id == (item.artifact.activityBotId ?? item.artifact.botId) }?.name ?? "this bot"
         let label = item.activity(at: date)
@@ -270,7 +294,7 @@ struct WorkView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     TimelineView(.periodic(from: .now, by: 15)) { context in
                         HStack(alignment: .center, spacing: 6) {
-                            if item.isWorking(at: context.date) {
+                            if cancellingItems.contains(item.id) || item.isWorking(at: context.date) {
                                 ProgressView().controlSize(.mini).frame(width: 14, height: 14)
                                     .accessibilityIdentifier("work-progress-\(item.artifact.id)")
                             } else if item.isFinished {
@@ -297,7 +321,10 @@ struct WorkView: View {
         .accessibilityHint(decision(for: item) != nil ? "Opens the decision card" : "Discusses this work with its context attached")
         .accessibilityIdentifier(item.pullRequest.map { "work-pr-\($0.number)" } ?? "work-item-\(item.artifact.id)")
         .accessibilityAction(named: "Ask for progress") { getUpdate(item.artifact) }
-        Menu { workActions(item) } label: {
+        Button {
+            actionItem = item
+            showingActions = true
+        } label: {
             Image(systemName: "ellipsis")
                 .font(.body).foregroundStyle(.secondary)
                 .frame(width: 44, height: 44).contentShape(Rectangle())

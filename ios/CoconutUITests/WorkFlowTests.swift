@@ -2,6 +2,41 @@ import XCTest
 
 final class WorkFlowTests: XCTestCase {
     @MainActor
+    func testCancellationShowsProgressFailureAndConfirmedStateBeforeRefresh() async throws {
+        guard let address = ProcessInfo.processInfo.environment["COCONUT_WORK_TEST_URL"] else { throw XCTSkip("Run the Work fixture.") }
+        continueAfterFailure = false
+        func configure(fail: Bool, delay: Int = 3, refreshDelay: Int = 12) async throws {
+            var request = URLRequest(url: URL(string: address + "/test/cancellation")!)
+            request.httpMethod = "POST"
+            request.httpBody = try JSONSerialization.data(withJSONObject: ["delay": delay, "refresh_delay": refreshDelay, "fail": fail])
+            _ = try await URLSession.shared.data(for: request)
+        }
+        try await configure(fail: true)
+        let app = XCUIApplication()
+        app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "work-test"]
+        app.launch()
+        let work = app.tabBars.buttons["Work"]
+        XCTAssertTrue(work.waitForExistence(timeout: 15)); work.tap()
+        let item = app.buttons["work-item-long-queued"]
+        let menu = app.buttons["work-menu-long-queued"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5))
+        if !menu.isHittable { app.collectionViews.firstMatch.swipeUp() }
+        menu.tap(); app.buttons["Cancel work"].tap()
+        XCTAssertTrue(item.staticTexts["Cancelling…"].waitForExistence(timeout: 2))
+        let alert = app.alerts["Cancellation not confirmed"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 5))
+        XCTAssertTrue(item.exists)
+        alert.buttons["OK"].tap()
+        try await configure(fail: false)
+        menu.tap(); app.buttons["Cancel work"].tap()
+        XCTAssertTrue(item.staticTexts["Cancelling…"].waitForExistence(timeout: 2))
+        XCTAssertTrue(item.waitForNonExistence(timeout: 5), "The receipt must update Work before the delayed refresh.")
+        XCTAssertTrue(app.buttons["work-item-export-active"].exists)
+        XCTAssertTrue(work.isSelected)
+        try await configure(fail: false, delay: 0, refreshDelay: 0)
+    }
+
+    @MainActor
     func testActiveWorkMovesToTopWhenItsStateChanges() async throws {
         guard let address = ProcessInfo.processInfo.environment["COCONUT_WORK_TEST_URL"] else { throw XCTSkip("Run the Work fixture.") }
         continueAfterFailure = false
