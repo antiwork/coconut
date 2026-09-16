@@ -88,7 +88,7 @@ class WorkRecovery:
                 for peer in peers:
                     canonical[peer['id']] = selected
             projected = self._work_projection([dict(a) for a in items])
-            records = self._all('native_receipts')
+            records = self._work_receipts()
             handled = set()
             for row in projected:
                 if row.get('work_state') != 'needs_recovery' or row.get('work_dismissal_id'):

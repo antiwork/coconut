@@ -54,3 +54,15 @@ class WorkReadCostTests(unittest.TestCase):
                 self.service._put('native_receipts', dict(id=identity, task_id=self.task['id'], state=state,
                     action={'name': 'terminal', 'arguments': {}}, result='{}', **fields))
         self.assertEqual({r['id'] for r in self.service._work_receipts()}, {'unknown', 'waiting'})
+
+    def test_completed_output_does_not_slow_pending_result_checks(self):
+        with self.service.transaction():
+            self.service._put('native_receipts', dict(id='historical-output', task_id=self.task['id'],
+                turn_id='previous-turn', state='completed', action={'name': 'terminal', 'arguments': {}},
+                result=json.dumps({'output': 'saved output'})))
+        original = json.loads
+        def decode(value, *args, **kwargs):
+            self.assertNotIn('historical-output', value)
+            return original(value, *args, **kwargs)
+        with patch('coconut.background_processes.json.loads', side_effect=decode):
+            self.assertFalse(self.service._background_pending(self.task['id']))

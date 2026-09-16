@@ -219,7 +219,7 @@ class NativeKanban:
         if hasattr(self.provider, 'trim_kanban_workers'):
             with self.lock:
                 owners = {r['task_id'] for r in self._pending_completion_receipts()}
-                keep = {execution_key(t) for t in self._all('tasks') if t['id'] in owners and t['status'] != 'cancelled'}
+                keep = {execution_key(t) for t in (self._get('tasks', i) for i in owners) if t['status'] != 'cancelled'}
             self.provider.trim_kanban_workers(keep)
         visible = [(i, t['status'], t['priority'], t['current_run_id']) for i, t in self.kanban.tasks.items()]
         with self.changed:

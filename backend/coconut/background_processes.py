@@ -80,7 +80,8 @@ class BackgroundProcesses:
                 "SELECT data FROM tasks WHERE id=? OR json_extract(data, '$._assignment_task_id')=?",
                 (task_id, task_id))]
             receipts = self.db.execute("""SELECT data FROM native_receipts
-                WHERE json_extract(data, '$.task_id') IN
+                INDEXED BY native_receipts_pending_completion
+                WHERE """ + PENDING_COMPLETIONS + """ AND json_extract(data, '$.task_id') IN
                     (SELECT id FROM tasks WHERE id=? OR json_extract(data, '$._assignment_task_id')=?)
                 AND NOT EXISTS (SELECT 1 FROM contexts WHERE contexts.id=json_extract(native_receipts.data, '$.turn_id')
                     AND json_extract(contexts.data, '$._decision_refresh')=1)""",
