@@ -138,6 +138,20 @@ class WorkModelTests(unittest.TestCase):
         self.service._put('decisions', decision)
         self.assertEqual(self.row()['work_state'], 'waiting')
 
+    def test_waiting_on_another_tasks_card_exposes_that_decision(self):
+        self.test_decision_wait_uses_the_dispatcher_rules()
+        decision = self.service._get('decisions', 'external-decision')
+        decision.update(status='pending')
+        self.service._put('decisions', decision)
+        row = self.row()
+        self.assertEqual(row['work_state'], 'needs_decision')
+        self.assertEqual(row['work_decision_id'], decision['id'])
+        decision.update(status='approved')
+        self.service._put('decisions', decision)
+        row = self.row()
+        self.assertEqual(row['work_state'], 'queued')
+        self.assertIsNone(row['work_decision_id'])
+
     def test_continuation_keeps_the_other_process_dependency(self):
         self.test_completed_process_is_queued_for_delivery_not_still_waiting()
         receipt = self.service._all('native_receipts')[-1]

@@ -87,6 +87,9 @@ class WorkModel:
                         state='ready' if (tasks[target]['status'] in ('failed', 'cancelled') or
                             (tasks[target]['status'] == 'completed' and not self._background_pending(target)
                              and not tasks[target].get('_waiting_on'))) else 'waiting', reason=None))
+        waiting_decisions = {d['target_id'] for d in dependencies if d['kind'] == 'decision' and d['state'] == 'waiting'}
+        pending_ids = {d['id'] for d in pending}
+        pending += [d for d in decisions if d['id'] in waiting_decisions - pending_ids and d['status'] == 'pending']
         for report in peers:
             routine = self._external_work_routine(report) if report['kind'] == 'work' else None
             reporting_task = tasks.get(report.get('task_id'), {})
