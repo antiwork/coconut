@@ -128,3 +128,14 @@ Bot workers inherit shared MCP connections between turns. A bot's native entry o
 Native Hermes code handles discovery, validation, connection testing, and tool execution.
 When configuration changes, the worker refreshes MCP connections without stopping native terminal processes.
 The installer includes Hermes's locked `mcp` extra for existing and new installations.
+
+## Installing a tested runtime update
+
+A source update keeps the installed Hermes revision by default.
+After testing a new pin, an external installer can use `scripts/deploy.py receive --update-runtime` with the verified source package.
+This command stops the managed service, installs Hermes at its final paths, and checks the replacement before restarting.
+The deployment lock covers both source and runtime changes. The journal restores both after a failed update.
+Native terminal state keeps its original files and lock. Profiles, conversations, and decisions stay in the host directory.
+A successful update retains the previous runtime in `.runtime/hermes-rollback-<deployment ID>`.
+Run this command outside the Coconut worker because the update stops that worker.
+A maintenance setup must check review, CI, and the user's merge approval before requesting installation.

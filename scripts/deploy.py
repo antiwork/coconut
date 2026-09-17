@@ -437,6 +437,78 @@ def copy_source(source, target):
             temporary.unlink(missing_ok=True)
 
 
+@contextlib.contextmanager
+def runtime_update_lease(root):
+    runtime = root / '.runtime/hermes'
+    if any(runtime in p.parents for p in (Path(sys.executable).absolute(), Path(sys.executable).resolve(), Path(sys.prefix).absolute())):
+        raise DeployError('Run runtime updates with Python outside the installed Hermes runtime.')
+    with contextlib.ExitStack() as leases:
+        paths = [root / '.runtime/hermes-update.lock', runtime / 'terminal.lock']
+        journal = root / '.runtime/deploy/update.json'
+        if journal.exists():
+            record = json.loads(journal.read_text())
+            if record.get('runtime_change'):
+                paths.append(runtime_paths(root, record)[1] / 'terminal.lock')
+        for path in paths:
+            if not path.parent.exists() or (path != paths[0] and not path.exists()):
+                continue
+            flags = os.O_RDWR | os.O_NOFOLLOW | (os.O_CREAT if path == paths[0] else 0)
+            descriptor = os.open(safe_path(path, root), flags, 0o600)
+            handle = leases.enter_context(os.fdopen(descriptor, 'a'))
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise DeployError('A Hermes Terminal session is active. Retry the update after it closes.') from None
+        yield
+
+
+def runtime_paths(root, record):
+    change = record.get('runtime_change')
+    if change is None:
+        return None
+    if (not isinstance(change, dict) or set(change) != {'previous', 'candidate'}
+            or any(not isinstance(v, str) or not re.fullmatch(r'[0-9a-f]{40}', v) for v in change.values())
+            or change['previous'] == change['candidate']):
+        raise DeployError('The runtime update journal is invalid.')
+    identity = str(UUID(record['deployment_id']))
+    return tuple(safe_path(root / '.runtime' / name, root) for name in (
+        'hermes', 'hermes-rollback-' + identity, 'hermes-failed-' + identity))
+
+
+def move_terminal_state(source, target, root):
+    # Keep the authoritative native terminal registry and its lock together.
+    for name in ('terminal', 'terminal.lock'):
+        old, new = safe_path(source / name, root), safe_path(target / name, root)
+        if old.exists():
+            if new.exists():
+                raise DeployError('Two copies of native terminal state prevent the runtime update.')
+            old.rename(new)
+            sync_directory(source)
+            sync_directory(target)
+
+
+def restore_runtime(root, record):
+    paths = runtime_paths(root, record)
+    if paths is None:
+        return
+    runtime, backup, failed = paths
+    if backup.exists():
+        receipt = safe_path(backup / 'install.json', root)
+        if json.loads(receipt.read_text()).get('commit') != record['runtime_change']['previous']:
+            raise DeployError('The saved Hermes runtime does not match the rollback revision.')
+        if runtime.exists():
+            move_terminal_state(runtime, backup, root)
+            if failed.exists():
+                raise DeployError('A failed runtime already exists. Preserve it before retrying recovery.')
+            runtime.rename(failed)
+            sync_directory(runtime.parent)
+        backup.rename(runtime)
+        sync_directory(runtime.parent)
+    receipt = safe_path(runtime / 'install.json', root)
+    if not receipt.is_file() or json.loads(receipt.read_text()).get('commit') != record['runtime_change']['previous']:
+        raise DeployError('The previous Hermes runtime is unavailable. Recovery stopped.')
+
+
 def reconcile(root, operations):
     journal = safe_path(root / '.runtime/deploy/update.json', root)
     if not journal.exists():
@@ -459,6 +531,7 @@ def reconcile(root, operations):
             if any(not allowed_path(name) or not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value) for name, value in names.items()):
                 raise ValueError()
         staging, backup = journal_paths(root, record)
+        runtime_paths(root, record)
     except (ValueError, KeyError, TypeError, OSError, AttributeError):
         raise DeployError('The incomplete deployment has an invalid recovery journal. No source or data was changed.') from None
     if (marker.get('state') == 'installed' and marker.get('deployment_id') == record.get('deployment_id') and record.get('deployment_id') and marker.get('files') == record['new_files']) or record['phase'] == 'rolled_back':
@@ -502,6 +575,7 @@ def reconcile(root, operations):
         raise DeployError('The incomplete update could not stop its service. Its journal, source, and runtime remain intact.') from error
     record['phase'] = 'rollback_stopped'
     write_json(journal, record)
+    restore_runtime(root, record)
     for name in set(record['new_files']) - set(old['files']):
         path = safe_path(root / name, root)
         if path.exists():
@@ -524,7 +598,7 @@ def reconcile(root, operations):
     remove_journal(root, record)
 
 
-def receive(directory, address, stream, *, home=None, operations=None):
+def receive(directory, address, stream, *, home=None, operations=None, update_runtime=False):
     os.umask(0o077)
     home = Path(home or Path.home()).resolve()
     root = destination(directory, home)
@@ -551,7 +625,7 @@ def receive(directory, address, stream, *, home=None, operations=None):
     deployment = safe_path(root / '.runtime/deploy', root)
     deployment.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor = os.open(deployment / 'deploy.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, 'a') as lock:
+    with os.fdopen(descriptor, 'a') as lock, contextlib.ExitStack() as leases:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -561,6 +635,13 @@ def receive(directory, address, stream, *, home=None, operations=None):
                 raise DeployError('The installation changed while the package was being checked. Retry the update.')
         elif (root / MARKER_PATH).exists() or any(path.name != '.runtime' for path in root.iterdir()):
             raise DeployError('Another deployment claimed this directory. Retry the update.')
+        journal = safe_path(deployment / 'update.json', root)
+        try:
+            pending_runtime = journal.exists() and json.loads(journal.read_text()).get('runtime_change')
+        except (ValueError, TypeError, AttributeError, OSError):
+            raise DeployError('The deployment journal is invalid. No files were changed.') from None
+        if update_runtime or pending_runtime:
+            leases.enter_context(runtime_update_lease(root))
         original = marker
         marker = marker or {'version': 1, 'installation_id': str(uuid4()), 'files': {}, 'package_id': '', 'state': 'pending', 'address': address}
         write_json(root / MARKER_PATH, marker)
@@ -578,10 +659,16 @@ def receive(directory, address, stream, *, home=None, operations=None):
             elif path.exists():
                 raise DeployError('A package path would replace an unmanaged file or directory.')
         installed = safe_path(root / '.runtime/hermes/install.json', root)
+        runtime_change = None
         if installed.exists():
             try:
-                if json.loads(installed.read_text())['commit'] != package.revision:
-                    raise DeployError('This update changes the Hermes revision. Keep the installed pin for a source-only update.')
+                previous_revision = json.loads(installed.read_text())['commit']
+                if not isinstance(previous_revision, str) or not re.fullmatch(r'[0-9a-f]{40}', previous_revision):
+                    raise ValueError()
+                if previous_revision != package.revision:
+                    if not update_runtime:
+                        raise DeployError('This update changes the Hermes revision. Use --update-runtime for a tested runtime update.')
+                    runtime_change = {'previous': previous_revision, 'candidate': package.revision}
             except (ValueError, KeyError, OSError):
                 raise DeployError('The Hermes installation receipt is invalid.') from None
         staging = Path(tempfile.mkdtemp(prefix='stage-', dir=deployment))
@@ -604,6 +691,8 @@ def receive(directory, address, stream, *, home=None, operations=None):
             raise DeployError('The service returned an invalid execution mode.')
         record = {'version': 1, 'deployment_id': str(uuid4()), 'original': marker, 'new_files': package.hashes, 'new_package_id': package.package_id,
                   'staging': staging.name, 'backup': backup.name, 'service_state': state, 'phase': 'prepared'}
+        if runtime_change:
+            record['runtime_change'] = runtime_change
         journal = deployment / 'update.json'
         write_json(journal, record)
         applied = False
@@ -619,6 +708,14 @@ def receive(directory, address, stream, *, home=None, operations=None):
             record['phase'] = 'applying'
             write_json(journal, record)
             applied = True
+            if runtime_change:
+                runtime, saved_runtime, failed_runtime = runtime_paths(root, record)
+                if saved_runtime.exists() or failed_runtime.exists():
+                    raise DeployError('A runtime backup already exists for this update.')
+                runtime.rename(saved_runtime)
+                sync_directory(runtime.parent)
+                runtime.mkdir(mode=0o700)
+                move_terminal_state(saved_runtime, runtime, root)
             for name in package.files:
                 target = safe_path(root / name, root)
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -666,9 +763,10 @@ def main():
     parser.add_argument('command', choices=['receive'])
     parser.add_argument('--directory', default='Coconut')
     parser.add_argument('--address', required=True)
+    parser.add_argument('--update-runtime', action='store_true', help='Install the package Hermes pin and retain the previous runtime for rollback.')
     args = parser.parse_args()
     try:
-        result = receive(args.directory, args.address, sys.stdin.buffer)
+        result = receive(args.directory, args.address, sys.stdin.buffer, update_runtime=args.update_runtime)
     except (DeployError, KeyboardInterrupt) as error:
         if isinstance(error, KeyboardInterrupt):
             error = DeployError('The deployment was interrupted. Check host status before retrying.')

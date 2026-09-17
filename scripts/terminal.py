@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, ExitStack
 import fcntl
 import json
 import os
@@ -98,17 +98,20 @@ def model_access(data):
 
 @contextmanager
 def runtime_lease(exclusive=False):
-    directory = private(ROOT / '.runtime/hermes')
-    descriptor = os.open(safe(directory / 'terminal.lock', ROOT), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    try:
-        try:
-            fcntl.flock(descriptor, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise SystemExit('Close Hermes Terminal sessions before removing its runtime.') from None
-        os.set_inheritable(descriptor, True)
+    with ExitStack() as leases:
+        # The outer lease stays at a fixed path while an update replaces Hermes.
+        parent = private(ROOT / '.runtime')
+        paths = [parent / 'hermes-update.lock', parent / 'hermes/terminal.lock']
+        for path in paths:
+            private(path.parent)
+            descriptor = os.open(safe(path, ROOT), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            leases.callback(os.close, descriptor)
+            try:
+                fcntl.flock(descriptor, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise SystemExit('Close Hermes Terminal sessions, or wait for the current runtime operation to finish.') from None
+            os.set_inheritable(descriptor, True)
         yield
-    finally:
-        os.close(descriptor)
 
 
 def read_database(data):
