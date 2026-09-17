@@ -26,8 +26,97 @@ WORK_INSTRUCTIONS = (
     'Use a native dependency or scheduled check for a valid external wait. Do not create a recovery task. '
 )
 
+CONTINUE_SCHEMA = {
+    'name': 'coconut_continue_work',
+    'description': 'Resume an existing blocked Hermes outcome with new facts. Use the native task ID from kanban_show. '
+        'You must own the work or be its requesting bot. This keeps its task, workspace, decisions, and result route. '
+        'It does not approve actions, complete work, or create another task. The result goes to the original requester.',
+    'parameters': {'type': 'object', 'additionalProperties': False,
+        'properties': {'task_id': {'type': 'string'}, 'message': {'type': 'string', 'maxLength': 16000}},
+        'required': ['task_id', 'message']},
+}
+
 
 class NativeOutcomes:
+    def continue_native_work(self, source_id, payload):
+        from .service import ServiceError, now, uid, digest, encoded, require_text
+        from .work_capacity import execution_key
+        with self.transaction():
+            source = self._get('tasks', source_id)
+            if source['status'] != 'working' or self._task_paused(source):
+                raise ServiceError(409, 'This task cannot continue work now.')
+            identity = require_text(payload, 'task_id', 100)
+            text = require_text(payload, 'message', 16000)
+            key = digest(encoded(['continue_work', source_id, source.get('_native_turn_id'), identity, text]))
+            previous = self.db.execute('SELECT data FROM deliveries WHERE id=?', (key,)).fetchone()
+            if previous:
+                return json.loads(previous[0])['receipt']
+            owners = [t for t in self._all('tasks') if t.get('_native_outcome_id') == identity]
+            if len(owners) != 1 or not self.kanban:
+                raise ServiceError(409, 'Choose one existing native outcome from kanban_show.')
+            owner = owners[0]
+            if source['bot_id'] not in (owner['bot_id'], owner.get('source_bot_id')):
+                raise ServiceError(403, 'Only the owner or its requesting bot can continue this work.')
+            bot = self._get('bots', owner['bot_id'])
+            if (self._task_paused(owner) or owner['session_id'] != bot['session_id']
+                    or owner.get('_conversation_epoch') != self._setting('conversation_epoch')
+                    or self._continuation_blocked(owner)
+                    or self._get('exchanges', owner['exchange_id']).get('cancelled')
+                    or self._task_work_is_paused(owner)):
+                raise ServiceError(409, 'This work is paused, cancelled, or belongs to an earlier conversation.')
+            native = self.kanban.tasks.get(owner['id'], {})
+            if native.get('id') != identity or native.get('status') not in ('triage', 'blocked'):
+                raise ServiceError(409, 'This native outcome is not blocked. Read its current result or activity.')
+            if owner['status'] not in ('completed', 'failed', 'waiting') or owner.get('_waiting_on'):
+                raise ServiceError(409, 'Wait for this task and its existing dependencies.')
+            if owner.get('_return_pending'):
+                raise ServiceError(409, 'Wait for the previous result to be delivered before continuing this work.')
+            related = [t for t in self._all('tasks') if execution_key(t) == execution_key(owner)]
+            if any((t['id'] != owner['id'] and t['status'] in self.ACTIVE)
+                   or self._background_pending(t['id']) for t in related):
+                raise ServiceError(409, 'This execution has active work. Wait for its result.')
+            if any(d['status'] == 'pending' and d['task_id'] in {t['id'] for t in related}
+                   for d in self._all('decisions')):
+                raise ServiceError(409, 'The existing decision must be answered before work continues.')
+            related_ids = {t['id'] for t in related}
+            recovery = owner.setdefault('_self_recovery', {})
+            recovery['previous_task_id'] = owner['id']
+            unknown = [r for identity in related_ids for r in self._native_task_receipts(identity, state='executing')]
+            recovery['unknown_tools'] = list({r['id']: r for r in recovery.get('unknown_tools', []) + unknown}.values())
+            decisions = [self._public(d) for d in self._all('decisions') if d['task_id'] in related_ids]
+            recovery['decisions'] = list({d['id']: d for d in recovery.get('decisions', []) + decisions}.values())
+            completed = []
+            if owner['status'] == 'failed':
+                completed = owner.get('_continuation_receipt_ids', []) + [r['id'] for r in
+                    self._native_task_receipts(owner['id'], state='completed') if r.get('turn_id') == owner.get('_native_turn_id')]
+            pending = owner.pop('_blocked_followup', None)
+            if pending:
+                for field, source_key in (('_preference_source_ids', 'source_ids'), ('_attachment_ids', 'attachment_ids')):
+                    owner[field] = list(dict.fromkeys(owner.get(field, []) + pending[source_key]))
+                owner.update(_steering=[], steering_status='continued')
+            # A failed provider may never have received the selected human input.
+            retry_input = {field: owner[field] for field in
+                ('_preference_source_ids', '_background_completion', '_pr_review') if field in owner}
+            if owner['status'] == 'failed' or pending:
+                retry_input['_input_after_message_id'] = owner.get('_input_after_message_id')
+            else:
+                retry_input = {}
+            self._advance_input(owner)
+            owner.update(retry_input)
+            owner['_continuation_receipt_ids'] = list(dict.fromkeys(completed))
+            owner.setdefault('_bot_messages', []).append(dict(sender_bot_id=source['bot_id'],
+                sender_name=self._get('bots', source['bot_id'])['name'], text=text,
+                result_status=None, progress_only=False))
+            owner.update(status='queued', summary='Continuing with the new information.', updated_at=now(),
+                _background_return_after=now(), _background_return_id=uid())
+            self._put('tasks', owner)
+            receipt = dict(task_id=owner['id'], native_task_id=identity, status='queued')
+            self._put('deliveries', dict(id=key, source_task_id=source_id, target_bot_id=owner['bot_id'],
+                text=text, receipt=receipt, created_at=now()))
+            self._event('task.updated', self._public(owner), owner['bot_id'], owner['id'])
+            self._refresh_bot(owner['bot_id'])
+            return receipt
+
     def _migrate_native_work(self):
         if not self.kanban or not getattr(self.provider, 'supports_native_outcomes', False):
             return

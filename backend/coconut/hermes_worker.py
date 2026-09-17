@@ -1058,6 +1058,10 @@ def run_turn(request, emit, request_receipt):
         bridge = NativeBridge(request, emit, request_receipt)
         if operation != 'context':
             from service_restart import RESTART_SCHEMA
+            from native_outcomes import CONTINUE_SCHEMA
+            registry.register(name=CONTINUE_SCHEMA['name'], toolset='coconut', schema=CONTINUE_SCHEMA,
+                              handler=lambda arguments, **kwargs: json.dumps(request_receipt('work_continue', arguments)))
+            allowed.add(CONTINUE_SCHEMA['name'])
             registry.register(name=RESTART_SCHEMA['name'], toolset='coconut', schema=RESTART_SCHEMA,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('service_restart', arguments)))
             allowed.add(RESTART_SCHEMA['name'])

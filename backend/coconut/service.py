@@ -2784,6 +2784,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         self._refresh_bot(task['bot_id'])
 
     def emit(self, task_id: str, kind: str, payload: dict):
+        if kind == 'work_continue':
+            return self.continue_native_work(task_id, payload)
         if kind == 'work_wait':
             return self.wait_for_task(task_id, payload)
         if kind == 'decision_response':

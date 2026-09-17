@@ -93,6 +93,23 @@ class PullRequestReviews:
                 raise ServiceError(400, f"Merge decision {existing['id']} already exists ({existing['status']}). "
                     f"Task {existing['task_id']} owns its answer and follow-through. "
                     'Do not create another card or repeat its action. Reuse the recorded decision and its owner.')
+        tasks = {t['id']: t for t in self._all('tasks')}
+        records = self._work_receipts()
+        linked = {}
+        for artifact in self._all('artifacts'):
+            if artifact['kind'] == 'pr' and artifact.get('url', '').lower() == url.lower():
+                owner = tasks.get(artifact.get('_review_task_id'))
+                if owner:
+                    linked.update(self._work_chain(owner, tasks, records, include_continuations=True))
+        for owner, _ in linked.values():
+            if (owner['status'] == 'cancelled' or self._assignment(owner)['status'] == 'cancelled'
+                    or self._get('exchanges', owner['exchange_id']).get('cancelled')):
+                continue
+            resolved = task.get('_resolved_dependency_id') if task.get('_assignment_task_id') == owner['id'] else None
+            waiting = [identity for identity in owner.get('_waiting_on', []) if identity != resolved]
+            if self._background_pending(owner['id'], finishing_task_id=task['id']) or waiting:
+                raise ServiceError(400, 'The PR review still has a pending worker or delegated result. '
+                    'Read its result before offering a merge decision.')
         return requested_at
 
     def _resolve_merged_pr_decisions(self):

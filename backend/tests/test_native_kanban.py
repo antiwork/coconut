@@ -839,6 +839,41 @@ board.kb.block_task(board.conn, sys.argv[4], reason='Worker setup failed')
         self.service.kanban.call({'op': 'snapshot'})
         self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'ready')
 
+    def test_bot_continuation_returns_triaged_native_outcome_to_ready(self):
+        import json
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner['status'] = 'completed'
+            self.service._put('tasks', owner)
+            self.service._migrate_native_work()
+        owner = self.service._get('tasks', task['id'])
+        identity = owner['_native_outcome_id']
+        row = self.service._kanban_row(owner, owner, 'ready', 10)
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+        self.native_program("with board.kb.write_txn(board.conn): board.conn.execute(\"UPDATE tasks SET status='triage' WHERE id=?\", (sys.argv[2],))", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        workspace = self.service.kanban.tasks[owner['id']]['workspace_path']
+        owner['status'] = 'completed'
+        self.service._put('tasks', owner)
+        source = self.task('The review result is available')
+        source = self.service._get('tasks', source['id'])
+        source['status'] = 'working'
+        self.service._put('tasks', source)
+        result = self.service.emit(source['id'], 'work_continue',
+            dict(task_id=identity, message='Read the completed review and finish the accepted outcome.'))
+        resumed = self.service._get('tasks', result['task_id'])
+        self.assertEqual(resumed['id'], owner['id'])
+        self.assertNotEqual(resumed['_native_turn_id'], owner['_native_turn_id'])
+        row = self.service._kanban_row(resumed, resumed, 'ready', 10)
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+        self.service.kanban.call({'op': 'snapshot'})
+        current = self.service.kanban.tasks[owner['id']]
+        self.assertEqual(current['id'], identity)
+        self.assertEqual(current['status'], 'ready')
+        self.assertEqual(current['workspace_path'], workspace)
+
     def test_native_reply_cannot_complete_outcome_and_retry_keeps_identity(self):
         origin = self.task('Complete an outcome')
         identity = self.native_program("""

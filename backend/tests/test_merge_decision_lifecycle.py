@@ -94,6 +94,58 @@ class MergeDecisionLifecycleTests(unittest.TestCase):
             self.question(merge_pr_url=URL.replace('/42', '/43'))
         self.assertEqual(self.service._all('decisions'), [])
 
+    def test_merge_card_waits_for_the_delegated_review_result(self):
+        dev = self.write('/v1/bots', {'name': 'Dev', 'role': ''})
+        review = self.service._store_bot_message(self.task['id'],
+            dict(target_bot_id=dev['id'], text='Review the current PR head.'))
+        with self.assertRaisesRegex(ServiceError, 'pending worker or delegated result') as error:
+            self.question(merge_pr_url=URL)
+        self.assertEqual(error.exception.status, 400)
+        self.assertEqual(self.service._all('decisions'), [])
+        task = self.service._get('tasks', self.task['id'])
+        self.assertIn(review['task_id'], task['_waiting_on'])
+        self.service._run_task(review['task_id'])
+        self.service._drain_returns()
+        callback = next(t for t in self.service._all('tasks') if t.get('_resolved_dependency_id') == review['task_id'])
+        self.assertEqual(callback['_assignment_task_id'], task['id'])
+        callback['status'] = 'working'
+        self.service._put('tasks', callback)
+        self.task = callback
+        decision, _ = self.question(merge_pr_url=URL)
+        self.assertEqual(decision['status'], 'pending')
+        self.assertIn(review['task_id'], self.service._get('tasks', task['id'])['_waiting_on'])
+
+    def test_merge_card_can_follow_the_returned_process_review(self):
+        receipt = self.service.emit(self.task['id'], 'native_call',
+            dict(name='terminal', arguments={'background': True}))
+        self.service.emit(self.task['id'], 'native_result', dict(id=receipt['id'],
+            result=json.dumps({'session_id': 'proc_review', 'notify_on_complete': True, 'status': 'running'})))
+        with self.assertRaisesRegex(ServiceError, 'pending worker'):
+            self.question(merge_pr_url=URL)
+        task = self.service._get('tasks', self.task['id'])
+        task['status'] = 'waiting'
+        self.service._put('tasks', task)
+        record = self.service._get('native_receipts', receipt['id'])
+        with self.service.transaction():
+            self.service._resume_process_task(task['id'], [(record, 'The review passed.')])
+        task = self.service._get('tasks', task['id'])
+        self.assertTrue(task['_background_completion'])
+        task['status'] = 'working'
+        self.service._put('tasks', task)
+        decision, _ = self.question(merge_pr_url=URL)
+        self.assertEqual(decision['status'], 'pending')
+
+    def test_cancelled_review_dependencies_do_not_block_the_current_review(self):
+        old = self.service._get('tasks', self.task['id'])
+        old['_waiting_on'] = ['cancelled-review']
+        self.service._put('tasks', old)
+        with self.service.transaction():
+            self.service._cancel_one(old, [])
+        self.assertEqual(self.service._get('tasks', old['id'])['_waiting_on'], ['cancelled-review'])
+        self.task = self.other_task(self.write('/v1/bots', {'name': 'Current reviewer'}))
+        decision, _ = self.question(merge_pr_url=URL)
+        self.assertEqual(decision['status'], 'pending')
+
     def test_optional_card_resolution_does_not_restart_finished_work(self):
         self.service.emit(self.task['id'], 'native_proposal', dict(key='merge', title='Merge?', merge_pr_url=URL,
                             options=[dict(id='merge', label='Merge', explanation='Merge it.')]))
