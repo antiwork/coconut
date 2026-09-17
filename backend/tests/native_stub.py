@@ -65,7 +65,16 @@ class PluginContext:
     def register_middleware(self, kind, callback):
         from tools.registry import registry
         original=registry.dispatch
-        registry.dispatch=lambda name,args,**kwargs:callback(name,args,lambda args:original(name,args,**kwargs))
+        def dispatch(name, args, **kwargs):
+            def execute(args):
+                from native_turn_scope import current
+                scope = current.get()
+                started = getattr(scope.agent, 'tool_start_callback', None) if scope else None
+                if started:
+                    started('call', name, args)
+                return original(name, args, **kwargs)
+            return callback(name, args, execute)
+        registry.dispatch=dispatch
         class Registration:
             def dispose(self): registry.dispatch=original
         return Registration()

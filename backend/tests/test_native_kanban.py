@@ -512,6 +512,141 @@ finally:
     bridge.close()
 """)
 
+    def test_tool_receipts_do_not_block_the_native_start_order(self):
+        self.native_tool_batch('chat')
+
+    def test_routine_tools_keep_the_claim_after_the_native_start_gate(self):
+        self.native_tool_batch('routine')
+
+    def test_native_batch_stops_after_a_card(self):
+        self.native_tool_batch('pause')
+
+    def test_native_batch_stops_when_the_routine_loses_its_claim(self):
+        self.native_tool_batch('lost')
+
+    def test_native_callback_stops_on_a_claim_storage_error(self):
+        self.native_tool_batch('claim_error')
+
+    def test_routine_call_stops_if_a_card_arrives_while_it_waits_for_the_claim(self):
+        self.native_tool_batch('routine_pause')
+
+    def test_routine_handler_errors_remain_tool_errors(self):
+        self.native_tool_batch('tool_error')
+
+    def native_tool_batch(self, mode):
+        self.native_program("""
+import contextvars
+from contextlib import contextmanager
+import threading
+from types import SimpleNamespace
+from pathlib import Path
+from agent.tool_executor import _StartOrderGate, _WorkerStartOnce, _run_agent_tool_execution_middleware
+from coconut.native_bridge import NativeBridge, TurnPaused
+from coconut.native_turn_scope import TurnScope, current
+from tools.file_tools import read_file_tool
+
+mode = sys.argv[2]
+folder = Path(sys.argv[1])
+for name in ('first.txt', 'later.txt'):
+    (folder / name).write_text('Content of ' + name)
+later_entered = threading.Event()
+paused = threading.Event()
+later_claim = threading.Event()
+started, results, errors, receipts = [], [], [], []
+def receipt(kind, payload):
+    receipts.append((kind, payload))
+    if kind == 'native_call' and Path(payload['arguments']['path']).name == 'later.txt':
+        later_entered.set()
+    return {'status': 'recorded', 'id': str(len(receipts))}
+bridge = NativeBridge({'operation': 'start', 'task': {'id': 'origin'}}, lambda *args: paused.set(), receipt)
+agent = SimpleNamespace(session_id='origin', _touch_activity=lambda *args: None,
+    quiet_mode=True, tool_progress_callback=None, _checkpoint_mgr=SimpleNamespace(enabled=False),
+    tool_start_callback=lambda identity, *args: started.append(identity),
+    _tool_guardrails=SimpleNamespace(before_call=lambda *args: SimpleNamespace(allows_execution=True)))
+if mode in ('routine', 'lost', 'claim_error', 'routine_pause', 'tool_error'):
+    from cron import jobs
+    job = jobs.create_job(prompt='Read two files', schedule='every 1h')
+    bridge.request['task']['_native_job'] = jobs.claim_job_for_fire(job['id'], manual=True, return_job=True)
+    if mode == 'routine_pause':
+        original_fence = jobs.fire_claim_fence
+        @contextmanager
+        def observed_fence(*args, **kwargs):
+            call = getattr(bridge.local, 'call', None)
+            if call and Path(call['action']['arguments']['path']).name == 'later.txt':
+                later_claim.set()
+            with original_fence(*args, **kwargs) as owns:
+                yield owns
+        jobs.fire_claim_fence = observed_fence
+scope = TurnScope('origin')
+scope.agent = agent
+current.set(scope)
+bridge.install(None)
+gate = _StartOrderGate(0.3)
+concurrent_reads = threading.Barrier(2)
+attempted, executed = [], []
+def execute(args):
+    name = Path(args['path']).name
+    attempted.append(name)
+    if mode in ('routine', 'tool_error'):
+        assert jobs._fire_fence_lock_state.__dict__.get('held'), 'The file ran outside the native claim fence'
+    if mode == 'tool_error':
+        raise ValueError('The tool failed')
+    if mode == 'chat':
+        concurrent_reads.wait(2)
+    if mode in ('pause', 'routine_pause'):
+        assert name == 'first.txt', 'The later tool ran after the card'
+        if mode == 'routine_pause':
+            assert later_claim.wait(2)
+        bridge.pause('native_question', {})
+    executed.append(name)
+    return read_file_tool(args['path'], task_id='origin')
+def run(index):
+    try:
+        start = _WorkerStartOnce(gate, index, 'read_file')
+        def begin(callback):
+            if mode == 'pause' and index == 1:
+                assert paused.wait(2)
+            if mode == 'lost' and index == 0:
+                assert jobs.remove_job(job['id'])
+            if mode == 'claim_error' and index == 0:
+                def unavailable(*args, **kwargs):
+                    raise OSError('The claim store is unavailable')
+                jobs.fire_claim_fence = unavailable
+            start.advance(callback)
+        result = _run_agent_tool_execution_middleware(agent, function_name='read_file',
+            function_args={'path': str(folder / ['first.txt', 'later.txt'][index])}, effective_task_id='origin',
+            tool_call_id=str(index), begin_execution=begin,
+            execute=execute)
+        results.append(result.result)
+    except BaseException as error:
+        errors.append(error)
+try:
+    later = threading.Thread(target=contextvars.copy_context().run, args=(run, 1))
+    later.start()
+    assert later_entered.wait(2)
+    first = threading.Thread(target=contextvars.copy_context().run, args=(run, 0))
+    first.start()
+    first.join(4)
+    later.join(4)
+    assert not first.is_alive() and not later.is_alive()
+    if mode in ('pause', 'lost', 'claim_error', 'routine_pause'):
+        assert len(errors) == 2 and all(isinstance(error, TurnPaused) for error in errors), errors
+        assert executed == []
+        assert attempted == (['first.txt'] if mode in ('pause', 'routine_pause') else []), attempted
+    elif mode == 'tool_error':
+        assert len(errors) == 2 and all(type(error) is ValueError for error in errors), errors
+        assert sorted(attempted) == ['first.txt', 'later.txt']
+    else:
+        assert not errors, errors
+        assert started == ['0', '1'], started
+        assert len(results) == 2 and all('Content of ' in result for result in results), results
+        assert len([r for r in receipts if r[0] == 'native_result']) == 2
+finally:
+    bridge.close()
+    from tools.terminal_tool import cleanup_all_environments
+    cleanup_all_environments()
+""", mode)
+
     def test_native_completion_survives_restart_and_keeps_saved_followup(self):
         import json
         for followup in (False, True):
