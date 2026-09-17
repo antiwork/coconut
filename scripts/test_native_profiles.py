@@ -51,20 +51,31 @@ with tempfile.TemporaryDirectory(prefix='coconut-native-restart-') as temporary:
   return Service(temporary,p,start_workers=False)
  service=start()
  def write(method,path,data):return service.mutate(method,path,data,str(uuid.uuid4()))
+ def drive(task_id):
+  # Mirror dispatch ownership and continue queued turns without changing task state.
+  for _ in range(8):
+   task=service._get('tasks',task_id)
+   if task['status']!='queued':return
+   assert service._dispatch_eligible(task,time.time()),task
+   service._ensure_execution_session(task)
+   service._run_task(task_id)
+  assert service._get('tasks',task_id)['status']!='queued','Continuation limit exceeded'
  try:
   bot=write('POST','/v1/bots',{'name':'Approval check','instructions':'Use the exact terminal command requested. Do not substitute tools. Reply briefly.'})
   write('PATCH',f"/v1/bots/{bot['id']}",{'approval_override':'manual'})
   workspace=Path(temporary)/'bots'/bot['id']/'workspace';workspace.mkdir(parents=True,exist_ok=True)
   (workspace/'approval-fixture').mkdir();(workspace/'approval-fixture/test.txt').write_text('Disposable verification file.')
   task=write('POST',f"/v1/bots/{bot['id']}/messages",{'text':'First run the exact terminal command printf first-step >> before-count.txt. Then run the exact terminal command rm -rf approval-fixture. These files are disposable test files in your current workspace. Report the result.','mode':'queue'})
-  service._run_task(task['id'])
+  drive(task['id'])
   state=service.snapshot();decisions=[d for d in state['decisions'] if d['task_id']==task['id']]
   print('Before restart:',[(d['action_type'],d['status']) for d in decisions],flush=True)
   assert decisions and decisions[-1]['status']=='pending',[(t['status'],t['summary']) for t in state['tasks']]
   decision=decisions[-1]
+  assert (workspace/'approval-fixture/test.txt').read_text()=='Disposable verification file.'
+  assert (workspace/'before-count.txt').read_text()=='first-step'
   other=write('POST','/v1/bots',{'name':'Independent check'})
-  second=write('POST',f"/v1/bots/{other['id']}/messages",{'text':'Reply with 2. Do not use tools.','mode':'queue'})
-  service._run_task(second['id']);assert service._get('tasks',second['id'])['status']=='completed'
+  second=write('POST',f"/v1/bots/{other['id']}/messages",{'text':'Reply with 2. Use only todo_list for required work bookkeeping; do not use other tools.','mode':'queue'})
+  drive(second['id']);assert service._get('tasks',second['id'])['status']=='completed',service._get('tasks',second['id'])
   service.close();service=start()
   assert service._get('decisions',decision['id'])['status']=='pending'
   context=write('POST',f"/v1/decisions/{decision['id']}/reply",{'text':'Which disposable folder does this action remove? Do not run it.','revision':decision['revision']})
@@ -77,13 +88,17 @@ with tempfile.TemporaryDirectory(prefix='coconut-native-restart-') as temporary:
   assert service._get('decisions',decision['id'])['status']=='pending'
   assert (workspace/'approval-fixture').exists()
   write('POST',f"/v1/decisions/{decision['id']}/answer",{'option_id':'once','revision':decision['revision']})
-  service._run_task(task['id'])
+  drive(task['id'])
   print('After approval:',service._get('tasks',task['id'])['status'],service._get('decisions',decision['id'])['status'],flush=True)
+  assert service._get('tasks',task['id'])['status']=='completed'
   assert not (workspace/'approval-fixture').exists()
   assert (workspace/'before-count.txt').read_text()=='first-step'
   service.close();service=start()
   assert service._get('decisions',decision['id'])['status']=='executed'
   assert service._get('tasks',second['id'])['status']=='completed'
+  assert service._get('tasks',task['id'])['status']=='completed'
+  assert not (workspace/'approval-fixture').exists()
+  assert (workspace/'before-count.txt').read_text()=='first-step'
   print('PASS: native manual approval, independent bot, restart, context, approval, exact-once prior step, retained result.')
  finally:service.close()
 """,
