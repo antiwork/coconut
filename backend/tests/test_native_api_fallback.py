@@ -115,6 +115,55 @@ print('Native fallback settings passed')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('Native fallback settings passed', result.stdout)
 
+    def test_native_titles_preserve_chat_work_and_compression(self):
+        with tempfile.TemporaryDirectory() as root:
+            code = """
+from uuid import uuid4
+from coconut.native_conversation import NativeConversation
+from coconut.native_relay import NativeRelay
+from hermes_state import SessionDB
+bot = {'id': str(uuid4()), 'session_id': str(uuid4()), 'name': 'Research check'}
+request = {'bot': bot, 'model': 'probe', 'operation': 'start', 'history': [], 'task': {'id': str(uuid4())}}
+db = SessionDB()
+def install():
+    conversation = NativeConversation(request, db)
+    NativeRelay(request, None).install(conversation)
+    return conversation.session_id
+try:
+    canonical = install()
+    title = db.get_session_title(canonical)
+    assert title == 'Bot Chat'
+    db.end_session(canonical, 'compression')
+    tip = str(uuid4())
+    db.create_session(tip, source='coconut', parent_session_id=canonical)
+    assert install() == tip
+    assert db.resolve_session_by_title('Bot Chat') == tip
+    identities = set()
+    for _ in range(2):
+        request['task']['_conversation_epoch'] = str(uuid4())
+        for execution in (None, 'same-work'):
+            request['task']['_execution_session_id'] = execution
+            current = install()
+            assert install() == current
+            assert current not in identities
+            identities.add(current)
+            assert db.get_session_title(current).startswith('Work ' if execution else 'Chat ')
+            assert db.resolve_session_by_title('Bot Chat') == tip
+    assert db.get_session(canonical) and db.get_session(tip)
+finally:
+    db.close()
+"""
+            env = dict(os.environ, HERMES_HOME=root,
+                       PYTHONPATH=os.pathsep.join([SOURCE, str(Path('backend').resolve())]))
+            result = subprocess.run([PYTHON, '-c', code], env=env, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_chat_restart_and_repeated_quota_fallback_through_service(self):
+        result = subprocess.run([PYTHON, 'scripts/test_native_chat_fallback.py', '--source', SOURCE, '--python', PYTHON],
+                                capture_output=True, text=True, timeout=150)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr[-6000:])
+        self.assertIn('Chat restart and repeated native fallback passed', result.stdout)
+
     def test_start_resume_and_context_pass_the_native_chain_to_hermes(self):
         from test_worker_model_settings import WorkerModelProcessTests
         fixture = WorkerModelProcessTests('runTest')

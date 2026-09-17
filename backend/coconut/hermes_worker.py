@@ -267,7 +267,7 @@ def bot_creation_instructions(request):
                     'The new bot inherits the native default model and has a separate Hermes profile. '
                     'Only a matching created or duplicate service receipt confirms creation. '
                     'Do not claim success after a rejected or unconfirmed request. '
-                    'After confirmation, use the returned bot ID for a requested handoff through native message_agent. '
+                    'After confirmation, use the returned bot ID for a requested handoff. '
                     'Creating a bot does not bypass any approval. '
                     'Give one short confirmation. Do not repeat the receipt or add an approval footer.')
     if sources:
@@ -1118,7 +1118,9 @@ def run_turn(request, emit, request_receipt):
             registry.register(name='coconut_wait', toolset='coconut', schema=wait_schema,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('work_wait', arguments)))
             allowed.add('coconut_wait')
-        if request['task'].get('_execution_session_id') and operation != 'context':
+        relay_tool = ('coconut_message_bot' if request['task'].get('_execution_session_id')
+                      or request['task'].get('_conversation_epoch') else 'message_agent')
+        if relay_tool == 'coconut_message_bot' and operation != 'context':
             from tools.bot_mode_dm import message_agent_tool_schema
             relay_schema = dict(message_agent_tool_schema()['function'], name='coconut_message_bot')
             registry.register(name='coconut_message_bot', toolset='coconut', schema=relay_schema,
@@ -1164,7 +1166,7 @@ def run_turn(request, emit, request_receipt):
                         'Use any reviewer fallback authorized by the native profile instructions automatically, within the same action scope. '
                         'A proposed card limit is not a human prohibition. Preserve actual human stops and native approval checks. '
                         'Do not expose internal reasoning or raw logs. Finish independent work before asking a question. '
-                        'Use the native message_agent tool to send useful requests and results. Use the exact contact ID as target. Do not send acknowledgements. '
+                        f'Use {relay_tool} to send useful requests and results through the native Hermes relay. Use the exact contact ID as target. Do not send acknowledgements. '
                         'The Coconut relay connects isolated Hermes profiles on this same Mac. '
                         'Homebrew packages and its Homebrew-only configuration are shared across Coconut bots on this Mac. '
                         'Coconut configures terminal PATH through Hermes shell_init_files. '
@@ -1224,7 +1226,7 @@ def run_turn(request, emit, request_receipt):
         if work.enabled:
             instructions += WORK_INSTRUCTIONS
         if request['task'].get('_execution_session_id'):
-            instructions += ' For this work session, contact bots with coconut_message_bot. Coconut routes it through the native Hermes relay. When coconut_workspace is available, call it with the local repository before editing code. Otherwise use a separate Git worktree. For existing changes, supply existing_worktree to retain the files and branch. Reuse its returned path for commands, replies, reviews, and recovery. Keep other work items and their files unchanged. '
+            instructions += ' When coconut_workspace is available, call it with the local repository before editing code. Otherwise use a separate Git worktree. For existing changes, supply existing_worktree to retain the files and branch. Reuse its returned path for commands, replies, reviews, and recovery. Keep other work items and their files unchanged. '
         if request['task'].get('_chat_session'):
             from native_outcomes import CHAT_INSTRUCTIONS
             instructions += CHAT_INSTRUCTIONS
@@ -1331,7 +1333,8 @@ def run_turn(request, emit, request_receipt):
         return 0
     except Exception as error:
         # Model libraries can include request bodies or keys in exception strings.
-        emit('failed', {'summary': f'Hermes could not finish ({type(error).__name__}). Check the model configuration on the Mac.'})
+        summary = 'Coconut could not prepare this conversation' if agent is None else 'Hermes could not finish this reply'
+        emit('failed', {'summary': f'{summary} ({type(error).__name__}).'})
         return 1
     finally:
         def clear_scope():

@@ -14,6 +14,7 @@ class SessionDB:
         self.sessions[session_id] = messages
     def resolve_resume_session_id(self, session_id): return session_id
     def get_session(self, session_id): return {'id': session_id} if session_id in self.sessions else None
+    def resolve_session_by_title(self, title): return None
     def set_session_title(self, session_id, title): pass
     def end_session(self, session_id, reason): pass
     def get_resume_conversations(self, session_id): return self.sessions.get(session_id, []), []

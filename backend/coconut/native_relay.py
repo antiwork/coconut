@@ -16,6 +16,10 @@ class NativeRelay:
         import yaml
         from utils import atomic_yaml_write
         from tools.bot_mode_probe import BOT_CHAT_TITLE
+        if __package__:
+            from .native_conversation import session_root
+        else:
+            from native_conversation import session_root
         path = self.home / 'profile.yaml'
         meta = (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
         ui = dict(meta.get('ui_meta') or {})
@@ -23,16 +27,16 @@ class NativeRelay:
         meta['ui_meta'] = ui
         atomic_yaml_write(self.home / 'profile.yaml', meta, sort_keys=False)
         conversation.db.create_session(conversation.session_id, source='coconut', model=self.request['model'])
-        if self.request['task'].get('_execution_session_id'):
-            # Bot Mode has one canonical chat. Work uses separate native sessions.
-            canonical = conversation.db.resolve_session_by_title(BOT_CHAT_TITLE)
-            if canonical is None:
-                canonical = conversation.db.resolve_resume_session_id(self.request['bot']['session_id'])
-                conversation.db.create_session(canonical, source='coconut', model=self.request['model'])
-                conversation.db.set_session_title(canonical, BOT_CHAT_TITLE)
-            conversation.db.set_session_title(conversation.session_id, 'Work ' + self.request['task']['_execution_session_id'])
-        else:
-            conversation.db.set_session_title(conversation.session_id, BOT_CHAT_TITLE)
+        # Hermes reserves one Bot Chat per profile. Restarts preserve that conversation.
+        canonical = conversation.db.resolve_session_by_title(BOT_CHAT_TITLE) or self.request['bot']['session_id']
+        canonical = conversation.db.resolve_resume_session_id(canonical)
+        conversation.db.create_session(canonical, source='coconut', model=self.request['model'])
+        conversation.db.set_session_title(canonical, BOT_CHAT_TITLE)
+        if conversation.session_id != canonical:
+            execution = self.request['task'].get('_execution_session_id')
+            root = session_root(self.request['bot'], execution=execution,
+                                epoch=self.request['task'].get('_conversation_epoch'))
+            conversation.db.set_session_title(conversation.session_id, ('Work ' if execution else 'Chat ') + root)
         self.sync_roster()
 
     def enqueue(self, arguments):
