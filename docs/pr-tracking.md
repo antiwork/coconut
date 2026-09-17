@@ -6,6 +6,24 @@ It cannot create repositories, open pull requests, change checks, or merge work.
 The service verifies each PR before creating its persistent card.
 The service refreshes registered cards every 60 seconds while it runs.
 GitHub requests release the service lock so other bots can continue.
+An unexpected refresh error does not stop the monitor.
+
+The monitor checks the current head after each push.
+It resumes the existing owner when CI fails, checks pass, or a Greptile check finishes.
+The owner reads the review findings and assesses merge readiness, including for draft PRs.
+An unchanged result does not repeat the assessment on each poll.
+
+The monitor reads required checks from classic branch protection and effective branch rules.
+Passing required checks can trigger assessment while optional checks remain pending.
+Unknown branch rules do not establish passing required checks.
+When a status omits the required app identity, the owner verifies its source before recommending merge.
+The displayed aggregate check state still includes optional checks.
+
+Assessment does not grant merge permission or waive a deployment requirement.
+The owner creates one merge decision when the current evidence supports it.
+Recorded choices for the same head remain effective after a check reruns.
+Bots use `coconut_track_pr` and finish their turn while checks run.
+They do not need a separate `gh pr checks --watch` process.
 
 The provider supplies `kind: "pr"` and an exact `https://github.com/{owner}/{repo}/pull/{number}` URL.
 Assistant prose cannot set the card state.

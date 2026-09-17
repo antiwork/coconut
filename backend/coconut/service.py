@@ -2209,13 +2209,13 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                                 preview=observation.detail, head_sha=observation.head_sha,
                                 checked_at=observation.checked_at, observed_at=observation.checked_at,
                                 refresh_error=None, pr_state=observation.pr_state,
-                                draft=observation.draft, checks_state=observation.checks_state)
+                                draft=observation.draft, checks_state=observation.checks_state, required_checks_state=observation.required_checks_state, review_checks=observation.review_checks, check_failures=observation.check_failures)
                 self._bind_pr_review(existing, review_task, transfer=task_id is None and bool(payload.get('review_task_id')))
                 self._set_work_activity(existing, task, payload)
                 self._put('artifacts', existing)
                 self._event('artifact.updated', self._public(existing), existing['bot_id'], existing['task_id'])
                 return self._public(existing)
-            artifact = dict(id=uid(), bot_id=task['bot_id'], task_id=task_id, title=(observation.title or 'Pull request')[:200], kind='pr', status=observation.state, preview=observation.detail, url=url, created_at=now(), checked_at=observation.checked_at, observed_at=observation.checked_at, head_sha=observation.head_sha, refresh_error=None, pr_state=observation.pr_state, draft=observation.draft, checks_state=observation.checks_state)
+            artifact = dict(id=uid(), bot_id=task['bot_id'], task_id=task_id, title=(observation.title or 'Pull request')[:200], kind='pr', status=observation.state, preview=observation.detail, url=url, created_at=now(), checked_at=observation.checked_at, observed_at=observation.checked_at, head_sha=observation.head_sha, refresh_error=None, pr_state=observation.pr_state, draft=observation.draft, checks_state=observation.checks_state, required_checks_state=observation.required_checks_state, review_checks=observation.review_checks, check_failures=observation.check_failures)
             if review_task:
                 artifact['_review_task_id'] = review_task['id']
             self._set_work_activity(artifact, task, payload)
@@ -2235,7 +2235,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
     def _poll_pull_requests(self):
         while not self.stopping.is_set():
-            self.refresh_pull_requests()
+            try:
+                self.refresh_pull_requests()
+            except Exception:
+                logging.getLogger(__name__).exception("PR monitoring failed; the next refresh will retry.")
             self.pr_refresh_requested.wait(60)
             self.pr_refresh_requested.clear()
 
@@ -2271,7 +2274,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         continue
                     current['checked_at'] = observation.checked_at
                     if observation.observed:
-                        current.update(status=observation.state, title=(observation.title or current['title'])[:200], preview=observation.detail, head_sha=observation.head_sha, observed_at=observation.checked_at, refresh_error=None, pr_state=observation.pr_state, draft=observation.draft, checks_state=observation.checks_state)
+                        current.update(status=observation.state, title=(observation.title or current['title'])[:200], preview=observation.detail, head_sha=observation.head_sha, observed_at=observation.checked_at, refresh_error=None, pr_state=observation.pr_state, draft=observation.draft, checks_state=observation.checks_state, required_checks_state=observation.required_checks_state, review_checks=observation.review_checks, check_failures=observation.check_failures)
                     else:
                         current.update(refresh_error=observation.detail, preview=observation.detail)
                     self._restore_active_work(current)

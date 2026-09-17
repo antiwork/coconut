@@ -1091,7 +1091,7 @@ def run_turn(request, emit, request_receipt):
             allowed.add(REPLY_SCHEMA['name'])
         if operation != 'context':
             pr_schema = {'name': 'coconut_track_pr', 'description':
-                'Track an existing GitHub pull request in Work. Call when you create a PR or begin work on one, or when the person asks to follow it. Do not track links mentioned only as context. Coconut reads GitHub status without model calls. This does not create, edit, push, or merge a PR.',
+                'Track an existing GitHub pull request in Work. Call when you create a PR or begin work on one, or when the person asks to follow it. Do not track links mentioned only as context. Coconut reads GitHub checks and resumes the owner when results change. Record waiting and finish the turn instead of starting gh pr checks --watch. This does not create, edit, push, or merge a PR.',
                 'parameters': {'type': 'object', 'properties': {'url': {'type': 'string',
                     'description': 'The exact https://github.com/owner/repo/pull/number URL.'},
                     'activity': {'type': 'string', 'maxLength': 80, 'description': 'One short current activity, for example Reviewing with Fable or Checking a finding. Update at phase changes and before finishing. No hashes or tool counts.'},

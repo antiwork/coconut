@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.client import HTTPException
 import json
+import hashlib
 import os
 import re
 import subprocess
@@ -14,6 +15,7 @@ import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.parse import quote
 
 
 _PR_URL = re.compile(
@@ -39,6 +41,9 @@ class PRObservation:
     pr_state: str | None = None
     draft: bool | None = None
     checks_state: str | None = None
+    required_checks_state: str | None = None
+    review_checks: str | None = None
+    check_failures: str | None = None
 
 
 class PRTrackingError(ValueError):
@@ -60,6 +65,8 @@ def parse_pr_url(url: str) -> tuple[str, str, str]:
 
 
 def _pr_fields(pr: dict[str, Any]) -> tuple[str, str, bool, bool, str]:
+    if not isinstance(pr, dict):
+        raise PRTrackingError("GitHub returned incomplete pull request data.")
     sha = pr.get("head", {}).get("sha") if isinstance(pr.get("head"), dict) else None
     state, draft, merged, title = (pr.get(key) for key in ("state", "draft", "merged", "title"))
     if (
@@ -125,7 +132,7 @@ class GitHubPRTracker:
         self._timeout = timeout
         self._opener = build_opener(_NoRedirect())
 
-    def _get(self, path: str, deadline: float) -> dict[str, Any]:
+    def _get(self, path: str, deadline: float) -> dict[str, Any] | list:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise PRTrackingError("GitHub refresh exceeded its time limit.")
@@ -151,7 +158,7 @@ class GitHubPRTracker:
                 if len(body) > 2_000_000:
                     raise PRTrackingError("GitHub returned too much data to refresh safely.")
         payload = json.loads(body)
-        if not isinstance(payload, dict):
+        if not isinstance(payload, (dict, list)):
             raise PRTrackingError("GitHub returned an unexpected response.")
         return payload
 
@@ -163,6 +170,8 @@ class GitHubPRTracker:
                 f"{prefix}/commits/{sha}/check-runs?filter=latest&per_page=100&page={page}",
                 deadline,
             )
+            if not isinstance(payload, dict):
+                raise PRTrackingError("GitHub returned incomplete check data.")
             total, batch = payload.get("total_count"), payload.get("check_runs")
             if (
                 type(total) is not int
@@ -182,6 +191,89 @@ class GitHubPRTracker:
             if len(checks) > total or not batch:
                 raise PRTrackingError("GitHub checks changed during refresh. Refresh again.")
         raise PRTrackingError("Too many checks to confirm the pull request state.")
+
+    def _required_checks(self, prefix, pr, checks, status, deadline):
+        """Use both branch protection and effective rules; unknown rules stay unknown."""
+        base = pr.get('base')
+        branch = base.get('ref') if isinstance(base, dict) else None
+        if not isinstance(branch, str) or not branch:
+            return None
+        try:
+            path = f'{prefix}/branches/{quote(branch, safe="")}'
+            branch_data = self._get(path, deadline)
+            if not isinstance(branch_data, dict) or type(branch_data.get('protected')) is not bool:
+                return None
+            rules = []
+            for page in range(1, 11):
+                batch = self._get(f'{prefix}/rules/branches/{quote(branch, safe="")}?per_page=100&page={page}', deadline)
+                if not isinstance(batch, list):
+                    return None
+                rules.extend(batch)
+                if len(batch) < 100:
+                    break
+            else:
+                return None
+            required = []
+            if branch_data['protected']:
+                protection = branch_data['protection']['required_status_checks']
+                if not isinstance(protection.get('contexts'), list) or not isinstance(protection.get('checks'), list):
+                    return None
+                required.extend(protection['checks'])
+                configured = {item['context'] for item in required}
+                required.extend({'context': context} for context in protection['contexts'] if context not in configured)
+            for rule in rules:
+                if rule['type'] == 'required_status_checks':
+                    required.extend(rule['parameters']['required_status_checks'])
+            if not required:
+                return None
+            results = []
+            for rule in required:
+                context = rule['context']
+                if not isinstance(context, str) or not context:
+                    return None
+                app = rule.get('integration_id', rule.get('app_id'))
+                candidates = [c for c in checks if c.get('name') == context
+                              and (app in (None, -1) or c.get('app', {}).get('id') == app)]
+                states = [c.get('conclusion') if c.get('status') == 'completed' else 'pending' for c in candidates]
+                matching_statuses = [s['state'] for s in status['statuses'] if s.get('context') == context]
+                if app in (None, -1):
+                    states.extend(matching_statuses)
+                elif not states and matching_statuses and all(s in _PASS for s in matching_statuses):
+                    # Commit statuses omit the app ID. Resume assessment without claiming that the expected app passed.
+                    results.append('unverified')
+                    continue
+                if any(s in _FAIL or s == 'error' for s in states):
+                    results.append('failed')
+                elif states and all(s in _PASS for s in states):
+                    results.append('passed')
+                else:
+                    results.append('running')
+            return ('failed' if 'failed' in results else 'running' if 'running' in results else
+                    'unverified' if 'unverified' in results else 'passed')
+        except HTTPError as error:
+            error.close()
+        except (URLError, OSError, HTTPException, PRTrackingError, ValueError, TypeError, KeyError, AttributeError):
+            pass
+        return None
+
+    def _statuses(self, prefix, sha, deadline):
+        statuses = []
+        first = None
+        for page in range(1, 11):
+            payload = self._get(f'{prefix}/commits/{sha}/status?per_page=100&page={page}', deadline)
+            if (not isinstance(payload, dict) or type(payload.get('total_count')) is not int
+                    or payload['total_count'] < 0 or not isinstance(payload.get('statuses'), list)):
+                raise PRTrackingError('GitHub returned incomplete commit status data.')
+            if first is None:
+                first = payload
+            elif any(payload.get(k) != first.get(k) for k in ('state', 'sha', 'total_count')):
+                raise PRTrackingError('GitHub statuses changed during refresh. Refresh again.')
+            statuses.extend(payload['statuses'])
+            if len(statuses) == first['total_count']:
+                return dict(first, statuses=statuses)
+            if not payload['statuses'] or len(statuses) > first['total_count']:
+                raise PRTrackingError('GitHub returned incomplete commit status data.')
+        raise PRTrackingError('Too many statuses to confirm the pull request state.')
 
     @classmethod
     def for_profile(cls, profile):
@@ -213,23 +305,44 @@ class GitHubPRTracker:
             prefix = f"/repos/{owner}/{repo}"
             path = f"{prefix}/pulls/{number}"
             deadline = time.monotonic() + 20
-            before = _pr_fields(self._get(path, deadline))
+            initial = self._get(path, deadline)
+            before = _pr_fields(initial)
             sha, state, draft, merged, title = before
             checks_state = None
+            required_checks_state = None
+            review_checks = None
+            check_failures = None
             if merged:
                 result, detail = "merged", "GitHub confirms this pull request merged."
             elif state == "closed":
                 result, detail = "failed", "The pull request closed without a merge."
             else:
                 checks = self._checks(prefix, sha, deadline)
-                status = self._get(f"{prefix}/commits/{sha}/status?per_page=100", deadline)
-                after = _pr_fields(self._get(path, deadline))
+                status = self._statuses(prefix, sha, deadline)
+                if not isinstance(status, dict):
+                    raise PRTrackingError('GitHub returned incomplete commit status data.')
+                result, detail = _classify(draft, checks, status, sha)
+                required_checks_state = self._required_checks(prefix, initial, checks, status, deadline)
+                final = self._get(path, deadline)
+                after = _pr_fields(final)
                 if before[:4] != after[:4]:
                     raise PRTrackingError("The pull request changed during refresh. Refresh again.")
+                if (initial.get('base') or {}).get('ref') != (final.get('base') or {}).get('ref'):
+                    raise PRTrackingError('The target branch changed during refresh. Refresh again.')
                 title = after[4]
-                result, detail = _classify(draft, checks, status, sha)
                 checks_state = {"failed": "failed", "checks_running": "running", "opened": "none", "ready_for_review": "passed"}[_classify(False, checks, status, sha)[0]]
-            return PRObservation(result, sha, title, url, detail, checked_at, True, "merged" if merged else state, draft, checks_state)
+                reviews = sorted((c['id'], c.get('conclusion'), c.get('completed_at')) for c in checks
+                                 if 'greptile' in str(c.get('name') or '').lower() and c.get('status') == 'completed')
+                if reviews:
+                    review_checks = hashlib.sha256(json.dumps(reviews).encode()).hexdigest()
+                failures = [('check', str(c['id']), c.get('conclusion'), c.get('completed_at')) for c in checks
+                            if c.get('status') == 'failure' or (c.get('status') == 'completed' and c.get('conclusion') in _FAIL)]
+                failures += [('status', str(s.get('id')), s.get('context'), s.get('updated_at')) for s in status['statuses']
+                             if s.get('state') in ('failure', 'error')]
+                if failures:
+                    check_failures = hashlib.sha256(json.dumps(sorted(failures)).encode()).hexdigest()
+            return PRObservation(result, sha, title, url, detail, checked_at, True, "merged" if merged else state,
+                                 draft, checks_state, required_checks_state, review_checks, check_failures)
         except HTTPError as error:
             detail = f"GitHub refresh failed (HTTP {error.code})."
             error.close()

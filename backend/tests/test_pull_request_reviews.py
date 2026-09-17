@@ -86,9 +86,7 @@ class PRReviewTests(unittest.TestCase):
         self.green()
         self.assertEqual(self.service._get('tasks',self.child_id)['_native_turn_id'],turn)
 
-    def test_draft_or_failed_observation_never_wakes(self):
-        self.green(draft=True)
-        self.assertEqual(self.service._get('tasks',self.child_id)['status'],'completed')
+    def test_failed_observation_never_wakes(self):
         self.green(observed=False,detail='No access')
         self.assertEqual(self.service._get('tasks',self.child_id)['status'],'completed')
 

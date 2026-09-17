@@ -3,12 +3,18 @@ import json
 import threading
 
 PR_REVIEW_INSTRUCTIONS = (
-    'Coconut observed passing CI for a tracked pull request. This is a request to assess merge readiness, not permission to merge. '
+    'Coconut observed new check or review results for a tracked pull request. This is a request to assess merge readiness, not permission to merge. '
     'Read the current PR head, required checks, reviews, unresolved findings, merge conflicts, and the original human instructions. '
     'Do not repeat finished implementation work. Respect any visual approval or other pending decision. '
     'A draft can be ready for a decision when its owner reports the current head ready. '
     'If the PR remains a draft, include marking it ready in the proposed merge action. '
     'If the PR head changed, checks are incomplete, or a requirement remains unmet, do not claim it is ready. '
+    'Distinguish required checks from optional checks. A pending optional deployment must not silently block assessment. '
+    'If required_checks_state is unverified, a required status passed but its expected GitHub App is unconfirmed. Verify its source before recommending merge. '
+    'Read current-head Greptile findings, not only its successful check status. Resolve findings within the existing approval and verify the result. '
+    'If CI failed, inspect the failure and continue the authorized fix. Do not ask permission for a routine retry or review. '
+    'If an external requirement remains, save its specific reason with coconut_track_pr activity_state waiting. '
+    'Coconut monitors this PR without model calls and resumes you when results change. Do not start gh pr checks --watch. '
     'If another bot requested this work, return your verified result to that bot through the existing assignment. '
     'Ask the requesting bot to offer one coconut_ask merge decision when the evidence supports it. '
     'If this is your own human conversation, offer that decision yourself. Recommend Merge when justified and include a Leave open option. '
@@ -154,10 +160,10 @@ class PullRequestReviews:
                         if (artifact['bot_id'] != bot_id or artifact['kind'] != 'pr'
                                 or not artifact.get('_review_task_id') or artifact.get('refresh_error')
                                 or artifact.get('pr_state') != 'open'
-                                or (artifact.get('draft') is not False and not (artifact.get('draft') is True
-                                    and artifact.get('_activity_state') == 'ready'
-                                    and artifact.get('_activity_head') == artifact.get('head_sha')))
-                                or artifact.get('checks_state') != 'passed' or not artifact.get('head_sha')):
+                                or not (artifact.get('checks_state') in ('passed', 'failed')
+                                        or artifact.get('required_checks_state') in ('passed', 'failed', 'unverified')
+                                        or artifact.get('review_checks'))
+                                or not artifact.get('head_sha')):
                             continue
                         task = self._get('tasks', artifact['_review_task_id'])
                         if not self._can_resume_process(task, bot) or self._task_paused(task):
@@ -169,20 +175,27 @@ class PullRequestReviews:
                         owner = self._pr_review_owner(peers)
                         if not owner or owner['id'] != artifact['id']:
                             continue
-                        if any(artifact['head_sha'] in self._pr_reviewed_heads(a) for a in peers):
+                        recorded_check = max((a.get('_review_checked_at', '') for a in peers), default='')
+                        # Preserve unknown legacy choices until a new head receives a recorded review.
+                        if any(d.get('merge_pr_url', '').lower() == artifact['url'].lower()
+                               and d['status'] in ('approved', 'rejected', 'executed', 'dismissed')
+                               and (d.get('_merge_pr_head') == artifact['head_sha']
+                                    or (not d.get('_merge_pr_head') and (not recorded_check
+                                        or (d.get('decided_at') or d['created_at']) >= recorded_check)))
+                               for d in self._all('decisions') if d.get('merge_pr_url')):
+                            continue
+                        signal = json.dumps([artifact['head_sha'], artifact.get('checks_state'),
+                                             artifact.get('required_checks_state'), artifact.get('review_checks'),
+                                             artifact.get('check_failures')])
+                        assessed = [a for a in peers if artifact['head_sha'] in a.get('_reviewed_states', {})]
+                        latest = max(assessed, key=lambda a: a.get('_review_checked_at', ''), default=None)
+                        seen = (latest['_reviewed_states'][artifact['head_sha']] == signal if latest else
+                                any(artifact['head_sha'] in self._pr_reviewed_heads(a) for a in peers))
+                        if seen:
                             from datetime import datetime, timezone
                             from .decision_freshness import age
                             checked = max((a.get('_review_checked_at') or self._get('tasks', a['_review_task_id']).get('updated_at', '')
                                            for a in peers if a.get('_review_task_id')), default='')
-                            recorded_check = max((a.get('_review_checked_at', '') for a in peers), default='')
-                            # Preserve unknown legacy choices until a new head receives a recorded review.
-                            if any(d.get('merge_pr_url', '').lower() == artifact['url'].lower()
-                                   and d['status'] in ('approved', 'rejected', 'executed', 'dismissed')
-                                   and (d.get('_merge_pr_head') == artifact['head_sha']
-                                        or (not d.get('_merge_pr_head') and (not recorded_check
-                                            or (d.get('decided_at') or d['created_at']) >= recorded_check)))
-                                   for d in self._all('decisions') if d.get('merge_pr_url')):
-                                continue
                             if age(checked, datetime.now(timezone.utc)) < 3600:
                                 continue
                             projected = next(a for a in self._work_projection([dict(p) for p in peers]) if a['id'] == artifact['id'])
@@ -199,10 +212,12 @@ class PullRequestReviews:
                         self._advance_input(task)
                         task.update(status='queued', updated_at=now(), summary='Checking merge readiness.',
                             _conversation_epoch=epoch,
-                            _pr_review={k: artifact[k] for k in ('url', 'head_sha', 'checked_at', 'draft')},
+                            _pr_review={k: artifact.get(k) for k in ('url', 'head_sha', 'checked_at', 'draft',
+                                                                  'checks_state', 'required_checks_state', 'review_checks', 'check_failures')},
                             _background_return_after=now(), _background_return_id=uid())
                         artifact['_reviewed_heads'] = sorted(self._pr_reviewed_heads(artifact) | {artifact['head_sha']})
                         artifact['_reviewed_head'] = artifact['head_sha']
+                        artifact['_reviewed_states'] = dict(artifact.get('_reviewed_states', {}), **{artifact['head_sha']: signal})
                         artifact['_review_checked_at'] = now()
                         self._put('artifacts', artifact)
                         self._put('tasks', task)
