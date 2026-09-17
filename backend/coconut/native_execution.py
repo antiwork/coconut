@@ -34,7 +34,7 @@ class NativeExecution:
         receipt = self._store_bot_message(task_id, payload)
         receipt = {key: value for key, value in receipt.items() if isinstance(value, str)}
         receipt['delivery_id'] = payload['native_envelope_id']
-        if receipt.get('task_id'):
+        if receipt.get('task_id') and receipt.get('disposition') != 'reply':
             recipient = self._get('tasks', receipt['task_id'])
             if any(message.get('progress_only') for message in recipient.get('_bot_messages', [])):
                 # Normal handoffs already have a return route. A message back to the

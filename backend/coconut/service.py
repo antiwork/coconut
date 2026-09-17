@@ -1373,10 +1373,20 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         sender = self._get('bots', source['bot_id'])
         owner_id = assignment.get('_reply_to_task_id') or assignment.get('source_task_id')
         owner = self._assignment(self._get('tasks', owner_id)) if target_id == assignment.get('source_bot_id') and owner_id else None
+        callback = self._get('tasks', source['_relay_callback_owner']) if source.get('_relay_callback_owner') else source
+        native_reply = bool(not returning and source.get('_is_return') and callback.get('_native_relay', {}).get('sender_bot_id') == target_id
+                            and not callback.get('_native_relay_result'))
         # Helper questions retain a separate callback while the native owner waits for that helper.
         native_return = bool(owner and owner.get('_native_outcome_id') and not progress_only)
         bot_message = {'sender_bot_id': sender['id'], 'sender_name': sender['name'], 'text': text, 'result_status': payload.get('result_status'), 'progress_only': progress_only}
-        if native_return:
+        if native_reply:
+            # Reply to the waiting sender through its existing Hermes envelope.
+            # A new delegation would make both workers wait for each other.
+            reply = dict(callback['_native_relay'], text=text, failed=payload.get('result_status') == 'failed')
+            callback.update(_native_reply_pending=reply, _native_relay_result=reply, _native_explicit_reply=True)
+            self._put('tasks', callback)
+            task = self._get('tasks', callback['source_task_id'])
+        elif native_return:
             # A dependency result resumes the native owner, including its claim and workspace.
             task = owner
             task.setdefault('_bot_messages', []).append(bot_message)
@@ -1400,7 +1410,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             task = self._get('tasks', task['id'])
             task['_bot_messages'] = [bot_message]
             task['_is_return'] = returning or target_id == assignment.get('source_bot_id')
-        if native_return:
+        if native_reply or native_return:
             pass
         elif target_id == assignment.get('source_bot_id') and owner_id:
             owner = self._assignment(self._get('tasks', owner_id))
@@ -1416,7 +1426,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 task['_requester_reply_task_id'] = callback_owner
             assignment['_waiting_on'] = list(dict.fromkeys([*assignment.get('_waiting_on', []), task['id']]))
             self._put('tasks', assignment)
-        if native_id:
+        if native_id and not native_reply:
             task['_native_relay'] = {'sender_bot_id': source['bot_id'], 'envelope_id': native_id}
         self._put('tasks', task)
         returned_message = next((m for m in reversed(self._all('messages'))
@@ -1434,7 +1444,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             exchange['deliveries'] += 1
         self._put('exchanges', exchange)
         receipt = {'task_id': task['id'], 'target_bot_id': target_id, 'thread_id': task['thread_id'], 'status': 'paused' if task['status'] == 'paused' else 'queued'}
-        self._event('bot_message.delivered', {'source_task_id': source['id'], 'source_bot_id': sender['id'], 'target_bot_id': target_id, 'task_id': task['id'], 'thread_id': task['thread_id'], 'conversation_bot_id': origin['id'], 'exchange_id': exchange['id'], 'deliveries': exchange['deliveries'], 'is_return': native_return or task.get('_is_return', False)}, origin['id'], task['id'])
+        if native_reply:
+            receipt['disposition'] = 'reply'
+        self._event('bot_message.delivered', {'source_task_id': source['id'], 'source_bot_id': sender['id'], 'target_bot_id': target_id, 'task_id': task['id'], 'thread_id': task['thread_id'], 'conversation_bot_id': origin['id'], 'exchange_id': exchange['id'], 'deliveries': exchange['deliveries'], 'is_return': native_reply or native_return or task.get('_is_return', False)}, origin['id'], task['id'])
         self._put('deliveries', dict(id=delivery_id, source_task_id=source['id'], target_bot_id=target_id, text=text, receipt=receipt, created_at=now(), _progress_only=progress_only))
         return receipt
 

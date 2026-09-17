@@ -320,6 +320,8 @@ class BackgroundProcesses:
             owners.add(task['_relay_callback_owner'])
         for owner_id in owners:
             owner = task if owner_id == task['id'] else self._get('tasks', owner_id)
+            if owner.get('_native_explicit_reply'):
+                continue
             assignment = self._assignment(owner)
             waiting = [identity for identity in assignment.get('_waiting_on', [])
                        if identity != task.get('_resolved_dependency_id')]
