@@ -108,5 +108,105 @@ class ProposalWorkTitleTests(unittest.TestCase):
         self.assertEqual(self.service._all('messages'), before)
 
 
+class ProposalWorkOwnershipTests(unittest.TestCase):
+    setUp = tracked.TrackedWorkTests.setUp
+    tearDown = tracked.TrackedWorkTests.tearDown
+    write = tracked.TrackedWorkTests.write
+
+    def pending_followup(self):
+        from coconut.service import YieldForDecision
+        parent = self.service._get('tasks', self.task['id'])
+        parent.update(status='working', _conversation_epoch=self.service._setting('conversation_epoch'))
+        self.service._put('tasks', parent)
+        pr = self.service._register_pr_artifact(parent['id'], dict(url=automatic.fixtures.URL))
+        self.service.emit(parent['id'], 'native_proposal', dict(key='fix-export', title='Fix the export?',
+            options=[dict(id='fix', label='Fix and update the PR'), dict(id='leave', label='Leave unchanged')]))
+        proposal = self.service._all('decisions')[-1]
+        self.write('POST', '/v1/decisions/' + proposal['id'] + '/answer', dict(option_id='fix', revision=1))
+        proposal = self.service._get('decisions', proposal['id'])
+        followup = self.service._get('tasks', proposal['_execution_task_id'])
+        followup.update(status='working', _conversation_epoch=parent['_conversation_epoch'], _native_turn_id='proposal-turn')
+        self.service._put('tasks', followup)
+        bot = self.write('POST', '/v1/bots', dict(name='Developer'))
+        message = self.service._store_bot_message(followup['id'], dict(target_bot_id=bot['id'],
+            text='Prepare the approved export fix', require_response=True))
+        child = self.service._get('tasks', message['task_id'])
+        child.update(status='working', _conversation_epoch=parent['_conversation_epoch'], _native_turn_id='display-turn')
+        self.service._put('tasks', child)
+        with self.assertRaises(YieldForDecision):
+            self.service.emit(child['id'], 'native_question', dict(title='Approve the display?',
+                options=[dict(id='approve', label='Approve display'), dict(id='revise', label='Revise display')]))
+        card = self.service._all('decisions')[-1]
+        self.service.wait_for_task(followup['id'], dict(task_id=child['id'], reason='Waiting for the prepared fix'))
+        followup = self.service._get('tasks', followup['id'])
+        followup.update(status='waiting')
+        self.service._put('tasks', followup)
+        parent.update(status='completed')
+        self.service._put('tasks', parent)
+        return parent, pr, proposal, followup, child, card
+
+    def row(self, pr):
+        return next(a for a in self.service.snapshot()['artifacts'] if a['id'] == pr['id'])
+
+    def test_approved_proposal_keeps_its_followup_card_and_prevents_recovery(self):
+        parent, pr, _, followup, child, card = self.pending_followup()
+        row = self.row(pr)
+        self.assertEqual(row['work_state'], 'needs_decision')
+        self.assertEqual(row['work_decision_id'], card['id'])
+        before = len(self.service._all('tasks'))
+        for _ in range(3): self.service._queue_work_recoveries()
+        self.assertEqual(len(self.service._all('tasks')), before)
+        parent.update(status='working')
+        self.service._put('tasks', parent)
+        listing = self.service.wait_for_task(parent['id'], {})
+        self.assertIn(card['id'], {d['id'] for d in listing['decisions']})
+        self.service.wait_for_task(parent['id'], dict(decision_id=card['id'], reason='Waiting for display feedback'))
+        self.write('POST', '/v1/decisions/' + card['id'] + '/answer', dict(option_id='revise', revision=card['revision']))
+        self.assertEqual(self.service._get('tasks', child['id'])['status'], 'queued')
+        self.assertNotEqual(self.service._get('tasks', followup['id'])['status'], 'queued')
+
+    def test_new_coordinator_report_keeps_the_proposal_card(self):
+        from coconut.service import now
+        parent, pr, _, _, _, card = self.pending_followup()
+        callback = dict(parent, id='status-callback', status='waiting', exchange_id=self.service._new_exchange(),
+            _is_return=True, _assignment_task_id=parent['id'], created_at=now(), _native_turn_id='status-turn')
+        self.service._put('tasks', callback)
+        self.service._set_work_activity(self.service._get('artifacts', pr['id']), callback,
+            dict(activity='Waiting for display feedback', activity_state='blocked'))
+        self.assertEqual(self.row(pr)['work_decision_id'], card['id'])
+
+    def test_existing_recovery_keeps_the_saved_proposal_continuation(self):
+        parent, pr, proposal, _, _, card = self.pending_followup()
+        # Reproduce the old service state where recovery could not see this link.
+        unlinked = dict(proposal)
+        unlinked.pop('_execution_task_id')
+        self.service._put('decisions', unlinked)
+        self.service._queue_work_recoveries()
+        owner = self.service._get('artifacts', pr['id'])['_review_task_id']
+        self.assertNotEqual(owner, parent['id'])
+        self.service._put('decisions', proposal)
+        self.assertEqual(self.row(pr)['work_decision_id'], card['id'])
+        before = len(self.service._all('tasks'))
+        self.service._queue_work_recoveries()
+        self.assertEqual(len(self.service._all('tasks')), before)
+
+    def test_cancellation_stops_the_approved_proposal_followup(self):
+        _, pr, _, followup, child, card = self.pending_followup()
+        self.write('POST', '/v1/work/items/' + pr['id'] + '/cancel', {})
+        self.assertEqual(self.service._get('tasks', followup['id'])['status'], 'cancelled')
+        self.assertEqual(self.service._get('tasks', child['id'])['status'], 'cancelled')
+        self.assertNotEqual(self.service._get('decisions', card['id'])['status'], 'pending')
+
+    def test_proposal_link_cannot_claim_an_unrelated_or_old_session_task(self):
+        parent, pr, proposal, followup, child, card = self.pending_followup()
+        original = dict(followup)
+        self.service._put('tasks', dict(parent, id='unrelated', parent_task_id=None))
+        for changes in (dict(parent_task_id='unrelated'), dict(session_id='old-session')):
+            self.service._put('tasks', dict(original, **changes))
+            self.assertNotEqual(self.row(pr)['work_decision_id'], card['id'])
+        self.service._put('tasks', original)
+        self.assertEqual(self.row(pr)['work_decision_id'], card['id'])
+
+
 if __name__ == '__main__':
     unittest.main()

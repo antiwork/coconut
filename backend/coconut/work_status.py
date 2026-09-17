@@ -177,6 +177,43 @@ class WorkStatus:
             linked.setdefault(task['id'], set()).update(task.get('_waiting_on', []))
         return linked, explicit_waits
 
+    def _proposal_work_links(self, tasks):
+        import json
+        graphs = getattr(self, '_work_graphs', None)
+        key = ('proposals', id(tasks))
+        if graphs is not None and key in graphs:
+            return graphs[key][1]
+        direct = {}
+        rows = self.db.execute("SELECT data FROM decisions WHERE json_extract(data, '$.inbox_kind')='proposal' "
+                               "AND json_extract(data, '$._execution_task_id') IS NOT NULL")
+        for row in rows:
+            decision = json.loads(row[0])
+            source = tasks.get(decision.get('task_id'))
+            target = tasks.get(decision.get('_execution_task_id'))
+            if (not source or not target or not decision.get('decided_by')
+                    or decision.get('status') not in ('approved', 'modified', 'replied', 'executed', 'failed')
+                    or decision.get('bot_id') != source['bot_id'] or target.get('parent_task_id') != source['id']
+                    or any(source.get(k) != target.get(k) for k in ('bot_id', 'conversation_bot_id', 'session_id', 'thread_id'))):
+                continue
+            direct.setdefault(source['id'], set()).add(target['id'])
+        linked = {source: set(targets) for source, targets in direct.items()}
+        for task in tasks.values():
+            previous, seen, sources = task, set(), set()
+            while previous and previous['id'] not in seen:
+                seen.add(previous['id'])
+                recovery = previous.get('_self_recovery') or {}
+                sources.update(t['id'] for t in recovery.get('saved_tasks', []))
+                identity = recovery.get('previous_task_id')
+                previous = tasks.get(identity)
+                if not previous or any(task.get(k) != previous.get(k) for k in ('bot_id', 'conversation_bot_id', 'session_id')):
+                    break
+                sources.add(identity)
+            for source in sources:
+                linked.setdefault(task['id'], set()).update(direct.get(source, set()))
+        if graphs is not None:
+            graphs[key] = tasks, linked
+        return linked
+
     def _link_external_work(self, tasks, linked, explicit_waits):
         artifacts = {a['id']: a for a in self._all('artifacts') if a['kind'] == 'work'}
         for item in artifacts.values():
@@ -211,6 +248,9 @@ class WorkStatus:
         else:
             linked, explicit_waits = self._work_links(tasks, records, include_continuations)
             if include_continuations:
+                for source, targets in self._proposal_work_links(tasks).items():
+                    linked.setdefault(source, set()).update(targets)
+                    explicit_waits.setdefault(source, set()).update(targets)
                 self._link_external_work(tasks, linked, explicit_waits)
             if graphs is not None:
                 # Keep inputs alive so Python cannot reuse their IDs within this read.
@@ -321,11 +361,13 @@ class WorkStatus:
         owned |= {t['id'] for t in tasks.values() if t.get('_work_context_id') in {p['id'] for p in peers}}
         owned |= {tasks[i]['_assignment_task_id'] for i in list(owned)
                   if tasks[i].get('_assignment_task_id') in tasks}
+        proposals = self._proposal_work_links(tasks)
         while True:
             # Wait targets can belong to other work. Only follow owned attempts.
             expanded = owned | {t['id'] for t in tasks.values()
                 if any(t.get(field) in owned for field in ('source_task_id', '_assignment_task_id',
                                                           '_requester_reply_task_id', '_relay_callback_owner'))}
+            expanded |= {target for source in owned for target in proposals.get(source, set())}
             if expanded == owned:
                 break
             owned = expanded

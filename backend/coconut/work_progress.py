@@ -130,11 +130,12 @@ class WorkProgress:
         tasks = {t['id']: t for t in self._all('tasks')}
         linked = set()
         assignment = self._assignment(task)
+        records = self._pending_completion_receipts()
+        linked.update(self._work_chain(assignment, tasks, records, include_continuations=True))
         work_id = task.get('_work_context_id') or assignment.get('_work_context_id')
         if work_id:
             item = self._canonical_work(self._get('artifacts', work_id))
             if not item.get('_hidden') and not self._setting('work.cancelled.' + self._work_identity(item)):
-                records = self._pending_completion_receipts()
                 identities = [item.get(key) for key in ('task_id', '_work_origin_task_id', '_review_task_id', '_activity_task_id')]
                 recovery = task.get('_self_recovery') or assignment.get('_self_recovery') or {}
                 identities += [recovery.get('previous_task_id')] + [t['id'] for t in recovery.get('saved_tasks', [])]

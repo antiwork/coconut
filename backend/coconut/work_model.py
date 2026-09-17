@@ -16,9 +16,10 @@ class WorkModel:
             review = self._pr_review_owner(peers)
             owner = tasks.get(review['_review_task_id'], {}) if review else {}
             identities = [owner.get('id')]
+            owner_chain = self._work_chain(owner, tasks, records, include_continuations=True) if owner else {}
             owner_active = bool(owner) and any(
                 task['status'] == 'queued' or self._work_live(task, records, timestamp)
-                for task, _ in self._work_chain(owner, tasks, records, include_continuations=True).values())
+                for task, _ in owner_chain.values())
             identities += [p.get('_activity_task_id') for p in peers
                            if p.get('_activity_at', '') >= owner.get('created_at', '')
                            and p.get('_activity_head') == item.get('head_sha')
@@ -36,6 +37,9 @@ class WorkModel:
             if replacements:
                 replacement = max(replacements, key=lambda t: (t['created_at'], t['id']))
                 identities = [i for i in identities if i in tasks and tasks[i]['exchange_id'] == replacement['exchange_id']]
+                # A newer status report does not replace an approved proposal's pending work.
+                proposals = self._proposal_work_links(tasks)
+                identities += [target for source in owner_chain for target in proposals.get(source, ())]
         for identity in identities:
             if identity in tasks and not self._get('exchanges', tasks[identity]['exchange_id']).get('cancelled'):
                 linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
