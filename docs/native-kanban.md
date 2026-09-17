@@ -23,6 +23,7 @@ Normal waits use native `scheduled` state and do not increase the native failure
 Hermes owns selection and capacity after a request becomes ready.
 Read-only status questions keep one separate native session so they can answer while work capacity is full.
 Queue positions use native priority and creation order.
+Work uses the native title and progress note. Changes to either field trigger a phone update.
 Native failures enter Coconut's existing recovery path, which checks tool receipts before another action.
 The adapter does not treat an unknown tool result as permission to repeat it.
 
@@ -57,3 +58,8 @@ A worktree isolates files. Tests still need separate database, Redis, and storag
 Each agent creates its worktree, writes a local file, waits for an Inbox answer, and records completion.
 The deployment compatibility check and CI run this integration check.
 No test sends messages, publishes changes, or uses a paid model.
+
+## Replies
+
+Coconut shows complete replies. Partial model output stays inside the worker until Hermes confirms the response.
+The phone keeps its activity indicator visible while it waits. Events still deliver complete replies without a full reload.

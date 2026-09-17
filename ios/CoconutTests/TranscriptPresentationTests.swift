@@ -2,6 +2,24 @@ import XCTest
 @testable import Coconut
 
 final class TranscriptPresentationTests: XCTestCase {
+    func testFinalReplyAppearsOnceAfterPartialUpdates() {
+        let before = message("before", role: "user", text: "Check this.")
+        for text in ["I am", "I am checking"] {
+            let partial = message("reply", text: text, streaming: true)
+            XCTAssertEqual(visibleIDs([before, partial]), ["before"])
+            XCTAssertEqual(latestConversationMessage(in: [before, partial])?.id, "before")
+        }
+        let answer = message("reply", text: "The check passed.")
+        XCTAssertEqual(visibleIDs([before, answer]), ["before", "reply"])
+    }
+
+    func testFirstPartialReplyCannotAppearThroughBotPreviewFallback() {
+        let partial = message("partial", text: "An unfinished reply", streaming: true)
+        XCTAssertNil(latestConversationMessage(in: [partial]))
+        XCTAssertEqual(TranscriptPresentation.previewFallback(partial.text, messages: [partial]), "")
+        XCTAssertEqual(TranscriptPresentation.previewFallback("Saved complete reply", messages: []), "Saved complete reply")
+    }
+
     func testSilenceControlsStayOutOfChatAndPreview() {
         let normal = message("answer", text: "The review finished.")
         let silent = message("silent", text: "  [SILENT]\n")
@@ -170,11 +188,12 @@ final class TranscriptPresentationTests: XCTestCase {
         XCTAssertEqual(visibleIDs(messages), messages.map(\.id))
     }
 
-    func testStreamingPlainCompletionRemainsVisibleBesideAnswer() {
+    func testPartialReplyStaysHiddenBesideAnswer() {
         let messages = [message("answer", text: "2"),
                         message("streaming", text: "Ready to review.", streaming: true)]
 
-        XCTAssertEqual(visibleIDs(messages), messages.map(\.id))
+        XCTAssertEqual(visibleIDs(messages), ["answer"])
+        XCTAssertEqual(latestConversationMessage(in: messages)?.id, "answer")
     }
 
     func testPeerAnswerCannotHideAnotherBotsCompletionLabel() {
@@ -289,7 +308,7 @@ final class TranscriptPresentationTests: XCTestCase {
         let messages = [message("streaming", text: "Ready to review.", streaming: true),
                         message("card", kind: "artifact", artifactID: "result")]
 
-        XCTAssertEqual(visibleIDs(messages, artifacts: [artifact("result")]), messages.map(\.id))
+        XCTAssertEqual(visibleIDs(messages, artifacts: [artifact("result")]), ["card"])
     }
 
     func testBotMessageToAnotherRecipientCannotHideArtifact() {

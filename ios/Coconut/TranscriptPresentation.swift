@@ -1,6 +1,12 @@
 import Foundation
 
 enum TranscriptPresentation {
+    static func previewFallback(_ text: String, messages: [Message]) -> String {
+        if messages.contains(where: \.streaming) || text.trimmingCharacters(in: .whitespacesAndNewlines) == "[SILENT]"
+            || isLegacySettingsNotice(text) { return "" }
+        return text
+    }
+
     private static let genericProgress: Set<String> = ["working", "working on your request", "preparing an answer"]
     private static let genericCompletion: Set<String> = [
         "ready to review",
@@ -11,6 +17,7 @@ enum TranscriptPresentation {
         let byID = Dictionary(artifacts.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
         let replied = Set(decisions.filter { $0.status == "replied" }.map(\.id))
         return messages.filter { message in
+            if message.streaming { return false }
             if message.kind == "decision", let id = message.decisionId, replied.contains(id) { return false }
             if message.reactionEvent != nil || isSilenceControl(message) { return false }
             if isSettingsNotice(message) { return false }

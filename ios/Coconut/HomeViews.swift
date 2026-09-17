@@ -118,7 +118,7 @@ struct HomePressStyle: ButtonStyle {
 
 func latestConversationMessage(in messages: [Message]) -> Message? {
     let textMessages = messages.filter {
-        $0.kind == "text" && $0.reactionEvent == nil && ["user", "assistant"].contains($0.role)
+        $0.kind == "text" && !$0.streaming && $0.reactionEvent == nil && ["user", "assistant"].contains($0.role)
             && !TranscriptPresentation.isSilenceControl($0)
             && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -140,8 +140,7 @@ struct BotContactRow: View {
     }
     private var preview: String {
         guard let message = latestMessage else {
-            return bot.lastMessage.isEmpty || bot.lastMessage.trimmingCharacters(in: .whitespacesAndNewlines) == "[SILENT]" || TranscriptPresentation.isLegacySettingsNotice(bot.lastMessage)
-                ? "" : bot.lastMessage
+            return TranscriptPresentation.previewFallback(bot.lastMessage, messages: store.messages.filter { $0.botId == bot.id })
         }
         let sender = message.senderBotId.flatMap { id in id == bot.id ? nil : store.bots.first { $0.id == id }?.name ?? "Deleted bot" }
         let prefix = message.role == "user" ? "You: " : sender.map { $0 + ": " } ?? ""

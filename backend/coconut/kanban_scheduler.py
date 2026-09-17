@@ -239,12 +239,18 @@ class NativeKanban(NativeOutcomes):
                 owners = {r['task_id'] for r in self._pending_completion_receipts()}
                 keep = {execution_key(t) for t in (self._get('tasks', i) for i in owners) if t['status'] != 'cancelled'}
             self.provider.trim_kanban_workers(keep)
-        visible = [(i, t['status'], t['priority'], t['current_run_id']) for i, t in self.kanban.tasks.items()]
+        self._publish_kanban_changes()
+        with self.changed:
+            self.changed.wait(1)
+
+    def _publish_kanban_changes(self):
+        visible = [(i, *(t.get(key) for key in ('status', 'priority', 'current_run_id', 'title',
+            'progress_note', 'outcome_summary', 'last_failure_error', 'dispatch_blocker')))
+            for i, t in self.kanban.tasks.items()]
         with self.changed:
             if visible != self._kanban_visible:
                 self._kanban_visible = visible
                 self._event('work.updated', {})
-            self.changed.wait(1)
 
     def _reconcile_kanban(self):
         from .service import now

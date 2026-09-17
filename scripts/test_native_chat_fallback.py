@@ -58,8 +58,14 @@ def check(source, python):
                 data = dict(id='probe', created=int(time.time()), model=request['model'])
                 if request.get('stream'):
                     if message.get('tool_calls'): message['tool_calls'][0]['index'] = 0
-                    data.update(object='chat.completion.chunk', choices=[dict(index=0, delta=message, finish_reason=finish)])
-                    self.wfile.write(('data: ' + json.dumps(data) + '\n\ndata: [DONE]\n\n').encode())
+                    chunks = [message] if message.get('tool_calls') else [
+                        dict(role='assistant', content=message['content'][:4]), dict(content=message['content'][4:])]
+                    for index, chunk in enumerate(chunks):
+                        data.update(object='chat.completion.chunk', choices=[dict(index=0, delta=chunk,
+                            finish_reason=finish if index == len(chunks) - 1 else None)])
+                        self.wfile.write(('data: ' + json.dumps(data) + '\n\n').encode())
+                        self.wfile.flush()
+                    self.wfile.write(b'data: [DONE]\n\n')
                 else:
                     data.update(object='chat.completion', choices=[dict(index=0, message=message, finish_reason=finish)],
                                 usage=dict(prompt_tokens=1, completion_tokens=1, total_tokens=2))
@@ -108,6 +114,11 @@ def check(source, python):
                         messages = [m['text'] for m in service._all('messages')
                                     if m.get('task_id') == task['id'] and m.get('role') == 'assistant' and m.get('kind') == 'text']
                         assert any(expected in text for text in messages), messages
+                        events = [json.loads(row[0]) for row in service.db.execute(
+                            "SELECT data FROM events WHERE task_id=? AND type IN ('message.created','message.updated')",
+                            (task['id'],))]
+                        replies = [m['text'] for m in events if m.get('role') == 'assistant' and m.get('kind') == 'text']
+                        assert replies and all(text == expected for text in replies), replies
                         return task
                     time.sleep(.05)
                 raise AssertionError('The chat did not finish.')

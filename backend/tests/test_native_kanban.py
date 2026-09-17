@@ -113,6 +113,39 @@ class NativeKanbanTests(unittest.TestCase):
         self.assertNotEqual(native['status'], 'ready')
         self.assertEqual(len(self.service.kanban.tasks), 1)
 
+    def test_native_title_and_progress_changes_reach_incremental_work_updates(self):
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner['status'] = 'waiting'
+            self.service._put('tasks', owner)
+            self.service._migrate_native_work()
+        self.service.kanban.call({'op': 'snapshot'})
+        native = self.service.kanban.tasks[task['id']]
+        self.native_program("""
+board.kb.claim_task(board.conn, sys.argv[2])
+board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the file')
+""", native['id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._publish_kanban_changes()
+        before = self.service.snapshot()['cursor']
+        self.native_program("""
+with board.kb.write_txn(board.conn):
+    board.conn.execute('UPDATE tasks SET title=? WHERE id=?', ('Verify the corrected export', sys.argv[2]))
+board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the exported rows')
+""", native['id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._publish_kanban_changes()
+        updates = self.service.updates(before, collection_deltas=True)
+        self.assertGreater(updates['cursor'], before)
+        result = next(a for a in updates['artifacts'] if a['id'] == item['id'])
+        self.assertEqual(result['title'], 'Verify the corrected export')
+        self.assertEqual(result['activity'], 'Checking the exported rows')
+        self.assertEqual(result['work_state'], 'working')
+        self.service._publish_kanban_changes()
+        self.assertEqual(self.service.snapshot()['cursor'], updates['cursor'])
+
     def test_completed_legacy_turn_becomes_unfinished_native_outcome(self):
         task, item = self.legacy_work()
         self.provider.supports_native_outcomes = True

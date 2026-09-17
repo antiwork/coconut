@@ -595,7 +595,7 @@ class ProviderTests(unittest.TestCase):
             provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
         self.assertEqual(events, [('completed', {'summary': 'Complete.', 'silent_response': True})])
 
-    def test_reply_streams_before_completion_and_reconciles_final_text(self):
+    def test_reply_waits_for_confirmed_completion(self):
         started, release = self.root / 'started', self.root / 'release'
         provider = self.fake_hermes(
             "from pathlib import Path\nimport time\n"
@@ -615,26 +615,22 @@ class ProviderTests(unittest.TestCase):
             thread.start()
             try:
                 self.wait_for_path(started)
-                self.assertEqual(events, [('text_delta', {'text': 'An unfinished **'})])
+                self.assertEqual(events, [])
             finally:
                 release.touch()
                 thread.join(timeout=3)
                 if thread.is_alive(): provider.cancel_task(self.task['id'])
         self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])
-        self.assertEqual(events, [('text_delta', {'text': 'An unfinished **'}),
-                                  ('text_delta', {'text': 'draft'}),
-                                  ('text_delta', {'text': 'The **finished reply**.', 'replace': True}),
+        self.assertEqual(events, [('text_delta', {'text': 'The **finished reply**.'}),
                                   ('completed', {'summary': 'Complete.'})])
 
-    def test_failed_turn_withdraws_its_unfinished_reply(self):
+    def test_failed_turn_never_shows_its_unfinished_reply(self):
         provider = self.fake_hermes("kwargs['stream_callback']('Unfinished answer')\nraise RuntimeError('failed')\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
-        self.assertEqual(events[:2], [('text_delta', {'text': 'Unfinished answer'}),
-                                     ('text_delta', {'text': '', 'replace': True})])
-        self.assertEqual(events[-1][0], 'failed')
+        self.assertEqual([kind for kind, _ in events], ['failed'])
 
     def configure_peer(self, *, budget=8):
         peer = {'id': str(uuid4()), 'name': 'Lin', 'role': 'Check calculations'}

@@ -859,7 +859,6 @@ def run_turn(request, emit, request_receipt):
     from turn_timings import TurnTimings
     timing = TurnTimings(request['task']['id'], 'worker')
     conversation = None
-    streamed = False
     agent = None
     bridge = None
     registry = None
@@ -877,8 +876,6 @@ def run_turn(request, emit, request_receipt):
     session_tokens = None
     raw_emit, raw_receipt = emit, request_receipt
     def emit(kind, payload):
-        if kind == 'failed' and streamed:
-            raw_emit('text_delta', {'text': '', 'replace': True})
         if kind in ('completed', 'failed', 'native_question', 'native_approval'):
             payload = dict(payload, **work.payload(agent))
         return raw_emit(kind, payload)
@@ -1141,12 +1138,9 @@ def run_turn(request, emit, request_receipt):
             allowed.add(workspace_schema['name'])
         coconut_toolset = scope.toolset(allowed)
 
-        def stream_delta(text):
-            nonlocal streamed
+        def collect_response(text):
             if isinstance(text, str) and text and not creation_errors and not deletion_errors:
                 response_chunks.append(text)
-                emit('text_delta', {'text': text})
-                streamed = True
 
         instructions = ('You work in Coconut, a concise messaging app. Give short, useful replies. '
                         'Use coconut_track_pr when you create a PR, start work on an existing PR, or the person asks to follow one. Track the URL even when this task continues an older conversation. '
@@ -1291,7 +1285,7 @@ def run_turn(request, emit, request_receipt):
         setup_lock.release()
         preparing = False
         result = agent.run_conversation(prompt, conversation_history=conversation.history, task_id=request['task']['id'],
-                                        stream_callback=stream_delta,
+                                        stream_callback=collect_response,
                                         persist_user_message=current['text'] if current else request.get('question'),
                                         persist_user_platform_id='coconut:' + current['id'] if current else None)
         if scope.unconfirmed:
@@ -1313,10 +1307,8 @@ def run_turn(request, emit, request_receipt):
         if request['task'].get('_native_job') or reaction_only_turn(request):
             from cron.scheduler import _is_cron_silence_response
             silent_response = _is_cron_silence_response(final or '')
-        if silent_response and streamed:
-            emit('text_delta', {'text': '', 'replace': True})
-        elif not silent_response and final and (not streamed or final != ''.join(response_chunks)):
-            emit('text_delta', dict(text=final, **({'replace': True} if streamed else {})))
+        if not silent_response and final:
+            emit('text_delta', {'text': final})
         if operation != 'context':
             completion = {'summary': 'Complete.'}
             if silent_response:

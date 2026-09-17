@@ -2,7 +2,7 @@ import XCTest
 
 final class StateSyncFlowTests: XCTestCase {
     @MainActor
-    func testConnectionRecoveryKeepsConversationAndStreamsUpdates() throws {
+    func testConnectionRecoveryKeepsDraftAndShowsCompleteReplies() throws {
         guard let url = ProcessInfo.processInfo.environment["COCONUT_SYNC_TEST_URL"] else {
             throw XCTSkip("Run this check with scripts/test_state_sync.py.")
         }
@@ -40,8 +40,12 @@ final class StateSyncFlowTests: XCTestCase {
         let recovered = app.staticTexts["Connection restored."]
         XCTAssertTrue(recovered.waitForExistence(timeout: 15))
         XCTAssertEqual(input.value as? String, "Keep this draft")
-        print("COCONUT_SYNC_STAGE=stream")
-        XCTAssertTrue(app.staticTexts["Streamed without reloading the conversation."].waitForExistence(timeout: 10))
+        print("COCONUT_SYNC_STAGE=partial")
+        XCTAssertTrue(recovered.waitForNonExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["Unfinished reply text"].exists)
+        XCTAssertEqual(input.value as? String, "Keep this draft")
+        print("COCONUT_SYNC_STAGE=complete")
+        XCTAssertTrue(app.staticTexts["Complete reply without reloading."].waitForExistence(timeout: 10))
         XCTAssertEqual(input.value as? String, "Keep this draft")
         XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "action-error").firstMatch.exists)
     }

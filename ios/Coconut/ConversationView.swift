@@ -41,7 +41,6 @@ struct ConversationView: View {
         guard store.connection == .connected || store.isDemo else { return [] }
         return store.tasks.filter { task in
             task.chatBotId == botId && ["queued", "working", "running"].contains(task.status)
-                && !messages.contains { $0.taskId == task.id && $0.streaming && !$0.text.isEmpty }
         }
     }
     private var showsActivity: Bool {
@@ -435,7 +434,6 @@ struct MessageBubble: View {
         .accessibilityAction(named: "Reply") { onReply?() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(isUser ? "You" : store.bots.first { $0.id == (message.senderBotId ?? message.botId) }?.name ?? "Deleted bot")")
-        .accessibilityValue(message.streaming ? "Response is streaming" : "")
         .sheet(item: $editingOutgoing) { RejectedMessageEditor(outgoing: $0) }
     }
     private func reactionButton(_ index: Int) -> some View {

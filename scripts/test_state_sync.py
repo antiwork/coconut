@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-TEST = 'StateSyncFlowTests/testConnectionRecoveryKeepsConversationAndStreamsUpdates'
+TEST = 'StateSyncFlowTests/testConnectionRecoveryKeepsDraftAndShowsCompleteReplies'
 
 
 class Fixture:
@@ -31,9 +31,10 @@ class Fixture:
     def stage(self, stage):
         with self.changed:
             self.mode = stage
-            if stage in ('recover', 'stream'):
-                self.message['text'] = 'Connection restored.' if stage == 'recover' else 'Streamed without reloading the conversation.'
-                self.message['streaming'] = True
+            if stage in ('recover', 'partial', 'complete'):
+                self.message['text'] = {'recover': 'Connection restored.', 'partial': 'Unfinished reply text',
+                                        'complete': 'Complete reply without reloading.'}[stage]
+                self.message['streaming'] = stage == 'partial'
                 self.state['cursor'] += 1
                 self.events.append(dict(seq=self.state['cursor'], type='message.updated', bot_id=self.message['bot_id'],
                                         task_id=self.message['task_id'], created_at=self.message['created_at'], data=dict(self.message)))
@@ -79,10 +80,10 @@ def main():
                         fixture.changed.wait(max(0, deadline - time.monotonic()))
                     value = dict(events=[e for e in fixture.events if e['seq'] > after], cursor=fixture.state['cursor'], server_time=fixture.state['server_time'])
                 elif url.path == '/v1/state':
-                    if fixture.mode == 'stream': fixture.state_reads_during_stream += 1
+                    if fixture.mode in ('partial', 'complete'): fixture.state_reads_during_stream += 1
                     value = fixture.state
                 else: value = {}
-                if fixture.mode == 'offline' or (url.path == '/v1/state' and fixture.mode == 'stream'):
+                if fixture.mode == 'offline' or (url.path == '/v1/state' and fixture.mode in ('partial', 'complete')):
                     self.respond(503, dict(error='Fixture temporarily unavailable.'))
                 else: self.respond(200, value)
 
@@ -113,8 +114,8 @@ def main():
                 result = process.wait()
             if result: raise SystemExit(result)
             if fixture.state_reads_during_stream:
-                raise SystemExit('Streaming unexpectedly requested the full state.')
-            print('Verified recovery, draft retention, and streaming without a full-state request.')
+                raise SystemExit('Reply delivery unexpectedly requested the full state.')
+            print('Verified recovery, draft retention, hidden partial text, and complete reply delivery without a full-state request.')
     finally:
         server.shutdown()
         server.server_close()
