@@ -512,9 +512,12 @@ class HermesProvider(FixtureProvider):
                             from .hermes_worker import bot_deletion_receipt
                             receipt = bot_deletion_receipt(result, event['data'], bot)
                         else:
-                            if not isinstance(result, dict) or result.get('status') not in ('queued', 'paused', 'duplicate'):
+                            statuses = ('queued', 'paused', 'duplicate', 'rejected') if event['type'] == 'native_bot_message' else ('queued', 'paused', 'duplicate')
+                            if not isinstance(result, dict) or result.get('status') not in statuses:
                                 raise ValueError('The service did not return a delivery receipt.')
                             receipt = {key: result[key] for key in ('task_id', 'target_bot_id', 'thread_id', 'status', 'delivery_id') if isinstance(result.get(key), str)}
+                            if result['status'] == 'rejected' and isinstance(result.get('error'), str):
+                                receipt['error'] = result['error']
                     except Exception as error:
                         from .service import ServiceError, YieldForDecision
                         if event['type'] == 'native_question':
@@ -526,7 +529,7 @@ class HermesProvider(FixtureProvider):
                                 receipt = ({'status': 'recorded', 'decision_id': error.decision_id}
                                            if isinstance(error, YieldForDecision) else
                                            {'status': 'unconfirmed', 'error': 'The service did not confirm this decision.'})
-                        elif event['type'] in ('work_wait', 'decision_response', 'native_proposal') and isinstance(error, ServiceError) and 400 <= error.status < 500:
+                        elif event['type'] in ('artifact', 'work_wait', 'decision_response', 'native_proposal') and isinstance(error, ServiceError) and 400 <= error.status < 500:
                             receipt = {'status': 'rejected', 'error': str(error)}
                         elif event['type'] in ('bot_create', 'bot_delete') and isinstance(error, ServiceError) and 400 <= error.status < 500:
                             message = {

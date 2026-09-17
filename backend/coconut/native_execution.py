@@ -25,7 +25,8 @@ class NativeExecution:
         if record['task_id'] != task_id or action['name'] != 'message_agent':
             raise ServiceError(409, 'The relay receipt does not match this task.')
         target = str(arguments.get('target', '')).lstrip('@').split('@')[0]
-        if target != payload['target_bot_id'] or arguments.get('message') != payload['text']:
+        if (target != payload['target_bot_id'] or arguments.get('message') != payload['text']
+                or arguments.get('continuation_task_id') != payload.get('continuation_task_id')):
             raise ServiceError(409, 'The relay envelope does not match this tool call.')
         if record['state'] == 'completed':
             return json.loads(record['result'])

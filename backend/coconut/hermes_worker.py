@@ -1091,7 +1091,7 @@ def run_turn(request, emit, request_receipt):
                 'Track an existing GitHub pull request in Work. Call when you create a PR or begin work on one, or when the person asks to follow it. Do not track links mentioned only as context. Coconut reads GitHub checks and resumes the owner when results change. Record waiting and finish the turn instead of starting gh pr checks --watch. This does not create, edit, push, or merge a PR.',
                 'parameters': {'type': 'object', 'properties': {'url': {'type': 'string',
                     'description': 'The exact https://github.com/owner/repo/pull/number URL.'},
-                    'work_id': {'type': 'string', 'description': 'Existing Work outcome that this PR delivers. Defaults to the current outcome. Reuse its ID across delegated work.'},
+                    'work_id': {'type': 'string', 'description': 'ID of a separate Work item that this PR completes. Omit for PR-only tracking. Do not pass the PR artifact ID. Reuse a linked Work ID across delegated work.'},
                     'activity': {'type': 'string', 'maxLength': 80, 'description': 'One short current activity, for example Reviewing with Fable or Checking a finding. Update at phase changes and before finishing. No hashes or tool counts.'},
                     'paused_by_decision_id': TRACK_WORK_SCHEMA['parameters']['properties']['paused_by_decision_id'],
                     'activity_state': {'type': 'string', 'enum': ['working', 'waiting', 'ready', 'blocked'], 'description': 'Use working while investigating or fixing. Use waiting when the PR author or checks own the next step. Coconut watches GitHub without model calls. Use blocked for unfinished work with no next owner. Use ready after verified review. Defaults to working.'}}, 'required': ['url']}}
@@ -1120,7 +1120,8 @@ def run_turn(request, emit, request_receipt):
                       or request['task'].get('_conversation_epoch') else 'message_agent')
         if relay_tool == 'coconut_message_bot' and operation != 'context':
             from tools.bot_mode_dm import message_agent_tool_schema
-            relay_schema = dict(message_agent_tool_schema()['function'], name='coconut_message_bot')
+            from native_relay import message_tool_schema
+            relay_schema = message_tool_schema(message_agent_tool_schema()['function'])
             registry.register(name='coconut_message_bot', toolset='coconut', schema=relay_schema,
                               handler=lambda arguments, **kwargs: bridge.recorded('message_agent', arguments, bridge.relay.enqueue))
             allowed.add('coconut_message_bot')

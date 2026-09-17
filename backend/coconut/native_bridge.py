@@ -10,6 +10,18 @@ def fingerprint(action):
     return hashlib.sha256(json.dumps(action, separators=(',', ':'), sort_keys=True).encode()).hexdigest()
 
 
+def kanban_arguments(args, task_id, turn_id, bot_id):
+    input_id = turn_id or task_id
+    intake_key = fingerprint([input_id, args])
+    args = dict(args, assignee='default', tenant=bot_id, session_id=task_id, initial_status='blocked',
+                idempotency_key='coconut:' + task_id + ':' + intake_key)
+    if not args.get('workspace_kind') or args['workspace_kind'] == 'scratch':
+        from hermes_cli.kanban_db import workspaces_root
+        args.update(workspace_kind='dir', workspace_path=str(workspaces_root() /
+            ('coconut-' + fingerprint([task_id, intake_key]))))
+    return args
+
+
 class TurnPaused(BaseException):
     """Unwind the native turn after Coconut receives a decision."""
 
@@ -92,16 +104,16 @@ class NativeBridge:
                     self.start_execution()
                     return create_native_job(arguments, self.session_key)
             if name == 'kanban_create':
-                # Bind native intake to the authenticated conversation and make creation replayable.
-                input_id = self.request['task'].get('_native_turn_id') or self.session_key
-                intake_key = fingerprint([input_id, args])
-                args = dict(args, assignee='default', tenant=self.request['bot']['id'],
-                    session_id=self.request['task']['id'], initial_status='blocked',
-                    idempotency_key='coconut:' + self.session_key + ':' + intake_key)
-                if not args.get('workspace_kind') or args['workspace_kind'] == 'scratch':
-                    from hermes_cli.kanban_db import workspaces_root
-                    args.update(workspace_kind='dir', workspace_path=str(workspaces_root() /
-                        ('coconut-' + fingerprint([self.session_key, intake_key]))))
+                # A continuation must match the original intake identity before creating another outcome.
+                for saved in self.request['task'].get('_native_receipts', []):
+                    if saved['action']['name'] != name:
+                        continue
+                    original = kanban_arguments(args, saved['task_id'], saved.get('turn_id'), self.request['bot']['id'])
+                    if fingerprint(dict(name=name, arguments=original)) == saved['action_hash']:
+                        args = original
+                        break
+                else:
+                    args = kanban_arguments(args, self.session_key, self.request['task'].get('_native_turn_id'), self.request['bot']['id'])
             action = dict(name=name, arguments=args)
             key = fingerprint(action)
             pending = self.request['task'].get('pending_decision', {})

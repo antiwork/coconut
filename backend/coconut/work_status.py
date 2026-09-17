@@ -210,6 +210,17 @@ class WorkStatus:
         return task
 
     @staticmethod
+    def _continued_work_task(task, tasks):
+        continued = tasks.get(task.get('_continued_task_id'))
+        if (continued and task.get('_execution_session_id')
+                and all(continued.get(key) == task.get(key) for key in (
+                    '_execution_session_id', 'bot_id', 'session_id', 'thread_id', 'conversation_bot_id'))
+                and (continued.get('_conversation_epoch') == task.get('_conversation_epoch')
+                     or (continued['status'] == 'queued' and '_conversation_epoch' not in continued))):
+            return continued
+        return None
+
+    @staticmethod
     def _work_links(tasks, records, include_continuations):
         linked = {}
         explicit_waits = {}
@@ -220,6 +231,10 @@ class WorkStatus:
                 if record.get(key) and not record.get('_process_delivery'):
                     linked.setdefault(record['task_id'], set()).add(record[key])
         for task in tasks.values():
+            continued = WorkStatus._continued_work_task(task, tasks) if include_continuations else None
+            if continued:
+                linked.setdefault(task['id'], set()).add(continued['id'])
+                explicit_waits.setdefault(task['id'], set()).add(continued['id'])
             if include_continuations and task['status'] not in ('failed', 'cancelled'):
                 owner = WorkStatus._work_execution_owner(task, tasks)
                 if owner['id'] != task['id']:
@@ -475,6 +490,8 @@ class WorkStatus:
                 if any(t.get(field) in owned for field in ('source_task_id', '_assignment_task_id',
                                                           '_requester_reply_task_id', '_relay_callback_owner'))}
             expanded |= {target for source in owned for target in proposals.get(source, set())}
+            expanded |= {continued['id'] for source in owned
+                         if (continued := self._continued_work_task(tasks[source], tasks))}
             if expanded == owned:
                 break
             owned = expanded

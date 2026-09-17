@@ -240,12 +240,14 @@ class TrackedWork:
         return outcome['activity_state'], outcome['activity']
 
     def _resume_tracked_work(self, tasks, artifacts):
-        """Keep a failed request's row when a human continues that request."""
+        """Keep a failed request's row when its owner continues the work."""
         from .service import now
         for task in sorted(tasks.values(), key=lambda t: (t['created_at'], t['id'])):
             parent = tasks.get(task.get('parent_task_id'))
-            if (not parent or parent['status'] != 'failed' or task.get('source_bot_id')
-                    or task.get('_work_context_id') or task.get('_assignment_task_id')
+            targeted = parent and self._continued_work_task(parent, tasks) is task
+            if (not parent or parent['status'] != 'failed'
+                    or (not targeted and (task.get('source_bot_id') or task.get('_work_context_id')))
+                    or task.get('_assignment_task_id')
                     or task['thread_id'] != parent['thread_id']
                     or any(task.get(k) != parent.get(k) for k in ('bot_id', 'conversation_bot_id', 'session_id'))):
                 continue

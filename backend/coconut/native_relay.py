@@ -3,7 +3,21 @@ import contextlib
 import fcntl
 import json
 import os
+import copy
 from pathlib import Path
+
+
+def message_tool_schema(native_schema):
+    schema = copy.deepcopy(native_schema)
+    schema['name'] = 'coconut_message_bot'
+    schema['description'] += (
+        ' To continue a failed task in this conversation, supply continuation_task_id from its saved task record. '
+        'This preserves its execution session and worktree. It does not approve actions or change workspace ownership. '
+        'Do not start another assignment for the same unfinished work.')
+    schema['parameters']['properties']['continuation_task_id'] = {
+        'type': 'string', 'minLength': 1, 'maxLength': 100,
+        'description': 'The failed task owned by the target bot in this conversation.'}
+    return schema
 
 
 class NativeRelay:
@@ -78,6 +92,8 @@ class NativeRelay:
         with relay_lock(self.home):
             intent = dict(call_id=call_id, task_id=self.request['task']['id'], target_bot_id=target,
                           text=arguments['message'], previous_ids=[e['id'] for e in stored_envelopes(self.home)])
+            if 'continuation_task_id' in arguments:
+                intent['continuation_task_id'] = arguments['continuation_task_id']
             save_intent(self.home, intent)
             result = next_call(arguments)
             envelopes = claim_pending_envelopes(self.home)
@@ -91,7 +107,7 @@ class NativeRelay:
             intent['envelope'] = matching[0]
             save_intent(self.home, intent)
             confirmed = self.receipt('native_bot_message', delivery_payload(intent))
-            if confirmed.get('status') not in ('queued', 'duplicate', 'paused'):
+            if confirmed.get('status') not in ('queued', 'duplicate', 'paused', 'rejected'):
                 stop_unconfirmed()
             return json.dumps(confirmed, sort_keys=True)
 
@@ -128,7 +144,8 @@ def stored_envelopes(home):
 def delivery_payload(intent):
     envelope = intent['envelope']
     return dict(native_call_id=intent['call_id'], native_envelope_id=envelope['id'],
-                target_bot_id=intent['target_bot_id'], text=intent['text'])
+                target_bot_id=intent['target_bot_id'], text=intent['text'],
+                **({key: intent[key] for key in ('continuation_task_id',) if key in intent}))
 
 
 def recover_delivery(home, call_id):

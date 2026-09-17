@@ -1338,21 +1338,67 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         with self.transaction():
             return self._store_bot_message(source_task_id, payload, returning=returning, record_message=record_message)
 
+    def _bot_continuation_owner(self, source, target_id, identity):
+        from .work_capacity import execution_key
+        previous = self._get('tasks', identity)
+        tasks = {t['id']: t for t in self._all('tasks')}
+        owners = (previous, self._assignment(previous), tasks.get(execution_key(previous), previous))
+        native = any(owner.get(key) for owner in owners
+                     for key in ('_chat_session', '_native_outcome_id', '_native_job', 'routine_id'))
+        if (previous['status'] != 'failed' or native
+                or previous['bot_id'] != target_id
+                or previous['session_id'] != self._get('bots', target_id)['session_id']
+                or previous['thread_id'] != source['thread_id']
+                or previous['conversation_bot_id'] != source['conversation_bot_id']
+                or previous.get('_conversation_epoch') != self._setting('conversation_epoch')):
+            raise ServiceError(409, 'Choose a failed task owned by this bot in the same conversation. Use the native workflow for an outcome or routine.')
+        if (self._task_paused(previous) or self._continuation_blocked(previous)
+                or self._get('exchanges', previous['exchange_id']).get('cancelled')
+                or self._automatic_work_is_paused(dict(previous, _work_resume=True))):
+            raise ServiceError(409, 'This work is paused or cancelled. Preserve the existing decision.')
+        if any(d['status'] == 'pending' and d.get('inbox_kind') != 'proposal'
+               and self._get('tasks', d['task_id'])['thread_id'] == previous['thread_id']
+               for d in self._all('decisions')):
+            raise ServiceError(409, 'Resolve the pending decision in this conversation before continuing.')
+        if previous.get('_waiting_on'):
+            identity = previous['_waiting_on'][0]
+            raise ServiceError(409, f'Wait for the result of delegated task {identity} before continuing its owner.')
+        self._ensure_execution_session(previous)
+        for peer in tasks.values():
+            if execution_key(peer) != execution_key(previous):
+                continue
+            if (peer['id'] != previous['id'] and peer['status'] in self.ACTIVE
+                    or self._background_pending(peer['id'])):
+                raise ServiceError(409, 'This execution already has active work. Reuse its current task.')
+            if (peer['id'] == previous.get('_continued_task_id') or peer.get('parent_task_id') == previous['id']
+                    or peer['created_at'] > previous['created_at']):
+                raise ServiceError(409, f'This task already continued as {peer["id"]}. Check that task before continuing.')
+        return previous
+
     def _store_bot_message(self, source_task_id: str, payload: dict, *, returning: bool = False, record_message: bool = True) -> dict:
         target_id = require_text(payload, 'target_bot_id', 100)
         text = require_text(payload, 'text', None if returning else 20000)
         native_id = payload.get('native_envelope_id')
         if native_id is not None and (not isinstance(native_id, str) or len(native_id) != 32 or any(c not in '0123456789abcdef' for c in native_id)):
             raise ServiceError(400, 'The native envelope ID is invalid.')
-        delivery_key = [source_task_id, target_id, text]
-        if returning and payload.get('return_id'):
-            delivery_key.append(payload['return_id'])
-        delivery_id = digest(encoded([source_task_id, native_id])) if native_id else digest(encoded(delivery_key))
-        source = self._get('tasks', source_task_id)
-        existing = self.db.execute('SELECT data FROM deliveries WHERE id=?', (delivery_id,)).fetchone()
-        if existing:
-            receipt = json.loads(existing[0])['receipt']
-            return receipt | {'status': 'duplicate' if receipt['task_id'] else receipt['status']}
+        try:
+            delivery_key = [source_task_id, target_id, text]
+            continuation_id = require_text(payload, 'continuation_task_id', 100) if 'continuation_task_id' in payload else None
+            if continuation_id:
+                delivery_key.append(continuation_id)
+            if returning and payload.get('return_id'):
+                delivery_key.append(payload['return_id'])
+            delivery_id = digest(encoded([source_task_id, native_id])) if native_id else digest(encoded(delivery_key))
+            source = self._get('tasks', source_task_id)
+            existing = self.db.execute('SELECT data FROM deliveries WHERE id=?', (delivery_id,)).fetchone()
+            if existing:
+                receipt = json.loads(existing[0])['receipt']
+                return receipt | {'status': 'duplicate' if receipt['task_id'] else receipt['status']}
+            continuation_owner = self._bot_continuation_owner(source, target_id, continuation_id) if continuation_id else None
+        except ServiceError as error:
+            if not native_id:
+                raise
+            return {'status': 'rejected', 'error': str(error), 'target_bot_id': target_id}
         progress_only = False
         exchange = self._get('exchanges', source['exchange_id'])
         cancellation_result = returning and source.get('_dependency_cancelled')
@@ -1382,7 +1428,54 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         # Helper questions retain a separate callback while the native owner waits for that helper.
         native_return = bool(owner and owner.get('_native_outcome_id') and not progress_only)
         bot_message = {'sender_bot_id': sender['id'], 'sender_name': sender['name'], 'text': text, 'result_status': payload.get('result_status'), 'progress_only': progress_only}
-        if native_reply:
+        if continuation_owner:
+            # Keep the native envelope's return route while restoring the saved execution.
+            task = self._send(target, {'text': text, 'mode': 'queue'}, thread_id=continuation_owner['thread_id'],
+                              parent_task_id=continuation_owner['id'], conversation_bot_id=origin['id'],
+                              exchange_id=source['exchange_id'], source_task=source, record_message=False)
+            task = self._get('tasks', task['id'])
+            for key in ('_execution_session_id', '_conversation_epoch', '_work_context_id', '_work_todos',
+                        '_attachment_ids', '_shared_message_ids', '_preference_source_ids', '_self_recovery', '_background_completion', '_pr_review'):
+                if key in continuation_owner:
+                    task[key] = copy.deepcopy(continuation_owner[key])
+            task['_shared_message_ids'] = list(dict.fromkeys(task.get('_shared_message_ids', [])
+                + continuation_owner.get('_turn_message_ids', [])))
+            pending = continuation_owner.pop('_blocked_followup', None)
+            if pending:
+                for key, source_key in (('_shared_message_ids', 'message_ids'),
+                                        ('_preference_source_ids', 'source_ids'), ('_attachment_ids', 'attachment_ids')):
+                    task[key] = list(dict.fromkeys(task.get(key, []) + pending[source_key]))
+                continuation_owner.update(_steering=[], steering_status='continued')
+            completed = [r['id'] for r in self._native_task_receipts(continuation_owner['id'], state='completed')
+                         if r.get('turn_id') == continuation_owner.get('_native_turn_id')]
+            task['_continuation_receipt_ids'] = list(dict.fromkeys(
+                continuation_owner.get('_continuation_receipt_ids', []) + completed))
+            related_ids = {t['id'] for t in self._all('tasks') if execution_key(t) == execution_key(continuation_owner)}
+            recovery = task.setdefault('_self_recovery', {})
+            recovery['previous_task_id'] = continuation_owner['id']
+            decisions = [self._public(d) for d in self._all('decisions') if d['task_id'] in related_ids]
+            recovery['decisions'] = list({d['id']: d for d in recovery.get('decisions', []) + decisions}.values())
+            unknown = [r for identity in related_ids for r in self._native_task_receipts(identity, state='executing')]
+            if unknown:
+                recovery['unknown_tools'] = list({r['id']: r for r in recovery.get('unknown_tools', [])
+                    + [{k: r.get(k) for k in ('id', 'task_id', 'turn_id', 'action', 'created_at')} for r in unknown]}.values())
+            task.update(title=continuation_owner['title'],
+                        _bot_messages=copy.deepcopy(continuation_owner.get('_bot_messages', [])) + [bot_message], _is_return=False)
+            continuation_owner['_continued_task_id'] = task['id']
+            for artifact in self._all('artifacts'):
+                if (artifact['kind'] == 'pr' and artifact['bot_id'] == task['bot_id']
+                        and artifact.get('_review_task_id') in related_ids):
+                    peers = [a for a in self._all('artifacts')
+                             if a['kind'] == 'pr' and a['url'].lower() == artifact['url'].lower()]
+                    owner = self._pr_review_owner(peers)
+                    if not owner or owner['_review_task_id'] not in related_ids:
+                        continue
+                    artifact.update(_review_task_id=task['id'], _review_ownership_at=now())
+                    self._put('artifacts', artifact)
+                    self._event('artifact.updated', self._public(artifact), artifact['bot_id'], artifact.get('task_id'))
+            self._put('tasks', continuation_owner)
+            native_reply = native_return = False
+        elif native_reply:
             # Reply to the waiting sender through its existing Hermes envelope.
             # A new delegation would make both workers wait for each other.
             reply = dict(callback['_native_relay'], text=text, failed=payload.get('result_status') == 'failed')
@@ -1423,7 +1516,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     task['_execution_session_id'] = previous['_execution_session_id']
         if native_reply or native_return:
             pass
-        elif target_id == assignment.get('source_bot_id') and owner_id:
+        elif not continuation_owner and target_id == assignment.get('source_bot_id') and owner_id:
             owner = self._assignment(self._get('tasks', owner_id))
             task.update(_is_return=True, _assignment_task_id=owner['id'])
             if assignment.get('_requester_reply_task_id'):
@@ -2502,6 +2595,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         task.pop('_turn_message_ids', None)
         task.pop('_direct_reply_message_id', None)
         task.pop('_turn_attachment_ids', None)
+        task.pop('_continuation_receipt_ids', None)
         task.pop('_conversation_epoch', None)
         task.pop('_resume_decision', None)
         task.pop('_background_completion', None)
@@ -2602,6 +2696,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         "SELECT data FROM native_receipts WHERE json_extract(data, '$.task_id')=? "
                         "AND json_extract(data, '$.turn_id')=? AND json_extract(data, '$.state')='completed' ORDER BY rowid",
                         (task_id, task.get('_native_turn_id')))]
+                    carried = [self._get('native_receipts', identity) for identity in task.get('_continuation_receipt_ids', [])]
+                    provider_task['_native_receipts'] = list({r['id']: r for r in carried + provider_task['_native_receipts']}.values())
                     provider_task.update(self._bot_creation_input(task))
                 timing.mark('receipts')
                 with self._read_view() as view, view._read_transaction():
