@@ -194,6 +194,8 @@ class NativeKanban(NativeOutcomes):
         self._drain_returns()
         # Read committed claims first. A lost adapter response cannot create another turn.
         self.kanban.call({'op': 'snapshot'})
+        with self.transaction():
+            self._migrate_native_work()
         self._adopt_native_outcomes()
         self._reconcile_kanban()
         with self.changed:

@@ -78,6 +78,292 @@ class NativeKanbanTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
 
+    def legacy_work(self, title='Verify the saved export'):
+        task = self.task(title)
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner['status'] = 'working'
+            self.service._put('tasks', owner)
+        item = self.service._register_work(task['id'], dict(key=task['id'], title=title,
+            status='working', activity='Checking results', completion_condition='The export passes its tests.'))
+        return task, item
+
+    def test_existing_work_migrates_once_with_same_workspace_and_card(self):
+        from coconut.service import YieldForDecision
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        workspace = self.service.root / 'workspaces' / task['id']
+        workspace.mkdir(parents=True)
+        (workspace / 'saved.txt').write_text('Keep this result')
+        with self.assertRaises(YieldForDecision):
+            self.service.emit(task['id'], 'native_question', dict(title='Publish the export?',
+                options=[dict(id='yes', label='Publish')]))
+        card = self.service._all('decisions')[0]
+        with self.service.transaction():
+            self.service._migrate_native_work()
+            self.service._migrate_native_work()
+        self.service.kanban.call({'op': 'snapshot'})
+        owner = self.service._get('tasks', task['id'])
+        native = self.service.kanban.tasks[task['id']]
+        self.assertEqual(owner['_native_outcome_id'], native['id'])
+        self.assertEqual(self.service._get('artifacts', item['id'])['_native_outcome_id'], native['id'])
+        self.assertEqual(native['workspace_path'], str(workspace))
+        self.assertEqual((workspace / 'saved.txt').read_text(), 'Keep this result')
+        self.assertEqual(self.service._all('decisions'), [card])
+        self.assertNotEqual(native['status'], 'ready')
+        self.assertEqual(len(self.service.kanban.tasks), 1)
+
+    def test_completed_legacy_turn_becomes_unfinished_native_outcome(self):
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner['status'] = 'completed'
+            self.service._put('tasks', owner)
+            self.service._migrate_native_work()
+        owner = self.service._get('tasks', task['id'])
+        self.assertEqual(owner['status'], 'queued')
+        self.service.kanban.call({'op': 'snapshot'})
+        native = self.service.kanban.tasks[task['id']]
+        self.assertEqual(native['status'], 'ready')
+        self.assertIn('The export passes its tests.', native['body'])
+        self.assertEqual(len(self.service._all('tasks')), 1)
+
+    def test_migration_preserves_cancelled_work_and_pending_alias_result(self):
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner['status'] = 'cancelled'
+            self.service._put('tasks', owner)
+            self.service._migrate_native_work()
+        self.assertNotIn('_native_outcome_id', self.service._get('tasks', task['id']))
+        task, item = self.legacy_work('Verify another export')
+        alias = self.task('Read the returned result')
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner['status'] = 'completed'
+            self.service._put('tasks', owner)
+            peer = dict(item, id=str(uuid4()), task_id=alias['id'], _same_outcome_as=item['id'])
+            self.service._put('artifacts', peer)
+            self.service._migrate_native_work()
+        self.assertNotIn('_native_outcome_id', self.service._get('tasks', task['id']))
+        self.assertEqual(self.service._get('tasks', alias['id'])['status'], 'queued')
+
+    def test_migration_keeps_answered_pause_and_distinct_outcomes(self):
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner['status'] = 'completed'
+            self.service._put('tasks', owner)
+            decision = dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=task['id'],
+                status='rejected', decided_by='person')
+            self.service._put('decisions', decision)
+            item['paused_by_decision_id'] = decision['id']
+            self.service._put('artifacts', item)
+            self.service._migrate_native_work()
+            self.assertNotIn('_native_outcome_id', self.service._get('tasks', task['id']))
+            item.pop('paused_by_decision_id')
+            self.service._put('artifacts', item)
+            other = dict(item, id=str(uuid4()), title='Verify a second export')
+            self.service._put('artifacts', other)
+            self.service._migrate_native_work()
+            self.assertNotIn('_native_outcome_id', self.service._get('tasks', task['id']))
+
+    def test_migration_waits_for_completed_alias_process(self):
+        import json
+        for link in ('_same_outcome_as', '_work_parent_id'):
+            task, item = self.legacy_work()
+            alias = self.task('Read the returned result')
+            self.provider.supports_native_outcomes = True
+            with self.service.transaction():
+                for identity in (task['id'], alias['id']):
+                    owner = self.service._get('tasks', identity)
+                    owner['status'] = 'completed'
+                    self.service._put('tasks', owner)
+                self.service._put('artifacts', dict(item, id=str(uuid4()), task_id=alias['id'], **{link: item['id']}))
+                record = dict(id=str(uuid4()), task_id=alias['id'], state='completed',
+                    action=dict(name='terminal', arguments={}), result=json.dumps(dict(session_id='pending-process', notify_on_complete=True)))
+                self.service._put('native_receipts', record)
+                self.service._migrate_native_work()
+                self.assertNotIn('_native_outcome_id', self.service._get('tasks', task['id']))
+                self.assertNotIn('_process_delivery', self.service._get('native_receipts', record['id']))
+
+    def test_migration_reopens_answered_native_review_and_preserves_routine_wait(self):
+        import json
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            self.service._ensure_execution_session(owner)
+            row = self.service._kanban_row(owner, owner, 'review', 10)
+            owner['status'] = 'queued'
+            self.service._put('tasks', owner)
+        self.native_program("board.sync([__import__('json').loads(sys.argv[2])])", json.dumps(row))
+        with self.service.transaction():
+            self.service._migrate_native_work()
+        self.service.kanban.call({'op': 'snapshot'})
+        self.assertEqual(self.service.kanban.tasks[task['id']]['status'], 'ready')
+        other, other_item = self.legacy_work('Wait for external confirmation')
+        with self.service.transaction(), patch.object(self.service, '_external_work_routine', return_value={'id': 'native-check'}):
+            owner = self.service._get('tasks', other['id'])
+            owner['status'] = 'completed'
+            self.service._put('tasks', owner)
+            self.service._migrate_native_work()
+            self.assertNotIn('_native_outcome_id', self.service._get('tasks', other['id']))
+
+    def test_migration_retains_uncertain_action_before_new_input(self):
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner.update(status='failed', _native_turn_id='interrupted-input')
+            self.service._put('tasks', owner)
+            receipt = dict(id=str(uuid4()), task_id=owner['id'], turn_id='interrupted-input', state='executing',
+                action=dict(name='terminal', arguments={'command': 'publish the prepared artifact'}))
+            self.service._put('native_receipts', receipt)
+            self.service._migrate_native_work()
+            migrated = self.service._get('tasks', owner['id'])
+            self.assertNotEqual(migrated['_native_turn_id'], 'interrupted-input')
+            self.assertEqual(migrated['_self_recovery']['unknown_tools'], [receipt])
+            self.assertEqual(self.service._get('native_receipts', receipt['id']), receipt)
+
+    def test_migration_keeps_unknown_actions_from_alias_and_assignment(self):
+        task, item = self.legacy_work()
+        alias = self.task('Read the returned result')
+        child = self.task('Finish the assigned check')
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            records = []
+            for identity in (task['id'], alias['id'], child['id']):
+                owner = self.service._get('tasks', identity)
+                owner.update(status='failed', _conversation_epoch=self.service._setting('conversation_epoch'))
+                if identity == child['id']:
+                    owner.update(_assignment_task_id=task['id'], exchange_id=task['exchange_id'])
+                self.service._put('tasks', owner)
+                record = dict(id=str(uuid4()), task_id=identity, state='executing',
+                    action=dict(name='terminal', arguments={'command': 'publish the prepared artifact'}))
+                self.service._put('native_receipts', record)
+                records.append(record)
+            saved = dict(id=str(uuid4()), task_id='earlier-attempt', action={'name': 'terminal'})
+            owner = self.service._get('tasks', task['id'])
+            owner['_self_recovery'] = {'unknown_tools': [saved, records[0]]}
+            self.service._put('tasks', owner)
+            self.service._put('artifacts', dict(item, id=str(uuid4()), task_id=alias['id'], _same_outcome_as=item['id']))
+            self.service._migrate_native_work()
+            migrated = self.service._get('tasks', task['id'])
+            self.assertCountEqual(migrated['_self_recovery']['unknown_tools'], [saved, *records])
+            self.assertEqual(migrated['status'], 'queued')
+
+    def test_migration_defers_a_wait_with_an_unknown_tool_result(self):
+        import json
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner.update(status='failed', _native_turn_id='interrupted-turn')
+            self.service._put('tasks', owner)
+            for state, result in [('executing', None), ('completed', json.dumps(dict(
+                    session_id='saved-process', notify_on_complete=True)))]:
+                self.service._put('native_receipts', dict(id=str(uuid4()), task_id=owner['id'],
+                    turn_id='interrupted-turn', state=state, result=result,
+                    action=dict(name='terminal', arguments={})))
+            self.service._migrate_native_work()
+            saved = self.service._get('tasks', owner['id'])
+            self.assertNotIn('_native_outcome_id', saved)
+            self.assertEqual(saved['_native_turn_id'], 'interrupted-turn')
+            self.assertEqual(saved['status'], 'failed')
+
+    def test_saved_wait_defers_uncertain_results_from_linked_attempts(self):
+        import json
+        task, item = self.legacy_work()
+        alias = self.task('Read the saved result')
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner['status'] = 'completed'
+            self.service._put('tasks', owner)
+            child = self.service._get('tasks', alias['id'])
+            child['status'] = 'failed'
+            self.service._put('tasks', child)
+            self.service._put('artifacts', dict(item, id=str(uuid4()), task_id=child['id'], _same_outcome_as=item['id']))
+            self.service._put('native_receipts', dict(id=str(uuid4()), task_id=owner['id'], state='completed',
+                result=json.dumps(dict(session_id='saved-process', notify_on_complete=True)),
+                action=dict(name='terminal', arguments={})))
+            self.service._put('native_receipts', dict(id=str(uuid4()), task_id=child['id'], state='executing',
+                action=dict(name='terminal', arguments={'command': 'publish the prepared artifact'})))
+            self.service._migrate_native_work()
+            self.assertNotIn('_native_outcome_id', self.service._get('tasks', owner['id']))
+
+    def test_migration_preserves_waits_from_a_previous_owner(self):
+        import json
+        for wait in ('process', 'question', 'working'):
+            task, item = self.legacy_work()
+            previous = self.task('Previous attempt')
+            self.provider.supports_native_outcomes = True
+            with self.service.transaction():
+                owner = self.service._get('tasks', task['id'])
+                owner['status'] = 'completed'
+                self.service._put('tasks', owner)
+                old = self.service._get('tasks', previous['id'])
+                old['status'] = 'working' if wait == 'working' else 'completed'
+                self.service._put('tasks', old)
+                item['_work_previous_task_ids'] = [old['id']]
+                self.service._put('artifacts', item)
+                if wait == 'process':
+                    self.service._put('native_receipts', dict(id=str(uuid4()), task_id=old['id'], state='completed',
+                        action=dict(name='terminal', arguments={}),
+                        result=json.dumps(dict(session_id='saved-process', notify_on_complete=True))))
+                elif wait == 'question':
+                    self.service._put('decisions', dict(id=str(uuid4()), task_id=old['id'], bot_id=old['bot_id'], status='pending'))
+                self.service._migrate_native_work()
+                self.assertNotIn('_native_outcome_id', self.service._get('tasks', owner['id']))
+
+    def test_queued_migration_keeps_unknown_results_from_previous_owner(self):
+        task, item = self.legacy_work()
+        previous = self.task('Interrupted attempt')
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner.update(status='queued', _conversation_epoch=self.service._setting('conversation_epoch'))
+            self.service._put('tasks', owner)
+            old = self.service._get('tasks', previous['id'])
+            old['status'] = 'failed'
+            self.service._put('tasks', old)
+            item['_work_previous_task_ids'] = [old['id']]
+            self.service._put('artifacts', item)
+            receipt = dict(id=str(uuid4()), task_id=old['id'], state='executing', action={'name': 'terminal'})
+            self.service._put('native_receipts', receipt)
+            self.service._migrate_native_work()
+            saved = self.service._get('tasks', owner['id'])
+            self.assertEqual(saved['_self_recovery']['unknown_tools'], [receipt])
+            self.assertEqual(saved['status'], 'queued')
+            saved['status'] = 'failed'
+            saved['_self_recovery']['saved_tasks'] = [{'id': old['id'], 'summary': 'Action result unknown'}]
+            self.service._put('tasks', saved)
+            for attempt in (1, 2):
+                self.service._native_retry(saved, dict(status='ready', consecutive_failures=attempt))
+                retried = self.service._get('tasks', saved['id'])
+                self.assertEqual(retried['_self_recovery']['unknown_tools'], [receipt])
+                self.assertEqual(retried['_self_recovery']['saved_tasks'], saved['_self_recovery']['saved_tasks'])
+                saved = dict(retried, status='failed')
+
+    def test_migration_preserves_alias_external_wait(self):
+        task, item = self.legacy_work()
+        alias = self.task('Wait for external confirmation')
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            for identity in (task['id'], alias['id']):
+                owner = self.service._get('tasks', identity)
+                owner['status'] = 'completed'
+                self.service._put('tasks', owner)
+            peer = dict(item, id=str(uuid4()), task_id=alias['id'], _work_parent_id=item['id'])
+            self.service._put('artifacts', peer)
+            with patch.object(self.service, '_external_work_routine', side_effect=lambda a: {'id': 'check'} if a['id'] == peer['id'] else None):
+                self.service._migrate_native_work()
+            self.assertNotIn('_native_outcome_id', self.service._get('tasks', task['id']))
+
     def test_service_forwards_each_accepted_input_to_native_intake(self):
         self.provider.supports_native_outcomes = True
         task = self.task('Start an outcome')

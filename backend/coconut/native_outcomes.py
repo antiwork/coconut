@@ -28,6 +28,81 @@ WORK_INSTRUCTIONS = (
 
 
 class NativeOutcomes:
+    def _migrate_native_work(self):
+        if not self.kanban or not getattr(self.provider, 'supports_native_outcomes', False):
+            return
+        from .service import now
+        candidates = [json.loads(row[0]) for row in self.db.execute(
+            "SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='work' "
+            "AND json_extract(data,'$._native_outcome_id') IS NULL "
+            "AND json_extract(data,'$.status') NOT IN ('completed','cancelled') "
+            "AND json_extract(data,'$._same_outcome_as') IS NULL "
+            "AND coalesce(json_extract(data,'$._hidden'),0)=0")]
+        for item in candidates:
+            owner = self._get('tasks', item['task_id'])
+            if (owner['status'] in ('working', 'cancelled') or owner.get('_assignment_task_id')
+                    or self._task_paused(owner) or self._automatic_work_is_paused(owner) or self._work_pause(item)
+                    or owner.get('_native_outcome_id') or self._external_work_routine(item)
+                    or sum(other['task_id'] == owner['id'] for other in candidates) != 1
+                    or self._setting('work.cancelled.' + self._work_identity(item))):
+                continue
+            peers = [json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM artifacts WHERE json_extract(data,'$._same_outcome_as')=? "
+                "OR json_extract(data,'$._work_parent_id')=?", (item['id'], item['id']))]
+            if any(self._external_work_routine(peer) for peer in peers):
+                continue
+            bot = self._get('bots', owner['bot_id'])
+            if not self._process_observation_current(owner, bot):
+                continue
+            pending = any(d['status'] == 'pending' and d['task_id'] == owner['id'] for d in self._all('decisions'))
+            waiting = pending or self._background_pending(owner['id']) or bool(owner.get('_waiting_on'))
+            waiting = waiting or owner['status'] in ('scheduled', 'paused')
+            tasks = {t['id']: t for t in self._all('tasks')}
+            records = self._work_receipts()
+            attempts = {owner['id'], *(peer['task_id'] for peer in peers)}
+            for previous in [item, *peers]:
+                attempts.update(previous.get('_work_previous_task_ids', []))
+            for task_id in tuple(attempts):
+                if task_id in tasks:
+                    attempts.update(self._work_chain(tasks[task_id], tasks, records, include_continuations=True))
+            attempts.update(t['id'] for t in tasks.values() if t.get('_assignment_task_id') in attempts)
+            related = attempts - {owner['id']}
+            if (any(tasks[i]['status'] in self.ACTIVE or self._background_pending(i) for i in related if i in tasks)
+                    or any(d['task_id'] in related and d['status'] == 'pending' for d in self._all('decisions'))
+                    or any(c['task_id'] in attempts and c['status'] in ('queued', 'working') for c in self._all('contexts'))):
+                continue
+            unknown = list({r['id']: r for r in (owner.get('_self_recovery') or {}).get('unknown_tools', [])
+                + [r for r in records if r['task_id'] in attempts and r['state'] == 'executing']}.values())
+            if waiting and unknown:
+                continue
+            state = 'review' if pending else 'scheduled' if waiting else 'ready'
+            self._ensure_execution_session(owner)
+            if not owner.get('_native_turn_id'):
+                self._advance_input(owner)
+            row = self._kanban_row(owner, owner, state, priority=10)
+            row.update(title=item['title'], work_id=item['id'], body=json.dumps(dict(
+                outcome=item['title'], acceptance=item.get('completion_condition'),
+                last_report=item.get('activity'), request=owner.get('title'),
+                instructions='Continue the saved outcome within its recorded approvals. '
+                    'Read the existing conversation, decisions, and receipts before acting. '
+                    'Verify unknown tool results before repeating an action. '
+                    'Use kanban_complete only after verifying the accepted outcome.'), ensure_ascii=False))
+            identity = self.kanban.call({'op': 'promote', 'row': row})['id']
+            if not identity:
+                continue
+            owner.update(_native_outcome_id=identity, _work_context_id=item['id'])
+            if unknown:
+                owner['_self_recovery'] = dict(owner.get('_self_recovery') or {},
+                    previous_task_id=owner['id'], failure=owner.get('summary'), unknown_tools=unknown)
+            if not waiting and owner['status'] in ('completed', 'failed', 'waiting'):
+                self._advance_input(owner)
+                owner.update(status='queued', summary='Checking the saved result', updated_at=now())
+            item['_native_outcome_id'] = identity
+            self._put('tasks', owner)
+            self._put('artifacts', item)
+            self._event('task.updated', self._public(owner), owner['bot_id'], owner['id'])
+            self._event('artifact.updated', self._public(item), item['bot_id'], owner['id'])
+
     def _dispatch_chat(self, capacity):
         from .work_capacity import execution_key
         active = {execution_key(self._get('tasks', i)) for i in self.running}
@@ -102,10 +177,13 @@ class NativeOutcomes:
         records = [json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM native_receipts WHERE json_extract(data,'$.task_id')=? "
             "AND json_extract(data,'$.state')='executing'", (task['id'],))]
+        previous = task.get('_self_recovery') or {}
+        records = list({r['id']: r for r in previous.get('unknown_tools', []) + records}.values())
         self._advance_input(task)
         task.update(status='queued', summary='Checking the previous result', updated_at=now(),
-            _self_recovery=dict(attempt=native.get('consecutive_failures', 0), previous_task_id=task['id'],
-                failure=native.get('last_failure_error'), unknown_tools=records, work=[], decisions=[]))
+            _self_recovery=dict(previous, attempt=native.get('consecutive_failures', 0), previous_task_id=task['id'],
+                failure=native.get('last_failure_error'), unknown_tools=records,
+                work=previous.get('work', []), decisions=previous.get('decisions', [])))
         self._put('tasks', task)
         self._event('task.updated', self._public(task), task['bot_id'], task['id'])
 

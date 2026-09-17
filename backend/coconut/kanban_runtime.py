@@ -132,6 +132,29 @@ class Board:
                                   'DO UPDATE SET native_id=excluded.native_id,intent=excluded.intent',
                                   (row['id'], identity, intent))
 
+    def promote(self, row):
+        binding = self.conn.execute('SELECT native_id FROM coconut_bindings WHERE external_id=?', (row['id'],)).fetchone()
+        previous = self.kb.get_task(self.conn, binding[0]) if binding else None
+        if previous and previous.status == 'running':
+            return None
+        owned = previous and self.conn.execute('SELECT 1 FROM coconut_outcomes WHERE native_id=?', (previous.id,)).fetchone()
+        if owned:
+            return previous.id
+        if previous and previous.status not in ('done', 'archived'):
+            identity = previous.id
+        else:
+            identity = self.kb.create_task(self.conn, title=row['title'], body=row['body'], assignee='default',
+                created_by='coconut', tenant=row['bot_id'], workspace_kind='dir', workspace_path=row['workspace'],
+                parents=[previous.id] if previous else [], initial_status='blocked',
+                idempotency_key='coconut-outcome:' + row['work_id'])
+        # These fields describe the accepted outcome. Lifecycle changes use the native kernel.
+        with self.kb.write_txn(self.conn):
+            self.conn.execute('UPDATE tasks SET title=?,body=? WHERE id=?', (row['title'], row['body'], identity))
+            self.conn.execute('INSERT INTO coconut_bindings VALUES (?,?,?) ON CONFLICT(external_id) '
+                'DO UPDATE SET native_id=excluded.native_id,intent=excluded.intent', (row['id'], identity, 'migration'))
+        self.sync([dict(row, native_id=identity)])
+        return identity
+
     def bind(self, identity, external_id):
         if not self.kb.get_task(self.conn, identity):
             raise ValueError('The native outcome does not exist.')
@@ -224,6 +247,8 @@ def main():
                     result = board.tick(request['rows'], request['capacity'], spawn)
                 elif request['op'] == 'finish':
                     result = {'ok': board.finish(request['id'], request['run_id'], request['state'], request['summary'])}
+                elif request['op'] == 'promote':
+                    result = {'id': board.promote(request['row'])}
                 elif request['op'] == 'bind':
                     board.bind(request['id'], request['external_id'])
                     result = {'ok': True}
