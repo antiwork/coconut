@@ -26,8 +26,7 @@ class WorkModel:
                            and not (owner_active and (tasks.get(p.get('_activity_task_id'), {}).get('_is_return')
                                or tasks.get(p.get('_activity_task_id'), {}).get('_source_audit_prompt')))]
         else:
-            identities = list(dict.fromkeys(identity for peer in peers for identity in
-                (peer.get('task_id'), tasks.get(peer.get('task_id'), {}).get('_assignment_task_id'))))
+            identities = list(dict.fromkeys(identity for peer in peers for identity in self._work_report_roots(peer, tasks)))
         if item['kind'] == 'pr' and owner:
             replacements = [tasks[i] for i in identities if i in tasks and i != owner['id']
                             and tasks[i]['exchange_id'] != owner['exchange_id']
@@ -223,8 +222,11 @@ class WorkModel:
             state, activity, next_step = 'needs_recovery', label or 'Needs recovery', item.get('next_step') or 'Ask for progress'
         description_at = None
         if state == 'working' and not live_reply:
-            work_reports = [p for p in peers if p['kind'] == 'work' and p.get('task_id') in {t['id'] for t in live}
-                            and p.get('_work_turn') == tasks[p['task_id']].get('_native_turn_id')
+            def live_report(report):
+                identity = report.get('_work_report_task_id', report.get('task_id'))
+                return (identity in {t['id'] for t in live}
+                        and report.get('_work_report_turn', report.get('_work_turn')) == tasks[identity].get('_native_turn_id'))
+            work_reports = [p for p in peers if p['kind'] == 'work' and live_report(p)
                             and p.get('status') != 'blocked'
                             and not p.get('_automatic_work') and not p.get('_work_resuming')]
             reports = [p for p in peers if p.get('_activity_task_id') in {t['id'] for t in live}

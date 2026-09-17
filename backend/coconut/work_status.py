@@ -156,6 +156,15 @@ class WorkStatus:
         self._event('artifact.updated', self._public(artifact), artifact['bot_id'], artifact.get('task_id'))
 
     @staticmethod
+    def _work_execution_owner(task, tasks):
+        owner = tasks.get(task.get('_execution_session_id'), {})
+        if (owner and (owner.get('_execution_session_id') or owner['id']) == owner['id']
+                and all(owner.get(field) == task.get(field) for field in
+                        ('bot_id', 'conversation_bot_id', 'session_id', '_conversation_epoch'))):
+            return owner
+        return task
+
+    @staticmethod
     def _work_links(tasks, records, include_continuations):
         linked = {}
         explicit_waits = {}
@@ -281,10 +290,23 @@ class WorkStatus:
                 pending.append((child, depth + 1))
         return found
 
-    def _work_report_chain(self, item, tasks, records):
+    def _work_report_roots(self, item, tasks):
         reporter = tasks.get(item.get('task_id'), {})
+        identities = {reporter.get('id'), reporter.get('_assignment_task_id')}
+        if reporter.get('_work_context_id') == item['id']:
+            # A discussion reports on the existing execution; it does not become its dependency.
+            owner_id = self._work_execution_owner(reporter, tasks).get('id')
+            identities.add(owner_id)
+            for identity in item.get('_work_previous_task_ids', []):
+                previous = tasks.get(identity, {})
+                if (previous.get('_work_context_id') == item['id']
+                        and self._work_execution_owner(previous, tasks).get('id') == owner_id):
+                    identities.add(identity)
+        return identities
+
+    def _work_report_chain(self, item, tasks, records):
         linked = {}
-        for identity in {reporter.get('id'), reporter.get('_assignment_task_id')}:
+        for identity in self._work_report_roots(item, tasks):
             if identity in tasks:
                 linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
         return linked

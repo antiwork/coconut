@@ -71,6 +71,91 @@ class WorkOutcomeAliasTests(unittest.TestCase):
         rows = [a for a in self.service.snapshot()['artifacts'] if a['kind'] == 'work']
         self.assertEqual([a['id'] for a in rows], [parent['id']])
 
+    def test_parent_and_delegate_discussions_keep_the_original_execution(self):
+        parent = self.track()
+        child, report = self.child()
+        owner = self.service._get('tasks', parent['task_id'])
+        middle = dict(owner, id='delegating-discussion', _execution_session_id=owner['id'],
+                      _work_context_id=parent['id'], parent_task_id=owner['id'])
+        self.service._put('tasks', middle)
+        owner['_waiting_on'] = []
+        child.update(source_task_id=middle['id'], parent_task_id=middle['id'], _reply_to_task_id=middle['id'])
+        for task, item, identity in ((owner, parent, 'parent-discussion'), (child, report, 'delegate-discussion')):
+            task['_execution_session_id'] = task['id']
+            self.service._put('tasks', task)
+            discussion = dict(task, id=identity, source_task_id=None,
+                parent_task_id=task['id'], exchange_id=self.service._new_exchange(),
+                _work_context_id=item['id'], _waiting_on=[], status='completed')
+            discussion.pop('_assignment_task_id', None)
+            self.service._put('tasks', discussion)
+            saved = self.service._get('artifacts', item['id'])
+            history = [task['id'], middle['id']] if item['id'] == parent['id'] else [task['id']]
+            saved.update(task_id=identity, _work_previous_task_ids=history, _hidden=False)
+            for field in ('_work_parent_id', '_work_parent_task_id', '_same_outcome_as'):
+                saved.pop(field, None)
+            self.service._put('artifacts', saved)
+        self.service.running[child['id']] = threading.current_thread()
+        try:
+            self.service._sync_automatic_work()
+            rows = [a for a in self.service.snapshot()['artifacts'] if a['kind'] == 'work']
+            self.assertEqual([a['id'] for a in rows], [parent['id']])
+            self.assertEqual(rows[0]['work_state'], 'working')
+            tasks = {t['id']: t for t in self.service._all('tasks')}
+            chain = self.service._work_report_chain(self.service._get('artifacts', parent['id']), tasks, [])
+            self.assertIn(child['id'], chain)
+        finally:
+            self.service.running.clear()
+
+    def test_execution_link_cannot_cross_bot_session_or_conversation(self):
+        parent = self.track()
+        owner = self.service._get('tasks', parent['task_id'])
+        owner['_execution_session_id'] = owner['id']
+        for field in ('bot_id', 'conversation_bot_id', 'session_id', '_conversation_epoch'):
+            with self.subTest(field=field):
+                other = dict(owner, id='other', **{field: 'another-value'})
+                tasks = {owner['id']: owner, other['id']: other}
+                self.assertEqual(self.service._work_execution_owner(other, tasks)['id'], other['id'])
+                links, _ = self.service._work_links(tasks, [], True)
+                self.assertNotIn(owner['id'], links.get(other['id'], set()))
+
+    def test_original_worker_can_report_after_a_newer_work_discussion(self):
+        parent = self.track()
+        owner = self.service._get('tasks', parent['task_id'])
+        owner['_execution_session_id'] = owner['id']
+        self.service._put('tasks', owner)
+        discussion = dict(owner, id='newer-discussion', parent_task_id=owner['id'],
+            _work_context_id=parent['id'], created_at=datetime.now(timezone.utc).isoformat())
+        self.service._put('tasks', discussion)
+        item = self.service._get('artifacts', parent['id'])
+        item['task_id'] = discussion['id']
+        self.service._put('artifacts', item)
+        self.service._register_work(owner['id'], dict(key='account-export', title='Export account data',
+            activity='Verifying the file', status='working'))
+        saved = self.service._get('artifacts', parent['id'])
+        self.assertEqual(saved['task_id'], discussion['id'])
+        self.assertEqual(saved['activity'], 'Verifying the file')
+        discussion['status'] = 'completed'
+        self.service._put('tasks', discussion)
+        self.service.running[owner['id']] = threading.current_thread()
+        try:
+            row = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == parent['id'])
+            self.assertEqual(row['activity'], 'Verifying the file')
+        finally:
+            self.service.running.clear()
+
+    def test_old_worker_cannot_report_on_an_unrelated_newer_outcome(self):
+        parent = self.track()
+        request = self.write('POST', '/v1/bots/' + self.bot['id'] + '/messages',
+            dict(text='Export a different account', mode='queue'))
+        newer = self.service._get('tasks', request['id'])
+        newer['status'] = 'working'
+        self.service._put('tasks', newer)
+        self.service._register_work(newer['id'], dict(key='account-export', title='Export another account',
+            activity='Preparing another file', status='working'))
+        with self.assertRaises(ServiceError):
+            self.service._register_work(parent['task_id'], dict(key='account-export', title='Export account data',
+                activity='Verifying the old file', status='working'))
+
     def test_explicit_alias_detaches_when_unrelated_work_reuses_parent_key(self):
         parent = self.track()
         task, item = self.child(key='worker-export')

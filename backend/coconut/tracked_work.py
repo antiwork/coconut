@@ -294,6 +294,8 @@ class TrackedWork:
                 continue
             task = tasks.get(item.get('task_id'), {})
             task = tasks.get(task.get('_assignment_task_id'), task)
+            if task.get('_work_context_id') == item['id']:
+                task = self._work_execution_owner(task, tasks)
             source = task.get('source_task_id')
             source_assignment = tasks.get(source, {}).get('_assignment_task_id', source)
             explicit_parent = by_id.get(item.get('_same_outcome_as'))
@@ -483,7 +485,10 @@ class TrackedWork:
             if item:
                 owner = self._get('tasks', item['task_id'])
                 if owner['id'] != task_id and owner['created_at'] >= task['created_at']:
-                    raise ServiceError(409, 'A newer task owns this work item.')
+                    tasks = {t['id']: t for t in self._all('tasks')}
+                    if task_id not in self._work_report_chain(item, tasks, self._pending_completion_receipts()):
+                        raise ServiceError(409, 'A newer task owns this work item.')
+                    report_only = True
                 if owner['id'] != task_id and not report_only:
                     self._carry_work_history(item, dict(item))
             else:
@@ -512,11 +517,13 @@ class TrackedWork:
             # Audits report progress without replacing the task doing the work.
             if not report_only:
                 item.update(task_id=task_id, _work_turn=task.get('_native_turn_id'))
-            description_owner = self._get('tasks', item['task_id'])
+            audit_report = self._assignment(task).get('_source_audit_prompt') or routine_report
+            description_owner = self._get('tasks', item['task_id'] if audit_report else task_id)
             description_owner['_work_progress_at'] = now()
             self._put('tasks', description_owner)
             item.update(title=title, activity=activity, status=state,
                         observed_at=now(), _work_key=key, _automatic_work=False, _hidden=bool(item.get('_work_parent_id')))
+            item.update(_work_report_task_id=description_owner['id'], _work_report_turn=description_owner.get('_native_turn_id'))
             item.update(details)
             self._apply_work_pause(item, task, payload, state)
             if routine_report and state == 'completed':
