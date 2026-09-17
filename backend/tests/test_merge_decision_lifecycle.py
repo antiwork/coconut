@@ -105,3 +105,169 @@ class MergeDecisionLifecycleTests(unittest.TestCase):
         self.service.refresh_pull_requests()
         self.assertEqual(self.service._all('decisions')[0]['status'], 'resolved')
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'completed')
+
+    def other_task(self, bot=None):
+        bot = bot or self.bot
+        task = self.service._send(self.service._get('bots', bot['id']),
+            {'text': 'Assess this PR', 'mode': 'queue'}, human_authored=False)
+        stored = self.service._get('tasks', task['id'])
+        stored['status'] = 'working'
+        self.service._put('tasks', stored)
+        self.service._register_pr_artifact(task['id'], {'url': URL})
+        return stored
+
+    def test_separate_tasks_share_one_pending_merge_decision(self):
+        decision, _ = self.question(merge_pr_url=URL)
+        task = self.other_task()
+        payload = dict(title='Merge the correction?', merge_pr_url=URL, options=decision['options'])
+        receipt = self.service.emit(task['id'], 'native_call', {'name': 'coconut_ask', 'arguments': payload})
+        with self.assertRaises(ServiceError) as error:
+            self.service.emit(task['id'], 'native_question', dict(payload, receipt_id=receipt['id']))
+        self.assertEqual(error.exception.status, 400)
+        self.assertIn(decision['id'], str(error.exception))
+        self.assertIn(decision['task_id'], str(error.exception))
+        self.assertEqual(self.service._all('decisions'), [decision])
+        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'working')
+        self.assertEqual(self.service._get('native_receipts', receipt['id'])['state'], 'executing')
+
+    def test_bots_and_optional_proposals_share_the_pending_merge_decision(self):
+        decision, _ = self.question(merge_pr_url=URL)
+        bot = self.write('/v1/bots', {'name': 'Dev', 'role': ''})
+        task = self.other_task(bot)
+        with self.assertRaises(ServiceError):
+            self.service.emit(task['id'], 'native_proposal', dict(key='merge-again', title='Merge?',
+                merge_pr_url=URL.upper().replace('HTTPS://GITHUB.COM', 'https://github.com').replace('/PULL/', '/pull/'),
+                options=decision['options']))
+        self.assertEqual(len(self.service._all('decisions')), 1)
+
+    def test_recorded_choice_prevents_automated_reasks_for_the_same_head(self):
+        decision, _ = self.question(merge_pr_url=URL)
+        self.write(f"/v1/decisions/{decision['id']}/answer", {'option_id': 'merge', 'revision': 1})
+        task = self.other_task()
+        with self.assertRaises(ServiceError):
+            self.service.emit(task['id'], 'native_proposal', dict(key='merge-again', title='Merge?',
+                merge_pr_url=URL, options=decision['options']))
+        self.assertEqual(len(self.service._all('decisions')), 1)
+
+    def test_new_human_request_can_reconsider_a_recorded_choice(self):
+        decision, _ = self.question(merge_pr_url=URL)
+        self.write(f"/v1/decisions/{decision['id']}/answer", {'option_id': 'merge', 'revision': 1})
+        task = self.write(f"/v1/bots/{self.bot['id']}/messages", {'text': 'Reconsider this merge before proceeding', 'mode': 'queue'})
+        stored = self.service._get('tasks', task['id'])
+        stored['status'] = 'working'
+        self.service._put('tasks', stored)
+        self.service.emit(task['id'], 'native_proposal', dict(key='reconsider', title='Leave this PR open?',
+            merge_pr_url=URL, options=decision['options']))
+        self.assertEqual(len(self.service._all('decisions')), 2)
+
+    def test_human_reply_on_the_existing_task_can_reconsider_a_choice(self):
+        decision, _ = self.question(merge_pr_url=URL)
+        self.write(f"/v1/decisions/{decision['id']}/answer", {'option_id': 'merge', 'revision': 1})
+        replied = self.write(f"/v1/bots/{self.bot['id']}/messages", {'text': 'Reconsider this merge first.', 'mode': 'auto'})
+        self.assertEqual(replied['id'], self.task['id'])
+        task = self.service._get('tasks', replied['id'])
+        task['status'] = 'working'
+        self.service._put('tasks', task)
+        self.service.emit(task['id'], 'native_proposal', dict(key='reconsider', title='Leave this PR open?',
+            merge_pr_url=URL, options=decision['options']))
+        self.assertEqual(len(self.service._all('decisions')), 2)
+
+        self.service.emit(task['id'], 'completed', {'summary': 'The revised merge choice is in Inbox.'})
+        task = self.service._get('tasks', task['id'])
+        self.assertEqual(task['_preference_source_ids'], [])
+        reconsidered = self.service._all('decisions')[-1]
+        with self.service.transaction():
+            self.service._revise_question(reconsidered, task,
+                dict(title='Leave the reviewed PR open?', options=decision['options']), 'Refresh the saved question.')
+        self.assertEqual(self.service._get('decisions', reconsidered['id'])['revision'], 2)
+        self.write(f"/v1/decisions/{reconsidered['id']}/answer", {'choice': 'reply', 'revision': 2,
+            'correction': 'Clarify the remaining risk before asking again.'})
+        answered = self.service._get('decisions', reconsidered['id'])
+        continuation = self.service._get('tasks', answered['_execution_task_id'])
+        continuation['status'] = 'working'
+        self.service._put('tasks', continuation)
+        self.service.emit(continuation['id'], 'native_proposal', dict(key='clarified', title='Leave the PR open?',
+            merge_pr_url=URL, options=decision['options']))
+        followup = self.service._all('decisions')[-1]
+        self.assertEqual(followup['previous_decision_id'], reconsidered['id'])
+        self.assertEqual(followup['status'], 'pending')
+
+    def test_deleted_bot_cannot_hold_a_pending_merge_proposal(self):
+        self.service.emit(self.task['id'], 'native_proposal', dict(key='merge', title='Merge?', merge_pr_url=URL,
+            options=[dict(id='merge', label='Merge', explanation='Merge the reviewed change.')]))
+        decision = self.service._all('decisions')[0]
+        task = self.service._get('tasks', self.task['id'])
+        task['status'] = 'completed'
+        self.service._put('tasks', task)
+        self.service.mutate('DELETE', f"/v1/bots/{self.bot['id']}", {}, str(uuid4()))
+        bot = self.write('/v1/bots', {'name': 'New Desk', 'role': ''})
+        task = self.other_task(bot)
+        self.service.emit(task['id'], 'native_proposal', dict(key='merge', title='Merge?',
+            merge_pr_url=URL, options=decision['options']))
+        self.assertEqual(self.service._all('decisions')[-1]['bot_id'], bot['id'])
+
+    def check_dismissal_order(self, legacy=False):
+        payload = dict(key='merge', title='Merge?', merge_pr_url=URL,
+            options=[dict(id='merge', label='Merge', explanation='Merge the reviewed change.')])
+        self.service.emit(self.task['id'], 'native_proposal', payload)
+        decision = self.service._all('decisions')[0]
+        other = self.write(f"/v1/bots/{self.bot['id']}/messages", {'text': 'Assess this merge again.', 'mode': 'queue'})
+        self.write(f"/v1/decisions/{decision['id']}/inbox", {'action': 'dismiss', 'revision': 1})
+        if legacy:
+            dismissed = self.service._get('decisions', decision['id'])
+            dismissed.pop('_inbox_dismissed_at')
+            self.service._put('decisions', dismissed)
+        task = self.service._get('tasks', other['id'])
+        task['status'] = 'working'
+        self.service._put('tasks', task)
+        with self.assertRaises(ServiceError):
+            self.service.emit(task['id'], 'native_proposal', payload)
+        self.write(f"/v1/bots/{self.bot['id']}/messages", {'text': 'Reconsider the dismissed merge now.', 'mode': 'auto'})
+        self.service.emit(task['id'], 'native_proposal', payload)
+        self.assertEqual(self.service._all('decisions')[-1]['status'], 'pending')
+
+    def test_only_a_request_after_dismissal_can_reconsider_a_proposal(self):
+        self.check_dismissal_order()
+
+    def test_legacy_dismissal_uses_its_saved_event(self):
+        self.check_dismissal_order(legacy=True)
+
+    def test_changed_head_requires_its_own_decision_after_an_answer(self):
+        from dataclasses import replace
+        decision, _ = self.question(merge_pr_url=URL)
+        self.write(f"/v1/decisions/{decision['id']}/answer", {'option_id': 'merge', 'revision': 1})
+        self.observation = replace(self.observation, head_sha='b' * 40)
+        self.service.refresh_pull_requests()
+        task = self.other_task()
+        self.service.emit(task['id'], 'native_proposal', dict(key='new-head', title='Merge the new changes?',
+            merge_pr_url=URL, options=decision['options']))
+        decisions = self.service._all('decisions')
+        self.assertEqual(len(decisions), 2)
+        self.assertEqual(decisions[-1]['_merge_pr_head'], 'b' * 40)
+        self.assertEqual(decisions[-1]['status'], 'pending')
+
+    def test_text_reply_can_lead_to_a_revised_merge_question(self):
+        decision, _ = self.question(merge_pr_url=URL)
+        self.write(f"/v1/decisions/{decision['id']}/answer", {'choice': 'reply', 'revision': 1,
+            'correction': 'Explain the risk before asking again.'})
+        task = self.service._get('tasks', self.task['id'])
+        task['status'] = 'working'
+        self.service._put('tasks', task)
+        revised, _ = self.question(merge_pr_url=URL, risk='The change can reject valid requests.')
+        self.assertEqual(revised['previous_decision_id'], decision['id'])
+        self.assertEqual(revised['status'], 'pending')
+
+    def test_revising_another_question_cannot_create_a_second_merge_decision(self):
+        decision, _ = self.question(merge_pr_url=URL)
+        task = self.other_task()
+        self.service.emit(task['id'], 'native_proposal', dict(key='other', title='Review the changes?', options=decision['options']))
+        other = self.service._all('decisions')[-1]
+        with self.service.transaction():
+            with self.assertRaises(ServiceError):
+                self.service._revise_question(other, task,
+                    dict(title='Merge the changes?', options=decision['options'], merge_pr_url=URL), 'Use this card.')
+        self.assertIsNone(self.service._get('decisions', other['id']).get('merge_pr_url'))
+        with self.service.transaction():
+            self.service._revise_question(decision, self.service._get('tasks', decision['task_id']),
+                dict(title='Merge the reviewed changes?', options=decision['options']), 'Clarify the title.')
+        self.assertEqual(self.service._get('decisions', decision['id'])['revision'], 2)

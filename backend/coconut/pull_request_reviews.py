@@ -46,6 +46,55 @@ class PullRequestReviews:
                      if url and a['kind'] == 'pr' and a['bot_id'] == task['bot_id']
                      and a['url'].lower() == url.lower()), None)
 
+    def _validate_merge_decision(self, decision, task):
+        from .service import ServiceError
+        url = decision.get('merge_pr_url')
+        if not url:
+            return
+        requested_at = decision.get('_merge_request_at') or ''
+        if decision.get('request_message_id'):
+            source = self._get('messages', decision['request_message_id'])
+            if (source.get('_human_device_id') and source.get('_human_source_kind') == 'chat'
+                    and not source.get('reaction_event')):
+                requested_at = max(requested_at, source['created_at'])
+        if decision.get('previous_decision_id'):
+            previous = self._get('decisions', decision['previous_decision_id'])
+            if (previous.get('merge_pr_url') or '').lower() == url.lower():
+                requested_at = max(requested_at, previous.get('_merge_request_at') or '')
+                if previous['status'] in ('replied', 'modified'):
+                    requested_at = max(requested_at, previous.get('decided_at') or '')
+        for identity in task.get('_preference_source_ids', []):
+            try:
+                source = self._human_source(task, identity, task, 'reconsider a merge')
+            except ServiceError:
+                continue
+            requested_at = max(requested_at, source['created_at'])
+        for existing in self._all('decisions'):
+            if (existing['id'] == decision['id'] or not existing.get('merge_pr_url')
+                    or existing['merge_pr_url'].lower() != url.lower()):
+                continue
+            if existing['status'] == 'pending':
+                owner = self._get('tasks', existing['task_id'])
+                if (owner['status'] == 'cancelled' or any(self._get('bots', identity).get('_deleted')
+                        for identity in (owner['bot_id'], owner['conversation_bot_id']))):
+                    continue
+            same_head = bool(decision.get('_merge_pr_head')
+                             and decision['_merge_pr_head'] == existing.get('_merge_pr_head'))
+            recorded_at = existing.get('decided_at') or existing.get('_inbox_dismissed_at')
+            if not recorded_at and requested_at and existing['status'] == 'dismissed':
+                dismissal = self.db.execute("SELECT created_at FROM events WHERE type='decision.updated' "
+                    "AND task_id=? AND json_extract(data, '$.id')=? AND json_extract(data, '$.status')='dismissed' "
+                    "AND json_extract(data, '$.inbox_swipe_id') IS NOT NULL ORDER BY seq DESC LIMIT 1",
+                    (existing['task_id'], existing['id'])).fetchone()
+                recorded_at = dismissal[0] if dismissal else existing['created_at']
+            new_request = bool(recorded_at and requested_at > recorded_at)
+            if (existing['status'] == 'pending' or (same_head and not new_request
+                    and existing['status'] in ('approved', 'executed', 'rejected', 'dismissed'))):
+                raise ServiceError(400, f"Merge decision {existing['id']} already exists ({existing['status']}). "
+                    f"Task {existing['task_id']} owns its answer and follow-through. "
+                    'Do not create another card or repeat its action. Reuse the recorded decision and its owner.')
+        return requested_at
+
     def _resolve_merged_pr_decisions(self):
         from .service import now
         with self.transaction():

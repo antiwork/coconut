@@ -184,6 +184,7 @@ class NativeExecution:
             if not approval and draft is None:
                 decision['merge_pr_url'] = self._merge_decision_url(payload, task)
                 decision['_merge_pr_head'] = self._merge_decision_head(decision['merge_pr_url'], task)
+                decision['_merge_request_at'] = self._validate_merge_decision(decision, task)
             self._put('decisions', decision)
             if optional:
                 self._initialize_decision_freshness(decision)

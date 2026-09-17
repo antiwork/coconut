@@ -102,6 +102,7 @@ class DecisionInbox:
                 raise ServiceError(409, 'This decision is no longer pending.')
             if decision.pop('_inbox_reject_device', None) is not None:
                 decision['revision'] += 1
+            decision.pop('_inbox_dismissed_at', None)
             decision.update(status='pending', inbox_deferred_at=None, inbox_undo_until=None, inbox_swipe_id=None)
         elif decision['status'] != 'pending':
             raise ServiceError(409, 'This decision is no longer pending.')
@@ -110,6 +111,7 @@ class DecisionInbox:
             decision['inbox_undo_until'] = (datetime.now(timezone.utc) + timedelta(seconds=10)).isoformat()
             if action == 'dismiss':
                 decision['status'] = 'dismissed'
+                decision['_inbox_dismissed_at'] = now()
                 if decision.get('inbox_kind') != 'proposal':
                     decision['_inbox_reject_device'] = self._request_device_id or 'local'
             else:
@@ -271,8 +273,10 @@ class DecisionInbox:
         if 'previous_decision_id' in revision:
             decision.update(self.decision_followup(task, revision))
         merge_url = self._merge_decision_url({'merge_pr_url': revision.get('merge_pr_url', decision.get('merge_pr_url'))}, task)
+        merge_head = self._merge_decision_head(merge_url, task)
+        requested_at = self._validate_merge_decision(dict(decision, merge_pr_url=merge_url, _merge_pr_head=merge_head), task)
         decision.update(title=title, options=options,
-                        merge_pr_url=merge_url, _merge_pr_head=self._merge_decision_head(merge_url, task),
+                        merge_pr_url=merge_url, _merge_pr_head=merge_head, _merge_request_at=requested_at,
                         recommended_option_id=recommended, revision=decision['revision'] + 1,
                         inbox_deferred_at=None)
         for field, limit in (('context', 2000), ('explanation', 2000), ('evidence', 8000), ('uncertainty', 2000), ('risk', 2000)):
