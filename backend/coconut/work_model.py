@@ -176,10 +176,10 @@ class WorkModel:
                     and not r.get('_process_delivery'))) for r in current_records))
         completed_report = (item['kind'] == 'work' and item['status'] == 'completed'
             and bool(item.get('completion_evidence')) and not item.get('_work_resuming')
-            and any(t.get('id') == 'coconut-assignment' and t.get('status') == 'completed'
-                    for t in reporter.get('_work_todos', {}).get('todos', []))
-            and any(t.get('id') == 'coconut-assignment' and t.get('status') == 'completed'
-                    for t in owner.get('_work_todos', {}).get('todos', [])))
+            and all((not task.get('_work_todos') and not item.get('_automatic_work') and reporter.get('status') == 'completed')
+                    or any(t.get('id') == 'coconut-assignment' and t.get('status') == 'completed'
+                           for t in task.get('_work_todos', {}).get('todos', []))
+                    for task in (reporter, owner)))
         # A delivered diagnosis ends its own scope even while the requester continues implementation.
         # Completing a review does not complete the PR or identify who owns the next step.
         latest_report = max(reports, key=lambda p: p.get('_activity_at', ''), default={})

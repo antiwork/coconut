@@ -42,6 +42,31 @@ class WorkScopeCompletionTests(unittest.TestCase):
         self.service._put('tasks', task)
         self.assertEqual(self.row()['work_state'], 'completed')
 
+    def test_explicit_completion_does_not_require_legacy_todos(self):
+        item, task = self.completed_diagnosis()
+        task.pop('_work_todos')
+        task['status'] = 'working'
+        self.service._put('tasks', task)
+        bot = self.write('POST', '/v1/bots', dict(name='Developer', role='Develop'))
+        from uuid import uuid4
+        call = self.service.emit(task['id'], 'native_call', dict(name='message_agent',
+            arguments=dict(target=bot['id'], message='Continue the implementation')))
+        sent = self.service.emit(task['id'], 'native_bot_message', dict(native_call_id=call['id'],
+            native_envelope_id=uuid4().hex, target_bot_id=bot['id'], text='Continue the implementation'))
+        task = self.service._get('tasks', task['id'])
+        task['status'] = 'waiting'
+        self.service._put('tasks', task)
+        reporter = dict(task, id=str(uuid4()), status='completed', _assignment_task_id=task['id'], _waiting_on=[])
+        self.service._put('tasks', reporter)
+        item = self.service._get('artifacts', item['id'])
+        item['task_id'] = reporter['id']
+        self.service._put('artifacts', item)
+        self.assertEqual(self.row()['work_state'], 'completed')
+        task['_explicit_work_waits'] = [sent['task_id']]
+        task['_waiting_on'] = [sent['task_id']]
+        self.service._put('tasks', task)
+        self.assertNotEqual(self.row()['work_state'], 'completed')
+
     def test_unconfirmed_local_process_still_requires_its_result(self):
         _, task = self.completed_diagnosis()
         self.service._put('native_receipts', dict(id='process', task_id=task['id'], state='completed',
