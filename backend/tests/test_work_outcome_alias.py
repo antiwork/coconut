@@ -32,6 +32,56 @@ class WorkOutcomeAliasTests(unittest.TestCase):
         finally:
             self.service.running.clear()
 
+    def test_validated_alias_survives_a_new_parent_attempt(self):
+        parent = self.track()
+        task, item = self.child(key='worker-export')
+        self.report(task, parent)
+        old = self.service._get('tasks', parent['task_id'])
+        newer = dict(old, id='later-verification', exchange_id=self.service._new_exchange(),
+            status='completed', _waiting_on=[], _self_recovery={'previous_task_id': old['id']})
+        self.service._put('tasks', newer)
+        saved = self.service._get('artifacts', parent['id'])
+        saved.update(task_id=newer['id'], _work_previous_task_ids=[old['id']])
+        self.service._put('artifacts', saved)
+        # Repair an alias that an earlier reconciliation exposed.
+        alias = self.service._get('artifacts', item['id'])
+        alias['_hidden'] = False
+        alias.pop('_work_parent_id', None)
+        alias.pop('_work_parent_task_id', None)
+        self.service._put('artifacts', alias)
+        for _ in range(2):
+            self.service._sync_automatic_work()
+            self.assertTrue(self.service._get('artifacts', item['id'])['_hidden'])
+            rows = [a for a in self.service.snapshot()['artifacts'] if a['kind'] == 'work']
+            self.assertEqual([a['id'] for a in rows], [parent['id']])
+
+    def test_explicit_alias_detaches_when_unrelated_work_reuses_parent_key(self):
+        parent = self.track()
+        task, item = self.child(key='worker-export')
+        self.report(task, parent)
+        request = self.write('POST', '/v1/bots/' + self.bot['id'] + '/messages',
+            dict(text='Export a different account', mode='queue'))
+        owner = self.service._get('tasks', request['id'])
+        owner['status'] = 'working'
+        self.service._put('tasks', owner)
+        self.service._register_work(owner['id'], dict(key='account-export', title='Export the other account',
+            activity='Preparing another export', status='working'))
+        self.assertFalse(self.service._get('artifacts', item['id'])['_hidden'])
+
+    def test_alias_recovery_keeps_the_original_parent(self):
+        parent = self.track()
+        task, item = self.child(key='worker-export')
+        self.report(task, parent)
+        attempt = dict(task, id='later-delegate', exchange_id=self.service._new_exchange(),
+            status='waiting', source_task_id=None, _self_recovery={'previous_task_id': task['id']})
+        self.service._put('tasks', attempt)
+        alias = self.service._get('artifacts', item['id'])
+        alias.update(task_id=attempt['id'], _hidden=False)
+        alias.pop('_work_parent_id', None)
+        self.service._put('artifacts', alias)
+        self.service._sync_automatic_work()
+        self.assertTrue(self.service._get('artifacts', item['id'])['_hidden'])
+
     def test_unrelated_task_cannot_hide_its_work_under_another_outcome(self):
         parent = self.track()
         task, _ = self.child(linked=False, key='worker-export')

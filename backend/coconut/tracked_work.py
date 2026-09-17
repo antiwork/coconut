@@ -282,6 +282,13 @@ class TrackedWork:
         # An explicit handoff with the same outcome key belongs in the parent's row.
         by_id = {a['id']: a for a in artifacts}
         records, chains = self._pending_completion_receipts(), {}
+        def attempts(task):
+            found = {}
+            while task and task['id'] not in found:
+                found[task['id']] = task
+                previous = task.get('_assignment_task_id') or (task.get('_self_recovery') or {}).get('previous_task_id')
+                task = tasks.get(previous)
+            return found
         for item in artifacts:
             if item['kind'] != 'work' or not item.get('_work_key'):
                 continue
@@ -313,7 +320,14 @@ class TrackedWork:
                     and task.get('status') in ('completed', 'cancelled')
                     and (owner['id'] == item.get('_work_parent_task_id', source_assignment)
                          or (owner.get('_self_recovery') and item.get('_work_parent_task_id', source_assignment) in parent.get('_work_previous_task_ids', []))))
-                if not owner or (task.get('id') not in chains[parent['id']] and not completed_handoff):
+                related = task.get('id') in chains.get(parent['id'], {})
+                if owner and explicit_parent and not related:
+                    # Follow recorded attempts. A reused key alone does not link outcomes.
+                    earlier = {}
+                    for attempt in attempts(owner).values():
+                        earlier.update(self._work_chain(attempt, tasks, records, include_continuations=True))
+                    related = bool(set(attempts(task)).intersection(earlier))
+                if not owner or (not related and not completed_handoff):
                     parent = None
             inherited_alias = parent and parent.get('_work_key') != item['_work_key'] and item.get('_same_outcome_as') != parent['id']
             if parent and (not item.get('_hidden') or item.get('_work_parent_id') != parent['id'] or inherited_alias):
