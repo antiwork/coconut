@@ -89,6 +89,36 @@ class RelayWakeupTests(unittest.TestCase):
         self.service._drain_process_completions()
         self.assertEqual(self.service._get('tasks', self.child)['status'], 'cancelled')
 
+    def failed_worker_callback(self):
+        child = self.service._get('tasks', self.child)
+        child.update(status='working', _conversation_epoch=self.service._setting('conversation_epoch'))
+        self.service._ensure_execution_session(child)
+        self.service.emit(self.child, 'failed', {'summary': 'The worker stopped before saving its next step.'})
+        self.service._drain_returns()
+        return next(t for t in self.service._all('tasks') if t.get('_is_return'))['id']
+
+    def test_coordinator_continues_failed_worker_with_its_saved_execution(self):
+        callback = self.failed_worker_callback()
+        _, payload, receipt = self.reply_with_tool(callback)
+        continued = self.service._get('tasks', receipt['task_id'])
+        self.service._ensure_execution_session(continued)
+        self.assertNotEqual(continued['id'], self.child)
+        self.assertEqual(continued['_execution_session_id'], self.child)
+        self.assertEqual(self.service._get('tasks', self.child)['status'], 'failed')
+        self.assertEqual(self.service.emit(callback, 'native_bot_message', payload), receipt)
+
+    def test_coordinator_cannot_reuse_a_cancelled_or_reset_execution(self):
+        callback = self.failed_worker_callback()
+        for change in (dict(status='cancelled'), dict(session_id='old-session'), dict(_conversation_epoch='old-epoch')):
+            with self.subTest(change=change):
+                original = self.service._get('tasks', self.child)
+                self.service._put('tasks', dict(original, **change))
+                _, _, receipt = self.reply_with_tool(callback)
+                continued = self.service._get('tasks', receipt['task_id'])
+                self.service._ensure_execution_session(continued)
+                self.assertEqual(continued['_execution_session_id'], continued['id'])
+                self.service._put('tasks', original)
+
     def test_requester_reply_round_trips_through_the_worker_transport(self):
         from pathlib import Path
         from unittest.mock import patch

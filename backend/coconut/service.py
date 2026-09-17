@@ -1413,6 +1413,14 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             task = self._get('tasks', task['id'])
             task['_bot_messages'] = [bot_message]
             task['_is_return'] = returning or target_id == assignment.get('source_bot_id')
+            if not returning and source.get('_is_return') and source.get('source_task_id'):
+                previous = self._get('tasks', source['source_task_id'])
+                if (previous['status'] == 'failed'
+                        and all(previous.get(k) == task.get(k) for k in ('bot_id', 'session_id', 'conversation_bot_id'))
+                        and previous.get('_conversation_epoch') == self._setting('conversation_epoch')):
+                    # The coordinator continues the failed worker in its saved workspace.
+                    self._ensure_execution_session(previous)
+                    task['_execution_session_id'] = previous['_execution_session_id']
         if native_reply or native_return:
             pass
         elif target_id == assignment.get('source_bot_id') and owner_id:
