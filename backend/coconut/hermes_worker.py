@@ -1091,11 +1091,12 @@ def run_turn(request, emit, request_receipt):
                 'Track an existing GitHub pull request in Work. Call when you create a PR or begin work on one, or when the person asks to follow it. Do not track links mentioned only as context. Coconut reads GitHub checks and resumes the owner when results change. Record waiting and finish the turn instead of starting gh pr checks --watch. This does not create, edit, push, or merge a PR.',
                 'parameters': {'type': 'object', 'properties': {'url': {'type': 'string',
                     'description': 'The exact https://github.com/owner/repo/pull/number URL.'},
+                    'work_id': {'type': 'string', 'description': 'Existing Work outcome that this PR delivers. Defaults to the current outcome. Reuse its ID across delegated work.'},
                     'activity': {'type': 'string', 'maxLength': 80, 'description': 'One short current activity, for example Reviewing with Fable or Checking a finding. Update at phase changes and before finishing. No hashes or tool counts.'},
                     'paused_by_decision_id': TRACK_WORK_SCHEMA['parameters']['properties']['paused_by_decision_id'],
                     'activity_state': {'type': 'string', 'enum': ['working', 'waiting', 'ready', 'blocked'], 'description': 'Use working while investigating or fixing. Use waiting when the PR author or checks own the next step. Coconut watches GitHub without model calls. Use blocked for unfinished work with no next owner. Use ready after verified review. Defaults to working.'}}, 'required': ['url']}}
             registry.register(name=pr_schema['name'], toolset='coconut', schema=pr_schema,
-                              handler=lambda arguments, **kwargs: json.dumps(request_receipt('artifact', dict(kind='pr', url=arguments.get('url'), **{k: arguments[k] for k in ('activity', 'activity_state', 'paused_by_decision_id') if k in arguments}))))
+                              handler=lambda arguments, **kwargs: json.dumps(request_receipt('artifact', dict(kind='pr', url=arguments.get('url'), **{k: arguments[k] for k in ('work_id', 'activity', 'activity_state', 'paused_by_decision_id') if k in arguments}))))
             allowed.add(pr_schema['name'])
             if not request['task'].get('_chat_session') and not request['task'].get('_native_outcome_id'):
                 registry.register(name=TRACK_WORK_SCHEMA['name'], toolset='coconut', schema=TRACK_WORK_SCHEMA,

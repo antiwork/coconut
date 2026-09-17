@@ -956,7 +956,7 @@ final class AppStore {
     }
 
     func dismissWork(_ pr: TrackedPullRequest) {
-        dismissWork(TrackedWorkItem(artifact: pr.artifact, pullRequest: pr))
+        dismissWork(TrackedWorkItem(artifact: pr.artifact, pullRequests: [pr]))
     }
 
     func dismissWork(_ item: TrackedWorkItem) {
@@ -1009,7 +1009,7 @@ final class AppStore {
         // Reject older snapshots and keep message replay consistent with the confirmed write.
         snapshotEpoch = UUID()
         snapshotRequest = nil
-        for index in artifacts.indices where (artifacts[index].kind == "work" ? "work:" + artifacts[index].id : artifacts[index].url?.lowercased()) == dismissal.url {
+        for index in artifacts.indices where artifacts[index].workIdentity == dismissal.url {
             artifacts[index].workDismissalId = undo ? nil : dismissal.id
         }
         cachedState?.artifacts = artifacts

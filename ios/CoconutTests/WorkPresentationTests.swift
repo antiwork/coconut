@@ -45,20 +45,20 @@ final class WorkPresentationTests: XCTestCase {
         artifact.status = "completed"
         artifact.activity = "Reviewing the new result"
         artifact.activityObservedAt = "2026-09-15T02:00:00Z"
-        let row = TrackedWorkItem(artifact: artifact, pullRequest: nil)
+        let row = TrackedWorkItem(artifact: artifact, pullRequests: [])
         XCTAssertEqual(row.activity(at: artifact.activityObservedAt!.apiDate!), "Reviewing the new result")
     }
 
     func testQueuePositionNamesTheBotAndNeverShowsAWorkingSpinner() {
         var artifact = work("queued", state: "queued", created: "2026-09-15T01:00:00Z")
         artifact.workQueuePosition = 1
-        var row = TrackedWorkItem(artifact: artifact, pullRequest: nil)
+        var row = TrackedWorkItem(artifact: artifact, pullRequests: [])
         XCTAssertEqual(row.queueLabel(botName: "Gumroad Dev"), "Next for Gumroad Dev")
         XCTAssertFalse(row.isWorking(at: Date()))
         artifact.workQueuePosition = 3
-        row = TrackedWorkItem(artifact: artifact, pullRequest: nil)
+        row = TrackedWorkItem(artifact: artifact, pullRequests: [])
         XCTAssertEqual(row.queueLabel(botName: "Gumroad Dev"), "3rd in Gumroad Dev’s queue")
         artifact.workState = "working"
-        XCTAssertNil(TrackedWorkItem(artifact: artifact, pullRequest: nil).queueLabel(botName: "Gumroad Dev"))
+        XCTAssertNil(TrackedWorkItem(artifact: artifact, pullRequests: []).queueLabel(botName: "Gumroad Dev"))
     }
 }

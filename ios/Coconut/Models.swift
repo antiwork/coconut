@@ -350,6 +350,11 @@ struct WorkReference: Codable, Hashable, Sendable {
 }
 
 struct Artifact: Codable, Identifiable, Equatable, Sendable {
+    var workIdentity: String {
+        if kind == "work" || workOutcomeId != nil { return "work:" + (workOutcomeId ?? id) }
+        return url?.lowercased() ?? id
+    }
+
     var id: String
     var botId: String
     var taskId: String?
@@ -359,6 +364,7 @@ struct Artifact: Codable, Identifiable, Equatable, Sendable {
     var preview: String
     var url: String?
     var createdAt: String
+    var workOutcomeId: String? = nil
     var checkedAt: String? = nil
     var observedAt: String? = nil
     var headSha: String? = nil

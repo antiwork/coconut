@@ -2,8 +2,9 @@ import SwiftUI
 
 struct TrackedWorkItem: Identifiable {
     let artifact: Artifact
-    let pullRequest: TrackedPullRequest?
-    var id: String { pullRequest?.id ?? "work:" + artifact.id }
+    let pullRequests: [TrackedPullRequest]
+    var pullRequest: TrackedPullRequest? { pullRequests.count == 1 ? pullRequests.first : nil }
+    var id: String { artifact.workIdentity }
     var needsDecision: Bool { artifact.workState == "needs_decision" && artifact.workDecisionId != nil }
     func groupOrder(at date: Date) -> Int {
         if isFinished { return 5 }
@@ -17,14 +18,22 @@ struct TrackedWorkItem: Identifiable {
     }
     var isFinished: Bool {
         if let state = artifact.workState { return ["completed", "cancelled"].contains(state) }
-        return pullRequest?.isFinished ?? ["completed", "cancelled"].contains(artifact.status)
+        return pullRequests.isEmpty ? ["completed", "cancelled"].contains(artifact.status) : pullRequests.allSatisfy(\.isFinished)
     }
 
     static func tracked(in artifacts: [Artifact], visibility: [String: Bool] = [:], at date: Date = Date()) -> [Self] {
-        let requests = TrackedPullRequest.tracked(in: artifacts, visibility: visibility)
-            .map { Self(artifact: $0.artifact, pullRequest: $0) }
-        let tasks = artifacts.filter { $0.kind == "work" && !(visibility["work:" + $0.id] ?? ($0.workDismissalId != nil)) }
-            .map { Self(artifact: $0, pullRequest: nil) }
+        let allRequests = TrackedPullRequest.tracked(in: artifacts, visibility: visibility)
+        let represented = Set(allRequests.compactMap { $0.artifact.workOutcomeId })
+        let requests = Dictionary(grouping: allRequests, by: { $0.artifact.workIdentity }).values.map { copies in
+            let copies = copies.sorted { $0.id < $1.id }
+            let outcome = copies.count > 1 ? artifacts.first(where: {
+                $0.kind == "work" && $0.workIdentity == copies[0].artifact.workIdentity
+            }) : nil
+            return Self(artifact: outcome ?? copies[0].artifact, pullRequests: copies)
+        }
+        let tasks = artifacts.filter { $0.kind == "work" && !represented.contains($0.id)
+                && !(visibility[$0.workIdentity] ?? ($0.workDismissalId != nil)) }
+            .map { Self(artifact: $0, pullRequests: []) }
         return (requests + tasks).sorted {
             let firstGroup = $0.groupOrder(at: date)
             let secondGroup = $1.groupOrder(at: date)

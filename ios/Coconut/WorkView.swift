@@ -19,7 +19,8 @@ struct TrackedPullRequest: Identifiable {
             location($0.url)!.url.absoluteString.lowercased()
         }
         return grouped.compactMap { url, copies in
-            guard !(visibility[url] ?? copies.contains { $0.workDismissalId != nil }) else { return nil }
+            let identity = copies.first(where: { $0.workOutcomeId != nil })?.workIdentity ?? url
+            guard !(visibility[identity] ?? copies.contains { $0.workDismissalId != nil }) else { return nil }
             guard let latest = copies.max(by: {
                 let first = (($0.observedAt ?? $0.createdAt).apiDate ?? .distantPast, ($0.checkedAt ?? $0.createdAt).apiDate ?? .distantPast, $0.id)
                 let second = (($1.observedAt ?? $1.createdAt).apiDate ?? .distantPast, ($1.checkedAt ?? $1.createdAt).apiDate ?? .distantPast, $1.id)
@@ -165,8 +166,8 @@ struct WorkView: View {
         .background(BoardStyle.paper)
         .confirmationDialog("Work options", isPresented: $showingActions, presenting: actionItem) { item in
             Button("Ask for progress") { getUpdate(item.artifact) }
-            if let pr = item.pullRequest {
-                Button("Open pull request") { openURL(pr.url) }
+            ForEach(item.pullRequests) { pr in
+                Button(item.pullRequests.count == 1 ? "Open pull request" : "Open \(pr.repository) #\(pr.number)") { openURL(pr.url) }
             }
             if item.artifact.workState == "cancelled" {
                 Button("Resume work") { Task { await store.resumeWork(item) } }
@@ -203,14 +204,22 @@ struct WorkView: View {
         .accessibilityIdentifier("work-undo")
     }
 
+    private func workConversation(_ artifact: Artifact) -> (Artifact, String) {
+        if let outcomeId = artifact.workOutcomeId,
+           let outcome = store.artifacts.first(where: { $0.id == outcomeId }) {
+            return (outcome, outcome.botId)
+        }
+        return (artifact, artifact.kind == "work" ? artifact.botId : (artifact.activityBotId ?? artifact.botId))
+    }
+
     private func openWork(_ artifact: Artifact, attach: Bool = true) {
-        let botId = artifact.activityBotId ?? artifact.botId
+        let (artifact, botId) = workConversation(artifact)
         openConversation(ConversationRoute(botId: botId,
             workContext: attach ? WorkReference(id: artifact.id, title: artifact.title) : nil))
     }
 
     private func getUpdate(_ artifact: Artifact) {
-        let botId = artifact.activityBotId ?? artifact.botId
+        let (artifact, botId) = workConversation(artifact)
         guard !requestingUpdates.contains(artifact.id), let bot = store.bots.first(where: { $0.id == botId }) else { return }
         requestingUpdates.insert(artifact.id)
         openWork(artifact, attach: false)
@@ -241,8 +250,8 @@ struct WorkView: View {
     private func workActions(_ item: TrackedWorkItem) -> some View {
         Button("Ask for progress") { getUpdate(item.artifact) }
             .disabled(requestingUpdates.contains(item.artifact.id))
-        if let pr = item.pullRequest {
-            Link("Open pull request", destination: pr.url)
+        ForEach(item.pullRequests) { pr in
+            Link(item.pullRequests.count == 1 ? "Open pull request" : "Open \(pr.repository) #\(pr.number)", destination: pr.url)
         }
         if item.artifact.workState == "cancelled" {
             Button("Resume work") { Task { await store.resumeWork(item) } }

@@ -51,14 +51,20 @@ class WorkFollowupTests(unittest.TestCase):
             self.service._put('native_receipts', self.process)
         self.assertEqual(self.row()['activity'], 'Waiting for worker output')
 
-    def test_stale_completed_and_previous_turn_processes_are_not_live(self):
+    def test_stale_and_delivered_processes_are_not_live(self):
         self.prepare()
         for change in ({'_process_observed_at': '2000-01-01T00:00:00Z'},
-                       {'_process_delivery': 'delivered'}, {'turn_id': 'previous-turn'}):
+                       {'_process_delivery': 'delivered'}):
             with self.subTest(change=change):
                 with self.service.transaction():
                     self.service._put('native_receipts', dict(self.process, **change))
                 self.assertNotEqual(self.row()['activity_state'], 'working')
+
+    def test_live_process_survives_a_later_turn(self):
+        self.prepare()
+        self.process['turn_id'] = 'previous-turn'
+        self.service._put('native_receipts', self.process)
+        self.assertEqual(self.row()['activity_state'], 'working')
 
     def test_unrelated_and_reset_tasks_do_not_supply_activity_or_context(self):
         self.prepare()

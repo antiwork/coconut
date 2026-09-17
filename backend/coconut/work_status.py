@@ -121,6 +121,7 @@ class WorkStatus:
         from .service import ServiceError, now, require_text
         if task.get('id') and self._pr_report_superseded(artifact, task):
             return
+        self._link_pr_outcome(artifact, task, payload)
         self._restore_active_work(artifact)
         if 'activity' not in payload:
             if payload.get('paused_by_decision_id') is not None:
@@ -156,6 +157,45 @@ class WorkStatus:
                         _activity_head=artifact.get('head_sha'), _activity_turn=task.get('_native_turn_id'), _activity_at=now())
         self._put('artifacts', artifact)
         self._event('artifact.updated', self._public(artifact), artifact['bot_id'], artifact.get('task_id'))
+
+    def _link_pr_outcome(self, artifact, task, payload):
+        from .service import ServiceError
+        if artifact.get('kind') != 'pr':
+            return
+        peers = [artifact, *(p for p in self._all('artifacts') if p['id'] != artifact['id']
+                  and p['kind'] == 'pr' and p.get('url', '').lower() == artifact['url'].lower())]
+        existing = next((p['work_outcome_id'] for p in peers if p.get('work_outcome_id')), None)
+        inherited = bool(existing) and not payload.get('work_id')
+        identity = payload.get('work_id') or existing or task.get('_work_context_id')
+        if not identity and task.get('id'):
+            matches = {self._work_outcome_artifact(a)['id'] for a in self._all('artifacts')
+                       if a['kind'] == 'work' and a.get('task_id') == task['id']}
+            identity = next(iter(matches)) if len(matches) == 1 else None
+        if not identity:
+            return
+        parent = self._work_outcome_artifact(self._get('artifacts', identity))
+        if parent['kind'] != 'work':
+            if 'work_id' in payload:
+                raise ServiceError(409, 'Choose the Work outcome for this pull request.')
+            return
+        tasks = {t['id']: t for t in self._all('tasks')}
+        reporter = task.get('id') or payload.get('review_task_id')
+        context = self._get('artifacts', task['_work_context_id']) if task.get('_work_context_id') else None
+        # The service validates this explicit context before creating the follow-up task.
+        follows = context is not None and self._work_identity(context) == self._work_identity(parent)
+        if not inherited and not follows and reporter not in self._work_report_chain(parent, tasks, self._pending_completion_receipts()):
+            raise ServiceError(409, 'This task does not belong to that Work outcome.')
+        for peer in peers:
+            if peer.get('work_outcome_id') and self._work_identity(peer) != self._work_identity(parent):
+                raise ServiceError(409, 'This pull request already belongs to another Work outcome.')
+            if (self._work_identity(peer) != self._work_identity(parent)
+                    and self._setting('work.cancelled.' + self._work_identity(peer))):
+                raise ServiceError(409, 'Resume this pull request before linking it to another Work outcome.')
+        for peer in peers:
+            if peer.get('work_outcome_id') != parent['id']:
+                peer['work_outcome_id'] = parent['id']
+                self._put('artifacts', peer)
+                self._event('artifact.updated', self._public(peer), peer['bot_id'], peer.get('task_id'))
 
     @staticmethod
     def _work_execution_owner(task, tasks):
@@ -300,9 +340,29 @@ class WorkStatus:
                 pending.append((child, depth + 1))
         return found
 
-    def _work_report_roots(self, item, tasks):
+    def _work_report_roots(self, item, tasks, *, pr_heads=None):
         reporter = tasks.get(item.get('task_id'), {})
+        if (item['kind'] == 'work' and item.get('_hidden') and item.get('_work_parent_id')
+                and reporter.get('status') in ('failed', 'cancelled')):
+            parent = self._work_outcome_artifact(item)
+            parent_owner = tasks.get(parent.get('task_id'), {})
+            parent_owner = tasks.get(parent_owner.get('_assignment_task_id'), parent_owner)
+            if (item.get('_work_parent_task_id') in parent.get('_work_previous_task_ids', [])
+                    and item.get('_work_parent_task_id') != parent_owner.get('id')
+                    and not self._background_pending(reporter['id'])):
+                return set()
+        linked_pr = item['kind'] == 'pr' and bool(item.get('work_outcome_id'))
+        if linked_pr:
+            # The PR keeps its creation task for history; the current owner controls execution.
+            reporter = (tasks.get(item.get('_review_task_id'))
+                        or tasks.get(self._work_outcome_artifact(item).get('task_id'), {}))
         identities = {reporter.get('id'), reporter.get('_assignment_task_id')}
+        if item['kind'] == 'pr':
+            identities.add(item.get('_review_task_id'))
+            head = pr_heads.get(item['url'].lower()) if pr_heads is not None else item.get('head_sha')
+            if (item.get('_activity_head') == head
+                    and (not linked_pr or item.get('_activity_at', '') >= reporter.get('created_at', ''))):
+                identities.add(item.get('_activity_task_id'))
         if reporter.get('_work_context_id') == item['id']:
             # A discussion reports on the existing execution; it does not become its dependency.
             owner_id = self._work_execution_owner(reporter, tasks).get('id')
@@ -363,30 +423,45 @@ class WorkStatus:
     def _restore_active_work(self, artifact):
         if (artifact.get('pr_state') == 'open' and artifact.get('observed_at') and not artifact.get('refresh_error')
                 and not self._setting('work.cancelled.' + self._work_identity(artifact))):
-            self.db.execute('DELETE FROM settings WHERE key=?', ('work.dismissed.' + artifact['url'].lower(),))
+            identity = self._work_identity(artifact)
+            key = 'work.dismissed.' + identity
+            if (self._setting(key) and identity.startswith('work:')
+                    and self._work_projection([dict(artifact)])[0]['work_state'] in ('completed', 'cancelled')):
+                return
+            self.db.execute('DELETE FROM settings WHERE key=?', (key,))
 
-    @staticmethod
-    def _work_identity(item):
-        return 'work:' + item['id'] if item['kind'] == 'work' else item['url'].lower()
+    def _work_outcome_artifact(self, item):
+        if item.get('work_outcome_id'):
+            item = self._get('artifacts', item['work_outcome_id'])
+        item = self._canonical_work(item)
+        seen = set()
+        while item.get('_hidden') and item.get('_work_parent_id') and item['id'] not in seen:
+            seen.add(item['id'])
+            item = self._canonical_work(self._get('artifacts', item['_work_parent_id']))
+        return item
+
+    def _work_identity(self, item):
+        outcome = self._work_outcome_artifact(item)
+        return 'work:' + outcome['id'] if outcome['kind'] == 'work' else outcome['url'].lower()
 
     def _cancel_work(self, artifact_id, callbacks):
         from .service import ServiceError, encoded, now
-        item = self._canonical_work(self._get('artifacts', artifact_id))
+        item = self._work_outcome_artifact(self._get('artifacts', artifact_id))
         if item['kind'] not in ('work', 'pr'):
             raise ServiceError(400, 'This item does not appear in Work.')
         identity = self._work_identity(item)
         if self._setting('work.cancelled.' + identity):
-            peers = [a for a in self._all('artifacts') if a['kind'] == item['kind']
+            peers = [a for a in self._all('artifacts') if a['kind'] in ('pr', 'work')
                      and self._work_identity(a) == identity]
-            return dict(ok=True, artifacts=[self._public(a) for a in self._work_projection(peers)], cursor=self._cursor())
+            return dict(ok=True, artifacts=[self._public(a) for a in self._work_projection(peers) if not a.get('_hidden')], cursor=self._cursor())
         projected = self._work_projection([dict(item)])[0]
         if projected['work_state'] in ('completed', 'cancelled'):
             raise ServiceError(409, 'This work has already finished.')
         tasks = {t['id']: t for t in self._all('tasks')}
-        peers = [a for a in self._all('artifacts') if a['kind'] == item['kind']
+        peers = [a for a in self._all('artifacts') if a['kind'] in ('pr', 'work')
                  and self._work_identity(a) == identity]
-        fields = ('task_id',) if item['kind'] == 'work' else ('_review_task_id', '_activity_task_id')
-        owned = {p.get(field) for p in peers for field in fields} & tasks.keys()
+        owned = {p.get(field) for p in peers for field in
+                 (('task_id',) if p['kind'] == 'work' else ('_review_task_id', '_activity_task_id'))} & tasks.keys()
         checks = {a.get('_external_wait_task_id') for a in self._all('artifacts')
                   if a['kind'] == 'work' and (self._work_identity(a) == identity or a.get('_work_parent_id') == item['id'])}
         owned |= checks & tasks.keys()
@@ -435,7 +510,7 @@ class WorkStatus:
             self._cancel_one(task, callbacks, include_finished=True)
         for decision in self._all('decisions'):
             url = (decision.get('merge_pr_url') or '').lower()
-            exact = item['kind'] == 'pr' and url == identity
+            exact = bool(url) and any(p['kind'] == 'pr' and p['url'].lower() == url for p in peers)
             # Unlinked questions on a shared task need a fresh scope after cancellation.
             changed_scope = item['kind'] == 'work' and not url and decision['task_id'] in owned & shared
             if decision['status'] != 'pending' or not (exact or changed_scope):
@@ -464,11 +539,32 @@ class WorkStatus:
         projected = self._work_projection([dict(peer) for peer in peers])
         for peer in projected:
             self._event('artifact.updated', peer, peer['bot_id'], peer.get('task_id'))
-        return dict(ok=True, artifacts=[self._public(peer) for peer in projected], cursor=self._cursor())
+        return dict(ok=True, artifacts=[self._public(peer) for peer in projected if not peer.get('_hidden')], cursor=self._cursor())
+
+    def _resume_pr_reviews(self, item, task, *, reset_heads=True):
+        from .service import uid
+        groups = {}
+        for peer in self._all('artifacts'):
+            if peer['kind'] == 'pr' and self._work_identity(peer) == self._work_identity(item):
+                groups.setdefault(peer['url'].lower(), []).append(peer)
+        for peers in groups.values():
+            selected = next((p for p in peers if p['bot_id'] == task['bot_id']), None)
+            if selected is None:
+                source = max(peers, key=lambda p: p.get('observed_at') or p['created_at'])
+                selected = dict(source, id=uid(), bot_id=task['bot_id'], task_id=task['id'])
+                peers.append(selected)
+                self._put('artifacts', selected)
+                self._event('artifact.created', self._public(selected), task['bot_id'], task['id'])
+            for peer in peers:
+                peer['_review_task_id'] = task['id'] if peer['id'] == selected['id'] else None
+                if reset_heads:
+                    peer['_reviewed_heads'] = []
+                    peer.pop('_reviewed_head', None)
+                self._put('artifacts', peer)
 
     def _resume_work(self, artifact_id):
         from .service import ServiceError, now
-        item = self._canonical_work(self._get('artifacts', artifact_id))
+        item = self._work_outcome_artifact(self._get('artifacts', artifact_id))
         if item['kind'] not in ('work', 'pr'):
             raise ServiceError(400, 'This item does not appear in Work.')
         key = 'work.cancelled.' + self._work_identity(item)
@@ -484,27 +580,18 @@ class WorkStatus:
         if item['kind'] == 'work':
             self._carry_work_history(item, dict(item))
             item.update(task_id=task['id'], status='waiting', activity='Queued', observed_at=now(), _work_resuming=True)
-        else:
-            for peer in self._all('artifacts'):
-                if peer['kind'] == 'pr' and self._work_identity(peer) == self._work_identity(item):
-                    if peer['id'] == item['id']:
-                        peer['_review_task_id'] = task['id']
-                    else:
-                        peer['_review_task_id'] = None
-                    peer['_reviewed_heads'] = []
-                    peer.pop('_reviewed_head', None)
-                    self._put('artifacts', peer)
-            item = self._get('artifacts', item['id'])
-        self._put('artifacts', item)
+            self._put('artifacts', item)
+        self._resume_pr_reviews(item, task)
+        item = self._get('artifacts', item['id'])
         self._event('artifact.updated', self._work_projection([dict(item)])[0], item['bot_id'], task['id'])
         return {'ok': True}
 
     def _dismiss_work(self, artifact_id, data):
         from .service import ServiceError, encoded, require_text
-        artifact = self._canonical_work(self._get('artifacts', artifact_id))
+        artifact = self._work_outcome_artifact(self._get('artifacts', artifact_id))
         if artifact['kind'] not in ('pr', 'work'):
             raise ServiceError(400, 'This item does not appear in Work.')
-        identity = 'work:' + artifact['id'] if artifact['kind'] == 'work' else artifact['url'].lower()
+        identity = self._work_identity(artifact)
         key = 'work.dismissed.' + identity
         token = require_text(data, 'dismissal_id', 80)
         undo = data.get('undo') is True

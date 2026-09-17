@@ -6,8 +6,11 @@ from .background_processes import subscription
 class WorkModel:
     def _work_outcome(self, item, tasks, records, decisions, contexts, timestamp, peers=None, queue_positions=None):
         if item.get('_native_outcome_id'):
-            return self._native_outcome_projection(item, tasks, decisions, timestamp, queue_positions)
+            return self._native_outcome_projection(item, tasks, records, decisions, timestamp, queue_positions, peers)
         peers = peers or [item]
+        latest_prs = {p['url'].lower(): p for p in sorted((p for p in peers if p['kind'] == 'pr'), key=lambda p:
+                 (p.get('observed_at') or p['created_at'], p.get('checked_at') or '', p['id']))}
+        heads = {url: p.get('head_sha') for url, p in latest_prs.items()}
         linked = {}
         owner = tasks.get(item.get('task_id'), {})
         if item['kind'] == 'work':
@@ -23,11 +26,12 @@ class WorkModel:
                 for task, _ in owner_chain.values())
             identities += [p.get('_activity_task_id') for p in peers
                            if p.get('_activity_at', '') >= owner.get('created_at', '')
-                           and p.get('_activity_head') == item.get('head_sha')
+                           and p.get('_activity_head') == heads.get((p.get('url') or '').lower())
                            and not (owner_active and (tasks.get(p.get('_activity_task_id'), {}).get('_is_return')
                                or tasks.get(p.get('_activity_task_id'), {}).get('_source_audit_prompt')))]
         else:
-            identities = list(dict.fromkeys(identity for peer in peers for identity in self._work_report_roots(peer, tasks)))
+            identities = list(dict.fromkeys(identity for peer in peers
+                for identity in self._work_report_roots(peer, tasks, pr_heads=heads)))
         if item['kind'] == 'pr' and owner:
             replacements = [tasks[i] for i in identities if i in tasks and i != owner['id']
                             and tasks[i]['exchange_id'] != owner['exchange_id']
@@ -48,8 +52,9 @@ class WorkModel:
                 linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
         attempts = [t for t, _ in linked.values() if not t.get('_work_status_only')]
         identities = {t['id'] for t in attempts}
+        pr_urls = {p.get('url') for p in peers if p['kind'] == 'pr'}
         pending = [d for d in decisions if d['status'] == 'pending' and (
-            d['task_id'] in identities or (item['kind'] == 'pr' and d.get('merge_pr_url') == item.get('url')))]
+            d['task_id'] in identities or d.get('merge_pr_url') in pr_urls)]
         replies = [c for c in contexts if c['task_id'] in identities and c['status'] in ('queued', 'working') and not c.get('_decision_refresh')]
         dependencies = []
         current_records = []
@@ -112,7 +117,7 @@ class WorkModel:
         live_reply = live_reply or any(self._work_live(tasks[r['task_id']], [r], timestamp) for r in context_processes)
         ready_reply = any(r.get('_completion_text') and not r.get('_process_delivery') for r in context_processes)
         reports = [p for p in peers if p.get('_activity_task_id') in identities
-                   and p.get('_activity_head') == item.get('head_sha')
+                   and p.get('_activity_head') == heads.get((p.get('url') or '').lower())
                    and p.get('_activity_turn') == tasks[p['_activity_task_id']].get('_native_turn_id')]
         blockers = []
         recovering = owner.get('_self_recovery', {})
@@ -183,10 +188,12 @@ class WorkModel:
         # A delivered diagnosis ends its own scope even while the requester continues implementation.
         # Completing a review does not complete the PR or identify who owns the next step.
         latest_report = max(reports, key=lambda p: p.get('_activity_at', ''), default={})
-        awaiting_pr = (item['kind'] == 'pr' and attempts and all(t['status'] == 'completed' for t in attempts)
-                       and (latest_report.get('_activity_state') == 'waiting'
-                            or any(t['id'] == 'coconut-assignment' and t['status'] == 'completed'
-                                   for t in owner.get('_work_todos', {}).get('todos', [])))
+        reviewed_pr = latest_prs.get((latest_report.get('url') or '').lower(), {})
+        awaiting_pr = (attempts and all(t['status'] == 'completed' for t in attempts)
+                       and ((reviewed_pr and reviewed_pr.get('pr_state') not in ('merged', 'closed')
+                             and latest_report.get('_activity_state') == 'waiting')
+                            or (item['kind'] == 'pr' and any(t['id'] == 'coconut-assignment' and t['status'] == 'completed'
+                                   for t in owner.get('_work_todos', {}).get('todos', []))))
                        and not dependencies and not pending and not replies
                        and not any(self._has_uncertain_receipt(t['id'], t.get('_native_turn_id')) for t in attempts))
         pause = self._work_pause(item, decisions, peers)
@@ -234,7 +241,7 @@ class WorkModel:
                             and p.get('status') != 'blocked'
                             and not p.get('_automatic_work') and not p.get('_work_resuming')]
             reports = [p for p in peers if p.get('_activity_task_id') in {t['id'] for t in live}
-                       and p.get('_activity_head') == item.get('head_sha')
+                       and p.get('_activity_head') == heads.get((p.get('url') or '').lower())
                        and p.get('_activity_turn') == tasks[p['_activity_task_id']].get('_native_turn_id')]
             reports = [p for p in reports if p.get('_activity_state') != 'blocked']
             if reports:
@@ -310,15 +317,24 @@ class WorkModel:
                 delegated.setdefault(item['_work_parent_id'], []).append(item)
         for item in artifacts:
             if item['kind'] in ('pr', 'work'):
-                identity = item['url'].lower() if item['kind'] == 'pr' else item['id']
+                identity = self._work_identity(item)
+                if item.get('work_outcome_id'):
+                    item['work_outcome_id'] = self._work_outcome_artifact(item)['id']
                 groups.setdefault(identity, []).append(item)
         for identity, peers in groups.items():
             latest = max(peers, key=lambda p: (p.get('observed_at') or p['created_at'], p.get('checked_at') or '', p['id']))
-            reports = peers + (delegated.get(identity, []) if latest['kind'] == 'work' else [])
+            if identity.startswith('work:'):
+                latest = dict(self._work_outcome_artifact(latest))
+            copies = [p for p in self._all('artifacts') if p['kind'] in ('work', 'pr')
+                      and not p.get('_hidden') and self._work_identity(p) == identity
+                      and p['id'] not in {a['id'] for a in peers}] if latest['kind'] == 'work' else []
+            reports = peers + copies + (delegated.get(latest['id'], []) if latest['kind'] == 'work' else [])
+            if latest['id'] not in {p['id'] for p in reports}:
+                reports.append(latest)
             outcome = self._work_outcome(latest, tasks, records, decisions, contexts, timestamp, reports, queue_positions)
             for item in peers:
                 item.update(outcome)
                 if item['kind'] == 'work':
                     item['status'] = outcome['activity_state']
-                key = identity if item['kind'] == 'pr' else 'work:' + identity
+                key = self._work_identity(item)
                 item['work_dismissal_id'] = self._setting('work.dismissed.' + key)

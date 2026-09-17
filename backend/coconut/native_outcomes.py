@@ -187,14 +187,25 @@ class NativeOutcomes:
         self._put('tasks', task)
         self._event('task.updated', self._public(task), task['bot_id'], task['id'])
 
-    def _native_outcome_projection(self, item, tasks, decisions, timestamp, queue_positions):
+    def _native_outcome_projection(self, item, tasks, records, decisions, timestamp, queue_positions, peers=None):
         native = next((n for n in self.kanban.tasks.values() if n['id'] == item['_native_outcome_id']), None) if self.kanban else None
         owner = tasks.get(item.get('task_id'), {})
-        pending = [d for d in decisions if d['task_id'] == owner.get('id') and d['status'] == 'pending']
+        linked = {}
+        peers = peers or [item]
+        for identity in {i for peer in peers for i in self._work_report_roots(peer, tasks)}:
+            if identity in tasks:
+                linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
+        pending = [d for d in decisions if d['status'] == 'pending' and (d['task_id'] in linked or any(
+            p['kind'] == 'pr' and d.get('merge_pr_url') == p.get('url') for p in peers))]
         status = native['status'] if native else 'scheduled'
         state = {'ready': 'queued', 'running': 'working', 'done': 'completed', 'archived': 'cancelled'}.get(status, 'waiting')
         activity = {'queued': 'Queued', 'working': 'In progress', 'completed': 'Completed', 'cancelled': 'Stopped'}.get(state, 'Waiting for a result')
-        if pending:
+        terminal = state in ('completed', 'cancelled')
+        live = [t for t, _ in linked.values() if t['status'] in ('working', 'waiting')
+                and self._work_live(t, records, timestamp)] if not terminal else []
+        if live:
+            state, activity = 'working', 'In progress'
+        if pending and not terminal:
             state, activity = 'needs_decision', 'Waiting for your decision'
         if self._setting('work.cancelled.' + self._work_identity(item)):
             state, activity = 'cancelled', 'Stopped'
@@ -202,12 +213,18 @@ class NativeOutcomes:
             activity = native.get('outcome_summary') or native.get('last_failure_error') or activity
         if native and state == 'working':
             activity = native.get('progress_note') or activity
+            from .worker_activity import progress_label
+            processes = [r for r in records if r['task_id'] in {t['id'] for t in live}
+                         and self._work_live(tasks[r['task_id']], [r], timestamp)
+                         and r.get('_process_status') == 'running' and not r.get('_process_delivery')]
+            if processes:
+                activity = progress_label(max(processes, key=lambda r: r.get('_process_observed_at', '')), timestamp)
         return dict(title=native['title'] if native else item['title'],
-            work_state=state, activity=activity, work_next_step='Review decision' if pending else None,
-            work_decision_id=pending[0]['id'] if pending else None,
+            work_state=state, activity=activity, work_next_step='Review decision' if state == 'needs_decision' else None,
+            work_decision_id=pending[0]['id'] if state == 'needs_decision' else None,
             work_queue_position=(queue_positions or {}).get(owner.get('id')) if state == 'queued' else None,
             completion_condition=item.get('completion_condition') or item['title'],
             completion_evidence=native.get('outcome_summary') if native and state == 'completed' else None,
-            work_attempts=[dict(id=owner.get('id'), state=owner.get('status'))], work_dependencies=[],
-            activity_bot_id=owner.get('bot_id', item['bot_id']), activity_observed_at=timestamp.isoformat(),
+            work_attempts=[dict(id=t['id'], state=t['status']) for t, _ in linked.values()], work_dependencies=[],
+            activity_bot_id=live[-1]['bot_id'] if live else owner.get('bot_id', item['bot_id']), activity_observed_at=timestamp.isoformat(),
             activity_state={'needs_decision': 'waiting', 'queued': 'waiting'}.get(state, state))

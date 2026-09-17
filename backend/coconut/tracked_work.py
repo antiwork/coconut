@@ -151,7 +151,9 @@ class TrackedWork:
     def _work_message_target(self, bot, data):
         from .service import ServiceError, require_text
         item = self._canonical_work(self._get('artifacts', require_text(data, 'work_artifact_id', 100)))
-        if item['kind'] not in ('work', 'pr') or item.get('_hidden'):
+        visible_pr = item['kind'] == 'work' and item.get('_hidden') and any(a['kind'] == 'pr' and not a.get('_hidden')
+            and self._work_identity(a) == self._work_identity(item) for a in self._all('artifacts'))
+        if item['kind'] not in ('work', 'pr') or (item.get('_hidden') and not visible_pr):
             raise ServiceError(400, 'This work item is unavailable.')
         projected = next(a for a in self._work_projection(self._all('artifacts')) if a['id'] == item['id'])
         owners = {item['bot_id'], projected.get('activity_bot_id')}
@@ -163,15 +165,20 @@ class TrackedWork:
             raise ServiceError(400, 'Send work questions now in the selected conversation.')
         if not isinstance(data.get('work_status_only', False), bool):
             raise ServiceError(400, 'Use a valid update request.')
-        return item
+        outcome = self._work_outcome_artifact(item)
+        if outcome.get('_native_outcome_id') and outcome['bot_id'] != bot['id']:
+            raise ServiceError(400, 'Open this work item in its owning bot conversation.')
+        return outcome
 
     def work_context_input(self, item_id):
         import json
         item = self._canonical_work(self._get('artifacts', item_id))
         item_id = item['id']
+        identity = self._work_identity(item)
         tasks = {t['id']: t for t in self._all('tasks')}
         records = self._work_receipts()
         peers = [a for a in self._all('artifacts') if a['id'] == item_id or
+                 (a['kind'] in ('work', 'pr') and self._work_identity(a) == identity) or
                  (item['kind'] == 'pr' and a['kind'] == 'pr' and a['url'].lower() == item['url'].lower())
                  or a.get('_work_parent_id') == item_id]
         linked = {}
@@ -184,8 +191,9 @@ class TrackedWork:
             "SELECT data FROM native_receipts WHERE json_extract(data, '$.task_id') IN "
             "(SELECT value FROM json_each(?)) AND json_extract(data, '$.state')='completed' "
             "ORDER BY rowid DESC LIMIT 3", (json.dumps(sorted(linked)),))]
-        projected = next(a for a in self._work_projection(peers) if a['id'] == item_id)
-        latest = max((a for a in peers if a['id'] == item_id or not a.get('_work_parent_id')), key=lambda a: (a.get('observed_at') or a['created_at'], a.get('checked_at') or a['created_at'], a['id']))
+        projected = next(a for a in self._work_projection([dict(p) for p in peers]) if a['id'] == item_id)
+        latest = max((a for a in peers if a['kind'] == item['kind'] and (a['id'] == item_id or not a.get('_work_parent_id'))
+                      and (item['kind'] != 'pr' or a.get('url', '').lower() == item['url'].lower())), key=lambda a: (a.get('observed_at') or a['created_at'], a.get('checked_at') or a['created_at'], a['id']))
         updates = [m for m in self._all('messages') if m.get('task_id') in linked
                    and m['role'] == 'assistant' and m['kind'] == 'text' and not m.get('streaming')]
         source = next((m for m in self._all('messages') if m.get('task_id') == item.get('_work_origin_task_id', item.get('task_id'))
@@ -196,6 +204,8 @@ class TrackedWork:
                                                    'work_decision_id', 'work_attempts', 'work_dependencies')},
                     pull_request={k: latest.get(k) for k in ('pr_state', 'checks_state', 'head_sha', 'draft',
                                   'observed_at', 'checked_at', 'refresh_error', 'preview')} if item['kind'] == 'pr' else None,
+                    pull_requests=[{k: a.get(k) for k in ('id', 'url', 'head_sha', 'pr_state', 'checks_state')}
+                                   for a in peers if a['kind'] == 'pr'],
                     related_work=[{k: a.get(k) for k in ('id', 'title', 'completion_evidence', 'external_wait')}
                                   for a in peers if a.get('_work_parent_id') == item_id],
                     source_message=dict(id=source['id'], text=source['text'][:1000]) if source else None,
@@ -515,6 +525,8 @@ class TrackedWork:
                 item['_work_previous_task_ids'] = list(dict.fromkeys(item.get('_work_previous_task_ids', []) + previous_tasks))
             item.pop('_work_resuming', None)
             # Audits report progress without replacing the task doing the work.
+            transferred = (not report_only and item.get('task_id') not in (None, task_id)
+                           and self._work_outcome_artifact(item)['id'] == item['id'])
             if not report_only:
                 item.update(task_id=task_id, _work_turn=task.get('_native_turn_id'))
             audit_report = self._assignment(task).get('_source_audit_prompt') or routine_report
@@ -545,6 +557,8 @@ class TrackedWork:
             if state not in ('completed', 'cancelled'):
                 self.db.execute('DELETE FROM settings WHERE key=?', ('work.dismissed.work:' + item['id'],))
             self._put('artifacts', item)
+            if transferred:
+                self._resume_pr_reviews(item, task, reset_heads=False)
             for automatic in self._all('artifacts'):
                 if (automatic.get('_automatic_work') and not automatic.get('_hidden')
                         and automatic.get('task_id') == task_id and automatic['id'] != item['id']):

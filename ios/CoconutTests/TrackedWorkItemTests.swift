@@ -19,6 +19,51 @@ final class TrackedWorkItemTests: XCTestCase {
         XCTAssertEqual(TrackedWorkItem.tracked(in: [finished, item()]).map(\.id), ["work:export", "work:done"])
     }
 
+    func testPullRequestRepresentsItsExistingOutcome() throws {
+        let work = item()
+        var pr = work
+        pr.id = "pr"
+        pr.kind = "pr"
+        pr.url = "https://github.com/example/project/pull/42"
+        pr.workOutcomeId = work.id
+        let rows = TrackedWorkItem.tracked(in: [work, pr])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.pullRequest?.number, "42")
+        var second = pr
+        second.id = "second-pr"
+        second.url = "https://github.com/example/project/pull/43"
+        let multiple = TrackedWorkItem.tracked(in: [work, pr, second])
+        XCTAssertEqual(multiple.map(\.id), ["work:export"])
+        XCTAssertNil(multiple.first?.pullRequest)
+        XCTAssertEqual(multiple.first?.pullRequests.map(\.number), ["42", "43"])
+        let hiddenOutcome = TrackedWorkItem.tracked(in: [second, pr])
+        XCTAssertEqual(hiddenOutcome.first?.pullRequests.map(\.number), ["42", "43"])
+        pr.workOutcomeId = nil
+        XCTAssertEqual(TrackedWorkItem.tracked(in: [work, pr]).count, 2)
+    }
+
+    @MainActor
+    func testLinkedPullRequestDismissalAndUndoKeepBothCopiesHidden() async throws {
+        let work = item(status: "completed")
+        var pr = work
+        pr.id = "pr"
+        pr.kind = "pr"
+        pr.url = "https://github.com/example/project/pull/42"
+        pr.workOutcomeId = work.id
+        pr.workState = "completed"
+        let store = AppStore(demo: true)
+        store.artifacts = [work, pr]
+        let row = try XCTUnwrap(TrackedWorkItem.tracked(in: store.artifacts).first)
+        store.dismissWork(row)
+        XCTAssertTrue(TrackedWorkItem.tracked(in: store.artifacts, visibility: store.workVisibility).isEmpty)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertTrue(TrackedWorkItem.tracked(in: store.artifacts).isEmpty)
+        store.undoWorkDismissal()
+        XCTAssertEqual(TrackedWorkItem.tracked(in: store.artifacts, visibility: store.workVisibility).count, 1)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(TrackedWorkItem.tracked(in: store.artifacts).count, 1)
+    }
+
     func testDisconnectedActivityDoesNotKeepClaimingWork() throws {
         let row = try XCTUnwrap(TrackedWorkItem.tracked(in: [item()]).first)
         let date = try XCTUnwrap(row.artifact.createdAt.apiDate)

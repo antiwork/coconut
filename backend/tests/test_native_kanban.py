@@ -88,6 +88,76 @@ class NativeKanbanTests(unittest.TestCase):
             status='working', activity='Checking results', completion_condition='The export passes its tests.'))
         return task, item
 
+    def test_native_wait_tracks_child_execution_but_completion_ends_the_outcome(self):
+        import json
+        from coconut.service import now
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        owner = self.service._get('tasks', task['id'])
+        owner['status'] = 'waiting'
+        self.service._put('tasks', owner)
+        self.service._migrate_native_work()
+        self.service.kanban.call({'op': 'snapshot'})
+        native = self.service.kanban.tasks[task['id']]
+        self.native_program("board.kb.schedule_task(board.conn, sys.argv[2], reason='Waiting for the existing worker')", native['id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        bot = self.write('/v1/bots', dict(name='Developer', role='Run checks'))
+        owner = self.service._get('tasks', owner['id'])
+        owner['status'] = 'working'
+        self.service._put('tasks', owner)
+        child = self.service._store_bot_message(owner['id'], dict(target_bot_id=bot['id'],
+            text='Run the acceptance check', require_response=True))
+        worker = self.service._get('tasks', child['task_id'])
+        worker.update(status='waiting')
+        self.service._put('tasks', worker)
+        owner = self.service._get('tasks', owner['id'])
+        owner.update(status='waiting', _waiting_on=[worker['id']])
+        self.service._put('tasks', owner)
+        receipt = dict(id=str(uuid4()), task_id=worker['id'], turn_id='earlier-turn', state='completed',
+            action={'name': 'terminal'}, result=json.dumps(dict(session_id='child-process', notify_on_complete=True)),
+            _process_status='running', _process_observed_at=now())
+        self.service._put('native_receipts', receipt)
+        def state():
+            return next(a for a in self.service.snapshot()['artifacts'] if a['id'] == item['id'])['work_state']
+        self.assertEqual(state(), 'working')
+        receipt['_process_delivery'] = 'result-received'
+        self.service._put('native_receipts', receipt)
+        self.assertEqual(state(), 'waiting')
+        self.native_program("board.kb.unblock_task(board.conn, sys.argv[2]); board.kb.complete_task(board.conn, sys.argv[2], summary='Acceptance check passed')", native['id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        receipt.pop('_process_delivery')
+        self.service._put('native_receipts', receipt)
+        self.assertEqual(state(), 'completed')
+
+    def test_linked_pr_message_resumes_its_completed_native_outcome(self):
+        from test_service_pr import Tracker, observation, URL
+        self.service.pr_tracker = Tracker(observation())
+        task, item = self.legacy_work()
+        pr = self.service._register_pr_artifact(task['id'], dict(url=URL))
+        self.provider.supports_native_outcomes = True
+        owner = self.service._get('tasks', task['id'])
+        owner['status'] = 'waiting'
+        self.service._put('tasks', owner)
+        self.service._migrate_native_work()
+        self.service.kanban.call({'op': 'snapshot'})
+        native = self.service.kanban.tasks[task['id']]
+        other = self.write('/v1/bots', dict(name='Reviewer', role='Review'))
+        copy = dict(self.service._get('artifacts', pr['id']), id=str(uuid4()), bot_id=other['id'])
+        self.service._put('artifacts', copy)
+        from coconut.service import ServiceError
+        before = len(self.service._all('messages'))
+        with self.assertRaises(ServiceError):
+            self.write('/v1/bots/' + other['id'] + '/messages',
+                dict(text='Add another field', work_artifact_id=copy['id'], mode='queue'))
+        self.assertEqual(len(self.service._all('messages')), before)
+        self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='Export verified')", native['id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        sent = self.write('/v1/bots/' + self.bot['id'] + '/messages',
+            dict(text='Add another export field', work_artifact_id=pr['id'], mode='queue'))
+        continuation = self.service._get('tasks', sent['id'])
+        self.assertEqual(continuation['_native_outcome_id'], native['id'])
+        self.assertEqual(continuation['_work_context_id'], item['id'])
+
     def test_existing_work_migrates_once_with_same_workspace_and_card(self):
         from coconut.service import YieldForDecision
         task, item = self.legacy_work()

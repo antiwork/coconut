@@ -84,7 +84,10 @@ class WorkRecovery:
             for item in items:
                 groups.setdefault(self._work_identity(item), []).append(item)
             for peers in groups.values():
-                selected = self._pr_review_owner(peers) if peers[0]['kind'] == 'pr' else peers[0]
+                outcome = self._work_outcome_artifact(peers[0])
+                selected = self._pr_review_owner(peers) if outcome['kind'] == 'pr' else outcome
+                if outcome.get('_native_outcome_id'):
+                    selected = None
                 for peer in peers:
                     canonical[peer['id']] = selected
             projected = self._work_projection([dict(a) for a in items])
@@ -114,7 +117,7 @@ class WorkRecovery:
                 affected = [a for a in items if any(p['id'] == a['id'] and p.get('work_state') == 'needs_recovery'
                             and not p.get('work_dismissal_id') for p in projected)
                             and canonical[a['id']] is not None
-                            and (canonical[a['id']].get('_review_task_id') if a['kind'] == 'pr' else a.get('task_id')) == owner['id']]
+                            and canonical[a['id']].get('_review_task_id' if canonical[a['id']]['kind'] == 'pr' else 'task_id') == owner['id']]
                 handled.add(owner['id'])
                 previous = owner.get('_self_recovery', {})
                 delay = retry_delay(previous.get('attempt', 0))
@@ -122,8 +125,8 @@ class WorkRecovery:
                 context = dict(attempt=previous.get('attempt', 0) + 1,
                     previous_task_id=owner['id'], previous_turn_id=owner.get('_native_turn_id'),
                     previous_status=owner['status'], failure=owner['summary'],
-                    work=[self.work_context_input(a['id']) | {'key': a.get('_work_key')} for a in affected
-                          if canonical[a['id']]['id'] == a['id']],
+                    work=[self.work_context_input(a['id']) | {'key': a.get('_work_key')}
+                          for a in {canonical[p['id']]['id']: canonical[p['id']] for p in affected}.values()],
                     unknown_tools=[{k: r.get(k) for k in ('id', 'task_id', 'turn_id', 'action', 'created_at')}
                                    for r in records if r['task_id'] in ids and r['state'] == 'executing'],
                     decisions=[self._public(d) for d in self._all('decisions') if d['task_id'] in ids])
@@ -139,14 +142,22 @@ class WorkRecovery:
                 task.update(_self_recovery=context, _conversation_epoch=self._setting('conversation_epoch'),
                             summary='Will retry automatically' if scheduled else 'Queued to check unfinished work')
                 self._put('tasks', task)
+                outcomes = {self._work_identity(target): target for target in affected}
+                for target in outcomes.values():
+                    outcome = self._work_outcome_artifact(target)
+                    if (outcome['kind'] == 'work' and outcome.get('_hidden')
+                            and outcome.get('task_id') == owner['id']):
+                        affected.append(outcome)
                 for target in affected:
                     if target['kind'] == 'work':
                         self._carry_work_history(target, dict(target))
                         target.update(task_id=task['id'], status='waiting', activity='Queued to check unfinished work',
                                       observed_at=now(), _work_resuming=True)
-                    else:
-                        target['_review_task_id'] = task['id'] if canonical[target['id']]['id'] == target['id'] else None
                     self._put('artifacts', target)
+                for target in outcomes.values():
+                    self._resume_pr_reviews(target, task, reset_heads=False)
+                for target in affected:
+                    target = self._get('artifacts', target['id'])
                     self._event('artifact.updated', self._work_projection([dict(target)])[0], target['bot_id'], task['id'])
                 self._event('work.recovery_queued', dict(task_id=task['id'], previous_task_id=owner['id'],
                     work_ids=[a['id'] for a in affected]), bot['id'], task['id'])
