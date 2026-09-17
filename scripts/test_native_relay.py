@@ -11,6 +11,7 @@ sys.path[:0] = [str(root / 'scripts'), str(code / 'backend')]
 import host
 from coconut.providers import HermesProvider
 from coconut.service import Service
+from coconut.work_capacity import execution_key
 os.umask(0o077)
 data = Path(tempfile.mkdtemp(prefix='native-relay-', dir=root / '.runtime/checks'))
 service = None
@@ -38,17 +39,32 @@ try:
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         host.load_credentials(root / '.runtime/host')
         service=Service(data, provider())
-        sender=write('POST','/v1/bots',dict(name='Relay Sender', instructions='Use native message_agent for a direct bot handoff. Keep replies under one sentence.'))
+        sender=write('POST','/v1/bots',dict(name='Relay Sender', instructions='Use native coconut_message_bot for a direct bot handoff. Keep replies under one sentence.'))
         recipient=write('POST','/v1/bots',dict(name='Relay Recipient', instructions='When asked to save the check, first call coconut_ask with title Save the check? and options save / Save it, hold / Do nothing. After the person chooses Save it, use terminal once to run python3 -c "from pathlib import Path; Path(\'relay-once.txt\').open(\'x\').write(\'native relay verified\')". Do not create the file before the choice. On context questions explain that this saves a private test file. Keep replies under one sentence.'))
         busy.acquire()
-        service.bot_locks[recipient['id']]=busy
+        recipient_ready=threading.Event()
+        run_task=service._run_task
+        def run_with_busy_recipient(task_id):
+            with service.lock:
+                task=service._get('tasks',task_id)
+                if task['bot_id']==recipient['id']:
+                    # Dispatch assigns the execution session before entering the worker.
+                    assert task.get('_execution_session_id')
+                    service.bot_locks.setdefault(execution_key(task),busy)
+                    recipient_ready.set()
+            return run_task(task_id)
+        service._run_task=run_with_busy_recipient
         stage='native-send-while-busy'
-        parent=write('POST','/v1/bots/'+sender['id']+'/messages',dict(text='Use message_agent to ask Relay Recipient to save the check. Then finish your turn without waiting.', mode='queue'))
+        parent=write('POST','/v1/bots/'+sender['id']+'/messages',dict(text='Use coconut_message_bot to ask Relay Recipient to save the check. Then finish your turn without waiting.', mode='queue'))
         state=wait(lambda s:any(t['id']==parent['id'] and t['status']=='waiting' for t in s['tasks']))
         deliveries=[r for r in service._all('deliveries') if r['source_task_id']==parent['id']]
         assert len(deliveries)==1
         child_id=deliveries[0]['receipt']['task_id']
-        assert service._get('tasks',child_id)['status']=='queued'
+        assert recipient_ready.wait(10),'Recipient worker did not reach its execution lock'
+        child=service._get('tasks',child_id)
+        assert child['status']=='queued'
+        assert execution_key(child)!=execution_key(service._get('tasks',parent['id']))
+        assert service.bot_locks[execution_key(child)] is busy and busy.locked()
         records=[r for r in service._all('native_receipts') if r['task_id']==parent['id'] and r['action']['name']=='message_agent']
         assert len(records)==1 and records[0]['state']=='completed'
         report['native_message_agent_used']=True
@@ -60,7 +76,10 @@ try:
         independent=write('POST','/v1/bots/'+sender['id']+'/messages',dict(text='What is 3 + 4? Answer with the number only.',mode='queue'))
         state=wait(lambda s:any(t['id']==independent['id'] and t['status']=='completed' for t in s['tasks']))
         assert service._get('decisions',decision['id'])['status']=='pending'
-        file=data/'bots'/recipient['id']/'workspace/relay-once.txt'
+        # Native dispatch owns the execution workspace, separately from the bot profile.
+        workspace=data/'workspaces'/execution_key(child)
+        assert Path(child['_kanban_claim']['workspace'])==workspace
+        file=workspace/'relay-once.txt'
         assert not file.exists()
         report['sender_continues_while_decision_waits']=True
         stage='restart-with-decision'
