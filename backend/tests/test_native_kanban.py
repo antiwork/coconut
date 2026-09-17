@@ -1156,6 +1156,39 @@ raise RuntimeError('The interruption did not run')
         self.service.kanban.call(dict(op='tick', rows=[row], capacity=1))
         self.assertEqual(self.service.kanban.tasks[task['id']]['status'], 'review')
 
+    def test_new_input_resumes_a_triaged_legacy_turn_after_an_old_sync(self):
+        import json
+        task = self.task('Check the pull request')
+        owner = self.service._get('tasks', task['id'])
+        row = self.service._kanban_row(owner, owner, 'ready', 10)
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+        self.service.kanban.call({'op': 'snapshot'})
+        identity = self.service.kanban.tasks[owner['id']]['id']
+        self.native_program("""
+board.kb.block_task(board.conn, sys.argv[2], reason='Previous attempt stopped')
+board.kb.unblock_task(board.conn, sys.argv[2])
+board.kb.block_task(board.conn, sys.argv[2], reason='Previous attempt stopped')
+assert board.kb.get_task(board.conn, sys.argv[2]).status == 'triage'
+""", identity)
+        owner['_kanban_claim'] = {'input': row['input']}
+        same = self.service._kanban_row(owner, owner, 'ready', 10)
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])]); assert board.kb.get_task(board.conn, sys.argv[3]).status == "triage"',
+            json.dumps(same), identity)
+        self.service._advance_input(owner)
+        self.service._put('tasks', owner)
+        fresh = self.service._kanban_row(owner, owner, 'ready', 10)
+        self.native_program("""
+import json
+from coconut.kanban_runtime import fingerprint
+row = json.loads(sys.argv[2])
+board.conn.execute('UPDATE coconut_bindings SET intent=? WHERE external_id=?',
+    (fingerprint({k: row[k] for k in ('state', 'input')}), row['id']))
+board.sync([row])
+assert board.kb.get_task(board.conn, sys.argv[3]).status == 'ready'
+board.sync([row])
+assert board.kb.get_task(board.conn, sys.argv[3]).status == 'ready'
+""", json.dumps(fresh), identity)
+
     def test_queued_dependency_remains_available_to_wait(self):
         self.service.mutate('PUT', '/v1/settings/work-capacity', {'limit': 1}, str(uuid4()))
         parent = self.task('Inspect the change')

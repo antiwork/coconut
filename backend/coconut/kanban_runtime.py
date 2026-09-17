@@ -86,7 +86,10 @@ class Board:
                 if existing.workspace_path != row['workspace']:
                     self.workspace.set_workspace_path(self.conn, old[0], row['workspace'])
             # Schedule and unblock commit separately. Replay readiness after an interrupted finish.
-            if old and old[1] == intent and not (row['state'] == 'ready' and existing.status == 'scheduled'):
+            resume_triage = (old and row['state'] == 'ready' and existing.status == 'triage'
+                             and row.get('previous_input') and row['previous_input'] != row['input'])
+            if (old and old[1] == intent and not resume_triage
+                    and not (row['state'] == 'ready' and existing.status == 'scheduled')):
                 continue
             if old:
                 identity = old[0]
@@ -102,6 +105,8 @@ class Board:
             if task.status != 'running':
                 if state == 'ready' and task.status in ('blocked', 'scheduled'):
                     self.kb.unblock_task(self.conn, identity)
+                elif resume_triage:
+                    self.kb.specify_triage_task(self.conn, identity, author='coconut')
                 elif state == 'ready' and task.status == 'review':
                     self.kb.reopen_review_task(self.conn, identity)
                 elif state == 'review' and task.status in ('ready', 'blocked', 'scheduled'):
