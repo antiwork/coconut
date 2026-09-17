@@ -148,6 +148,8 @@ class WorkStatus:
         if not task.get('id'):
             raise ServiceError(400, 'Only the bot doing this task can report its activity.')
         self._apply_work_pause(artifact, task, payload, state)
+        if state == 'working':
+            self._bind_pr_progress(artifact, task)
         task['_work_progress_at'] = now()
         self._put('tasks', task)
         artifact.update(_activity=text, _activity_state=state, _activity_task_id=task['id'],
@@ -159,8 +161,11 @@ class WorkStatus:
     def _work_execution_owner(task, tasks):
         owner = tasks.get(task.get('_execution_session_id'), {})
         if (owner and (owner.get('_execution_session_id') or owner['id']) == owner['id']
+                and owner.get('status') not in ('failed', 'cancelled')
+                and (owner.get('conversation_bot_id') == task.get('conversation_bot_id')
+                     or (task.get('_work_context_id') and not task.get('_work_status_only')))
                 and all(owner.get(field) == task.get(field) for field in
-                        ('bot_id', 'conversation_bot_id', 'session_id', '_conversation_epoch'))):
+                        ('bot_id', 'session_id', '_conversation_epoch'))):
             return owner
         return task
 
@@ -175,6 +180,11 @@ class WorkStatus:
                 if record.get(key) and not record.get('_process_delivery'):
                     linked.setdefault(record['task_id'], set()).add(record[key])
         for task in tasks.values():
+            if include_continuations and task['status'] not in ('failed', 'cancelled'):
+                owner = WorkStatus._work_execution_owner(task, tasks)
+                if owner['id'] != task['id']:
+                    linked.setdefault(owner['id'], set()).add(task['id'])
+                    explicit_waits.setdefault(owner['id'], set()).add(task['id'])
             if task.get('source_task_id') and ((task.get('_native_relay') and not task.get('_is_return'))
                     or (include_continuations and task.get('_is_return') and task.get('_assignment_task_id'))):
                 linked.setdefault(task['source_task_id'], set()).add(task['id'])

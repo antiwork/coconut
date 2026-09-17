@@ -15,6 +15,7 @@ class WorkModel:
         if item['kind'] == 'pr':
             review = self._pr_review_owner(peers)
             owner = tasks.get(review['_review_task_id'], {}) if review else {}
+            owner = self._work_execution_owner(owner, tasks)
             identities = [owner.get('id')]
             owner_chain = self._work_chain(owner, tasks, records, include_continuations=True) if owner else {}
             owner_active = bool(owner) and any(
@@ -39,6 +40,9 @@ class WorkModel:
                 # A newer status report does not replace an approved proposal's pending work.
                 proposals = self._proposal_work_links(tasks)
                 identities += [target for source in owner_chain for target in proposals.get(source, ())]
+                identities += [t['id'] for t, _ in owner_chain.values()
+                               if t.get('_execution_session_id') and t['status'] not in ('failed', 'cancelled')
+                               and self._work_execution_owner(t, tasks)['id'] == owner['id']]
         for identity in identities:
             if identity in tasks and not self._get('exchanges', tasks[identity]['exchange_id']).get('cancelled'):
                 linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
@@ -177,7 +181,7 @@ class WorkModel:
             and any(t.get('id') == 'coconut-assignment' and t.get('status') == 'completed'
                     for t in owner.get('_work_todos', {}).get('todos', [])))
         # A delivered diagnosis ends its own scope even while the requester continues implementation.
-        # Completing the bot's assignment can leave a PR waiting on its author or checks.
+        # Completing a review does not complete the PR or identify who owns the next step.
         latest_report = max(reports, key=lambda p: p.get('_activity_at', ''), default={})
         awaiting_pr = (item['kind'] == 'pr' and attempts and all(t['status'] == 'completed' for t in attempts)
                        and (latest_report.get('_activity_state') == 'waiting'
@@ -197,7 +201,7 @@ class WorkModel:
         elif pause and not live and not live_reply and not replies and not queued and not item.get('_work_resuming'):
             state, activity, next_step = 'waiting', 'Paused by your decision', item.get('next_step')
         elif awaiting_pr:
-            state, activity, next_step = 'waiting', ('Waiting for the PR author' if item.get('draft') else 'Waiting for PR updates'), 'Continue when the PR changes'
+            state, activity, next_step = 'waiting', 'Review complete', 'Check remaining PR requirements'
         elif blockers and not live_reply and not replies:
             state, activity, next_step = 'needs_recovery', blockers[-1][1] or 'Needs recovery', 'Ask for progress'
         elif live or live_reply:

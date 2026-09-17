@@ -175,6 +175,183 @@ class PRReviewTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks',self.child_id)['status'],'queued')
         self.assertEqual(self.service._get('tasks',later['id'])['status'],'completed')
 
+    def start_correction(self):
+        sent = self.write(f'/v1/bots/{self.dev["id"]}/messages', {'text': 'Continue the approved PR corrections'})
+        task = self.service._get('tasks', sent['id'])
+        task.update(status='working', _execution_session_id=task['id'],
+                    _conversation_epoch=self.service._setting('conversation_epoch'))
+        self.service._put('tasks', task)
+        return task
+
+    def report_correction(self, task):
+        return self.service._register_pr_artifact(task['id'], dict(url=URL,
+            activity='Testing the corrections', activity_state='working'))
+
+    def test_correction_owns_work_and_check_updates_after_completed_review(self):
+        task = self.start_correction()
+        self.report_correction(task)
+        self.assertEqual(self.service._get('artifacts', self.artifact_id)['_review_task_id'], task['id'])
+        import threading
+        self.service.running[task['id']] = threading.current_thread()
+        try:
+            row = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == self.artifact_id)
+            self.assertEqual(row['work_state'], 'working')
+            self.assertEqual(row['activity'], 'Testing the corrections')
+        finally:
+            self.service.running.clear()
+        task.update(status='completed')
+        self.service._put('tasks', task)
+        self.green()
+        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'queued')
+        self.assertEqual(self.service._get('tasks', self.child_id)['status'], 'completed')
+
+    def test_progress_uses_the_native_execution_instead_of_a_short_continuation(self):
+        task = self.start_correction()
+        continuation = dict(task, id=str(uuid4()), parent_task_id=task['id'])
+        self.service._put('tasks', continuation)
+        self.report_correction(continuation)
+        self.assertEqual(self.service._get('artifacts', self.artifact_id)['_review_task_id'], task['id'])
+
+    def test_work_reply_reuses_the_current_pr_execution(self):
+        task = self.start_correction()
+        self.report_correction(task)
+        sent = self.write(f'/v1/bots/{self.dev["id"]}/messages',
+            dict(text='Continue the existing fix', mode='queue', work_artifact_id=self.artifact_id))
+        continuation = self.service._get('tasks', sent['id'])
+        self.service._ensure_execution_session(continuation)
+        self.assertEqual(continuation['_execution_session_id'], task['_execution_session_id'])
+
+    def test_work_reply_to_delegated_pr_keeps_execution_and_return_address(self):
+        owner = self.service._get('tasks', self.child_id)
+        self.service._ensure_execution_session(owner)
+        sent = self.write(f'/v1/bots/{self.dev["id"]}/messages',
+            dict(text='Continue the existing fix', mode='queue', work_artifact_id=self.artifact_id))
+        task = self.service._get('tasks', sent['id'])
+        task.update(status='working', _conversation_epoch=owner['_conversation_epoch'])
+        self.service._put('tasks', task)
+        self.assertNotEqual(task['conversation_bot_id'], owner['conversation_bot_id'])
+        self.report_correction(task)
+        self.assertEqual(self.service._get('artifacts', self.artifact_id)['_review_task_id'], owner['id'])
+
+    def test_queued_work_reply_prevents_takeover_before_its_first_turn(self):
+        owner = self.service._get('tasks', self.child_id)
+        self.service._ensure_execution_session(owner)
+        sent = self.write(f'/v1/bots/{self.dev["id"]}/messages',
+            dict(text='Continue the existing fix', mode='queue', work_artifact_id=self.artifact_id))
+        self.report_correction(self.start_correction())
+        self.assertEqual(self.service._get('artifacts', self.artifact_id)['_review_task_id'], owner['id'])
+        row = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == self.artifact_id)
+        self.assertIn(sent['id'], [t['id'] for t in row['work_attempts']])
+
+    def test_finished_continuation_does_not_restore_an_older_failure(self):
+        owner = self.service._get('tasks', self.child_id)
+        self.service._ensure_execution_session(owner)
+        failed = dict(owner, id=str(uuid4()), status='failed', parent_task_id=owner['id'])
+        self.service._put('tasks', failed)
+        sent = self.write(f'/v1/bots/{self.dev["id"]}/messages',
+            dict(text='Continue the existing fix', mode='queue', work_artifact_id=self.artifact_id))
+        task = self.service._get('tasks', sent['id'])
+        task['status'] = 'working'
+        self.service._put('tasks', task)
+        self.service._register_pr_artifact(task['id'], dict(url=URL, activity='Waiting for checks', activity_state='waiting'))
+        task['status'] = 'completed'
+        self.service._put('tasks', task)
+        row = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == self.artifact_id)
+        self.assertEqual(row['work_state'], 'waiting')
+        self.assertNotIn(failed['id'], [t['id'] for t in row['work_attempts']])
+
+    def test_completed_work_reply_keeps_its_proposal_and_approved_work(self):
+        owner = self.service._get('tasks', self.child_id)
+        self.service._ensure_execution_session(owner)
+        sent = self.write(f'/v1/bots/{self.dev["id"]}/messages',
+            dict(text='Review the remaining tradeoff', mode='queue', work_artifact_id=self.artifact_id))
+        task = self.service._get('tasks', sent['id'])
+        task['status'] = 'working'
+        self.service._put('tasks', task)
+        self.service.emit(task['id'], 'native_proposal', dict(key='review-tradeoff',
+            title='Change the retry policy?', explanation='The current policy retries three times.',
+            options=[dict(id='change', label='Change the policy'), dict(id='keep', label='Keep the policy')]))
+        task['status'] = 'completed'
+        self.service._put('tasks', task)
+        decision = self.service.snapshot()['decisions'][-1]
+        other = self.start_correction()
+        self.report_correction(other)
+        self.assertEqual(self.service._get('artifacts', self.artifact_id)['_review_task_id'], owner['id'])
+        row = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == self.artifact_id)
+        self.assertEqual(row['work_decision_id'], decision['id'])
+        self.write(f'/v1/decisions/{decision["id"]}/answer', dict(option_id='change', revision=1))
+        execution = self.service._get('decisions', decision['id'])['_execution_task_id']
+        self.report_correction(other)
+        self.assertEqual(self.service._get('artifacts', self.artifact_id)['_review_task_id'], owner['id'])
+        row = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == self.artifact_id)
+        self.assertIn(execution, [t['id'] for t in row['work_attempts']])
+
+    def test_completed_resumed_pr_does_not_restore_its_cancelled_predecessor(self):
+        owner = self.service._get('tasks', self.child_id)
+        self.service._ensure_execution_session(owner)
+        self.write('/v1/work/items/' + self.artifact_id + '/cancel', {})
+        self.write('/v1/work/items/' + self.artifact_id + '/resume', {})
+        artifact = self.service._get('artifacts', self.artifact_id)
+        task = self.service._get('tasks', artifact['_review_task_id'])
+        task.update(status='working', _conversation_epoch=self.service._setting('conversation_epoch'))
+        self.service._put('tasks', task)
+        self.service._register_pr_artifact(task['id'], dict(url=URL, activity='Waiting for checks', activity_state='waiting'))
+        task['status'] = 'completed'
+        self.service._put('tasks', task)
+        row = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == self.artifact_id)
+        self.assertEqual(row['work_state'], 'waiting')
+        self.assertEqual(row['activity'], 'Review complete')
+        self.assertNotIn(owner['id'], [t['id'] for t in row['work_attempts']])
+
+    def test_correction_keeps_ownership_when_coordinator_also_tracks_the_pr(self):
+        parent = next(t for t in self.service._all('tasks') if t['bot_id'] == self.desk['id'] and not t.get('_is_return'))
+        self.tracker.observations.append(replace(observation(), pr_state='open', checks_state='running'))
+        peer = self.write('/v1/work/pull-requests', dict(bot_id=self.desk['id'], url=URL, review_task_id=parent['id']))
+        saved = self.service._get('artifacts', peer['id'])
+        saved['created_at'] = '2000-01-01T00:00:00Z'
+        self.service._put('artifacts', saved)
+        task = self.start_correction()
+        self.report_correction(task)
+        self.assertEqual(self.service._pr_review_owner(self.service._all('artifacts'))['_review_task_id'], task['id'])
+        task['status'] = 'completed'
+        self.service._put('tasks', task)
+        result = replace(observation('ready_for_review'), pr_state='open', draft=False, checks_state='passed')
+        self.tracker.observations.extend([result, result])
+        self.service.refresh_pull_requests()
+        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'queued')
+        self.assertEqual(self.service._get('tasks', parent['id'])['status'], 'completed')
+
+    def test_new_progress_cannot_replace_an_existing_wait_or_decision(self):
+        task = self.start_correction()
+        owner = self.service._get('tasks', self.child_id)
+        for status in ('waiting', 'needs_you', 'working', 'queued'):
+            with self.subTest(status=status):
+                owner['status'] = status
+                self.service._put('tasks', owner)
+                self.report_correction(task)
+                self.assertEqual(self.service._get('artifacts', self.artifact_id)['_review_task_id'], owner['id'])
+
+    def test_status_callback_does_not_take_ownership_of_completed_work(self):
+        task = self.start_correction()
+        task['_is_return'] = True
+        self.service._put('tasks', task)
+        self.report_correction(task)
+        self.assertEqual(self.service._get('artifacts', self.artifact_id)['_review_task_id'], self.child_id)
+
+    def test_native_continuation_keeps_work_active_and_prevents_takeover(self):
+        task = self.start_correction()
+        owner = self.service._get('tasks', self.child_id)
+        owner['_execution_session_id'] = owner['id']
+        self.service._put('tasks', owner)
+        continuation = dict(owner, id=str(uuid4()), status='queued',
+                            exchange_id=self.service._new_exchange(), parent_task_id=owner['id'])
+        self.service._put('tasks', continuation)
+        self.report_correction(task)
+        self.assertEqual(self.service._get('artifacts', self.artifact_id)['_review_task_id'], owner['id'])
+        row = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == self.artifact_id)
+        self.assertIn(continuation['id'], [t['id'] for t in row['work_attempts']])
+        self.assertEqual(row['work_state'], 'queued')
+
     def test_return_to_earlier_head_does_not_repeat_review(self):
         for head in ('a' * 40, 'b' * 40):
             self.green(head_sha=head)

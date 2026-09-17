@@ -124,10 +124,46 @@ class PullRequestReviews:
         if task and (transfer or not self._pr_review_source_current(artifact)) and artifact.get('_review_task_id') != task['id']:
             with self.transaction():
                 artifact['_review_task_id'] = task['id']
+                if transfer:
+                    from .service import now
+                    artifact['_review_ownership_at'] = now()
                 self._put('artifacts', artifact)
+                self._event('artifact.updated', self._public(artifact), artifact['bot_id'], artifact.get('task_id'))
+
+    def _bind_pr_progress(self, artifact, task):
+        if (task.get('_is_return') or task.get('_source_audit_prompt')
+                or self._setting('work.cancelled.' + self._work_identity(artifact))):
+            return
+        tasks = {t['id']: t for t in self._all('tasks')}
+        current = tasks.get(artifact.get('_review_task_id'), {})
+        owner = self._work_execution_owner(task, tasks)
+        if not current or current['id'] == owner['id'] or current.get('status') != 'completed':
+            return
+        peers = [a for a in self._all('artifacts')
+                 if a['kind'] == 'pr' and a.get('url', '').lower() == artifact['url'].lower()]
+        if self._work_pause(artifact, peers=peers):
+            return
+        records = self._work_receipts()
+        linked = {}
+        for peer in peers:
+            if self._pr_review_source_current(peer):
+                root = self._work_execution_owner(tasks[peer['_review_task_id']], tasks)
+                linked.update(self._work_chain(root, tasks, records,
+                                              include_continuations=True))
+        if (any(t['status'] not in ('completed', 'failed', 'cancelled')
+                or self._background_pending(t['id']) for t, _ in linked.values())
+                or any(d['task_id'] in linked and d['status'] == 'pending' for d in self._all('decisions'))):
+            return
+        # A new execution can continue a finished review. Status callbacks keep its return address.
+        from .service import now
+        artifact['_review_task_id'] = owner['id']
+        artifact['_review_ownership_at'] = now()
 
     def _pr_review_owner(self, peers):
         candidates = [a for a in peers if self._pr_review_source_current(a)]
+        transferred = [a for a in candidates if a.get('_review_ownership_at')]
+        if transferred:
+            return max(transferred, key=lambda a: (a['_review_ownership_at'], a['id']))
         def order(artifact):
             assignment = self._assignment(self._get('tasks', artifact['_review_task_id']))
             # A delegated worker owns readiness; its coordinator receives the result.

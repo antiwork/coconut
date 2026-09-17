@@ -19,7 +19,7 @@ class WorkModelTests(unittest.TestCase):
             task.update(fields)
             self.service._put('tasks', task)
 
-    def test_completed_pr_check_waits_for_author_without_recovery_loop(self):
+    def test_completed_pr_check_does_not_infer_author_ownership(self):
         from dataclasses import replace
         from test_service_pr import observation
         self.tracker.observations = [replace(observation(), pr_state='open', draft=True, checks_state='failed')]
@@ -29,7 +29,7 @@ class WorkModelTests(unittest.TestCase):
             content='Verified the requested PR status; the author still owns implementation.')]})
         row = self.row()
         self.assertEqual(row['work_state'], 'waiting')
-        self.assertEqual(row['activity'], 'Waiting for the PR author')
+        self.assertEqual(row['activity'], 'Review complete')
         self.assertIsNone(row['completion_evidence'])
         count = len(self.service._all('tasks'))
         for _ in range(3):

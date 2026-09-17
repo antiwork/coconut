@@ -1754,7 +1754,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 and not work_item and not source_task and (not parent or parent.get('_chat_session')) and not scheduled):
             task['_chat_session'] = True
         if work_item:
-            task.update(_work_context_id=work_item['id'], _work_status_only=data.get('work_status_only', False))
+            task.update(_work_context_id=work_item['id'], _work_status_only=data.get('work_status_only', False),
+                        _conversation_epoch=self._setting('conversation_epoch'))
             # Capture the owner before recovery transfers the visible work item to this task.
             self._ensure_execution_session(task)
             if work_item.get('_native_outcome_id') and not data.get('work_status_only'):
@@ -2372,8 +2373,15 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         owner = self._assignment(task)
         if task.get('_work_context_id') and not task.get('_work_status_only'):
             artifact = self._get('artifacts', task['_work_context_id'])
-            if artifact.get('task_id'):
-                candidate = self._get('tasks', artifact['task_id'])
+            identity = artifact.get('task_id')
+            if artifact['kind'] == 'pr':
+                peers = [a for a in self._all('artifacts') if a['kind'] == 'pr'
+                         and a.get('url', '').lower() == artifact['url'].lower()]
+                review = self._pr_review_owner(peers)
+                if review and review['bot_id'] == task['bot_id']:
+                    identity = review['_review_task_id']
+            if identity:
+                candidate = self._get('tasks', identity)
                 if candidate['bot_id'] == task['bot_id']:
                     owner = self._assignment(candidate)
         task['_execution_session_id'] = owner.get('_execution_session_id') or owner['id']
