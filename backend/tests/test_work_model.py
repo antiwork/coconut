@@ -48,6 +48,47 @@ class WorkModelTests(unittest.TestCase):
         self.assertEqual(self.row()['completion_condition'], 'The exported file contains every requested record.')
         self.assertEqual(self.row()['work_next_step'], 'Ask for progress')
 
+    def test_explicit_pr_wait_uses_github_updates_without_recovery(self):
+        from dataclasses import replace
+        from test_service_pr import observation
+        self.tracker.observations = [replace(observation(), pr_state='open', draft=True, checks_state='failed')]
+        self.provider.payload.update(activity='Waiting for author validation', activity_state='waiting')
+        self.service._run_task(self.task['id'])
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'completed')
+        self.assertEqual(self.row()['work_state'], 'waiting')
+        count = len(self.service._all('tasks'))
+        for _ in range(3): self.service._queue_work_recoveries()
+        self.assertEqual(len(self.service._all('tasks')), count)
+        self.assertEqual(self.service._all('decisions'), [])
+        self.tracker.observations = [replace(observation(), pr_state='open', draft=False, checks_state='passed')]
+        self.service.refresh_pull_requests()
+        self.assertEqual(self.row()['work_state'], 'queued')
+
+    def test_pr_wait_cannot_hide_a_failed_turn_or_changed_head(self):
+        self.provider.payload.update(activity='Waiting for author validation', activity_state='waiting')
+        self.service._run_task(self.task['id'])
+        self.state(status='failed')
+        self.assertEqual(self.row()['work_state'], 'needs_recovery')
+        self.state(status='completed')
+        self.assertEqual(self.row()['work_state'], 'waiting')
+        item = self.service._all('artifacts')[0]
+        item['head_sha'] = 'b' * 40
+        self.service._put('artifacts', item)
+        self.assertEqual(self.row()['work_state'], 'needs_recovery')
+
+    def test_pr_wait_verifies_an_unknown_tool_result_before_waiting(self):
+        self.provider.payload.update(activity='Waiting for author validation', activity_state='waiting')
+        self.service._run_task(self.task['id'])
+        self.state(status='working')
+        receipt = self.service.native_event(self.task['id'], 'native_call',
+            dict(name='terminal', arguments=dict(command='git push')))
+        self.state(status='completed')
+        self.assertEqual(self.row()['work_state'], 'needs_recovery')
+        self.service._queue_work_recoveries()
+        recovery = self.service._all('tasks')[-1]
+        self.assertNotEqual(recovery['id'], self.task['id'])
+        self.assertIn(receipt['id'], {r['id'] for r in recovery['_self_recovery']['unknown_tools']})
+
     def test_completion_requires_evidence_and_keeps_the_outcome_id(self):
         item = self.track()
         with self.assertRaises(ServiceError):

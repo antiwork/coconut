@@ -1096,7 +1096,7 @@ def run_turn(request, emit, request_receipt):
                     'description': 'The exact https://github.com/owner/repo/pull/number URL.'},
                     'activity': {'type': 'string', 'maxLength': 80, 'description': 'One short current activity, for example Reviewing with Fable or Checking a finding. Update at phase changes and before finishing. No hashes or tool counts.'},
                     'paused_by_decision_id': TRACK_WORK_SCHEMA['parameters']['properties']['paused_by_decision_id'],
-                    'activity_state': {'type': 'string', 'enum': ['working', 'ready', 'blocked'], 'description': 'Use working while investigating or fixing, even when CI fails or merge is blocked. Use blocked only when work cannot proceed. Use ready only after verified review. Defaults to working.'}}, 'required': ['url']}}
+                    'activity_state': {'type': 'string', 'enum': ['working', 'waiting', 'ready', 'blocked'], 'description': 'Use working while investigating or fixing. Use waiting when the PR author or checks own the next step. Coconut watches GitHub without model calls. Use blocked for unfinished work with no next owner. Use ready after verified review. Defaults to working.'}}, 'required': ['url']}}
             registry.register(name=pr_schema['name'], toolset='coconut', schema=pr_schema,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('artifact', dict(kind='pr', url=arguments.get('url'), **{k: arguments[k] for k in ('activity', 'activity_state', 'paused_by_decision_id') if k in arguments}))))
             allowed.add(pr_schema['name'])
@@ -1148,7 +1148,7 @@ def run_turn(request, emit, request_receipt):
 
         instructions = ('You work in Coconut, a concise messaging app. Give short, useful replies. '
                         'Use coconut_track_pr when you create a PR, start work on an existing PR, or the person asks to follow one. Track the URL even when this task continues an older conversation. '
-                        'Include activity in coconut_track_pr at each phase change, before launching a background review, and when returning its result. Use a short phrase naming the work, such as Reviewing with Fable. Report the verified outcome with ready or blocked before finishing. '
+                        'Include activity in coconut_track_pr at each phase change, before launching a background review, and when returning its result. Use a short phrase naming the work, such as Reviewing with Fable. Report ready after verified review. Report waiting when the PR author or checks own the next step; Coconut watches GitHub. Report blocked for unfinished work with no next owner. '
                         'When a delegated PR passes CI, its owner verifies current reviews, unresolved findings, conflicts, and required approvals, then returns the result to the requesting bot. '
                         'The requesting bot offers one merge decision with coconut_ask when those checks support merging. Recommend Merge when justified. Do not ask the person to remind you. '
                         'Reuse any pending merge decision for that PR. Green CI alone is not merge permission. Never merge without explicit authorization for the current changes; recheck the head before any authorized merge. '

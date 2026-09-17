@@ -143,8 +143,8 @@ class WorkStatus:
                     return
         text = require_text(payload, 'activity', 80)
         state = payload.get('activity_state', 'working')
-        if state not in ('working', 'ready', 'blocked') or '\n' in text:
-            raise ServiceError(400, 'Use one short activity and a working, ready, or blocked state.')
+        if state not in ('working', 'waiting', 'ready', 'blocked') or '\n' in text:
+            raise ServiceError(400, 'Use one short activity and a working, waiting, ready, or blocked state.')
         if not task.get('id'):
             raise ServiceError(400, 'Only the bot doing this task can report its activity.')
         self._apply_work_pause(artifact, task, payload, state)

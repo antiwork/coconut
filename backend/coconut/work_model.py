@@ -179,10 +179,13 @@ class WorkModel:
                     for t in owner.get('_work_todos', {}).get('todos', [])))
         # A delivered diagnosis ends its own scope even while the requester continues implementation.
         # Completing the bot's assignment can leave a PR waiting on its author or checks.
+        latest_report = max(reports, key=lambda p: p.get('_activity_at', ''), default={})
         awaiting_pr = (item['kind'] == 'pr' and attempts and all(t['status'] == 'completed' for t in attempts)
-                       and any(t['id'] == 'coconut-assignment' and t['status'] == 'completed'
-                               for t in owner.get('_work_todos', {}).get('todos', []))
-                       and not dependencies and not pending and not replies)
+                       and (latest_report.get('_activity_state') == 'waiting'
+                            or any(t['id'] == 'coconut-assignment' and t['status'] == 'completed'
+                                   for t in owner.get('_work_todos', {}).get('todos', [])))
+                       and not dependencies and not pending and not replies
+                       and not any(self._has_uncertain_receipt(t['id'], t.get('_native_turn_id')) for t in attempts))
         pause = self._work_pause(item, decisions, peers)
         if self._setting('work.cancelled.' + self._work_identity(item)) or (item['kind'] == 'work' and ((owner.get('status') == 'cancelled' and not evidence) or item['status'] == 'cancelled')):
             state, activity, next_step = 'cancelled', 'Stopped', None
