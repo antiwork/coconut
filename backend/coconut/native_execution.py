@@ -32,9 +32,10 @@ class NativeExecution:
         if record['state'] != 'executing':
             raise ServiceError(409, 'This tool cannot deliver a message.')
         receipt = self._store_bot_message(task_id, payload)
+        native_reply = receipt.pop('disposition', None) == 'reply'
         receipt = {key: value for key, value in receipt.items() if isinstance(value, str)}
         receipt['delivery_id'] = payload['native_envelope_id']
-        if receipt.get('task_id') and receipt.get('disposition') != 'reply':
+        if receipt.get('task_id') and not native_reply:
             recipient = self._get('tasks', receipt['task_id'])
             if any(message.get('progress_only') for message in recipient.get('_bot_messages', [])):
                 # Normal handoffs already have a return route. A message back to the

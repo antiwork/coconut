@@ -1375,7 +1375,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         owner = self._assignment(self._get('tasks', owner_id)) if target_id == assignment.get('source_bot_id') and owner_id else None
         callback = self._get('tasks', source['_relay_callback_owner']) if source.get('_relay_callback_owner') else source
         native_reply = bool(not returning and source.get('_is_return') and callback.get('_native_relay', {}).get('sender_bot_id') == target_id
-                            and not callback.get('_native_relay_result'))
+                            and not callback.get('_native_relay_result') and self.db.execute(
+                                "SELECT 1 FROM native_receipts WHERE json_extract(data, '$.task_id')=? "
+                                "AND json_extract(data, '$._relay_task_id')=? AND json_extract(data, '$._process_delivery') IS NULL LIMIT 1",
+                                (callback.get('source_task_id'), callback['id'])).fetchone())
         # Helper questions retain a separate callback while the native owner waits for that helper.
         native_return = bool(owner and owner.get('_native_outcome_id') and not progress_only)
         bot_message = {'sender_bot_id': sender['id'], 'sender_name': sender['name'], 'text': text, 'result_status': payload.get('result_status'), 'progress_only': progress_only}

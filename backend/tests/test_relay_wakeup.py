@@ -39,15 +39,16 @@ class RelayWakeupTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', self.parent['id'])['status'], 'waiting')
         self.assertEqual(self.service._get('native_receipts', record_id)['_process_delivery'], helper['_native_turn_id'])
 
-    def reply_with_tool(self, reply_id):
+    def reply_with_tool(self, reply_id, target=None):
+        target = target or self.dev['id']
         with self.service.transaction():
             reply = self.service._get('tasks', reply_id)
             reply['status'] = 'working'
             self.service._put('tasks', reply)
         call = self.service.emit(reply_id, 'native_call', {
-            'name': 'message_agent', 'arguments': {'target': self.dev['id'], 'message': 'The user approved the test-only draft PR.'}})
+            'name': 'message_agent', 'arguments': {'target': target, 'message': 'The user approved the test-only draft PR.'}})
         payload = dict(native_call_id=call['id'], native_envelope_id=uuid4().hex,
-                       target_bot_id=self.dev['id'], text='The user approved the test-only draft PR.')
+                       target_bot_id=target, text='The user approved the test-only draft PR.')
         return call['id'], payload, self.service.emit(reply_id, 'native_bot_message', payload)
 
     def test_requester_tool_reply_resumes_the_original_worker_once(self):
@@ -59,7 +60,7 @@ class RelayWakeupTests(unittest.TestCase):
         task_count = len(self.service._all('tasks'))
         reply_record, payload, receipt = self.reply_with_tool(reply_id)
         self.assertEqual(receipt['task_id'], self.child)
-        self.assertEqual(receipt['disposition'], 'reply')
+        self.assertNotIn('disposition', receipt)
         self.assertEqual(len(self.service._all('tasks')), task_count)
         self.assertNotIn('_relay_task_id', self.service._get('native_receipts', reply_record))
         self.assertEqual(self.service.emit(reply_id, 'native_bot_message', payload), receipt)
@@ -87,6 +88,58 @@ class RelayWakeupTests(unittest.TestCase):
         self.service._drain_returns()
         self.service._drain_process_completions()
         self.assertEqual(self.service._get('tasks', self.child)['status'], 'cancelled')
+
+    def test_requester_reply_round_trips_through_the_worker_transport(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        from coconut.providers import HermesProvider
+        from test_provider import ProviderTests
+        import os
+        record_id, reply_id = self.send_back()
+        self.root = Path(self.temp.name)
+        fixture = ProviderTests.fake_hermes(self, """
+            import json
+            result = json.loads(registry.dispatch('message_agent',
+                {'target': TARGET, 'message': 'Continue the approved tests.'}))
+            assert result['task_id'] == OWNER
+            return {'completed': True, 'final_response': 'Answer delivered.'}
+        """.replace('TARGET', repr(self.dev['id'])).replace('OWNER', repr(self.child)))
+        provider = HermesProvider(fixture.data_dir, python=fixture.python,
+                                  hermes_root=fixture.hermes_root, catalog=fixture.catalog)
+        self.addCleanup(provider.close)
+        with self.service.transaction():
+            task = self.service._get('tasks', reply_id)
+            task['status'] = 'working'
+            self.service._put('tasks', task)
+        task['_available_bots'] = [self.dev]
+        events = []
+        def emit(kind, payload):
+            events.append(kind)
+            return self.service.emit(reply_id, kind, payload)
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(task, self.desk, [], emit)
+        self.assertIn('completed', events)
+        self.assertNotIn('failed', events)
+        self.service._drain_returns()
+        self.service._drain_process_completions()
+        self.assertEqual(self.service._get('tasks', self.child)['status'], 'queued')
+        self.assertTrue(self.service._get('native_receipts', record_id)['_process_delivery'])
+
+    def test_callback_without_a_native_wait_retains_the_normal_return_route(self):
+        with self.service.transaction():
+            child = self.service._get('tasks', self.child)
+            child['_native_relay'] = {'sender_bot_id': self.desk['id'], 'envelope_id': uuid4().hex}
+            self.service._put('tasks', child)
+            callback = dict(child, id=str(uuid4()), _is_return=True,
+                            _assignment_task_id=self.child, _relay_callback_owner=self.child)
+            callback.pop('_native_relay')
+            self.service._put('tasks', callback)
+        # This callback has no native receipt waiting on its inherited owner.
+        # It must deliver a normal request, rather than record an unread reply.
+        _, _, receipt = self.reply_with_tool(callback['id'], self.desk['id'])
+        self.assertNotEqual(receipt['task_id'], self.parent['id'])
+        self.assertEqual(self.service._get('tasks', receipt['task_id'])['_assignment_task_id'], self.parent['id'])
+        self.assertNotIn('_native_relay_result', self.service._get('tasks', self.child))
 
     def test_requester_tool_reply_after_another_helper_keeps_the_original_sender(self):
         _, reply_id = self.send_back()
