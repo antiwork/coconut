@@ -323,10 +323,18 @@ class TrackedWork:
                 related = task.get('id') in chains.get(parent['id'], {})
                 if owner and explicit_parent and not related:
                     # Follow recorded attempts. A reused key alone does not link outcomes.
-                    earlier = {}
-                    for attempt in attempts(owner).values():
-                        earlier.update(self._work_chain(attempt, tasks, records, include_continuations=True))
-                    related = bool(set(attempts(task)).intersection(earlier))
+                    owners = set(attempts(owner))
+                    pending, visited = [task], set()
+                    while pending and not related:
+                        previous = pending.pop()
+                        for identity, attempt in attempts(previous).items():
+                            if identity in visited:
+                                continue
+                            visited.add(identity)
+                            related = related or identity in owners
+                            source = tasks.get(attempt.get('source_task_id'))
+                            if source:
+                                pending.append(source)
                 if not owner or (not related and not completed_handoff):
                     parent = None
             inherited_alias = parent and parent.get('_work_key') != item['_work_key'] and item.get('_same_outcome_as') != parent['id']

@@ -72,6 +72,9 @@ class WorkOutcomeAliasTests(unittest.TestCase):
         parent = self.track()
         task, item = self.child(key='worker-export')
         self.report(task, parent)
+        owner = self.service._get('tasks', parent['task_id'])
+        owner.update(exchange_id=self.service._new_exchange(), _waiting_on=[])
+        self.service._put('tasks', owner)
         attempt = dict(task, id='later-delegate', exchange_id=self.service._new_exchange(),
             status='waiting', source_task_id=None, _self_recovery={'previous_task_id': task['id']})
         self.service._put('tasks', attempt)
