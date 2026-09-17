@@ -324,6 +324,8 @@ class TrackedWork:
                 if owner and explicit_parent and not related:
                     # Follow recorded attempts. A reused key alone does not link outcomes.
                     owners = set(attempts(owner))
+                    if owner.get('_work_context_id') == parent['id']:
+                        owners.update(parent.get('_work_previous_task_ids', []))
                     pending, visited = [task], set()
                     while pending and not related:
                         previous = pending.pop()
@@ -345,6 +347,7 @@ class TrackedWork:
                 self._put('artifacts', item)
                 self._event('artifact.updated', dict(self._public(item), _hidden=True), item['bot_id'], item['task_id'])
             elif not parent and item.pop('_work_parent_id', None):
+                item.pop('_same_outcome_as', None)
                 item.pop('_work_parent_task_id', None)
                 item['_hidden'] = False
                 self._put('artifacts', item)

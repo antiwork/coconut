@@ -55,6 +55,22 @@ class WorkOutcomeAliasTests(unittest.TestCase):
             rows = [a for a in self.service.snapshot()['artifacts'] if a['kind'] == 'work']
             self.assertEqual([a['id'] for a in rows], [parent['id']])
 
+    def test_work_discussion_keeps_the_existing_delegated_report(self):
+        parent = self.track()
+        child, report = self.child(key='worker-export')
+        self.report(child, parent)
+        sent = self.write('POST', '/v1/bots/' + self.bot['id'] + '/messages',
+            dict(text='Update the title for this same work', mode='queue', work_artifact_id=parent['id']))
+        discussion = self.service._get('tasks', sent['id'])
+        discussion['status'] = 'working'
+        self.service._put('tasks', discussion)
+        self.service._register_work(discussion['id'], dict(key='account-export', title='Export the account records',
+            activity='Waiting for the existing result', status='waiting'))
+        self.service._sync_automatic_work()
+        self.assertTrue(self.service._get('artifacts', report['id'])['_hidden'])
+        rows = [a for a in self.service.snapshot()['artifacts'] if a['kind'] == 'work']
+        self.assertEqual([a['id'] for a in rows], [parent['id']])
+
     def test_explicit_alias_detaches_when_unrelated_work_reuses_parent_key(self):
         parent = self.track()
         task, item = self.child(key='worker-export')
@@ -66,6 +82,14 @@ class WorkOutcomeAliasTests(unittest.TestCase):
         self.service._put('tasks', owner)
         self.service._register_work(owner['id'], dict(key='account-export', title='Export the other account',
             activity='Preparing another export', status='working'))
+        self.assertFalse(self.service._get('artifacts', item['id'])['_hidden'])
+        discussion = self.write('POST', '/v1/bots/' + self.bot['id'] + '/messages',
+            dict(text='Update the other account export', mode='queue', work_artifact_id=parent['id']))
+        current = self.service._get('tasks', discussion['id'])
+        current['status'] = 'working'
+        self.service._put('tasks', current)
+        self.service._register_work(current['id'], dict(key='account-export', title='Export the other account',
+            activity='Checking the other export', status='working'))
         self.assertFalse(self.service._get('artifacts', item['id'])['_hidden'])
 
     def test_alias_recovery_keeps_the_original_parent(self):
