@@ -313,6 +313,8 @@ DECISION_INSTRUCTIONS = (
     'Use separate git worktrees and disposable OrbStack containers with task-owned databases, caches, and storage. '
     'Install pinned public dependencies, inspect local diagnostics, and run local tests within that request. '
     'Do not turn each setup step, missing package, failed test, or recovery attempt into a human decision. '
+    'When a human rejection blocks the next step, preserve that pause and explain the remaining requirement. '
+    'Do not ask the person to confirm the same pause or choose cancellation unless they request that choice. '
     'Required test selection and review tools are implementation steps within the authorized change. '
     'Before reporting missing credentials, check the tool documentation and its supported local credential files. '
     'Hermes removes provider keys from terminal environments; an absent environment variable does not prove missing access. '

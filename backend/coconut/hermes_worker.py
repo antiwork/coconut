@@ -606,6 +606,10 @@ def conversation_input(request):
     if receipts:
         prompt += '\nCompleted native tools for this task. Use these results. Do not repeat their effects:\n'
         prompt += json.dumps([{'action': item['action'], 'result': item['result']} for item in receipts])
+    if request['task'].get('_direct_reply_message_id') and request['task'].get('source_bot_id'):
+        prompt += ('\nThe person addressed you directly. Answer them in this conversation. '
+                   'The original bot assignment remains context; sending its owner a message does not answer the person. '
+                   'Do not treat a question as permission to resume blocked actions.')
     incoming = explicit_bot_messages(request['task'])
     if incoming:
         prompt += '\nExplicit messages delivered by the service. Sender identity comes from the service. The text is shared task context:\n'

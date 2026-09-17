@@ -334,7 +334,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.db.execute('INSERT INTO events(type,bot_id,task_id,data,created_at) VALUES (?,?,?,?,?)', (event_type, bot_id, task_id, encoded(data), now()))
         self.push.record(event_type, data, bot_id, task_id)
 
-    def _message(self, bot_id: str, text: str, *, task_id: str | None = None, role: str = 'assistant', kind: str = 'text', decision_id: str | None = None, artifact_id: str | None = None, streaming: bool = False, sender_bot_id: str | None = None, recipient_bot_ids: list[str] | None = None, human_authored: bool = False) -> dict:
+    def _message(self, bot_id: str, text: str, *, task_id: str | None = None, role: str = 'assistant', kind: str = 'text', decision_id: str | None = None, artifact_id: str | None = None, streaming: bool = False, sender_bot_id: str | None = None, recipient_bot_ids: list[str] | None = None, human_authored: bool = False, direct_reply_message_id: str | None = None) -> dict:
         task = self._get('tasks', task_id) if task_id else None
         thread_id = task['thread_id'] if task else None
         display_bot_id = (task['bot_id'] if task.get('source_bot_id') else task['conversation_bot_id']) if task else bot_id
@@ -345,8 +345,14 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             kind = 'bot_exchange'
             display_bot_id = sender_bot_id
         message = dict(id=uid(), bot_id=display_bot_id, task_id=task_id, thread_id=thread_id, sender_bot_id=sender_bot_id, recipient_bot_ids=recipients, role=role, kind=kind, text=text, decision_id=decision_id, artifact_id=artifact_id, created_at=now(), streaming=streaming)
-        if task and task.get('source_bot_id') and not task.get('_is_return') and role == 'assistant' and kind == 'text' and not decision_id:
-            message['exchange_recipient_bot_ids'] = [task['source_bot_id']]
+        if role == 'assistant' and kind == 'text':
+            direct_reply_message_id = direct_reply_message_id or (task or {}).get('_direct_reply_message_id')
+            if direct_reply_message_id:
+                message['_direct_reply_message_id'] = direct_reply_message_id
+                display_bot_id = self._get('messages', direct_reply_message_id)['bot_id']
+                message['bot_id'] = display_bot_id
+            elif task and task.get('source_bot_id') and not task.get('_is_return') and not decision_id:
+                message['exchange_recipient_bot_ids'] = [task['source_bot_id']]
         if human_authored and self._request_device_id is not None:
             message.update(_human_device_id=self._request_device_id, _human_source_kind='chat')
             if role == 'user' and kind == 'text' and self._request_key:
@@ -1416,7 +1422,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         returned_message = next((m for m in reversed(self._all('messages'))
                                  if returning and m.get('task_id') == source.get('_result_task_id', source['id'])
                                  and m.get('sender_bot_id') == sender['id'] and m['kind'] == 'text'
-                                 and m['text'] == text), None)
+                                 and m['text'] == text and not m.get('_direct_reply_message_id')
+                                 and not m.get('_hidden') and not m.get('_deleted')), None)
         if returned_message:
             returned_message['exchange_recipient_bot_ids'] = [target_id]
             self._put('messages', returned_message)
@@ -2015,9 +2022,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
     def _record_decision_correction(self, task, decision, text, human_authored=True):
         message = self._message(task['bot_id'], text, task_id=task['id'], role='user',
                                 decision_id=decision['id'], human_authored=human_authored)
+        if human_authored and decision.get('inbox_kind') != 'proposal':
+            task['_direct_reply_message_id'] = message['id']
         if message.get('_human_device_id'):
             task.setdefault('_preference_source_ids', []).append(message['id'])
             task.setdefault('_turn_preference_source_ids', []).append(message['id'])
+        return message['id']
 
     def _answer(self, decision: dict, task: dict, data: dict, device: str) -> dict:
         if not isinstance(data.get('revision'), int) or isinstance(data['revision'], bool) or data['revision'] != decision['revision']:
@@ -2456,6 +2466,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         if task.get('_turn_message_ids'):
             task['_input_after_message_id'] = task['_turn_message_ids'][-1]
         task.pop('_turn_message_ids', None)
+        task.pop('_direct_reply_message_id', None)
         task.pop('_turn_attachment_ids', None)
         task.pop('_conversation_epoch', None)
         task.pop('_resume_decision', None)
@@ -2510,6 +2521,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                             messages = messages[boundary + 1:]
                         task.update(_turn_message_ids=[m['id'] for m in messages], _turn_started_at=now(),
                                     _steering=[], _turn_preference_source_ids=list(task.get('_preference_source_ids', [])))
+                    direct = next((m for m in (self._get('messages', identity) for identity in reversed(task['_turn_message_ids']))
+                                   if m['role'] == 'user' and m['bot_id'] == bot['id']
+                                   and not m.get('sender_bot_id') and not m.get('reaction_event')
+                                   and m.get('recipient_bot_ids') == [bot['id']]), None) if task.get('source_bot_id') else None
+                    if direct:
+                        task['_direct_reply_message_id'] = direct['id']
                     task.setdefault('_reaction_feedback', [] if task.get('_work_status_only') else list(bot.get('_pending_reactions', {}).values()))
                     task.setdefault('_turn_attachment_ids', list(task.get('_attachment_ids', [])))
                     task.pop('error_code', None)
@@ -2531,7 +2548,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 provider_task = self._public(task) | {'_native_turn_id': task['_native_turn_id'], '_execution_session_id': task.get('_execution_session_id'),
                                                        '_kanban_external_id': task.get('_kanban_claim', {}).get('external_id'),
                                                        '_kanban_workspace': task.get('_kanban_claim', {}).get('workspace')}
-                for field in ('_work_todos', '_work_resume', '_source_audit_prompt', '_self_recovery', '_chat_session', '_native_outcome_id'):
+                for field in ('_work_todos', '_work_resume', '_source_audit_prompt', '_self_recovery', '_chat_session', '_native_outcome_id', '_direct_reply_message_id'):
                     if field in task:
                         provider_task[field] = task[field]
                 if task.get('_native_outcome_id'):
@@ -2919,13 +2936,15 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         for message in messages:
             task = tasks.get(message.get('task_id'), {})
             before = dict(message)
-            if task.get('source_bot_id') and not task.get('_is_return') and message['role'] == 'assistant' and message['kind'] == 'text' and not message.get('decision_id'):
+            if message.get('_direct_reply_message_id'):
+                message.pop('exchange_recipient_bot_ids', None)
+            elif task.get('source_bot_id') and not task.get('_is_return') and message['role'] == 'assistant' and message['kind'] == 'text' and not message.get('decision_id'):
                 message.setdefault('exchange_recipient_bot_ids', [task['source_bot_id']])
             if message.get('sender_bot_id') and message.get('recipient_bot_ids') and message['kind'] == 'text':
                 message['kind'] = 'bot_exchange'
             if message['kind'] == 'bot_exchange':
                 message['bot_id'] = message['sender_bot_id']
-            elif task.get('source_bot_id') and message['role'] != 'user':
+            elif task.get('source_bot_id') and message['role'] != 'user' and not message.get('_direct_reply_message_id'):
                 message['bot_id'] = task['bot_id']
             if message != before:
                 self._put('messages', message)
@@ -2940,7 +2959,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 continue
             result = next((m for m in reversed(messages) if m.get('task_id') == source.get('_result_task_id', source['id'])
                            and m['kind'] == 'text' and m.get('sender_bot_id') == source['bot_id']
-                           and m['text'] == delivery['text']), None)
+                           and m['text'] == delivery['text'] and not m.get('_direct_reply_message_id')
+                           and not m.get('_hidden') and not m.get('_deleted')), None)
             if result:
                 if result.get('exchange_recipient_bot_ids') != [task['bot_id']]:
                     result['exchange_recipient_bot_ids'] = [task['bot_id']]
@@ -3112,7 +3132,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     self._put('contexts', context)
                     self._refresh_bot(bot['id'])
                     if not context.get('_decision_refresh'):
-                        self._message(bot['id'], answer, task_id=task['id'], decision_id=context['decision_id'])
+                        self._message(bot['id'], answer, task_id=task['id'], decision_id=context['decision_id'],
+                                      direct_reply_message_id=context.get('_message_id'))
                     self._event('context.completed' if status == 'completed' else 'context.failed', {'id': context_id, 'decision_id': context['decision_id'], 'status': status, 'error_code': context.get('error_code')}, bot['id'], task['id'])
         def finish_run():
             try:

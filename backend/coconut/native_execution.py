@@ -229,7 +229,7 @@ class NativeExecution:
                                           predicted_option_id=decision.get('_predicted_option_id'), decided_by=device))
         if choice == 'reply':
             decision['outcome'] = 'Reply received. The bot will continue.'
-            self._record_decision_correction(task, decision, correction)
+            reply_message_id = self._record_decision_correction(task, decision, correction)
             self._put('tasks', task)
         if decision.get('draft') is not None and choice != 'reply':
             decision['outcome'] = 'Approved for sending.' if choice == 'approve' else 'Draft discarded. Nothing was sent.'
@@ -247,6 +247,8 @@ class NativeExecution:
                            conversation_bot_id=task['conversation_bot_id'], record_message=False, human_authored=False)
                 stored = self._get('tasks', continuation['id'])
                 stored['_resume_decision'] = decision['id']
+                if choice == 'reply':
+                    stored['_direct_reply_message_id'] = reply_message_id
                 stored['title'] = decision['title'][:120]
                 self._put('tasks', stored)
                 decision['_execution_task_id'] = stored['id']
@@ -262,6 +264,8 @@ class NativeExecution:
             self._advance_recovery_input(task)
         if task.get('_self_recovery') and (not decision.get('_recovery_work_ids') or option_id == 'retry'):
             task['_self_recovery']['attempt'] = 0
+        if choice == 'reply':
+            task['_direct_reply_message_id'] = reply_message_id
         task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
         if correction.strip() and choice != 'reply':
             self._record_decision_correction(task, decision, correction)
