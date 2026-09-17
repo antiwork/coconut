@@ -98,6 +98,24 @@ class ConversationInputTests(unittest.TestCase):
         self.assertEqual([row['content'] for row in seed_messages(self.request)],
                          ['Use the blue label.', 'I will use blue.'])
 
+    def test_background_work_does_not_import_an_unrelated_unanswered_chat(self):
+        self.request['task'].update(id='audit', _execution_session_id='audit', _turn_message_ids=[],
+                                   _source_audit_prompt='Check the assigned launch issue.')
+        history = NativeConversation(self.request, self.db).history
+        prompt, _ = conversation_input(self.request)
+        self.assertEqual(history, [])
+        self.assertIn('Check the assigned launch issue.', prompt)
+        self.assertNotIn('Which label?', prompt)
+        self.assertNotIn('Do a different task later.', prompt)
+
+    def test_work_history_keeps_the_owner_and_explicit_assignment(self):
+        self.request['task'].update(_execution_session_id='earlier')
+        self.assertEqual([row['content'] for row in seed_messages(self.request)],
+                         ['Use the blue label.', 'I will use blue.'])
+        self.request['task'].update(_execution_session_id='new-owner', _handoff_assignment={'task_id': 'earlier'})
+        self.assertEqual([row['content'] for row in seed_messages(self.request)],
+                         ['Use the blue label.', 'I will use blue.'])
+
     def test_import_runs_once_and_never_replaces_native_tool_history(self):
         first = NativeConversation(self.request, self.db)
         self.assertEqual(len(first.history), 2)

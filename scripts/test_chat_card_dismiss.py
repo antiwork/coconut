@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--xctestrun', type=Path, required=True)
     parser.add_argument('--simulator', required=True)
     parser.add_argument('--result', type=Path, required=True)
+    parser.add_argument('--position', action='store_true')
     args = parser.parse_args()
     state = json.loads((ROOT / 'ios/Coconut/Fixtures/PreviewState.json').read_text())
     bot = dict(state['bots'][1], pinned=False, status='idle', unread_count=0)
@@ -29,6 +30,18 @@ def main():
     state['messages'] = [dict(id='decision-message', bot_id=bot['id'], task_id=task['id'],
         role='assistant', kind='decision', text='', decision_id=decision['id'],
         created_at=state['server_time'], streaming=False)]
+    if args.position:
+        decision.update(title='Keep this report?', context='The report is ready.', explanation='',
+                        consequences='', resource='', proposal_preview=None, action_type='question',
+                        created_at='2026-09-17T09:00:00Z',
+                        options=[dict(id='keep', label='Keep', answer='approve', explanation=''),
+                                 dict(id='discard', label='Discard', answer='reject', explanation='')])
+        state['messages'] = [dict(id=identity, bot_id=bot['id'], task_id=task['id'], role='assistant',
+            kind='text', text=text, created_at=stamp, streaming=False) for identity,text,stamp in [
+                ('before', 'Before the card.', '2026-09-17T08:00:00Z'),
+                ('after', 'After the card.', '2026-09-17T10:00:00Z')]]
+        earlier_message = state['messages'].pop(0)
+        state['history_before'] = {bot['id']: 10}
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -48,6 +61,10 @@ def main():
             elif self.path.startswith('/v1/events'):
                 time.sleep(1)
                 self.send(dict(events=[], cursor=state['cursor'], server_time=state['server_time']))
+            elif args.position and self.path.startswith('/v1/history/' + bot['id']):
+                self.send(dict(messages=[earlier_message, dict(id='original-card-message', bot_id=bot['id'], task_id=task['id'],
+                    role='assistant', kind='decision', text='', decision_id=decision['id'],
+                    created_at=decision['created_at'], streaming=False)], before=None))
             elif self.path == '/v1/work': self.send(dict(artifacts=[]))
             else: self.send({})
 
@@ -88,8 +105,12 @@ def main():
             runfile.write_bytes(plistlib.dumps(document))
             subprocess.run(['xcodebuild', 'test-without-building', '-xctestrun', str(runfile),
                             '-destination', 'platform=iOS Simulator,id=' + args.simulator,
-                            '-only-testing:CoconutUITests/ChatCardDismissTests', '-parallel-testing-enabled', 'NO',
+                            '-only-testing:CoconutUITests/' + ('ChatCardPositionTests' if args.position else 'ChatCardDismissTests'), '-parallel-testing-enabled', 'NO',
                             '-resultBundlePath', str(args.result)], check=True)
+        if args.position:
+            assert not requests, requests
+            print('Verified: card stays between messages before and after history loading.')
+            return
         assert len(requests) == 2, requests
         assert all(payload.get('action') == 'dismiss' for payload, key in requests), requests
         assert all(key for payload, key in requests), 'Dismiss requests need idempotency keys'

@@ -565,6 +565,26 @@ final class AppStore {
             .sorted { $0.createdAt < $1.createdAt }
     }
 
+    func conversationTranscript(for botId: String, focusDecisionId: String? = nil) -> [Message] {
+        let messages = conversationMessages(for: botId).map { message in
+            var row = message
+            if row.kind == "decision", let id = row.decisionId { row.id = id }
+            return row
+        }
+        let represented = Set(messages.filter { $0.kind == "decision" }.compactMap(\.decisionId))
+        let missing = decisions.filter {
+            conversationBotId(for: $0) == botId && ($0.isPending || $0.id == focusDecisionId)
+                && !represented.contains($0.id)
+        }.map { decision in
+            Message(id: decision.id, botId: botId, taskId: decision.taskId, role: "assistant", kind: "decision",
+                    text: "", decisionId: decision.id, artifactId: nil, createdAt: decision.createdAt, streaming: false)
+        }
+        // Cards can outlive the loaded history page. Keep their original place in the transcript.
+        let timeline = (messages + missing).sorted { $0.createdAt < $1.createdAt }
+        return TranscriptPresentation.visibleMessages(timeline, artifacts: artifacts, decisions: decisions)
+            .filter { $0.kind != "activity" }
+    }
+
     @discardableResult
     func reply(task: AgentTask, text: String, attachments: [String] = [], decisionId: String? = nil, mentionedBotIds: [String] = []) async -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)

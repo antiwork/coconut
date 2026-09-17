@@ -87,6 +87,14 @@ def seed_messages(request):
     current = current_messages(request) if request['operation'] == 'start' else []
     if current:
         rows = rows[:rows.index(current[0])]
+    task = request['task']
+    if task.get('_execution_session_id'):
+        # Native normalization joins adjacent user messages. An unrelated chat request
+        # must not become part of a background assignment when its session starts.
+        task_ids = {task['id'], task['_execution_session_id'],
+                    (task.get('_handoff_assignment') or {}).get('task_id'),
+                    (request.get('decision') or task.get('pending_decision') or {}).get('task_id')}
+        rows = [message for message in rows if message.get('task_id') in task_ids - {None}]
     result = []
     for message in rows:
         row = dict(role=message['role'], content=message_content(message),

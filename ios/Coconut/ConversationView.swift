@@ -35,8 +35,7 @@ struct ConversationView: View {
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
     private var messages: [Message] {
-        TranscriptPresentation.visibleMessages(store.conversationMessages(for: botId), artifacts: store.artifacts, decisions: store.decisions)
-            .filter { $0.kind != "activity" }
+        store.conversationTranscript(for: botId, focusDecisionId: focusDecisionId)
     }
     private var waitingForResponse: [AgentTask] {
         guard store.connection == .connected || store.isDemo else { return [] }
@@ -119,16 +118,6 @@ struct ConversationView: View {
                                     // Keep full text height when the lazy stack resizes or scrolls to a new message.
                                     .fixedSize(horizontal: false, vertical: true)
                                     .id(message.kind == "decision" ? (message.decisionId ?? entry.id) : entry.id)
-                            }
-                            ForEach(store.decisions.filter { decision in
-                                store.conversationBotId(for: decision) == botId
-                                    && (decision.isPending || decision.id == focusDecisionId)
-                                    && !messages.contains { $0.kind == "decision" && $0.decisionId == decision.id }
-                            }) { decision in
-                                DecisionCard(decision: decision, onViewPrevious: { id in
-                                    Task { await loadAndScrollToMessage(id, proxy: proxy) }
-                                }).id(decision.id)
-                                    .modifier(MessageTimestamp(createdAt: decision.createdAt))
                             }
                             if showsActivity {
                                 BotWorkingIndicator(botId: botId)
