@@ -328,7 +328,7 @@ class WorkStatus:
             return True
         return any(r['task_id'] == task['id'] and subscription(r) and not r.get('_process_delivery')
                    and (r.get('turn_id') == task.get('_native_turn_id')
-                        or (self._completion_context(r) and self._can_resume_completion(task, self._get('bots', task['bot_id']), r)))
+                        or self._can_resume_completion(task, self._get('bots', task['bot_id']), r))
                    and r.get('_process_status') == 'running' and r.get('_process_observed_at')
                    and (timestamp - datetime.fromisoformat(r['_process_observed_at'].replace('Z', '+00:00'))).total_seconds() < 45
                    for r in records)

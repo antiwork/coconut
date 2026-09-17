@@ -90,6 +90,20 @@ class WorkStatusTests(unittest.TestCase):
         with self.service.transaction(): self.service._put('native_receipts', record)
         self.assertEqual(self.row()['work_state'], 'waiting')
 
+    def test_active_process_survives_a_later_owner_turn(self):
+        self.artifact()
+        self.status('waiting')
+        record = dict(id=str(uuid4()), task_id=self.task['id'], action={'name': 'terminal'}, state='completed',
+                      result=json.dumps(dict(session_id='test-process', notify_on_complete=True)),
+                      turn_id='earlier-turn', _process_status='running', _process_observed_at=now())
+        with self.service.transaction():
+            self.service._put('native_receipts', record)
+        self.assertEqual(self.row()['work_state'], 'working')
+        record['_process_delivery'] = 'finished-turn'
+        with self.service.transaction():
+            self.service._put('native_receipts', record)
+        self.assertNotEqual(self.row()['work_state'], 'working')
+
     def test_verified_outcome_survives_turn_but_not_changed_head(self):
         artifact = self.artifact('Review needs changes', 'blocked')
         self.assertEqual(self.row()['activity'], 'Review needs changes')
