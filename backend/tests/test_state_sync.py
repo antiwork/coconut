@@ -67,6 +67,28 @@ class StateSyncTests(unittest.TestCase):
         reset = self.service.updates(state['cursor'] + 1000, collection_deltas=True, native_events=True, compact_history=True)
         self.assertEqual({d['id'] for d in reset['reset']['decisions']}, {'pending-card', 'prior-choice'})
 
+    def test_new_followup_delivers_earlier_choice_from_an_older_task(self):
+        from coconut.service import now
+        old = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Original choice'})
+        previous = dict(id='earlier', bot_id=self.bot['id'], task_id=old['id'], status='resolved',
+            action_type='question', title='Original choice?', revision=1, created_at=now(), selected_option_label='Include both')
+        self.service._put('decisions', previous)
+        self.service._message(self.bot['id'], 'Earlier card', task_id=old['id'], decision_id=previous['id'])
+        for i in range(80):
+            self.service._message(self.bot['id'], str(i))
+        state = self.service.snapshot(content_only=True, compact_history=True)
+        self.assertEqual(state['decisions'], [])
+        current = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'The new result'})
+        followup = dict(previous, id='followup', task_id=current['id'], status='pending', previous_decision_id=previous['id'])
+        self.service._put('decisions', followup)
+        self.service._event('decision.created', followup, self.bot['id'], current['id'])
+        page = self.service.updates(state['cursor'], collection_deltas=True, native_events=True, compact_history=True)
+        self.assertEqual({d['id'] for d in page['decisions']}, {'earlier', 'followup'})
+        self.assertEqual({t['id'] for t in page['tasks']}, {old['id'], current['id']})
+        card = self.service.card('followup')
+        self.assertEqual({d['id'] for d in card['decisions']}, {'earlier', 'followup'})
+        self.assertEqual({t['id'] for t in card['tasks']}, {old['id'], current['id']})
+
     def test_updates_include_new_and_hidden_messages_and_changed_tasks(self):
         initial = self.service.snapshot(content_only=True)
         task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})

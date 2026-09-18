@@ -132,6 +132,8 @@ struct HistoryPage: Decodable, Sendable {
 }
 
 struct CardSnapshot: Decodable, Sendable {
+    let decisions: [Decision]?
+    let tasks: [AgentTask]?
     let decision: Decision
     let task: AgentTask
     let bot: Bot

@@ -105,7 +105,14 @@ class StateSync:
                                           for c in view._all('contexts'))
             if not public.get('request_text'):
                 public.update(view.decision_origin(task))
-            return dict(decision=public, task=view._public(task), bot=view._public(bot),
+            visible = {b['id'] for b in view._all('bots') if not b.get('_deleted')}
+            related = [view._public(d) for d in view._page_decisions([{'decision_id': identity}])
+                if not d.get('_hidden') and not d.get('_deleted') and d['bot_id'] in visible
+                and view._get('tasks', d['task_id']).get('conversation_bot_id', d['bot_id']) in visible]
+            related = [public if d['id'] == identity else d for d in related]
+            owners = {d['task_id']: view._public(view._get('tasks', d['task_id'])) for d in related}
+            return dict(decision=public, decisions=related, tasks=list(owners.values()),
+                        task=view._public(task), bot=view._public(bot),
                         owner=view._public(owner), cursor=view._cursor(), server_time=now(),
                         messages=view._card_messages([identity], {b['id'] for b in view._all('bots') if not b.get('_deleted')}))
 
@@ -271,6 +278,18 @@ class StateSync:
                     if not decision.get('request_text') and decision.get('task_id'):
                         decision.update(self.decision_origin(tasks[decision['task_id']]))
                     decisions.append(decision)
+                included = {d['id'] for d in decisions}
+                for earlier in self._page_decisions([{'decision_id': identity} for identity in included]):
+                    if earlier['id'] in included or not visible_owned(earlier):
+                        continue
+                    previous = self._public(earlier)
+                    previous['reply_pending'] = earlier['id'] in replying
+                    previous.update(self.decision_origin(tasks[earlier['task_id']]))
+                    decisions.append(previous)
+                    included.add(earlier['id'])
+                    removed_decisions.discard(earlier['id'])
+                    if not any(t['id'] == earlier['task_id'] for t in result['tasks']):
+                        result['tasks'].append(self._public(tasks[earlier['task_id']]))
                 result['decisions'] = decisions
                 if collection_deltas:
                     result['removed_decisions'] = sorted(removed_decisions)

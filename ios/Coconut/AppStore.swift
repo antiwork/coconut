@@ -1565,8 +1565,8 @@ final class AppStore {
                     snapshotEpoch = UUID()
                     if let replies = card.messages { messages = StateUpdates.merge(replies, into: messages).sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) } }
                     cachedState?.messages = messages
-                    decisions = StateUpdates.merge([card.decision], into: decisions)
-                    tasks = StateUpdates.merge([card.task], into: tasks)
+                    decisions = StateUpdates.merge(card.decisions ?? [card.decision], into: decisions)
+                    tasks = StateUpdates.merge(card.tasks ?? [card.task], into: tasks)
                     bots = StateUpdates.merge(preservingNativeSettings(in: card.bot.id == card.owner.id ? [card.bot] : [card.bot, card.owner]), into: bots)
                     cachedState?.decisions = decisions
                     cachedState?.tasks = tasks
