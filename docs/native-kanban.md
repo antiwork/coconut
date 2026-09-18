@@ -134,3 +134,11 @@ No test sends messages, publishes changes, or uses a paid model.
 
 Coconut shows complete replies. Partial model output stays inside the worker until Hermes confirms the response.
 The phone keeps its activity indicator visible while it waits. Events still deliver complete replies without a full reload.
+
+## Completed history
+
+Native tasks supply current Work state. Retained completed reports pass the existing completion checks once during migration.
+Coconut then keeps their verified result as history. It does not reconstruct their conversation chains on each phone read.
+A changed report invalidates this imported result. An unfinished retained report keeps its decisions and receipts during native migration.
+PR closure and explicit cancellation remain authoritative facts. Missing native state never implies completion.
+Content snapshots decode only active tasks and tasks referenced by visible records.

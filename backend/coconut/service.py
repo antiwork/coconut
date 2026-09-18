@@ -715,12 +715,16 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                                    "(type IN ('settings.updated','bot.created','bot.deleted') OR type LIKE 'routine.%') LIMIT 1", (settings_cursor,)).fetchone():
                     continue
                 data_started = time.perf_counter()
-                self._all('exchanges')
                 bots = [self._bot_view(dict(b, **{key: value for key, value in observed.get(b['id'], {}).items() if key in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'worker_limit', 'model_override', '_native_effective_model', '_model_error')}), catalog) for b in self._all('bots') if not b.get('_deleted')]
                 visible = {b['id'] for b in bots}
-                visible_task_ids = {task['id'] for task in self._all('tasks') if task['bot_id'] in visible and task['conversation_bot_id'] in visible}
+                visible_task_ids = {row[0] for row in self.db.execute(
+                    "SELECT id FROM tasks WHERE json_extract(data,'$.bot_id') IN (SELECT value FROM json_each(?)) "
+                    "AND json_extract(data,'$.conversation_bot_id') IN (SELECT value FROM json_each(?))",
+                    (json.dumps(sorted(visible)), json.dumps(sorted(visible))))}
                 state = {'bots': bots, 'work_capacity': capacity_state(self._setting('work_capacity'))}
                 for table in self.TABLES[1:]:
+                    if content_only and table == 'tasks':
+                        continue
                     if content_only and table == 'messages':
                         state[table], history = self._recent_messages(visible)
                         state['history_before'] = history
@@ -728,7 +732,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     state[table] = [self._public(o) for o in self._all(table) if o['bot_id'] in visible and o.get('conversation_bot_id', o['bot_id']) in visible and not o.get('_deleted') and not o.get('_hidden') and (table not in ('decisions', 'artifacts') or not o.get('task_id') or o['task_id'] in visible_task_ids)]
                 if content_only:
                     referenced = {o.get('task_id') for name in ('messages', 'decisions', 'artifacts') for o in state[name]}
-                    state['tasks'] = [t for t in state['tasks'] if t['status'] in self.ACTIVE or t['id'] in referenced]
+                    state['tasks'] = [self._public(task) for task in (json.loads(row[0]) for row in self.db.execute(
+                        "SELECT data FROM tasks WHERE (json_extract(data,'$.status') IN (SELECT value FROM json_each(?)) "
+                        "OR id IN (SELECT value FROM json_each(?))) AND id IN (SELECT value FROM json_each(?)) "
+                        "AND NOT coalesce(json_extract(data,'$._hidden'),0) AND NOT coalesce(json_extract(data,'$._deleted'),0) ORDER BY rowid",
+                        (json.dumps(sorted(self.ACTIVE)), json.dumps(sorted(referenced - {None})), json.dumps(sorted(visible_task_ids)))))]
                 if routines is not None:
                     previous = {r['id']: r.get('last_task_id') for r in state['routines']}
                     state['routines'] = [dict(self._public(r), last_task_id=previous.get(r['id']))

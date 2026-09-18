@@ -808,6 +808,47 @@ for title in ('First defect', 'Second defect'):
             projected = self.service._work_projection([dict(item)])
         self.assertEqual(projected[0]['work_state'], 'queued')
 
+    def test_completed_history_import_removes_repeated_chain_reads(self):
+        task, item = self.legacy_work('Verified export')
+        self.provider.supports_native_outcomes = True
+        owner = self.service._get('tasks', task['id'])
+        owner['status'] = 'completed'
+        self.service._put('tasks', owner)
+        item.update(status='completed', completion_evidence='The exported rows match the source.')
+        self.service._put('artifacts', item)
+        self.service._migrate_native_work()
+        item = self.service._get('artifacts', item['id'])
+        self.assertIn('_completed_history', item)
+        self.assertNotIn('_native_outcome_id', item)
+        with patch.object(self.service, '_all', side_effect=AssertionError('Do not rebuild history')), \
+             patch.object(self.service, '_pending_completion_receipts', side_effect=AssertionError('Do not read old receipts')):
+            projected = self.service._work_projection([dict(item)])[0]
+            self.service._migrate_native_work()
+        self.assertEqual(projected['work_state'], 'completed')
+        self.assertEqual(projected['completion_evidence'], item['completion_evidence'])
+        item.update(status='working', activity='Apply the new request')
+        self.service._put('artifacts', item)
+        self.assertIsNone(self.service._retained_terminal_work(item))
+        self.service._migrate_native_work()
+        self.assertTrue(self.service._get('tasks', owner['id'])['_native_outcome_id'])
+
+    def test_completed_report_with_a_pending_decision_migrates_without_completion(self):
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        owner = self.service._get('tasks', task['id'])
+        owner['status'] = 'needs_you'
+        self.service._put('tasks', owner)
+        item.update(status='completed', completion_evidence='Local tests pass')
+        self.service._put('artifacts', item)
+        self.service._put('decisions', dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=owner['id'], status='pending'))
+        self.service._migrate_native_work()
+        current = self.service._get('artifacts', item['id'])
+        self.assertNotIn('_completed_history', current)
+        self.assertTrue(current['_native_outcome_id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'review')
+        self.assertEqual(self.service._work_projection([current])[0]['work_state'], 'needs_decision')
+
     def test_native_work_only_view_keeps_the_linked_pr_decision(self):
         task, item = self.legacy_work()
         self.provider.supports_native_outcomes = True

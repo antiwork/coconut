@@ -31,6 +31,19 @@ class StateSyncTests(unittest.TestCase):
         self.assertIsNone(third['before'])
         self.assertEqual(state['sync_version'], 1)
 
+    def test_native_content_reads_only_referenced_or_active_tasks(self):
+        from types import SimpleNamespace
+        task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Current request'})
+        self.service.provider.supports_native_outcomes = True
+        read = Service._all
+        def bounded(service, table):
+            if table in ('tasks', 'exchanges'):
+                raise AssertionError('Content must not decode complete execution history')
+            return read(service, table)
+        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={})), patch.object(Service, '_all', bounded):
+            state = self.service.snapshot(content_only=True)
+        self.assertEqual([t['id'] for t in state['tasks']], [task['id']])
+
     def test_updates_include_new_and_hidden_messages_and_changed_tasks(self):
         initial = self.service.snapshot(content_only=True)
         task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})

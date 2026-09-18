@@ -262,17 +262,57 @@ class NativeOutcomes:
             self._refresh_bot(owner['bot_id'])
             return receipt
 
+    @staticmethod
+    def _work_history_key(item):
+        from .service import digest, encoded
+        return digest(encoded({k: v for k, v in item.items() if k != '_completed_history'}))
+
+    def _retained_terminal_work(self, item):
+        if self._setting('work.cancelled.' + self._work_identity(item)) or item['status'] == 'cancelled':
+            return dict(work_state='cancelled', activity_state='cancelled', activity='Stopped')
+        if item['kind'] == 'pr' and (item['status'] == 'merged' or item.get('pr_state') in ('merged', 'closed')):
+            return dict(work_state='completed', activity_state='completed', activity='Completed',
+                completion_evidence='Pull request ' + (item.get('pr_state') or 'merged') + '.')
+        history = item.get('_completed_history') or {}
+        if history.get('report') == self._work_history_key(item):
+            return dict(work_state='completed', activity_state='completed', activity='Completed',
+                completion_evidence=history['evidence'])
+        return None
+
+    def _import_completed_work_history(self):
+        from datetime import datetime, timezone
+        # Import verified results once. Later conversations cannot rewrite completed history.
+        candidates = [json.loads(row[0]) for row in self.db.execute(
+            "SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='work' "
+            "AND json_extract(data,'$.status')='completed' AND json_extract(data,'$._native_outcome_id') IS NULL "
+            "AND json_extract(data,'$._same_outcome_as') IS NULL AND NOT coalesce(json_extract(data,'$._hidden'),0)")]
+        candidates = [a for a in candidates if not self._retained_terminal_work(a)]
+        if not candidates:
+            return
+        projected = [dict(a) for a in candidates]
+        self._project_work_outcomes(projected, {t['id']: t for t in self._all('tasks')},
+            self._pending_completion_receipts(), self._all('decisions'), datetime.now(timezone.utc))
+        for item, outcome in zip(candidates, projected):
+            if outcome['work_state'] != 'completed':
+                continue
+            item['_completed_history'] = dict(report=self._work_history_key(item), evidence=outcome.get('completion_evidence'))
+            self._put('artifacts', item)
+            self._event('artifact.updated', self._public(item), item['bot_id'], item['task_id'])
+
     def _migrate_native_work(self):
         if not self.kanban or not getattr(self.provider, 'supports_native_outcomes', False):
             return
         from .service import now
+        self._import_completed_work_history()
         candidates = [json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='work' "
             "AND json_extract(data,'$._native_outcome_id') IS NULL "
-            "AND json_extract(data,'$.status') NOT IN ('completed','cancelled') "
+            "AND json_extract(data,'$.status')!='cancelled' "
             "AND json_extract(data,'$._same_outcome_as') IS NULL "
             "AND coalesce(json_extract(data,'$._hidden'),0)=0")]
         for item in candidates:
+            if self._retained_terminal_work(item):
+                continue
             owner = self._get('tasks', item['task_id'])
             if (owner['status'] in ('working', 'cancelled') or owner.get('_assignment_task_id')
                     or self._task_paused(owner) or self._automatic_work_is_paused(owner) or self._work_pause(item)
@@ -432,7 +472,17 @@ class NativeOutcomes:
                 continue
             root = self._work_outcome_artifact(item)
             if not root.get('_native_outcome_id'):
-                legacy.append(item)
+                terminal = self._retained_terminal_work(root)
+                if terminal:
+                    item.update(terminal, activity_observed_at=timestamp.isoformat(), work_decision_id=None,
+                        work_next_step=None, work_queue_position=None,
+                        work_dismissal_id=self._setting('work.dismissed.' + self._work_identity(root)))
+                    if item.get('work_outcome_id'):
+                        item['work_outcome_id'] = root['id']
+                    if item['kind'] == 'work':
+                        item['status'] = terminal['activity_state']
+                else:
+                    legacy.append(item)
                 continue
             if item.get('work_outcome_id'):
                 item['work_outcome_id'] = root['id']
