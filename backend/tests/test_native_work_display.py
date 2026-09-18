@@ -1,0 +1,68 @@
+"""Work displays current native state, without renewing old narrative."""
+import unittest
+from unittest.mock import patch
+import test_native_kanban as native
+
+
+@unittest.skipUnless(native.SOURCE and native.PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+class NativeWorkDisplayTests(unittest.TestCase):
+    setUp = native.NativeKanbanTests.setUp
+    write = native.NativeKanbanTests.write
+    task = native.NativeKanbanTests.task
+    native_program = native.NativeKanbanTests.native_program
+
+    def outcome(self):
+        self.provider.supports_native_outcomes = True
+        origin = self.task('Complete the accepted fix')
+        identity = self.native_program("""
+print(board.kb.create_task(board.conn, title='Fix the accepted defect', body='Verify the accepted outcome', assignee='default',
+    tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked'))
+""", self.bot['id'], origin['id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._adopt_native_outcomes()
+        owner = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
+        return identity, self.service._get('artifacts', owner['_work_context_id'])
+
+    def project(self, item):
+        self.service.kanban.call({'op': 'snapshot'})
+        return self.service._work_projection([dict(item)])[0]
+
+    def test_blocked_work_does_not_present_an_old_summary_as_current_activity(self):
+        identity, item = self.outcome()
+        self.native_program("board.kb.block_task(board.conn, sys.argv[2], reason='Tests failed on old commit abc123', kind='capability')", identity)
+        projected = self.project(item)
+        self.assertNotIn('abc123', projected['activity'])
+        self.assertEqual(projected['activity'], 'Blocked: a required resource is unavailable')
+        self.assertEqual(projected['native_status'], 'blocked')
+
+    def test_dependencies_come_from_native_graph_and_disappear_when_completed(self):
+        identity, item = self.outcome()
+        parent = self.native_program("""
+parent=board.kb.create_task(board.conn,title='Prepare isolated tests',body='Verify setup',assignee='default',initial_status='blocked')
+board.kb.link_tasks(board.conn,parent,sys.argv[2])
+print(parent)
+""", identity)
+        projected = self.project(item)
+        self.assertEqual(projected['activity'], 'Waiting for Prepare isolated tests')
+        self.assertEqual(projected['work_dependencies'][0]['id'], parent)
+        self.native_program("board.kb.complete_task(board.conn,sys.argv[2],summary='Setup verified')", parent)
+        self.assertEqual(self.project(item)['work_dependencies'], [])
+
+    def test_reading_work_does_not_refresh_the_native_observation(self):
+        identity, item = self.outcome()
+        self.service.kanban.observed_at = '2026-01-01T00:00:00Z'
+        projected = self.service._work_projection([dict(item)])[0]
+        self.assertEqual(projected['activity_observed_at'], '2026-01-01T00:00:00Z')
+
+    def test_old_phase_expires_while_the_native_worker_remains_running(self):
+        identity, item = self.outcome()
+        self.native_program("""
+board.kb.unblock_task(board.conn,sys.argv[2])
+board.kb.claim_task(board.conn,sys.argv[2])
+board.dispatch.heartbeat_worker(board.conn,sys.argv[2],note='Running the focused tests')
+""", identity)
+        self.assertEqual(self.project(item)['activity'], 'Running the focused tests')
+        self.native_program("board.conn.execute(\"UPDATE task_events SET created_at=created_at-300 WHERE task_id=? AND kind='heartbeat'\",(sys.argv[2],)); board.conn.commit()", identity)
+        projected = self.project(item)
+        self.assertEqual(projected['work_state'], 'working')
+        self.assertEqual(projected['activity'], 'Waiting for worker output')

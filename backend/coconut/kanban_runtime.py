@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 
 
 def fingerprint(value):
@@ -212,15 +213,20 @@ class Board:
             task = self.kb.get_task(self.conn, binding[1])
             blocker = self.dispatch.check_respawn_guard(self.conn, task.id) if task.status == 'ready' else None
             progress = self.conn.execute(
-                "SELECT json_extract(payload,'$.note') FROM task_events WHERE task_id=? AND run_id=? "
+                "SELECT json_extract(payload,'$.note'),created_at FROM task_events WHERE task_id=? AND run_id=? "
                 "AND kind='heartbeat' AND json_extract(payload,'$.note') IS NOT NULL ORDER BY id DESC LIMIT 1",
                 (task.id, task.current_run_id)).fetchone()
             accepted = self.conn.execute('SELECT input_id FROM coconut_outcomes WHERE native_id=?', (task.id,)).fetchone()
             result.append(dict(external_id=binding[0], dispatch_blocker=blocker, input_id=accepted[0] if accepted else None,
-                progress_note=progress[0] if progress else None, outcome_summary=self.kb.latest_summary(self.conn, task.id), **asdict(task)))
+                progress_note=progress[0] if progress and 0 <= time.time() - progress[1] < 120 else None,
+                progress_at=progress[1] if progress else None, outcome_summary=self.kb.latest_summary(self.conn, task.id), **asdict(task)))
         for row in self.conn.execute('SELECT id FROM tasks WHERE id NOT IN (SELECT native_id FROM coconut_bindings) AND id NOT IN (SELECT native_id FROM coconut_outcomes)'):
             task = self.kb.get_task(self.conn, row[0])
             result.append(dict(external_id='native:' + task.id, unbound=True, **asdict(task)))
+        graph = self.kb.task_graph_contexts(self.conn, [task['id'] for task in result])
+        for task in result:
+            task['dependencies'] = [parent for parent in graph[task['id']]['parents']
+                                    if parent['status'] not in ('done', 'archived')]
         return result
 
     def tick(self, rows, capacity, spawn):

@@ -580,16 +580,33 @@ class NativeOutcomes:
             state, activity = 'needs_decision', 'Waiting for your decision'
         if self._setting('work.cancelled.' + self._work_identity(item)):
             state, activity = 'cancelled', 'Stopped'
+        dependencies = native.get('dependencies', []) if native else []
         if native and state == 'waiting':
-            activity = native.get('outcome_summary') or native.get('last_failure_error') or activity
+            if dependencies:
+                activity = 'Waiting for ' + dependencies[0]['title']
+                if len(dependencies) > 1:
+                    activity += ' and ' + str(len(dependencies) - 1) + ' other tasks'
+            else:
+                activity = {'review': 'Waiting for review', 'scheduled': 'Waiting for a scheduled check',
+                    'triage': 'Paused: the next step needs clarification',
+                    'blocked': 'Blocked: the next step cannot run'}.get(status, activity)
+                if status in ('blocked', 'triage'):
+                    activity = {'needs_input': 'Paused: input needed',
+                        'capability': 'Blocked: a required resource is unavailable',
+                        'dependency': 'Waiting for a dependency',
+                        'transient': 'Waiting to retry'}.get(native.get('block_kind'), activity)
         if native and state == 'working':
-            activity = native.get('progress_note') or activity
+            activity = native.get('progress_note') or 'Waiting for worker output'
         return dict(title=native['title'] if native else item['title'], native_task_id=item['_native_outcome_id'],
+            native_status=status, native_block_kind=native.get('block_kind') if native else None,
+            progress_observed_at=native.get('progress_at') if native else None,
             work_state=state, activity=activity, work_next_step='Review decision' if state == 'needs_decision' else None,
             work_decision_id=pending[0]['id'] if state == 'needs_decision' else None,
             work_queue_position=(queue_positions or {}).get(owner.get('id')) if state == 'queued' else None,
             completion_condition=item.get('completion_condition') or item['title'],
             completion_evidence=native.get('outcome_summary') if native and state == 'completed' else None,
-            work_attempts=[dict(id=identity, state=tasks[identity]['status']) for identity in sorted(owners) if identity in tasks], work_dependencies=[],
-            activity_bot_id=owner.get('bot_id', item['bot_id']), activity_observed_at=timestamp.isoformat(),
+            work_attempts=[dict(id=identity, state=tasks[identity]['status']) for identity in sorted(owners) if identity in tasks],
+            work_dependencies=[dict(id=parent['id'], title=parent['title'], state=parent['status']) for parent in dependencies],
+            activity_bot_id=owner.get('bot_id', item['bot_id']),
+            activity_observed_at=self.kanban.observed_at if self.kanban else None,
             activity_state={'needs_decision': 'waiting', 'queued': 'waiting'}.get(state, state))

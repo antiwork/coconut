@@ -265,7 +265,7 @@ class NativeKanban(NativeOutcomes):
 
     def _publish_kanban_changes(self):
         visible = [(i, *(t.get(key) for key in ('status', 'priority', 'current_run_id', 'title',
-            'progress_note', 'outcome_summary', 'last_failure_error', 'dispatch_blocker')))
+            'progress_note', 'outcome_summary', 'last_failure_error', 'dispatch_blocker', 'block_kind', 'dependencies')))
             for i, t in self.kanban.tasks.items()]
         with self.changed:
             if visible != self._kanban_visible:
