@@ -358,9 +358,13 @@ struct MessageBubble: View {
                 MessageText(text: displayText, linkColor: isUser ? BoardStyle.userBubbleLink : .blue, allowsTextSelection: false)
                     .accessibilityIdentifier("message-text-\(message.id)")
                 if let requestId = message.clientRequestId,
+                   store.outgoingAnswers.contains(where: { $0.id == requestId }) {
+                    Text("Sending…").font(.caption).foregroundStyle(.secondary)
+                }
+                if let requestId = message.clientRequestId,
                    let outgoing = store.outgoingMessages.first(where: { $0.id == requestId }) {
                     if outgoing.status == .failed {
-                        Button("Not confirmed. Retry", systemImage: "arrow.clockwise") {
+                        Button("Waiting to send. Retry", systemImage: "arrow.clockwise") {
                             Task { await store.retryOutgoing(requestId) }
                         }
                         .font(.caption).foregroundStyle(.secondary)

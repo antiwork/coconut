@@ -338,7 +338,8 @@ struct DecisionInboxView: View {
         Task {
             try? await Task.sleep(for: .milliseconds(340))
             withAnimation(.easeOut(duration: reduceMotion ? 0.1 : 0.2)) {
-                queue.remove(decision.id)
+                // A saved answer can still be rejected. Keep the queue tied to pending state.
+                queue.reconcile(pending, sort: sorting)
                 selectedId = nil
                 confirmingChoice = nil
             }
