@@ -3,9 +3,11 @@ import Observation
 import UIKit
 import CryptoKit
 import Network
+import OSLog
 
 @MainActor @Observable
 final class AppStore {
+    private static let deliveryLog = Logger(subsystem: "com.gumroad.coconut", category: "delivery")
     var bots: [Bot] = []
     var tasks: [AgentTask] = []
     var messages: [Message] = []
@@ -1326,7 +1328,18 @@ final class AppStore {
         refreshNativeSettings(using: client)
     }
 
+    nonisolated static func newReplies(in incoming: StateSnapshot, after previous: StateSnapshot?) -> [Message] {
+        guard let previous, incoming.cursor > previous.cursor else { return [] }
+        let finished = Set(previous.messages.filter { !$0.streaming }.map(\.id))
+        return incoming.messages.filter {
+            $0.role == "assistant" && $0.kind == "text" && !$0.streaming && !finished.contains($0.id)
+        }
+    }
+
     private func apply(_ incoming: StateSnapshot, persist: Bool) {
+        for reply in Self.newReplies(in: incoming, after: cachedState) {
+            Self.deliveryLog.info("reply_applied task=\(reply.taskId ?? "", privacy: .public) message=\(reply.id, privacy: .public) created=\(reply.createdAt, privacy: .public)")
+        }
         var snapshot = incoming
         if snapshot.contentOnly == true && cachedState != nil {
             snapshot.model = model

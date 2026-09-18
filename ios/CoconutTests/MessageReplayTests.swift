@@ -15,6 +15,26 @@ final class MessageReplayTests: XCTestCase {
         XCTAssertEqual(MessageReplay.applying(page, after: 12, to: [second]), [second])
     }
 
+    func testDeliveryTraceExcludesHistoryAndRepeatedSnapshots() throws {
+        var previous = try PreviewStateFixture.load()
+        previous.cursor = 10
+        var reply = message
+        reply.streaming = false
+        var incoming = previous
+        incoming.messages.append(reply)
+        XCTAssertTrue(AppStore.newReplies(in: incoming, after: previous).isEmpty)
+        incoming.cursor = 11
+        XCTAssertEqual(AppStore.newReplies(in: incoming, after: previous).map(\.id), [reply.id])
+        XCTAssertTrue(AppStore.newReplies(in: incoming, after: nil).isEmpty)
+        XCTAssertTrue(AppStore.newReplies(in: incoming, after: incoming).isEmpty)
+        var streaming = reply
+        streaming.streaming = true
+        previous.messages.append(streaming)
+        XCTAssertEqual(AppStore.newReplies(in: incoming, after: previous).map(\.id), [reply.id])
+        previous.messages[previous.messages.count - 1].streaming = false
+        XCTAssertTrue(AppStore.newReplies(in: incoming, after: previous).isEmpty)
+    }
+
     func testLateResponseCannotReplaceNewerText() throws {
         var current = message; current.text = "Hello there."
         let stale = try page([event(10, message)], cursor: 10)

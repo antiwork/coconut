@@ -117,6 +117,7 @@ class WorkerModelProcessTests(unittest.TestCase):
                         assert kwargs == {'conversation_history': []}
                         assert set(json.loads(prompt)) == {'source', 'preferences', 'earlier_sources', 'later_sources'}
                         return {'completed': True, 'final_response': '{"no_change":true}'}
+                    kwargs['stream_callback']('Ready.')
                     return {'completed': True, 'final_response': 'Ready.'}
         '''))
         self.bot = {'id': str(uuid4()), 'session_id': str(uuid4()), 'instructions': 'Keep replies concise.'}
@@ -169,6 +170,18 @@ class WorkerModelProcessTests(unittest.TestCase):
         self.assertNotIn('private-test-token', json.dumps(events) + stderr)
         self.assertNotIn('ambient-test-key', json.dumps(events) + stderr)
         return code, events, records, home
+
+    def test_turn_trace_correlates_output_without_exposing_content(self):
+        code, events, _, _ = self.run_worker('start', effort=None, extract=False,
+            task_context={'_native_turn_id': 'trace-turn'})
+        self.assertEqual(code, 0, events)
+        traces = [event['data'] for event in events if event['type'] == 'turn_trace']
+        self.assertEqual([trace['stage'] for trace in traces],
+                         ['model_start', 'first_output', 'model_end', 'worker_end'])
+        self.assertTrue(all(trace['turn_id'] == 'trace-turn' for trace in traces))
+        self.assertTrue(all(trace['elapsed_ms'] >= 0 for trace in traces))
+        self.assertNotIn('Ready.', json.dumps(traces))
+        self.assertEqual(len([event for event in events if event['type'] == 'text_delta']), 1)
 
     def test_delegated_turn_can_create_native_outcomes(self):
         code, events, records, _ = self.run_worker('start', effort='high', extract=False,

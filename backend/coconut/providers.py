@@ -492,8 +492,8 @@ class HermesProvider(FixtureProvider):
             # Keep stdin open. EOF lets the worker stop if the service disappears.
             terminal_received = False
             for event in events(channel):
-                if event.get('type') == 'turn_timing':
-                    logging.getLogger(__name__).warning('coconut.turn_timing %s', json.dumps(event.get('data')))
+                if event.get('type') in ('turn_timing', 'turn_trace'):
+                    logging.getLogger(__name__).warning('coconut.%s %s', event['type'], json.dumps(event.get('data')))
                     continue
                 if event.get('type') == 'process_completions':
                     continue  # A timed-out status request can finish before this turn.

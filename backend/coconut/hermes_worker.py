@@ -862,7 +862,7 @@ def main():
 
 
 def run_turn(request, emit, request_receipt):
-    from turn_timings import TurnTimings
+    from turn_timings import TurnTimings, TurnTrace
     timing = TurnTimings(request['task']['id'], 'worker')
     conversation = None
     agent = None
@@ -881,11 +881,14 @@ def run_turn(request, emit, request_receipt):
     board_binding = nullcontext()
     session_tokens = None
     raw_emit, raw_receipt = emit, request_receipt
+    trace = TurnTrace(request['task'], request['operation'], raw_emit)
     def emit(kind, payload):
         if kind in ('completed', 'failed', 'native_question', 'native_approval'):
             payload = dict(payload, **work.payload(agent))
         return raw_emit(kind, payload)
     def request_receipt(kind, payload):
+        if kind in ('native_call', 'native_question', 'native_approval'):
+            trace.mark('first_output')
         if kind in ('native_call', 'native_result', 'native_question', 'native_approval'):
             payload = dict(payload, **work.payload(agent))
         return raw_receipt(kind, payload)
@@ -1152,6 +1155,7 @@ def run_turn(request, emit, request_receipt):
 
         def collect_response(text):
             if isinstance(text, str) and text and not creation_errors and not deletion_errors:
+                trace.mark('first_output')
                 response_chunks.append(text)
 
         instructions = ('You work in Coconut, a concise messaging app. Give short, useful replies. '
@@ -1283,10 +1287,12 @@ def run_turn(request, emit, request_receipt):
         raw_emit('turn_timing', timing.payload())
         setup_lock.release()
         preparing = False
+        trace.mark('model_start')
         result = agent.run_conversation(prompt, conversation_history=conversation.history, task_id=request['task']['id'],
                                         stream_callback=collect_response,
                                         persist_user_message=current['text'] if current else request.get('question'),
                                         persist_user_platform_id='coconut:' + current['id'] if current else None)
+        trace.mark('model_end')
         if scope.unconfirmed:
             raise TurnUnconfirmed()
         if result.get('completed') is not True or result.get('failed') or result.get('interrupted'):
@@ -1328,6 +1334,8 @@ def run_turn(request, emit, request_receipt):
         emit('failed', {'summary': f'{summary} ({type(error).__name__}).'})
         return 1
     finally:
+        if 'model_start' in trace.emitted:
+            trace.mark('worker_end')
         def clear_scope():
             with setup_lock:
                 active_scopes.discard(scope)

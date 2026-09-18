@@ -2744,6 +2744,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     task.setdefault('_reaction_feedback', [] if task.get('_work_status_only') else list(bot.get('_pending_reactions', {}).values()))
                     task.setdefault('_turn_attachment_ids', list(task.get('_attachment_ids', [])))
                     task.pop('error_code', None)
+                    from .turn_timings import TurnTrace
+                    queued_at = datetime.fromisoformat(task['updated_at'].replace('Z', '+00:00'))
+                    TurnTrace(task, 'dispatch').mark('dispatch',
+                        queue_age_ms=max(0, round((datetime.now(timezone.utc) - queued_at).total_seconds() * 1000, 1)))
                     task.update(status='working', summary='Working', updated_at=now())
                     self._put('tasks', task)
                     self._event('task.updated', self._public(task), bot['id'], task_id)
@@ -2937,7 +2941,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     self._put('bots', bot)
                     self._event('message.updated', previous, bot_id, task_id)
                 else:
-                    self._message(bot_id, text, task_id=task_id, streaming=True)
+                    message = self._message(bot_id, text, task_id=task_id, streaming=True)
+                    from .turn_timings import TurnTrace
+                    TurnTrace(task, 'delivery').mark('reply_created', message_id=message['id'])
             elif kind == 'activity':
                 self._message(bot_id, str(payload.get('text', payload.get('summary', 'Working')))[:500], task_id=task_id, kind='activity')
             elif kind == 'decision':
