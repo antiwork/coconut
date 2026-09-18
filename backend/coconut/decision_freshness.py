@@ -45,26 +45,30 @@ def age(value, current):
 
 
 class DecisionFreshness:
-    def _refresh_decision_sources(self, observations):
+    def _refresh_decision_sources(self, observations, *, decision_ids=None, read_cache=None):
         from .decision_sources import github_links, github_source
         with self.lock:
             decisions = [d for d in self._all('decisions') if d['status'] == 'pending'
                 and not d.get('_hidden') and not d.get('_deleted')
                 and not self._get('bots', d['bot_id']).get('_deleted')]
         issues, discussions, trackers = {}, {}, {}
+        read = read_cache or (lambda key, load: load())
+        updated = False
         for decision in decisions:
             if self.stopping.is_set():
                 return
             links = github_links(decision)
+            if decision_ids is not None and decision['id'] not in decision_ids:
+                continue
             facts = {url: value for url, value in decision.get('_source_facts', {}).items() if url in links}
             for url in links:
                 key = (decision['bot_id'], url.lower())
                 if decision['bot_id'] not in trackers:
-                    trackers[decision['bot_id']] = self._pr_tracker_for(decision['bot_id'])
+                    trackers[decision['bot_id']] = read(('tracker', decision['bot_id']), lambda: self._pr_tracker_for(decision['bot_id']))
                 tracker = trackers[decision['bot_id']]
                 if github_source(url)[0] == 'pulls':
                     if key not in observations:
-                        observations[key] = tracker.observe(url)
+                        observations[key] = read(('pr', *key), lambda: tracker.observe(url))
                     value = observations[key]
                     current_facts = dict(facts.get(url, {}))
                     identity = {field: getattr(value, field, None) for field in ('head_sha', 'base_branch')}
@@ -85,14 +89,14 @@ class DecisionFreshness:
                         if value.required_checks_state is None and not getattr(value, 'required_checks_observed', False):
                             current_facts['required_checks_state'] = previous_required
                     if key not in discussions:
-                        discussions[key] = tracker.observe_discussion(url)
-                    if discussions[key] is not None:
+                        discussions[key] = read(('discussion', *key), lambda: tracker.observe_discussion(url))
+                    if discussions.get(key) is not None:
                         current_facts['discussion'] = discussions[key]
                     if current_facts:
                         facts[url] = current_facts
                 elif hasattr(tracker, 'observe_issue'):
                     if key not in issues:
-                        issues[key] = tracker.observe_issue(url)
+                        issues[key] = read(('issue', *key), lambda: tracker.observe_issue(url))
                     if issues[key] is not None:
                         facts[url] = issues[key]
             with self.transaction():
@@ -101,6 +105,8 @@ class DecisionFreshness:
                         and github_links(current) == links and current.get('_source_facts', {}) != facts):
                     current['_source_facts'] = facts
                     self._put('decisions', current)
+                    updated = True
+        return updated
 
     def _decision_human_messages(self, task):
         assignment = self._assignment(task)

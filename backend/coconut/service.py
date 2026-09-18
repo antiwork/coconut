@@ -16,7 +16,8 @@ import sqlite3
 import threading
 import time
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future
+from queue import Empty, Queue
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4, uuid5
@@ -2440,27 +2441,93 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             if self.stopping.is_set():
                 return
             artifacts = [a for a in self._all('artifacts') if a['kind'] == 'pr' and a['status'] != 'merged' and a.get('pr_state') not in ('closed', 'merged') and not self._get('bots', a['bot_id']).get('_deleted')]
+        from .decision_sources import github_links, github_source
+        with self.lock:
+            decisions = [d for d in self._all('decisions') if d['status'] == 'pending'
+                         and not d.get('_hidden') and not d.get('_deleted')]
         observations, grouped = {}, {}
         for artifact in artifacts:
             key = (artifact['bot_id'], artifact['url'].lower())
             grouped.setdefault(key, []).append(artifact)
-        # Each profile keeps its own credentials. Bound concurrent GitHub requests.
-        def observe(key, url):
-            if self.stopping.is_set():
-                return None
-            tracker = self._pr_tracker_for(key[0])
-            return None if self.stopping.is_set() else tracker.observe(url)
+        jobs, source_jobs, results = Queue(), Queue(), Queue()
+        finished = threading.Event()
+        source_reads, source_lock = {}, threading.Lock()
+        def read_source(key, load):
+            with source_lock:
+                first = key not in source_reads
+                future = source_reads.setdefault(key, Future())
+            if first:
+                try:
+                    future.set_result(load())
+                except Exception as error:
+                    future.set_exception(error)
+            return future.result()
 
-        pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix='pr-observation')
-        try:
-            pending = {pool.submit(observe, key, items[0]['url']): key for key, items in grouped.items()}
-            for future in as_completed(pending):
-                if self.stopping.is_set():
+        for key, items in grouped.items():
+            jobs.put((key, items[0]['url']))
+
+        def observe():
+            while not self.stopping.is_set() and not finished.is_set():
+                try:
+                    key, url = jobs.get_nowait()
+                except Empty:
                     return
-                key = pending[future]
-                observation = future.result()
-                if observation is None:
+                try:
+                    tracker = self._pr_tracker_for(key[0])
+                    if self.stopping.is_set():
+                        return
+                    result = tracker.observe(url)
+                except Exception as error:
+                    result = error
+                results.put(('pr', key, result))
+
+        def refresh_sources():
+            while not self.stopping.is_set() and not finished.is_set():
+                try:
+                    identity, known = source_jobs.get(timeout=.2)
+                except Empty:
                     continue
+                try:
+                    result = self._refresh_decision_sources(known, decision_ids={identity}, read_cache=read_source)
+                except Exception as error:
+                    result = error
+                results.put(('source', identity, result))
+
+        remaining, pending_sources, scheduled = len(grouped), 0, set()
+        def schedule_sources():
+            nonlocal pending_sources
+            for decision in decisions:
+                if decision['id'] in scheduled:
+                    continue
+                keys = {(decision['bot_id'], url.lower()) for url in github_links(decision)
+                        if github_source(url)[0] == 'pulls'}
+                # A card receives all its linked PR facts together, including discussion evidence.
+                if not keys.intersection(grouped).issubset(observations):
+                    continue
+                scheduled.add(decision['id'])
+                pending_sources += 1
+                source_jobs.put((decision['id'], dict(observations)))
+
+        # Active HTTP reads retain their timeout and never delay process shutdown.
+        for _ in range(min(4, len(grouped))):
+            threading.Thread(target=observe, name='pr-observation', daemon=True).start()
+        for _ in range(min(2, len(decisions))):
+            threading.Thread(target=refresh_sources, name='decision-observation', daemon=True).start()
+        schedule_sources()
+        try:
+            while (remaining or pending_sources) and not self.stopping.is_set():
+                try:
+                    kind, key, observation = results.get(timeout=.2)
+                except Empty:
+                    continue
+                if isinstance(observation, Exception):
+                    raise observation
+                if kind == 'source':
+                    pending_sources -= 1
+                    if observation:
+                        self._queue_decision_refreshes()
+                    continue
+                remaining -= 1
                 observations[key] = observation
                 for artifact in grouped[key]:
                     with self.lock:
@@ -2482,9 +2549,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                             self._event('artifact.updated', self._public(current), current['bot_id'], current['task_id'])
                 self._resolve_merged_pr_decisions()
                 self._queue_pr_reviews(artifact_ids={item['id'] for item in grouped[key]})
+                schedule_sources()
         finally:
-            pool.shutdown(wait=False, cancel_futures=True)
-        self._refresh_decision_sources(observations)
+            finished.set()
 
     def _dispatch(self):
         next_routine_tick = 0

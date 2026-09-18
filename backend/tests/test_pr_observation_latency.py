@@ -24,6 +24,9 @@ class PRObservationLatencyTests(unittest.TestCase):
         with self.service.transaction():
             second = dict(first, id='second-pr', url=second_url)
             self.service._put('artifacts', second)
+            self.service._put('decisions', dict(id='pending-card', bot_id=self.bot['id'],
+                task_id=self.task['id'], status='pending', revision=1, created_at=first['created_at'],
+                action_type='question', sources=[dict(kind='pull_request', title='PR', url=second_url)]))
         blocked, release, finished = threading.Event(), threading.Event(), threading.Event()
         def observe(url):
             if url == fixture.URL:
@@ -64,6 +67,72 @@ class PRObservationLatencyTests(unittest.TestCase):
             self.assertFalse(finished.is_set())
             self.assertTrue(scheduled_ready.wait(1), 'The fresh observation must schedule its review.')
             self.assertEqual(scheduled, [{second['id']}], 'Only freshly observed PRs can start a review.')
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                with self.service.lock:
+                    card = self.service._get('decisions', 'pending-card')
+                if card.get('_source_facts', {}).get(second_url, {}).get('head_sha') == 'b' * 40:
+                    break
+                time.sleep(.005)
+            self.assertEqual(card['_source_facts'][second_url]['head_sha'], 'b' * 40)
+            self.assertFalse(finished.is_set(), 'The card must refresh before the slow PR returns.')
         finally:
             release.set()
             worker.join(5)
+
+    def test_slow_card_discussion_does_not_delay_another_pr(self):
+        first = self.run_task()['artifacts'][0]
+        second_url = fixture.URL.replace('/42', '/43')
+        with self.service.transaction():
+            self.service._put('artifacts', dict(first, id='second-pr', url=second_url))
+            self.service._put('decisions', dict(id='pending-card', bot_id=self.bot['id'],
+                task_id=self.task['id'], status='pending', revision=1, created_at=first['created_at'],
+                action_type='question', sources=[dict(kind='pull_request', title='PR', url=fixture.URL)]))
+        blocked, release = threading.Event(), threading.Event()
+        def discussion(url):
+            blocked.set()
+            release.wait(3)
+            return {'fingerprint': 'current'}
+        def observe(url):
+            if url == second_url:
+                blocked.wait(2)
+            return replace(fixture.observation('ready', sha='b' * 40), url=url)
+        self.tracker.observe = observe
+        self.tracker.observe_discussion = discussion
+        worker = threading.Thread(target=self.service.refresh_pull_requests)
+        worker.start()
+        try:
+            self.assertTrue(blocked.wait(1))
+            deadline = time.monotonic() + .5
+            while time.monotonic() < deadline:
+                with self.service.lock:
+                    current = self.service._get('artifacts', 'second-pr')
+                if current['head_sha'] == 'b' * 40:
+                    break
+                time.sleep(.005)
+            self.assertEqual(current['head_sha'], 'b' * 40)
+            self.service.stopping.set()
+            worker.join(.5)
+            self.assertFalse(worker.is_alive(), 'Shutdown must not drain blocked HTTP reads.')
+        finally:
+            release.set()
+            worker.join(5)
+
+    def test_cards_share_source_reads_within_one_refresh(self):
+        first = self.run_task()['artifacts'][0]
+        with self.service.transaction():
+            for identity in ('first-card', 'second-card'):
+                self.service._put('decisions', dict(id=identity, bot_id=self.bot['id'],
+                    task_id=self.task['id'], status='pending', revision=1, created_at=first['created_at'],
+                    action_type='question', sources=[dict(kind='pull_request', title='PR', url=fixture.URL)]))
+        calls = []
+        def discussion(url):
+            calls.append(url)
+            time.sleep(.05)
+            return {'fingerprint': 'current'}
+        self.tracker.observe_discussion = discussion
+        self.service.refresh_pull_requests()
+        self.assertEqual(calls, [fixture.URL])
+        for identity in ('first-card', 'second-card'):
+            card = self.service._get('decisions', identity)
+            self.assertEqual(card['_source_facts'][fixture.URL]['discussion'], {'fingerprint': 'current'})
