@@ -120,6 +120,75 @@ class NativeWorkContinuationTests(unittest.TestCase):
         with self.assertRaisesRegex(ServiceError, 'another execution'):
             self.resume(source)
 
+    def test_reporter_wait_does_not_block_restoring_the_native_owner(self):
+        owner, source, reporter, item = self.reported_work()
+        self.service._put('tasks', dict(reporter, status='working'))
+        self.service.emit(reporter['id'], 'work_wait', dict(task_id=source['id'], reason='Wait for the coordinator'))
+        self.service._put('tasks', reporter)
+        receipts = copy.deepcopy(self.service._native_task_receipts(reporter['id']))
+        self.assertTrue(self.service._background_pending(reporter['id']))
+        self.resume(source)
+        self.assertEqual(self.service._get('artifacts', item['id'])['task_id'], owner['id'])
+        self.assertEqual(self.service._get('tasks', reporter['id']), reporter)
+        self.assertEqual(self.service._native_task_receipts(reporter['id']), receipts)
+
+    def test_reporter_process_or_unknown_action_still_blocks_restoration(self):
+        import json
+        owner, source, reporter, item = self.reported_work()
+        self.service._put('tasks', dict(reporter, status='working'))
+        record = self.service.emit(reporter['id'], 'native_call', dict(name='terminal', arguments={'command': 'run tests'}))
+        self.service._put('tasks', reporter)
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(source)
+        self.service._put('tasks', dict(reporter, status='working'))
+        self.service.emit(reporter['id'], 'native_result', dict(id=record['id'],
+            result=json.dumps(dict(notify_on_complete=True, session_id='running-process'))))
+        self.service._put('tasks', reporter)
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(source)
+        self.assertEqual(self.service._get('artifacts', item['id']), item)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_reporter_wait_for_another_tasks_decision_blocks_restoration(self):
+        owner, source, reporter, item = self.reported_work()
+        decision = dict(id='other-decision', task_id=source['id'], status='pending')
+        self.service._put('decisions', decision)
+        self.service._put('tasks', dict(reporter, status='working'))
+        self.service.emit(reporter['id'], 'work_wait', dict(decision_id=decision['id'], reason='Wait for the human'))
+        self.service._put('tasks', reporter)
+        for changes in ({}, {'status': 'dismissed', 'inbox_undo_until': '2099-01-01T00:00:00Z'}):
+            self.service._put('decisions', dict(decision, **changes))
+            with self.subTest(changes=changes), self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(source)
+            self.assertEqual(self.service._get('artifacts', item['id']), item)
+        self.service._put('decisions', dict(decision, status='approved'))
+        self.resume(source)
+        self.assertEqual(self.service._get('artifacts', item['id'])['task_id'], owner['id'])
+
+    def test_old_chat_execution_does_not_block_current_reporter(self):
+        from uuid import uuid4
+        owner, source, reporter, item = self.reported_work()
+        reporter.pop('_execution_session_id')
+        reporter['_chat_session'] = True
+        self.service._put('tasks', reporter)
+        old = dict(reporter, id=str(uuid4()), status='working', _conversation_epoch='old-conversation')
+        self.service._put('tasks', old)
+        self.service.emit(old['id'], 'native_call', dict(name='terminal', arguments={'command': 'old process'}))
+        self.resume(source)
+        self.assertEqual(self.service._get('artifacts', item['id'])['task_id'], owner['id'])
+        self.assertEqual(self.service._get('tasks', old['id'])['status'], 'working')
+
+    def test_queued_reporter_callback_blocks_before_its_epoch_is_assigned(self):
+        from uuid import uuid4
+        owner, source, reporter, item = self.reported_work()
+        callback = dict(reporter, id=str(uuid4()), status='queued', _assignment_task_id=reporter['id'])
+        callback.pop('_conversation_epoch', None)
+        self.service._put('tasks', callback)
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(source)
+        self.assertEqual(self.service._get('artifacts', item['id']), item)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
     def test_progress_report_keeps_native_work_owner_and_binding(self):
         owner, source, reporter, item = self.reported_work()
         item.update(task_id=owner['id'], _native_outcome_id=owner['_native_outcome_id'])

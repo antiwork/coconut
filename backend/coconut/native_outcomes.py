@@ -71,18 +71,31 @@ class NativeOutcomes:
     def _restore_native_work_owner(self, owner):
         """An older progress report could replace the visible owner without moving its execution."""
         from .service import ServiceError
+        from .background_processes import subscription
+        from .work_capacity import execution_key
         if not owner.get('_work_context_id'):
             return
         item = self._get('artifacts', owner['_work_context_id'])
         if item['task_id'] == owner['id']:
             return
         reporter = self._get('tasks', item['task_id'])
+        related = [t for t in self._all('tasks')
+                   if t.get('session_id') == reporter.get('session_id')
+                   and (t.get('_conversation_epoch') == reporter.get('_conversation_epoch')
+                        or (t['status'] == 'queued' and '_conversation_epoch' not in t))
+                   and (execution_key(t) == execution_key(reporter) or t.get('_assignment_task_id') == reporter['id'])]
+        # A saved wait observes another task. It does not own this execution.
+        executing = any(t['status'] in ('queued', 'working', 'needs_you', 'paused') for t in related)
+        executing = executing or any(r['state'] == 'executing'
+            or (not r.get('_process_delivery') and (subscription(r)
+                or (r.get('_wait_decision_id') and self._decision_wait_pending(self._get('decisions', r['_wait_decision_id'])))))
+            for t in related for r in self._native_task_receipts(t['id']))
         history = [item.get('_work_origin_task_id'), *item.get('_work_previous_task_ids', [])]
         if (item['kind'] != 'work' or item['bot_id'] != owner['bot_id'] or owner['id'] not in history
                 or reporter.get('_native_outcome_id') or reporter.get('_work_context_id') == item['id']
                 or any(reporter.get(k) != owner.get(k) for k in ('bot_id', 'session_id', 'conversation_bot_id', '_conversation_epoch'))
                 or reporter['status'] not in ('completed', 'failed', 'waiting')
-                or self._background_pending(reporter['id'])
+                or executing
                 or any(d['task_id'] == reporter['id'] and d['status'] == 'pending' for d in self._all('decisions'))):
             raise ServiceError(409, 'This Work item has another execution. Continue its current owner.')
         self._carry_work_history(item, dict(item))
