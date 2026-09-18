@@ -1166,9 +1166,16 @@ def run_turn(request, emit, request_receipt):
                 trace.mark('first_output')
                 response_chunks.append(text)
 
+        pr_progress = (
+            'Supply work_id with the native task ID when a PR delivers its outcome. '
+            'Record progress with kanban_heartbeat. Keep lifecycle state in Hermes. '
+            'Use a native dependency or scheduled check for external waits. '
+            if request['task'].get('_native_outcome_id') or request['task'].get('_chat_session') else
+            'Include activity in coconut_track_pr at phase changes and when returning a result. '
+            'Report ready after verified review, waiting for an external result, or blocked when no next owner exists. ')
         instructions = ('You work in Coconut, a concise messaging app. Give short, useful replies. '
                         'Use coconut_track_pr when you create a PR, start work on an existing PR, or the person asks to follow one. Track the URL even when this task continues an older conversation. '
-                        'Include activity in coconut_track_pr at each phase change, before launching a background review, and when returning its result. Use a short phrase naming the work, such as Reviewing with Fable. Report ready after verified review. Report waiting when the PR author or checks own the next step; Coconut watches GitHub. Report blocked for unfinished work with no next owner. '
+                        + pr_progress +
                         'When a delegated PR passes CI, its owner verifies current reviews, unresolved findings, conflicts, and required approvals. '
                         'The owner offers one merge decision with coconut_ask when those checks support merging. Coconut preserves the recorded conversation route. '
                         'Do not wait for the requesting bot to present the card. Return useful results through the existing assignment. Recommend Merge when justified. '
@@ -1212,8 +1219,7 @@ def run_turn(request, emit, request_receipt):
         if request['task'].get('_tracked_prs'):
             instructions += ('\nWork already tracks these PRs for this assignment and its callbacks: '
                              + json.dumps(request['task']['_tracked_prs'])
-                             + '. Before starting work or a background process, call coconut_track_pr with the current short activity. '
-                             'Update it when the phase changes and when returning the verified result. This continues existing tracking.')
+                             + '. Reuse the existing tracking and task.')
         if request['task'].get('_tracked_pr_observations'):
             instructions += ('\nLatest saved GitHub observations for these PRs: '
                 + json.dumps(request['task']['_tracked_pr_observations'])

@@ -13,7 +13,7 @@ PR_REVIEW_INSTRUCTIONS = (
     'If required_checks_state is unverified, a required status passed but its expected GitHub App is unconfirmed. Verify its source before recommending merge. '
     'Read current-head Greptile findings, not only its successful check status. Resolve findings within the existing approval and verify the result. '
     'If CI failed, inspect the failure and continue the authorized fix. Do not ask permission for a routine retry or review. '
-    'If an external requirement remains, save its specific reason with coconut_track_pr activity_state waiting. '
+    'If an external requirement remains, record its specific reason on the existing task. '
     'Coconut monitors this PR without model calls and resumes you when results change. Do not start gh pr checks --watch. '
     'Offer one coconut_ask merge decision yourself when the evidence supports it. Coconut preserves the recorded conversation route. '
     'Do not wait for the requesting bot to present the card. Return useful results through the existing assignment. '
