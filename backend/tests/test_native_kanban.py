@@ -725,6 +725,7 @@ for title in ('First result', 'Second result'):
             second = next(t for t in owners if t['_native_outcome_id'] == identities[1])
             second['status'] = 'completed'
             self.service._put('tasks', second)
+        self.native_program("board.kb.block_task(board.conn, sys.argv[2], reason='Waiting for the external result')", identities[1])
         self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='First result verified')", identities[0])
         self.service.kanban.call({'op': 'snapshot'})
         self.service._reconcile_kanban()
