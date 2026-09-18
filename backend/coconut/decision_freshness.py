@@ -66,14 +66,17 @@ class DecisionFreshness:
                     if key not in observations:
                         observations[key] = tracker.observe(url)
                     value = observations[key]
+                    current_facts = dict(facts.get(url, {}))
                     if value.observed:
-                        prior_discussion = facts.get(url, {}).get('discussion')
-                        facts[url] = {field: getattr(value, field) for field in (
+                        current_facts.update({field: getattr(value, field) for field in (
                             'pr_state', 'head_sha', 'title', 'draft', 'checks_state',
-                            'required_checks_state', 'review_checks', 'check_failures')}
-                        if key not in discussions:
-                            discussions[key] = tracker.observe_discussion(url)
-                        facts[url]['discussion'] = discussions[key] or prior_discussion
+                            'required_checks_state', 'review_checks', 'check_failures')})
+                    if key not in discussions:
+                        discussions[key] = tracker.observe_discussion(url)
+                    if discussions[key] is not None:
+                        current_facts['discussion'] = discussions[key]
+                    if current_facts:
+                        facts[url] = current_facts
                 elif hasattr(tracker, 'observe_issue'):
                     if key not in issues:
                         issues[key] = tracker.observe_issue(url)

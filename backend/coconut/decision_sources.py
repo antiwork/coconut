@@ -35,9 +35,19 @@ def attach_sources(decision, payload):
 def github_source(url):
     """Return one canonical GitHub issue or PR location. Ignore link fragments."""
     import re
-    match = re.fullmatch(r'https://github\.com/([A-Za-z0-9][A-Za-z0-9-]{0,38})/'
-        r'([A-Za-z0-9_.-]{1,100})/(issues|pull)/([1-9][0-9]{0,9})/?(?:#[^\s]*)?', url or '')
-    if not match or match[2] in ('.', '..'):
+    if not isinstance(url, str):
+        return None
+    try:
+        parsed = urlsplit(url)
+        if (parsed.scheme not in ('http', 'https') or parsed.hostname != 'github.com'
+                or parsed.username or parsed.password or parsed.port not in (None, 443, 80)):
+            return None
+    except ValueError:
+        return None
+    match = re.fullmatch(r'/([A-Za-z0-9][A-Za-z0-9-]{0,38})/'
+        r'([A-Za-z0-9_.-]{1,100})/(issues|pull)/([1-9][0-9]{0,9})'
+        r'(?:/(files|commits|checks|changes))?/?', parsed.path)
+    if not match or match[2] in ('.', '..') or (match[3] == 'issues' and match[5]):
         return None
     kind = 'issues' if match[3] == 'issues' else 'pulls'
     return kind, '/'.join((match[1], match[2], kind, match[4])), f'https://github.com/{match[1]}/{match[2]}/{match[3]}/{match[4]}'

@@ -165,6 +165,19 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.service._queue_decision_refreshes()
         self.assertEqual(len(self.service._all('contexts')), 2)
 
+    def test_pr_discussion_refresh_does_not_require_checks_permission(self):
+        decision = self.question(old=False)
+        url = 'https://github.com/example/project/pull/42'
+        decision['sources'] = [dict(kind='pull_request', title='Review changes', url=url + '/files?diff=split#review')]
+        self.service._put('decisions', decision)
+        tracker = SimpleNamespace(observe_discussion=lambda _: 'new-discussion')
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            self.service._refresh_decision_sources({(decision['bot_id'], url): SimpleNamespace(observed=False)})
+        self.assertEqual(self.service._get('decisions', decision['id'])['_source_facts'],
+                         {url: {'discussion': 'new-discussion'}})
+        self.service._queue_decision_refreshes()
+        self.assertEqual(len(self.service._all('contexts')), 1)
+
     def test_source_observation_cannot_replace_a_card_revised_during_fetch(self):
         decision = self.question(old=False)
         decision['sources'] = [dict(kind='issue', title='Original issue', url='https://github.com/example/project/issues/12')]
