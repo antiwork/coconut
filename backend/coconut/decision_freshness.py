@@ -51,7 +51,7 @@ class DecisionFreshness:
             decisions = [d for d in self._all('decisions') if d['status'] == 'pending'
                 and not d.get('_hidden') and not d.get('_deleted')
                 and not self._get('bots', d['bot_id']).get('_deleted')]
-        issues, trackers = {}, {}
+        issues, discussions, trackers = {}, {}, {}
         for decision in decisions:
             if self.stopping.is_set():
                 return
@@ -67,9 +67,13 @@ class DecisionFreshness:
                         observations[key] = tracker.observe(url)
                     value = observations[key]
                     if value.observed:
+                        prior_discussion = facts.get(url, {}).get('discussion')
                         facts[url] = {field: getattr(value, field) for field in (
                             'pr_state', 'head_sha', 'title', 'draft', 'checks_state',
                             'required_checks_state', 'review_checks', 'check_failures')}
+                        if key not in discussions:
+                            discussions[key] = tracker.observe_discussion(url)
+                        facts[url]['discussion'] = discussions[key] or prior_discussion
                 elif hasattr(tracker, 'observe_issue'):
                     if key not in issues:
                         issues[key] = tracker.observe_issue(url)

@@ -127,6 +127,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         observation = SimpleNamespace(observed=True, pr_state='open', head_sha='head', title='Fix', draft=False,
             checks_state='passed', required_checks_state='passed', review_checks='first-review', check_failures=None)
         tracker = Mock()
+        tracker.observe_discussion.return_value = 'first-discussion'
         with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
             self.service._refresh_decision_sources({(decision['bot_id'], url): observation})
             tracker.observe.assert_not_called()
@@ -134,6 +135,29 @@ class DecisionFreshnessTests(unittest.TestCase):
             self.service.refresh_decision(context['id'], dict(status='current', evidence='Checked the current review.'))
             self.finish(context)
             observation.review_checks = 'new-review'
+            self.service._refresh_decision_sources({(decision['bot_id'], url): observation})
+        saved = self.service._get('decisions', decision['id'])
+        saved['_freshness']['queued_at'] = '2000-01-01T00:00:00Z'
+        self.service._put('decisions', saved)
+        self.service._queue_decision_refreshes()
+        self.assertEqual(len(self.service._all('contexts')), 2)
+
+    def test_pr_comment_change_refreshes_a_card_with_unchanged_checks(self):
+        from unittest.mock import Mock
+        decision = self.question(old=False)
+        url = 'https://github.com/example/project/pull/42'
+        decision['merge_pr_url'] = url
+        self.service._put('decisions', decision)
+        observation = SimpleNamespace(observed=True, pr_state='open', head_sha='head', title='Fix', draft=False,
+            checks_state='passed', required_checks_state='passed', review_checks='same-review', check_failures=None)
+        tracker = Mock()
+        tracker.observe_discussion.return_value = 'before-comment'
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            self.service._refresh_decision_sources({(decision['bot_id'], url): observation})
+            context = self.refresh()
+            self.service.refresh_decision(context['id'], dict(status='current', evidence='Read current comments.'))
+            self.finish(context)
+            tracker.observe_discussion.return_value = 'after-comment'
             self.service._refresh_decision_sources({(decision['bot_id'], url): observation})
         saved = self.service._get('decisions', decision['id'])
         saved['_freshness']['queued_at'] = '2000-01-01T00:00:00Z'

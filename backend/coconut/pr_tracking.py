@@ -313,6 +313,30 @@ class GitHubPRTracker:
             pass
         return None
 
+    def observe_discussion(self, url: str) -> str | None:
+        """Fingerprint complete PR discussions and reviews. Never return their private text."""
+        try:
+            owner, repo, number = parse_pr_url(url)
+            deadline = time.monotonic() + 20
+            records = []
+            for route in (f'issues/{number}/comments', f'pulls/{number}/comments', f'pulls/{number}/reviews'):
+                for page in range(1, 11):
+                    values = self._get(f'/repos/{owner}/{repo}/{route}?per_page=100&page={page}', deadline)
+                    if not isinstance(values, list) or any(not isinstance(v, dict) or 'id' not in v for v in values):
+                        return None
+                    records.extend((route, {k: v.get(k) for k in (
+                        'id', 'updated_at', 'submitted_at', 'state', 'body', 'commit_id')}) for v in values)
+                    if len(values) < 100:
+                        break
+                else:
+                    return None
+            return hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest()
+        except HTTPError as error:
+            error.close()
+        except (URLError, TimeoutError, OSError, HTTPException, PRTrackingError, ValueError, TypeError):
+            pass
+        return None
+
     def observe(self, url: str) -> PRObservation:
         """Errors carry no replacement state. Keep the last state and mark it stale."""
         checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
