@@ -44,6 +44,29 @@ class StateSyncTests(unittest.TestCase):
             state = self.service.snapshot(content_only=True)
         self.assertEqual([t['id'] for t in state['tasks']], [task['id']])
 
+    def test_recent_snapshot_loads_card_history_with_its_conversation_page(self):
+        task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Review this outcome'})
+        template = dict(bot_id=self.bot['id'], task_id=task['id'], action_type='question',
+            title='Review the result?', status='resolved', revision=1, created_at=task['created_at'])
+        with self.service.transaction():
+            for identity in ('old-card', 'prior-choice', 'pending-card'):
+                value = dict(template, id=identity)
+                if identity == 'pending-card':
+                    value.update(status='pending', previous_decision_id='prior-choice')
+                self.service._put('decisions', value)
+                self.service._message(self.bot['id'], identity, task_id=task['id'], decision_id=identity)
+            for i in range(80):
+                self.service._message(self.bot['id'], str(i), task_id=task['id'])
+        state = self.service.snapshot(content_only=True, compact_history=True)
+        self.assertEqual({d['id'] for d in state['decisions']}, {'pending-card', 'prior-choice'})
+        self.assertIn('pending-card', {m.get('decision_id') for m in state['messages']})
+        page = self.service.message_page(self.bot['id'], state['history_before'][self.bot['id']])
+        self.assertEqual({d['id'] for d in page['decisions']}, {'old-card', 'prior-choice', 'pending-card'})
+        self.assertEqual({t['id'] for t in page['tasks']}, {task['id']})
+        self.assertEqual(len(self.service.snapshot(content_only=True)['decisions']), 3)
+        reset = self.service.updates(state['cursor'] + 1000, collection_deltas=True, native_events=True, compact_history=True)
+        self.assertEqual({d['id'] for d in reset['reset']['decisions']}, {'pending-card', 'prior-choice'})
+
     def test_updates_include_new_and_hidden_messages_and_changed_tasks(self):
         initial = self.service.snapshot(content_only=True)
         task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})

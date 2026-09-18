@@ -127,6 +127,7 @@ struct StateUpdates: Decodable, Sendable {
 struct HistoryPage: Decodable, Sendable {
     let messages: [Message]
     let tasks: [AgentTask]?
+    let decisions: [Decision]?
     let before: Int?
 }
 

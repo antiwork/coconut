@@ -17,6 +17,7 @@ final class IncrementalSyncTests: XCTestCase {
         var task = state.tasks[0]; task.status = "completed"
         var message = state.messages[0]; message.id = "incremental-message"; message.text = "Incremental output"
         var old = message; old.id = "old-history"; old.text = "Earlier output"
+        var oldDecision = decision; oldDecision.id = "old-card"; oldDecision.status = "resolved"
         let routine = Routine(id: "confirmed-routine", botId: state.bots[0].id, name: "Daily check", prompt: "Check the queue.",
             cron: "daily", timezone: "UTC", enabled: true, nextRunAt: nil, lastRunAt: nil,
             lastTaskId: nil, createdAt: state.serverTime, updatedAt: state.serverTime)
@@ -30,7 +31,7 @@ final class IncrementalSyncTests: XCTestCase {
             "GET /v1/state": try APIJSON.encoder().encode(state),
             "GET /v1/cards/\(decision.id)": try json(["decision": object(decision), "task": object(task),
                 "bot": object(state.bots[0]), "owner": object(state.bots[0]), "cursor": 11]),
-            "GET /v1/history/\(state.bots[0].id)": try json(["messages": [object(old)], "tasks": [], "before": 50]),
+            "GET /v1/history/\(state.bots[0].id)": try json(["messages": [object(old)], "tasks": [], "decisions": [object(oldDecision), object(state.decisions[0])], "before": 50]),
             "GET /v1/history/\(state.bots[0].id)?before=50": try json(["messages": [object(old)], "tasks": [], "before": NSNull()])
         ], update: try json(["after": 10, "cursor": 11, "server_time": state.serverTime,
                             "tasks": [object(task)], "messages": [object(message)], "decisions": [object(decision)]]),
@@ -85,6 +86,8 @@ final class IncrementalSyncTests: XCTestCase {
         let firstPage = await store.loadOlderMessages(state.bots[0].id)
         XCTAssertTrue(firstPage)
         XCTAssertTrue(store.messages.contains { $0.text == "Earlier output" })
+        XCTAssertEqual(store.decisions.first { $0.id == oldDecision.id }, oldDecision)
+        XCTAssertEqual(store.decisions.first { $0.id == decision.id }?.title, "Current card")
         let count = store.messages.count
         let duplicatePage = await store.loadOlderMessages(state.bots[0].id)
         XCTAssertTrue(duplicatePage, "A page can advance its cursor without adding another message.")

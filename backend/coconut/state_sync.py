@@ -10,7 +10,9 @@ class StateSync:
             messages.update((m['id'], m) for m in page['messages'])
             if page['before'] is not None:
                 before[bot_id] = page['before']
-        pending = [d['id'] for d in self._all('decisions') if d.get('status') == 'pending' and not d.get('_hidden') and not d.get('_deleted')]
+        pending = [row[0] for row in self.db.execute(
+            "SELECT id FROM decisions WHERE json_extract(data,'$.status')='pending' "
+            "AND NOT coalesce(json_extract(data,'$._hidden'),0) AND NOT coalesce(json_extract(data,'$._deleted'),0)")]
         messages.update((m['id'], m) for m in self._card_messages(pending, visible))
         return sorted(messages.values(), key=lambda m: (m['created_at'], m['id'])), before
 
@@ -48,11 +50,35 @@ class StateSync:
         return {'messages': [self._public(row[1]) for row in reversed(page)],
                 'before': page[-1][0] if len(rows) > limit else None}
 
+    def _page_decisions(self, messages, *, pending=False):
+        import json
+        identities = sorted({m['decision_id'] for m in messages if m.get('decision_id')})
+        rows = [json.loads(row[0]) for row in self.db.execute(
+            "SELECT data FROM decisions WHERE id IN (SELECT value FROM json_each(?)) "
+            "OR (? AND json_extract(data,'$.status')='pending') ORDER BY rowid", (json.dumps(identities), pending))]
+        # Keep the recorded earlier choice available without loading unrelated cards.
+        selected = {d['id']: d for d in rows}
+        for decision in rows:
+            previous = decision.get('previous_decision_id')
+            if previous and previous not in selected:
+                row = self._read_one('SELECT data FROM decisions WHERE id=?', (previous,))
+                if row:
+                    value = json.loads(row[0])
+                    selected[previous] = value
+                    rows.append(value)
+        return rows
+
     def message_page(self, bot_id, before=None):
         with self._read_view() as view, view._read_transaction():
             page = view._message_page(bot_id, before=before)
-            identities = {m.get('task_id') for m in page['messages']}
-            page['tasks'] = [view._public(t) for t in view._all('tasks') if t['id'] in identities]
+            import json
+            visible = {b['id'] for b in view._all('bots') if not b.get('_deleted')}
+            page['decisions'] = [view._public(d) for d in view._page_decisions(page['messages'])
+                if not d.get('_hidden') and not d.get('_deleted') and d['bot_id'] in visible
+                and view._get('tasks', d['task_id']).get('conversation_bot_id', d['bot_id']) in visible]
+            identities = {m.get('task_id') for m in page['messages'] + page['decisions']} - {None}
+            page['tasks'] = [view._public(json.loads(row[0])) for row in view.db.execute(
+                'SELECT data FROM tasks WHERE id IN (SELECT value FROM json_each(?))', (json.dumps(sorted(identities)),))]
             return page
 
     def search_conversations(self, query):
@@ -116,7 +142,7 @@ class StateSync:
         from .service import ServiceError
         raise ServiceError(503, 'Settings changed during this request. Try again.')
 
-    def updates(self, after, wait=0, *, collection_deltas=False, native_events=False):
+    def updates(self, after, wait=0, *, collection_deltas=False, native_events=False, compact_history=False):
         from .service import ServiceError
         if after < 0:
             raise ServiceError(400, 'The event cursor must be zero or greater.')
@@ -131,7 +157,7 @@ class StateSync:
                 result = view._replay_changes(after, collection_deltas=collection_deltas, native_events=native_events)
             if result is not None:
                 return result
-            state = view._snapshot(content_only=True)
+            state = view._snapshot(content_only=True, compact_history=compact_history)
             return dict(after=after, cursor=state['cursor'], server_time=state['server_time'], reset=state)
 
     def _replay_changes(self, after, *, collection_deltas=False, native_events=False):

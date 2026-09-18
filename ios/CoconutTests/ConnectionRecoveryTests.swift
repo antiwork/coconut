@@ -3,6 +3,28 @@ import Network
 @testable import Coconut
 
 final class ConnectionRecoveryTests: XCTestCase {
+    func testShortReadTimeoutDoesNotCancelLongPoll() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let server = try DelayedConnectionServer()
+        let address = try await server.start()
+        defer { server.stop() }
+        let client = try APIClient(serverURL: address, fingerprint: "", token: "fixture-only")
+        async let poll: [String: Int] = client.request("updates?after=0&wait=20", retryTransient: false)
+        let started = ContinuousClock.now
+        do {
+            let _: [String: Int] = try await client.request("state", retryTransient: false)
+            XCTFail("A stalled foreground read must time out before the delayed response.")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .timedOut)
+            XCTAssertLessThan(started.duration(to: .now), .seconds(7))
+        }
+        let result = try await poll
+        XCTAssertEqual(result["ok"], 1, "The event request must keep its longer budget.")
+        #endif
+    }
+
     @MainActor
     func testRepeatedAvailablePathsDoNotCancelSynchronization() async throws {
         #if !(DEBUG && targetEnvironment(simulator))
@@ -78,6 +100,42 @@ private final class ConnectionServer: @unchecked Sendable {
                 response.append(body)
                 let reply = response
                 queue.asyncAfter(deadline: .now() + .milliseconds(500)) {
+                    connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
+                }
+            }
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            listener.stateUpdateHandler = { [self] state in
+                switch state {
+                case .ready:
+                    listener.stateUpdateHandler = nil
+                    continuation.resume(returning: "http://127.0.0.1:\(listener.port!.rawValue)")
+                case .failed(let error):
+                    listener.stateUpdateHandler = nil
+                    continuation.resume(throwing: error)
+                default: break
+                }
+            }
+            listener.start(queue: queue)
+        }
+    }
+
+    func stop() { listener.cancel() }
+}
+
+private final class DelayedConnectionServer: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "coconut.timeout-test")
+    private let listener: NWListener
+
+    init() throws { listener = try NWListener(using: .tcp, on: .any) }
+
+    func start() async throws -> String {
+        listener.newConnectionHandler = { [self] connection in
+            connection.start(queue: queue)
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [self] data, _, _, _ in
+                guard data != nil else { connection.cancel(); return }
+                let reply = Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 8\r\nConnection: close\r\n\r\n{\"ok\":1}".utf8)
+                queue.asyncAfter(deadline: .now() + 7) {
                     connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
                 }
             }

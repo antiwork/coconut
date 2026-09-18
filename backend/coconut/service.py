@@ -679,11 +679,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             self._work_graphs = previous_graphs
             self.db.execute('ROLLBACK')
 
-    def snapshot(self, *, timings=None, content_only=False) -> dict:
+    def snapshot(self, *, timings=None, content_only=False, compact_history=False) -> dict:
         with self._read_view() as view:
-            return view._snapshot(timings=timings, content_only=content_only)
+            return view._snapshot(timings=timings, content_only=content_only, compact_history=compact_history)
 
-    def _snapshot(self, *, timings=None, content_only=False) -> dict:
+    def _snapshot(self, *, timings=None, content_only=False, compact_history=False) -> dict:
         started = time.perf_counter()
         def measured(name):
             nonlocal started
@@ -732,7 +732,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         state[table], history = self._recent_messages(visible)
                         state['history_before'] = history
                         continue
-                    state[table] = [self._public(o) for o in self._all(table) if o['bot_id'] in visible and o.get('conversation_bot_id', o['bot_id']) in visible and not o.get('_deleted') and not o.get('_hidden') and (table not in ('decisions', 'artifacts') or not o.get('task_id') or o['task_id'] in visible_task_ids)]
+                    source = self._page_decisions(state['messages'], pending=True) if content_only and compact_history and table == 'decisions' else self._all(table)
+                    state[table] = [self._public(o) for o in source if o['bot_id'] in visible and o.get('conversation_bot_id', o['bot_id']) in visible and not o.get('_deleted') and not o.get('_hidden') and (table not in ('decisions', 'artifacts') or not o.get('task_id') or o['task_id'] in visible_task_ids)]
                 if content_only:
                     referenced = {o.get('task_id') for name in ('messages', 'decisions', 'artifacts') for o in state[name]}
                     state['tasks'] = [self._public(task) for task in (json.loads(row[0]) for row in self.db.execute(

@@ -90,6 +90,7 @@ final class APIClient: @unchecked Sendable {
     private let baseURL: URL
     private let token: String?
     private let session: URLSession
+    private let foregroundSession: URLSession
 
     init(serverURL: String, fingerprint: String, token: String?) throws {
         guard let components = URLComponents(string: serverURL.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -123,9 +124,16 @@ final class APIClient: @unchecked Sendable {
         config.httpShouldSetCookies = false
         config.waitsForConnectivity = true
         session = URLSession(configuration: config, delegate: PinDelegate(host: host, fingerprint: pin), delegateQueue: nil)
+        config.timeoutIntervalForRequest = 4
+        config.timeoutIntervalForResource = 6
+        config.waitsForConnectivity = false
+        foregroundSession = URLSession(configuration: config, delegate: PinDelegate(host: host, fingerprint: pin), delegateQueue: nil)
     }
 
-    deinit { session.invalidateAndCancel() }
+    deinit {
+        session.invalidateAndCancel()
+        foregroundSession.invalidateAndCancel()
+    }
 
     static func normalizeFingerprint(_ value: String) -> String {
         value.lowercased().filter { !$0.isWhitespace && $0 != ":" }
@@ -151,8 +159,8 @@ final class APIClient: @unchecked Sendable {
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        if path == "state" { request.setValue("content", forHTTPHeaderField: "X-Coconut-State") }
-        if path.hasPrefix("updates?") { request.setValue("3", forHTTPHeaderField: "X-Coconut-Updates") }
+        if path == "state" { request.setValue("recent", forHTTPHeaderField: "X-Coconut-State") }
+        if path.hasPrefix("updates?") { request.setValue("4", forHTTPHeaderField: "X-Coconut-Updates") }
         request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
@@ -161,9 +169,15 @@ final class APIClient: @unchecked Sendable {
             // The same request and key survive the network retry.
             request.setValue(idempotencyKey ?? UUID().uuidString, forHTTPHeaderField: "Idempotency-Key")
         }
+        let wait = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+            .first(where: { $0.name == "wait" })?.value.flatMap(Double.init) ?? 0
+        let shortRead = method == "GET" && (path == "state" || path.hasPrefix("cards/")
+            || path.hasPrefix("history/") || path.hasPrefix("search?")
+            || (path.hasPrefix("updates?") && wait <= 0))
+        let transport = shortRead ? foregroundSession : session
         for attempt in 0...1 {
             do {
-                let (data, response) = try await session.data(for: request)
+                let (data, response) = try await transport.data(for: request)
                 guard let response = response as? HTTPURLResponse else { throw ServiceError.invalidResponse }
                 guard (200..<300).contains(response.statusCode) else {
                     let error = try? JSONDecoder().decode(ErrorBody.self, from: data)

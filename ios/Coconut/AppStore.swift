@@ -1544,6 +1544,7 @@ final class AppStore {
             // Current messages win if replay updates a row while its history request runs.
             state.messages = StateUpdates.merge(state.messages, into: page.messages)
             state.tasks = StateUpdates.merge(state.tasks, into: page.tasks ?? [])
+            state.decisions = StateUpdates.merge(state.decisions, into: page.decisions ?? [])
             state.historyBefore?[botId] = page.before
             apply(state, persist: true)
             return page.before != before
@@ -1627,12 +1628,12 @@ private struct PairingConfiguration: Codable { let serverURL: String; let finger
 struct SnapshotCache: Codable, Sendable {
     let snapshot: StateSnapshot
     let syncedAt: Date
-    var updateProtocol: Int? = 3
+    var updateProtocol: Int? = 4
 
     var snapshotForRestore: StateSnapshot {
         var restored = snapshot
         // Older caches lack native IDs. Refresh once before compact updates.
-        if updateProtocol != 3 { restored.syncVersion = nil }
+        if updateProtocol != 4 { restored.syncVersion = nil }
         return restored
     }
 }

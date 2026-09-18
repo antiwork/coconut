@@ -17,6 +17,17 @@ final class StateUpdatesTests: XCTestCase {
         XCTAssertEqual(current.snapshotForRestore.syncVersion, 1)
     }
 
+    func testProtocolThreeCacheRequestsRecentHistorySnapshot() throws {
+        var snapshot = try PreviewStateFixture.load()
+        snapshot.syncVersion = 1
+        let cache = SnapshotCache(snapshot: snapshot, syncedAt: Date())
+        var old = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(cache)) as? [String: Any])
+        old["updateProtocol"] = 3
+        let previous = try JSONDecoder().decode(SnapshotCache.self, from: JSONSerialization.data(withJSONObject: old))
+        XCTAssertNil(previous.snapshotForRestore.syncVersion)
+        XCTAssertEqual(previous.snapshotForRestore.decisions, snapshot.decisions)
+    }
+
     func testNativeFreshnessKeepsUnchangedWorkVisibleWithoutReplacingArtifacts() throws {
         var state = try PreviewStateFixture.load()
         state.cursor = 10

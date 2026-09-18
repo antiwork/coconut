@@ -126,7 +126,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if method == 'GET':
                 if url.path == '/v1/state':
-                    self._json(200, service.snapshot(timings=self.timings, content_only=self.headers.get('X-Coconut-State') == 'content'))
+                    self._json(200, service.snapshot(timings=self.timings, content_only=self.headers.get('X-Coconut-State') in ('content', 'recent'),
+                        compact_history=self.headers.get('X-Coconut-State') == 'recent'))
                 elif url.path == '/v1/search':
                     self._json(200, service.search_conversations(parse_qs(url.query).get('q', [''])[0]))
                 elif url.path == '/v1/state/settings':
@@ -147,8 +148,9 @@ class Handler(BaseHTTPRequestHandler):
                         wait = float(query.get('wait', ['0'])[0])
                     except ValueError:
                         raise ServiceError(400, 'after and wait must contain numbers.')
-                    self._json(200, service.updates(after, wait, collection_deltas=self.headers.get('X-Coconut-Updates') in ('2', '3'),
-                        native_events=self.headers.get('X-Coconut-Updates') == '3'))
+                    self._json(200, service.updates(after, wait, collection_deltas=self.headers.get('X-Coconut-Updates') in ('2', '3', '4'),
+                        native_events=self.headers.get('X-Coconut-Updates') in ('3', '4'),
+                        compact_history=self.headers.get('X-Coconut-Updates') == '4'))
                 elif url.path == '/v1/settings/google':
                     self._json(200, service.google_connection('status', {}, device))
                 elif url.path == '/v1/push/config':
