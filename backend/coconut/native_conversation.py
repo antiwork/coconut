@@ -82,6 +82,22 @@ def current_message(request):
     return dict(messages[-1], text='\n\n'.join(message_content(message) for message in messages)) if messages else None
 
 
+def chat_message_content(request, message):
+    content = message_content(message)
+    task = request['task']
+    if (request['operation'] != 'start' or not task.get('_chat_session')
+            or task.get('_execution_session_id') or message.get('reply_to')):
+        return content
+    reference = task.get('_visible_reply_contexts', {}).get(message['id'])
+    if not reference:
+        return content
+    # Parallel work replies reach the phone without entering the foreground Hermes session.
+    return ('This was the last completed reply in this chat when Coconut received the following message. '
+            'It may come from another task. Use it to interpret references. '
+            'It does not confirm current state or authorize an action.\n'
+            + json.dumps(reference) + '\n\nCurrent message:\n' + content)
+
+
 def seed_messages(request):
     rows = visible_history(request.get('history', []))
     current = current_messages(request) if request['operation'] == 'start' else []

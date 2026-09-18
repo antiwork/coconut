@@ -67,6 +67,58 @@ class ConversationInputTests(unittest.TestCase):
                 self.assertEqual(self.db.replacements, 0)
         self.assertEqual(decision['request_text'], original[:4000])
 
+    def test_foreground_reply_keeps_the_visible_parallel_answer_after_native_compaction(self):
+        self.request['task'].update(_chat_session=True, _turn_message_ids=['current-user'])
+        self.request['history'][1]['text'] = 'The finance-alert card remains pending.'
+        self.request['task']['_visible_reply_contexts'] = {'current-user': dict(message_id='old-answer', text=self.request['history'][1]['text'])}
+        self.request['history'][2]['text'] = 'Incorrect there is no card pending'
+        self.request['history'].append(self.message('later-answer', 'queued', 'assistant', 'A later unrelated answer.'))
+        self.db.meta['coconut.history-context.' + self.root] = 'complete'
+        self.db.sessions[self.root] = [{'role': 'assistant', 'content': 'Run the Stripe test is recommended.'}]
+        prompt, _ = conversation_input(self.request)
+        self.assertIn('The finance-alert card remains pending.', prompt)
+        self.assertIn('Incorrect there is no card pending', prompt)
+        self.assertNotIn('A later unrelated answer.', prompt)
+        self.assertIn('does not confirm current state or authorize an action', prompt)
+        self.assertEqual(NativeConversation(self.request, self.db).history, self.db.sessions[self.root])
+        self.assertEqual(self.db.replacements, 0)
+
+    def test_old_input_without_a_visibility_snapshot_does_not_infer_context_later(self):
+        self.request['task']['_chat_session'] = True
+        prompt, _ = conversation_input(self.request)
+        self.assertNotIn('I will use blue.', prompt)
+
+    def test_batched_messages_keep_their_own_snapshot_and_explicit_reference(self):
+        self.request['task'].update(_chat_session=True, _turn_message_ids=['current-user', 'queued-user'],
+            _visible_reply_contexts={
+                'current-user': dict(message_id='first-answer', text='The finance card is pending.'),
+                'queued-user': dict(message_id='second-answer', text='The Stripe test is ready.')})
+        self.request['history'][2]['text'] = 'Incorrect there is no card pending'
+        self.request['history'][3]['text'] = 'How long will that test take?'
+        prompt, _ = conversation_input(self.request)
+        self.assertLess(prompt.index('The finance card is pending.'), prompt.index('Incorrect there is no card pending'))
+        self.assertLess(prompt.index('Incorrect there is no card pending'), prompt.index('The Stripe test is ready.'))
+        self.assertLess(prompt.index('The Stripe test is ready.'), prompt.index('How long will that test take?'))
+        self.request['history'][2]['reply_to'] = dict(message_id='quoted', text='An older finance answer.',
+            author='Desk', role='assistant', author_bot_id=self.request['bot']['id'])
+        prompt, _ = conversation_input(self.request)
+        self.assertIn('An older finance answer.', prompt)
+        self.assertNotIn('The finance card is pending.', prompt)
+        self.assertIn('The Stripe test is ready.', prompt)
+
+    def test_explicit_reply_and_background_work_keep_their_own_context(self):
+        self.request['task']['_chat_session'] = True
+        self.request['task']['_visible_reply_contexts'] = {'current-user': dict(message_id='old-answer', text='I will use blue.')}
+        self.request['history'][2]['reply_to'] = dict(message_id='quoted', text='A specific older reply.',
+            author='Desk', role='assistant', author_bot_id=self.request['bot']['id'])
+        prompt, _ = conversation_input(self.request)
+        self.assertIn('A specific older reply.', prompt)
+        self.assertNotIn('I will use blue.', prompt)
+        self.request['history'][2].pop('reply_to')
+        self.request['task']['_execution_session_id'] = 'background-work'
+        prompt, _ = conversation_input(self.request)
+        self.assertNotIn('I will use blue.', prompt)
+
     def test_old_reply_and_reaction_keep_reference_after_native_continuation(self):
         source = self.request['history'][1]
         source['text'] = 'The original recommendation has a unique detail: cobalt-17.'
@@ -211,6 +263,65 @@ class BotConversationTests(unittest.TestCase):
 
     def bot(self, name): return self.write('POST', '/v1/bots', {'name': name})
     def send(self, bot, text): return self.write('POST', f'/v1/bots/{bot["id"]}/messages', {'text': text})
+
+    def test_chat_captures_visible_reply_before_a_queued_message_or_later_completion(self):
+        self.provider.supports_native_outcomes = True
+        bot = self.bot('Desk')
+        other = self.bot('Developer')
+        with self.service.transaction():
+            visible = self.service._message(bot['id'], 'The finance-alert card remains pending.', sender_bot_id=bot['id'])
+            self.service._message(bot['id'], ' \n ', sender_bot_id=bot['id'])
+            for extra in [dict(_hidden=True), dict(_deleted=True), dict(streaming=True),
+                          dict(exchange_recipient_bot_ids=[other['id']]), dict(kind='bot_exchange')]:
+                row = self.service._message(bot['id'], 'Excluded reply.', sender_bot_id=bot['id'])
+                self.service._put('messages', row | extra)
+            self.service._message(other['id'], 'Another chat.', sender_bot_id=other['id'])
+            partial = self.service._message(bot['id'], 'A Stripe answer still in progress.', sender_bot_id=bot['id'], streaming=True)
+        task = self.send(bot, 'Incorrect there is no card pending')
+        source = next(m for m in self.service._task_messages(task['id']) if m['role'] == 'user')
+        self.assertEqual(source['_visible_reply_context']['message_id'], visible['id'])
+        self.assertNotIn('_visible_reply_context', self.service._public(source))
+        with self.service.transaction():
+            partial.update(streaming=False, text='The Stripe card is ready.')
+            self.service._put('messages', partial)
+        self.service.close()
+        self.service = Service(self.temp.name, self.provider, start_workers=False)
+        self.service._run_task(task['id'])
+        sent_task, sent_bot, history = self.provider.starts[-1]
+        prompt, _ = conversation_input(dict(operation='start', task=sent_task, bot=sent_bot, history=history))
+        self.assertIn('The finance-alert card remains pending.', prompt)
+        self.assertNotIn('The Stripe card is ready.', prompt)
+        self.assertNotIn('Excluded reply.', prompt)
+
+    def test_chat_skips_redundant_completion_but_keeps_completion_without_a_result(self):
+        bot = self.bot('Desk')
+        task = self.send(bot, 'Prepare a report.')
+        with self.service.transaction():
+            answer = self.service._message(bot['id'], 'The finance-alert card remains pending.', task_id=task['id'])
+            self.service._message(bot['id'], 'The report is ready.', task_id=task['id'], kind='artifact')
+            self.service._message(bot['id'], 'Done.', task_id=task['id'])
+            self.assertEqual(self.service._last_visible_reply(bot['id'])['message_id'], answer['id'])
+        other = self.send(bot, 'Finish a separate check.')
+        with self.service.transaction():
+            complete = self.service._message(bot['id'], 'Complete.', task_id=other['id'])
+            self.assertEqual(self.service._last_visible_reply(bot['id'])['message_id'], complete['id'])
+
+    def test_queued_replies_pass_each_arrival_snapshot_to_the_provider(self):
+        self.provider.supports_native_outcomes = True
+        bot = self.bot('Desk')
+        with self.service.transaction():
+            self.service._message(bot['id'], 'The finance card is pending.')
+        task = self.send(bot, 'Incorrect there is no card pending')
+        with self.service.transaction():
+            self.service._message(bot['id'], 'The Stripe test is ready.')
+        self.write('POST', f'/v1/tasks/{task["id"]}/replies', {'text': 'How long will that test take?'})
+        self.service._run_task(task['id'])
+        sent_task, sent_bot, history = self.provider.starts[-1]
+        prompt, _ = conversation_input(dict(operation='start', task=sent_task, bot=sent_bot, history=history))
+        self.assertEqual(len(sent_task['_visible_reply_contexts']), 2)
+        self.assertLess(prompt.index('The finance card is pending.'), prompt.index('Incorrect there is no card pending'))
+        self.assertLess(prompt.index('Incorrect there is no card pending'), prompt.index('The Stripe test is ready.'))
+        self.assertLess(prompt.index('The Stripe test is ready.'), prompt.index('How long will that test take?'))
 
     def check_failed_turn_preserves_replies(self, route, uncertain=False):
         bot = self.bot('Writer')

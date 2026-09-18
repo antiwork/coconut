@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 if __package__:
-    from .native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn
+    from .native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content
     from .native_bridge import TurnPaused
     from .native_turn_scope import TurnScope, current as current_turn, setup_lock, active_scopes, TurnUnconfirmed
     from .pull_request_reviews import PR_REVIEW_INSTRUCTIONS
@@ -26,7 +26,7 @@ if __package__:
     from .silent_responses import is_silent_response
     from .worker_protocol import MAX_EVENT_CHARACTERS, event_frame
 else:
-    from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn
+    from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content
     from native_bridge import TurnPaused
     from native_turn_scope import TurnScope, current as current_turn, setup_lock, active_scopes, TurnUnconfirmed
     from pull_request_reviews import PR_REVIEW_INSTRUCTIONS
@@ -551,7 +551,7 @@ def conversation_input(request):
         if index is None:
             prompt = request['task']['title']
         else:
-            prompt = '\n\n'.join(message_content(message) for message in current)
+            prompt = '\n\n'.join(chat_message_content(request, message) for message in current)
             history = history[:index]
         if request['task'].get('_background_completion'):
             followup = '\nNew message from the person:\n' + prompt if current else ''
