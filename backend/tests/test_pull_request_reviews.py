@@ -338,6 +338,84 @@ class PRReviewTests(unittest.TestCase):
         self.report_correction(task)
         self.assertEqual(self.service._get('artifacts', self.artifact_id)['_review_task_id'], self.child_id)
 
+    def test_readiness_report_keeps_completed_native_owner_for_check_updates(self):
+        task = self.start_correction()
+        owner = self.service._get('tasks', self.child_id)
+        owner['_native_outcome_id'] = 'native-original'
+        self.service._put('tasks', owner)
+        self.report_correction(task)
+        self.assertEqual(self.service._get('artifacts', self.artifact_id)['_review_task_id'], owner['id'])
+        task['status'] = 'completed'
+        self.service._put('tasks', task)
+        self.green()
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'queued')
+        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'completed')
+
+    def test_coordinator_receives_current_checks_when_a_result_waits_in_queue(self):
+        self.green()
+        self.service._run_task(self.child_id)
+        self.service._drain_returns()
+        callback = next(t for t in self.service._all('tasks') if t.get('_is_return') and t['status'] == 'queued')
+        artifact = self.service._get('artifacts', self.artifact_id)
+        artifact.update(checks_state='failed', required_checks_state='failed', checked_at='2099-01-01T00:00:00Z')
+        self.service._put('artifacts', artifact)
+        self.service._run_task(callback['id'])
+        current = self.provider.starts[-1]['_tracked_pr_observations']
+        self.assertEqual(len(current), 1)
+        self.assertEqual(current[0]['url'], URL)
+        self.assertEqual(current[0]['head_sha'], artifact['head_sha'])
+        self.assertEqual(current[0]['checks_state'], 'failed')
+        self.assertEqual(current[0]['checked_at'], '2099-01-01T00:00:00Z')
+
+    def test_separate_reporter_callback_retains_pr_context_after_newer_reports(self):
+        owner = self.service._get('tasks', self.child_id)
+        owner['_native_outcome_id'] = 'native-original'
+        self.service._put('tasks', owner)
+        parent = self.service._get('tasks', owner['source_task_id'])
+        parent['status'] = 'working'
+        self.service._put('tasks', parent)
+        sent = self.service._store_bot_message(parent['id'], dict(target_bot_id=self.dev['id'], text='Verify readiness'))
+        reporter = self.service._get('tasks', sent['task_id'])
+        reporter.update(status='working', _conversation_epoch=self.service._setting('conversation_epoch'))
+        self.service._put('tasks', reporter)
+        self.report_correction(reporter)
+        reporter = self.service._get('tasks', reporter['id'])
+        self.service._prepare_return(reporter, 'The reviewed head is ready.', 'completed')
+        reporter['status'] = 'completed'
+        self.service._put('tasks', reporter)
+        self.service._drain_returns()
+        callback = next(t for t in self.service._all('tasks') if t.get('_is_return') and t['status'] == 'queued')
+        newer = self.start_correction()
+        self.report_correction(newer)
+        artifact = self.service._get('artifacts', self.artifact_id)
+        self.assertEqual(artifact['_review_task_id'], owner['id'])
+        self.assertEqual(artifact['_activity_task_id'], newer['id'])
+        artifact.update(checks_state='failed', required_checks_state='failed', checked_at='2099-01-01T00:00:00Z')
+        self.service._put('artifacts', artifact)
+        self.service._run_task(callback['id'])
+        self.assertEqual(self.provider.starts[-1]['id'], callback['id'])
+        current = self.provider.starts[-1]['_tracked_pr_observations']
+        self.assertEqual([item['url'] for item in current], [URL])
+        self.assertEqual(current[0]['checks_state'], 'failed')
+
+    def test_latest_refresh_failure_reaches_callback_without_unrelated_prs(self):
+        self.green()
+        self.service._run_task(self.child_id)
+        self.service._drain_returns()
+        callback = next(t for t in self.service._all('tasks') if t.get('_is_return') and t['status'] == 'queued')
+        artifact = self.service._get('artifacts', self.artifact_id)
+        failed = dict(artifact, id=str(uuid4()), checked_at='2099-01-01T00:00:00Z',
+                      refresh_error='GitHub is unreachable.')
+        self.service._put('artifacts', failed)
+        other = self.write(f'/v1/bots/{self.dev["id"]}/messages', {'text': 'A separate PR'})
+        unrelated = dict(failed, id=str(uuid4()), url=URL + '0', task_id=other['id'], _review_task_id=other['id'])
+        self.service._put('artifacts', unrelated)
+        self.service._run_task(callback['id'])
+        current = self.provider.starts[-1]['_tracked_pr_observations']
+        self.assertEqual(len(current), 1)
+        self.assertEqual(current[0]['url'], URL)
+        self.assertEqual(current[0]['refresh_error'], 'GitHub is unreachable.')
+
     def test_native_continuation_keeps_work_active_and_prevents_takeover(self):
         task = self.start_correction()
         owner = self.service._get('tasks', self.child_id)

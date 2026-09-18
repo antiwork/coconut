@@ -2766,6 +2766,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     if not task.get('_chat_session') and not task.get('_native_outcome_id'):
                         provider_task['_tracked_prs'] = view._tracked_work_input(task)
                         provider_task['_tracked_work'] = view._tracked_items_input(task)
+                    provider_task['_tracked_pr_observations'] = view._tracked_pr_observations(task, provider_task.get('_tracked_prs', []))
                     if not task.get('_work_status_only'):
                         provider_task['_recent_work_updates'] = view.recent_work_updates(task)
                     work_id = task.get('_work_context_id') or assignment.get('_work_context_id')

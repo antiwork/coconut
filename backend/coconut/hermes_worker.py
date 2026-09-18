@@ -1195,6 +1195,13 @@ def run_turn(request, emit, request_receipt):
                              + json.dumps(request['task']['_tracked_prs'])
                              + '. Before starting work or a background process, call coconut_track_pr with the current short activity. '
                              'Update it when the phase changes and when returning the verified result. This continues existing tracking.')
+        if request['task'].get('_tracked_pr_observations'):
+            instructions += ('\nLatest saved GitHub observations for these PRs: '
+                + json.dumps(request['task']['_tracked_pr_observations'])
+                + '. Compare checked_at with earlier messages. Newer observations replace older check status reports. '
+                'A refresh error means the current state is unconfirmed. Verify the current head before a merge decision. '
+                'Use the existing worker result and review for that head. Do not request another readiness audit '
+                'unless a specific finding, changed head, or missing result requires it.')
         if not request['task'].get('_chat_session') and not request['task'].get('_native_outcome'):
             instructions += ('Work tracks the requested outcome across attempts. Coconut derives its state from execution, saved waits, and decisions. '
                              'Report one concrete progress sentence and the next step. Include completion_evidence when the outcome is complete. '

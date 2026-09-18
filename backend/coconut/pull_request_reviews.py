@@ -203,7 +203,8 @@ class PullRequestReviews:
         tasks = {t['id']: t for t in self._all('tasks')}
         current = tasks.get(artifact.get('_review_task_id'), {})
         owner = self._work_execution_owner(task, tasks)
-        if not current or current['id'] == owner['id'] or current.get('status') != 'completed':
+        if (not current or current['id'] == owner['id'] or current.get('status') != 'completed'
+                or current.get('_native_outcome_id')):
             return
         peers = [a for a in self._all('artifacts')
                  if a['kind'] == 'pr' and a.get('url', '').lower() == artifact['url'].lower()]

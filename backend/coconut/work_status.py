@@ -119,6 +119,9 @@ class WorkStatus:
 
     def _set_work_activity(self, artifact, task, payload):
         from .service import ServiceError, now, require_text
+        if task.get('id') and artifact['kind'] == 'pr':
+            task['_reported_pr_urls'] = sorted(set(task.get('_reported_pr_urls', [])) | {artifact['url'].lower()})
+            self._put('tasks', task)
         if task.get('id') and self._pr_report_superseded(artifact, task):
             return
         self._link_pr_outcome(artifact, task, payload)
@@ -424,6 +427,29 @@ class WorkStatus:
         self._project_work_outcomes(artifacts, {t['id']: t for t in self._all('tasks')},
                                     self._pending_completion_receipts(), self._all('decisions'), datetime.now(timezone.utc))
         return artifacts
+
+    def _tracked_pr_observations(self, task, urls):
+        fields = ('url', 'head_sha', 'pr_state', 'draft', 'checks_state', 'required_checks_state',
+                  'review_checks', 'check_failures', 'checked_at', 'refresh_error')
+        artifacts = [a for a in self._all('artifacts') if a['kind'] == 'pr']
+        owners = {task['id']}
+        if task.get('_is_return'):
+            owners.update(filter(None, (task.get('source_task_id'), task.get('_resolved_dependency_id'))))
+        related = {url.lower() for url in urls}
+        related.update(url for source in self._all('tasks') if source['id'] in owners
+                       for url in source.get('_reported_pr_urls', []))
+        related.update(a['url'].lower() for a in artifacts
+                       if owners.intersection((a.get('_review_task_id'), a.get('_activity_task_id')))
+                       and self._pr_review_source_current(a))
+        latest = {}
+        timestamp = lambda a: (a.get('checked_at') or '', a.get('observed_at') or '', a['created_at'])
+        for artifact in artifacts:
+            url = artifact['url'].lower()
+            if url not in related:
+                continue
+            if url not in latest or timestamp(artifact) > timestamp(latest[url]):
+                latest[url] = artifact
+        return [{key: artifact.get(key) for key in fields} for artifact in latest.values()]
 
     def _work_receipts(self):
         import json

@@ -106,7 +106,7 @@ class WorkerModelProcessTests(unittest.TestCase):
                     if os.environ.get('EXPECTED_NATIVE_KEY'):
                         assert kwargs.get('api_key') == os.environ['EXPECTED_NATIVE_KEY']
                     fields = ('model', 'provider', 'api_mode', 'base_url', 'requested_provider', 'reasoning_config',
-                              'enabled_toolsets', 'skip_context_files', 'skip_memory', 'skip_background_review')
+                              'enabled_toolsets', 'skip_context_files', 'skip_memory', 'skip_background_review', 'ephemeral_system_prompt')
                     record = {key: kwargs.get(key) for key in fields}
                     record.update(home=os.environ['HOME'], hermes_home=os.environ['HERMES_HOME'],
                                   allowed_tools=sorted(self.valid_tool_names))
@@ -126,13 +126,14 @@ class WorkerModelProcessTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def run_worker(self, operation, *, effort, native=None, extract=True, decision_status='executed'):
+    def run_worker(self, operation, *, effort, native=None, extract=True, decision_status='executed', task_context=None):
         home = self.root / 'bot-home'
         home.mkdir(exist_ok=True)
         capture = self.root / (str(uuid4()) + '.jsonl')
         source = {'id': str(uuid4()), 'text': 'Remember to use metric units.'}
         task = {'id': str(uuid4()), 'title': 'Check the result', 'bot_id': self.bot['id'],
                 '_preference_sources': [source] if extract else []}
+        task.update(task_context or {})
         runtime = self.native if native is None else native
         request = {'operation': operation, 'task': task, 'bot': self.bot, 'history': [], 'model': 'gpt-6-astra',
                    'provider': 'openai-codex', 'base_url': self.native['base_url'], 'runtime_config': runtime,
@@ -168,6 +169,15 @@ class WorkerModelProcessTests(unittest.TestCase):
         self.assertNotIn('private-test-token', json.dumps(events) + stderr)
         self.assertNotIn('ambient-test-key', json.dumps(events) + stderr)
         return code, events, records, home
+
+    def test_saved_pr_observation_reaches_the_native_agent(self):
+        observation = {'url': 'https://github.com/example/project/pull/42', 'head_sha': 'a' * 40,
+                       'required_checks_state': 'failed', 'checked_at': '2099-01-01T00:00:00Z',
+                       'refresh_error': None}
+        code, events, records, _ = self.run_worker('start', effort=None, extract=False,
+            task_context={'_tracked_pr_observations': [observation]})
+        self.assertEqual(code, 0, events)
+        self.assertIn(json.dumps([observation]), records[0]['ephemeral_system_prompt'])
 
     def test_task_context_and_resumes_share_native_route_effort_and_memory(self):
         cases = [('start', None, 'executed'), ('context', 'none', 'executed'),
