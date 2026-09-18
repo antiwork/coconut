@@ -254,6 +254,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
 
     def test_continued_result_reaches_requester_after_an_earlier_return(self):
         owner, source = self.native()
+        self.service.kanban.tasks[owner['id']].update(status='done', input_id=owner['id'])
         self.service._prepare_return(owner, 'Acceptance is blocked.', 'completed')
         self.service._put('tasks', owner)
         with self.assertRaisesRegex(ServiceError, 'previous result'):
@@ -266,6 +267,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.service._put('tasks', dict(source, status='working'))
         self.resume(source)
         continued = self.service._get('tasks', owner['id'])
+        self.service.kanban.tasks[owner['id']].update(status='done', input_id=continued['_native_turn_id'])
         self.service._prepare_return(continued, 'Acceptance passed.', 'completed')
         continued['status'] = 'completed'
         self.service._put('tasks', continued)
