@@ -368,6 +368,8 @@ class TrackedWork:
                 self._event('artifact.updated', self._public(item), item['bot_id'], item['task_id'])
 
     def _sync_automatic_work(self):
+        if self.kanban and getattr(self.provider, 'supports_native_outcomes', False):
+            return
         from .service import now, uid
         with self.transaction():
             tasks = {t['id']: t for t in self._all('tasks')}

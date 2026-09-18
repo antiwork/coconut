@@ -312,7 +312,10 @@ class WorkModel:
         queue_positions = self._queue_positions(tasks, timestamp.timestamp())
         groups = {}
         delegated = {}
+        copies_by_outcome = {}
         for item in self._all('artifacts'):
+            if item['kind'] in ('work', 'pr') and not item.get('_hidden'):
+                copies_by_outcome.setdefault(self._work_identity(item), []).append(item)
             if item['kind'] == 'work' and item.get('_hidden') and item.get('_work_parent_id'):
                 delegated.setdefault(item['_work_parent_id'], []).append(item)
         for item in artifacts:
@@ -325,9 +328,9 @@ class WorkModel:
             latest = max(peers, key=lambda p: (p.get('observed_at') or p['created_at'], p.get('checked_at') or '', p['id']))
             if identity.startswith('work:'):
                 latest = dict(self._work_outcome_artifact(latest))
-            copies = [p for p in self._all('artifacts') if p['kind'] in ('work', 'pr')
-                      and not p.get('_hidden') and self._work_identity(p) == identity
-                      and p['id'] not in {a['id'] for a in peers}] if latest['kind'] == 'work' else []
+            peer_ids = {p['id'] for p in peers}
+            copies = [p for p in copies_by_outcome.get(identity, [])
+                      if p['id'] not in peer_ids] if latest['kind'] == 'work' else []
             reports = peers + copies + (delegated.get(latest['id'], []) if latest['kind'] == 'work' else [])
             if latest['id'] not in {p['id'] for p in reports}:
                 reports.append(latest)

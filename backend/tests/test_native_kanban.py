@@ -608,6 +608,67 @@ for title in ('First defect', 'Second defect'):
             self.service._cancel(self.service._get('tasks', task['id']), [])
         self.assertEqual(self.service._get('tasks', owned[1]['id'])['status'], 'queued')
 
+    def test_native_view_and_maintenance_skip_the_duplicate_tracker(self):
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner['status'] = 'waiting'
+            self.service._put('tasks', owner)
+        self.service._migrate_native_work()
+        self.service.kanban.call({'op': 'snapshot'})
+        item = self.service._get('artifacts', item['id'])
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner['status'] = 'queued'
+            self.service._put('tasks', owner)
+        with patch.object(self.service, '_all', side_effect=AssertionError('Do not rebuild history')), \
+             patch.object(self.service, '_pending_completion_receipts', side_effect=AssertionError('Do not infer work from receipts')):
+            self.service._sync_automatic_work()
+            projected = self.service._work_projection([dict(item)])
+        self.assertEqual(projected[0]['work_state'], 'queued')
+
+    def test_native_view_preserves_legacy_pause_and_canonical_pr_links(self):
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner['status'] = 'completed'
+            self.service._put('tasks', owner)
+            decision = dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=task['id'],
+                status='rejected', decided_by='person')
+            self.service._put('decisions', decision)
+            item['paused_by_decision_id'] = decision['id']
+            self.service._put('artifacts', item)
+        paused = self.service._work_projection([dict(item)])[0]
+        self.assertEqual(paused['work_state'], 'waiting')
+        self.assertEqual(paused['activity'], 'Paused by your decision')
+        with self.service.transaction():
+            item.update(status='cancelled', completion_evidence='Stopped by the user')
+            self.service._put('artifacts', item)
+            alias = dict(item, id=str(uuid4()), _hidden=True, _work_parent_id=item['id'])
+            self.service._put('artifacts', alias)
+            pr = dict(item, id=str(uuid4()), kind='pr', url='https://github.com/example/repo/pull/1',
+                work_outcome_id=alias['id'])
+        projected = self.service._work_projection([pr])[0]
+        self.assertEqual(projected['work_outcome_id'], item['id'])
+        self.assertEqual(projected['work_state'], 'cancelled')
+
+    def test_native_view_does_not_complete_legacy_work_with_a_pending_decision(self):
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner['status'] = 'completed'
+            self.service._put('tasks', owner)
+            decision = dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=task['id'], status='pending')
+            self.service._put('decisions', decision)
+            item.update(status='completed', completion_evidence='Local check passed')
+            self.service._put('artifacts', item)
+        projected = self.service._work_projection([dict(item)])[0]
+        self.assertEqual(projected['work_state'], 'needs_decision')
+        self.assertEqual(projected['work_decision_id'], decision['id'])
+
     def test_native_work_status_does_not_follow_conversation_activity(self):
         origin = self.task('Discuss a pending outcome')
         identity = self.native_program("""

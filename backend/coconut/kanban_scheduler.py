@@ -369,6 +369,6 @@ class NativeKanban(NativeOutcomes):
     def _native_queue_positions(self, tasks, timestamp):
         native = self.kanban.tasks
         ordered = sorted((n for i, n in native.items() if i in tasks and n['status'] == 'ready'
-                          and self._dispatch_eligible(tasks[i], timestamp)),
+                          and not n.get('dispatch_blocker')),
                          key=lambda n: (-n['priority'], n['created_at']))
         return {n['external_id']: index + 1 for index, n in enumerate(ordered)}

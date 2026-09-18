@@ -424,6 +424,8 @@ class WorkStatus:
         return sorted(urls)
 
     def _work_projection(self, artifacts):
+        if self.kanban and getattr(self.provider, 'supports_native_outcomes', False):
+            return self._native_work_view(artifacts)
         self._project_work_outcomes(artifacts, {t['id']: t for t in self._all('tasks')},
                                     self._pending_completion_receipts(), self._all('decisions'), datetime.now(timezone.utc))
         return artifacts

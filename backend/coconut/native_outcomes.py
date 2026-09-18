@@ -342,6 +342,42 @@ class NativeOutcomes:
         self._put('tasks', task)
         self._event('task.updated', self._public(task), task['bot_id'], task['id'])
 
+    def _native_work_view(self, artifacts):
+        from datetime import datetime, timezone
+        timestamp = datetime.now(timezone.utc)
+        groups, legacy = {}, []
+        for item in artifacts:
+            if item['kind'] not in ('work', 'pr'):
+                continue
+            root = self._work_outcome_artifact(item)
+            if not root.get('_native_outcome_id'):
+                legacy.append(item)
+                continue
+            if item.get('work_outcome_id'):
+                item['work_outcome_id'] = root['id']
+            groups.setdefault(root['id'], (root, []))[1].append(item)
+        if groups:
+            identities = {root['task_id'] for root, _ in groups.values()} - {None}
+            identities.update(n['external_id'] for n in self.kanban.tasks.values())
+            tasks = {t['id']: t for t in (json.loads(row[0]) for row in self.db.execute(
+                'SELECT data FROM tasks WHERE id IN (SELECT value FROM json_each(?))', (json.dumps(sorted(identities)),)))}
+            decisions = [json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending' "
+                "AND NOT coalesce(json_extract(data,'$._hidden'),0) AND NOT coalesce(json_extract(data,'$._deleted'),0)")]
+            positions = self._native_queue_positions(tasks, timestamp.timestamp())
+            for root, peers in groups.values():
+                outcome = self._native_outcome_projection(root, tasks, [], decisions, timestamp, positions, peers)
+                for item in peers:
+                    item.update(outcome)
+                    if item['kind'] == 'work':
+                        item['status'] = outcome['activity_state']
+                    item['work_dismissal_id'] = self._setting('work.dismissed.' + self._work_identity(root))
+        # Retained work must finish migration with its original waits and decisions.
+        if legacy:
+            self._project_work_outcomes(legacy, {t['id']: t for t in self._all('tasks')},
+                self._pending_completion_receipts(), self._all('decisions'), timestamp)
+        return artifacts
+
     def _native_outcome_projection(self, item, tasks, records, decisions, timestamp, queue_positions, peers=None):
         native = next((n for n in self.kanban.tasks.values() if n['id'] == item['_native_outcome_id']), None) if self.kanban else None
         owner = tasks.get(item.get('task_id'), {})
