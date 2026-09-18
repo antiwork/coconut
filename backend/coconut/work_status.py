@@ -168,8 +168,24 @@ class WorkStatus:
         peers = [artifact, *(p for p in self._all('artifacts') if p['id'] != artifact['id']
                   and p['kind'] == 'pr' and p.get('url', '').lower() == artifact['url'].lower())]
         existing = next((p['work_outcome_id'] for p in peers if p.get('work_outcome_id')), None)
+        if 'work_id' in payload and payload['work_id'] is None:
+            if task.get('id'):
+                raise ServiceError(409, 'Only the authenticated client can remove a Work link.')
+            for peer in peers:
+                peer.pop('work_outcome_id', None)
+                self._put('artifacts', peer)
+                self._event('artifact.updated', self._public(peer), peer['bot_id'], peer.get('task_id'))
+            return
+        native = bool(task.get('_native_outcome_id') or task.get('_chat_session'))
+        if native and not existing and not payload.get('work_id'):
+            return
         inherited = bool(existing) and not payload.get('work_id')
         identity = payload.get('work_id') or existing or task.get('_work_context_id')
+        if identity and identity.startswith('t_'):
+            owner, _ = self._native_continuation_owner(identity)
+            identity = owner.get('_work_context_id')
+            if not identity:
+                raise ServiceError(409, 'This native task does not have a Work outcome yet.')
         if not identity and task.get('id'):
             matches = {self._work_outcome_artifact(a)['id'] for a in self._all('artifacts')
                        if a['kind'] == 'work' and a.get('task_id') == task['id']}

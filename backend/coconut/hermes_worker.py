@@ -1104,10 +1104,18 @@ def run_turn(request, emit, request_receipt):
                 'Track an existing GitHub pull request in Work. Call when you create a PR or begin work on one, or when the person asks to follow it. Do not track links mentioned only as context. Coconut reads GitHub checks and resumes the owner when results change. Record waiting and finish the turn instead of starting gh pr checks --watch. This does not create, edit, push, or merge a PR.',
                 'parameters': {'type': 'object', 'properties': {'url': {'type': 'string',
                     'description': 'The exact https://github.com/owner/repo/pull/number URL.'},
-                    'work_id': {'type': 'string', 'description': 'ID of a separate Work item that this PR completes. Omit for PR-only tracking. Do not pass the PR artifact ID. Reuse a linked Work ID across delegated work.'},
+                    'work_id': {'type': 'string', 'description': 'Native task ID or Work item ID for the outcome this PR delivers. Supply it explicitly for a deliverable. Omit for PR-only tracking. A dependency PR does not deliver the current outcome.'},
                     'activity': {'type': 'string', 'maxLength': 80, 'description': 'One short current activity, for example Reviewing with Fable or Checking a finding. Update at phase changes and before finishing. No hashes or tool counts.'},
                     'paused_by_decision_id': TRACK_WORK_SCHEMA['parameters']['properties']['paused_by_decision_id'],
                     'activity_state': {'type': 'string', 'enum': ['working', 'waiting', 'ready', 'blocked'], 'description': 'Use working while investigating or fixing. Use waiting when the PR author or checks own the next step. Coconut watches GitHub without model calls. Use blocked for unfinished work with no next owner. Use ready after verified review. Defaults to working.'}}, 'required': ['url']}}
+            if request['task'].get('_native_outcome_id') or request['task'].get('_chat_session'):
+                pr_schema['parameters']['properties'] = {key: value for key, value in pr_schema['parameters']['properties'].items()
+                    if key in ('url', 'work_id')}
+                pr_schema['description'] = (
+                    'Track an existing GitHub PR and its checks. Supply work_id only when the PR delivers that native outcome. '
+                    'Omit it for a separate PR. Do not track references that need no follow-up. '
+                    'Use Hermes tasks and heartbeats for progress. Coconut resumes the owner when GitHub results change. '
+                    'This does not create, edit, push, or merge a PR.')
             registry.register(name=pr_schema['name'], toolset='coconut', schema=pr_schema,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('artifact', dict(kind='pr', url=arguments.get('url'), **{k: arguments[k] for k in ('work_id', 'activity', 'activity_state', 'paused_by_decision_id') if k in arguments}))))
             allowed.add(pr_schema['name'])
