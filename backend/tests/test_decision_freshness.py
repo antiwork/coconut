@@ -238,6 +238,23 @@ class DecisionFreshnessTests(unittest.TestCase):
             self.assertEqual(facts['base_branch'], base)
             self.assertNotIn('required_checks_state', facts)
 
+    def test_final_pr_identity_read_invalidates_pending_card_checks(self):
+        from test_pr_tracking import tracker_for, pull, check, SHA, URL
+        decision = self.question(old=False)
+        decision['merge_pr_url'] = URL
+        for final in (pull(head={'sha': 'b' * 40}, base={'ref': 'main'}), pull(base={'ref': 'release'})):
+            decision['_source_facts'] = {URL: dict(head_sha=SHA, base_branch='main', required_checks_state='passed')}
+            self.service._put('decisions', decision)
+            tracker = tracker_for([check()], before=pull(base={'ref': 'main'}), after=final)
+            with patch.object(tracker, '_required_checks', return_value=('passed', True)), \
+                 patch.object(tracker, 'observe_discussion', return_value=None), \
+                 patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+                self.service._refresh_decision_sources({})
+            facts = self.service._get('decisions', decision['id'])['_source_facts'][URL]
+            self.assertEqual(facts['head_sha'], final['head']['sha'])
+            self.assertEqual(facts['base_branch'], final['base']['ref'])
+            self.assertNotIn('required_checks_state', facts)
+
     def test_source_observation_cannot_replace_a_card_revised_during_fetch(self):
         decision = self.question(old=False)
         decision['sources'] = [dict(kind='issue', title='Original issue', url='https://github.com/example/project/issues/12')]

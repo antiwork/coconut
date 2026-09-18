@@ -377,6 +377,7 @@ class GitHubPRTracker:
                 required_checks_state, required_checks_observed = self._required_checks(prefix, initial, checks, status, deadline)
                 final = self._get(path, deadline)
                 after = _pr_fields(final)
+                sha, base_branch = after[0], (final.get("base") or {}).get("ref")
                 if before[:4] != after[:4]:
                     raise PRTrackingError("The pull request changed during refresh. Refresh again.")
                 if (initial.get('base') or {}).get('ref') != (final.get('base') or {}).get('ref'):
