@@ -319,7 +319,7 @@ class BackgroundProcesses:
 
     def _prepare_native_reply(self, task, text, result_status):
         ready = True
-        owners = {task['id']} if task.get('_native_relay') else set()
+        owners = {task['id']} if task.get('_native_relay') or task.get('_native_intake') else set()
         if task.get('_relay_callback_owner'):
             owners.add(task['_relay_callback_owner'])
         for owner_id in owners:
@@ -335,11 +335,21 @@ class BackgroundProcesses:
                           for identity in waiting)
             turns = [t for t in self._all('tasks')
                      if t['id'] == owner_id or t.get('_relay_callback_owner') == owner_id]
+            # Creation finishes before the scheduler adopts the native task.
+            adopted = {t.get('_native_outcome_id') for t in turns}
+            for record in self._native_task_receipts(owner_id):
+                if record['action']['name'] != 'kanban_create':
+                    continue
+                created = result_value(record)
+                pending = pending or record['state'] == 'executing' or (
+                    isinstance(created, dict) and created.get('task_id') and created['task_id'] not in adopted)
             pending = pending or any(self._background_pending(t['id'], finishing_task_id=task['id'])
                                      or (t['id'] != task['id'] and t['status'] in ('queued', 'working', 'needs_you', 'paused'))
                                      for t in turns)
             if result_status != 'failed' and pending:
                 ready = False
+                continue
+            if not owner.get('_native_relay'):
                 continue
             owner['_native_reply_pending'] = dict(owner['_native_relay'], text=text, failed=result_status == 'failed')
             owner['_native_relay_result'] = dict(owner['_native_reply_pending'])

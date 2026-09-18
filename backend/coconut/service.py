@@ -1454,6 +1454,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         if origin['archived'] or origin.get('_deleted'):
             raise ServiceError(409, 'The originating conversation is unavailable.')
         assignment = self._assignment(source)
+        dependency_id = assignment.get('_return_dependency_id', assignment['id'])
         progress_only = not returning and target_id == assignment.get('source_bot_id') and (
             self._unfinished_work(assignment) or bool(assignment.get('_waiting_on')) or self._background_pending(assignment['id']))
         target = self._get('bots', target_id)
@@ -1528,7 +1529,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             task = owner
             task.setdefault('_bot_messages', []).append(bot_message)
             if not progress_only:
-                task['_waiting_on'] = [identity for identity in task.get('_waiting_on', []) if identity != assignment['id']]
+                task['_waiting_on'] = [identity for identity in task.get('_waiting_on', []) if identity != dependency_id]
             native = self.kanban.tasks.get(task['id'], {})
             if task['status'] not in ('cancelled', 'paused', 'needs_you') and native.get('status') not in ('done', 'archived'):
                 if task['status'] == 'working':
@@ -1563,7 +1564,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             if assignment.get('_requester_reply_task_id'):
                 task['_relay_callback_owner'] = assignment['_requester_reply_task_id']
             if not progress_only:
-                task['_resolved_dependency_id'] = assignment['id']
+                task['_resolved_dependency_id'] = dependency_id
         elif not task['_is_return']:
             task['_reply_to_task_id'] = assignment['id']
             callback_owner = source.get('_relay_callback_owner') or (source['id'] if source.get('_native_relay') else None)
@@ -1635,6 +1636,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self._event('task.updated', self._public(assignment), assignment['bot_id'], assignment['id'])
 
     def _prepare_return(self, task: dict, text: str, result_status: str):
+        result_key = None
         if task.get('_native_outcome_id') and result_status == 'completed':
             native = self.kanban.tasks.get(task['id'], {}) if self.kanban else {}
             if native.get('id') != task['_native_outcome_id'] or native.get('status') != 'done':
@@ -1644,11 +1646,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 return
             if task.get('_native_return_prepared') == list(result_key):
                 return
-            task['_native_return_prepared'] = list(result_key)
         if result_status == 'failed':
             self._hold_failed_followup(task)
         if not self._prepare_native_reply(task, text, result_status):
             return
+        if result_key:
+            task['_native_return_prepared'] = list(result_key)
         if not task.get('source_bot_id') or task.get('_is_return'):
             return
         turn_ids = {t['id'] for t in self._all('tasks') if t['id'] == task['id'] or t.get('_assignment_task_id') == task['id']}

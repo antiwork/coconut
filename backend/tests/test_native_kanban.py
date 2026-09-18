@@ -583,6 +583,22 @@ print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve t
         tracking = NativeWork(dict(operation='start', task=intake))
         self.assertFalse(tracking.enabled)
         self.assertFalse(tracking.capture)
+        with self.service.transaction():
+            intake['status'] = 'working'
+            self.service._put('tasks', intake)
+        record = self.service.emit(intake['id'], 'native_call', dict(name='kanban_create', arguments={}))
+        import json
+        self.service.emit(intake['id'], 'native_result',
+            dict(id=record['id'], result=json.dumps(dict(ok=True, task_id=identity))))
+        with self.service.transaction():
+            intake = self.service._get('tasks', intake['id'])
+            intake['status'] = 'completed'
+            self.service._finish_assignment_turn(intake, 'I started the work', 'completed')
+            self.service._put('tasks', intake)
+        self.assertNotIn('_return_pending', intake)
+        self.assertNotIn('_native_relay_result', intake)
+        self.service._drain_returns()
+        self.assertFalse(any(d['source_task_id'] == intake['id'] for d in self.service._all('deliveries')))
         self.service.kanban.call({'op': 'snapshot'})
         self.service._adopt_native_outcomes()
         owner = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
@@ -623,6 +639,9 @@ print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve t
             self.service._prepare_return(owner, owner['summary'], 'failed')
             self.service._put('tasks', owner)
         self.service._drain_returns()
+        failed_callback = next(t for t in self.service._all('tasks')
+                               if t.get('source_task_id') == owner['id'])
+        self.assertEqual(failed_callback['_resolved_dependency_id'], intake['id'])
         with self.service.transaction():
             owner = self.service._get('tasks', owner['id'])
             self.service._native_retry(owner, {'status': 'ready'})
@@ -648,10 +667,61 @@ print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve t
                     if d['source_task_id'] == owner['id'] and d['target_bot_id'] == self.bot['id']]
         self.assertEqual(len(returned), 2)
         self.assertEqual(returned[-1]['text'], 'The requested result is ready')
+        completed_callback = self.service._get('tasks', returned[-1]['receipt']['task_id'])
+        self.assertEqual(completed_callback['_resolved_dependency_id'], intake['id'])
+        with self.service.transaction():
+            self.service._finish_assignment_turn(completed_callback, 'Result received', 'completed')
+        self.assertNotIn(intake['id'], self.service._get('tasks', source['id'])['_waiting_on'])
         self.service._reconcile_kanban()
         self.service._drain_returns()
         self.assertEqual(len([d for d in self.service._all('deliveries')
                               if d['source_task_id'] == owner['id'] and d['target_bot_id'] == self.bot['id']]), 2)
+
+    def test_each_native_result_returns_after_shared_callback_work_finishes(self):
+        import json
+        self.provider.supports_native_outcomes = True
+        source = self.task('Delegate two results')
+        developer = self.write('/v1/bots', {'name': 'Developer'})
+        with self.service.transaction():
+            source = self.service._get('tasks', source['id'])
+            source['status'] = 'working'
+            self.service._put('tasks', source)
+            request = self.service._store_bot_message(source['id'], dict(target_bot_id=developer['id'],
+                text='Implement both results', require_response=True, native_envelope_id=uuid4().hex))
+        identities = self.native_program("""
+for title in ('First result', 'Second result'):
+    print(board.kb.create_task(board.conn, title=title, assignee='default', tenant=sys.argv[2],
+        session_id=sys.argv[3], initial_status='blocked'))
+""", developer['id'], request['task_id']).splitlines()
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._adopt_native_outcomes()
+        owners = [t for t in self.service._all('tasks') if t.get('_native_outcome_id') in identities]
+        with self.service.transaction():
+            intake = self.service._get('tasks', request['task_id'])
+            intake.update(status='completed', _conversation_epoch=self.service._setting('conversation_epoch'))
+            self.service._finish_assignment_turn(intake, 'I started both results', 'completed')
+            self.service._put('tasks', intake)
+            parent = self.service._get('tasks', source['id'])
+            parent.update(status='waiting', _conversation_epoch=self.service._setting('conversation_epoch'))
+            self.service._put('tasks', parent)
+        for owner in owners:
+            row = self.service._kanban_row(owner, owner, 'ready', priority=10)
+            self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+        self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='First result verified')", identities[0])
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._reconcile_kanban()
+        first = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identities[0])
+        self.assertNotIn('_native_return_prepared', first)
+        self.assertNotIn('_return_pending', first)
+        self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='Second result verified')", identities[1])
+        self.service.kanban.call({'op': 'snapshot'})
+        for _ in range(3):
+            self.service._reconcile_kanban()
+            self.service._drain_returns()
+        delivered = [d for d in self.service._all('deliveries') if d['source_task_id'] in {t['id'] for t in owners}]
+        self.assertEqual({d['text'] for d in delivered}, {'First result verified', 'Second result verified'})
+        self.assertEqual(len(delivered), 2)
+        self.assertFalse(any(d['source_task_id'] == intake['id'] for d in self.service._all('deliveries')))
 
     def test_native_intake_is_idempotent_and_followup_keeps_owner(self):
         origin = self.task('Fix two separate defects')

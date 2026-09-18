@@ -106,6 +106,8 @@ class WorkProgress:
                 return
             self._saved_return_check_at = time.monotonic() + 60
             tasks = {t['id']: t for t in self._all('tasks')}
+            returning = {t['_return_dependency_id'] for t in tasks.values()
+                         if t.get('_return_dependency_id') and t.get('_return_pending')}
             for parent in tasks.values():
                 if parent['status'] != 'waiting' or not self._process_observation_current(parent, self._get('bots', parent['bot_id'])):
                     continue
@@ -113,7 +115,7 @@ class WorkProgress:
                     child = tasks.get(identity)
                     result = child.get('_native_relay_result') if child else None
                     if (not child or child['status'] not in ('completed', 'failed') or not result or not result.get('text')
-                            or result.get('sender_bot_id') != parent['bot_id'] or child.get('_return_pending')
+                            or result.get('sender_bot_id') != parent['bot_id'] or child.get('_return_pending') or identity in returning
                             or bool(result.get('failed')) != (child['status'] == 'failed')
                             or not self._process_observation_current(child, self._get('bots', child['bot_id']))
                             or (child['status'] == 'completed' and self._unfinished_work(child))

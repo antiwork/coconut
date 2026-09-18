@@ -311,9 +311,10 @@ class NativeOutcomes:
                         title=native['title'], status='queued', summary='Queued', scheduled_at=None,
                         created_at=now(), updated_at=now(), _attachment_ids=attachments,
                         _execution_session_id=identity, _native_outcome_id=native['id'])
-                    callback = origin.get('_relay_callback_owner') or (origin_id if origin.get('_native_relay') else None)
+                    callback = origin.get('_relay_callback_owner') or (origin_id if origin.get('source_bot_id') else None)
                     if callback:
                         task['_relay_callback_owner'] = callback
+                        task['_return_dependency_id'] = origin.get('_return_dependency_id', origin_id)
                     if origin.get('_reply_to_task_id'):
                         task['_reply_to_task_id'] = origin['_reply_to_task_id']
                     artifact_id = str(uuid5(UUID(identity), 'work'))
