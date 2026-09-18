@@ -251,7 +251,7 @@ class StateSync:
         for row in self.db.execute("SELECT data FROM artifacts WHERE json_extract(data,'$.kind') IN ('work','pr') "
                 "AND NOT coalesce(json_extract(data,'$._hidden'),0) AND NOT coalesce(json_extract(data,'$._deleted'),0)"):
             item = self._work_outcome_artifact(json.loads(row[0]))
-            if (item.get('_native_outcome_id') or item['status'] in ('completed', 'cancelled', 'merged', 'closed')
+            if (item.get('_native_outcome_id') or item['status'] in ('cancelled', 'merged', 'closed')
                     or item.get('pr_state') in ('merged', 'closed')
                     or self._setting('work.cancelled.' + self._work_identity(item))):
                 continue

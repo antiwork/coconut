@@ -132,8 +132,12 @@ class StateSyncTests(unittest.TestCase):
         with patch.object(self.service, 'kanban', SimpleNamespace(tasks={}, observed_at='2099-01-01T00:00:00Z')), \
              patch('coconut.service.now', return_value='2099-01-01T00:00:00Z'), \
              patch.object(Service, '_work_projection', return_value=[artifact]):
-            page = self.service.updates(cursor, collection_deltas=True, native_events=True)
-            self.assertEqual(page['artifacts'], [artifact])
+            for status in ('blocked', 'completed'):
+                artifact['status'] = status
+                with self.service.transaction():
+                    self.service._put('artifacts', artifact)
+                page = self.service.updates(cursor, collection_deltas=True, native_events=True)
+                self.assertEqual(page['artifacts'], [artifact])
             with self.service.transaction():
                 self.service.db.execute('INSERT INTO settings VALUES (?,?)', ('work.cancelled.work:retained', 'true'))
             self.assertNotIn('artifacts', self.service.updates(cursor, collection_deltas=True, native_events=True))
