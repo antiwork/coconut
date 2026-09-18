@@ -64,6 +64,34 @@ class StateSyncTests(unittest.TestCase):
             self.service._event('task.updated', {})
         self.assertIn('reset', self.service.updates(initial['cursor']))
 
+    def test_empty_delta_reads_no_collections_or_work_history(self):
+        cursor = self.service._cursor()
+        timestamp = self.service.db.execute('SELECT created_at FROM events WHERE seq=?', (cursor,)).fetchone()[0]
+        with patch('coconut.service.now', return_value=timestamp), \
+             patch.object(Service, '_all', side_effect=AssertionError('No collection changed')), \
+             patch.object(Service, '_work_projection', side_effect=AssertionError('No work changed')):
+            page = self.service.updates(cursor, collection_deltas=True)
+        self.assertEqual(page, dict(after=cursor, cursor=cursor,
+            server_time=timestamp, collection_deltas=True))
+
+    def test_idle_delta_keeps_work_observations_fresh(self):
+        cursor = self.service._cursor()
+        observation = {'id': 'work', 'activity_observed_at': 'current'}
+        with patch('coconut.service.now', return_value='2099-01-01T00:00:00Z'), \
+             patch.object(Service, '_work_projection', return_value=[observation]):
+            page = self.service.updates(cursor, collection_deltas=True)
+        self.assertEqual(page['artifacts'], [observation])
+
+    def test_native_work_event_refreshes_an_idle_delta(self):
+        cursor = self.service._cursor()
+        with self.service.transaction():
+            self.service._event('work.updated', {})
+        observation = {'id': 'native-work', 'work_state': 'completed'}
+        with patch.object(Service, '_work_projection', return_value=[observation]):
+            page = self.service.updates(cursor, collection_deltas=True)
+        self.assertEqual(page['artifacts'], [observation])
+        self.assertGreater(page['cursor'], cursor)
+
     def test_text_replay_does_not_build_history_work_or_decisions(self):
         task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})
         with self.service.transaction():

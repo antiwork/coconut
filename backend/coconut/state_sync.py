@@ -151,9 +151,17 @@ class StateSync:
                 or any(row[0] != after + index + 1 for index, row in enumerate(rows))
                 or any(r[1] not in known for r in rows)):
             return None
+        from datetime import datetime
+        server_time = now()
+        previous = self._read_one('SELECT created_at FROM events WHERE seq=?', (after,))
+        refresh_activity = (previous is None or
+            int(datetime.fromisoformat(previous[0].replace('Z', '+00:00')).timestamp() // 15) !=
+            int(datetime.fromisoformat(server_time.replace('Z', '+00:00')).timestamp() // 15))
+        if not rows and collection_deltas and not refresh_activity:
+            return dict(after=after, cursor=cursor, server_time=server_time, collection_deltas=True)
         bots = [self._bot_view(b, None) for b in self._all('bots') if not b.get('_deleted')]
         visible = {b['id'] for b in bots}
-        result = dict(after=after, cursor=cursor, server_time=now(), bots=bots)
+        result = dict(after=after, cursor=cursor, server_time=server_time, bots=bots)
         task_ids, message_ids, decision_ids, artifact_ids = set(), set(), set(), set()
         if collection_deltas:
             result['collection_deltas'] = True
@@ -201,11 +209,6 @@ class StateSync:
                     "WHERE id=json_extract(messages.data,'$.bot_id') AND NOT COALESCE(json_extract(bots.data,'$._deleted'),0))").fetchone()
                 result['confirmed_request_ids'] = json.loads(receipts[0])
         # Refresh age-based activity every 15 seconds, even during continuous text delivery.
-        from datetime import datetime
-        previous = self._read_one('SELECT created_at FROM events WHERE seq=?', (after,))
-        refresh_activity = (previous is None or
-            int(datetime.fromisoformat(previous[0].replace('Z', '+00:00')).timestamp() // 15) !=
-            int(datetime.fromisoformat(result['server_time'].replace('Z', '+00:00')).timestamp() // 15))
         structural = not rows or refresh_activity or any(r[1] not in ('message.created', 'message.updated', 'bot.read', 'bot.updated') for r in rows)
         if structural:
             tasks = {t['id']: t for t in self._all('tasks') if visible_row(t)}
