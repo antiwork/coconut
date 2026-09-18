@@ -264,13 +264,18 @@ class NativeKanban(NativeOutcomes):
             self.changed.wait(1)
 
     def _publish_kanban_changes(self):
-        visible = [(i, *(t.get(key) for key in ('status', 'priority', 'current_run_id', 'title',
-            'progress_note', 'outcome_summary', 'last_failure_error', 'dispatch_blocker', 'block_kind', 'dependencies')))
-            for i, t in self.kanban.tasks.items()]
+        visible = {t['id']: tuple(t.get(key) for key in ('status', 'priority', 'current_run_id', 'title',
+            'progress_note', 'outcome_summary', 'last_failure_error', 'dispatch_blocker', 'block_kind', 'dependencies'))
+            for t in self.kanban.tasks.values()}
         with self.changed:
             if visible != self._kanban_visible:
+                previous = self._kanban_visible or {}
+                affected = {identity for identity in visible.keys() | previous.keys()
+                            if visible.get(identity) != previous.get(identity)}
+                # A changed claim or priority can change every ready task's queue position.
+                affected.update(t['id'] for t in self.kanban.tasks.values() if t['status'] == 'ready')
                 self._kanban_visible = visible
-                self._event('work.updated', {})
+                self._event('work.updated', {'native_task_ids': sorted(affected)})
 
     def _reconcile_kanban(self):
         from .service import now

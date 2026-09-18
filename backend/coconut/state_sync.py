@@ -203,10 +203,16 @@ class StateSync:
         visible = {b['id'] for b in bots}
         result = dict(after=after, cursor=cursor, server_time=server_time, bots=bots, **freshness)
         task_ids, message_ids, decision_ids, artifact_ids = set(), set(), set(), set()
+        native_work_ids = set() if native and collection_deltas and not refresh_activity else None
         if collection_deltas:
             result['collection_deltas'] = True
         for _, kind, task_id, data in rows:
             value = json.loads(data)
+            if native_work_ids is not None:
+                if kind == 'work.updated' and isinstance(value.get('native_task_ids'), list):
+                    native_work_ids.update(value['native_task_ids'])
+                elif kind.startswith(('work.', 'decision.', 'artifact.')):
+                    native_work_ids = None
             if task_id:
                 task_ids.add(task_id)
             if kind.startswith('task.') and value.get('id'):
@@ -255,8 +261,14 @@ class StateSync:
             def visible_owned(value):
                 return visible_row(value) and (not value.get('task_id') or value['task_id'] in tasks)
             stored_artifacts = self._all('artifacts')
-            artifacts = [a for a in stored_artifacts if visible_owned(a)
-                         and (not collection_deltas or a['kind'] in ('pr', 'work') or a['id'] in artifact_ids)]
+            def changed_artifact(artifact):
+                if artifact['id'] in artifact_ids or not collection_deltas:
+                    return True
+                if artifact['kind'] not in ('pr', 'work'):
+                    return False
+                return (native_work_ids is None
+                    or self._work_outcome_artifact(artifact).get('_native_outcome_id') in native_work_ids)
+            artifacts = [a for a in stored_artifacts if visible_owned(a) and changed_artifact(a)]
             if collection_deltas:
                 present = {a['id'] for a in stored_artifacts if visible_owned(a)}
                 result['removed_artifacts'] = sorted((artifact_ids - present) |
