@@ -178,6 +178,26 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.service._queue_decision_refreshes()
         self.assertEqual(len(self.service._all('contexts')), 1)
 
+    def test_partial_check_failure_preserves_the_last_same_head_fact(self):
+        from unittest.mock import Mock
+        decision = self.question(old=False)
+        url = 'https://github.com/example/project/pull/42'
+        decision['merge_pr_url'] = url
+        self.service._put('decisions', decision)
+        value = SimpleNamespace(observed=True, pr_state='open', head_sha='head', title='Fix', draft=False,
+            checks_state='passed', required_checks_state='passed', review_checks=None, check_failures=None)
+        tracker = Mock()
+        tracker.observe_discussion.return_value = 'discussion'
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            self.service._refresh_decision_sources({(decision['bot_id'], url): value})
+            before = self.service._get('decisions', decision['id'])['_source_facts']
+            value.required_checks_state = None
+            self.service._refresh_decision_sources({(decision['bot_id'], url): value})
+            self.assertEqual(self.service._get('decisions', decision['id'])['_source_facts'], before)
+            value.head_sha = 'new-head'
+            self.service._refresh_decision_sources({(decision['bot_id'], url): value})
+            self.assertIsNone(self.service._get('decisions', decision['id'])['_source_facts'][url]['required_checks_state'])
+
     def test_source_observation_cannot_replace_a_card_revised_during_fetch(self):
         decision = self.question(old=False)
         decision['sources'] = [dict(kind='issue', title='Original issue', url='https://github.com/example/project/issues/12')]

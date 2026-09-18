@@ -68,9 +68,13 @@ class DecisionFreshness:
                     value = observations[key]
                     current_facts = dict(facts.get(url, {}))
                     if value.observed:
+                        previous_required = (current_facts.get('required_checks_state')
+                            if current_facts.get('head_sha') == value.head_sha else None)
                         current_facts.update({field: getattr(value, field) for field in (
                             'pr_state', 'head_sha', 'title', 'draft', 'checks_state',
                             'required_checks_state', 'review_checks', 'check_failures')})
+                        if value.required_checks_state is None:
+                            current_facts['required_checks_state'] = previous_required
                     if key not in discussions:
                         discussions[key] = tracker.observe_discussion(url)
                     if discussions[key] is not None:

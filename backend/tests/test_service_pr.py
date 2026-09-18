@@ -20,12 +20,21 @@ class Tracker:
         self.observations = list(observations)
         self.urls = []
         self.before_read = None
+        self.latest = {}
 
     def observe(self, url):
         self.urls.append(url)
         if self.before_read:
             self.before_read()
-        return self.observations.pop(0)
+        if self.observations:
+            self.latest[url] = self.observations.pop(0)
+        return self.latest[url]
+
+    def observe_discussion(self, url):
+        return None
+
+    def observe_issue(self, url):
+        return None
 
 
 class Provider:
