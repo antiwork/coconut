@@ -157,6 +157,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         CREATE INDEX IF NOT EXISTS native_receipts_task ON native_receipts (json_extract(data, '$.task_id'));
         CREATE INDEX IF NOT EXISTS messages_task ON messages (json_extract(data, '$.task_id'));
         CREATE INDEX IF NOT EXISTS messages_chat ON messages (json_extract(data, '$.bot_id'));
+        CREATE INDEX IF NOT EXISTS tasks_bot_session ON tasks (json_extract(data,'$.bot_id'), json_extract(data,'$.session_id'));
+        CREATE INDEX IF NOT EXISTS deliveries_source ON deliveries (json_extract(data,'$.source_task_id'));
         CREATE INDEX IF NOT EXISTS tasks_status ON tasks (json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS contexts_status ON contexts (json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS decisions_status ON decisions (json_extract(data,'$.status'));
@@ -2836,8 +2838,15 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     # Same predicate as the worker's NativeWork, evaluated on the assembled provider task.
                     if work_enabled('resume' if decision else 'start', provider_task):
                         provider_task['_work_dependencies'] = view.work_dependencies(task)
-                    turn_ids = {t['id'] for t in view._all('tasks') if t['id'] == assignment['id'] or t.get('_assignment_task_id') == assignment['id']}
-                    provider_task['_outgoing_bot_messages'] = [{'target_bot_id': delivery['target_bot_id'], 'text': delivery['text'], 'task_id': delivery['receipt']['task_id'], 'status': view._get('tasks', delivery['receipt']['task_id'])['status'] if delivery['receipt']['task_id'] else delivery['receipt']['status']} for delivery in view._all('deliveries') if delivery['source_task_id'] in turn_ids]
+                    deliveries = view.db.execute(
+                        "SELECT d.data FROM deliveries d WHERE json_extract(d.data,'$.source_task_id') IN "
+                        "(SELECT id FROM tasks WHERE id=? OR json_extract(data,'$._assignment_task_id')=?) ORDER BY d.rowid",
+                        (assignment['id'], assignment['id']))
+                    provider_task['_outgoing_bot_messages'] = [
+                        dict(target_bot_id=d['target_bot_id'], text=d['text'], task_id=d['receipt']['task_id'],
+                             status=view._get('tasks', d['receipt']['task_id'])['status'] if d['receipt']['task_id'] else d['receipt']['status'])
+                        for row in deliveries for d in [json.loads(row[0])]]
+
                 timing.mark('context')
                 with self.transaction():
                     current = self._get('tasks', task_id)

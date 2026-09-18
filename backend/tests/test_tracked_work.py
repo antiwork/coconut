@@ -22,6 +22,28 @@ class TrackedWorkTests(unittest.TestCase):
     def row(self):
         return self.service.snapshot()['artifacts'][0]
 
+    def test_recent_updates_read_only_matching_messages(self):
+        from unittest.mock import patch
+        from uuid import uuid4
+        task = self.service._get('tasks', self.task['id'])
+        task['_turn_started_at'] = '2026-01-02T00:00:00Z'
+        self.service._put('tasks', task)
+        update = dict(task, id=str(uuid4()), _work_status_only=True, _work_context_id='work')
+        self.service._put('tasks', update)
+        expected = []
+        for i in range(5):
+            message = self.service._message(self.bot['id'], str(i), task_id=update['id'])
+            message['created_at'] = '2026-01-03T00:00:00Z'
+            self.service._put('messages', message)
+            expected.append(message['id'])
+        current = dict(task, id=str(uuid4()))
+        with patch.object(self.service, '_all', side_effect=AssertionError('Unbounded history read')):
+            rows = self.service.recent_work_updates(current)
+        self.assertEqual([row['message_id'] for row in rows], expected[-3:])
+        task['_turn_started_at'] = '2026-01-04T00:00:00Z'
+        self.service._put('tasks', task)
+        self.assertEqual(self.service.recent_work_updates(current), [])
+
     def test_updates_reuse_item_without_messages_or_github_calls(self):
         before = len(self.service._all('messages'))
         first = self.track()

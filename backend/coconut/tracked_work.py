@@ -1,4 +1,5 @@
 """Explicit work tracking outside pull requests."""
+import json
 import re
 from datetime import datetime, timezone
 
@@ -222,16 +223,24 @@ class TrackedWork:
                                for d in self._all('decisions') if d['task_id'] in linked and d['status'] == 'pending'])
 
     def recent_work_updates(self, task):
-        tasks = [t for t in self._all('tasks') if t['bot_id'] == task['bot_id']
-                 and t['session_id'] == task['session_id']]
-        before = max((t.get('_turn_started_at', '') for t in tasks
-                      if t['id'] != task['id'] and not t.get('_work_status_only')), default='')
-        updates = {t['id']: t for t in tasks if t.get('_work_status_only')}
-        messages = [m for m in self._all('messages') if m['task_id'] in updates
-                    and m['role'] == 'assistant' and m['kind'] == 'text' and not m.get('streaming')
-                    and not m.get('_hidden') and not m.get('_deleted') and m['created_at'] > before]
-        return [dict(message_id=m['id'], text=m['text'][:1000], created_at=m['created_at'],
-                     work_id=updates[m['task_id']]['_work_context_id']) for m in messages[-3:]]
+        before = self.db.execute(
+            "SELECT coalesce(max(json_extract(data,'$._turn_started_at')),'') FROM tasks "
+            "WHERE json_extract(data,'$.bot_id')=? AND json_extract(data,'$.session_id')=? "
+            "AND id!=? AND NOT coalesce(json_extract(data,'$._work_status_only'),0)",
+            (task['bot_id'], task['session_id'], task['id'])).fetchone()[0]
+        rows = self.db.execute(
+            "SELECT m.data,json_extract(t.data,'$._work_context_id') FROM tasks t "
+            "JOIN messages m ON json_extract(m.data,'$.task_id')=t.id "
+            "WHERE json_extract(t.data,'$.bot_id')=? AND json_extract(t.data,'$.session_id')=? "
+            "AND json_extract(t.data,'$._work_status_only')=1 "
+            "AND json_extract(m.data,'$.role')='assistant' AND json_extract(m.data,'$.kind')='text' "
+            "AND NOT coalesce(json_extract(m.data,'$.streaming'),0) "
+            "AND NOT coalesce(json_extract(m.data,'$._hidden'),0) "
+            "AND NOT coalesce(json_extract(m.data,'$._deleted'),0) "
+            "AND json_extract(m.data,'$.created_at')>? ORDER BY m.rowid DESC LIMIT 3",
+            (task['bot_id'], task['session_id'], before)).fetchall()
+        return [dict(message_id=m['id'], text=m['text'][:1000], created_at=m['created_at'], work_id=work_id)
+                for data, work_id in reversed(rows) for m in [json.loads(data)]]
 
     def _automatic_work_state(self, root, tasks, records, timestamp):
         item = dict(id=root['id'], task_id=root['id'], bot_id=root['bot_id'], kind='work',

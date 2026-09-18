@@ -1,6 +1,8 @@
 """Share one decision record between chat and Inbox."""
 from __future__ import annotations
 
+import json
+
 
 def decision_options(options):
     from .service import ServiceError
@@ -162,8 +164,9 @@ class DecisionInbox:
             except ServiceError:
                 continue
             sources.append(dict(id=source['id'], text=source['text']))
-        decisions = [self._public(d) for d in self._all('decisions')
-                     if d['status'] == 'pending' and self._decision_visible_to_task(d, task)]
+        decisions = [self._public(d) for row in self.db.execute(
+            "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending' ORDER BY rowid")
+            for d in [json.loads(row[0])] if self._decision_visible_to_task(d, task)]
         return dict(_pending_decisions=decisions, _decision_reply_sources=sources)
 
     def _decision_visible_to_task(self, decision, task):
