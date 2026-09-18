@@ -6,19 +6,22 @@ from uuid import UUID, uuid5
 
 
 CHAT_INSTRUCTIONS = (
-    'Use this persistent conversation for direct replies and discussion. '
+    'Reply directly to this conversation’s sender. '
     'For work with an outcome beyond this reply, create one native kanban task before starting it. '
     'Use kanban_create with a clear title, the complete request, scope, approval limits, and acceptance criteria in body. '
     'Coconut supplies the bot, dispatch state, and a stable creation key. Hermes gives each outcome its own workspace. '
     'Use kanban_list and kanban_show to find existing work before creating another task. '
     'For an existing outcome, add new facts with kanban_comment. Do not create a second task for a retry or status question. '
     'A task comment is context, not new permission. Preserve human decisions. '
+    'Create a separate native outcome for new work after a completed PR. Keep the earlier PR as context. '
     'Use coconut_ask only for a concrete decision. Ordinary local setup and planning need no card. '
 )
 WORK_INSTRUCTIONS = (
     'The native kanban task below owns this outcome. Its comments and previous attempts are the work record. '
     'Use kanban_heartbeat for a short progress description at phase changes. '
     'Use kanban_complete only after verifying every accepted outcome. A reply or plan does not complete the task. '
+    'A question about a decision does not complete its unfinished outcome. Answer it and retain the remaining work. '
+    'If a decision is still needed, create an updated card with the concrete next action. '
     'Use coconut_ask when a human decision is required. Coconut connects the card to this same native task. '
     'Use coconut_wait for an existing process or bot result. Finish the turn after registering the wait. '
     'Before repeating an action from an earlier attempt, check its receipt and destination. '
@@ -120,7 +123,7 @@ class NativeOutcomes:
             if len(owners) != 1 or not self.kanban:
                 raise ServiceError(409, 'Choose one existing native outcome from kanban_show.')
             owner = owners[0]
-            if source['bot_id'] not in (owner['bot_id'], owner.get('source_bot_id')):
+            if source['bot_id'] not in (owner['bot_id'], owner.get('source_bot_id'), owner.get('_requesting_bot_id')):
                 raise ServiceError(403, 'Only the owner or its requesting bot can continue this work.')
             bot = self._get('bots', owner['bot_id'])
             if (self._task_paused(owner) or owner['session_id'] != bot['session_id']
@@ -303,6 +306,7 @@ class NativeOutcomes:
                     task = dict(id=identity, thread_id=identity, parent_task_id=origin_id,
                         bot_id=origin['bot_id'], conversation_bot_id=origin['conversation_bot_id'],
                         session_id=origin['session_id'], source_bot_id=None, source_task_id=None,
+                        _requesting_bot_id=origin.get('source_bot_id'),
                         exchange_id=self._new_exchange(), exchange_depth=origin.get('exchange_depth', 0),
                         title=native['title'], status='queued', summary='Queued', scheduled_at=None,
                         created_at=now(), updated_at=now(), _attachment_ids=attachments,

@@ -562,6 +562,43 @@ board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the expo
         self.assertEqual(len(captured), 2)
         self.assertNotEqual(captured[0], captured[1])
 
+    def test_native_intake_retains_the_requesting_bot(self):
+        from coconut.service import ServiceError
+        source = self.task('Delegate an accepted outcome')
+        developer = self.write('/v1/bots', {'name': 'Developer', 'role': 'Implement requested fixes'})
+        with self.service.transaction():
+            source = self.service._get('tasks', source['id'])
+            source['status'] = 'working'
+            self.service._put('tasks', source)
+            origin = self.service._store_bot_message(source['id'],
+                dict(target_bot_id=developer['id'], text='Implement the accepted result', require_response=True))
+        identity = self.native_program("""
+print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve the approved scope', assignee='default',
+    tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked'))
+""", developer['id'], origin['task_id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._adopt_native_outcomes()
+        owner = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
+        self.assertEqual(owner['_requesting_bot_id'], self.bot['id'])
+        with self.service.transaction():
+            owner.update(status='failed', _conversation_epoch=self.service._setting('conversation_epoch'))
+            self.service._put('tasks', owner)
+        self.native_program("board.kb.block_task(board.conn, sys.argv[2], reason='Awaiting corrected input')", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        result = self.service.continue_native_work(source['id'],
+            dict(task_id=identity, message='Continue within the accepted scope'))
+        self.assertEqual(result['task_id'], owner['id'])
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'queued')
+        unrelated = self.write('/v1/bots', {'name': 'Unrelated'})
+        other = self.write('/v1/bots/' + unrelated['id'] + '/messages', {'text': 'Check something else'})
+        with self.service.transaction():
+            other = self.service._get('tasks', other['id'])
+            other['status'] = 'working'
+            self.service._put('tasks', other)
+        with self.assertRaises(ServiceError) as rejected:
+            self.service.continue_native_work(other['id'], dict(task_id=identity, message='Continue'))
+        self.assertEqual(rejected.exception.status, 403)
+
     def test_native_intake_is_idempotent_and_followup_keeps_owner(self):
         origin = self.task('Fix two separate defects')
         with self.service.transaction():

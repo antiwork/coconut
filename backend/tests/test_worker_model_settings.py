@@ -170,6 +170,14 @@ class WorkerModelProcessTests(unittest.TestCase):
         self.assertNotIn('ambient-test-key', json.dumps(events) + stderr)
         return code, events, records, home
 
+    def test_delegated_turn_can_create_native_outcomes(self):
+        code, events, records, _ = self.run_worker('start', effort='high', extract=False,
+            task_context={'source_bot_id': 'requesting-bot', '_execution_session_id': 'existing-execution'})
+        self.assertEqual(code, 0, events)
+        self.assertIn('kanban', records[0]['enabled_toolsets'])
+        self.assertIn('create one native kanban task', records[0]['ephemeral_system_prompt'])
+        self.assertNotIn('Coconut derives its state', records[0]['ephemeral_system_prompt'])
+
     def test_saved_pr_observation_reaches_the_native_agent(self):
         observation = {'url': 'https://github.com/example/project/pull/42', 'head_sha': 'a' * 40,
                        'required_checks_state': 'failed', 'checked_at': '2099-01-01T00:00:00Z',
@@ -212,6 +220,6 @@ class WorkerModelProcessTests(unittest.TestCase):
     def test_private_runtime_cannot_replace_the_restricted_tool_scope(self):
         native = self.native | {'enabled_toolsets': ['terminal']}
         code, events, records, _ = self.run_worker('start', effort='high', native=native)
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
         self.assertEqual([event['type'] for event in events], ['failed'])
         self.assertEqual(records, [])
