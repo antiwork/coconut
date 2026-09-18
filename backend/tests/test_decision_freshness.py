@@ -186,14 +186,28 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.service._put('decisions', decision)
         value = SimpleNamespace(observed=True, pr_state='open', head_sha='head', title='Fix', draft=False,
             checks_state='passed', required_checks_state='passed', review_checks=None, check_failures=None)
+        artifact = dict(id='linked-facts', kind='pr', task_id=self.task['id'], bot_id=self.bot['id'],
+            title='Fix', status='ready_for_review', created_at=decision['created_at'], url=url, head_sha='head',
+            checks_state='passed', required_checks_state='passed')
+        self.service._put('artifacts', artifact)
         tracker = Mock()
         tracker.observe_discussion.return_value = 'discussion'
         with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
             self.service._refresh_decision_sources({(decision['bot_id'], url): value})
             before = self.service._get('decisions', decision['id'])['_source_facts']
+            context = self.refresh()
+            self.service.refresh_decision(context['id'], dict(status='current', evidence='Checked current source facts.'))
+            self.finish(context)
             value.required_checks_state = None
+            artifact['required_checks_state'] = None
+            self.service._put('artifacts', artifact)
             self.service._refresh_decision_sources({(decision['bot_id'], url): value})
             self.assertEqual(self.service._get('decisions', decision['id'])['_source_facts'], before)
+            saved = self.service._get('decisions', decision['id'])
+            saved['_freshness']['queued_at'] = '2000-01-01T00:00:00Z'
+            self.service._put('decisions', saved)
+            self.service._queue_decision_refreshes()
+            self.assertEqual(len(self.service._all('contexts')), 1)
             value.head_sha = 'new-head'
             self.service._refresh_decision_sources({(decision['bot_id'], url): value})
             self.assertIsNone(self.service._get('decisions', decision['id'])['_source_facts'][url]['required_checks_state'])

@@ -147,7 +147,7 @@ class DecisionFreshness:
             tasks=[{k: t.get(k) for k in ('id', 'status', 'summary', '_work_progress_at')}
                    for t in tasks.values() if t['id'] in ids],
             work=[{k: a.get(k) for k in ('id', 'title', 'status', 'activity', 'head_sha', 'pr_state',
-                                       'checks_state', 'required_checks_state', 'review_checks', 'check_failures', 'completion_evidence')} for a in work],
+                                       'checks_state', 'review_checks', 'check_failures', 'completion_evidence')} for a in work],
             receipts=[(r['id'], r.get('state'), r.get('completed_at'), r.get('_process_delivery'),
                        r.get('_completion_text'), r.get('_process_status'))
                       for r in records if r['task_id'] in ids and r.get('turn_id') != ignore_context_id
