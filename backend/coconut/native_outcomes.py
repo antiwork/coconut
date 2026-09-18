@@ -424,6 +424,10 @@ class NativeOutcomes:
         active.update(execution_key(self._get('tasks', self._get('contexts', i)['task_id'])) for i in self.context_threads)
         # Share host capacity, retaining one reserved slot for direct replies.
         slots = max(0, capacity + 1 - len(self.running) - len(self.context_threads))
+        if self._kanban_dispatching:
+            foreground = sum(bool(self._get('tasks', i).get('_chat_session') or
+                self._get('tasks', i).get('_work_status_only')) for i in self.running)
+            slots = min(slots, max(0, 1 - foreground))
         candidates = [json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM tasks WHERE json_extract(data,'$._chat_session') "
             "AND json_extract(data,'$.status') IN ('queued','scheduled') ORDER BY rowid")]
