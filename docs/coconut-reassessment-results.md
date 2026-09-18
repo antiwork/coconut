@@ -10,7 +10,7 @@ Hermes source remains unchanged at `345cd2b057a452236de401d3534b8502a7465e8d` (`
 
 Each code stage passed focused tests and a clean autoreview before publication.
 The supported installer deployed each runtime stage to the Mac mini.
-The final runtime deployment, `ecba9ae`, passed the authenticated HTTPS health check with the exact server certificate.
+The recovery deployment, `ecba9ae`, passed the authenticated HTTPS health check with the exact server certificate.
 
 | Change | Result | Commit or final correction |
 | --- | --- | --- |
@@ -132,3 +132,47 @@ Build 159 contains the compact synchronization, short-read, timing, and Work ali
 Apple marks build 159 as `VALID`. The existing private TestFlight group includes it.
 Its App Store Connect build ID is `0f2d2000-6c35-427a-80ea-9d386e1e31a5`.
 The later backend recovery fix requires no additional iOS build.
+
+## Further system simplification
+
+The second pass changes the codebase and its ownership rules. It does not add another monitoring agent.
+
+| Change | Removed behavior | Commit |
+| --- | --- | --- |
+| Native source links | Native bots no longer maintain a second status file. Source checks derive ownership from native tasks and confirmed receipts. | `d1e921c` |
+| Current Work descriptions | Old completion summaries no longer become current progress. Native dependencies and block reasons determine the label. | `ac8fd17` |
+| Explicit PR deliverables | A referenced PR no longer becomes the current task's deliverable automatically. Native PR tools no longer accept duplicate progress state. | `cf04faf` |
+| Scoped Work updates | One task change no longer projects every unrelated Work row. Ready rows remain included when queue positions can change. | `8ae2555` |
+| Saved revision compatibility | Null timestamps in older source links no longer stop assignment checks. A valid saved revision remains intact. | `e9dcc59` |
+| Consistent worker instructions | Native workers no longer receive directions to write the removed PR activity fields. Repeated tracking instructions are removed. | `ed4fbc1` |
+
+Hermes still owns execution, retries, dependencies, and completion. Coconut retains message delivery, human decisions, source links, and display state.
+Source links record identity and source revision. They contain no second lifecycle status.
+The older provider path remains for retained work. Removing that path now would discard unfinished records.
+No Hermes source changes are required.
+
+The native task snapshot expires phase descriptions after 120 seconds without a phase update.
+A running task then displays `Waiting for worker output`. Reading Work does not renew the observation time.
+This label does not prove that a worker is stuck. Hermes remains responsible for worker execution.
+
+The scoped-update regression sends one affected row instead of two rows when the other task remains blocked.
+It also verifies that ready rows refresh when queue positions can change.
+This measures payload selection in the integration suite. It is not a new latency benchmark.
+Structural reads still load the stored artifact collection. No claim of bounded database reads is made for this change.
+
+The deployment audit found a null revision in existing source records. That record exposed a compatibility bug in the first stage.
+The added regression reproduces the failure. The correction preserves valid source links and restores live assignment checks.
+At 22:34 UTC, the Mac mini records a successful source check with 54 native source links and no error.
+Three changed assignments still require reconciliation. A recorded source gap does not prove that its native work is absent.
+
+The audit clears two incorrect links from Coconut PR #6 to the checkout wording outcome through the authenticated API.
+It preserves the PR records and all native execution state.
+The checkout implementation remains stopped. The public review identity task retains its recorded pause.
+The X follow-up has draft PR #7792. Its required CI passes, but Greptile reports an unresolved finding.
+The original native owner resumes automatically during verification. No additional recovery prompt or merge card is sent.
+Two native tasks run concurrently in the observed sample. The configured automatic capacity remains five.
+
+Validation includes 39 scoped-update checks, 29 source checks, 88 PR and instruction checks, and 104 native integration checks.
+These suites overlap. Their counts must not be added as distinct tests.
+The behavioral regressions fail against the preceding implementation. Each executable stage passes a clean autoreview.
+These backend changes use the existing iOS contract. They do not require another TestFlight build.

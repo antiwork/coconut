@@ -98,5 +98,17 @@
         "artifacts": 0
       }
     ]
+  },
+  "native_update_selection": {
+    "environment": "Pinned Hermes integration suite; two native outcomes",
+    "test": "test_native_change_sends_only_affected_work_and_queued_positions",
+    "unchanged_other_task": "blocked",
+    "before_artifact_rows": 2,
+    "after_artifact_rows": 1,
+    "queued_rows_also_refreshed": true,
+    "limits": [
+      "This is payload selection proof, not a latency benchmark.",
+      "Structural reads still load stored artifacts."
+    ]
   }
 }
