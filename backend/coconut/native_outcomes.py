@@ -352,9 +352,11 @@ class NativeOutcomes:
                 linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
         pending = [d for d in decisions if d['status'] == 'pending' and (d['task_id'] in linked or any(
             p['kind'] == 'pr' and d.get('merge_pr_url') == p.get('url') for p in peers))]
-        status = native['status'] if native else 'scheduled'
+        status = native['status'] if native else None
         state = {'ready': 'queued', 'running': 'working', 'done': 'completed', 'archived': 'cancelled'}.get(status, 'waiting')
         activity = {'queued': 'Queued', 'working': 'In progress', 'completed': 'Completed', 'cancelled': 'Stopped'}.get(state, 'Waiting for a result')
+        if native is None:
+            activity = 'Status unavailable'
         terminal = state in ('completed', 'cancelled')
         live = [t for t, _ in linked.values() if t['status'] in ('working', 'waiting')
                 and self._work_live(t, records, timestamp)] if not terminal else []

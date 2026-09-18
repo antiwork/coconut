@@ -51,7 +51,7 @@ class Board:
                 new_input = not old or bool(previous_input and previous_input[0] and previous_input[0] != row['input'])
                 if task.status in ('done', 'archived') and row['state'] in ('ready', 'scheduled') and new_input:
                     # Native terminal results stay immutable. New input owns a durable successor.
-                    identity = self.kb.create_task(self.conn, title=row['title'], body=task.body,
+                    identity = self.kb.create_task(self.conn, title=task.title, body=task.body,
                         assignee='default', created_by='coconut', tenant=row['bot_id'],
                         workspace_kind='dir', workspace_path=row['workspace'], parents=[task.id],
                         priority=row['priority'], initial_status='blocked',
@@ -204,9 +204,11 @@ class Board:
     def snapshot(self):
         result = []
         for binding in self.conn.execute(
-                'SELECT external_id,native_id FROM coconut_bindings b JOIN tasks t ON t.id=b.native_id '
-                "WHERE t.status NOT IN ('done','archived') OR t.id IN (SELECT native_id FROM coconut_outcomes) OR b.rowid IN "
-                '(SELECT rowid FROM coconut_bindings ORDER BY rowid DESC LIMIT 32) ORDER BY b.rowid'):
+                "SELECT coalesce(b.external_id,'outcome:' || t.id),t.id FROM tasks t "
+                'LEFT JOIN coconut_bindings b ON b.native_id=t.id '
+                'WHERE t.id IN (SELECT native_id FROM coconut_outcomes) OR (b.external_id IS NOT NULL AND '
+                "(t.status NOT IN ('done','archived') OR b.rowid IN "
+                '(SELECT rowid FROM coconut_bindings ORDER BY rowid DESC LIMIT 32))) ORDER BY t.created_at,t.rowid'):
             task = self.kb.get_task(self.conn, binding[1])
             blocker = self.dispatch.check_respawn_guard(self.conn, task.id) if task.status == 'ready' else None
             progress = self.conn.execute(
