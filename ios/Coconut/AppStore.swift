@@ -12,6 +12,9 @@ final class AppStore {
     var tasks: [AgentTask] = []
     var messages: [Message] = []
     var outgoingMessages: [OutgoingMessage] = []
+    var outgoingAnswers: [OutgoingAnswer] = []
+    @ObservationIgnored private var deliveryTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var deliveryID = UUID()
     var reactionOverrides: [String: [String]] = [:]
     var decisions: [Decision] = []
     var answeringDecisionIds: Set<String> = []
@@ -135,6 +138,8 @@ final class AppStore {
             connection = .disconnected
             if let cache: OutgoingCache = ProtectedCache.read("outgoing.json"), cache.deviceId == configuration.deviceId {
                 outgoingMessages = cache.messages.map(\.afterRestart)
+                outgoingAnswers = cache.answers ?? []
+                answeringDecisionIds = Set(outgoingAnswers.map(\.decisionId))
             }
             if let cache: SnapshotCache = ProtectedCache.read("snapshot.json") {
                 apply(cache.snapshotForRestore, persist: false)
@@ -220,7 +225,8 @@ final class AppStore {
             try PairingToken.save(response.token)
             let configuration = PairingConfiguration(serverURL: address, fingerprint: pin, deviceId: response.deviceId)
             try ProtectedCache.write(configuration, name: "pairing.json")
-            outgoingMessages = []
+            resetDelivery()
+            outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []
             ProtectedCache.remove("outgoing.json")
             workVisibility = [:]; workUndo = []; workMutationIds = [:]
             pairing = configuration
@@ -275,7 +281,8 @@ final class AppStore {
         syncIssue = nil
         client = nil
         uncertainWriteKeys = [:]
-        outgoingMessages = []
+        resetDelivery()
+        outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []
         ProtectedCache.remove("outgoing.json")
         pairing = nil
         PairingToken.delete()
@@ -466,7 +473,7 @@ final class AppStore {
             attachmentIds: attachments, recipientBotIds: [], replyToMessageId: replyTo?.messageId, mentionedBotIds: mentionedBotIds, workArtifactId: workContext?.id, workStatusOnly: workStatusOnly)
         let outgoing = OutgoingMessage(id: UUID().uuidString, botId: bot.id,
             executorIds: [selectedMode == "steer" ? currentTask!.botId : bot.id],
-            request: request, createdAt: Self.now, status: .sending, replyTo: replyTo, workContext: workContext)
+            request: request, createdAt: Self.now, status: .sending, replyTo: replyTo, workContext: workContext, sequence: nextDeliverySequence)
         outgoingMessages.append(outgoing)
         do { try saveOutgoing() }
         catch {
@@ -474,7 +481,7 @@ final class AppStore {
             report(error)
             return false
         }
-        await deliverOutgoing(outgoing.id)
+        scheduleDelivery()
         // The draft is saved locally even when the Mac has not confirmed it yet.
         return true
     }
@@ -482,13 +489,13 @@ final class AppStore {
     func retryOutgoing(_ id: String) async {
         guard let index = outgoingMessages.firstIndex(where: { $0.id == id && $0.status == .failed }) else { return }
         outgoingMessages[index].status = .sending
-        await deliverOutgoing(id)
+        scheduleDelivery()
     }
 
     private func deliverOutgoing(_ id: String) async {
         guard let outgoing = outgoingMessages.first(where: { $0.id == id }) else { return }
         let result: AgentTask? = await write("bots/\(outgoing.botId)/messages", payload: outgoing.request,
-            as: AgentTask.self, quiet: true, idempotencyKey: id, onFailure: { failure in
+            as: AgentTask.self, quiet: true, refreshInBackground: true, idempotencyKey: id, onFailure: { failure in
                 guard let index = self.outgoingMessages.firstIndex(where: { $0.id == id }),
                       let serviceError = failure as? ServiceError,
                       case .response(let status, let reason) = serviceError,
@@ -515,7 +522,7 @@ final class AppStore {
 
     private func saveOutgoing() throws {
         guard let pairing else { return }
-        try ProtectedCache.write(OutgoingCache(deviceId: pairing.deviceId, messages: outgoingMessages), name: "outgoing.json")
+        try ProtectedCache.write(OutgoingCache(deviceId: pairing.deviceId, messages: outgoingMessages, answers: outgoingAnswers), name: "outgoing.json")
     }
 
     func messageReference(for message: Message) -> MessageReference? {
@@ -569,7 +576,8 @@ final class AppStore {
             var displayed = message
             if let requestId = message.clientRequestId { displayed.id = "outgoing-" + requestId }
             return displayed
-        } + outgoingMessages.filter { $0.botId == botId && !confirmedRequests.contains($0.id) }.map(\.message))
+        } + outgoingMessages.filter { $0.botId == botId && !confirmedRequests.contains($0.id) }.map(\.message)
+          + outgoingAnswers.filter { $0.botId == botId && !confirmedRequests.contains($0.id) }.map(\.message))
             .sorted { $0.createdAt < $1.createdAt }
     }
 
@@ -684,7 +692,9 @@ final class AppStore {
         guard ["approve", "reject", "modify", "reply"].contains(choice) else { return false }
         guard !answeringDecisionIds.contains(decision.id) else { return false }
         answeringDecisionIds.insert(decision.id)
-        defer { answeringDecisionIds.remove(decision.id) }
+        defer {
+            if !outgoingAnswers.contains(where: { $0.decisionId == decision.id }) { answeringDecisionIds.remove(decision.id) }
+        }
         if isDemo {
             guard let index = decisions.firstIndex(where: { $0.id == decision.id }), decisions[index].isPending else { return false }
             let option = decisions[index].options.first { $0.id == optionId }
@@ -727,20 +737,89 @@ final class AppStore {
             }
             return true
         }
-        let deviceId = pairing?.deviceId
-        let recorded: Decision? = await write("decisions/\(decision.id)/answer", payload: AnswerRequest(choice: choice, revision: decision.revision, correction: correction, optionId: optionId, draftHash: decision.draftHash, previewsHash: decision.previewsHash), as: Decision.self, quiet: true, refreshInBackground: true, onFailure: { failure in
-            if deviceId == self.pairing?.deviceId { self.report(failure, updateConnection: false) }
-        }, onSuccess: { receipt in
-            guard deviceId == self.pairing?.deviceId else { return }
-            self.snapshotEpoch = UUID()
-            self.snapshotRequest = nil
-            if let index = self.decisions.firstIndex(where: { $0.id == receipt.id }),
-               self.decisions[index].revision == receipt.revision {
-                self.decisions[index] = receipt
+        guard hasPairing else { error = "Pair with your Mac before replying."; return false }
+        let queued = OutgoingAnswer(id: UUID().uuidString, decisionId: decision.id,
+            botId: conversationBotId(for: decision), createdAt: Self.now, sequence: nextDeliverySequence,
+            text: correction ?? decision.options.first { $0.id == optionId }?.label ?? choice.capitalized,
+            request: AnswerRequest(choice: choice, revision: decision.revision, correction: correction,
+                optionId: optionId, draftHash: decision.draftHash, previewsHash: decision.previewsHash))
+        outgoingAnswers.append(queued)
+        do { try saveOutgoing() }
+        catch {
+            outgoingAnswers.removeAll { $0.id == queued.id }
+            report(error)
+            return false
+        }
+        scheduleDelivery()
+        return true
+    }
+
+    private var nextDeliverySequence: Int {
+        max(outgoingMessages.compactMap(\.sequence).max() ?? 0, outgoingAnswers.map(\.sequence).max() ?? 0) + 1
+    }
+
+    private func resetDelivery() {
+        deliveryID = UUID()
+        for task in deliveryTasks.values { task.cancel() }
+        deliveryTasks = [:]
+    }
+
+    private func scheduleDelivery() {
+        guard !isDemo, hasPairing else { return }
+        let identity = deliveryID
+        let bots = Set(outgoingMessages.filter { [.sending, .failed].contains($0.status) }.map(\.botId))
+            .union(outgoingAnswers.map(\.botId))
+        for botId in bots where deliveryTasks[botId] == nil {
+            deliveryTasks[botId] = Task { [weak self] in
+                guard let self else { return }
+                defer { if self.deliveryID == identity { self.deliveryTasks[botId] = nil } }
+                while !Task.isCancelled, self.deliveryID == identity {
+                    let message = self.outgoingMessages.first { $0.botId == botId && [.sending, .failed].contains($0.status) }
+                    let answer = self.outgoingAnswers.first { $0.botId == botId }
+                    if let message, answer == nil || (message.sequence ?? 0) < answer!.sequence {
+                        await self.deliverOutgoing(message.id)
+                        if self.outgoingMessages.contains(where: { $0.id == message.id && $0.status == .failed }) { break }
+                    } else if let answer {
+                        if !(await self.deliverAnswer(answer)) { break }
+                    } else { break }
+                }
             }
-            if let index = self.cachedState?.decisions.firstIndex(where: { $0.id == receipt.id }) { self.cachedState?.decisions[index] = receipt }
-        })
-        return recorded != nil
+        }
+    }
+
+    private func deliverAnswer(_ answer: OutgoingAnswer) async -> Bool {
+        let identity = deliveryID
+        var rejected = false
+        let recorded: Decision? = await write("decisions/\(answer.decisionId)/answer", payload: answer.request,
+            as: Decision.self, quiet: true, refreshInBackground: true, idempotencyKey: answer.id,
+            onFailure: { failure in
+                if let serviceError = failure as? ServiceError,
+                   case .response(let status, let reason) = serviceError,
+                   (400..<500).contains(status), ![408, 429].contains(status) {
+                    rejected = true
+                    if identity == self.deliveryID { self.error = reason }
+                }
+            }, onSuccess: { receipt in
+                guard identity == self.deliveryID else { return }
+                self.snapshotEpoch = UUID()
+                self.snapshotRequest = nil
+                if let index = self.decisions.firstIndex(where: { $0.id == receipt.id }),
+                   self.decisions[index].revision == receipt.revision { self.decisions[index] = receipt }
+                if let index = self.cachedState?.decisions.firstIndex(where: { $0.id == receipt.id }) {
+                    self.cachedState?.decisions[index] = receipt
+                }
+            })
+        guard identity == deliveryID else { return false }
+        if recorded != nil || rejected {
+            if rejected, answer.request.choice == "reply", let text = answer.request.correction {
+                decisionReplyDrafts[answer.decisionId] = text
+            }
+            outgoingAnswers.removeAll { $0.id == answer.id }
+            answeringDecisionIds.remove(answer.decisionId)
+            try? saveOutgoing()
+            return true
+        }
+        return false
     }
 
     func editDraft(_ decision: Decision, draft: MessageDraft) async -> Bool {
@@ -1245,6 +1324,7 @@ final class AppStore {
                             self.refreshNativeSettings(using: client, force: page.settingsChanged == true || page.reset != nil)
                             Task { await self.syncPushRegistration() }
                         }
+                        self.scheduleDelivery()
                         continue
                     }
                     let page: EventPage = try await client.request("events?after=\(self.cursor)&wait=20")
@@ -1261,6 +1341,7 @@ final class AppStore {
                     self.lastSync = Date()
                     self.connection = .connected
                     self.syncIssue = nil
+                    self.scheduleDelivery()
                     Task { await self.syncPushRegistration() }
                     failures = 0
                 } catch is CancellationError { break }
@@ -1372,6 +1453,7 @@ final class AppStore {
         if isDemo && parallelWork == nil { parallelWork = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4) }
         mcpServers = snapshot.mcpServers ?? []
         if routines != snapshot.routines ?? [] { routines = snapshot.routines ?? [] }
+        if foreground { scheduleDelivery() }
         cursor = snapshot.cursor
         provider = snapshot.provider
         model = snapshot.model
@@ -1673,6 +1755,7 @@ struct OutgoingMessage: Codable, Identifiable {
     var failureReason: String? = nil
     var replyTo: MessageReference? = nil
     var workContext: WorkReference? = nil
+    var sequence: Int? = nil
     var expectsResponse: Bool { [.sending, .accepted].contains(status) && request.scheduledAt == nil }
     var afterRestart: Self {
         var restored = self
@@ -1685,8 +1768,21 @@ struct OutgoingMessage: Codable, Identifiable {
                 recipientBotIds: request.recipientBotIds, clientRequestId: id, replyTo: replyTo, workContext: workContext)
     }
 }
-private struct OutgoingCache: Codable { let deviceId: String; let messages: [OutgoingMessage] }
-private struct AnswerRequest: Encodable { let choice: String; let revision: Int; let correction: String?; let optionId: String?; let draftHash: String?; let previewsHash: String? }
+private struct OutgoingCache: Codable { let deviceId: String; let messages: [OutgoingMessage]; var answers: [OutgoingAnswer]? = nil }
+struct OutgoingAnswer: Codable, Identifiable {
+    let id: String
+    let decisionId: String
+    let botId: String
+    let createdAt: String
+    let sequence: Int
+    let text: String
+    let request: AnswerRequest
+    var message: Message {
+        Message(id: "outgoing-" + id, botId: botId, taskId: nil, role: "user", kind: "text", text: text,
+                decisionId: nil, artifactId: nil, createdAt: createdAt, streaming: false, clientRequestId: id)
+    }
+}
+struct AnswerRequest: Codable { let choice: String; let revision: Int; let correction: String?; let optionId: String?; let draftHash: String?; let previewsHash: String? }
 private struct DraftEditRequest: Encodable { let revision: Int; let draft: MessageDraft }
 private struct InboxRequest: Encodable { let action: String; let revision: Int; let swipeId: String? }
 private struct ReplyRequest: Encodable { let text: String; let attachmentIds: [String]; let decisionId: String?; let mentionedBotIds: [String] }
