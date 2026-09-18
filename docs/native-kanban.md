@@ -19,13 +19,20 @@ Card replies reopen review through the native kernel. Duplicate phone requests r
 A new request after completion creates a new native execution record and retains the previous result.
 
 Coconut supplies readiness for application dependencies and scheduled requests.
-Normal waits use native `scheduled` state and do not increase the native failure count.
+Application waits use native `scheduled` state and do not increase the native failure count.
+Explicit native blocks keep their reason and continuation eligibility across ticks;
+native dependency waits retain `todo` until their parents finish.
 Hermes owns selection and capacity after a request becomes ready.
 Read-only status questions keep one separate native session so they can answer while work capacity is full.
 Queue positions use native priority and creation order.
 Work uses the native title and progress note. Changes to either field trigger a phone update.
 Native failures enter Coconut's existing recovery path, which checks tool receipts before another action.
 The adapter does not treat an unknown tool result as permission to repeat it.
+
+Coconut parks native retries that have no ready application input before dispatch.
+If Hermes promotes another retry during its claim phase, the adapter releases that
+claim through native scheduling without starting a worker or recording a false
+spawn failure. Startup loads native bindings before accepting task replies.
 
 ## Workspaces
 
@@ -50,10 +57,66 @@ Recovery keeps the outcome's execution ID and worktree when it replaces a reques
 Each new turn applies the saved workspace through native task and session overrides before the agent starts.
 A worktree isolates files. Tests still need separate database, Redis, and storage resources when they modify shared state.
 
+## Operator workspace recovery
+
+A paired device can POST `/v1/maintenance/workspace-recovery` with its existing
+Bearer authentication and a UUID `Idempotency-Key`. This is a managed-service
+operator action, available before the blocked worker starts. It is not a bot tool
+and the restart tool still accepts no arguments. The exact JSON fields are:
+
+```json
+{
+  "task_id": "existing-coconut-task-uuid",
+  "native_task_id": "t_existing",
+  "expected_owner": "retained-execution-uuid",
+  "repository": "/canonical/repository",
+  "path": "/canonical/repository/.worktrees/existing-worktree",
+  "old_branch": "saved-branch",
+  "new_branch": "verified-current-branch"
+}
+```
+
+The device authorizes only this binding transition for the existing task. The
+service verifies its execution identity and native binding, canonical paths,
+registered linked worktree and actual branch. It saves a durable request before
+draining. No new native, chat or context turn starts during the drain. Existing
+turns may finish. Before the managed exit it checks native claims, runtime
+resources, background receipts, process checkpoints, delegation ledgers and
+unaccounted workers. Active, reused or ambiguous PIDs or process groups cause a
+held receipt. A dead checkpoint wrapper is insufficient: its group must also be
+absent. Recorded systemd scopes remain held for inspection because this path
+cannot prove their descendants have stopped. No writer is killed to make the
+repair possible. Unmanaged editors still require operator exclusion.
+
+Startup applies the request under `service.lock`, before native recovery or
+dispatch, and repeats the writer and ownership checks. Under the workspace lock
+it compares the complete saved manifest, verifies the current Git branch, and
+atomically replaces only the authorized binding's branch and recovery marker.
+It fsyncs both file and directory. A crash before replacement retains the old
+binding. A crash after replacement recognizes the exact recorded result including
+its request marker. A different task input, binding or newer manifest is held;
+it is never overwritten. Git contents, approvals and execution ownership stay
+unchanged.
+
+Repeat the exact POST with the same request key to read the durable receipt:
+`draining`, `applied`, `held`, or `superseded`. Reusing a key for different scope
+is rejected. A held recovery keeps dispatch stopped while its checks fail;
+startup repeats the checks using the same exact authorization. After inspecting
+and resolving the reported writer or stale-state issue, a new
+device request with a new key can authorize a fresh transition. A successful
+receipt supplies `/v1/tasks/{task_id}/replies`. Send the intended continuation
+there using normal device authentication and a new idempotency key. Pending
+native approvals must still be answered through their existing decision routes.
+An unfinished native outcome resumes in place. Terminal outcomes use the existing
+native successor route, including legacy PR owners without `_work_context_id`.
+
 ## Validation
 
 `test_native_kanban.py` checks capacity, review, duplicate answers, restart, and lost acknowledgements against the real kernel.
 `test_work_workspace.py` checks separate branches, worktree adoption, and preservation of uncommitted changes.
+`test_workspace_recovery.py` exercises the authenticated API, managed drain,
+startup lock and crash replay, writer refusals, native continuation, and the real
+provider's preferred workspace using a disposable local model server.
 `scripts/test_native_kanban.py` runs two real Hermes agents through Coconut against a local model fixture.
 Each agent creates its worktree, writes a local file, waits for an Inbox answer, and records completion.
 The deployment compatibility check and CI run this integration check.

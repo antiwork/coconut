@@ -92,6 +92,7 @@ from .kanban_scheduler import NativeKanban
 
 
 from .service_restart import ServiceRestart
+from .workspace_recovery import WorkspaceRecovery
 from .tracked_work import TrackedWork
 from .work_model import WorkModel
 from .work_recovery import WorkRecovery
@@ -99,7 +100,7 @@ from .decision_freshness import DecisionFreshness
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
-class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart):
+class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -126,6 +127,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.pr_follow_lock = threading.Lock()
         self.pr_last_request = float('-inf')
         self.lock = threading.RLock()
+        self.dispatch_gate = threading.RLock()
         self.model_settings_lock = threading.Lock()
         self.changed = threading.Condition(self.lock)
         self.db = sqlite3.connect(self.root / 'coconut.sqlite3', check_same_thread=False, isolation_level=None)
@@ -147,6 +149,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         CREATE TABLE IF NOT EXISTS bot_creation_receipts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS bot_deletion_receipts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS workspace_recoveries (id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS native_receipts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS native_receipts_executing ON native_receipts
             (json_extract(data, '$.task_id'), json_extract(data, '$.turn_id'))
@@ -175,11 +178,15 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.source_poller: threading.Thread | None = None
         from .push import PushDelivery
         self.push = PushDelivery(self)
-        if hasattr(self.provider, 'migrate_model_default'):
-            self.provider.migrate_model_default(self._setting('model'), self._setting('base_url'))
-        elif hasattr(self.provider, 'configure') and self._setting('model'):
-            self.provider.configure(model=self._setting('model'), base_url=self._setting('base_url') or None)
         try:
+            self._recover_workspace_binding()
+            if not getattr(self, '_workspace_recovery_hold', False):
+                if hasattr(self.provider, 'migrate_model_default'):
+                    self.provider.migrate_model_default(self._setting('model'), self._setting('base_url'))
+                elif hasattr(self.provider, 'configure') and self._setting('model'):
+                    self.provider.configure(model=self._setting('model'), base_url=self._setting('base_url') or None)
+            if self.kanban and not getattr(self, '_workspace_recovery_hold', False):
+                self.kanban.call({'op': 'snapshot'})
             self._index_message_audience()
             with self.transaction():
                 self._migrate_threads()
@@ -190,13 +197,16 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._migrate_silent_responses()
                 self._migrate_pr_review_sources()
                 self._migrate_native_routine_prompts()
-                self._recover()
+                if not getattr(self, '_workspace_recovery_hold', False):
+                    self._recover()
         except BaseException:
+            if self.kanban:
+                self.kanban.close()
             self.db.close()
             fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_UN)
             self.process_lock.close()
             raise
-        if hasattr(self.provider, 'native_settings'):
+        if hasattr(self.provider, 'native_settings') and not getattr(self, '_workspace_recovery_hold', False):
             self.provider.native_settings('migrate', [b for b in self._all('bots') if not b.get('_deleted')])
         with self.transaction():
             for bot in self._all('bots'):
@@ -2015,9 +2025,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             return self._public(task) | {'reply_status': 'queued'}
         if task['status'] == 'needs_you':
             raise ServiceError(409, 'Refresh this thread before replying.')
-        if task.get('_native_outcome_id') and task.get('_work_context_id'):
+        work_context = self._native_continuation_item(task) if task.get('_native_outcome_id') else None
+        if work_context:
             result = self._send(bot, dict(text=text, mode='queue', attachment_ids=attachments),
-                conversation_bot_id=task['conversation_bot_id'], work_item=self._get('artifacts', task['_work_context_id']))
+                conversation_bot_id=task['conversation_bot_id'], work_item=work_context)
         else:
             result = self._send(bot, dict(text=text, mode='queue', attachment_ids=attachments), thread_id=task['thread_id'], parent_task_id=task['id'], conversation_bot_id=task['conversation_bot_id'])
         return result | {'reply_status': 'queued_continuation'}
@@ -2261,7 +2272,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             return {'groups': list(groups.values())}
 
     def start(self):
-        if self.dispatcher:
+        if self.dispatcher or getattr(self, '_workspace_recovery_hold', False):
             return
         self.dispatcher = threading.Thread(target=self._dispatch, name='coconut-dispatch', daemon=True)
         self.dispatcher.start()
@@ -2388,6 +2399,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         next_recovery_tick = 0
         next_decision_tick = 0
         while not self.stopping.is_set():
+            if self.restart_pending:
+                self._dispatch_pending()
+                self.stopping.wait(.2)
+                continue
             if time.monotonic() >= next_routine_tick:
                 next_routine_tick = time.monotonic() + 1
                 for update in (self.tick_routines, self._sync_automatic_work):
@@ -2415,6 +2430,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self.stopping.wait(1)
 
     def _dispatch_pending(self):
+        with self.dispatch_gate:
+            if getattr(self, '_workspace_recovery_hold', False):
+                return
+            return self._dispatch_pending_locked()
+
+    def _dispatch_pending_locked(self):
         if self.kanban is not None:
             return self._dispatch_kanban()
         self.finish_inbox_swipes()

@@ -66,9 +66,9 @@ class Board:
                 # Only new input or cancellation can change a native-owned lifecycle here.
                 if row['state'] == 'archived' and task.status != 'archived':
                     self.kb.archive_task(self.conn, task.id)
-                elif task.status == 'ready' and row['state'] in ('scheduled', 'review'):
+                elif task.status == 'ready' and row['state'] != 'ready':
                     self.kb.schedule_task(self.conn, task.id, reason=row.get('summary') or 'Waiting for delivery.')
-                elif old[1] and old[1] != intent and row['state'] == 'ready':
+                elif row['state'] == 'ready' and (task.status == 'scheduled' or old[1] and old[1] != intent):
                     if task.status == 'review':
                         self.kb.reopen_review_task(self.conn, task.id)
                     elif task.status in ('scheduled', 'blocked'):
@@ -221,8 +221,31 @@ class Board:
 
     def tick(self, rows, capacity, spawn):
         self.sync(rows)
-        result = self.dispatch.dispatch_once(self.conn, spawn_fn=spawn, max_in_progress=capacity,
+        # Native retries and dependency promotion can outlive Coconut input.
+        # Park only ready lanes, including omitted terminal/legacy requests.
+        # Blocked outcomes retain their reason and continuation eligibility;
+        # todo dependencies must remain eligible for native promotion.
+        selected = {r['id'] for r in rows if r['state'] == 'ready'}
+        for external, identity in self.conn.execute(
+                'SELECT b.external_id,t.id FROM tasks t LEFT JOIN coconut_bindings b ON b.native_id=t.id '
+                "WHERE t.status = 'ready'").fetchall():
+            if external not in selected:
+                self.kb.schedule_task(self.conn, identity, reason='Waiting for Coconut input readiness.')
+        deferred = set()
+        def selected_spawn(task, workspace):
+            binding = self.conn.execute('SELECT external_id FROM coconut_bindings WHERE native_id=?', (task.id,)).fetchone()
+            if not binding or binding[0] not in selected:
+                # The kernel can reclaim/promote another task inside this tick.
+                # Release that claim through its native lifecycle, without a
+                # worker or a bogus spawn-failure/retry loop.
+                self.kb.schedule_task(self.conn, task.id, expected_run_id=task.current_run_id,
+                                      reason='Waiting for Coconut input readiness.')
+                deferred.add(task.id)
+                return None
+            return spawn(task, workspace)
+        result = self.dispatch.dispatch_once(self.conn, spawn_fn=selected_spawn, max_in_progress=capacity,
                                        max_spawn=capacity, reconcile_orphans=True)
+        result.spawned = [r for r in result.spawned if r[0] not in deferred]
         return {'tasks': self.snapshot(), 'dispatch': asdict(result)}
 
 

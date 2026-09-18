@@ -38,6 +38,19 @@ CONTINUE_SCHEMA = {
 
 
 class NativeOutcomes:
+    def _native_continuation_item(self, task):
+        from .service import ServiceError
+        if task.get('_work_context_id'):
+            return self._get('artifacts', task['_work_context_id'])
+        # Older PR outcome owners predate explicit work context. Resolve their
+        # durable native link rather than creating an unrelated conversation.
+        candidates = [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr')
+                      and a.get('_native_outcome_id') == task['_native_outcome_id']
+                      and a['task_id'] == task['id'] and a['bot_id'] == task['bot_id']]
+        if len(candidates) != 1:
+            raise ServiceError(409, 'The native outcome needs one unambiguous retained Work or PR owner.')
+        return candidates[0]
+
     def continue_native_work(self, source_id, payload):
         from .service import ServiceError, now, uid, digest, encoded, require_text
         from .work_capacity import execution_key

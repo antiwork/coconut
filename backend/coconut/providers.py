@@ -396,6 +396,17 @@ class HermesProvider(FixtureProvider):
         with self._lock:
             return self._prepared.pop(identity, None)
 
+    def workspace_recovery_idle_pids(self):
+        """Prove cached runtimes idle without cancelling any resource."""
+        with self._lock:
+            if self._processes or self._prepared:
+                raise ValueError('A native worker is still executing or prepared.')
+            processes = set(self._runtimes.values()) | set(self._kanban_runtimes.values())
+        for process in processes:
+            if self._has_live_resources(process):
+                raise ValueError('A native runtime has active or ambiguous background resources.')
+        return {p.pid for p in processes if p.poll() is None}
+
     def start_task(self, task, bot, history, emit):
         self._run('start', task, bot, history, emit)
 

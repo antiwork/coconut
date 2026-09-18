@@ -120,6 +120,10 @@ class Handler(BaseHTTPRequestHandler):
             started = time.perf_counter()
             device = service.authenticate(authorization[7:])
             self.timings = {'auth': (time.perf_counter() - started) * 1000}
+            if method == 'POST' and url.path == '/v1/maintenance/workspace-recovery':
+                self._json(200, service.request_workspace_recovery(
+                    self._body(), self.headers.get('Idempotency-Key', ''), device))
+                return
             if method == 'GET':
                 if url.path == '/v1/state':
                     self._json(200, service.snapshot(timings=self.timings, content_only=self.headers.get('X-Coconut-State') == 'content'))
