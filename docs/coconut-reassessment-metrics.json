@@ -1,0 +1,102 @@
+{
+  "date": "2026-09-18",
+  "environment": "Mac mini; authenticated HTTPS to its configured Tailscale address",
+  "method": "Four sequential state reads and four idle delta reads per cohort. The after cohort uses recent state and update protocol 4. No model call starts.",
+  "limits": [
+    "Not a physical-phone benchmark.",
+    "Small cohorts; load and cache state can affect elapsed time.",
+    "The payload contract deliberately excludes old decisions and unchanged Work."
+  ],
+  "before": {
+    "snapshots": [
+      {
+        "ms": 835.13,
+        "bytes": 2278751
+      },
+      {
+        "ms": 632.62,
+        "bytes": 2278751
+      },
+      {
+        "ms": 945.72,
+        "bytes": 2278751
+      },
+      {
+        "ms": 577.99,
+        "bytes": 2278751
+      }
+    ],
+    "deltas": [
+      {
+        "ms": 605.81,
+        "bytes": 536896,
+        "events": 0,
+        "artifacts": 282
+      },
+      {
+        "ms": 315.29,
+        "bytes": 536896,
+        "events": 0,
+        "artifacts": 282
+      },
+      {
+        "ms": 331.27,
+        "bytes": 536896,
+        "events": 0,
+        "artifacts": 282
+      },
+      {
+        "ms": 543.35,
+        "bytes": 536896,
+        "events": 0,
+        "artifacts": 282
+      }
+    ]
+  },
+  "after": {
+    "snapshots": [
+      {
+        "ms": 206.29,
+        "bytes": 957440
+      },
+      {
+        "ms": 161.75,
+        "bytes": 957440
+      },
+      {
+        "ms": 266.78,
+        "bytes": 957440
+      },
+      {
+        "ms": 239.35,
+        "bytes": 957440
+      }
+    ],
+    "deltas": [
+      {
+        "ms": 16.1,
+        "bytes": 157,
+        "events": 0,
+        "artifacts": 0
+      },
+      {
+        "ms": 16.18,
+        "bytes": 157,
+        "events": 0,
+        "artifacts": 0
+      },
+      {
+        "ms": 20.23,
+        "bytes": 157,
+        "events": 0,
+        "artifacts": 0
+      },
+      {
+        "ms": 16.35,
+        "bytes": 157,
+        "events": 0,
+        "artifacts": 0
+      }
+    ]
+  }
+}
