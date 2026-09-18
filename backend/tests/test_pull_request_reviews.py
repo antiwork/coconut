@@ -78,6 +78,34 @@ class PRReviewTests(unittest.TestCase):
         self.assertEqual(len(self.provider.starts),count)
         self.assertEqual(self.service._get('tasks',self.child_id)['status'],'completed')
 
+    def test_verified_owner_offers_card_without_coordinator_turn(self):
+        from coconut.pull_request_reviews import PR_REVIEW_INSTRUCTIONS
+        self.assertIn('Offer one coconut_ask merge decision yourself', PR_REVIEW_INSTRUCTIONS)
+        original_start = self.provider.start_task
+        def start(task, bot, history, emit):
+            if not task.get('_pr_review'):
+                return original_start(task, bot, history, emit)
+            emit('native_question', {'title': 'Merge PR #42?', 'merge_pr_url': URL,
+                'recommended_option_id': 'merge',
+                'options': [{'id': 'merge', 'label': 'Merge',
+                             'explanation': 'Merge the verified changes into main.'},
+                            {'id': 'leave', 'label': 'Leave open',
+                             'explanation': 'Keep the pull request open.'}]})
+            emit('completed', {'summary': 'Waiting for the merge decision.'})
+        self.provider.start_task = start
+        self.green()
+        before = {task['id'] for task in self.service._all('tasks')}
+        self.service._run_task(self.child_id)
+        cards = self.service.snapshot()['decisions']
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]['task_id'], self.child_id)
+        self.assertEqual(cards[0]['status'], 'pending')
+        self.assertEqual(cards[0]['merge_pr_url'], URL)
+        self.assertEqual(self.service._get('tasks', self.child_id)['status'], 'needs_you')
+        self.assertEqual({task['id'] for task in self.service._all('tasks')}, before)
+        self.green()
+        self.assertEqual(len(self.service.snapshot()['decisions']), 1)
+
     def test_restart_does_not_duplicate_queued_review(self):
         self.green()
         turn=self.service._get('tasks',self.child_id)['_native_turn_id']
