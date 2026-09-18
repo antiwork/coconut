@@ -68,7 +68,7 @@ class Board:
                 # Only new input or cancellation can change a native-owned lifecycle here.
                 if row['state'] == 'archived' and task.status != 'archived':
                     self.kb.archive_task(self.conn, task.id)
-                elif task.status == 'ready' and row['state'] != 'ready':
+                elif task.status == 'ready' and row['state'] in ('scheduled', 'review'):
                     self.kb.schedule_task(self.conn, task.id, reason=row.get('summary') or 'Waiting for delivery.')
                 elif row['state'] == 'ready' and (task.status == 'scheduled' or old[1] and old[1] != intent):
                     if task.status == 'review':
@@ -239,12 +239,13 @@ class Board:
             self.dispatch._run_reclaim_phase(self.conn, result, stale_timeout_seconds=0,
                 failure_limit=self.dispatch.DEFAULT_FAILURE_LIMIT, reconcile_orphans=True)
             # Reclaim can promote dependencies after Coconut projected readiness.
-            # Park only excluded ready tasks; preserve blocked reasons and todo
-            # dependencies so native continuation and promotion remain eligible.
+            # Only explicit input waits park native work. A completed reply
+            # cannot stop an outcome that Hermes just made ready.
+            waiting = {row['id'] for row in rows if row['state'] in ('scheduled', 'review')}
             for external, identity in self.conn.execute(
                     'SELECT b.external_id,t.id FROM tasks t LEFT JOIN coconut_bindings b ON b.native_id=t.id '
                     "WHERE t.status='ready'").fetchall():
-                if external not in candidates:
+                if external in waiting:
                     self.kb.schedule_task(self.conn, identity, reason='Waiting for Coconut input readiness.')
             allowed, budget = self.dispatch._tick_spawn_budget(self.conn, result,
                 max_spawn=capacity, max_in_progress=capacity, board=None)

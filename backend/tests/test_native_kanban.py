@@ -1526,6 +1526,29 @@ assert board.kb.get_task(board.conn, task.id).status != 'done'
         self.assertEqual(task['_native_outcome_id'], identity)
         self.assertEqual(task['_self_recovery']['attempt'], 1)
 
+    def test_completed_reply_cannot_park_ready_native_outcome(self):
+        self.native_program("""
+workspace = board.kb.kanban_db_path().parent / 'saved-work'
+workspace.mkdir()
+row = dict(id='original-owner', bot_id='owner', title='Finish accepted work', state='ready',
+           input='same-input', workspace=str(workspace), priority=10, summary='Complete.')
+board.sync([row])
+identity = board.snapshot()[0]['id']
+board.bind(identity, row['id'])
+row['native_id'] = identity
+row['state'] = 'done'
+started = []
+board.tick([row], 0, lambda *args: started.append(args))
+assert board.kb.get_task(board.conn, identity).status == 'ready'
+assert not started
+assert len(board.snapshot()) == 1
+row['state'] = 'scheduled'
+row['summary'] = 'Waiting for an existing result.'
+board.tick([row], 0, lambda *args: started.append(args))
+assert board.kb.get_task(board.conn, identity).status == 'scheduled'
+assert not started
+""")
+
     def test_dispatcher_retries_native_failure_without_scheduling_it(self):
         origin = self.task('Deliver a verified outcome')
         identity = self.native_program("""
