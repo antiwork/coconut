@@ -2,6 +2,21 @@ import XCTest
 @testable import Coconut
 
 final class StateUpdatesTests: XCTestCase {
+    func testPreviousCacheKeepsVisibleContentButRequiresOneFullSnapshot() throws {
+        var snapshot = try PreviewStateFixture.load()
+        snapshot.syncVersion = 1
+        let cache = SnapshotCache(snapshot: snapshot, syncedAt: Date())
+        let data = try JSONEncoder().encode(cache)
+        var old = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        old.removeValue(forKey: "updateProtocol")
+        let previous = try JSONDecoder().decode(SnapshotCache.self, from: JSONSerialization.data(withJSONObject: old))
+        XCTAssertNil(previous.snapshotForRestore.syncVersion)
+        XCTAssertEqual(previous.snapshotForRestore.messages.map(\.id), snapshot.messages.map(\.id))
+        XCTAssertEqual(previous.snapshotForRestore.artifacts.map(\.id), snapshot.artifacts.map(\.id))
+        let current = try JSONDecoder().decode(SnapshotCache.self, from: data)
+        XCTAssertEqual(current.snapshotForRestore.syncVersion, 1)
+    }
+
     func testNativeFreshnessKeepsUnchangedWorkVisibleWithoutReplacingArtifacts() throws {
         var state = try PreviewStateFixture.load()
         state.cursor = 10

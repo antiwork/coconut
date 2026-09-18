@@ -135,7 +135,7 @@ final class AppStore {
                 outgoingMessages = cache.messages.map(\.afterRestart)
             }
             if let cache: SnapshotCache = ProtectedCache.read("snapshot.json") {
-                apply(cache.snapshot, persist: false)
+                apply(cache.snapshotForRestore, persist: false)
                 lastSync = cache.syncedAt
             }
         }
@@ -1624,7 +1624,18 @@ final class AppStore {
 }
 
 private struct PairingConfiguration: Codable { let serverURL: String; let fingerprint: String; let deviceId: String }
-private struct SnapshotCache: Codable, Sendable { let snapshot: StateSnapshot; let syncedAt: Date }
+struct SnapshotCache: Codable, Sendable {
+    let snapshot: StateSnapshot
+    let syncedAt: Date
+    var updateProtocol: Int? = 3
+
+    var snapshotForRestore: StateSnapshot {
+        var restored = snapshot
+        // Older caches lack native IDs. Refresh once before compact updates.
+        if updateProtocol != 3 { restored.syncVersion = nil }
+        return restored
+    }
+}
 private struct PairRequest: Encodable { let code: String; let deviceName: String }
 private struct PairResponse: Decodable, Sendable { let token: String; let deviceId: String }
 private struct EmptyRequest: Encodable {}
