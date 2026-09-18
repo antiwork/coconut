@@ -34,6 +34,8 @@ class Board:
         self.conn = kanban_db_connect.connect()
         self.conn.execute('CREATE TABLE IF NOT EXISTS coconut_bindings '
                           '(external_id TEXT PRIMARY KEY, native_id TEXT NOT NULL UNIQUE, intent TEXT NOT NULL)')
+        self.conn.execute('CREATE TABLE IF NOT EXISTS coconut_pr_followups '
+                          '(native_id TEXT PRIMARY KEY, input_id TEXT NOT NULL)')
         self.conn.execute('CREATE TABLE IF NOT EXISTS coconut_outcomes (native_id TEXT PRIMARY KEY, initialized INTEGER NOT NULL DEFAULT 0)')
         if 'input_id' not in {r[1] for r in self.conn.execute('PRAGMA table_info(coconut_outcomes)')}:
             self.conn.execute("ALTER TABLE coconut_outcomes ADD COLUMN input_id TEXT NOT NULL DEFAULT ''")
@@ -221,32 +223,78 @@ class Board:
 
     def tick(self, rows, capacity, spawn):
         self.sync(rows)
-        # Native retries and dependency promotion can outlive Coconut input.
-        # Park only ready lanes, including omitted terminal/legacy requests.
-        # Blocked outcomes retain their reason and continuation eligibility;
-        # todo dependencies must remain eligible for native promotion.
-        selected = {r['id'] for r in rows if r['state'] == 'ready'}
-        for external, identity in self.conn.execute(
-                'SELECT b.external_id,t.id FROM tasks t LEFT JOIN coconut_bindings b ON b.native_id=t.id '
-                "WHERE t.status = 'ready'").fetchall():
-            if external not in selected:
-                self.kb.schedule_task(self.conn, identity, reason='Waiting for Coconut input readiness.')
-        deferred = set()
-        def selected_spawn(task, workspace):
-            binding = self.conn.execute('SELECT external_id FROM coconut_bindings WHERE native_id=?', (task.id,)).fetchone()
-            if not binding or binding[0] not in selected:
-                # The kernel can reclaim/promote another task inside this tick.
-                # Release that claim through its native lifecycle, without a
-                # worker or a bogus spawn-failure/retry loop.
-                self.kb.schedule_task(self.conn, task.id, expected_run_id=task.current_run_id,
-                                      reason='Waiting for Coconut input readiness.')
-                deferred.add(task.id)
-                return None
-            return spawn(task, workspace)
-        result = self.dispatch.dispatch_once(self.conn, spawn_fn=selected_spawn, max_in_progress=capacity,
-                                       max_spawn=capacity, reconcile_orphans=True)
-        result.spawned = [r for r in result.spawned if r[0] not in deferred]
+        result = self._dispatch_ready(rows, capacity, spawn)
         return {'tasks': self.snapshot(), 'dispatch': asdict(result)}
+
+    def _dispatch_ready(self, rows, capacity, spawn):
+        from hermes_cli.kanban_db_connect import _dispatch_tick_lock
+        result = self.dispatch.DispatchResult()
+        candidates = {row['id']: row for row in rows if row['state'] == 'ready'}
+        with _dispatch_tick_lock(self.kb.kanban_db_path()) as acquired:
+            if not acquired:
+                result.skipped_locked = True
+                return result
+            self.dispatch._run_reclaim_phase(self.conn, result, stale_timeout_seconds=0,
+                failure_limit=self.dispatch.DEFAULT_FAILURE_LIMIT, reconcile_orphans=True)
+            # Reclaim can promote dependencies after Coconut projected readiness.
+            # Park only excluded ready tasks; preserve blocked reasons and todo
+            # dependencies so native continuation and promotion remain eligible.
+            for external, identity in self.conn.execute(
+                    'SELECT b.external_id,t.id FROM tasks t LEFT JOIN coconut_bindings b ON b.native_id=t.id '
+                    "WHERE t.status='ready'").fetchall():
+                if external not in candidates:
+                    self.kb.schedule_task(self.conn, identity, reason='Waiting for Coconut input readiness.')
+            allowed, budget = self.dispatch._tick_spawn_budget(self.conn, result,
+                max_spawn=capacity, max_in_progress=capacity, board=None)
+            if not allowed:
+                return result
+            pending = self.conn.execute('SELECT t.*,b.external_id,f.input_id AS followup_input FROM tasks t JOIN coconut_bindings b '
+                'ON b.native_id=t.id LEFT JOIN coconut_pr_followups f ON f.native_id=t.id '
+                "WHERE t.status='ready' ORDER BY t.priority DESC,t.created_at,t.rowid").fetchall()
+            for task in pending:
+                if budget is not None and len(result.spawned) >= budget:
+                    break
+                row = candidates.get(task['external_id'])
+                profile_exists = self.dispatch._profile_exists_fn()
+                if not row or not task['assignee'] or profile_exists and not profile_exists(task['assignee']):
+                    continue
+                continuing = task['followup_input'] == row['input']
+                new_input = row.get('previous_input') and row['previous_input'] != row['input']
+                guard = self.dispatch.check_respawn_guard(self.conn, task['id'])
+                if not (continuing or new_input and guard == 'active_pr'):
+                    self.dispatch._dispatch_lane_task(self.conn, task, task['assignee'], result,
+                        lane='ready', dry_run=False, ttl_seconds=None, board=None,
+                        failure_limit=self.dispatch.DEFAULT_FAILURE_LIMIT, spawn_fn=spawn,
+                        per_profile_cap=None, per_profile_running={})
+                    continue
+                if guard not in (None, 'active_pr'):
+                    result.respawn_guarded.append((task['id'], guard))
+                    continue
+                # Accepted input continues an existing PR. Keep its native ready claim so failures
+                # use normal retries. Remember the input across a lost spawn response or guard expiry.
+                with self.kb.write_txn(self.conn):
+                    self.conn.execute('INSERT INTO coconut_pr_followups VALUES (?,?) ON CONFLICT(native_id) '
+                        'DO UPDATE SET input_id=excluded.input_id', (task['id'], row['input']))
+                claimed = self.kb.claim_task(self.conn, task['id'])
+                if not claimed:
+                    continue
+                try:
+                    if claimed.workspace_kind == 'worktree':
+                        workspace, branch = self.workspace._resolve_worktree_workspace(claimed)
+                        self.workspace.set_branch_name(self.conn, claimed.id, branch or claimed.branch_name or 'wt/' + claimed.id)
+                    else:
+                        workspace = self.workspace.resolve_workspace(claimed)
+                    self.workspace.set_workspace_path(self.conn, claimed.id, str(workspace))
+                    pid = spawn(claimed, str(workspace))
+                    if pid:
+                        self.dispatch._set_worker_pid(self.conn, claimed.id, int(pid))
+                    self.kb._fire_worker_spawned_hook(self.conn, claimed, str(workspace), pid)
+                    result.spawned.append((claimed.id, claimed.assignee or '', str(workspace)))
+                except Exception as error:
+                    if self.dispatch._record_task_failure(self.conn, claimed.id, str(error),
+                            outcome='spawn_failed', release_claim=True, end_run=True):
+                        result.auto_blocked.append(claimed.id)
+        return result
 
 
 def main():

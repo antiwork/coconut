@@ -144,6 +144,10 @@ Inbox cards use compact padding and body-size titles. Keep option explanations, 
 ### Decision card language
 
 Coconut supplies the same writing rules to every bot on every turn. A card names the choice and its practical effects.
-The bot uses plain language and states the decisive fact once. Technical evidence and exact execution targets stay in the original chat and action.
+The bot uses plain language and states the decisive fact once. The card names what changes and where.
+The card distinguishes preparation from execution: local work, a draft PR, a merge, a deployment, or a direct setting change.
+The bot verifies the delivery method before asking. It does not imply that a PR exists or that approval immediately changes production.
+Option labels name the action. Their descriptions explain the result when the label alone is insufficient.
+Low-level commands and detailed evidence stay in the original chat and action.
 Cards retain uncertainty, costs, affected people, public changes, irreversible effects, and approval limits when these affect the choice.
 Coconut does not shorten existing decisions or rewrite their meaning after the bot creates them.

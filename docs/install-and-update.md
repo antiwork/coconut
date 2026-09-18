@@ -151,6 +151,10 @@ python3 scripts/remote.py status
 
 An iPhone interface change needs a separate signed app update. Backend changes do not install a new iPhone binary.
 
+A bot can request a service restart after staging a reviewed update. Coconut pauses new work for at most 60 seconds.
+If active turns remain, Coconut reopens the queue and defers the restart until the workers become idle.
+Repeated requests do not extend the pause. Coconut does not interrupt active turns to meet this deadline.
+
 ## Check remote use
 
 1. Turn off Wi-Fi on the iPhone.

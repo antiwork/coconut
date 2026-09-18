@@ -1,5 +1,6 @@
 import unittest
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 
@@ -180,6 +181,33 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.assertEqual((task['status'], task['_resume_decision']), ('queued', decision['id']))
         prompt, _ = conversation_input(dict(operation='resume', task=task, decision=saved, history=[]))
         self.assertIn('No option was selected', prompt)
+
+    def test_closed_source_with_completed_exact_action_can_withdraw(self):
+        decision = self.question()
+        context = self.refresh()
+        self.service.refresh_decision(context['id'], dict(status='withdraw',
+            evidence='The exact requested release is recorded complete at the source URL.'))
+        saved = self.service._get('decisions', decision['id'])
+        self.assertEqual(saved['status'], 'resolved')
+        self.assertIsNone(saved['decided_by'])
+
+    def test_closed_source_with_remaining_followup_revises_same_card(self):
+        decision = self.question()
+        context = self.refresh()
+        self.service.refresh_decision(context['id'], dict(status='revise',
+            evidence='The source is closed, but deployment remains unverified.',
+            revision=dict(title='Deploy the completed change?', context='Implementation finished; deployment remains.',
+                          options=[dict(id='deploy', label='Deploy'), dict(id='later', label='Later')])))
+        saved = self.service._get('decisions', decision['id'])
+        self.assertEqual((saved['status'], saved['revision'], saved['title']),
+                         ('pending', 2, 'Deploy the completed change?'))
+
+    def test_rejected_decision_never_queues_a_freshness_check(self):
+        decision = self.question()
+        decision['status'] = 'rejected'
+        self.service._put('decisions', decision)
+        self.service._queue_decision_refreshes()
+        self.assertEqual(self.service._all('contexts'), [])
 
     def test_source_change_during_check_rejects_stale_withdrawal(self):
         decision = self.question()
@@ -650,6 +678,50 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.service._put('tasks', continuation)
         self.service._cancel_stale_decision_refreshes()
         self.assertEqual(self.service._get('contexts', context['id'])['status'], 'cancelled')
+
+    def test_unrelated_native_guarded_callback_does_not_starve_refresh(self):
+        decision = self.question()
+        other_bot = self.write('POST', '/v1/bots', dict(name='Care', role='Handle callbacks'))
+        callback = self.write('POST', '/v1/bots/' + other_bot['id'] + '/messages', dict(text='Unrelated callback', mode='queue'))
+        callback = self.service._get('tasks', callback['id'])
+        callback['_background_completion'] = ['Done']
+        self.service._put('tasks', callback)
+        self.service.kanban = SimpleNamespace(tasks={callback['id']: dict(status='ready', dispatch_blocker='active_pr')}, close=lambda: None)
+        self.service._queue_decision_refreshes()
+        contexts = self.service._all('contexts')
+        self.assertEqual(len(contexts), 1)
+        self.assertEqual(contexts[0]['decision_id'], decision['id'])
+
+    def test_related_genuinely_runnable_callback_defers_refresh(self):
+        self.question()
+        owner = self.service._get('tasks', self.task['id'])
+        callback = dict(owner, id='related-callback', status='queued',
+                        _background_completion=['Done'], _preference_source_ids=[], _turn_preference_source_ids=[])
+        self.service._put('tasks', callback)
+        self.service.kanban = SimpleNamespace(tasks={callback['id']: dict(status='ready', dispatch_blocker=None)}, close=lambda: None)
+        self.service._queue_decision_refreshes()
+        self.assertEqual(self.service._all('contexts'), [])
+
+    def test_ready_human_reply_context_owns_work_while_its_task_needs_you(self):
+        decision = self.question()
+        self.write('POST', '/v1/decisions/' + decision['id'] + '/reply',
+                   dict(text='Inspect the current source before changing this.', revision=1))
+        reply = self.service._all('contexts')[-1]
+        owner = self.service._get('tasks', self.task['id'])
+        self.assertEqual(owner['status'], 'needs_you')
+
+        # Use the native projection built by the service, including its independent
+        # context identity, instead of inventing task-shaped state for the reply.
+        self.service.kanban = SimpleNamespace(tasks={}, close=lambda: None)
+        rows = {row['id']: row for row in self.service._kanban_rows()}
+        self.assertEqual(rows[reply['id']]['state'], 'ready')
+        self.assertEqual(rows[owner['id']]['state'], 'review')
+        self.service.kanban.tasks = {
+            identity: dict(id=identity, status=row['state'], dispatch_blocker=None)
+            for identity, row in rows.items()
+        }
+
+        self.assertTrue(self.service._refresh_has_queued_owner(owner))
 
     def test_second_completion_carries_an_unknown_effect_from_its_sibling(self):
         decision = self.question()

@@ -293,6 +293,20 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     var uncertainty: String? = nil
     var risk: String? = nil
     var replyPending: Bool? = nil
+    var sources: [DecisionSource]? = nil
+    var mergePrUrl: String? = nil
+
+    var cardSources: [DecisionSource] {
+        var result = sources ?? []
+        if let mergePrUrl, !result.contains(where: { $0.url == mergePrUrl }),
+           let url = URL(string: mergePrUrl), url.host == "github.com",
+           url.pathComponents.count == 5, url.pathComponents[3] == "pull" {
+            result.append(DecisionSource(kind: "pull_request",
+                title: "\(url.pathComponents[2]) #\(url.lastPathComponent)", url: mergePrUrl))
+        }
+        var seen = Set<DecisionSource>()
+        return result.filter { !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && seen.insert($0).inserted }
+    }
 
     var cardOptions: [DecisionOption] {
         guard options.isEmpty, actionType == "create_file" else { return options }
@@ -319,6 +333,30 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
 
     var isProposal: Bool { inboxKind == "proposal" }
     var isPending: Bool { status == "pending" }
+}
+
+struct DecisionSource: Codable, Hashable, Sendable {
+    var kind: String
+    var title: String
+    var url: String? = nil
+
+    var link: URL? {
+        guard let url, let link = URL(string: url),
+              ["https", "http"].contains(link.scheme?.lowercased() ?? ""),
+              let host = link.host, !host.isEmpty,
+              link.user == nil, link.password == nil else { return nil }
+        return link
+    }
+
+    var label: String {
+        switch kind {
+        case "email": "Email"
+        case "issue": "Issue"
+        case "pull_request": "PR"
+        default: "Source"
+        }
+    }
+
 }
 
 struct DecisionPreview: Codable, Identifiable, Equatable, Sendable {

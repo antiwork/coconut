@@ -169,6 +169,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.generation = uid()
         self.restart_enabled = False
         self.restart_pending = False
+        self.restart_deadline = None
         self.running: dict[str, threading.Thread] = {}
         self.bot_locks: dict[str, threading.Lock] = {}
         self.context_threads: dict[str, threading.Thread] = {}

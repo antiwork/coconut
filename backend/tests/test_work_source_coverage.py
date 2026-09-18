@@ -101,6 +101,89 @@ class WorkSourceTests(unittest.TestCase):
         self.assertEqual(failed['error'], 'ValueError')
         self.assertEqual(len(self.service._all('tasks')), 1)
 
+    def test_source_removed_from_open_list_gets_one_exact_url_reconciliation(self):
+        (self.root / 'coverage.json').write_text(json.dumps({self.item['id']: dict(
+            updated_at=self.item['updated_at'], decision_ids=['pending-card'])}))
+        self.service._put('decisions', dict(id='pending-card', task_id='old-owner', status='pending'))
+        self.items = []
+        state = self.audit()
+        task = self.service._get('tasks', state['task_id'])
+        self.assertEqual(state['missing'], [self.item['id']])
+        self.assertIn('Fetch the exact source URL in its id', task['_source_audit_prompt'])
+        self.assertIn(self.item['id'], task['_source_audit_prompt'])
+        self.assertIn('Do not withdraw a card merely because the source closed', task['_source_audit_prompt'])
+        self.assertIn('Preserve every human rejection', task['_source_audit_prompt'])
+        self.audit()
+        self.assertEqual(len(self.service._all('tasks')), 1)
+
+    def test_removed_source_gets_first_reconciliation_when_old_owner_holds_card(self):
+        old_owner = self.service._send(self.bot, {'text': 'Original source work', 'mode': 'queue'},
+                                       record_message=False)
+        with self.service.transaction():
+            task = self.service._get('tasks', old_owner['id'])
+            task.update(status='needs_you', _source_assignment=dict(
+                id=self.item['id'], updated_at=self.item['updated_at']))
+            self.service._put('tasks', task)
+            self.service._put('decisions', dict(
+                id='original-card', task_id=task['id'], status='pending'))
+        (self.root / 'coverage.json').write_text(json.dumps({self.item['id']: dict(
+            updated_at=self.item['updated_at'], decision_ids=['original-card'])}))
+        self.items = []
+
+        state = self.audit()
+
+        self.assertNotEqual(state['task_id'], old_owner['id'])
+        self.assertEqual(len(self.service._all('tasks')), 2)
+        refresh = self.service._get('tasks', state['task_id'])
+        self.assertIn('Fetch the exact source URL in its id', refresh['_source_audit_prompt'])
+
+    def test_removed_source_live_waiting_recovery_deduplicates_changed_binding(self):
+        binding = dict(updated_at=self.item['updated_at'], decision_ids=['pending-card'])
+        (self.root / 'coverage.json').write_text(json.dumps({self.item['id']: binding}))
+        self.service._put('decisions', dict(id='pending-card', task_id='old-owner', status='pending'))
+        self.items = []
+        first = self.audit()['task_id']
+        child = self.service._send(self.bot, {'text': 'Check follow-up', 'mode': 'queue'}, record_message=False)
+        with self.service.transaction():
+            task = self.service._get('tasks', first)
+            task.update(status='waiting', _waiting_on=[child['id']])
+            self.service._put('tasks', task)
+        binding['reason'] = 'Waiting for active follow-up'
+        (self.root / 'coverage.json').write_text(json.dumps({self.item['id']: binding}))
+
+        state = self.audit()
+
+        self.assertEqual(state['recoveries'][self.item['id']]['task_id'], first)
+        self.assertEqual(len(self.service._all('tasks')), 2)
+
+    def test_removed_source_needs_you_recovery_deduplicates_changed_binding(self):
+        binding = dict(updated_at=self.item['updated_at'], decision_ids=['pending-card'])
+        (self.root / 'coverage.json').write_text(json.dumps({self.item['id']: binding}))
+        self.service._put('decisions', dict(id='pending-card', task_id='old-owner', status='pending'))
+        self.items = []
+        first = self.audit()['task_id']
+        with self.service.transaction():
+            task = self.service._get('tasks', first)
+            task['status'] = 'needs_you'
+            self.service._put('tasks', task)
+            self.service._put('decisions', dict(id='followup-card', task_id=first, status='pending'))
+        binding['decision_ids'].append('followup-card')
+        (self.root / 'coverage.json').write_text(json.dumps({self.item['id']: binding}))
+
+        state = self.audit()
+
+        self.assertEqual(state['recoveries'][self.item['id']]['task_id'], first)
+        self.assertEqual(len(self.service._all('tasks')), 1)
+
+    def test_removed_source_does_not_reopen_a_rejected_decision(self):
+        (self.root / 'coverage.json').write_text(json.dumps({self.item['id']: dict(
+            updated_at=self.item['updated_at'], decision_ids=['rejected-card'])}))
+        self.service._put('decisions', dict(id='rejected-card', task_id='old-owner', status='rejected'))
+        self.items = []
+        state = self.audit()
+        self.assertEqual(state['missing'], [])
+        self.assertEqual(self.service._all('tasks'), [])
+
     def test_waiting_recovery_does_not_block_new_assignments(self):
         original = self.audit()['task_id']
         with self.service.transaction():

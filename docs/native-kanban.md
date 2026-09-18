@@ -16,6 +16,11 @@ The task's tenant and body identify the real Coconut bot.
 The adapter starts that bot's existing Hermes profile in a process dedicated to the work session.
 A card maps to native `review`. Native review dispatch is disabled for this board because the human answers through Inbox.
 Card replies reopen review through the native kernel. Duplicate phone requests retain their existing execution receipt.
+
+Hermes prevents automatic dispatch when a recent task comment links to a PR.
+For new accepted input, Coconut claims that existing task through the native kernel after checking worker capacity and the other native guards.
+The adapter records the input so an interrupted follow-up can retry without creating another task or workspace.
+Pending cards and paused work remain ineligible. Failed follow-ups retain the normal native retry path.
 A new request after completion creates a new native execution record and retains the previous result.
 
 Coconut supplies readiness for application dependencies and scheduled requests.
@@ -29,10 +34,10 @@ Work uses the native title and progress note. Changes to either field trigger a 
 Native failures enter Coconut's existing recovery path, which checks tool receipts before another action.
 The adapter does not treat an unknown tool result as permission to repeat it.
 
-Coconut parks native retries that have no ready application input before dispatch.
-If Hermes promotes another retry during its claim phase, the adapter releases that
-claim through native scheduling without starting a worker or recording a false
-spawn failure. Startup loads native bindings before accepting task replies.
+Coconut parks native retries that have no ready application input after native
+reclaim and dependency promotion, before claiming ready tasks. Native scheduling
+releases those retries without starting a worker or recording a false spawn
+failure. Startup loads native bindings before accepting task replies.
 
 ## Workspaces
 
@@ -80,7 +85,8 @@ The device authorizes only this binding transition for the existing task. The
 service verifies its execution identity and native binding, canonical paths,
 registered linked worktree and actual branch. It saves a durable request before
 draining. No new native, chat or context turn starts during the drain. Existing
-turns may finish. Before the managed exit it checks native claims, runtime
+turns may finish. This recovery drain is not released by the ordinary restart
+tool's 60-second dispatch pause limit. Before the managed exit it checks native claims, runtime
 resources, background receipts, process checkpoints, delegation ledgers and
 unaccounted workers. Active, reused or ambiguous PIDs or process groups cause a
 held receipt. A dead checkpoint wrapper is insufficient: its group must also be

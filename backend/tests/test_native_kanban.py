@@ -1017,6 +1017,140 @@ print(board.kb.create_task(board.conn, title='Follow-up outcome', body='Keep the
         self.assertEqual(self.service.db.execute('SELECT count(*) FROM receipts').fetchone()[0], 1)
         self.assertEqual(len(self.provider.processes), 2)
 
+    def test_pr_card_answer_resumes_original_review_once(self):
+        task = self.task('Draft a note.md')
+        self.settle(lambda: self.service.kanban.tasks.get(task['id'], {}).get('status') == 'review')
+        native_id = self.service.kanban.tasks[task['id']]['id']
+        self.native_program("board.kb.add_comment(board.conn, sys.argv[2], 'default', 'https://github.com/example/app/pull/6')", native_id)
+        self.tick()
+        self.assertEqual(self.provider.started, [task['id']])
+        card = self.service._all('decisions')[0]
+        self.write('/v1/decisions/' + card['id'] + '/answer',
+            {'option_id': 'full', 'revision': card['revision']})
+        self.settle(lambda: self.service.kanban.tasks[task['id']]['status'] == 'done')
+        self.tick()
+        self.assertEqual(self.service.kanban.tasks[task['id']]['id'], native_id)
+        self.assertEqual(len(self.provider.processes), 2)
+
+    def test_native_pr_followup_preserves_capacity_owner_and_saved_work(self):
+        self.native_program("""
+import os
+workspace = board.kb.kanban_db_path().parent / 'saved-work'
+workspace.mkdir()
+(workspace / 'patch.txt').write_text('Unpublished fix')
+rows = [dict(id=name, bot_id='owner', title=name, state=state, input='new', previous_input=previous,
+    workspace=str(workspace), priority=10, summary='') for name, state, previous in [
+        ('new-task', 'ready', None), ('unchanged', 'ready', 'new'),
+        ('human', 'review', 'old'), ('paused', 'scheduled', 'old'),
+        ('followup', 'ready', 'old'), ('next-followup', 'ready', 'old')]]
+rows[-2]['priority'] = 20
+board.sync(rows)
+identities = {t['external_id']: t['id'] for t in board.snapshot()}
+for identity in identities.values():
+    board.kb.add_comment(board.conn, identity, 'default', 'https://github.com/example/app/pull/6')
+board.bind(identities['followup'], 'followup')
+rows[-2]['native_id'] = identities['followup']
+started = []
+def spawn(task, path):
+    started.append(task.id)
+    assert task.tenant == 'owner'
+    assert path == str(workspace)
+    return os.getpid()
+board.tick(rows, 1, spawn)
+board.tick(rows, 1, spawn)
+assert started == [identities['followup']], started
+assert board.kb.get_task(board.conn, identities['human']).status == 'review'
+assert board.kb.get_task(board.conn, identities['paused']).status == 'scheduled'
+assert (workspace / 'patch.txt').read_text() == 'Unpublished fix'
+assert len(board.snapshot()) == len(rows)
+""")
+
+    def test_pr_followup_retries_after_guard_expiry_but_keeps_auth_and_human_pause(self):
+        self.native_program("""
+import os
+workspace = board.kb.kanban_db_path().parent / 'saved-work'
+workspace.mkdir()
+rows = [dict(id=name, bot_id='owner', title=name, state='ready', input='new', previous_input='old',
+    workspace=str(workspace), priority=10, summary='') for name in ('handoff', 'auth')]
+board.sync(rows)
+identities = {t['external_id']: t['id'] for t in board.snapshot()}
+for identity in identities.values():
+    board.kb.add_comment(board.conn, identity, 'default', 'https://github.com/example/app/pull/6')
+with board.kb.write_txn(board.conn):
+    board.conn.execute('UPDATE tasks SET last_failure_error=? WHERE id=?', ('invalid API key', identities['auth']))
+started = []
+def spawn(task, path):
+    started.append(task.id)
+    return os.getpid()
+board.tick(rows, 2, spawn)
+assert started == [identities['handoff']], started
+assert board.dispatch.check_respawn_guard(board.conn, identities['auth']) == 'blocker_auth'
+board.dispatch._record_task_failure(board.conn, identities['handoff'], 'Worker exited',
+    outcome='worker_failed', release_claim=True, end_run=True)
+assert board.kb.get_task(board.conn, identities['handoff']).status == 'ready'
+rows[0]['previous_input'] = rows[0]['input']
+with board.kb.write_txn(board.conn):
+    board.conn.execute('UPDATE task_comments SET created_at=created_at-172800 WHERE task_id=?', (identities['handoff'],))
+board = Board(sys.argv[1])
+board.tick(rows, 2, spawn)
+assert started == [identities['handoff']] * 2, started
+current = board.kb.get_task(board.conn, identities['handoff'])
+assert board.kb.request_review(board.conn, current.id, expected_run_id=current.current_run_id)
+rows[0]['state'] = 'review'
+board.tick(rows, 2, spawn)
+assert len(started) == 2
+assert board.kb.get_task(board.conn, current.id).status == 'review'
+""")
+
+    def test_pr_followup_shares_native_memory_pressure_limit_with_normal_work(self):
+        self.native_program("""
+import os
+from unittest.mock import patch
+workspace = board.kb.kanban_db_path().parent / 'saved-work'
+workspace.mkdir()
+rows = [dict(id=name, bot_id='owner', title=name, state='ready', input='new', previous_input=previous,
+    workspace=str(workspace), priority=10, summary='') for name, previous in [('followup', 'old'), ('normal', None)]]
+board.sync(rows)
+identities = {t['external_id']: t['id'] for t in board.snapshot()}
+board.kb.add_comment(board.conn, identities['followup'], 'default', 'https://github.com/example/app/pull/6')
+started = []
+def spawn(task, path):
+    started.append(task.id)
+    return os.getpid()
+with patch.object(board.dispatch, '_memory_pressure_level', return_value='elevated'):
+    board.tick(rows, 4, spawn)
+assert started == [identities['followup']], started
+assert board.kb.get_task(board.conn, identities['normal']).status == 'ready'
+""")
+
+    def test_pr_followup_tick_also_reclaims_crashed_native_workers(self):
+        self.native_program("""
+import os, subprocess
+workspace = board.kb.kanban_db_path().parent / 'saved-work'
+workspace.mkdir()
+rows = [dict(id=name, bot_id='owner', title=name, state='ready', input='new', previous_input='old',
+    workspace=str(workspace), priority=10, summary='') for name in ('crashed', 'followup')]
+board.sync(rows)
+identities = {t['external_id']: t['id'] for t in board.snapshot()}
+process = subprocess.Popen(['sleep', '1'])
+process.terminate()
+process.wait()
+board.kb.claim_task(board.conn, identities['crashed'])
+board.dispatch._set_worker_pid(board.conn, identities['crashed'], process.pid)
+with board.kb.write_txn(board.conn):
+    board.conn.execute('UPDATE tasks SET started_at=started_at-? WHERE id=?',
+        (board.kb._resolve_crash_grace_seconds() + 1, identities['crashed']))
+rows[0]['state'] = 'scheduled'
+board.kb.add_comment(board.conn, identities['followup'], 'default', 'https://github.com/example/app/pull/6')
+started = []
+def spawn(task, path):
+    started.append(task.id)
+    return os.getpid()
+result = board.tick(rows, 3, spawn)
+assert identities['crashed'] in result['dispatch']['crashed'], result
+assert started == [identities['followup']], started
+""")
+
     def test_native_capacity_and_fifo_then_cancellation(self):
         self.service.mutate('PUT', '/v1/settings/work-capacity', {'limit': 2}, str(uuid4()))
         tasks = [self.task('Calculate item ' + str(i)) for i in range(4)]
@@ -1036,6 +1170,29 @@ print(board.kb.create_task(board.conn, title='Follow-up outcome', body='Keep the
         self.settle(lambda: self.service.kanban.tasks[tasks[3]['id']]['status'] == 'done')
         self.assertNotIn(tasks[2]['id'], self.provider.started)
         self.assertEqual(self.service.kanban.tasks[tasks[2]['id']]['status'], 'archived')
+
+    def test_restart_deferral_reopens_native_dispatch_and_preserves_active_claim(self):
+        from coconut.service_restart import RESTART_DRAIN_SECONDS
+        self.service.restart_enabled = True
+        self.provider.release.clear()
+        active = self.task('Check the existing patch')
+        self.settle(lambda: active['id'] in self.provider.started)
+        original_claim = self.service._get('tasks', active['id'])['_kanban_claim'].copy()
+        queued = self.task('Check another patch')
+        with patch('coconut.service_restart.time.monotonic', return_value=100) as clock:
+            self.service.request_service_restart(active['id'], {})
+            self.tick()
+            self.assertNotIn(queued['id'], self.provider.started)
+            clock.return_value += RESTART_DRAIN_SECONDS
+            self.assertFalse(self.service.take_service_restart())
+        self.settle(lambda: queued['id'] in self.provider.started)
+        self.assertEqual(self.service._get('tasks', active['id'])['_kanban_claim'], original_claim)
+        self.assertFalse(self.service.take_service_restart())
+        self.provider.release.set()
+        self.settle(lambda: all(self.service.kanban.tasks[t['id']]['status'] == 'done' for t in (active, queued)))
+        self.assertEqual(self.provider.started.count(active['id']), 1)
+        self.assertEqual(self.provider.started.count(queued['id']), 1)
+        self.assertTrue(self.service.take_service_restart())
 
     def test_lost_dispatch_reply_uses_saved_claim(self):
         task = self.task('Calculate one item')

@@ -37,16 +37,7 @@ struct ConversationView: View {
     private var messages: [Message] {
         store.conversationTranscript(for: botId, focusDecisionId: focusDecisionId)
     }
-    private var waitingForResponse: [AgentTask] {
-        guard store.connection == .connected || store.isDemo else { return [] }
-        return store.tasks.filter { task in
-            task.chatBotId == botId && ["queued", "working", "running"].contains(task.status)
-        }
-    }
-    private var showsActivity: Bool {
-        !waitingForResponse.isEmpty
-            || store.outgoingMessages.contains { $0.botId == botId && $0.expectsResponse }
-    }
+    private var showsActivity: Bool { store.isConversationResponding(botId) }
     private var activeTask: AgentTask? {
         store.tasks.last { $0.chatBotId == botId && ["working", "running"].contains($0.status) }
             ?? store.tasks.last { $0.chatBotId == botId && ["needs_you", "waiting"].contains($0.status) }

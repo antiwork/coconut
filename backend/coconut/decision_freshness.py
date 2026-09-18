@@ -127,13 +127,45 @@ class DecisionFreshness:
     def _refresh_has_queued_owner(self, task):
         from .work_capacity import execution_key
         import time
-        return (any(not c.get('_decision_refresh') and c['status'] == 'queued'
-                    and self._get('tasks', c['task_id'])['status'] != 'cancelled'
-                    and not self._task_paused(self._get('tasks', c['task_id'])) for c in self._all('contexts'))
-                or any((execution_key(t) == execution_key(task) or t.get('_resume_decision')
-                        or t.get('_is_return') or t.get('_background_completion')
-                        or set(t.get('_preference_source_ids', [])) - set(t.get('_turn_preference_source_ids', [])))
-                       and self._dispatch_eligible(t, time.time()) for t in self._all('tasks')))
+        tasks = {item['id']: item for item in self._all('tasks')}
+        records = self._pending_completion_receipts()
+        related = self._work_chain(self._assignment(task), tasks, records, include_continuations=True)
+        related.update(self._work_chain(task, tasks, records, include_continuations=True))
+        key = execution_key(task)
+        related_decisions = {decision['id'] for decision in self._all('decisions')
+                             if decision.get('task_id') in related}
+
+        def owns(item):
+            same_work = item['id'] in related or self._assignment(item)['id'] == self._assignment(task)['id']
+            return (execution_key(item) == key
+                    or item.get('_resume_decision') in related_decisions
+                    or (same_work and (item.get('_is_return') or item.get('_background_completion')
+                        or set(item.get('_preference_source_ids', [])) - set(item.get('_turn_preference_source_ids', [])))))
+
+        def native_runnable(identity):
+            if self.kanban is None:
+                return True
+            native = self.kanban.tasks.get(identity)
+            # A new projection has not reached Hermes yet. Once it has, honor the
+            # native dispatch state and blocker instead of treating ready-looking
+            # Coconut metadata as proof that a worker can start.
+            return native is None or (native.get('status') == 'ready' and not native.get('dispatch_blocker'))
+
+        def task_runnable(item):
+            if not self._dispatch_eligible(item, time.time()):
+                return False
+            return native_runnable(item['id'])
+
+        def context_runnable(context, owner):
+            # Contexts are independently dispatchable native rows. A decision owner
+            # normally remains needs_you while its queued human reply is ready.
+            return (owner['status'] != 'cancelled' and not self._task_paused(owner)
+                    and native_runnable(context['id']))
+
+        return (any(not context.get('_decision_refresh') and context['status'] == 'queued'
+                    and owns(tasks[context['task_id']]) and context_runnable(context, tasks[context['task_id']])
+                    for context in self._all('contexts'))
+                or any(owns(item) and task_runnable(item) for item in tasks.values()))
 
     def _refresh_session_busy(self, task):
         from .work_capacity import execution_key
