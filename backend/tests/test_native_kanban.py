@@ -164,7 +164,7 @@ class NativeKanbanTests(unittest.TestCase):
             status='working', activity='Checking results', completion_condition='The export passes its tests.'))
         return task, item
 
-    def test_native_wait_tracks_child_execution_but_completion_ends_the_outcome(self):
+    def test_native_wait_and_completion_do_not_depend_on_child_receipts(self):
         import json
         from coconut.service import now
         task, item = self.legacy_work()
@@ -195,7 +195,7 @@ class NativeKanbanTests(unittest.TestCase):
         self.service._put('native_receipts', receipt)
         def state():
             return next(a for a in self.service.snapshot()['artifacts'] if a['id'] == item['id'])['work_state']
-        self.assertEqual(state(), 'working')
+        self.assertEqual(state(), 'waiting')
         receipt['_process_delivery'] = 'result-received'
         self.service._put('native_receipts', receipt)
         self.assertEqual(state(), 'waiting')
@@ -607,6 +607,34 @@ for title in ('First defect', 'Second defect'):
         with self.service.transaction():
             self.service._cancel(self.service._get('tasks', task['id']), [])
         self.assertEqual(self.service._get('tasks', owned[1]['id'])['status'], 'queued')
+
+    def test_native_work_status_does_not_follow_conversation_activity(self):
+        origin = self.task('Discuss a pending outcome')
+        identity = self.native_program("""
+print(board.kb.create_task(board.conn, title='Verify accepted outcome', body='Retain the result', assignee='default',
+    tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked'))
+""", self.bot['id'], origin['id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._adopt_native_outcomes()
+        owner = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
+        item = self.service._get('artifacts', owner['_work_context_id'])
+        self.native_program("board.kb.block_task(board.conn, sys.argv[2], reason='Pending external result')", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        with self.service.transaction():
+            owner['status'] = 'working'
+            self.service._put('tasks', owner)
+        release = threading.Event()
+        worker = threading.Thread(target=release.wait)
+        worker.start()
+        self.addCleanup(lambda: (release.set(), worker.join(5)))
+        self.service.running[owner['id']] = worker
+        with patch.object(self.service, '_work_chain', side_effect=AssertionError('Native work needs no conversation graph')):
+            projected = self.service._work_projection([dict(item)])[0]
+        self.assertEqual(projected['work_state'], 'waiting')
+        self.service.kanban.tasks = {}
+        projected = self.service._work_projection([dict(item)])[0]
+        self.assertEqual(projected['activity'], 'Status unavailable')
+        self.assertEqual(projected['work_state'], 'waiting')
 
     def test_native_bot_result_resumes_same_owner_and_native_task(self):
         import json
