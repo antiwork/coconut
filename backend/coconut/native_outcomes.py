@@ -49,13 +49,15 @@ class NativeOutcomes:
     def _retain_native_work(self, owner, native):
         from .service import ServiceError, now
         if owner.get('_work_context_id'):
-            return
-        items = [a for a in self._all('artifacts') if a['kind'] == 'work' and a['task_id'] == owner['id']]
+            items = [self._get('artifacts', owner['_work_context_id'])]
+        else:
+            items = [a for a in self._all('artifacts') if a['kind'] == 'work' and a['task_id'] == owner['id']]
         if len(items) > 1:
             raise ServiceError(409, 'Choose one retained Work item for this native outcome.')
         if items:
             item = items[0]
-            if item.get('_native_outcome_id') not in (None, native['id']):
+            if (item['kind'] not in ('work', 'pr') or item['bot_id'] != owner['bot_id']
+                    or item.get('_native_outcome_id') not in (None, native['id'])):
                 raise ServiceError(409, 'The retained Work item belongs to another native outcome.')
             item['_native_outcome_id'] = native['id']
         else:

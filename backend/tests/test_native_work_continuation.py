@@ -152,6 +152,24 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(item['_native_outcome_id'], 't_existing')
         self.assertEqual(len(self.service._all('artifacts')), 1)
 
+    def test_promoted_claim_binds_an_existing_context_before_a_human_reply(self):
+        owner, source = self.scheduled_native()
+        owner['_work_context_id'] = 'retained-work'
+        self.service._put('tasks', owner)
+        self.service._put('artifacts', dict(id='retained-work', task_id=owner['id'],
+            bot_id=owner['bot_id'], kind='work', title='The original outcome', status='waiting'))
+        self.resume(source)
+        continued = self.service._get('tasks', owner['id'])
+        continued['status'] = 'completed'
+        self.service._put('tasks', continued)
+        self.service.kanban.tasks[owner['id']]['status'] = 'done'
+        result = self.write('/v1/tasks/' + owner['id'] + '/replies',
+                            {'text': 'Continue this work with the new review finding.'})
+        followup = self.service._get('tasks', result['id'])
+        self.assertEqual(followup['_native_outcome_id'], 't_existing')
+        self.assertEqual(followup['_work_context_id'], 'retained-work')
+        self.assertEqual(followup['_execution_session_id'], owner['_execution_session_id'])
+
     def test_scheduled_continuation_rejects_foreign_caller(self):
         owner, source = self.scheduled_native()
         other = self.write('/v1/bots', {'name': 'Unrelated'})
