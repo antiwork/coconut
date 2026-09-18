@@ -39,7 +39,7 @@ def check(source, python):
                     results = [m for m in messages if m.get('role') == 'tool']
                     if len(results) > 12:
                         raise AssertionError('Unexpected tool retry: ' + results[-1]['content'][:1000])
-                    chat = 'Use this persistent conversation for direct replies' in json.dumps(messages[:1])
+                    chat = 'create one native kanban task before starting it' in json.dumps(messages[:1])
                     if chat:
                         last_user = max(i for i, m in enumerate(messages) if m['role'] == 'user')
                         recent = messages[last_user:]

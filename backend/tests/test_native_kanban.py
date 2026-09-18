@@ -571,7 +571,8 @@ board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the expo
             source['status'] = 'working'
             self.service._put('tasks', source)
             origin = self.service._store_bot_message(source['id'],
-                dict(target_bot_id=developer['id'], text='Implement the accepted result', require_response=True))
+                dict(target_bot_id=developer['id'], text='Implement the accepted result', require_response=True,
+                     native_envelope_id=uuid4().hex))
         identity = self.native_program("""
 print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve the approved scope', assignee='default',
     tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked'))
@@ -579,7 +580,15 @@ print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve t
         self.service.kanban.call({'op': 'snapshot'})
         self.service._adopt_native_outcomes()
         owner = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
-        self.assertEqual(owner['_requesting_bot_id'], self.bot['id'])
+        self.assertEqual(owner['source_bot_id'], self.bot['id'])
+        self.assertEqual(owner['source_task_id'], source['id'])
+        self.assertEqual(owner['_relay_callback_owner'], origin['task_id'])
+        with self.service.transaction():
+            intake = self.service._get('tasks', origin['task_id'])
+            intake['status'] = 'completed'
+            self.service._prepare_native_reply(intake, 'I started the work', 'completed')
+            self.service._put('tasks', intake)
+        self.assertNotIn('_native_relay_result', intake)
         with self.service.transaction():
             owner.update(status='failed', _conversation_epoch=self.service._setting('conversation_epoch'))
             self.service._put('tasks', owner)
@@ -598,6 +607,19 @@ print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve t
         with self.assertRaises(ServiceError) as rejected:
             self.service.continue_native_work(other['id'], dict(task_id=identity, message='Continue'))
         self.assertEqual(rejected.exception.status, 403)
+        with self.service.transaction():
+            owner = self.service._get('tasks', owner['id'])
+            owner.update(status='completed', summary='The requested result is ready')
+            self.service._prepare_return(owner, owner['summary'], 'completed')
+            self.service._put('tasks', owner)
+        callback = self.service._get('tasks', origin['task_id'])
+        self.assertEqual(callback['_native_reply_pending']['text'], 'The requested result is ready')
+        self.assertFalse(callback['_native_reply_pending']['failed'])
+        self.service._drain_returns()
+        returned = [d for d in self.service._all('deliveries')
+                    if d['source_task_id'] == owner['id'] and d['target_bot_id'] == self.bot['id']]
+        self.assertEqual(len(returned), 1)
+        self.assertEqual(returned[0]['text'], 'The requested result is ready')
 
     def test_native_intake_is_idempotent_and_followup_keeps_owner(self):
         origin = self.task('Fix two separate defects')
@@ -664,6 +686,30 @@ for title in ('First defect', 'Second defect'):
             self.service._sync_automatic_work()
             projected = self.service._work_projection([dict(item)])
         self.assertEqual(projected[0]['work_state'], 'queued')
+
+    def test_native_work_only_view_keeps_the_linked_pr_decision(self):
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        with self.service.transaction():
+            owner = self.service._get('tasks', task['id'])
+            owner['status'] = 'waiting'
+            self.service._put('tasks', owner)
+        self.service._migrate_native_work()
+        self.service.kanban.call({'op': 'snapshot'})
+        item = self.service._get('artifacts', item['id'])
+        reviewer = self.task('Review the existing PR')
+        with self.service.transaction():
+            pr = dict(item, id=str(uuid4()), kind='pr', work_outcome_id=item['id'],
+                url='https://github.com/example/repo/pull/1')
+            self.service._put('artifacts', pr)
+            decision = dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=reviewer['id'],
+                status='pending', merge_pr_url=pr['url'])
+            self.service._put('decisions', decision)
+        full = self.service._work_projection([dict(item), dict(pr)])[0]
+        partial = self.service._work_projection([dict(item)])[0]
+        self.assertEqual(partial['work_state'], 'needs_decision')
+        self.assertEqual(partial['work_decision_id'], decision['id'])
+        self.assertEqual(full['work_decision_id'], partial['work_decision_id'])
 
     def test_native_view_preserves_legacy_pause_and_canonical_pr_links(self):
         task, item = self.legacy_work()

@@ -123,7 +123,7 @@ class NativeOutcomes:
             if len(owners) != 1 or not self.kanban:
                 raise ServiceError(409, 'Choose one existing native outcome from kanban_show.')
             owner = owners[0]
-            if source['bot_id'] not in (owner['bot_id'], owner.get('source_bot_id'), owner.get('_requesting_bot_id')):
+            if source['bot_id'] not in (owner['bot_id'], owner.get('source_bot_id')):
                 raise ServiceError(403, 'Only the owner or its requesting bot can continue this work.')
             bot = self._get('bots', owner['bot_id'])
             if (self._task_paused(owner) or owner['session_id'] != bot['session_id']
@@ -305,12 +305,17 @@ class NativeOutcomes:
                     attachments = json.loads(receipt[0]).get('_attachment_ids', []) if receipt else []
                     task = dict(id=identity, thread_id=identity, parent_task_id=origin_id,
                         bot_id=origin['bot_id'], conversation_bot_id=origin['conversation_bot_id'],
-                        session_id=origin['session_id'], source_bot_id=None, source_task_id=None,
-                        _requesting_bot_id=origin.get('source_bot_id'),
+                        session_id=origin['session_id'], source_bot_id=origin.get('source_bot_id'),
+                        source_task_id=origin.get('source_task_id'),
                         exchange_id=self._new_exchange(), exchange_depth=origin.get('exchange_depth', 0),
                         title=native['title'], status='queued', summary='Queued', scheduled_at=None,
                         created_at=now(), updated_at=now(), _attachment_ids=attachments,
                         _execution_session_id=identity, _native_outcome_id=native['id'])
+                    callback = origin.get('_relay_callback_owner') or (origin_id if origin.get('_native_relay') else None)
+                    if callback:
+                        task['_relay_callback_owner'] = callback
+                    if origin.get('_reply_to_task_id'):
+                        task['_reply_to_task_id'] = origin['_reply_to_task_id']
                     artifact_id = str(uuid5(UUID(identity), 'work'))
                     task['_work_context_id'] = artifact_id
                     self._put('tasks', task)
@@ -368,9 +373,18 @@ class NativeOutcomes:
             decisions = [json.loads(row[0]) for row in self.db.execute(
                 "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending' "
                 "AND NOT coalesce(json_extract(data,'$._hidden'),0) AND NOT coalesce(json_extract(data,'$._deleted'),0)")]
+            reports = {}
+            for row in self.db.execute(
+                    "SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='pr' "
+                    "AND NOT coalesce(json_extract(data,'$._hidden'),0)"):
+                linked = json.loads(row[0])
+                root_id = self._work_outcome_artifact(linked)['id']
+                if root_id in groups:
+                    reports.setdefault(root_id, []).append(linked)
             positions = self._native_queue_positions(tasks, timestamp.timestamp())
             for root, peers in groups.values():
-                outcome = self._native_outcome_projection(root, tasks, [], decisions, timestamp, positions, peers)
+                outcome = self._native_outcome_projection(root, tasks, [], decisions, timestamp, positions,
+                    peers + reports.get(root['id'], []))
                 for item in peers:
                     item.update(outcome)
                     if item['kind'] == 'work':
