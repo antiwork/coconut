@@ -58,13 +58,29 @@ class WorkWorkspaceTests(unittest.TestCase):
         git(original['path'], 'branch', '-m', 'reviewed-change')
         self.assertEqual(preferred(self.saved, outcome), Path(original['path']))
         resumed = acquire(self.saved, outcome, str(self.repo))
-        self.assertEqual(resumed, dict(original, branch='reviewed-change'))
+        self.assertEqual({k: resumed[k] for k in original if k != '_head_log'},
+                         {k: v for k, v in dict(original, branch='reviewed-change').items() if k != '_head_log'})
         self.assertEqual(note.read_text(), 'Accepted unfinished changes')
         manifest = json.loads((self.saved / 'worktrees.json').read_text())
         self.assertEqual(list(manifest.values()), [resumed])
         with self.assertRaisesRegex(ValueError, 'Another outcome'):
             acquire(self.saved, str(uuid4()), str(self.repo), original['path'])
+        git(original['path'], 'branch', '-m', 'second-reviewed-name')
+        self.assertEqual(preferred(self.saved, outcome), Path(original['path']))
+        self.assertEqual(list(json.loads((self.saved / 'worktrees.json').read_text()).values())[0]['branch'], 'second-reviewed-name')
         git(original['path'], 'switch', '--detach')
+        with self.assertRaisesRegex(ValueError, 'changed branches'):
+            preferred(self.saved, outcome)
+
+    def test_an_old_branch_rename_does_not_authorize_a_later_switch(self):
+        path = self.root / 'existing'
+        git(self.repo, 'worktree', 'add', '-b', 'original', str(path))
+        git(path, 'branch', '-m', 'historical-name')
+        git(path, 'switch', '-c', 'original')
+        outcome = str(uuid4())
+        acquire(self.saved, outcome, str(self.repo), str(path))
+        git(path, 'switch', 'historical-name')
+        git(path, 'branch', '-D', 'original')
         with self.assertRaisesRegex(ValueError, 'changed branches'):
             preferred(self.saved, outcome)
 

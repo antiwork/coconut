@@ -15,6 +15,17 @@ def git(path, *arguments):
     return result.stdout.strip()
 
 
+def head_log(path):
+    try:
+        return Path(git(path, 'rev-parse', '--git-path', 'logs/HEAD')).read_bytes()
+    except FileNotFoundError:
+        return b''
+
+
+def remember_head(binding, log):
+    binding['_head_log'] = dict(size=len(log), digest=hashlib.sha256(log).hexdigest())
+
+
 def validate_binding(binding, *, allow_rename=False):
     path = Path(binding['path'])
     repository = Path(binding['repository']).resolve()
@@ -26,15 +37,31 @@ def validate_binding(binding, *, allow_rename=False):
         raise ValueError('The saved worktree belongs to another repository.')
     current = git(path, 'branch', '--show-current')
     if current != binding['branch']:
-        previous_ref = 'refs/heads/' + binding['branch']
-        current_ref = 'refs/heads/' + current
-        renamed = (allow_rename and current
-            and previous_ref not in git(path, 'for-each-ref', '--format=%(refname)', previous_ref).splitlines()
-            and f'Branch: renamed {previous_ref} to {current_ref}' in
-                git(path, 'reflog', 'show', '--format=%gs', '-n', '100', current_ref).splitlines())
+        log = head_log(path)
+        checkpoint = binding.get('_head_log', {})
+        size = checkpoint.get('size', 0)
+        continuous = (size > 0 and len(log) >= size
+            and hashlib.sha256(log[:size]).hexdigest() == checkpoint.get('digest'))
+        branch = binding['branch']
+        for line in log[size:].splitlines() if continuous else []:
+            message = line.partition(b'\t')[2].decode('utf-8', errors='replace')
+            if message.startswith('checkout:'):
+                continuous = False
+                break
+            if message.startswith('Branch: renamed '):
+                if not line.split(b' ', 2)[1].strip(b'0'):
+                    continue
+                prefix = 'Branch: renamed refs/heads/' + branch + ' to refs/heads/'
+                if not message.startswith(prefix):
+                    continuous = False
+                    break
+                branch = message[len(prefix):]
+        renamed = allow_rename and current and continuous and branch == current
         if not renamed:
             raise ValueError('The saved worktree changed branches. Inspect it before continuing.')
         binding['branch'] = current
+    if allow_rename:
+        remember_head(binding, head_log(path))
     return path
 
 
@@ -73,9 +100,9 @@ def acquire(root, outcome, repository, existing_worktree=None):
         saved = json.loads(manifest.read_text()) if manifest.exists() else {}
         binding = saved.get(identity)
         if binding:
-            previous = binding['branch']
+            previous = dict(binding)
             validate_binding(binding, allow_rename=True)
-            if binding['branch'] != previous:
+            if binding != previous:
                 save_bindings(manifest, saved)
             return binding
         branch = 'wt/' + identity
@@ -99,6 +126,7 @@ def acquire(root, outcome, repository, existing_worktree=None):
         if any(Path(item['path']).resolve() == path for item in saved.values()):
             raise ValueError('Another outcome owns this worktree. Use its existing work item to continue it.')
         binding = dict(path=str(path), branch=branch, repository=str(repository), outcome=outcome)
+        remember_head(binding, head_log(path))
         saved[identity] = binding
         save_bindings(manifest, saved)
         return binding
@@ -118,11 +146,16 @@ def preferred(root, outcome, *, verify=True):
     root = Path(root)
     manifest = root / 'worktrees.json'
     if manifest.exists():
-        bindings = [v for v in json.loads(manifest.read_text()).values() if v['outcome'] == outcome]
-        if verify:
-            for binding in bindings:
-                validate_binding(binding, allow_rename=True)
-        if len(bindings) == 1:
-            if Path(bindings[0]['path']).is_dir():
+        with (root / '.workspace.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX if verify else fcntl.LOCK_SH)
+            saved = json.loads(manifest.read_text())
+            bindings = [v for v in saved.values() if v['outcome'] == outcome]
+            before = json.dumps(saved, sort_keys=True)
+            if verify:
+                for binding in bindings:
+                    validate_binding(binding, allow_rename=True)
+                if json.dumps(saved, sort_keys=True) != before:
+                    save_bindings(manifest, saved)
+            if len(bindings) == 1 and Path(bindings[0]['path']).is_dir():
                 return Path(bindings[0]['path'])
     return root / outcome
