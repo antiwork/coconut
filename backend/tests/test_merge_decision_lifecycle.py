@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import uuid4
 
 from coconut.providers import FixtureProvider
@@ -18,7 +20,8 @@ class MergeDecisionLifecycleTests(unittest.TestCase):
         self.bot = self.write('/v1/bots', {'name': 'Desk', 'role': ''})
         self.task = self.write(f"/v1/bots/{self.bot['id']}/messages", {'text': 'Review this PR'})
         self.observation = self.observed('open')
-        self.service.pr_tracker = type('Tracker', (), {'observe': lambda _, url: self.observation})()
+        self.service.pr_tracker = type('Tracker', (), {'observe': lambda _, url: self.observation,
+            'observe_discussion': lambda _, url: None})()
         with self.service.transaction():
             task = self.service._get('tasks', self.task['id'])
             task['status'] = 'working'
@@ -190,10 +193,12 @@ class MergeDecisionLifecycleTests(unittest.TestCase):
                             options=[dict(id='merge', label='Merge', explanation='Merge it.')]))
         with self.service.transaction():
             task = self.service._get('tasks', self.task['id'])
-            task['status'] = 'completed'
+            task.update(status='completed', _native_outcome_id='t_finished')
             self.service._put('tasks', task)
         self.observation = self.observed('merged')
-        self.service.refresh_pull_requests()
+        native = SimpleNamespace(tasks={task['id']: {'id': 't_finished', 'status': 'done'}})
+        with patch.object(self.service, 'kanban', native):
+            self.service.refresh_pull_requests()
         self.assertEqual(self.service._all('decisions')[0]['status'], 'resolved')
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'completed')
 

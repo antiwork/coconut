@@ -536,7 +536,9 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         self.assertEqual(self.provider.started, [])
         native_task = self.service.kanban.tasks[task['id']]
         self.assertEqual(native_task['consecutive_failures'], 0)
-        self.assertEqual(native_task['status'], 'scheduled')
+        self.assertEqual(native_task['status'], 'ready')
+        self.assertIsNone(native_task['worker_pid'])
+        self.assertIsNone(native_task['current_run_id'])
 
     def native_run_count(self):
         return int(self.program('print(board.conn.execute("SELECT count(*) FROM task_runs WHERE task_id=?", (sys.argv[2],)).fetchone()[0])', self.native_id))
