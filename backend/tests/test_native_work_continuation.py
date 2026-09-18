@@ -181,6 +181,33 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(self.service._get('artifacts', 'retained-pr')['_native_outcome_id'], 't_existing')
         self.assertEqual(len(self.service._all('artifacts')), 1)
 
+    def test_claim_promotion_cannot_take_a_pr_from_another_execution(self):
+        owner, source = self.scheduled_native()
+        from uuid import uuid4
+        other = dict(owner, id=str(uuid4()), _execution_session_id=str(uuid4()), status='working')
+        self.service._put('tasks', other)
+        item = dict(id='retained-pr', task_id=owner['id'], bot_id=owner['bot_id'],
+                    kind='pr', title='The original PR', status='open',
+                    url='https://github.com/example/project/pull/1', pr_state='open')
+        for field in ('_review_task_id', '_activity_task_id'):
+            self.service._put('artifacts', dict(item, **{field: other['id']}))
+            with self.subTest(field=field), self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(source)
+            self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_claim_promotion_preserves_cancellation_of_its_retained_pr(self):
+        owner, source = self.scheduled_native()
+        item = dict(id='retained-pr', task_id=owner['id'], bot_id=owner['bot_id'],
+                    kind='pr', title='The original PR', status='open',
+                    url='https://github.com/example/project/pull/1', pr_state='open')
+        self.service._put('artifacts', item)
+        self.service.db.execute('INSERT INTO settings VALUES (?,?)',
+                                ('work.cancelled.' + item['url'], '"2026-09-18T00:00:00Z"'))
+        with self.assertRaisesRegex(ServiceError, 'cancelled'):
+            self.resume(source)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.service._get('artifacts', item['id']), item)
+
     def test_promoted_claim_resolves_and_deduplicates_retained_aliases(self):
         owner, source = self.scheduled_native()
         root = dict(id='retained-work', task_id=owner['id'], bot_id=owner['bot_id'],
