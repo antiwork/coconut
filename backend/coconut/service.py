@@ -180,6 +180,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.bot_locks: dict[str, threading.Lock] = {}
         self.context_threads: dict[str, threading.Thread] = {}
         self.dispatcher: threading.Thread | None = None
+        self.chat_dispatcher: threading.Thread | None = None
+        self._kanban_dispatching = False
         self.pr_poller: threading.Thread | None = None
         self.process_poller: threading.Thread | None = None
         self.source_poller: threading.Thread | None = None
@@ -2337,6 +2339,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             return
         self.dispatcher = threading.Thread(target=self._dispatch, name='coconut-dispatch', daemon=True)
         self.dispatcher.start()
+        if self.kanban is not None:
+            self.chat_dispatcher = threading.Thread(target=self._dispatch_conversations, name='coconut-chat-dispatch', daemon=True)
+            self.chat_dispatcher.start()
         self.pr_poller = threading.Thread(target=self._poll_pull_requests, name='coconut-pr-poll', daemon=True)
         self.pr_poller.start()
         self.process_poller = threading.Thread(target=self._poll_processes, name='coconut-process-poll', daemon=True)
@@ -2498,11 +2503,41 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 logging.getLogger(__name__).exception('Queue dispatch failed; queued work will retry.')
                 self.stopping.wait(1)
 
+    def _dispatch_foreground(self):
+        # Caller holds the service lock. Native admission reserves background slots.
+        if self.restart_pending or self.stopping.is_set() or getattr(self, '_workspace_recovery_hold', False):
+            return
+        self.running = {k: v for k, v in self.running.items() if v.is_alive()}
+        self.context_threads = {k: v for k, v in self.context_threads.items() if v.is_alive()}
+        self._dispatch_status_request()
+        self._dispatch_chat(capacity_state(self._setting('work_capacity'))['effective_limit'])
+
+    def _dispatch_conversations(self):
+        while not self.stopping.is_set():
+            try:
+                with self.changed:
+                    self._dispatch_foreground()
+                    # Transactions wake this condition. The timeout admits scheduled messages.
+                    self.changed.wait(1)
+            except Exception:
+                logging.getLogger(__name__).exception('Conversation dispatch failed; saved messages will retry.')
+                self.stopping.wait(1)
+
     def _dispatch_pending(self):
         with self.dispatch_gate:
             if getattr(self, '_workspace_recovery_hold', False):
                 return
-            return self._dispatch_pending_locked()
+            if self.kanban is None:
+                return self._dispatch_pending_locked()
+            with self.lock:
+                self._dispatch_foreground()
+                self._kanban_dispatching = True
+            result = self._dispatch_pending_locked()
+            # Retain the reservation after an uncertain native response until reconciliation succeeds.
+            with self.lock:
+                self._kanban_dispatching = False
+                self.changed.notify_all()
+            return result
 
     def _dispatch_pending_locked(self):
         if self.kanban is not None:
@@ -3406,6 +3441,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             self.changed.notify_all()
         if self.dispatcher:
             self.dispatcher.join(timeout=2)
+        if self.chat_dispatcher:
+            self.chat_dispatcher.join(timeout=2)
         if self.pr_poller:
             self.pr_poller.join(timeout=2)
         if self.process_poller:
