@@ -262,10 +262,11 @@ class PullRequestReviews:
                     or (d.get('decided_at') or d['created_at']) >= recorded_check)))
             for d in self._all('decisions') if d.get('merge_pr_url'))
 
-    def _queue_pr_reviews(self):
+    def _queue_pr_reviews(self, *, artifact_ids=None):
         from .service import now, uid
         with self.lock:
-            bot_ids = {a['bot_id'] for a in self._all('artifacts') if a['kind'] == 'pr' and a.get('_review_task_id')}
+            bot_ids = {a['bot_id'] for a in self._all('artifacts') if a['kind'] == 'pr' and a.get('_review_task_id')
+                       and (artifact_ids is None or a['id'] in artifact_ids)}
         for bot_id in bot_ids:
             with self.lock:
                 bot_lock = self.bot_locks.setdefault(bot_id, threading.Lock())
@@ -278,6 +279,7 @@ class PullRequestReviews:
                     bot = self._get('bots', bot_id)
                     for artifact in self._all('artifacts'):
                         if (artifact['bot_id'] != bot_id or artifact['kind'] != 'pr'
+                                or (artifact_ids is not None and artifact['id'] not in artifact_ids)
                                 or not artifact.get('_review_task_id') or artifact.get('refresh_error')
                                 or (artifact.get('pr_state') != 'open' and not artifact.get('_terminal_review_pending'))
                                 or not (artifact.get('_terminal_review_pending') or artifact.get('checks_state') in ('passed', 'failed')

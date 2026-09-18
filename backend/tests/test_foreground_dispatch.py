@@ -4,14 +4,14 @@ import time
 import unittest
 from unittest.mock import patch
 
-from test_native_kanban import NativeKanbanTests as NativeFixture, SOURCE, PYTHON
+import test_native_kanban as native
 
 
-@unittest.skipUnless(SOURCE and PYTHON, "Set Coconut Hermes paths for native integration checks.")
+@unittest.skipUnless(native.SOURCE and native.PYTHON, "Set Coconut Hermes paths for native integration checks.")
 class ForegroundDispatchTests(unittest.TestCase):
-    setUp = NativeFixture.setUp
-    write = NativeFixture.write
-    task = NativeFixture.task
+    setUp = native.NativeKanbanTests.setUp
+    write = native.NativeKanbanTests.write
+    task = native.NativeKanbanTests.task
 
     def test_direct_reply_starts_while_maintenance_waits(self):
         self.provider.supports_native_outcomes = True
