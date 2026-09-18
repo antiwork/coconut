@@ -39,7 +39,7 @@ def native_bindings(items, bindings, tasks, native_tasks, decisions, source, *, 
     saved = {}
     for item in [*origins.values(),
                  *(dict(id=identity, updated_at=value.get('updated_at')) for identity, value in bindings.items())]:
-        if item.get('id') and item.get('updated_at', '') > saved.get(item['id'], {}).get('updated_at', ''):
+        if item.get('id') and (item.get('updated_at') or '') > saved.get(item['id'], {}).get('updated_at', ''):
             saved[item['id']] = item
     retained = [item for identity, item in saved.items() if identity and identity not in current_ids]
     for item in [*items, *retained]:
@@ -187,7 +187,7 @@ class WorkSources:
                 bindings = dict(state.get('native_links', {}))
                 imported = json.loads(bindings_path.read_text()) if bindings_path.exists() else {}
                 for identity, binding in imported.items():
-                    if identity not in bindings or binding.get('updated_at', '') > bindings[identity].get('updated_at', ''):
+                    if identity not in bindings or (binding.get('updated_at') or '') > (bindings[identity].get('updated_at') or ''):
                         bindings[identity] = binding
                 with self.transaction():
                     if self.stopping.is_set() or self.restart_pending:

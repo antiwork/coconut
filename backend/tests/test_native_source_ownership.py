@@ -167,3 +167,19 @@ print(board.kb.create_task(board.conn, title='Finish the accepted issue', body='
         (self.root / 'coverage.json').write_text(json.dumps({self.item['id']: dict(
             updated_at=self.item['updated_at'], decision_ids=['answered-card'])}))
         self.assertEqual(self.audit()['missing'], [self.item['id']])
+
+    def test_legacy_null_revisions_do_not_stop_native_source_checks(self):
+        origin = self.source()
+        identity = self.outcome(origin)
+        self.audit()
+        task = self.service._get('tasks', origin)
+        task['_source_assignment']['updated_at'] = None
+        self.service._put('tasks', task)
+        (self.root / 'coverage.json').write_text(json.dumps({
+            self.item['id']: dict(updated_at=None, task_ids=[identity]),
+            'https://github.com/example/repo/issues/old': dict(updated_at=None, task_ids=[]),
+        }))
+        state = self.audit()
+        self.assertEqual(state['missing'], [])
+        self.assertEqual(state['native_links'][self.item['id']]['updated_at'], self.item['updated_at'])
+        self.assertIsNone(state['error'])
