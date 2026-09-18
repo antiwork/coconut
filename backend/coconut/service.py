@@ -156,6 +156,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             WHERE json_extract(data, '$.state')='executing';
         CREATE INDEX IF NOT EXISTS native_receipts_task ON native_receipts (json_extract(data, '$.task_id'));
         CREATE INDEX IF NOT EXISTS messages_task ON messages (json_extract(data, '$.task_id'));
+        CREATE INDEX IF NOT EXISTS messages_chat ON messages (json_extract(data, '$.bot_id'));
         CREATE INDEX IF NOT EXISTS tasks_assignment ON tasks (json_extract(data, '$._assignment_task_id'));
         CREATE INDEX IF NOT EXISTS tasks_blocked ON tasks (id)
             WHERE json_extract(data, '$.status') IN ('needs_you', 'paused');
@@ -372,6 +373,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             message.update(self._message_interaction)
             if message.get('reaction_event'):
                 message['_human_source_kind'] = 'reaction'
+        if human_authored and role == 'user' and kind == 'text':
+            message['_visible_reply_context'] = self._last_visible_reply(display_bot_id)
         if is_silent_message(message):
             message['_hidden'] = True
             self._put('messages', message)
@@ -385,6 +388,33 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self._put('bots', bot)
         self._event('message.created', self._public(message), display_bot_id, task_id)
         return message
+
+    def _last_visible_reply(self, bot_id):
+        # Match the text rules in TranscriptPresentation before freezing chat context.
+        completion = {'ready to review', 'done', 'complete', 'completed', 'task complete',
+                      'task completed', 'work complete', 'work completed'}
+        def label(message):
+            return message.get('text', '').strip().strip('.!…').lower()
+        rows = self.db.execute("SELECT data FROM messages WHERE json_extract(data,'$.bot_id')=? "
+            "AND json_extract(data,'$.role')='assistant' AND json_extract(data,'$.kind')='text' "
+            "AND COALESCE(json_extract(data,'$._hidden'),0)=0 AND COALESCE(json_extract(data,'$._deleted'),0)=0 "
+            "AND COALESCE(json_extract(data,'$.streaming'),0)=0 "
+            "AND COALESCE(json_array_length(data,'$.exchange_recipient_bot_ids'),0)=0 ORDER BY rowid DESC", (bot_id,))
+        for raw in rows:
+            reply = json.loads(raw[0])
+            if not reply['text'].strip() or reply.get('reaction_event') or is_silent_message(reply):
+                continue
+            if (label(reply) in completion and reply.get('task_id') and not reply.get('decision_id')
+                    and not reply.get('recipient_bot_ids')):
+                author = reply.get('sender_bot_id') or reply['bot_id']
+                if any(m['id'] != reply['id'] and m['bot_id'] == bot_id and m['role'] == 'assistant'
+                       and (m.get('sender_bot_id') or m['bot_id']) == author
+                       and m['kind'] in ('text', 'artifact', 'decision') and m['text'] and label(m) not in completion
+                       and not m.get('_hidden') and not m.get('_deleted')
+                       for m in self._task_messages(reply['task_id'])):
+                    continue
+            return self._reply_reference(reply)
+        return None
 
     def _sync_profile(self, bot: dict):
         if self.db.in_transaction:
@@ -2699,6 +2729,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     if task['status'] != 'working' or self.stopping.is_set():
                         return
                     history = self._history(bot['id'])
+                    visible_replies = ({identity: self._get('messages', identity).get('_visible_reply_context')
+                                        for identity in task.get('_turn_message_ids', [])}
+                                       if task.get('_chat_session') else {})
                 timing.mark('history')
                 provider_task = self._public(task) | {'_native_turn_id': task['_native_turn_id'], '_execution_session_id': task.get('_execution_session_id'),
                                                        '_kanban_external_id': task.get('_kanban_claim', {}).get('external_id'),
@@ -2711,6 +2744,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 reaction_feedback = task.get('_reaction_feedback', [])
                 provider_task['_reaction_feedback'] = reaction_feedback
                 provider_task['_turn_message_ids'] = task['_turn_message_ids']
+                provider_task['_visible_reply_contexts'] = visible_replies
                 provider_task['_conversation_epoch'] = task['_conversation_epoch']
                 if task.get('_background_completion'):
                     provider_task['_background_completion'] = task['_background_completion']
