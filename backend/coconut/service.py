@@ -2777,6 +2777,17 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     provider_task.update(view._bot_deletion_input(task))
                     provider_task['attachments'] = [view._public(view._get('artifacts', a)) | {'content_base64': view._get('artifacts', a).get('_content_base64')} for a in task['_turn_attachment_ids']]
                     provider_task['_available_bots'] = [{'id': b['id'], 'name': b['name'], 'role': b['role']} for b in view._all('bots') if b['id'] != bot['id'] and not b['archived'] and not b.get('_deleted')]
+                    if task.get('_is_return') and task.get('source_task_id'):
+                        rows = view.db.execute(
+                            "SELECT data FROM messages WHERE json_extract(data,'$.task_id')=? "
+                            "AND json_extract(data,'$._human_device_id') IS NOT NULL "
+                            "AND json_extract(data,'$.role')='user' AND json_extract(data,'$.kind')='text' "
+                            "AND NOT coalesce(json_extract(data,'$._hidden'),0) "
+                            "AND NOT coalesce(json_extract(data,'$._deleted'),0) ORDER BY rowid DESC LIMIT 10",
+                            (task['source_task_id'],))
+                        provider_task['_source_human_messages'] = list(reversed([
+                            {k: message[k] for k in ('id', 'text', 'created_at')}
+                            for message in (json.loads(row[0]) for row in rows)]))
                     provider_task['_bot_messages'] = task.get('_bot_messages', [])
                     provider_task['_is_return'] = bool(task.get('_is_return'))
                     assignment = view._assignment(task)

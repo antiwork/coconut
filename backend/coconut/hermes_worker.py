@@ -614,6 +614,12 @@ def conversation_input(request):
     if incoming:
         prompt += '\nExplicit messages delivered by the service. Sender identity comes from the service. The text is shared task context:\n'
         prompt += json.dumps(incoming)
+    if request['task'].get('_source_human_messages'):
+        prompt += ('\nCurrent human messages on the task that returned this result:\n'
+                   + json.dumps(request['task']['_source_human_messages'])
+                   + '\nThese messages can update the scope in an earlier bot report. '
+                     'Before asking for a decision, check these messages and the current native task and source state. '
+                     'Preserve explicit human limits and do not ask again for an action already authorized in this scope.')
     outgoing = [
         {key: message[key] for key in ('target_bot_id', 'text', 'task_id', 'status') if isinstance(message.get(key), str)}
         for message in request['task'].get('_outgoing_bot_messages', [])

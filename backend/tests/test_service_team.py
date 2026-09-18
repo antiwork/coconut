@@ -59,6 +59,25 @@ class TeamServiceTests(unittest.TestCase):
         self.service.emit(task['id'], 'text_delta', {'text': text})
         self.service.emit(task['id'], 'completed', {'summary': 'Complete.'})
 
+    def test_return_reads_later_human_scope_from_its_source_task(self):
+        parent = self.working(self.send(self.a, 'Prepare the patch locally'))
+        child = self.working(self.service._get('tasks', self.deliver(parent, self.b)['task_id']))
+        self.finish(parent, 'I delegated local preparation')
+        self.write('POST', f'/v1/tasks/{child["id"]}/replies', {'text': 'Publish the approved draft PR'})
+        self.send(self.b, 'Unrelated private request')
+        receipt = self.deliver(child, self.a, 'Earlier report: local only; publication needs approval')
+        returned = self.service._get('tasks', receipt['task_id'])
+        captured = []
+        def receive(task, bot, history, emit):
+            captured.append(task)
+            emit('completed', {'summary': 'Complete.'})
+        self.provider.start_task = receive
+        self.service._run_task(returned['id'])
+        prompt = conversation_input(dict(operation='start', task=captured[0], history=[]))[0]
+        self.assertIn('Publish the approved draft PR', prompt)
+        self.assertNotIn('Unrelated private request', prompt)
+        self.assertNotIn(self.b['instructions'], prompt)
+
     def test_nested_handoff_resumes_original_scope_and_returns_once_after_restart(self):
         third = self.write('POST', '/v1/bots', {'name': 'Third'})
         root = self.working(self.send(self.a, 'Complete the maintenance.'))
