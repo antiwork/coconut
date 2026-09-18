@@ -78,6 +78,21 @@ def coverage(item, binding, tasks, decisions, receipts, current, seen=None, *, i
     return False
 
 
+def audit_signature(proof, decisions):
+    """Fingerprint source evidence without hashing an audit's own bookkeeping."""
+    item = proof['item']
+    if item.get('_removed_from_source'):
+        binding = proof['binding']
+        value = dict(id=item['id'], updated_at=item.get('updated_at'), pending_decisions=sorted({
+            (identity, decisions.get(identity, {}).get('revision'))
+            for identity in binding.get('decision_ids', [])
+            if decisions.get(identity, {}).get('status') == 'pending'
+        }))
+    else:
+        value = proof
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
 class WorkSources:
     def _poll_work_sources(self):
         while not self.stopping.is_set():
@@ -136,7 +151,17 @@ class WorkSources:
                         if owner:
                             chain = self._work_chain(owner, tasks, list(receipts.values()), include_continuations=True)
                             binding['task_ids'] = list(dict.fromkeys(binding.get('task_ids', []) + list(chain)))
-                    gaps = [item for item in items if not coverage(item, bindings.get(item['id'], {}), tasks, decisions, receipts, current)]
+                    open_ids = {item['id'] for item in items}
+                    removed = [dict(id=identity, updated_at=binding.get('updated_at', ''),
+                                    title='Reconcile source no longer in the open assignment list',
+                                    _removed_from_source=True)
+                               for identity, binding in bindings.items()
+                               if identity not in open_ids and binding.get('updated_at')
+                               and any(decisions.get(key, {}).get('status') == 'pending'
+                                       for key in binding.get('decision_ids', []))]
+                    gaps = ([item for item in items
+                             if not coverage(item, bindings.get(item['id'], {}), tasks, decisions, receipts, current)]
+                            + removed)
                     evidence = [dict(item=item, binding=bindings.get(item['id'], {}),
                                      tasks={key: tasks.get(key, {}).get('status') for key in bindings.get(item['id'], {}).get('task_ids', [])},
                                      decisions={key: decisions.get(key, {}).get('status') for key in bindings.get(item['id'], {}).get('decision_ids', [])})
@@ -146,23 +171,37 @@ class WorkSources:
                     eligible, signatures = [], {}
                     for proof in evidence:
                         identity = proof['item']['id']
-                        signature = hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest()
+                        signature = audit_signature(proof, decisions)
                         previous = recoveries.get(identity, {})
                         previous_status = tasks.get(previous.get('task_id'), {}).get('status')
                         owners = audit_owners.get((identity, proof['item']['updated_at']), []) + [previous.get('task_id')]
                         live = coverage(proof['item'], dict(updated_at=proof['item']['updated_at'], task_ids=owners),
                                         tasks, decisions, receipts, current, include_task_decisions=True)
+                        source_removed = proof['item'].get('_removed_from_source') is True
                         retry = (previous_status in ('failed', 'completed', 'waiting') and not live
+                                 and not (source_removed and previous_status == 'completed')
                                  and (previous.get('attempts', 1) < 2 and previous_status != 'waiting'
                                       or time.time() >= previous.get('retry_at', 0)))
                         if ((signature != previous.get('signature') or retry)
                                 and previous_status not in ('queued', 'working', 'needs_you') and not live):
                             eligible.append(proof['item'])
                             signatures[identity] = signature
+                        elif (source_removed and not previous.get('task_id')
+                                and signature != previous.get('signature')):
+                            # The old owner may be held by the pending card itself.
+                            # Source removal needs one independent exact-source read,
+                            # but an existing recovery remains the deduplicating owner.
+                            eligible.append(proof['item'])
+                            signatures[identity] = signature
                     # Deduplicate each assignment independently. A waiting recovery must
                     # not prevent the next assignment from receiving attention.
                     for item in eligible:
+                        removed_instruction = ('This source left the open assignment list. Fetch the exact source URL in its id and read its current state and latest comments. '
+                            'Do not withdraw a card merely because the source closed. Withdraw only when evidence proves its exact proposed action completed or became obsolete; '
+                            'revise it when deployment, reconnection, validation, or another follow-up choice remains. Preserve every human rejection. '
+                            if item.get('_removed_from_source') else '')
                         text = ('Reconcile these open assignments against the original sources and existing work. '
+                                + removed_instruction +
                                 'Read prior decisions before asking anything. An answered or dismissed decision is not permission to ask it again. '
                                 'Update existing Work rows with the verified current activity before returning or recording a deferral. '
                                 'Reuse their keys; do not create a row for this audit or each delegated step. '

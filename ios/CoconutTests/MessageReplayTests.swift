@@ -108,6 +108,62 @@ final class MessageReplayTests: XCTestCase {
         XCTAssertFalse(store.isBotActive(bot))
     }
 
+    @MainActor
+    func testConversationThinkingTracksRealResponseStatesAndStreaming() throws {
+        let store = AppStore(demo: false)
+        let fixture = try PreviewStateFixture.load()
+        let bot = fixture.bots[1]
+        var task = fixture.tasks.first { $0.botId == bot.id }!
+        store.connection = .connected
+        store.tasks = [task]
+        for status in ["idle", "queued", "waiting", "scheduled", "failed", "completed"] {
+            store.tasks[0].status = status
+            XCTAssertFalse(store.isConversationResponding(bot.id), status)
+        }
+        for status in ["working", "running"] {
+            store.tasks[0].status = status
+            XCTAssertTrue(store.isConversationResponding(bot.id), status)
+        }
+        task.status = "waiting"
+        store.tasks = [task]
+        var stream = fixture.messages.first { $0.botId == bot.id && $0.role == "assistant" }!
+        stream.streaming = true
+        store.messages = [stream]
+        XCTAssertTrue(store.isConversationResponding(bot.id), "A real partial response still needs feedback.")
+        stream.streaming = false
+        store.messages = [stream]
+        XCTAssertFalse(store.isConversationResponding(bot.id))
+        store.connection = .disconnected
+        store.tasks[0].status = "working"
+        store.messages[0].streaming = true
+        XCTAssertFalse(store.isConversationResponding(bot.id))
+    }
+
+    @MainActor
+    func testPendingOutgoingResponseRemainsVisibleWhileConnectionIsUnconfirmed() throws {
+        let store = AppStore(demo: false)
+        let fixture = try PreviewStateFixture.load()
+        let sourceBot = fixture.bots[0]
+        let executorBot = fixture.bots[1]
+        let request = MessageRequest(text: "Please investigate", mode: "ask", taskId: nil, scheduledAt: nil,
+                                     attachmentIds: [], recipientBotIds: [executorBot.id])
+        store.outgoingMessages = [OutgoingMessage(id: "pending-request", botId: sourceBot.id,
+                                                  executorIds: [executorBot.id], request: request,
+                                                  createdAt: "2026-09-18T12:00:00Z", status: .sending)]
+
+        for connection in [ConnectionState.disconnected, .connecting] {
+            store.connection = connection
+            for status in [OutgoingMessage.Status.sending, .accepted] {
+                store.outgoingMessages[0].status = status
+                XCTAssertTrue(store.isConversationResponding(sourceBot.id), "\(status) while \(connection)")
+                XCTAssertFalse(store.isConversationResponding(executorBot.id),
+                               "Conversation activity must stay scoped to the outgoing message's source bot.")
+            }
+            store.outgoingMessages[0].status = .failed
+            XCTAssertFalse(store.isConversationResponding(sourceBot.id), "Failed outgoing work must not show activity.")
+        }
+    }
+
     private func event(_ seq: Int, _ message: Message, type: String = "message.updated") throws -> [String: Any] {
         ["seq": seq, "type": type, "bot_id": message.botId, "task_id": message.taskId ?? "task",
          "created_at": message.createdAt, "data": try JSONSerialization.jsonObject(with: APIJSON.encode(message))]

@@ -17,6 +17,7 @@
 		09F74A644FB1733BEE399A18 /* BotCharacterFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14989796E26DE12C64A8913B /* BotCharacterFlowTests.swift */; };
 		0A1926FF4E2FCCEBE8039F81 /* WorkDismissalRaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48CDEE7D460D1A6410A027ED /* WorkDismissalRaceTests.swift */; };
 		0CE3FD694FA5FF40A3BE0B2B /* StateUpdates.swift in Sources */ = {isa = PBXBuildFile; fileRef = E047A026D090ABDE156F4AAF /* StateUpdates.swift */; };
+		0DF4044DD846286B9E4FF8CC /* ChatActivityFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1166F32D2FDC4583B87FAC32 /* ChatActivityFlowTests.swift */; };
 		0E115E85F7147FB4EAF1109E /* push-envelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = F448A74041D874CA655251FF /* push-envelope.swift */; };
 		0E708C1B47846F82A49FC450 /* DecisionReplyComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 980EB12D70F1EC36BEAD57F7 /* DecisionReplyComposer.swift */; };
 		10BDD85335378533A07BF6C4 /* ConversationCardPositionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 833C2F8609ED54B0567705E6 /* ConversationCardPositionTests.swift */; };
@@ -172,6 +173,7 @@
 		0B21355BCE096CB44BE61694 /* BotExpressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotExpressionTests.swift; sourceTree = "<group>"; };
 		0F7D0F8D88BFF0F00891F0D9 /* PreviewStateFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewStateFixture.swift; sourceTree = "<group>"; };
 		10DFD4C7D86BB227502C3FFF /* ModelSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSettingsView.swift; sourceTree = "<group>"; };
+		1166F32D2FDC4583B87FAC32 /* ChatActivityFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatActivityFlowTests.swift; sourceTree = "<group>"; };
 		13E2BAC2B32852FEC7770DD3 /* ModelSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSettingsTests.swift; sourceTree = "<group>"; };
 		14989796E26DE12C64A8913B /* BotCharacterFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotCharacterFlowTests.swift; sourceTree = "<group>"; };
 		1672CEE8BC93CE62BDF964D2 /* NotificationOpenPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationOpenPerformanceTests.swift; sourceTree = "<group>"; };
@@ -430,6 +432,7 @@
 				14989796E26DE12C64A8913B /* BotCharacterFlowTests.swift */,
 				AB2417619FA30AF5EAF2B0BC /* BotExchangeFlowTests.swift */,
 				400471E8AAF347FBC8EA7EBE /* BotMentionsFlowTests.swift */,
+				1166F32D2FDC4583B87FAC32 /* ChatActivityFlowTests.swift */,
 				9F8EE907E052D5714E1FCC28 /* ChatCardDismissTests.swift */,
 				EC935807ABDC42D846BEE0A8 /* ChatCardPositionTests.swift */,
 				C1C70B071B87F3D2EF67787B /* ConcurrentWorkSettingsTests.swift */,
@@ -732,6 +735,7 @@
 				09F74A644FB1733BEE399A18 /* BotCharacterFlowTests.swift in Sources */,
 				39B3A0FE631ECEBD97FB4E54 /* BotExchangeFlowTests.swift in Sources */,
 				1EB1F802466DF19388CE712C /* BotMentionsFlowTests.swift in Sources */,
+				0DF4044DD846286B9E4FF8CC /* ChatActivityFlowTests.swift in Sources */,
 				4E1E4CFAE936241C91CBA5E0 /* ChatCardDismissTests.swift in Sources */,
 				082B05C8228540913BA4D238 /* ChatCardPositionTests.swift in Sources */,
 				80F8046902B1C28B7714AF51 /* ConcurrentWorkSettingsTests.swift in Sources */,

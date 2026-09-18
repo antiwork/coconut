@@ -84,6 +84,12 @@ final class AppStore {
         return ["working", "running"].contains(bot.status)
             || tasks.contains { $0.botId == bot.id && ["working", "running"].contains($0.status) }
     }
+    func isConversationResponding(_ botId: String) -> Bool {
+        if outgoingMessages.contains(where: { $0.botId == botId && $0.expectsResponse }) { return true }
+        guard isDemo || connection == .connected else { return false }
+        return tasks.contains { $0.chatBotId == botId && ["working", "running"].contains($0.status) }
+            || messages.contains { $0.botId == botId && $0.role == "assistant" && $0.streaming }
+    }
     func conversationBotId(for decision: Decision) -> String {
         tasks.first { $0.id == decision.taskId }?.chatBotId ?? decision.botId
     }
