@@ -46,6 +46,10 @@ class DecisionFreshnessTests(unittest.TestCase):
         context['status'] = 'completed'
         self.service._put('contexts', context)
 
+    def test_no_pending_cards_or_refreshes_skip_historical_collections(self):
+        with patch.object(self.service, '_all', side_effect=AssertionError('No card needs observation')):
+            self.service._queue_decision_refreshes()
+
     def test_scoped_receipts_keep_journal_order_when_delivery_is_acknowledged(self):
         decision = self.question()
         records = [dict(id='earlier', task_id=self.task['id'], state='completed', action={'name': 'terminal'}, result='{}'),

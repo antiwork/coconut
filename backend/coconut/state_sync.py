@@ -154,14 +154,18 @@ class StateSync:
         from datetime import datetime
         server_time = now()
         native = native_events and self.kanban is not None and getattr(self.provider, 'supports_native_outcomes', False)
-        timed = not native or self._retained_work_needs_observation()
+        retained = self._retained_work_observations() if native else []
+        timed = not native or bool(retained)
         previous = self._read_one('SELECT created_at FROM events WHERE seq=?', (after,)) if timed else None
         refresh_activity = timed and (previous is None or
             int(datetime.fromisoformat(previous[0].replace('Z', '+00:00')).timestamp() // 15) !=
             int(datetime.fromisoformat(server_time.replace('Z', '+00:00')).timestamp() // 15))
         freshness = {'native_work_observed_at': self.kanban.observed_at} if native else {}
-        if not rows and collection_deltas and not refresh_activity:
-            return dict(after=after, cursor=cursor, server_time=server_time, collection_deltas=True, **freshness)
+        if not rows and collection_deltas and (native or not refresh_activity):
+            result = dict(after=after, cursor=cursor, server_time=server_time, collection_deltas=True, **freshness)
+            if refresh_activity:
+                result['artifacts'] = [self._public(a) for a in self._work_projection(retained)]
+            return result
         bots = [self._bot_view(b, None) for b in self._all('bots') if not b.get('_deleted')]
         visible = {b['id'] for b in bots}
         result = dict(after=after, cursor=cursor, server_time=server_time, bots=bots, **freshness)
@@ -246,12 +250,21 @@ class StateSync:
                     result['removed_decisions'] = sorted(removed_decisions)
         return result
 
-    def _retained_work_needs_observation(self):
+    def _retained_work_observations(self):
         import json
+        result = []
+        visible = {row[0] for row in self.db.execute(
+            "SELECT id FROM bots WHERE NOT coalesce(json_extract(data,'$._deleted'),0)")}
         for row in self.db.execute("SELECT data FROM artifacts WHERE json_extract(data,'$.kind') IN ('work','pr') "
                 "AND NOT coalesce(json_extract(data,'$._hidden'),0) AND NOT coalesce(json_extract(data,'$._deleted'),0)"):
-            item = self._work_outcome_artifact(json.loads(row[0]))
+            original = json.loads(row[0])
+            if original['bot_id'] not in visible:
+                continue
+            owner = self._get('tasks', original['task_id']) if original.get('task_id') else None
+            if owner and owner.get('conversation_bot_id', owner['bot_id']) not in visible:
+                continue
+            item = self._work_outcome_artifact(original)
             if item.get('_native_outcome_id') or self._retained_terminal_work(item):
                 continue
-            return True
-        return False
+            result.append(original)
+        return result

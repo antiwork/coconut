@@ -76,6 +76,10 @@ class WorkRecovery:
                 return
             self._retire_obsolete_recovery_questions()
             items = [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr') and not a.get('_hidden') and not a.get('_native_outcome_id')]
+            items = [a for a in items if not self._retained_terminal_work(self._work_outcome_artifact(a))
+                     and not self._work_outcome_artifact(a).get('_native_outcome_id')]
+            if not items:
+                return
             tasks = {t['id']: t for t in self._all('tasks')}
             items = [a for a in items if a['kind'] == 'pr' or (a.get('status') not in ('completed', 'cancelled')
                      and tasks.get(a.get('task_id'), {}).get('status') in ('completed', 'failed', 'waiting'))]

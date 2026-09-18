@@ -155,6 +155,25 @@ class StateSyncTests(unittest.TestCase):
                 self.service.db.execute('INSERT INTO settings VALUES (?,?)', ('work.cancelled.work:retained', 'true'))
             self.assertNotIn('artifacts', self.service.updates(cursor, collection_deltas=True, native_events=True))
 
+    def test_idle_native_update_projects_only_unfinished_retained_work(self):
+        from types import SimpleNamespace
+        self.service.provider.supports_native_outcomes = True
+        task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Retained work'})
+        retained = dict(id='retained', kind='work', task_id=task['id'], bot_id=self.bot['id'],
+            status='working', title='Retained work', created_at='2026-09-18T00:00:00Z')
+        self.service._put('artifacts', retained)
+        self.service._put('artifacts', dict(retained, id='native', _native_outcome_id='t_current'))
+        self.service._put('artifacts', dict(retained, id='cancelled', status='cancelled'))
+        self.service._put('artifacts', dict(retained, id='hidden', _hidden=True))
+        cursor = self.service._cursor()
+        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={}, observed_at='2099-01-01T00:00:00Z')), \
+             patch('coconut.service.now', return_value='2099-01-01T00:00:00Z'), \
+             patch.object(Service, '_all', side_effect=AssertionError('An idle native read must not decode history')), \
+             patch.object(Service, '_work_projection', side_effect=lambda items: items):
+            page = self.service.updates(cursor, collection_deltas=True, native_events=True)
+        self.assertEqual([a['id'] for a in page['artifacts']], ['retained'])
+        self.assertNotIn('bots', page)
+
     def test_native_work_event_refreshes_an_idle_delta(self):
         cursor = self.service._cursor()
         with self.service.transaction():

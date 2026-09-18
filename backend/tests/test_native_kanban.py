@@ -808,6 +808,44 @@ for title in ('First defect', 'Second defect'):
             projected = self.service._work_projection([dict(item)])
         self.assertEqual(projected[0]['work_state'], 'queued')
 
+    def test_native_alias_uses_its_original_outcome_without_history_reads(self):
+        task, item = self.legacy_work()
+        self.provider.supports_native_outcomes = True
+        owner = self.service._get('tasks', task['id'])
+        owner['status'] = 'waiting'
+        self.service._put('tasks', owner)
+        self.service._migrate_native_work()
+        self.service.kanban.call({'op': 'snapshot'})
+        item = self.service._get('artifacts', item['id'])
+        other = self.write('/v1/bots', {'name': 'Coordinator', 'role': ''})
+        alias = dict(item, id=str(uuid4()), bot_id=other['id'], _same_outcome_as=item['id'])
+        alias.pop('_native_outcome_id')
+        self.service._put('artifacts', alias)
+        with patch.object(self.service, '_all', side_effect=AssertionError('Do not infer the alias from history')):
+            original, projected = self.service._work_projection([dict(item), dict(alias)])
+        self.assertEqual(projected['native_task_id'], original['native_task_id'])
+        self.assertEqual(projected['work_state'], original['work_state'])
+        self.assertEqual(self.service._work_identity(alias), self.service._work_identity(item))
+
+    def test_scheduler_reads_active_rows_and_known_terminal_transitions(self):
+        queued = self.task('Continue accepted work')
+        finished = self.task('Completed input')
+        unrelated = self.task('Old completed input')
+        for value in (finished, unrelated):
+            owner = self.service._get('tasks', value['id'])
+            owner['status'] = 'completed'
+            self.service._put('tasks', owner)
+        self.service.kanban.tasks = {finished['id']: dict(status='running')}
+        original = self.service._all
+        def bounded(table):
+            if table in ('tasks', 'contexts'):
+                raise AssertionError('Do not decode complete task history')
+            return original(table)
+        with patch.object(self.service, '_all', side_effect=bounded):
+            rows = self.service._kanban_rows()
+        self.assertEqual({r['id'] for r in rows}, {queued['id'], finished['id']})
+        self.assertEqual(next(r['state'] for r in rows if r['id'] == finished['id']), 'done')
+
     def test_completed_history_import_removes_repeated_chain_reads(self):
         task, item = self.legacy_work('Verified export')
         self.provider.supports_native_outcomes = True

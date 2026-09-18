@@ -301,6 +301,11 @@ class DecisionFreshness:
         with self.transaction():
             if self.stopping.is_set() or self.restart_pending:
                 return
+            pending = self.db.execute("SELECT 1 FROM decisions WHERE json_extract(data,'$.status')='pending' LIMIT 1").fetchone()
+            refresh = self.db.execute("SELECT 1 FROM contexts WHERE json_extract(data,'$._decision_refresh') "
+                "AND json_extract(data,'$.status') IN ('queued','working') LIMIT 1").fetchone()
+            if not pending and not refresh:
+                return
             tasks = {t['id']: t for t in self._all('tasks')}
             decisions, contexts = self._all('decisions'), self._all('contexts')
             self._cancel_stale_decision_refreshes()

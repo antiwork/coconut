@@ -118,15 +118,20 @@ class NativeKanban(NativeOutcomes):
 
     def _kanban_rows(self):
         from .work_capacity import execution_key
-        tasks = self._all('tasks')
         known = self.kanban.tasks
+        retained = json.dumps([i for i, task in known.items() if task.get('status') not in ('done', 'archived')])
+        tasks = [json.loads(row[0]) for row in self.db.execute(
+            "SELECT data FROM tasks WHERE json_extract(data,'$.status') IN (SELECT value FROM json_each(?)) "
+            "OR id IN (SELECT value FROM json_each(?)) ORDER BY rowid", (json.dumps(sorted(self.ACTIVE)), retained))]
         active_keys = {execution_key(self._get('tasks', identity)) for identity in self.running}
         active_keys.update(execution_key(self._get('tasks', self._get('contexts', identity)['task_id']))
                            for identity in self.context_threads)
         selected = set(active_keys)
         refresh_active = any(self._get('contexts', i).get('_decision_refresh') for i in self.context_threads)
         rows = []
-        for context in self._all('contexts'):
+        for context in (json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working') "
+                "OR id IN (SELECT value FROM json_each(?)) ORDER BY rowid", (retained,))):
             if context['status'] not in ('queued', 'working') and known.get(context['id'], {}).get('status', 'done') in ('done', 'archived'):
                 continue
             task = self._get('tasks', context['task_id'])
@@ -271,7 +276,9 @@ class NativeKanban(NativeOutcomes):
         finishes = []
         with self.changed:
             for table, workers in (('tasks', self.running), ('contexts', self.context_threads)):
-                records = {item['id']: item for item in self._all(table)}
+                records = {item['id']: item for item in (json.loads(row[0]) for row in self.db.execute(
+                    'SELECT data FROM ' + table + ' WHERE id IN (SELECT value FROM json_each(?))',
+                    (json.dumps(list(self.kanban.tasks)),)))}
                 for identity, native in self.kanban.tasks.items():
                     if identity in workers and workers[identity].is_alive():
                         continue

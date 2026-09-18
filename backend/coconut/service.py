@@ -157,6 +157,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         CREATE INDEX IF NOT EXISTS native_receipts_task ON native_receipts (json_extract(data, '$.task_id'));
         CREATE INDEX IF NOT EXISTS messages_task ON messages (json_extract(data, '$.task_id'));
         CREATE INDEX IF NOT EXISTS messages_chat ON messages (json_extract(data, '$.bot_id'));
+        CREATE INDEX IF NOT EXISTS tasks_status ON tasks (json_extract(data,'$.status'));
+        CREATE INDEX IF NOT EXISTS contexts_status ON contexts (json_extract(data,'$.status'));
+        CREATE INDEX IF NOT EXISTS decisions_status ON decisions (json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS tasks_assignment ON tasks (json_extract(data, '$._assignment_task_id'));
         CREATE INDEX IF NOT EXISTS tasks_blocked ON tasks (id)
             WHERE json_extract(data, '$.status') IN ('needs_you', 'paused');

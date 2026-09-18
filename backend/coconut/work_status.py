@@ -478,9 +478,15 @@ class WorkStatus:
             item = self._get('artifacts', item['work_outcome_id'])
         item = self._canonical_work(item)
         seen = set()
-        while item.get('_hidden') and item.get('_work_parent_id') and item['id'] not in seen:
+        while item['id'] not in seen:
+            link = item.get('_same_outcome_as') or (item.get('_work_parent_id') if item.get('_hidden') else None)
+            if not link:
+                break
             seen.add(item['id'])
-            item = self._canonical_work(self._get('artifacts', item['_work_parent_id']))
+            parent = self._canonical_work(self._get('artifacts', link))
+            if parent['kind'] != 'work':
+                break
+            item = parent
         return item
 
     def _work_identity(self, item):
