@@ -299,6 +299,43 @@ class NativeOutcomes:
             self._put('artifacts', item)
             self._event('artifact.updated', self._public(item), item['bot_id'], item['task_id'])
 
+    def _retained_pr_candidates(self):
+        from .service import now
+        groups = {}
+        for row in self.db.execute("SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='pr' "
+                "AND NOT coalesce(json_extract(data,'$._hidden'),0) AND NOT coalesce(json_extract(data,'$._deleted'),0)"):
+            item = json.loads(row[0])
+            groups.setdefault(item['url'].lower(), []).append(item)
+        candidates = []
+        for url, peers in groups.items():
+            if any(p.get('work_outcome_id') or p.get('_native_outcome_id') or self._retained_terminal_work(p) for p in peers):
+                continue
+            report = self._pr_review_owner(peers)
+            if (not report or report.get('pr_state') != 'open' or not report.get('observed_at')
+                    or report.get('refresh_error') or self._work_pause(report, peers=peers)):
+                continue
+            owner = self._get('tasks', report['_review_task_id'])
+            if owner.get('_work_context_id') or owner.get('_native_outcome_id'):
+                continue
+            related = {p.get('_review_task_id') or p.get('task_id') for p in peers} - {None, owner['id']}
+            def busy(identity):
+                other = self._get('tasks', identity)
+                awaiting_owner = other['status'] == 'waiting' and owner['id'] in other.get('_waiting_on', [])
+                if awaiting_owner:
+                    return False
+                return (other['status'] in self.ACTIVE or self._background_pending(identity)
+                    or self.db.execute("SELECT 1 FROM native_receipts WHERE json_extract(data,'$.task_id')=? "
+                        "AND json_extract(data,'$.state')='executing' LIMIT 1", (identity,)).fetchone())
+            if any(busy(identity) for identity in related):
+                continue
+            candidates.append(dict(id=str(uuid5(UUID(owner['id']), 'retained-pr:' + url)),
+                bot_id=owner['bot_id'], task_id=owner['id'], kind='work', title=report['title'],
+                status='waiting', activity=report.get('activity') or 'Checking the saved result', url=None, preview='',
+                created_at=report['created_at'], observed_at=now(), _work_key='retained-pr:' + url,
+                completion_condition='Complete the accepted request for ' + report['url'] + '. Preserve its approvals and remaining follow-up.',
+                _pr_migration_reports=[p['id'] for p in peers]))
+        return candidates
+
     def _migrate_native_work(self):
         if not self.kanban or not getattr(self.provider, 'supports_native_outcomes', False):
             return
@@ -311,6 +348,7 @@ class NativeOutcomes:
             "AND json_extract(data,'$._same_outcome_as') IS NULL "
             "AND coalesce(json_extract(data,'$._hidden'),0)=0")]
         candidates = [item for item in candidates if not self._retained_terminal_work(item)]
+        candidates.extend(self._retained_pr_candidates())
         for item in candidates:
             owner = self._get('tasks', item['task_id'])
             if (owner['status'] in ('working', 'cancelled') or owner.get('_assignment_task_id')
@@ -327,7 +365,10 @@ class NativeOutcomes:
             bot = self._get('bots', owner['bot_id'])
             if not self._process_observation_current(owner, bot):
                 continue
-            pending = any(d['status'] == 'pending' and d['task_id'] == owner['id'] for d in self._all('decisions'))
+            pr_reports = [self._get('artifacts', i) for i in item.get('_pr_migration_reports', [])]
+            pr_urls = {p['url'].lower() for p in pr_reports}
+            pending = any(d['status'] == 'pending' and (d['task_id'] == owner['id']
+                or d.get('merge_pr_url', '').lower() in pr_urls) for d in self._all('decisions'))
             waiting = pending or self._background_pending(owner['id']) or bool(owner.get('_waiting_on'))
             waiting = waiting or owner['status'] in ('scheduled', 'paused')
             tasks = {t['id']: t for t in self._all('tasks')}
@@ -371,6 +412,11 @@ class NativeOutcomes:
                 self._advance_input(owner)
                 owner.update(status='queued', summary='Checking the saved result', updated_at=now())
             item['_native_outcome_id'] = identity
+            item.pop('_pr_migration_reports', None)
+            for report in pr_reports:
+                report['work_outcome_id'] = item['id']
+                self._put('artifacts', report)
+                self._event('artifact.updated', self._public(report), report['bot_id'], report['task_id'])
             self._put('tasks', owner)
             self._put('artifacts', item)
             self._event('task.updated', self._public(owner), owner['bot_id'], owner['id'])

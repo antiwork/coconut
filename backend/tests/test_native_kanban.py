@@ -846,6 +846,65 @@ for title in ('First defect', 'Second defect'):
         self.assertEqual({r['id'] for r in rows}, {queued['id'], finished['id']})
         self.assertEqual(next(r['state'] for r in rows if r['id'] == finished['id']), 'done')
 
+    def retained_pr(self):
+        from coconut.service import now
+        task = self.task('Finish the existing PR')
+        owner = self.service._get('tasks', task['id'])
+        owner.update(status='completed', _conversation_epoch=self.service._setting('conversation_epoch'))
+        self.service._put('tasks', owner)
+        report = dict(id=str(uuid4()), kind='pr', task_id=owner['id'], _review_task_id=owner['id'],
+            bot_id=owner['bot_id'], title='Correct the exported totals', url='https://github.com/example/project/pull/42',
+            status='ready_for_review', pr_state='open', observed_at=now(), created_at=now())
+        self.service._put('artifacts', report)
+        self.provider.supports_native_outcomes = True
+        return owner, report
+
+    def test_retained_pr_migrates_with_its_owner_and_waiting_coordinator(self):
+        owner, report = self.retained_pr()
+        coordinator = self.task('Read the implementation result')
+        source = self.service._get('tasks', coordinator['id'])
+        source.update(status='waiting', _waiting_on=[owner['id']], _conversation_epoch=self.service._setting('conversation_epoch'))
+        self.service._put('tasks', source)
+        owner.update(source_task_id=source['id'], source_bot_id=source['bot_id'], exchange_depth=1)
+        self.service._put('tasks', owner)
+        peer = dict(report, id=str(uuid4()), task_id=source['id'], _review_task_id=source['id'])
+        self.service._put('artifacts', peer)
+        self.service._migrate_native_work()
+        migrated = self.service._get('tasks', owner['id'])
+        self.assertTrue(migrated['_native_outcome_id'])
+        self.assertEqual(migrated['source_task_id'], source['id'])
+        self.assertEqual(self.service._get('tasks', source['id'])['_waiting_on'], [owner['id']])
+        root = self.service._get('artifacts', report['id'])['work_outcome_id']
+        self.assertEqual(self.service._get('artifacts', peer['id'])['work_outcome_id'], root)
+        count = len(self.service._all('artifacts'))
+        self.service._migrate_native_work()
+        self.assertEqual(len(self.service._all('artifacts')), count)
+        self.assertEqual(len(self.service._all('tasks')), 2)
+
+    def test_retained_pr_migration_preserves_a_pending_merge_choice(self):
+        owner, report = self.retained_pr()
+        self.service._put('decisions', dict(id=str(uuid4()), task_id=owner['id'], bot_id=owner['bot_id'],
+            status='pending', merge_pr_url=report['url']))
+        self.service._migrate_native_work()
+        self.service.kanban.call({'op': 'snapshot'})
+        migrated = self.service._get('tasks', owner['id'])
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'scheduled')
+        item = self.service._get('artifacts', report['id'])
+        self.assertEqual(self.service._work_projection([item])[0]['work_state'], 'needs_decision')
+        self.assertEqual(migrated['status'], 'completed')
+
+    def test_retained_pr_migration_waits_for_writers_and_preserves_stops(self):
+        owner, report = self.retained_pr()
+        owner['status'] = 'working'
+        self.service._put('tasks', owner)
+        self.service._migrate_native_work()
+        self.assertNotIn('work_outcome_id', self.service._get('artifacts', report['id']))
+        owner['status'] = 'completed'
+        self.service._put('tasks', owner)
+        self.service.db.execute('INSERT INTO settings VALUES (?,?)', ('work.cancelled.' + report['url'], 'true'))
+        self.service._migrate_native_work()
+        self.assertNotIn('work_outcome_id', self.service._get('artifacts', report['id']))
+
     def test_completed_history_import_removes_repeated_chain_reads(self):
         task, item = self.legacy_work('Verified export')
         self.provider.supports_native_outcomes = True
