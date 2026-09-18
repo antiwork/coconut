@@ -35,10 +35,12 @@ class PRObservationLatencyTests(unittest.TestCase):
         # Keep that work on the same independent path as the GitHub request.
         self.service._pr_tracker_for = lambda bot_id: self.tracker
         scheduled = []
+        scheduled_ready = threading.Event()
         schedule = self.service._queue_pr_reviews
         def queue_reviews(*, artifact_ids=None):
             scheduled.append(artifact_ids)
             schedule(artifact_ids=artifact_ids)
+            scheduled_ready.set()
         self.service._queue_pr_reviews = queue_reviews
         def refresh():
             try:
@@ -60,6 +62,7 @@ class PRObservationLatencyTests(unittest.TestCase):
             print(f'Fast PR observation: {(time.monotonic() - started) * 1000:.2f} ms')
             self.assertEqual(current['head_sha'], 'b' * 40)
             self.assertFalse(finished.is_set())
+            self.assertTrue(scheduled_ready.wait(1), 'The fresh observation must schedule its review.')
             self.assertEqual(scheduled, [{second['id']}], 'Only freshly observed PRs can start a review.')
         finally:
             release.set()
