@@ -51,7 +51,8 @@ class NativeOutcomes:
         if owner.get('_work_context_id'):
             items = [self._get('artifacts', owner['_work_context_id'])]
         else:
-            items = [a for a in self._all('artifacts') if a['kind'] == 'work' and a['task_id'] == owner['id']]
+            items = [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr') and a['task_id'] == owner['id']]
+        items = list({a['id']: a for a in (self._work_outcome_artifact(item) for item in items)}.values())
         if len(items) > 1:
             raise ServiceError(409, 'Choose one retained Work item for this native outcome.')
         if items:

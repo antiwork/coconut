@@ -170,6 +170,44 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(followup['_work_context_id'], 'retained-work')
         self.assertEqual(followup['_execution_session_id'], owner['_execution_session_id'])
 
+    def test_promoted_claim_retains_a_standalone_pr(self):
+        owner, source = self.scheduled_native()
+        self.service._put('artifacts', dict(id='retained-pr', task_id=owner['id'],
+            bot_id=owner['bot_id'], kind='pr', title='The original PR', status='open',
+            url='https://github.com/example/project/pull/1', pr_state='open'))
+        self.resume(source)
+        continued = self.service._get('tasks', owner['id'])
+        self.assertEqual(continued['_work_context_id'], 'retained-pr')
+        self.assertEqual(self.service._get('artifacts', 'retained-pr')['_native_outcome_id'], 't_existing')
+        self.assertEqual(len(self.service._all('artifacts')), 1)
+
+    def test_promoted_claim_resolves_and_deduplicates_retained_aliases(self):
+        owner, source = self.scheduled_native()
+        root = dict(id='retained-work', task_id=owner['id'], bot_id=owner['bot_id'],
+                    kind='work', title='The original outcome', status='waiting')
+        for item in (root, dict(root, id='hidden', _hidden=True, _work_parent_id='retained-work'),
+                     dict(root, id='replaced', _work_replaced_by='hidden'),
+                     dict(root, id='pr-link', kind='pr', work_outcome_id='replaced')):
+            self.service._put('artifacts', item)
+        self.resume(source)
+        continued = self.service._get('tasks', owner['id'])
+        self.assertEqual(continued['_work_context_id'], 'retained-work')
+        self.assertEqual(self.service._get('artifacts', 'retained-work')['_native_outcome_id'], 't_existing')
+        self.assertEqual(len(self.service._all('artifacts')), 4)
+
+    def test_promoted_claim_resolves_a_retained_context_alias(self):
+        owner, source = self.scheduled_native()
+        owner['_work_context_id'] = 'alias'
+        self.service._put('tasks', owner)
+        root = dict(id='retained-work', task_id=owner['id'], bot_id=owner['bot_id'],
+                    kind='work', title='The original outcome', status='waiting')
+        self.service._put('artifacts', root)
+        self.service._put('artifacts', dict(root, id='alias', _work_replaced_by=root['id']))
+        self.resume(source)
+        continued = self.service._get('tasks', owner['id'])
+        self.assertEqual(continued['_work_context_id'], root['id'])
+        self.assertEqual(self.service._get('artifacts', root['id'])['_native_outcome_id'], 't_existing')
+
     def test_scheduled_continuation_rejects_foreign_caller(self):
         owner, source = self.scheduled_native()
         other = self.write('/v1/bots', {'name': 'Unrelated'})
