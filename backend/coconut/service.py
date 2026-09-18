@@ -3245,7 +3245,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         # A service interruption does not consume a bot's recovery attempt.
                         task['_self_recovery'] = dict(recovery, attempt=max(0, recovery.get('attempt', 0) - 1))
                     self._finish_assignment_turn(task, 'Task failed: ' + task['summary'], 'failed')
-                    self._message(task['bot_id'], 'The Mac restarted before a tool returned its result. I stopped to avoid repeating an action. Reply to continue.', task_id=task['id'])
+                    if not task.get('_native_outcome_id'):
+                        self._message(task['bot_id'], 'Coconut’s service restarted before a tool returned its result. I stopped to avoid repeating an action. Reply to continue.', task_id=task['id'])
                 self._put('tasks', task)
                 self._event('task.recovered', self._public(task), task['bot_id'], task['id'])
         for message in self._all('messages'):

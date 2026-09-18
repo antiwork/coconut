@@ -88,3 +88,26 @@ board.dispatch.heartbeat_worker(board.conn,sys.argv[2],note='Running the focused
         self.service._publish_kanban_changes()
         page = self.service.updates(cursor, collection_deltas=True, native_events=True)
         self.assertEqual({a['id'] for a in page['artifacts']}, {item['id'], other['id']})
+
+    def test_native_restart_preserves_unknown_result_without_a_manual_reply_alert(self):
+        identity, item = self.outcome()
+        owner = self.service._get('tasks', item['task_id'])
+        owner['status'] = 'working'
+        self.service._put('tasks', owner)
+        self.native_program('assert board.kb.claim_task(board.conn,sys.argv[2])', identity)
+        receipt = self.service.native_event(owner['id'], 'native_call',
+            dict(name='terminal', arguments=dict(command='verify_saved_result')))
+        before = len(self.service._all('messages'))
+        with self.service.transaction():
+            self.service._recover()
+        recovered = self.service._get('tasks', owner['id'])
+        self.assertEqual(recovered['status'], 'failed')
+        self.assertEqual(self.service._get('native_receipts', receipt['id'])['state'], 'executing')
+        self.assertEqual(len(self.service._all('messages')), before)
+        self.native_program("board.dispatch._record_task_failure(board.conn,sys.argv[2],'Worker exited',outcome='worker_failed',release_claim=True,end_run=True)", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._reconcile_kanban()
+        resumed = self.service._get('tasks', owner['id'])
+        self.assertEqual(resumed['status'], 'queued')
+        self.assertIn(receipt['id'], [r['id'] for r in resumed['_self_recovery']['unknown_tools']])
+        self.assertEqual(self.provider.started, [])
