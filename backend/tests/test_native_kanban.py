@@ -78,6 +78,82 @@ class NativeKanbanTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
 
+    def test_restart_drain_retries_adapter_failures_then_dispatches_after_deadline(self):
+        from contextlib import ExitStack
+        active = self.task('Finish the current turn')
+        with self.service.transaction():
+            task = self.service._get('tasks', active['id'])
+            task['status'] = 'working'
+            self.service._put('tasks', task)
+        release = threading.Event()
+        worker = threading.Thread(target=release.wait)
+        worker.start()
+        self.addCleanup(lambda: (release.set(), worker.join(5)))
+        self.service.running[active['id']] = worker
+        bot = self.write('/v1/bots', {'name': 'Queued work'})
+        queued = self.write('/v1/bots/' + bot['id'] + '/messages',
+                            {'text': 'Run after the restart pause', 'mode': 'queue'})
+        self.service.restart_enabled = True
+        self.assertEqual(self.service.request_service_restart(active['id'], {})['status'], 'queued')
+
+        call = self.service.kanban.call
+        failures = [BrokenPipeError('adapter pipe closed'), RuntimeError('The Hermes Kanban adapter did not respond.')]
+        retried = threading.Event()
+        def flaky_adapter(request, *args):
+            if self.service.restart_pending:
+                self.assertEqual(request['op'], 'snapshot')
+                if failures:
+                    raise failures.pop(0)
+                result = call(request, *args)
+                retried.set()
+                return result
+            return call(request, *args)
+
+        with ExitStack() as stack:
+            maintenance = [stack.enter_context(patch.object(self.service, name)) for name in (
+                'tick_routines', '_sync_automatic_work', '_queue_work_recoveries',
+                '_queue_context_recoveries', '_queue_decision_refreshes')]
+            stack.enter_context(patch.object(self.service.kanban, 'call', side_effect=flaky_adapter))
+            log = stack.enter_context(patch('coconut.service.logging.getLogger'))
+            self.service.dispatcher = threading.Thread(target=self.service._dispatch)
+            self.service.dispatcher.start()
+            try:
+                self.assertTrue(retried.wait(5), 'Drain adapter failures killed the dispatcher instead of retrying.')
+                self.assertTrue(self.service.dispatcher.is_alive())
+                self.assertEqual(log.return_value.exception.call_count, 2)
+                for update in maintenance:
+                    update.assert_not_called()
+                self.assertEqual(self.provider.started, [])
+                self.assertTrue(self.service.restart_pending)
+                self.assertEqual(self.service._get('tasks', queued['id'])['status'], 'queued')
+
+                self.service.restart_deadline = time.monotonic() - 1
+                deadline = time.monotonic() + 5
+                while self.service.restart_pending and time.monotonic() < deadline:
+                    self.assertFalse(self.service.take_service_restart())
+                    time.sleep(.01)
+                self.assertFalse(self.service.restart_pending)
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    with self.service.lock:
+                        if self.service._get('tasks', queued['id'])['status'] == 'completed':
+                            break
+                    time.sleep(.01)
+                self.assertEqual(self.service._get('tasks', queued['id'])['status'], 'completed')
+                self.assertEqual(self.provider.started, [queued['id']])
+                self.assertTrue(self.service.dispatcher.is_alive())
+                self.assertTrue(worker.is_alive())
+                self.assertFalse(self.service.stopping.is_set())
+                self.assertEqual(self.service._get('tasks', active['id'])['status'], 'working')
+                for update in maintenance:
+                    update.assert_called()
+            finally:
+                self.service.stopping.set()
+                with self.service.changed:
+                    self.service.changed.notify_all()
+                self.service.dispatcher.join(5)
+                self.assertFalse(self.service.dispatcher.is_alive())
+
     def legacy_work(self, title='Verify the saved export'):
         task = self.task(title)
         with self.service.transaction():

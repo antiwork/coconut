@@ -2401,8 +2401,13 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         next_decision_tick = 0
         while not self.stopping.is_set():
             if self.restart_pending:
-                self._dispatch_pending()
-                self.stopping.wait(.2)
+                try:
+                    self._dispatch_pending()
+                except Exception:
+                    logging.getLogger(__name__).exception('Queue dispatch failed; queued work will retry.')
+                    self.stopping.wait(1)
+                else:
+                    self.stopping.wait(.2)
                 continue
             if time.monotonic() >= next_routine_tick:
                 next_routine_tick = time.monotonic() + 1
