@@ -42,11 +42,27 @@ class NativeOutcomes:
         from .service import ServiceError
         if task.get('_work_context_id'):
             return self._get('artifacts', task['_work_context_id'])
-        # Older PR outcome owners predate explicit work context. Resolve their
-        # durable native link rather than creating an unrelated conversation.
-        candidates = [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr')
-                      and a.get('_native_outcome_id') == task['_native_outcome_id']
-                      and a['task_id'] == task['id'] and a['bot_id'] == task['bot_id']]
+        # _send retains ownership history before moving the artifact; native
+        # reconciliation then replaces its native ID with the successor's ID.
+        # Neither mutable ID alone can resolve a reply to the original owner.
+        tasks = {t['id']: t for t in self._all('tasks')}
+        candidates = []
+        for item in self._all('artifacts'):
+            if item['kind'] not in ('work', 'pr') or item['bot_id'] != task['bot_id']:
+                continue
+            if item['task_id'] == task['id']:
+                if item.get('_native_outcome_id') == task['_native_outcome_id']:
+                    candidates.append(item)
+                continue
+            owner = tasks.get(item['task_id'], {})
+            history = [item.get('_work_origin_task_id'), *item.get('_work_previous_task_ids', [])]
+            if (task['id'] in history and owner.get('_work_context_id') == item['id']
+                    and owner.get('bot_id') == task['bot_id']
+                    and owner.get('conversation_bot_id') == task['conversation_bot_id']
+                    and owner.get('_execution_session_id') == (task.get('_execution_session_id') or task['id'])
+                    and item.get('_native_outcome_id')
+                    and owner.get('_native_outcome_id') == item['_native_outcome_id']):
+                candidates.append(item)
         if len(candidates) != 1:
             raise ServiceError(409, 'The native outcome needs one unambiguous retained Work or PR owner.')
         return candidates[0]

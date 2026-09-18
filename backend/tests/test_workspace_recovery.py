@@ -327,9 +327,7 @@ class WorkspaceRecoveryTests(unittest.TestCase):
             Service(self.data, native.Provider(self.data), start_workers=False)
         self.assertEqual(self.manifest.read_bytes(), self.before)
 
-    def test_legacy_native_pr_followup_dispatches_after_startup(self):
-        # A legacy PR owner has no _work_context_id. The native terminal parent
-        # must stay terminal while its followup retains the execution workspace.
+    def prepare_legacy_native_pr(self):
         self.assertEqual(self.request()[0], 200)
         self.assertTrue(self.service.take_service_restart())
         self.restart()
@@ -342,6 +340,13 @@ class WorkspaceRecoveryTests(unittest.TestCase):
                         url='https://github.com/synthetic/recovery/pull/7748', created_at=task['created_at'])
         self.service._put('artifacts', artifact)
         self.restart()
+        self.assertNotIn('_work_context_id', self.service._get('tasks', task['id']))
+        return task, artifact
+
+    def test_legacy_native_pr_followup_dispatches_after_startup(self):
+        # A legacy PR owner has no _work_context_id. The native terminal parent
+        # must stay terminal while its followup retains the execution workspace.
+        task, artifact = self.prepare_legacy_native_pr()
         result = self.write('/v1/tasks/' + task['id'] + '/replies', {'text': 'Implement the approved followup'})
         self.assertEqual(self.service._get('tasks', result['id']).get('_execution_session_id'), self.owner)
         self.service._dispatch_pending()
@@ -350,6 +355,142 @@ class WorkspaceRecoveryTests(unittest.TestCase):
             time.sleep(.05)
         self.assertEqual(self.provider.started, [result['id']])
         self.assertEqual(self.service.kanban.tasks[result['id']]['workspace_path'], str(self.workspace))
+
+    def assert_legacy_continuation_owner(self, artifact, current_id, task_count):
+        tasks = self.service._all('tasks')
+        self.assertEqual(len(tasks), task_count)
+        self.assertEqual({t['_execution_session_id'] for t in tasks}, {self.owner})
+        self.assertEqual([t['id'] for t in tasks if t['status'] in self.service.ACTIVE], [current_id])
+        item = self.service._get('artifacts', artifact['id'])
+        self.assertEqual(item['task_id'], current_id)
+        self.assertEqual(item['_work_origin_task_id'], self.task['id'])
+        self.assertIn(self.task['id'], item['_work_previous_task_ids'])
+        self.assertEqual(self.service.kanban.tasks[self.task['id']]['status'], 'done')
+        self.assertLessEqual({identity for identity, native_task in self.service.kanban.tasks.items()
+                              if native_task['status'] not in ('done', 'archived')}, {current_id})
+        self.assertNotIn('_work_context_id', self.service._get('tasks', self.task['id']))
+
+    def test_repeated_legacy_replies_reuse_queued_owner_after_artifact_moves(self):
+        task, artifact = self.prepare_legacy_native_pr()
+        path = '/v1/tasks/' + task['id'] + '/replies'
+        first = self.write(path, {'text': 'Implement the approved followup'})
+        self.assert_legacy_continuation_owner(artifact, first['id'], 2)
+        self.restart()
+        for text in ('Keep the original acceptance criteria', 'Also verify the saved result'):
+            result = self.write(path, {'text': text})
+            self.assertEqual(result['id'], first['id'])
+            self.assert_legacy_continuation_owner(artifact, first['id'], 2)
+        self.assertEqual(self.provider.started, [])
+        self.assertEqual([m['text'] for m in self.service._all('messages') if m.get('task_id') == first['id']],
+                         ['Implement the approved followup', 'Keep the original acceptance criteria',
+                          'Also verify the saved result'])
+
+    def test_repeated_legacy_replies_follow_active_and_terminal_native_successors(self):
+        task, artifact = self.prepare_legacy_native_pr()
+        path = '/v1/tasks/' + task['id'] + '/replies'
+        previous_native = self.native_id
+        previous_tasks = [task['id']]
+        for generation in range(2):
+            result = self.write(path, {'text': f'Implement approved followup {generation}'})
+            self.assertNotIn(result['id'], previous_tasks)
+            self.assert_legacy_continuation_owner(artifact, result['id'], generation + 2)
+            self.provider.release.clear()
+            try:
+                self.service._dispatch_pending()
+                deadline = time.monotonic() + 10
+                while result['id'] not in self.provider.started and time.monotonic() < deadline:
+                    time.sleep(.05)
+                self.assertEqual(self.provider.started, [result['id']])
+                current = self.service.kanban.tasks[result['id']]
+                self.assertEqual(current['status'], 'running')
+                self.assertNotEqual(current['id'], previous_native)
+                self.assertEqual(current['workspace_path'], str(self.workspace))
+                item = self.service._get('artifacts', artifact['id'])
+                self.assertEqual(item['_native_outcome_id'], current['id'])
+                self.assertEqual(self.service._get('tasks', result['id'])['_native_outcome_id'], current['id'])
+                for text in ('Keep the followup local', 'Verify before completing'):
+                    reply = self.write(path, {'text': text})
+                    self.assertEqual(reply['id'], result['id'])
+                    self.assert_legacy_continuation_owner(artifact, result['id'], generation + 2)
+                self.assertEqual(self.service._get('tasks', result['id'])['_steering'],
+                                 ['Keep the followup local', 'Verify before completing'])
+            finally:
+                self.provider.release.set()
+                for worker in list(self.service.running.values()):
+                    worker.join(10)
+                    self.assertFalse(worker.is_alive())
+            # Replies received during a turn are consumed at the next safe turn
+            # on the same Coconut task and native successor.
+            self.assertEqual(self.service._get('tasks', result['id'])['status'], 'queued')
+            self.assert_legacy_continuation_owner(artifact, result['id'], generation + 2)
+            captured = []
+            start = self.provider.start_task
+            def capture(task, bot, history, emit):
+                captured.extend(m['text'] for m in history if m.get('role') == 'user')
+                return start(task, bot, history, emit)
+            with patch.object(self.provider, 'start_task', side_effect=capture):
+                self.service._dispatch_pending()
+                for worker in list(self.service.running.values()):
+                    worker.join(10)
+                    self.assertFalse(worker.is_alive())
+            self.assertEqual(self.provider.started, [result['id'], result['id']])
+            self.assertIn('Keep the followup local', captured)
+            self.assertIn('Verify before completing', captured)
+            self.assertEqual(self.service.kanban.tasks[result['id']]['id'], current['id'])
+            self.assertFalse(self.service._get('tasks', result['id']).get('_steering'))
+            self.program('board.kb.complete_task(board.conn, sys.argv[2], summary="Verified followup")', current['id'])
+            self.service.kanban.call({'op': 'snapshot'})
+            self.service._reconcile_kanban()
+            self.assertEqual(self.service._get('tasks', result['id'])['status'], 'completed')
+            self.assertEqual([t for t in self.service._all('tasks') if t['status'] in self.service.ACTIVE], [])
+            self.assertEqual(int(self.program('print(board.conn.execute("SELECT count(*) FROM task_runs WHERE task_id=?", (sys.argv[2],)).fetchone()[0])', current['id'])), 2)
+            self.assertEqual(self.service.kanban.tasks[previous_tasks[-1]]['status'], 'done')
+            previous_native = current['id']
+            previous_tasks.append(result['id'])
+            self.restart()
+        item = self.service._get('artifacts', artifact['id'])
+        self.assertEqual(item['_work_previous_task_ids'], previous_tasks[:-1])
+
+    def test_legacy_continuation_rejects_ambiguous_or_unproven_ownership(self):
+        task, artifact = self.prepare_legacy_native_pr()
+        path = '/v1/tasks/' + task['id'] + '/replies'
+        other = dict(artifact, id=str(uuid4()))
+        self.service._put('artifacts', other)
+        status, error = self.http(path, {'text': 'Ambiguous original owner'})
+        self.assertEqual(status, 409, error)
+        self.assertEqual(len(self.service._all('tasks')), 1)
+        self.service.db.execute('DELETE FROM artifacts WHERE id=?', (other['id'],))
+        first = self.write(path, {'text': 'Continue the retained outcome'})
+        item = self.service._get('artifacts', artifact['id'])
+        owner = self.service._get('tasks', first['id'])
+        mutations = [
+            ('artifacts', dict(item, bot_id=str(uuid4()))),
+            ('artifacts', dict(item, _work_origin_task_id=None, _work_previous_task_ids=[])),
+            ('artifacts', dict(item, _native_outcome_id='t_unrelated')),
+            ('tasks', dict(owner, bot_id=str(uuid4()))),
+            ('tasks', dict(owner, conversation_bot_id=str(uuid4()))),
+            ('tasks', dict(owner, _execution_session_id=str(uuid4()))),
+            ('tasks', dict(owner, _work_context_id=str(uuid4()))),
+            ('tasks', dict(owner, _native_outcome_id='t_unrelated')),
+            ('tasks', dict(task, _execution_session_id=str(uuid4()))),
+        ]
+        for table, changed in mutations:
+            with self.subTest(table=table, changed=changed):
+                self.service._put(table, changed)
+                before = {name: copy.deepcopy(self.service._all(name)) for name in ('tasks', 'artifacts', 'messages')}
+                status, error = self.http(path, {'text': 'Do not route through an unproven owner'})
+                self.assertEqual(status, 409, error)
+                for name, rows in before.items():
+                    self.assertEqual(self.service._all(name), rows)
+                self.service._put('tasks', task)
+                self.service._put('tasks', owner)
+                self.service._put('artifacts', item)
+        # A second artifact retaining the same original native owner is still
+        # ambiguous even though the first artifact now belongs to its successor.
+        self.service._put('artifacts', other)
+        status, error = self.http(path, {'text': 'Ambiguous retained history'})
+        self.assertEqual(status, 409, error)
+        self.assertEqual(len(self.service._all('tasks')), 2)
 
     def test_native_readiness_does_not_dispatch_excluded_request(self):
         # A native dependency retry becomes ready *inside* dispatch_once, after
