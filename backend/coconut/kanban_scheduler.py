@@ -191,6 +191,14 @@ class NativeKanban(NativeOutcomes):
 
     def _dispatch_kanban(self):
         from .work_capacity import execution_key, state as capacity_state
+        if self.restart_pending or self.stopping.is_set():
+            # Finish committed turns, but neither adopt work nor claim/start any
+            # new turn while the operator drain owns the dispatch gate.
+            self.kanban.call({'op': 'snapshot'})
+            self._reconcile_kanban()
+            with self.changed:
+                self.changed.wait(.2)
+            return
         self.finish_inbox_swipes()
         self._drain_returns()
         # Read committed claims first. A lost adapter response cannot create another turn.
@@ -220,7 +228,7 @@ class NativeKanban(NativeOutcomes):
             with self.lock:
                 context = contexts.get(row['id'])
                 task = self._get('tasks', context['task_id'] if context else row['id'])
-                if (self._task_paused(task) or self.stopping.is_set() or task['status'] == 'cancelled'
+                if (self._task_paused(task) or self.restart_pending or self.stopping.is_set() or task['status'] == 'cancelled'
                         or (context and self._get('contexts', context['id'])['status'] != 'queued')
                         or (not context and task['status'] not in ('queued', 'scheduled'))
                         or row['id'] in self.running or row['id'] in self.context_threads):
@@ -266,6 +274,13 @@ class NativeKanban(NativeOutcomes):
                     if item is None:
                         continue
                     claim = item.get('_kanban_claim')
+                    if self.restart_pending:
+                        # Only finish our own already-started, completed turn.
+                        # Do not reclaim preparations/orphans during maintenance.
+                        if (not claim or claim.get('generation') != self.generation
+                                or item.get('_kanban_started') != claim.get('run_id')
+                                or item['status'] == 'working'):
+                            continue
                     if item.get('_native_outcome_id'):
                         if item['_native_outcome_id'] != native['id']:
                             item['_native_outcome_id'] = native['id']
@@ -312,7 +327,7 @@ class NativeKanban(NativeOutcomes):
                     pending_start = (item.get('_kanban_started') != claim['run_id'] and same_process
                                      and native.get('worker_pid') == claim.get('pid'))
                     status = item['status']
-                    if pending_start and status in ('queued', 'scheduled') and not self.stopping.is_set():
+                    if pending_start and status in ('queued', 'scheduled') and not self.stopping.is_set() and not self.restart_pending:
                         item['_kanban_started'] = claim['run_id']
                         self._put(table, item)
                         if table == 'contexts':

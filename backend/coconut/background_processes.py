@@ -100,8 +100,10 @@ class BackgroundProcesses:
     def _poll_processes(self):
         while not self.stopping.is_set():
             try:
-                self._drain_process_completions()
-                self._expire_work_descriptions()
+                with self.dispatch_gate:
+                    if not self.restart_pending:
+                        self._drain_process_completions()
+                        self._expire_work_descriptions()
             except Exception:
                 logging.getLogger(__name__).exception('Could not deliver a Hermes process result.')
             self.stopping.wait(1)

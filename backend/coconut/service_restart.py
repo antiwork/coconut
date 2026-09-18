@@ -39,21 +39,37 @@ class ServiceRestart:
 
     def take_service_restart(self):
         # The HTTP accept loop must remain available while another request owns the queue.
+        if not self.dispatch_gate.acquire(blocking=False):
+            return False
         if not self.lock.acquire(blocking=False):
+            self.dispatch_gate.release()
             return False
         try:
-            if self.restart_deadline is None or self.stopping.is_set():
+            recovery = self._pending_workspace_recovery()
+            if ((self.restart_deadline is None and not recovery) or self.stopping.is_set()
+                    or getattr(self, '_workspace_recovery_hold', False)):
                 return False
             if any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values()]):
-                if self.restart_pending and time.monotonic() >= self.restart_deadline:
+                if not recovery and self.restart_pending and time.monotonic() >= self.restart_deadline:
                     with self.transaction():
                         self._event('service.restart_deferred', {'reason': 'active_turns', 'dispatch_resumed': True})
                     self.restart_pending = False
                     self.changed.notify_all()
                 return False
+            if recovery:
+                try:
+                    self.kanban.call({'op': 'snapshot'})
+                    self._reconcile_kanban()
+                    # No tick/reclaim here: read the native ledger before anything
+                    # can discard evidence of surviving or ambiguous writers.
+                    self._check_recovery_writers()
+                except Exception as error:
+                    self._refuse_workspace_recovery(recovery, error)
+                    return False
             self.restart_pending = False
             self.restart_deadline = None
             self.stopping.set()
             return True
         finally:
             self.lock.release()
+            self.dispatch_gate.release()
