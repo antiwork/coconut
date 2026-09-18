@@ -35,7 +35,7 @@ WORK_INSTRUCTIONS = (
 
 CONTINUE_SCHEMA = {
     'name': 'coconut_continue_work',
-    'description': 'Continue a blocked or completed Hermes outcome with new facts. Use the native task ID from kanban_show. '
+    'description': 'Continue a quiescent scheduled, blocked, or completed Hermes outcome with new facts. Use the native task ID from kanban_show. '
         'You must own the work or be its requesting bot. This keeps its task, workspace, decisions, and result route. '
         'Hermes preserves completed results and creates a linked follow-up with the same workspace. '
         'This does not approve actions. The result goes to the original requester.',
@@ -46,6 +46,40 @@ CONTINUE_SCHEMA = {
 
 
 class NativeOutcomes:
+    def _native_continuation_owner(self, identity):
+        """Resolve the caller's native ID through Coconut's durable owner mapping."""
+        from .service import ServiceError
+        if not self.kanban:
+            raise ServiceError(409, 'Choose one existing native outcome from kanban_show.')
+        candidates = []
+        mismatch = False
+        for owner in self._all('tasks'):
+            explicit = owner.get('_native_outcome_id')
+            claimed = (owner.get('_kanban_claim') or {}).get('native_id')
+            native = self.kanban.tasks.get(owner['id'], {})
+            mapped = native.get('id')
+            if identity not in {value for value in (explicit, claimed, mapped) if value}:
+                continue
+            if explicit:
+                # A successor keeps the previous run's claim until it starts.
+                if explicit != identity or (mapped and mapped != identity):
+                    mismatch = True
+                elif mapped == identity:
+                    candidates.append((owner, native))
+                continue
+            if claimed:
+                if claimed != identity or (mapped and mapped != identity):
+                    mismatch = True
+                elif mapped == identity and native.get('status') == 'scheduled':
+                    # A completed Coconut input can leave its native outcome
+                    # parked pending fresh input before ownership was recorded.
+                    candidates.append((owner, native))
+        if mismatch:
+            raise ServiceError(409, 'The saved Coconut and native outcome mapping does not match.')
+        if len(candidates) != 1:
+            raise ServiceError(409, 'Choose one existing native outcome from kanban_show.')
+        return candidates[0]
+
     def _native_continuation_item(self, task):
         from .service import ServiceError
         if task.get('_work_context_id'):
@@ -123,10 +157,7 @@ class NativeOutcomes:
             previous = self.db.execute('SELECT data FROM deliveries WHERE id=?', (key,)).fetchone()
             if previous:
                 return json.loads(previous[0])['receipt']
-            owners = [t for t in self._all('tasks') if t.get('_native_outcome_id') == identity]
-            if len(owners) != 1 or not self.kanban:
-                raise ServiceError(409, 'Choose one existing native outcome from kanban_show.')
-            owner = owners[0]
+            owner, native = self._native_continuation_owner(identity)
             if source['bot_id'] not in (owner['bot_id'], owner.get('source_bot_id')):
                 raise ServiceError(403, 'Only the owner or its requesting bot can continue this work.')
             bot = self._get('bots', owner['bot_id'])
@@ -136,20 +167,25 @@ class NativeOutcomes:
                     or self._get('exchanges', owner['exchange_id']).get('cancelled')
                     or self._task_work_is_paused(owner)):
                 raise ServiceError(409, 'This work is paused, cancelled, or belongs to an earlier conversation.')
-            native = self.kanban.tasks.get(owner['id'], {})
-            if native.get('id') != identity or native.get('status') not in ('triage', 'blocked', 'done'):
+            scheduled = native.get('status') == 'scheduled'
+            if native.get('status') not in ('triage', 'blocked', 'done', 'scheduled'):
                 raise ServiceError(409, 'This native outcome is not blocked or completed. Read its current result or activity.')
-            if owner['status'] not in ('completed', 'failed', 'waiting') or owner.get('_waiting_on'):
+            if (owner['status'] not in ('completed', 'failed', 'waiting') and not
+                    (scheduled and owner['status'] == 'scheduled')) or owner.get('_waiting_on'):
                 raise ServiceError(409, 'Wait for this task and its existing dependencies.')
             if owner.get('_return_pending'):
                 raise ServiceError(409, 'Wait for the previous result to be delivered before continuing this work.')
             related = [t for t in self._all('tasks') if execution_key(t) == execution_key(owner)]
-            if any((t['id'] != owner['id'] and t['status'] in self.ACTIVE)
-                   or self._background_pending(t['id']) for t in related):
+            worker = self.running.get(owner['id'])
+            active_worker = bool(worker and worker.is_alive())
+            if (scheduled and (native.get('current_run_id') or native.get('worker_pid') or active_worker)) or any(
+                    (t['id'] != owner['id'] and t['status'] in self.ACTIVE)
+                    or self._background_pending(t['id']) for t in related):
                 raise ServiceError(409, 'This execution has active work. Wait for its result.')
             if any(d['status'] == 'pending' and d['task_id'] in {t['id'] for t in related}
                    for d in self._all('decisions')):
                 raise ServiceError(409, 'The existing decision must be answered before work continues.')
+            owner['_native_outcome_id'] = identity
             self._restore_native_work_owner(owner)
             related_ids = {t['id'] for t in related}
             recovery = owner.setdefault('_self_recovery', {})

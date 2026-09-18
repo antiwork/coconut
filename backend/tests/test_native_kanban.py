@@ -1243,6 +1243,77 @@ board.kb.block_task(board.conn, sys.argv[4], reason='Worker setup failed')
         self.assertEqual(current['status'], 'ready')
         self.assertEqual(current['workspace_path'], workspace)
 
+    def test_bot_continuation_supplies_fresh_input_to_same_scheduled_native_outcome(self):
+        import json
+        task = self.task('Finish the saved native outcome')
+        owner = self.service._get('tasks', task['id'])
+        original_execution = owner['_execution_session_id'] = owner['id']
+        original = self.service._kanban_row(owner, owner, 'ready', 10)
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(original))
+        self.service.kanban.call({'op': 'snapshot'})
+        identity = self.service.kanban.tasks[owner['id']]['id']
+        workspace = self.service.kanban.tasks[owner['id']]['workspace_path']
+        self.native_program(
+            "board.kb.schedule_task(board.conn, sys.argv[2], reason='Waiting for Coconut input readiness.')",
+            identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        owner.update(status='completed', _kanban_claim={
+            'native_id': identity, 'input': original['input'], 'run_id': 'completed-run'})
+        owner.pop('_native_outcome_id', None)
+        self.service._put('tasks', owner)
+        source = self.service._get('tasks', self.task('Continue with the completed review')['id'])
+        source['status'] = 'working'
+        self.service._put('tasks', source)
+
+        receipt = self.service.emit(source['id'], 'work_continue', dict(
+            task_id=identity, message='The review passed. Finish the original outcome.'))
+        continued = self.service._get('tasks', receipt['task_id'])
+        fresh = self.service._kanban_row(continued, continued, 'ready', 10)
+        self.assertEqual(fresh['previous_input'], original['input'])
+        self.assertNotEqual(fresh['input'], original['input'])
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(fresh))
+        self.service.kanban.call({'op': 'snapshot'})
+        current = self.service.kanban.tasks[owner['id']]
+        self.assertEqual(current['id'], identity)
+        self.assertEqual(current['status'], 'ready')
+        self.assertEqual(current['workspace_path'], workspace)
+        self.assertEqual(continued['_execution_session_id'], original_execution)
+
+    def test_claim_only_terminal_continuation_is_rejected_without_mutation(self):
+        import copy
+        import json
+        from coconut.service import ServiceError
+        task = self.task('Do not falsely continue a terminal claim')
+        owner = self.service._get('tasks', task['id'])
+        owner['_execution_session_id'] = owner['id']
+        original = self.service._kanban_row(owner, owner, 'ready', 10)
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(original))
+        self.service.kanban.call({'op': 'snapshot'})
+        identity = self.service.kanban.tasks[owner['id']]['id']
+        self.native_program(
+            "board.kb.complete_task(board.conn, sys.argv[2], summary='Original input complete')", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        owner.update(status='completed', _kanban_claim={
+            'native_id': identity, 'input': original['input'], 'run_id': 'completed-run'})
+        owner.pop('_native_outcome_id', None)
+        self.service._put('tasks', owner)
+        source = self.service._get('tasks', self.task('Try to continue the terminal claim')['id'])
+        source['status'] = 'working'
+        self.service._put('tasks', source)
+        saved = copy.deepcopy(owner)
+        deliveries = copy.deepcopy(self.service._all('deliveries'))
+
+        with patch.object(self.service, '_background_pending', return_value=False), \
+                self.assertRaisesRegex(ServiceError, 'existing native outcome'):
+            self.service.emit(source['id'], 'work_continue', dict(
+                task_id=identity, message='This must not report a queued continuation.'))
+
+        self.assertEqual(self.service._get('tasks', owner['id']), saved)
+        self.assertEqual(self.service._all('deliveries'), deliveries)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['id'], identity)
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'done')
+
     def test_native_reply_cannot_complete_outcome_and_retry_keeps_identity(self):
         origin = self.task('Complete an outcome')
         identity = self.native_program("""
@@ -1342,7 +1413,7 @@ print(json.dumps(acquire(sys.argv[2], sys.argv[3], sys.argv[4])))
         source = self.service._get('tasks', source['id'])
         source['status'] = 'working'
         self.service._put('tasks', source)
-        receipt = self.service.continue_native_work(source['id'], dict(task_id=identity,
+        receipt = self.service.emit(source['id'], 'work_continue', dict(task_id=identity,
             message='Apply the revised local scope. Keep publication paused.'))
         continued = self.service._get('tasks', receipt['task_id'])
         row = self.service._kanban_row(continued, continued, 'ready', 10)

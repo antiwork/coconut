@@ -24,6 +24,17 @@ class NativeWorkContinuationTests(unittest.TestCase):
         return self.service.emit(source['id'], 'work_continue',
             dict(task_id='t_existing', message='The corrected commit passed review. Finish its acceptance check.'))
 
+    def scheduled_native(self):
+        owner, source = self.prepare()
+        owner.update(status='completed', _native_turn_id='completed-input',
+                     _kanban_claim={'native_id': 't_existing', 'input': 'completed-input',
+                                    'run_id': 'completed-run'})
+        owner.pop('_native_outcome_id', None)
+        self.service._put('tasks', owner)
+        self.service.kanban = Mock(tasks={owner['id']: dict(
+            id='t_existing', status='scheduled', current_run_id=None, worker_pid=None)})
+        return owner, source
+
     def test_requester_resumes_same_outcome_and_preserves_its_result_route(self):
         owner, source = self.native()
         before = len(self.service._all('tasks'))
@@ -78,6 +89,106 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(continued['source_task_id'], owner['source_task_id'])
         self.assertEqual(continued['status'], 'queued')
         self.assertNotEqual(continued['_native_turn_id'], owner.get('_native_turn_id'))
+
+    def test_completed_successor_can_keep_its_previous_claim(self):
+        owner, source = self.native()
+        owner['_kanban_claim'] = {'native_id': 't_previous', 'input': 'previous-input'}
+        self.service._put('tasks', owner)
+        self.service.kanban.tasks[owner['id']]['status'] = 'done'
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
+    def test_requester_continues_quiescent_scheduled_outcome_from_durable_claim(self):
+        owner, source = self.scheduled_native()
+        task_count = len(self.service._all('tasks'))
+        original_execution = owner['_execution_session_id']
+        original_workspace = '/tmp/retained-native-workspace'
+        self.service.kanban.tasks[owner['id']]['workspace_path'] = original_workspace
+        result = self.resume(source)
+        continued = self.service._get('tasks', result['task_id'])
+        row = next(row for row in self.service._kanban_rows() if row['id'] == owner['id'])
+        self.assertEqual(continued['id'], owner['id'])
+        self.assertEqual(continued['_native_outcome_id'], 't_existing')
+        self.assertEqual(continued['_execution_session_id'], original_execution)
+        self.assertEqual(continued['status'], 'queued')
+        self.assertEqual(row['state'], 'ready')
+        self.assertEqual(row['native_id'], 't_existing')
+        self.assertEqual(row['previous_input'], 'completed-input')
+        self.assertNotEqual(row['input'], row['previous_input'])
+        self.assertEqual(row['workspace'], original_workspace)
+        self.assertEqual(self.resume(source), result)
+        self.assertEqual(len(self.service._all('tasks')), task_count)
+        self.assertEqual(len(continued['_bot_messages']),
+                         len(self.service._get('tasks', owner['id'])['_bot_messages']))
+
+    def test_owner_can_continue_quiescent_scheduled_outcome(self):
+        owner, source = self.scheduled_native()
+        self.service._put('tasks', dict(source, bot_id=owner['bot_id']))
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
+    def test_scheduled_continuation_rejects_foreign_caller(self):
+        owner, source = self.scheduled_native()
+        other = self.write('/v1/bots', {'name': 'Unrelated'})
+        self.service._put('tasks', dict(source, bot_id=other['id']))
+        with self.assertRaisesRegex(ServiceError, 'owner or its requesting bot'):
+            self.resume(source)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_scheduled_continuation_preserves_human_work_pause(self):
+        owner, source = self.scheduled_native()
+        with patch.object(self.service, '_task_work_is_paused', return_value=True), \
+                self.assertRaisesRegex(ServiceError, 'paused, cancelled'):
+            self.resume(source)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_scheduled_native_mapping_must_be_unambiguous_and_consistent(self):
+        owner, source = self.scheduled_native()
+        cases = (
+            {'_native_outcome_id': 't_conflicting'},
+            {'_kanban_claim': dict(owner['_kanban_claim'], native_id='t_conflicting')},
+        )
+        for changes in cases:
+            with self.subTest(changes=changes):
+                self.service._put('tasks', dict(owner, **changes))
+                with self.assertRaisesRegex(ServiceError, 'mapping does not match'):
+                    self.resume(source)
+                self.assertEqual(self.service._get('tasks', owner['id']), dict(owner, **changes))
+
+    def test_scheduled_continuation_rejects_active_native_work(self):
+        owner, source = self.scheduled_native()
+        native = self.service.kanban.tasks[owner['id']]
+        for changes in ({'current_run_id': 'active-run'}, {'worker_pid': 1234}):
+            with self.subTest(changes=changes):
+                native.update(current_run_id=None, worker_pid=None)
+                native.update(changes)
+                with self.assertRaisesRegex(ServiceError, 'active work'):
+                    self.resume(source)
+        native.update(current_run_id=None, worker_pid=None)
+        worker = Mock()
+        worker.is_alive.return_value = True
+        self.service.running[owner['id']] = worker
+        with self.assertRaisesRegex(ServiceError, 'active work'):
+            self.resume(source)
+        self.service.running.clear()
+        with patch.object(self.service, '_background_pending', return_value=True), \
+                self.assertRaisesRegex(ServiceError, 'active work'):
+            self.resume(source)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_scheduled_continuation_fails_closed_for_cancelled_deleted_or_missing_work(self):
+        owner, source = self.scheduled_native()
+        exchange = self.service._get('exchanges', owner['exchange_id'])
+        self.service._put('exchanges', dict(exchange, cancelled=True))
+        with self.assertRaisesRegex(ServiceError, 'paused, cancelled'):
+            self.resume(source)
+        self.service._put('exchanges', exchange)
+        bot = self.service._get('bots', owner['bot_id'])
+        self.service._put('bots', dict(bot, _deleted=True))
+        with self.assertRaisesRegex(ServiceError, 'paused, cancelled'):
+            self.resume(source)
+        self.service._put('bots', bot)
+        self.service.kanban.tasks.clear()
+        with self.assertRaisesRegex(ServiceError, 'existing native outcome'):
+            self.resume(source)
 
     def reported_work(self):
         from uuid import uuid4
