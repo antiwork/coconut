@@ -35,14 +35,14 @@
       "options": [
         {
           "id": "include",
-          "label": "Include both",
-          "explanation": "Check both types of alert automatically.",
+          "label": "Update alert rules",
+          "explanation": "Add both reports to the finance bot’s automatic checks.",
           "answer": "approve"
         },
         {
           "id": "keep",
-          "label": "Keep current routing",
-          "explanation": "Keep these alerts outside the automatic checks.",
+          "label": "Keep current rules",
+          "explanation": "Keep both reports outside the automatic checks.",
           "answer": "approve"
         }
       ],
@@ -53,7 +53,7 @@
       "revision": 1,
       "status": "pending",
       "task_id": "00000000-0000-4000-8000-000000000021",
-      "title": "Include payout alerts in finance checks?",
+      "title": "Update the finance alert rules?",
       "urgency": "normal",
       "evidence": "",
       "uncertainty": "",
@@ -62,7 +62,7 @@
       "previous_decision_id": null,
       "selected_option_id": null,
       "selected_option_label": null,
-      "context": "Weekly payout failures and negative-balance reports currently miss the automatic finance checks. Include both so the finance bot can investigate them.\n\nThis changes routing only. It does not authorize financial actions.",
+      "context": "Weekly payout failures and negative-balance reports miss the automatic finance checks. Gumclaw will update its saved email rules directly so the finance bot checks both reports.\n\nThis takes effect immediately. It does not create a PR or authorize payments or customer messages.",
       "sources": [
         {
           "kind": "email",
