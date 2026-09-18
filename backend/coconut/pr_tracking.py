@@ -44,6 +44,7 @@ class PRObservation:
     required_checks_state: str | None = None
     review_checks: str | None = None
     check_failures: str | None = None
+    required_checks_observed: bool = False
 
 
 class PRTrackingError(ValueError):
@@ -197,27 +198,27 @@ class GitHubPRTracker:
         base = pr.get('base')
         branch = base.get('ref') if isinstance(base, dict) else None
         if not isinstance(branch, str) or not branch:
-            return None
+            return None, False
         try:
             path = f'{prefix}/branches/{quote(branch, safe="")}'
             branch_data = self._get(path, deadline)
             if not isinstance(branch_data, dict) or type(branch_data.get('protected')) is not bool:
-                return None
+                return None, False
             rules = []
             for page in range(1, 11):
                 batch = self._get(f'{prefix}/rules/branches/{quote(branch, safe="")}?per_page=100&page={page}', deadline)
                 if not isinstance(batch, list):
-                    return None
+                    return None, False
                 rules.extend(batch)
                 if len(batch) < 100:
                     break
             else:
-                return None
+                return None, False
             required = []
             if branch_data['protected']:
                 protection = branch_data['protection']['required_status_checks']
                 if not isinstance(protection.get('contexts'), list) or not isinstance(protection.get('checks'), list):
-                    return None
+                    return None, False
                 required.extend(protection['checks'])
                 configured = {item['context'] for item in required}
                 required.extend({'context': context} for context in protection['contexts'] if context not in configured)
@@ -225,12 +226,12 @@ class GitHubPRTracker:
                 if rule['type'] == 'required_status_checks':
                     required.extend(rule['parameters']['required_status_checks'])
             if not required:
-                return None
+                return None, True
             results = []
             for rule in required:
                 context = rule['context']
                 if not isinstance(context, str) or not context:
-                    return None
+                    return None, False
                 app = rule.get('integration_id', rule.get('app_id'))
                 candidates = [c for c in checks if c.get('name') == context
                               and (app in (None, -1) or c.get('app', {}).get('id') == app)]
@@ -249,12 +250,12 @@ class GitHubPRTracker:
                 else:
                     results.append('running')
             return ('failed' if 'failed' in results else 'running' if 'running' in results else
-                    'unverified' if 'unverified' in results else 'passed')
+                    'unverified' if 'unverified' in results else 'passed'), True
         except HTTPError as error:
             error.close()
         except (URLError, OSError, HTTPException, PRTrackingError, ValueError, TypeError, KeyError, AttributeError):
             pass
-        return None
+        return None, False
 
     def _statuses(self, prefix, sha, deadline):
         statuses = []
@@ -357,6 +358,7 @@ class GitHubPRTracker:
             sha, state, draft, merged, title = before
             checks_state = None
             required_checks_state = None
+            required_checks_observed = False
             review_checks = None
             check_failures = None
             if merged:
@@ -369,7 +371,7 @@ class GitHubPRTracker:
                 if not isinstance(status, dict):
                     raise PRTrackingError('GitHub returned incomplete commit status data.')
                 result, detail = _classify(draft, checks, status, sha)
-                required_checks_state = self._required_checks(prefix, initial, checks, status, deadline)
+                required_checks_state, required_checks_observed = self._required_checks(prefix, initial, checks, status, deadline)
                 final = self._get(path, deadline)
                 after = _pr_fields(final)
                 if before[:4] != after[:4]:
@@ -389,7 +391,7 @@ class GitHubPRTracker:
                 if failures:
                     check_failures = hashlib.sha256(json.dumps(sorted(failures)).encode()).hexdigest()
             return PRObservation(result, sha, title, url, detail, checked_at, True, "merged" if merged else state,
-                                 draft, checks_state, required_checks_state, review_checks, check_failures)
+                                 draft, checks_state, required_checks_state, review_checks, check_failures, required_checks_observed)
         except HTTPError as error:
             detail = f"GitHub refresh failed (HTTP {error.code})."
             error.close()

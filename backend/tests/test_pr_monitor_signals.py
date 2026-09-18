@@ -52,6 +52,16 @@ class RequiredCheckTests(unittest.TestCase):
         self.assertIsNone(result.required_checks_state)
         self.assertEqual(result.checks_state, 'running')
 
+    def test_removed_rules_are_distinct_from_a_failed_rules_read(self):
+        observed = self.tracker(required=[]).observe(URL)
+        self.assertIsNone(observed.required_checks_state)
+        self.assertTrue(observed.required_checks_observed)
+        tracker = self.tracker()
+        tracker.payloads[4] = HTTPError(URL, 403, 'Unavailable', {}, None)
+        failed = tracker.observe(URL)
+        self.assertIsNone(failed.required_checks_state)
+        self.assertFalse(failed.required_checks_observed)
+
     def test_target_change_invalidates_required_check_result(self):
         result = self.tracker(after=pull(draft=True, base={'ref': 'release'})).observe(URL)
         self.assertFalse(result.observed)

@@ -73,7 +73,7 @@ class DecisionFreshness:
                         current_facts.update({field: getattr(value, field) for field in (
                             'pr_state', 'head_sha', 'title', 'draft', 'checks_state',
                             'required_checks_state', 'review_checks', 'check_failures')})
-                        if value.required_checks_state is None:
+                        if value.required_checks_state is None and not getattr(value, 'required_checks_observed', False):
                             current_facts['required_checks_state'] = previous_required
                     if key not in discussions:
                         discussions[key] = tracker.observe_discussion(url)

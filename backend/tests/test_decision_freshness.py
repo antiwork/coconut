@@ -208,6 +208,10 @@ class DecisionFreshnessTests(unittest.TestCase):
             self.service._put('decisions', saved)
             self.service._queue_decision_refreshes()
             self.assertEqual(len(self.service._all('contexts')), 1)
+            value.required_checks_observed = True
+            self.service._refresh_decision_sources({(decision['bot_id'], url): value})
+            self.assertIsNone(self.service._get('decisions', decision['id'])['_source_facts'][url]['required_checks_state'])
+            value.required_checks_observed = False
             value.head_sha = 'new-head'
             self.service._refresh_decision_sources({(decision['bot_id'], url): value})
             self.assertIsNone(self.service._get('decisions', decision['id'])['_source_facts'][url]['required_checks_state'])
