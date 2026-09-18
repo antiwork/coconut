@@ -193,6 +193,7 @@ class NativeKanban(NativeOutcomes):
         return dict(id=source['id'], bot_id=task['bot_id'], title=task['title'], state=state,
                     input=str(source.get('_native_turn_id') or source.get('_message_id') or source['id']),
                     previous_input=(source.get('_kanban_claim') or {}).get('input'),
+                    recovering=bool(source['id'] == task['id'] and task.get('_native_outcome_id') and task.get('_self_recovery')),
                     workspace=str(workspace), workspace_changed=changed, priority=priority, summary=source.get('summary', ''),
                     execution_id=execution_key(task), native_id=task.get('_native_outcome_id') if source['id'] == task['id'] else None,
                     created_at=source.get('created_at', task.get('created_at', '')))

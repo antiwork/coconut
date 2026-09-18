@@ -1840,6 +1840,41 @@ assert len(started) == 2
 assert board.kb.get_task(board.conn, current.id).status == 'review'
 """)
 
+    def test_native_pr_recovery_resumes_same_input_after_restart(self):
+        self.native_program("""
+import os
+workspace = board.kb.kanban_db_path().parent / 'saved-work'
+workspace.mkdir()
+(workspace / 'patch.txt').write_text('Retained correction')
+rows = [dict(id=name, bot_id='owner', title=name, state='ready', input='same', previous_input=None,
+    workspace=str(workspace), priority=10, summary='') for name in ('recover', 'unmarked', 'auth')]
+board.sync(rows)
+identities = {t['external_id']: t['id'] for t in board.snapshot()}
+for row in rows:
+    identity = identities[row['id']]
+    board.bind(identity, row['id'])
+    board.kb.claim_task(board.conn, identity)
+    board.kb.add_comment(board.conn, identity, 'default', 'https://github.com/example/app/pull/6')
+    board.dispatch._record_task_failure(board.conn, identity, 'Worker exited',
+        outcome='worker_failed', release_claim=True, end_run=True)
+    row.update(native_id=identity, previous_input='same', recovering=row['id'] != 'unmarked')
+with board.kb.write_txn(board.conn):
+    board.conn.execute('UPDATE tasks SET last_failure_error=? WHERE id=?', ('invalid API key', identities['auth']))
+board = Board(sys.argv[1])
+started = []
+def spawn(task, path):
+    started.append(task.id)
+    assert path == str(workspace)
+    return os.getpid()
+board.tick(rows, 3, spawn)
+board.tick(rows, 3, spawn)
+assert started == [identities['recover']], started
+assert board.kb.get_task(board.conn, identities['unmarked']).status == 'ready'
+assert board.dispatch.check_respawn_guard(board.conn, identities['auth']) == 'blocker_auth'
+assert (workspace / 'patch.txt').read_text() == 'Retained correction'
+assert len(board.snapshot()) == 3
+""")
+
     def test_pr_followup_shares_native_memory_pressure_limit_with_normal_work(self):
         self.native_program("""
 import os

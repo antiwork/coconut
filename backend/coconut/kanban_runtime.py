@@ -263,8 +263,10 @@ class Board:
                     continue
                 continuing = task['followup_input'] == row['input']
                 new_input = row.get('previous_input') and row['previous_input'] != row['input']
+                recovering = (row.get('recovering') and row.get('native_id') == task['id']
+                              and row.get('previous_input') == row['input'])
                 guard = self.dispatch.check_respawn_guard(self.conn, task['id'])
-                if not (continuing or new_input and guard == 'active_pr'):
+                if not (continuing or (new_input or recovering) and guard == 'active_pr'):
                     self.dispatch._dispatch_lane_task(self.conn, task, task['assignee'], result,
                         lane='ready', dry_run=False, ttl_seconds=None, board=None,
                         failure_limit=self.dispatch.DEFAULT_FAILURE_LIMIT, spawn_fn=spawn,
@@ -273,7 +275,7 @@ class Board:
                 if guard not in (None, 'active_pr'):
                     result.respawn_guarded.append((task['id'], guard))
                     continue
-                # Accepted input continues an existing PR. Keep its native ready claim so failures
+                # Accepted input or saved recovery continues the same PR. Keep its native claim so failures
                 # use normal retries. Remember the input across a lost spawn response or guard expiry.
                 with self.kb.write_txn(self.conn):
                     self.conn.execute('INSERT INTO coconut_pr_followups VALUES (?,?) ON CONFLICT(native_id) '
