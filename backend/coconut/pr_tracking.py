@@ -294,6 +294,25 @@ class GitHubPRTracker:
                 pass
         return cls(token=token)
 
+    def observe_issue(self, url: str) -> dict | None:
+        """Read issue facts without a model call. Failure keeps the last observation."""
+        from .decision_sources import github_source
+        source = github_source(url)
+        if not source or source[0] != 'issues':
+            return None
+        try:
+            issue = self._get('/repos/' + source[1], time.monotonic() + 10)
+            if (not isinstance(issue, dict) or issue.get('state') not in ('open', 'closed')
+                    or not isinstance(issue.get('updated_at'), str) or not issue['updated_at']
+                    or not isinstance(issue.get('title'), str) or type(issue.get('comments')) is not int):
+                return None
+            return {key: issue.get(key) for key in ('state', 'title', 'updated_at', 'comments', 'state_reason')}
+        except HTTPError as error:
+            error.close()
+        except (URLError, TimeoutError, OSError, HTTPException, PRTrackingError, ValueError, TypeError):
+            pass
+        return None
+
     def observe(self, url: str) -> PRObservation:
         """Errors carry no replacement state. Keep the last state and mark it stale."""
         checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

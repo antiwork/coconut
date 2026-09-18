@@ -143,3 +143,15 @@ Coconut then keeps their verified result as history. It does not reconstruct the
 A changed report invalidates this imported result. An unfinished retained report keeps its decisions and receipts during native migration.
 PR closure and explicit cancellation remain authoritative facts. Missing native state never implies completion.
 Content snapshots decode only active tasks and tasks referenced by visible records.
+
+
+Pending cards follow source changes
+---------------------------------
+
+The existing GitHub reader observes the issues and PRs linked to pending cards.
+It reuses PR observations within each bot profile. It never borrows another profile's credentials.
+A changed source, review, task result, or human message can queue one card check.
+An unchanged card does not start a model merely because it is old.
+Failed checks retry after the existing delay. Source failures retain the last known facts.
+The check cannot approve a choice. Human replies and current card revisions take priority.
+Other sources still use the configured intake routines and their recorded evidence.

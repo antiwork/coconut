@@ -2448,6 +2448,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     self._restore_active_work(current)
                     self._put('artifacts', current)
                     self._event('artifact.updated', self._public(current), current['bot_id'], current['task_id'])
+        self._refresh_decision_sources(observations)
 
     def _dispatch(self):
         next_routine_tick = 0

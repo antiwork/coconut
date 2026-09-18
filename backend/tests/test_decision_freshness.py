@@ -29,6 +29,9 @@ class DecisionFreshnessTests(unittest.TestCase):
             decision['created_at'] = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat()
             decision['_freshness']['checked_at'] = decision['created_at']
             self.service._put('decisions', decision)
+            task = self.service._get('tasks', self.task['id'])
+            task['summary'] = 'The dependency source has changed.'
+            self.service._put('tasks', task)
         return decision
 
     def refresh(self):
@@ -72,7 +75,7 @@ class DecisionFreshnessTests(unittest.TestCase):
             self.service.refresh_decision(context['id'], dict(status='current', evidence='The original choice still needs an answer.'))
         self.assertTrue(self.service._get('contexts', context['id'])['_refresh_recorded'])
 
-    def test_old_card_queues_one_silent_check_without_a_human_message(self):
+    def test_changed_evidence_queues_one_silent_check_without_a_human_message(self):
         self.question()
         messages = self.service._all('messages')
         self.refresh()
@@ -80,6 +83,76 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.assertEqual(len(self.service._all('contexts')), 1)
         self.assertEqual(self.service._all('messages'), messages)
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'needs_you')
+
+    def test_age_alone_never_rechecks_an_unchanged_card(self):
+        decision = self.question(old=False)
+        decision['created_at'] = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        decision['_freshness']['checked_at'] = decision['created_at']
+        self.service._put('decisions', decision)
+        self.service._queue_decision_refreshes()
+        self.assertEqual(self.service._all('contexts'), [])
+
+    def test_changed_issue_facts_refresh_once_and_failed_reads_keep_evidence(self):
+        decision = self.question(old=False)
+        url = 'https://github.com/example/project/issues/12'
+        decision['sources'] = [dict(kind='issue', title='Original issue', url=url + '#issuecomment-1')]
+        self.service._put('decisions', decision)
+        facts = dict(state='open', title='Original issue', updated_at='2026-09-18T00:00:00Z', comments=1)
+        tracker = SimpleNamespace(observe_issue=lambda _: facts)
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            self.service._refresh_decision_sources({})
+            context = self.refresh()
+            self.service.refresh_decision(context['id'], dict(status='current', evidence='Read the linked issue.'))
+            self.finish(context)
+            self.service._refresh_decision_sources({})
+            self.service._queue_decision_refreshes()
+            self.assertEqual(len(self.service._all('contexts')), 1)
+            tracker.observe_issue = lambda _: None
+            self.service._refresh_decision_sources({})
+            self.assertEqual(self.service._get('decisions', decision['id'])['_source_facts'][url], facts)
+            tracker.observe_issue = lambda _: dict(facts, state='closed', comments=2)
+            self.service._refresh_decision_sources({})
+        decision = self.service._get('decisions', decision['id'])
+        decision['_freshness']['queued_at'] = '2000-01-01T00:00:00Z'
+        self.service._put('decisions', decision)
+        self.service._queue_decision_refreshes()
+        self.assertEqual(len(self.service._all('contexts')), 2)
+
+    def test_cards_reuse_one_pr_observation_and_new_review_triggers_a_check(self):
+        from unittest.mock import Mock
+        decision = self.question(old=False)
+        url = 'https://github.com/example/project/pull/42'
+        decision['merge_pr_url'] = url
+        self.service._put('decisions', decision)
+        observation = SimpleNamespace(observed=True, pr_state='open', head_sha='head', title='Fix', draft=False,
+            checks_state='passed', required_checks_state='passed', review_checks='first-review', check_failures=None)
+        tracker = Mock()
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            self.service._refresh_decision_sources({(decision['bot_id'], url): observation})
+            tracker.observe.assert_not_called()
+            context = self.refresh()
+            self.service.refresh_decision(context['id'], dict(status='current', evidence='Checked the current review.'))
+            self.finish(context)
+            observation.review_checks = 'new-review'
+            self.service._refresh_decision_sources({(decision['bot_id'], url): observation})
+        saved = self.service._get('decisions', decision['id'])
+        saved['_freshness']['queued_at'] = '2000-01-01T00:00:00Z'
+        self.service._put('decisions', saved)
+        self.service._queue_decision_refreshes()
+        self.assertEqual(len(self.service._all('contexts')), 2)
+
+    def test_source_observation_cannot_replace_a_card_revised_during_fetch(self):
+        decision = self.question(old=False)
+        decision['sources'] = [dict(kind='issue', title='Original issue', url='https://github.com/example/project/issues/12')]
+        self.service._put('decisions', decision)
+        def observe(_):
+            current = self.service._get('decisions', decision['id'])
+            current['revision'] += 1
+            self.service._put('decisions', current)
+            return dict(state='closed')
+        with patch.object(self.service, '_pr_tracker_for', return_value=SimpleNamespace(observe_issue=observe)):
+            self.service._refresh_decision_sources({})
+        self.assertNotIn('_source_facts', self.service._get('decisions', decision['id']))
 
     def test_fresh_card_waits_but_changed_work_queues_a_check(self):
         self.question(old=False)

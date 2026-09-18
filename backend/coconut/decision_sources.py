@@ -30,3 +30,19 @@ def attach_sources(decision, payload):
         if item not in sources:
             sources.append(item)
     decision['sources'] = sources
+
+
+def github_source(url):
+    """Return one canonical GitHub issue or PR location. Ignore link fragments."""
+    import re
+    match = re.fullmatch(r'https://github\.com/([A-Za-z0-9][A-Za-z0-9-]{0,38})/'
+        r'([A-Za-z0-9_.-]{1,100})/(issues|pull)/([1-9][0-9]{0,9})/?(?:#[^\s]*)?', url or '')
+    if not match or match[2] in ('.', '..'):
+        return None
+    kind = 'issues' if match[3] == 'issues' else 'pulls'
+    return kind, '/'.join((match[1], match[2], kind, match[4])), f'https://github.com/{match[1]}/{match[2]}/{match[3]}/{match[4]}'
+
+
+def github_links(decision):
+    values = [s.get('url') for s in decision.get('sources', [])] + [decision.get('merge_pr_url')]
+    return sorted({source[2] for value in values if (source := github_source(value))})

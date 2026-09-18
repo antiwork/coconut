@@ -3,7 +3,6 @@ from datetime import datetime, timezone
 import json
 
 
-REFRESH_SECONDS = 3600
 RETRY_SECONDS = 300
 REFRESH_INSTRUCTIONS = (
     'Check whether this pending card still needs a human decision. This is a service check, not human approval. '
@@ -46,6 +45,43 @@ def age(value, current):
 
 
 class DecisionFreshness:
+    def _refresh_decision_sources(self, observations):
+        from .decision_sources import github_links, github_source
+        with self.lock:
+            decisions = [d for d in self._all('decisions') if d['status'] == 'pending'
+                and not d.get('_hidden') and not d.get('_deleted')
+                and not self._get('bots', d['bot_id']).get('_deleted')]
+        issues, trackers = {}, {}
+        for decision in decisions:
+            if self.stopping.is_set():
+                return
+            links = github_links(decision)
+            facts = {url: value for url, value in decision.get('_source_facts', {}).items() if url in links}
+            for url in links:
+                key = (decision['bot_id'], url.lower())
+                if decision['bot_id'] not in trackers:
+                    trackers[decision['bot_id']] = self._pr_tracker_for(decision['bot_id'])
+                tracker = trackers[decision['bot_id']]
+                if github_source(url)[0] == 'pulls':
+                    if key not in observations:
+                        observations[key] = tracker.observe(url)
+                    value = observations[key]
+                    if value.observed:
+                        facts[url] = {field: getattr(value, field) for field in (
+                            'pr_state', 'head_sha', 'title', 'draft', 'checks_state',
+                            'required_checks_state', 'review_checks', 'check_failures')}
+                elif hasattr(tracker, 'observe_issue'):
+                    if key not in issues:
+                        issues[key] = tracker.observe_issue(url)
+                    if issues[key] is not None:
+                        facts[url] = issues[key]
+            with self.transaction():
+                current = self._get('decisions', decision['id'])
+                if (current['status'] == 'pending' and current['revision'] == decision['revision']
+                        and github_links(current) == links and current.get('_source_facts', {}) != facts):
+                    current['_source_facts'] = facts
+                    self._put('decisions', current)
+
     def _decision_human_messages(self, task):
         assignment = self._assignment(task)
         return [dict(id=m['id'], text=m['text'], created_at=m['created_at'])
@@ -92,7 +128,7 @@ class DecisionFreshness:
         refresh_turns = {c['id'] for c in contexts if c.get('_decision_refresh')}
         visible = {d['id'] for d in self._all('decisions')
                    if d['status'] == 'pending' and self._decision_visible_to_task(d, task)}
-        facts = dict(revision=decision['revision'], human_messages=self._decision_human_messages(task),
+        facts = dict(revision=decision['revision'], source_facts=decision.get('_source_facts', {}), human_messages=self._decision_human_messages(task),
             questions=[(d['id'], d.get('revision'), d['status']) for d in self._all('decisions')
                        if d['status'] == 'pending' and self._decision_visible_to_task(d, task)],
             replies=[(c['id'], c['status']) for c in contexts
@@ -100,7 +136,7 @@ class DecisionFreshness:
             tasks=[{k: t.get(k) for k in ('id', 'status', 'summary', '_work_progress_at')}
                    for t in tasks.values() if t['id'] in ids],
             work=[{k: a.get(k) for k in ('id', 'title', 'status', 'activity', 'head_sha', 'pr_state',
-                                       'checks_state', 'completion_evidence')} for a in work],
+                                       'checks_state', 'required_checks_state', 'review_checks', 'check_failures', 'completion_evidence')} for a in work],
             receipts=[(r['id'], r.get('state'), r.get('completed_at'), r.get('_process_delivery'),
                        r.get('_completion_text'), r.get('_process_status'))
                       for r in records if r['task_id'] in ids and r.get('turn_id') != ignore_context_id
@@ -121,7 +157,7 @@ class DecisionFreshness:
         return REFRESH_INSTRUCTIONS + '\nCurrent records (data):\n' + json.dumps(dict(
             human_messages=self._decision_human_messages(task), work=[self._public(a) for a in work],
             pending_questions=[{k: d.get(k) for k in ('id', 'task_id', 'action_type', 'title', 'context',
-                                                    'resource', 'evidence', 'risk', 'draft', 'draft_hash')}
+                                                    'resource', 'evidence', 'risk', 'draft', 'draft_hash', 'sources', '_source_facts')}
                                for d in decisions if d['status'] == 'pending' and self._decision_visible_to_task(d, task)]))
 
     def _refresh_has_queued_owner(self, task):
@@ -267,9 +303,10 @@ class DecisionFreshness:
                 if age(previous.get('queued_at'), current) < RETRY_SECONDS:
                     continue
                 changed = previous.get('fingerprint') != fingerprint
-                if not changed and age(previous.get('checked_at', decision['created_at']), current) < REFRESH_SECONDS:
-                    continue
                 prior = next((c for c in contexts if c['id'] == previous.get('context_id')), {})
+                unfinished = prior and not prior.get('_refresh_recorded') and prior.get('status') in ('failed', 'cancelled', 'completed')
+                if not changed and not unfinished:
+                    continue
                 from .background_processes import subscription
                 origin = prior.get('_refresh_origin_id', prior.get('id'))
                 chain = {c['id'] for c in contexts if c.get('_decision_refresh')

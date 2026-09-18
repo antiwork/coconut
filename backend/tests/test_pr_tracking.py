@@ -52,6 +52,17 @@ def tracker_for(checks=(), status=None, before=None, after=None):
 
 
 class PRStateTests(unittest.TestCase):
+    def test_issue_observation_uses_safe_read_only_routes(self):
+        value = dict(state='open', title='Follow up', updated_at='2026-09-18T00:00:00Z', comments=2)
+        tracker = PayloadTracker([value])
+        self.assertEqual(tracker.observe_issue('https://github.com/example/project/issues/12#issuecomment-9'),
+                         dict(value, state_reason=None))
+        self.assertEqual(tracker.paths, ['/repos/example/project/issues/12'])
+        self.assertIsNone(tracker.observe_issue('https://example.invalid/project/issues/12'))
+        self.assertIsNone(tracker.observe_issue('https://github.com/example/../issues/12'))
+        self.assertIsNone(PayloadTracker([dict(state='open')]).observe_issue('https://github.com/example/project/issues/12'))
+        self.assertIsNone(PayloadTracker([URLError('offline')]).observe_issue('https://github.com/example/project/issues/12'))
+
     def test_no_checks_stays_opened(self):
         observation = tracker_for().observe(URL)
         self.assertTrue(observation.observed)
