@@ -835,7 +835,7 @@ for title in ('First defect', 'Second defect'):
             owner = self.service._get('tasks', value['id'])
             owner['status'] = 'completed'
             self.service._put('tasks', owner)
-        self.service.kanban.tasks = {finished['id']: dict(status='running')}
+        self.service.kanban.tasks = {finished['id']: dict(id='t_finished', status='running')}
         original = self.service._all
         def bounded(table):
             if table in ('tasks', 'contexts'):

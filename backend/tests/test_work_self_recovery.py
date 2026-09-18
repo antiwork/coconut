@@ -489,6 +489,25 @@ class WorkSelfRecoveryTests(unittest.TestCase):
         self.assertNotEqual(recovered['id'], self.task['id'])
         self.assertEqual(recovered['_self_recovery']['unknown_tools'][0]['id'], receipt['id'])
 
+    def test_newer_merge_report_prevents_recovery_of_an_old_open_report(self):
+        from test_service_pr import URL
+        self.start()
+        first = self.service._register_pr_artifact(self.task['id'], dict(url=URL))
+        other_bot = self.write('POST', '/v1/bots', dict(name='Reviewer', role='Review'))
+        other = self.write('POST', '/v1/bots/' + other_bot['id'] + '/messages', dict(text='Read the merge result', mode='queue'))
+        owner = self.service._get('tasks', other['id'])
+        owner['status'] = 'completed'
+        self.service._put('tasks', owner)
+        merged = dict(self.service._get('artifacts', first['id']), id='merge-report',
+            bot_id=other_bot['id'], task_id=owner['id'], _review_task_id=owner['id'], status='merged',
+            pr_state='merged', observed_at='2099-01-01T00:00:00Z', checked_at='2099-01-01T00:00:00Z')
+        self.service._put('artifacts', merged)
+        self.start(status='failed')
+        self.service.running.clear()
+        before = len(self.service._all('tasks'))
+        self.recover()
+        self.assertEqual(len(self.service._all('tasks')), before)
+
     def test_duplicate_pr_reports_get_one_recovery_owner(self):
         from test_service_pr import URL
         self.start()
