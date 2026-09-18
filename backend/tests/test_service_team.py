@@ -272,7 +272,7 @@ class TeamServiceTests(unittest.TestCase):
         self.service._run_task(reply['id'])
         self.assertEqual(self.service._get('tasks', root['id'])['status'], 'completed')
 
-    def test_failed_continuation_notifies_once_and_stops_later_replies(self):
+    def test_failed_continuation_preserves_an_independent_result(self):
         device = self.service.pair({'code': self.service.pairing_code()})['device_id']
         self.service.push.registration(device, dict(token='a' * 64, environment='development', enabled=True))
         third = self.write('POST', '/v1/bots', {'name': 'Third'})
@@ -285,11 +285,19 @@ class TeamServiceTests(unittest.TestCase):
         replies = [t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id']]
         self.working(replies[0])
         self.service.emit(replies[0]['id'], 'failed', {'summary': 'The tool failed.'})
+        stored = self.service._get('tasks', root['id'])
+        self.assertEqual(stored['status'], 'waiting')
+        self.assertEqual(stored['_waiting_on'], [replies[1]['_resolved_dependency_id']])
+        self.assertFalse(self.service._continuation_blocked(replies[1]))
         self.service._run_task(replies[1]['id'])
-        self.assertEqual(self.provider.starts, [])
-        self.assertEqual(self.service._get('tasks', replies[1]['id'])['status'], 'failed')
+        self.assertEqual([task['id'] for task, _, _ in self.provider.starts], [replies[1]['id']])
+        self.assertEqual(self.service._get('tasks', replies[1]['id'])['status'], 'completed')
+        failed = self.service._get('tasks', replies[0]['id'])
+        self.assertEqual((failed['status'], failed['summary']), ('failed', 'The tool failed.'))
+        self.assertTrue(any(m['task_id'] == failed['id'] and m['text'] == 'The tool failed.'
+                            for m in self.service._all('messages')))
         jobs = self.service.db.execute('SELECT task_id,kind FROM push_outbox').fetchall()
-        self.assertEqual(jobs, [(root['id'], 'failed')])
+        self.assertEqual(jobs, [(root['id'], 'completed')])
 
     def test_rejecting_a_continuation_proposal_resolves_the_original_assignment(self):
         root = self.working(self.send(self.a))
