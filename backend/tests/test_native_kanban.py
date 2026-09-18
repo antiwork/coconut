@@ -1357,7 +1357,7 @@ print(board.kb.create_task(board.conn, title='Verify the result', body='Check ev
         self.assertEqual(self.service._get('tasks', owner['id'])['_native_outcome_id'], identity)
         self.assertNotEqual(self.service.kanban.tasks[owner['id']]['status'], 'scheduled')
 
-    def test_only_one_foreground_conversation_uses_the_reserved_slot(self):
+    def test_independent_foreground_conversations_share_host_capacity(self):
         self.provider.supports_native_outcomes = True
         second = self.write('/v1/bots', {'name': 'Second bot', 'role': ''})
         tasks = [self.task('Answer first'), self.write('/v1/bots/' + second['id'] + '/messages', {'text': 'Answer second'})]
@@ -1365,7 +1365,38 @@ print(board.kb.create_task(board.conn, title='Verify the result', body='Check ev
         with self.service.lock:
             self.service._dispatch_chat(2)
             self.service._dispatch_chat(2)
-            self.assertEqual(set(self.service.running), {tasks[0]['id']})
+            self.assertEqual(set(self.service.running), {task['id'] for task in tasks})
+        self.provider.release.set()
+
+    def test_foreground_capacity_and_session_exclusion(self):
+        self.provider.supports_native_outcomes = True
+        tasks = [self.task('First direct reply'), self.task('Same session waits')]
+        for name in ('Second', 'Third', 'Fourth'):
+            bot = self.write('/v1/bots', {'name': name})
+            tasks.append(self.write('/v1/bots/' + bot['id'] + '/messages', {'text': 'Direct reply'}))
+        self.provider.release.clear()
+        with self.service.lock:
+            self.service._dispatch_chat(2)
+            self.service._dispatch_chat(2)
+            self.assertEqual(set(self.service.running), {tasks[i]['id'] for i in (0, 2, 3)})
+        self.provider.release.set()
+
+    def test_chat_reserves_native_capacity_before_dispatch(self):
+        self.provider.supports_native_outcomes = True
+        for name in ('First', 'Second', 'Third'):
+            bot = self.write('/v1/bots', {'name': name})
+            self.write('/v1/bots/' + bot['id'] + '/messages', {'text': 'Direct reply'})
+        self.service.mutate('PUT', '/v1/settings/work-capacity', {'limit': 2}, str(uuid4()))
+        self.provider.release.clear()
+        call = self.service.kanban.call
+        budgets = []
+        def observed(request, *args):
+            if request['op'] == 'tick':
+                budgets.append(request['capacity'])
+            return call(request, *args)
+        with patch.object(self.service.kanban, 'call', side_effect=observed):
+            self.tick()
+        self.assertEqual(budgets, [0])
         self.provider.release.set()
 
     def test_chat_failure_and_completion_keep_persistent_conversation(self):

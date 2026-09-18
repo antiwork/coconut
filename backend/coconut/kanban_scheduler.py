@@ -220,7 +220,9 @@ class NativeKanban(NativeOutcomes):
             rows = self._kanban_rows()
             by_id = {r['id']: r for r in rows}
             contexts = {c['id']: c for c in self._all('contexts')}
-            capacity = capacity_state(self._setting('work_capacity'))['effective_limit']
+            foreground = sum(bool(self._get('tasks', i).get('_chat_session') or
+                self._get('tasks', i).get('_work_status_only')) for i in self.running)
+            capacity = max(0, capacity - max(0, foreground - 1))
         def spawn(claim):
             row = by_id.get(claim['external_id'])
             if row is None or row['state'] != 'ready':

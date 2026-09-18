@@ -28,7 +28,9 @@ Application waits use native `scheduled` state and do not increase the native fa
 Explicit native blocks keep their reason and continuation eligibility across ticks;
 native dependency waits retain `todo` until their parents finish.
 Hermes owns selection and capacity after a request becomes ready.
-Read-only status questions keep one separate native session so they can answer while work capacity is full.
+Direct chats use separate Hermes sessions and share the configured host capacity.
+One additional slot remains available for a direct reply when Work fills that capacity.
+Independent bot chats can run together. Calls within the same session remain serial.
 Queue positions use native priority and creation order.
 Work uses the native title and progress note. Changes to either field trigger a phone update.
 Native failures enter Coconut's existing recovery path, which checks tool receipts before another action.

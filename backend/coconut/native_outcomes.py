@@ -341,10 +341,11 @@ class NativeOutcomes:
         from .work_capacity import execution_key
         active = {execution_key(self._get('tasks', i)) for i in self.running}
         active.update(execution_key(self._get('tasks', self._get('contexts', i)['task_id'])) for i in self.context_threads)
-        # One foreground slot is separate from native work capacity.
-        if any(self._get('tasks', i).get('_chat_session') or self._get('tasks', i).get('_work_status_only') for i in self.running):
-            return
+        # Share host capacity, retaining one reserved slot for direct replies.
+        slots = max(0, capacity + 1 - len(self.running) - len(self.context_threads))
         for task in self._dispatch_order(self._all('tasks')):
+            if not slots:
+                break
             if not task.get('_chat_session') or execution_key(task) in active:
                 continue
             bot = self._get('bots', task['bot_id'])
@@ -354,7 +355,7 @@ class NativeOutcomes:
             self.running[task['id']] = worker
             active.add(execution_key(task))
             worker.start()
-            return
+            slots -= 1
 
     def _adopt_native_outcomes(self):
         from .service import now
