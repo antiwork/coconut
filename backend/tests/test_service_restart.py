@@ -1,12 +1,13 @@
 import tempfile
 import threading
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from coconut.providers import FixtureProvider
 from coconut.service import Service, ServiceError
 from coconut.server import APIServer
+from coconut.service_restart import RESTART_DRAIN_SECONDS
 
 
 class ServiceRestartTests(unittest.TestCase):
@@ -54,6 +55,73 @@ class ServiceRestartTests(unittest.TestCase):
         self.assertEqual(self.request()['status'], 'restarted')
         self.assertFalse(self.service.restart_pending)
         self.assertFalse(self.service.take_service_restart())
+
+    def test_long_turn_releases_dispatch_without_interrupting_the_worker(self):
+        active = Mock()
+        active.is_alive.return_value = True
+        self.service.running[self.task['id']] = active
+        bot = self.service.mutate('POST', '/v1/bots', {'name': 'Dev'}, str(uuid4()))
+        queued = self.service.mutate('POST', f"/v1/bots/{bot['id']}/messages", {'text': 'Review the PR'}, str(uuid4()))
+        with patch('coconut.service_restart.time.monotonic', return_value=100) as clock:
+            self.request()
+            self.service._dispatch_pending()
+            self.assertNotIn(queued['id'], self.service.running)
+            clock.return_value += RESTART_DRAIN_SECONDS
+            self.assertFalse(self.service.take_service_restart())
+            self.assertFalse(self.service.stopping.is_set())
+            self.service._dispatch_pending()
+        worker = self.service.running[queued['id']]
+        worker.join(timeout=3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(self.service._get('tasks', queued['id'])['status'], 'completed')
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'working')
+        self.assertIs(self.service.running[self.task['id']], active)
+        self.assertFalse(self.service.take_service_restart())
+        active.is_alive.return_value = False
+        self.assertTrue(self.service.take_service_restart())
+        self.assertFalse(self.service.take_service_restart())
+
+    def test_context_defers_once_and_reports_deferral_on_repeated_requests(self):
+        active = Mock()
+        active.is_alive.return_value = True
+        self.service.context_threads['context'] = active
+        with patch('coconut.service_restart.time.monotonic', return_value=100) as clock:
+            self.request()
+            clock.return_value += RESTART_DRAIN_SECONDS - 1
+            self.assertFalse(self.service.take_service_restart())
+            self.assertTrue(self.service.restart_pending)
+            clock.return_value += 1
+            self.assertFalse(self.service.take_service_restart())
+            self.assertEqual(self.request()['status'], 'deferred')
+            for _ in range(3):
+                self.assertFalse(self.service.take_service_restart())
+        events = self.service.db.execute("SELECT count(*) FROM events WHERE type='service.restart_deferred'").fetchone()[0]
+        self.assertEqual(events, 1)
+        self.assertFalse(self.service.restart_pending)
+        active.is_alive.return_value = False
+        self.assertTrue(self.service.take_service_restart())
+
+    def test_another_request_cannot_extend_or_restart_the_dispatch_pause(self):
+        active = Mock()
+        active.is_alive.return_value = True
+        self.service.running[self.task['id']] = active
+        with patch('coconut.service_restart.time.monotonic', return_value=100) as clock:
+            self.request()
+            clock.return_value += RESTART_DRAIN_SECONDS - 1
+            with self.service.transaction():
+                task = self.service._get('tasks', self.task['id'])
+                self.service._advance_input(task)
+                self.service._put('tasks', task)
+            self.assertEqual(self.request()['status'], 'queued')
+            clock.return_value += 1
+            self.assertFalse(self.service.take_service_restart())
+            self.assertFalse(self.service.restart_pending)
+            with self.service.transaction():
+                task = self.service._get('tasks', self.task['id'])
+                self.service._advance_input(task)
+                self.service._put('tasks', task)
+            self.assertEqual(self.request()['status'], 'deferred')
+            self.assertFalse(self.service.restart_pending)
 
     def test_new_turn_can_request_another_restart(self):
         self.request()

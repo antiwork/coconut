@@ -1037,6 +1037,29 @@ print(board.kb.create_task(board.conn, title='Follow-up outcome', body='Keep the
         self.assertNotIn(tasks[2]['id'], self.provider.started)
         self.assertEqual(self.service.kanban.tasks[tasks[2]['id']]['status'], 'archived')
 
+    def test_restart_deferral_reopens_native_dispatch_and_preserves_active_claim(self):
+        from coconut.service_restart import RESTART_DRAIN_SECONDS
+        self.service.restart_enabled = True
+        self.provider.release.clear()
+        active = self.task('Check the existing patch')
+        self.settle(lambda: active['id'] in self.provider.started)
+        original_claim = self.service._get('tasks', active['id'])['_kanban_claim'].copy()
+        queued = self.task('Check another patch')
+        with patch('coconut.service_restart.time.monotonic', return_value=100) as clock:
+            self.service.request_service_restart(active['id'], {})
+            self.tick()
+            self.assertNotIn(queued['id'], self.provider.started)
+            clock.return_value += RESTART_DRAIN_SECONDS
+            self.assertFalse(self.service.take_service_restart())
+        self.settle(lambda: queued['id'] in self.provider.started)
+        self.assertEqual(self.service._get('tasks', active['id'])['_kanban_claim'], original_claim)
+        self.assertFalse(self.service.take_service_restart())
+        self.provider.release.set()
+        self.settle(lambda: all(self.service.kanban.tasks[t['id']]['status'] == 'done' for t in (active, queued)))
+        self.assertEqual(self.provider.started.count(active['id']), 1)
+        self.assertEqual(self.provider.started.count(queued['id']), 1)
+        self.assertTrue(self.service.take_service_restart())
+
     def test_lost_dispatch_reply_uses_saved_claim(self):
         task = self.task('Calculate one item')
         original = self.service.kanban.call
