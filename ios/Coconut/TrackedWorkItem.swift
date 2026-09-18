@@ -23,7 +23,7 @@ struct TrackedWorkItem: Identifiable {
 
     static func tracked(in artifacts: [Artifact], visibility: [String: Bool] = [:], at date: Date = Date()) -> [Self] {
         let allRequests = TrackedPullRequest.tracked(in: artifacts, visibility: visibility)
-        let represented = Set(allRequests.compactMap { $0.artifact.workOutcomeId })
+        let represented = Set(allRequests.map { $0.artifact.workIdentity })
         let requests = Dictionary(grouping: allRequests, by: { $0.artifact.workIdentity }).values.map { copies in
             let copies = copies.sorted { $0.id < $1.id }
             let outcome = copies.count > 1 ? artifacts.first(where: {
@@ -31,9 +31,15 @@ struct TrackedWorkItem: Identifiable {
             }) : nil
             return Self(artifact: outcome ?? copies[0].artifact, pullRequests: copies)
         }
-        let tasks = artifacts.filter { $0.kind == "work" && !represented.contains($0.id)
-                && !(visibility[$0.workIdentity] ?? ($0.workDismissalId != nil)) }
-            .map { Self(artifact: $0, pullRequests: []) }
+        let groupedTasks = Dictionary(grouping: artifacts.filter { $0.kind == "work" }, by: \.workIdentity)
+        let tasks = groupedTasks.compactMap { identity, copies -> Self? in
+            guard !represented.contains(identity),
+                  !(visibility[identity] ?? copies.contains { $0.workDismissalId != nil }) else { return nil }
+            let ordered = copies.sorted { $0.id < $1.id }
+            guard let item = ordered.first(where: { $0.workOutcomeId == nil || $0.workOutcomeId == $0.id })
+                    ?? ordered.first else { return nil }
+            return Self(artifact: item, pullRequests: [])
+        }
         return (requests + tasks).sorted {
             let firstGroup = $0.groupOrder(at: date)
             let secondGroup = $1.groupOrder(at: date)

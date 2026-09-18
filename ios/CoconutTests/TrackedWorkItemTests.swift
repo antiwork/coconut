@@ -42,6 +42,27 @@ final class TrackedWorkItemTests: XCTestCase {
         XCTAssertEqual(TrackedWorkItem.tracked(in: [work, pr]).count, 2)
     }
 
+    func testAliasUsesOneRowWithOrWithoutItsPullRequest() throws {
+        let work = item()
+        var alias = work
+        alias.id = "alias"
+        alias.workOutcomeId = work.id
+        alias.title = "Old coordination report"
+        let alone = TrackedWorkItem.tracked(in: [alias, work])
+        XCTAssertEqual(alone.count, 1)
+        XCTAssertEqual(alone.first?.artifact.id, work.id)
+        XCTAssertEqual(TrackedWorkItem.tracked(in: [alias]).first?.id, "work:export")
+        var pr = work
+        pr.id = "pr"
+        pr.kind = "pr"
+        pr.url = "https://github.com/example/project/pull/42"
+        pr.workOutcomeId = work.id
+        let linked = TrackedWorkItem.tracked(in: [alias, pr, work])
+        XCTAssertEqual(linked.count, 1)
+        XCTAssertEqual(linked.first?.pullRequest?.number, "42")
+        XCTAssertTrue(TrackedWorkItem.tracked(in: [alias, pr, work], visibility: ["work:export": true]).isEmpty)
+    }
+
     @MainActor
     func testLinkedPullRequestDismissalAndUndoKeepBothCopiesHidden() async throws {
         let work = item(status: "completed")

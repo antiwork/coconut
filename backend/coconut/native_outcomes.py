@@ -521,14 +521,14 @@ class NativeOutcomes:
                     item.update(terminal, activity_observed_at=timestamp.isoformat(), work_decision_id=None,
                         work_next_step=None, work_queue_position=None,
                         work_dismissal_id=self._setting('work.dismissed.' + self._work_identity(root)))
-                    if item.get('work_outcome_id'):
+                    if root['id'] != item['id'] or item.get('work_outcome_id'):
                         item['work_outcome_id'] = root['id']
                     if item['kind'] == 'work':
                         item['status'] = terminal['activity_state']
                 else:
                     legacy.append(item)
                 continue
-            if item.get('work_outcome_id'):
+            if root['id'] != item['id'] or item.get('work_outcome_id'):
                 item['work_outcome_id'] = root['id']
             groups.setdefault(root['id'], (root, []))[1].append(item)
         if groups:

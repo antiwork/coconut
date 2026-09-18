@@ -824,6 +824,7 @@ for title in ('First defect', 'Second defect'):
         with patch.object(self.service, '_all', side_effect=AssertionError('Do not infer the alias from history')):
             original, projected = self.service._work_projection([dict(item), dict(alias)])
         self.assertEqual(projected['native_task_id'], original['native_task_id'])
+        self.assertEqual(projected['work_outcome_id'], original['id'])
         self.assertEqual(projected['work_state'], original['work_state'])
         self.assertEqual(self.service._work_identity(alias), self.service._work_identity(item))
 
