@@ -249,6 +249,15 @@ class PullRequestReviews:
             heads.add(artifact['_reviewed_head'])
         return heads
 
+    def _pr_has_recorded_merge_decision(self, artifact, peers):
+        recorded_check = max((a.get('_review_checked_at', '') for a in peers), default='')
+        return any(d.get('merge_pr_url', '').lower() == artifact['url'].lower()
+            and d['status'] in ('approved', 'rejected', 'executed', 'dismissed')
+            and (d.get('_merge_pr_head') == artifact.get('head_sha')
+                or (not d.get('_merge_pr_head') and (not recorded_check
+                    or (d.get('decided_at') or d['created_at']) >= recorded_check)))
+            for d in self._all('decisions') if d.get('merge_pr_url'))
+
     def _queue_pr_reviews(self):
         from .service import now, uid
         with self.lock:
@@ -282,14 +291,7 @@ class PullRequestReviews:
                         owner = self._pr_review_owner(peers)
                         if not owner or owner['id'] != artifact['id']:
                             continue
-                        recorded_check = max((a.get('_review_checked_at', '') for a in peers), default='')
-                        # Preserve unknown legacy choices until a new head receives a recorded review.
-                        if any(d.get('merge_pr_url', '').lower() == artifact['url'].lower()
-                               and d['status'] in ('approved', 'rejected', 'executed', 'dismissed')
-                               and (d.get('_merge_pr_head') == artifact['head_sha']
-                                    or (not d.get('_merge_pr_head') and (not recorded_check
-                                        or (d.get('decided_at') or d['created_at']) >= recorded_check)))
-                               for d in self._all('decisions') if d.get('merge_pr_url')):
+                        if self._pr_has_recorded_merge_decision(artifact, peers):
                             continue
                         signal = json.dumps([artifact['head_sha'], artifact.get('checks_state'),
                                              artifact.get('required_checks_state'), artifact.get('review_checks'),

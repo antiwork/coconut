@@ -881,6 +881,31 @@ for title in ('First defect', 'Second defect'):
         self.assertEqual(len(self.service._all('artifacts')), count)
         self.assertEqual(len(self.service._all('tasks')), 2)
 
+    def test_retained_pr_ignores_unrelated_questions_without_a_merge_url(self):
+        owner, report = self.retained_pr()
+        other = self.task('A separate decision')
+        self.service._put('decisions', dict(id=str(uuid4()), task_id=other['id'], bot_id=self.bot['id'],
+            status='pending', merge_pr_url=None))
+        self.service._migrate_native_work()
+        self.assertTrue(self.service._get('tasks', owner['id'])['_native_outcome_id'])
+
+    def test_retained_pr_migration_waits_for_a_separate_activity_execution(self):
+        owner, report = self.retained_pr()
+        active = self.task('Apply the current fix')
+        report['_activity_task_id'] = active['id']
+        self.service._put('artifacts', report)
+        self.service._migrate_native_work()
+        self.assertNotIn('_native_outcome_id', self.service._get('tasks', owner['id']))
+        self.assertEqual(self.service._get('tasks', active['id'])['status'], 'queued')
+
+    def test_retained_pr_migration_keeps_an_answered_merge_stop(self):
+        owner, report = self.retained_pr()
+        self.service._put('decisions', dict(id=str(uuid4()), task_id=owner['id'], bot_id=owner['bot_id'],
+            status='rejected', merge_pr_url=report['url'], created_at=report['created_at'], decided_by='phone'))
+        self.service._migrate_native_work()
+        self.assertNotIn('_native_outcome_id', self.service._get('tasks', owner['id']))
+        self.assertNotIn('work_outcome_id', self.service._get('artifacts', report['id']))
+
     def test_retained_pr_migration_preserves_a_pending_merge_choice(self):
         owner, report = self.retained_pr()
         self.service._put('decisions', dict(id=str(uuid4()), task_id=owner['id'], bot_id=owner['bot_id'],

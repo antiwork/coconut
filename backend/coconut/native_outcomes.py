@@ -312,21 +312,11 @@ class NativeOutcomes:
                 continue
             report = self._pr_review_owner(peers)
             if (not report or report.get('pr_state') != 'open' or not report.get('observed_at')
-                    or report.get('refresh_error') or self._work_pause(report, peers=peers)):
+                    or report.get('refresh_error') or self._work_pause(report, peers=peers)
+                    or self._pr_has_recorded_merge_decision(report, peers)):
                 continue
             owner = self._get('tasks', report['_review_task_id'])
             if owner.get('_work_context_id') or owner.get('_native_outcome_id'):
-                continue
-            related = {p.get('_review_task_id') or p.get('task_id') for p in peers} - {None, owner['id']}
-            def busy(identity):
-                other = self._get('tasks', identity)
-                awaiting_owner = other['status'] == 'waiting' and owner['id'] in other.get('_waiting_on', [])
-                if awaiting_owner:
-                    return False
-                return (other['status'] in self.ACTIVE or self._background_pending(identity)
-                    or self.db.execute("SELECT 1 FROM native_receipts WHERE json_extract(data,'$.task_id')=? "
-                        "AND json_extract(data,'$.state')='executing' LIMIT 1", (identity,)).fetchone())
-            if any(busy(identity) for identity in related):
                 continue
             candidates.append(dict(id=str(uuid5(UUID(owner['id']), 'retained-pr:' + url)),
                 bot_id=owner['bot_id'], task_id=owner['id'], kind='work', title=report['title'],
@@ -368,20 +358,24 @@ class NativeOutcomes:
             pr_reports = [self._get('artifacts', i) for i in item.get('_pr_migration_reports', [])]
             pr_urls = {p['url'].lower() for p in pr_reports}
             pending = any(d['status'] == 'pending' and (d['task_id'] == owner['id']
-                or d.get('merge_pr_url', '').lower() in pr_urls) for d in self._all('decisions'))
+                or (d.get('merge_pr_url') or '').lower() in pr_urls) for d in self._all('decisions'))
             waiting = pending or self._background_pending(owner['id']) or bool(owner.get('_waiting_on'))
             waiting = waiting or owner['status'] in ('scheduled', 'paused')
             tasks = {t['id']: t for t in self._all('tasks')}
             records = self._work_receipts()
             attempts = {owner['id'], *(peer['task_id'] for peer in peers)}
-            for previous in [item, *peers]:
+            for previous in [item, *peers, *pr_reports]:
                 attempts.update(previous.get('_work_previous_task_ids', []))
+                if previous.get('kind') == 'pr':
+                    attempts.update(previous.get(field) for field in ('task_id', '_review_task_id', '_activity_task_id') if previous.get(field))
             for task_id in tuple(attempts):
                 if task_id in tasks:
                     attempts.update(self._work_chain(tasks[task_id], tasks, records, include_continuations=True))
             attempts.update(t['id'] for t in tasks.values() if t.get('_assignment_task_id') in attempts)
             related = attempts - {owner['id']}
-            if (any(tasks[i]['status'] in self.ACTIVE or self._background_pending(i) for i in related if i in tasks)
+            waiters = {i for i in related if pr_reports and i in tasks and tasks[i]['status'] == 'waiting'
+                       and owner['id'] in tasks[i].get('_waiting_on', [])}
+            if (any(tasks[i]['status'] in self.ACTIVE or self._background_pending(i) for i in related - waiters if i in tasks)
                     or any(d['task_id'] in related and d['status'] == 'pending' for d in self._all('decisions'))
                     or any(c['task_id'] in attempts and c['status'] in ('queued', 'working') for c in self._all('contexts'))):
                 continue
