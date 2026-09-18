@@ -50,6 +50,24 @@ class WorkWorkspaceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'missing'):
             preferred(self.saved, first)
 
+    def test_verified_branch_rename_keeps_the_same_owner_and_dirty_files(self):
+        outcome = str(uuid4())
+        original = acquire(self.saved, outcome, str(self.repo))
+        note = Path(original['path']) / 'pending.txt'
+        note.write_text('Accepted unfinished changes')
+        git(original['path'], 'branch', '-m', 'reviewed-change')
+        self.assertEqual(preferred(self.saved, outcome), Path(original['path']))
+        resumed = acquire(self.saved, outcome, str(self.repo))
+        self.assertEqual(resumed, dict(original, branch='reviewed-change'))
+        self.assertEqual(note.read_text(), 'Accepted unfinished changes')
+        manifest = json.loads((self.saved / 'worktrees.json').read_text())
+        self.assertEqual(list(manifest.values()), [resumed])
+        with self.assertRaisesRegex(ValueError, 'Another outcome'):
+            acquire(self.saved, str(uuid4()), str(self.repo), original['path'])
+        git(original['path'], 'switch', '--detach')
+        with self.assertRaisesRegex(ValueError, 'changed branches'):
+            preferred(self.saved, outcome)
+
     def test_existing_worktree_is_adopted_once_without_moving_its_branch(self):
         path = self.root / 'existing'
         git(self.repo, 'worktree', 'add', '-b', 'existing-pr', str(path))

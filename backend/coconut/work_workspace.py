@@ -15,18 +15,42 @@ def git(path, *arguments):
     return result.stdout.strip()
 
 
-def validate_binding(binding):
+def validate_binding(binding, *, allow_rename=False):
     path = Path(binding['path'])
     repository = Path(binding['repository']).resolve()
     if not path.is_dir():
         raise ValueError('The saved worktree is missing. Inspect its Git record before creating another checkout.')
     if path.resolve() == repository or not (path / '.git').is_file():
         raise ValueError('The saved workspace is no longer a linked worktree.')
-    if git(path, 'branch', '--show-current') != binding['branch']:
-        raise ValueError('The saved worktree changed branches. Inspect it before continuing.')
     if Path(git(path, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve() != repository / '.git':
         raise ValueError('The saved worktree belongs to another repository.')
+    current = git(path, 'branch', '--show-current')
+    if current != binding['branch']:
+        previous_ref = 'refs/heads/' + binding['branch']
+        current_ref = 'refs/heads/' + current
+        renamed = (allow_rename and current
+            and previous_ref not in git(path, 'for-each-ref', '--format=%(refname)', previous_ref).splitlines()
+            and f'Branch: renamed {previous_ref} to {current_ref}' in
+                git(path, 'reflog', 'show', '--format=%gs', '-n', '100', current_ref).splitlines())
+        if not renamed:
+            raise ValueError('The saved worktree changed branches. Inspect it before continuing.')
+        binding['branch'] = current
     return path
+
+
+def save_bindings(manifest, saved):
+    temporary = manifest.with_suffix('.tmp')
+    with temporary.open('w') as output:
+        temporary.chmod(0o600)
+        output.write(json.dumps(saved, sort_keys=True))
+        output.flush()
+        os.fsync(output.fileno())
+    temporary.replace(manifest)
+    directory = os.open(manifest.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def acquire(root, outcome, repository, existing_worktree=None):
@@ -49,7 +73,10 @@ def acquire(root, outcome, repository, existing_worktree=None):
         saved = json.loads(manifest.read_text()) if manifest.exists() else {}
         binding = saved.get(identity)
         if binding:
-            validate_binding(binding)
+            previous = binding['branch']
+            validate_binding(binding, allow_rename=True)
+            if binding['branch'] != previous:
+                save_bindings(manifest, saved)
             return binding
         branch = 'wt/' + identity
         target = repository
@@ -73,18 +100,7 @@ def acquire(root, outcome, repository, existing_worktree=None):
             raise ValueError('Another outcome owns this worktree. Use its existing work item to continue it.')
         binding = dict(path=str(path), branch=branch, repository=str(repository), outcome=outcome)
         saved[identity] = binding
-        temporary = manifest.with_suffix('.tmp')
-        with temporary.open('w') as output:
-            temporary.chmod(0o600)
-            output.write(json.dumps(saved, sort_keys=True))
-            output.flush()
-            os.fsync(output.fileno())
-        temporary.replace(manifest)
-        directory = os.open(root, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        save_bindings(manifest, saved)
         return binding
 
 
@@ -105,7 +121,7 @@ def preferred(root, outcome, *, verify=True):
         bindings = [v for v in json.loads(manifest.read_text()).values() if v['outcome'] == outcome]
         if verify:
             for binding in bindings:
-                validate_binding(binding)
+                validate_binding(binding, allow_rename=True)
         if len(bindings) == 1:
             if Path(bindings[0]['path']).is_dir():
                 return Path(bindings[0]['path'])

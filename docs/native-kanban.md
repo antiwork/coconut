@@ -47,7 +47,8 @@ failure. Startup loads native bindings before accepting task replies.
 It creates one Git worktree per outcome and repository.
 The bot uses the returned directory for code changes and tests.
 An existing linked worktree can be adopted once to retain earlier changes.
-The registry rejects another outcome's worktree and rejects a changed branch.
+The registry rejects another outcome's worktree and an unverified branch switch.
+A Git-confirmed branch rename keeps the same owner and files. Coconut updates its saved branch without a service restart.
 The service keeps the registry under `workspaces/worktrees.json`.
 Coconut retains these worktrees after a turn ends. It does not delete uncommitted work.
 Native delegated workers also default to `delegation.worktree_isolation: true`.

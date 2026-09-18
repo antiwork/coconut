@@ -65,7 +65,7 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         task.update(status='failed', _native_outcome_id=self.native_id)
         self.service._put('tasks', task)
         self.service.kanban.call({'op': 'snapshot'})
-        git(self.workspace, 'branch', '-m', 'reviewed-local-branch')
+        git(self.workspace, 'switch', '-c', 'reviewed-local-branch')
         self.manifest = self.data / 'workspaces' / 'worktrees.json'
         self.before = self.manifest.read_bytes()
         self.payload = dict(task_id=task['id'], native_task_id=self.native_id, expected_owner=self.owner,
