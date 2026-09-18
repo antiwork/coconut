@@ -348,6 +348,7 @@ class GitHubPRTracker:
         checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         sha: str | None = None
         title: str | None = None
+        base_branch: str | None = None
         try:
             owner, repo, number = parse_pr_url(url)
             url = f"https://github.com/{owner}/{repo}/pull/{number}"
@@ -357,6 +358,7 @@ class GitHubPRTracker:
             initial = self._get(path, deadline)
             before = _pr_fields(initial)
             sha, state, draft, merged, title = before
+            base_branch = (initial.get("base") or {}).get("ref")
             checks_state = None
             required_checks_state = None
             required_checks_observed = False
@@ -392,7 +394,7 @@ class GitHubPRTracker:
                 if failures:
                     check_failures = hashlib.sha256(json.dumps(sorted(failures)).encode()).hexdigest()
             return PRObservation(result, sha, title, url, detail, checked_at, True, "merged" if merged else state,
-                                 draft, checks_state, required_checks_state, review_checks, check_failures, required_checks_observed, (initial.get("base") or {}).get("ref"))
+                                 draft, checks_state, required_checks_state, review_checks, check_failures, required_checks_observed, base_branch)
         except HTTPError as error:
             detail = f"GitHub refresh failed (HTTP {error.code})."
             error.close()
@@ -402,4 +404,4 @@ class GitHubPRTracker:
             detail = str(error)
         except (ValueError, TypeError, KeyError):
             detail = "GitHub returned data that could not be verified."
-        return PRObservation(None, sha, title, url, detail, checked_at, False)
+        return PRObservation(None, sha, title, url, detail, checked_at, False, base_branch=base_branch)

@@ -222,6 +222,22 @@ class DecisionFreshnessTests(unittest.TestCase):
             self.service._refresh_decision_sources({(decision['bot_id'], url): value})
             self.assertIsNone(self.service._get('decisions', decision['id'])['_source_facts'][url]['required_checks_state'])
 
+    def test_partial_pr_read_invalidates_checks_for_a_changed_head_or_target(self):
+        decision = self.question(old=False)
+        url = 'https://github.com/example/project/pull/42'
+        decision['merge_pr_url'] = url
+        tracker = SimpleNamespace(observe_discussion=lambda _: None)
+        for head, base in (('new-head', 'main'), ('head', 'release')):
+            decision['_source_facts'] = {url: dict(head_sha='head', base_branch='main', required_checks_state='passed')}
+            self.service._put('decisions', decision)
+            value = SimpleNamespace(observed=False, head_sha=head, base_branch=base)
+            with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+                self.service._refresh_decision_sources({(decision['bot_id'], url): value})
+            facts = self.service._get('decisions', decision['id'])['_source_facts'][url]
+            self.assertEqual(facts['head_sha'], head)
+            self.assertEqual(facts['base_branch'], base)
+            self.assertNotIn('required_checks_state', facts)
+
     def test_source_observation_cannot_replace_a_card_revised_during_fetch(self):
         decision = self.question(old=False)
         decision['sources'] = [dict(kind='issue', title='Original issue', url='https://github.com/example/project/issues/12')]

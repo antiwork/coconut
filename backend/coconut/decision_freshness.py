@@ -67,6 +67,12 @@ class DecisionFreshness:
                         observations[key] = tracker.observe(url)
                     value = observations[key]
                     current_facts = dict(facts.get(url, {}))
+                    identity = {field: getattr(value, field, None) for field in ('head_sha', 'base_branch')}
+                    changed = any(fact and fact != current_facts.get(field) for field, fact in identity.items())
+                    if changed:
+                        for field in ('checks_state', 'required_checks_state', 'review_checks', 'check_failures'):
+                            current_facts.pop(field, None)
+                        current_facts.update({field: fact for field, fact in identity.items() if fact})
                     if value.observed:
                         previous_required = (current_facts.get('required_checks_state')
                             if current_facts.get('head_sha') == value.head_sha
