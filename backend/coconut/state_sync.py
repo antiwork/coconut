@@ -154,8 +154,9 @@ class StateSync:
         from datetime import datetime
         server_time = now()
         native = native_events and self.kanban is not None and getattr(self.provider, 'supports_native_outcomes', False)
-        previous = None if native else self._read_one('SELECT created_at FROM events WHERE seq=?', (after,))
-        refresh_activity = not native and (previous is None or
+        timed = not native or self._retained_work_needs_observation()
+        previous = self._read_one('SELECT created_at FROM events WHERE seq=?', (after,)) if timed else None
+        refresh_activity = timed and (previous is None or
             int(datetime.fromisoformat(previous[0].replace('Z', '+00:00')).timestamp() // 15) !=
             int(datetime.fromisoformat(server_time.replace('Z', '+00:00')).timestamp() // 15))
         freshness = {'native_work_observed_at': self.kanban.observed_at} if native else {}
@@ -244,3 +245,15 @@ class StateSync:
                 if collection_deltas:
                     result['removed_decisions'] = sorted(removed_decisions)
         return result
+
+    def _retained_work_needs_observation(self):
+        import json
+        for row in self.db.execute("SELECT data FROM artifacts WHERE json_extract(data,'$.kind') IN ('work','pr') "
+                "AND NOT coalesce(json_extract(data,'$._hidden'),0) AND NOT coalesce(json_extract(data,'$._deleted'),0)"):
+            item = self._work_outcome_artifact(json.loads(row[0]))
+            if (item.get('_native_outcome_id') or item['status'] in ('completed', 'cancelled', 'merged', 'closed')
+                    or item.get('pr_state') in ('merged', 'closed')
+                    or self._setting('work.cancelled.' + self._work_identity(item))):
+                continue
+            return True
+        return False

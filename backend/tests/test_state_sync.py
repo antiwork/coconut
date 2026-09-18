@@ -120,6 +120,24 @@ class StateSyncTests(unittest.TestCase):
         self.assertEqual(page['artifacts'], [{'id': 'work'}])
         self.assertNotIn('native_work_observed_at', page)
 
+    def test_protocol_three_keeps_retained_work_fresh_until_migration(self):
+        from types import SimpleNamespace
+        self.service.provider.supports_native_outcomes = True
+        task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Retained work'})
+        artifact = dict(id='retained', kind='work', task_id=task['id'], bot_id=self.bot['id'],
+            status='blocked', title='Paused work', created_at='2026-09-18T00:00:00Z')
+        with self.service.transaction():
+            self.service._put('artifacts', artifact)
+        cursor = self.service._cursor()
+        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={}, observed_at='2099-01-01T00:00:00Z')), \
+             patch('coconut.service.now', return_value='2099-01-01T00:00:00Z'), \
+             patch.object(Service, '_work_projection', return_value=[artifact]):
+            page = self.service.updates(cursor, collection_deltas=True, native_events=True)
+            self.assertEqual(page['artifacts'], [artifact])
+            with self.service.transaction():
+                self.service.db.execute('INSERT INTO settings VALUES (?,?)', ('work.cancelled.work:retained', 'true'))
+            self.assertNotIn('artifacts', self.service.updates(cursor, collection_deltas=True, native_events=True))
+
     def test_native_work_event_refreshes_an_idle_delta(self):
         cursor = self.service._cursor()
         with self.service.transaction():
