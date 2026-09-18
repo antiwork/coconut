@@ -208,6 +208,24 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
         self.assertEqual(self.service._get('artifacts', item['id']), item)
 
+    def test_claim_promotion_checks_linked_pr_owners_behind_a_work_context(self):
+        owner, source = self.scheduled_native()
+        from uuid import uuid4
+        other = dict(owner, id=str(uuid4()), _execution_session_id=str(uuid4()), status='working')
+        self.service._put('tasks', other)
+        owner['_work_context_id'] = 'retained-work'
+        self.service._put('tasks', owner)
+        self.service._put('artifacts', dict(id='retained-work', task_id=owner['id'],
+            bot_id=owner['bot_id'], kind='work', title='The original outcome', status='waiting'))
+        pr = dict(id='linked-pr', task_id=other['id'], bot_id=owner['bot_id'],
+                  kind='pr', title='The linked PR', status='open', pr_state='open',
+                  url='https://github.com/example/project/pull/1', work_outcome_id='retained-work')
+        for field in ('_review_task_id', '_activity_task_id'):
+            self.service._put('artifacts', dict(pr, **{field: other['id']}))
+            with self.subTest(field=field), self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(source)
+            self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
     def test_promoted_claim_resolves_and_deduplicates_retained_aliases(self):
         owner, source = self.scheduled_native()
         root = dict(id='retained-work', task_id=owner['id'], bot_id=owner['bot_id'],

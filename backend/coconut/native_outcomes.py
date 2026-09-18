@@ -61,11 +61,13 @@ class NativeOutcomes:
             if (item['kind'] not in ('work', 'pr') or item['bot_id'] != owner['bot_id']
                     or item.get('_native_outcome_id') not in (None, native['id'])):
                 raise ServiceError(409, 'The retained Work item belongs to another native outcome.')
-            if self._setting('work.cancelled.' + self._work_identity(item)) or self._work_pause(item):
+            peers = self._work_pause_peers(item)
+            if self._setting('work.cancelled.' + self._work_identity(item)) or self._work_pause(item, peers=peers):
                 raise ServiceError(409, 'This work is paused or cancelled.')
-            for field in ('_review_task_id', '_activity_task_id'):
-                if item.get(field) and execution_key(self._get('tasks', item[field])) != execution_key(owner):
-                    raise ServiceError(409, 'This Work item has another execution. Continue its current owner.')
+            for peer in peers:
+                for field in ('_review_task_id', '_activity_task_id'):
+                    if peer.get(field) and execution_key(self._get('tasks', peer[field])) != execution_key(owner):
+                        raise ServiceError(409, 'This Work item has another execution. Continue its current owner.')
             item['_native_outcome_id'] = native['id']
         else:
             title = native.get('title') or owner['title']
