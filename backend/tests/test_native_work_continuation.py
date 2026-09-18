@@ -60,13 +60,80 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.resume(source)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
-    def test_cannot_resume_active_or_finished_native_work(self):
+    def test_cannot_resume_active_or_archived_native_work(self):
         owner, source = self.native()
-        for state in ('running', 'ready', 'done', 'archived'):
+        for state in ('running', 'ready', 'archived'):
             self.service.kanban.tasks[owner['id']]['status'] = state
             with self.subTest(state=state), self.assertRaisesRegex(ServiceError, 'not blocked'):
                 self.resume(source)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_completed_outcome_accepts_new_facts_without_changing_execution(self):
+        owner, source = self.native()
+        self.service.kanban.tasks[owner['id']]['status'] = 'done'
+        result = self.resume(source)
+        continued = self.service._get('tasks', result['task_id'])
+        self.assertEqual(continued['id'], owner['id'])
+        self.assertEqual(continued['_execution_session_id'], owner['_execution_session_id'])
+        self.assertEqual(continued['source_task_id'], owner['source_task_id'])
+        self.assertEqual(continued['status'], 'queued')
+        self.assertNotEqual(continued['_native_turn_id'], owner.get('_native_turn_id'))
+
+    def reported_work(self):
+        from uuid import uuid4
+        owner, source = self.native()
+        reporter = dict(owner, id=str(uuid4()), status='waiting', _native_outcome_id=None,
+                        _work_context_id=None, created_at='2099-01-01T00:00:00Z')
+        reporter['_execution_session_id'] = reporter['id']
+        self.service._put('tasks', reporter)
+        item = dict(id=str(uuid4()), kind='work', bot_id=owner['bot_id'], task_id=reporter['id'],
+            _work_key='retained-work', title='Continue the saved correction', status='waiting',
+            activity='Waiting for the original worker', created_at=owner['created_at'], observed_at=owner['created_at'],
+            _work_origin_task_id=owner['id'], _work_previous_task_ids=[owner['id']], _native_outcome_id='old-report')
+        self.service._put('artifacts', item)
+        owner['_work_context_id'] = item['id']
+        self.service._put('tasks', owner)
+        return owner, source, reporter, item
+
+    def test_continuation_restores_an_owner_displaced_by_a_progress_report(self):
+        owner, source, reporter, item = self.reported_work()
+        self.resume(source)
+        restored = self.service._get('artifacts', item['id'])
+        self.assertEqual(restored['task_id'], owner['id'])
+        self.assertEqual(restored['_native_outcome_id'], owner['_native_outcome_id'])
+        self.assertIn(reporter['id'], restored['_work_previous_task_ids'])
+        self.assertEqual(self.service._get('tasks', reporter['id']), reporter)
+
+    def test_continuation_does_not_take_work_from_another_execution(self):
+        owner, source, reporter, item = self.reported_work()
+        cases = ({'_native_outcome_id': 'another'}, {'_work_context_id': item['id']},
+                 {'status': 'working'}, {'status': 'paused'}, {'status': 'cancelled'}, {'session_id': 'old'})
+        for changes in cases:
+            with self.subTest(changes=changes):
+                self.service._put('tasks', dict(reporter, **changes))
+                with self.assertRaisesRegex(ServiceError, 'another execution'):
+                    self.resume(source)
+                self.assertEqual(self.service._get('artifacts', item['id']), item)
+                self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.service._put('tasks', reporter)
+        self.service._put('decisions', dict(id='pending-report', task_id=reporter['id'], status='pending'))
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(source)
+
+    def test_progress_report_keeps_native_work_owner_and_binding(self):
+        owner, source, reporter, item = self.reported_work()
+        item.update(task_id=owner['id'], _native_outcome_id=owner['_native_outcome_id'])
+        self.service._put('artifacts', item)
+        reporter['status'] = 'working'
+        self.service._put('tasks', reporter)
+        self.service.emit(reporter['id'], 'artifact', dict(kind='work', key=item['_work_key'],
+            title=item['title'], activity='The human revised the local scope', status='waiting',
+            completion_condition='Verify the revised scope in the original worktree'))
+        saved = self.service._get('artifacts', item['id'])
+        self.assertEqual(saved['task_id'], owner['id'])
+        self.assertEqual(saved['_native_outcome_id'], owner['_native_outcome_id'])
+        self.assertEqual(saved['_work_report_task_id'], reporter['id'])
+        self.assertEqual(saved['completion_condition'], 'Verify the revised scope in the original worktree')
 
     def test_cannot_resume_paused_work_or_pending_dependencies(self):
         owner, source = self.native()

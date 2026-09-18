@@ -1017,6 +1017,58 @@ print(board.kb.create_task(board.conn, title='Verify the result', body='Check ev
             self.assertTrue(stored['_chat_session'])
             self.assertNotIn('_execution_session_id', stored)
 
+    def test_bot_continues_completed_outcome_in_its_dirty_worktree(self):
+        import json
+        source = self.task('Continue the accepted outcome with new facts')
+        identity = self.native_program("""
+print(board.kb.create_task(board.conn, title='Saved correction', body='Keep publication paused', assignee='default',
+    tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked'))
+""", self.bot['id'], source['id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._adopt_native_outcomes()
+        owner = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
+        repo = Path(self.tmp.name) / 'repo'
+        repo.mkdir()
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                        'commit', '--allow-empty', '-qm', 'Initial'], check=True)
+        binding = json.loads(self.native_program("""
+import json
+from coconut.work_workspace import acquire
+print(json.dumps(acquire(sys.argv[2], sys.argv[3], sys.argv[4])))
+""", str(self.service.root / 'workspaces'), owner['_execution_session_id'], str(repo)))
+        saved = Path(binding['path']) / 'pending.txt'
+        saved.write_text('Uncommitted correction')
+        row = next(r for r in self.service._kanban_rows() if r['id'] == owner['id'])
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+        self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='First accepted scope complete')", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._reconcile_kanban()
+        original = self.service._get('tasks', owner['id'])
+        self.assertEqual(original['status'], 'completed')
+        source = self.service._get('tasks', source['id'])
+        source['status'] = 'working'
+        self.service._put('tasks', source)
+        receipt = self.service.continue_native_work(source['id'], dict(task_id=identity,
+            message='Apply the revised local scope. Keep publication paused.'))
+        continued = self.service._get('tasks', receipt['task_id'])
+        row = self.service._kanban_row(continued, continued, 'ready', 10)
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._reconcile_kanban()
+        continued = self.service._get('tasks', receipt['task_id'])
+        native = self.service.kanban.tasks[continued['id']]
+        self.assertEqual(continued['id'], original['id'])
+        self.assertEqual(continued['_execution_session_id'], original['_execution_session_id'])
+        self.assertNotEqual(native['id'], identity)
+        self.assertEqual(native['status'], 'ready')
+        self.assertEqual(native['workspace_path'], binding['path'])
+        self.assertEqual(self.native_program('print(board.kb.get_task(board.conn, sys.argv[2]).status)', identity), 'done')
+        self.assertEqual(saved.read_text(), 'Uncommitted correction')
+        item = self.service._get('artifacts', owner['_work_context_id'])
+        self.assertEqual(item['task_id'], original['id'])
+        self.assertEqual(item['_native_outcome_id'], native['id'])
+
     def test_native_completion_and_cancel_resume_rebind_successors(self):
         origin = self.task('An outcome with a follow-up')
         identity = self.native_program("""

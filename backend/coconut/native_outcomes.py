@@ -28,9 +28,10 @@ WORK_INSTRUCTIONS = (
 
 CONTINUE_SCHEMA = {
     'name': 'coconut_continue_work',
-    'description': 'Resume an existing blocked Hermes outcome with new facts. Use the native task ID from kanban_show. '
+    'description': 'Continue a blocked or completed Hermes outcome with new facts. Use the native task ID from kanban_show. '
         'You must own the work or be its requesting bot. This keeps its task, workspace, decisions, and result route. '
-        'It does not approve actions, complete work, or create another task. The result goes to the original requester.',
+        'Hermes preserves completed results and creates a linked follow-up with the same workspace. '
+        'This does not approve actions. The result goes to the original requester.',
     'parameters': {'type': 'object', 'additionalProperties': False,
         'properties': {'task_id': {'type': 'string'}, 'message': {'type': 'string', 'maxLength': 16000}},
         'required': ['task_id', 'message']},
@@ -67,6 +68,28 @@ class NativeOutcomes:
             raise ServiceError(409, 'The native outcome needs one unambiguous retained Work or PR owner.')
         return candidates[0]
 
+    def _restore_native_work_owner(self, owner):
+        """An older progress report could replace the visible owner without moving its execution."""
+        from .service import ServiceError
+        if not owner.get('_work_context_id'):
+            return
+        item = self._get('artifacts', owner['_work_context_id'])
+        if item['task_id'] == owner['id']:
+            return
+        reporter = self._get('tasks', item['task_id'])
+        history = [item.get('_work_origin_task_id'), *item.get('_work_previous_task_ids', [])]
+        if (item['kind'] != 'work' or item['bot_id'] != owner['bot_id'] or owner['id'] not in history
+                or reporter.get('_native_outcome_id') or reporter.get('_work_context_id') == item['id']
+                or any(reporter.get(k) != owner.get(k) for k in ('bot_id', 'session_id', 'conversation_bot_id', '_conversation_epoch'))
+                or reporter['status'] not in ('completed', 'failed', 'waiting')
+                or self._background_pending(reporter['id'])
+                or any(d['task_id'] == reporter['id'] and d['status'] == 'pending' for d in self._all('decisions'))):
+            raise ServiceError(409, 'This Work item has another execution. Continue its current owner.')
+        self._carry_work_history(item, dict(item))
+        item.update(task_id=owner['id'], _native_outcome_id=owner['_native_outcome_id'])
+        self._put('artifacts', item)
+        self._event('artifact.updated', self._public(item), item['bot_id'], owner['id'])
+
     def continue_native_work(self, source_id, payload):
         from .service import ServiceError, now, uid, digest, encoded, require_text
         from .work_capacity import execution_key
@@ -94,8 +117,8 @@ class NativeOutcomes:
                     or self._task_work_is_paused(owner)):
                 raise ServiceError(409, 'This work is paused, cancelled, or belongs to an earlier conversation.')
             native = self.kanban.tasks.get(owner['id'], {})
-            if native.get('id') != identity or native.get('status') not in ('triage', 'blocked'):
-                raise ServiceError(409, 'This native outcome is not blocked. Read its current result or activity.')
+            if native.get('id') != identity or native.get('status') not in ('triage', 'blocked', 'done'):
+                raise ServiceError(409, 'This native outcome is not blocked or completed. Read its current result or activity.')
             if owner['status'] not in ('completed', 'failed', 'waiting') or owner.get('_waiting_on'):
                 raise ServiceError(409, 'Wait for this task and its existing dependencies.')
             if owner.get('_return_pending'):
@@ -107,6 +130,7 @@ class NativeOutcomes:
             if any(d['status'] == 'pending' and d['task_id'] in {t['id'] for t in related}
                    for d in self._all('decisions')):
                 raise ServiceError(409, 'The existing decision must be answered before work continues.')
+            self._restore_native_work_owner(owner)
             related_ids = {t['id'] for t in related}
             recovery = owner.setdefault('_self_recovery', {})
             recovery['previous_task_id'] = owner['id']

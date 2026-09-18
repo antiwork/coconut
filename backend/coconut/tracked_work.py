@@ -493,7 +493,9 @@ class TrackedWork:
             binding = item.get('external_wait') if item else None
             routine_report = bool(binding and
                 (self._assignment(task).get('_native_job') or {}).get('id') == binding['job_id'])
-            report_only = bool(item and (self._assignment(task).get('_source_audit_prompt') or routine_report))
+            # A progress report cannot replace the execution that owns a native outcome.
+            report_only = bool(item and (item.get('_native_outcome_id') and item['task_id'] != task_id
+                or self._assignment(task).get('_source_audit_prompt') or routine_report))
             if item:
                 owner = self._get('tasks', item['task_id'])
                 if owner['id'] != task_id and owner['created_at'] >= task['created_at']:
