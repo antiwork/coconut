@@ -125,6 +125,33 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.service._put('tasks', dict(source, bot_id=owner['bot_id']))
         self.assertEqual(self.resume(source)['task_id'], owner['id'])
 
+    def test_promoted_claim_retains_work_for_a_human_reply_after_completion(self):
+        owner, source = self.scheduled_native()
+        self.resume(source)
+        continued = self.service._get('tasks', owner['id'])
+        continued['status'] = 'completed'
+        self.service._put('tasks', continued)
+        self.service.kanban.tasks[owner['id']]['status'] = 'done'
+        result = self.write('/v1/tasks/' + owner['id'] + '/replies',
+                            {'text': 'Check the additional review finding in this same work.'})
+        next_task = self.service._get('tasks', result['id'])
+        self.assertEqual(next_task['_execution_session_id'], owner['_execution_session_id'])
+        item = self.service._get('artifacts', next_task['_work_context_id'])
+        self.assertEqual(item['_native_outcome_id'], 't_existing')
+        self.assertEqual(len([a for a in self.service._all('artifacts') if a['kind'] == 'work']), 1)
+
+    def test_promoted_claim_reuses_its_existing_work_item(self):
+        owner, source = self.scheduled_native()
+        self.service._put('artifacts', dict(id='retained-work', task_id=owner['id'],
+            bot_id=owner['bot_id'], kind='work', title='The original outcome', status='waiting'))
+        self.resume(source)
+        continued = self.service._get('tasks', owner['id'])
+        self.assertEqual(continued['_work_context_id'], 'retained-work')
+        item = self.service._get('artifacts', 'retained-work')
+        self.assertEqual(item['title'], 'The original outcome')
+        self.assertEqual(item['_native_outcome_id'], 't_existing')
+        self.assertEqual(len(self.service._all('artifacts')), 1)
+
     def test_scheduled_continuation_rejects_foreign_caller(self):
         owner, source = self.scheduled_native()
         other = self.write('/v1/bots', {'name': 'Unrelated'})

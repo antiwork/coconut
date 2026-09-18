@@ -46,6 +46,29 @@ CONTINUE_SCHEMA = {
 
 
 class NativeOutcomes:
+    def _retain_native_work(self, owner, native):
+        from .service import ServiceError, now
+        if owner.get('_work_context_id'):
+            return
+        items = [a for a in self._all('artifacts') if a['kind'] == 'work' and a['task_id'] == owner['id']]
+        if len(items) > 1:
+            raise ServiceError(409, 'Choose one retained Work item for this native outcome.')
+        if items:
+            item = items[0]
+            if item.get('_native_outcome_id') not in (None, native['id']):
+                raise ServiceError(409, 'The retained Work item belongs to another native outcome.')
+            item['_native_outcome_id'] = native['id']
+        else:
+            title = native.get('title') or owner['title']
+            item = dict(id=str(uuid5(UUID(owner['id']), 'work')), bot_id=owner['bot_id'],
+                task_id=owner['id'], kind='work', title=title, status='queued', activity='Queued',
+                preview='', url=None, created_at=now(), observed_at=now(),
+                _work_key='native-' + native['id'], _native_outcome_id=native['id'],
+                completion_condition=title)
+        owner['_work_context_id'] = item['id']
+        self._put('artifacts', item)
+        self._event('artifact.updated' if items else 'artifact.created', self._public(item), owner['bot_id'], owner['id'])
+
     def _native_continuation_owner(self, identity):
         """Resolve the caller's native ID through Coconut's durable owner mapping."""
         from .service import ServiceError
@@ -185,6 +208,8 @@ class NativeOutcomes:
             if any(d['status'] == 'pending' and d['task_id'] in {t['id'] for t in related}
                    for d in self._all('decisions')):
                 raise ServiceError(409, 'The existing decision must be answered before work continues.')
+            if not owner.get('_native_outcome_id'):
+                self._retain_native_work(owner, native)
             owner['_native_outcome_id'] = identity
             self._restore_native_work_owner(owner)
             related_ids = {t['id'] for t in related}
@@ -357,16 +382,9 @@ class NativeOutcomes:
                         task['_return_dependency_id'] = origin.get('_return_dependency_id', origin_id)
                     if origin.get('_reply_to_task_id'):
                         task['_reply_to_task_id'] = origin['_reply_to_task_id']
-                    artifact_id = str(uuid5(UUID(identity), 'work'))
-                    task['_work_context_id'] = artifact_id
+                    self._retain_native_work(task, native)
                     self._put('tasks', task)
-                    item = dict(id=artifact_id, bot_id=task['bot_id'], task_id=identity, kind='work',
-                        title=native['title'], status='queued', activity='Queued', preview='', url=None,
-                        created_at=now(), observed_at=now(), _work_key='native-' + native['id'],
-                        _native_outcome_id=native['id'], completion_condition=native['title'])
-                    self._put('artifacts', item)
                     self._event('task.created', self._public(task), task['bot_id'], identity)
-                    self._event('artifact.created', self._public(item), task['bot_id'], identity)
                 bindings.append(dict(op='bind', id=native['id'], external_id=identity))
         for binding in bindings:
             self.kanban.call(binding)
