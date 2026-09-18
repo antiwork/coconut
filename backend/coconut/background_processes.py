@@ -318,6 +318,7 @@ class BackgroundProcesses:
                 bot_lock.release()
 
     def _prepare_native_reply(self, task, text, result_status):
+        from .native_outcomes import outcome_owner_id
         ready = True
         owners = {task['id']} if task.get('_native_relay') or task.get('_native_intake') else set()
         if task.get('_relay_callback_owner'):
@@ -336,13 +337,17 @@ class BackgroundProcesses:
             turns = [t for t in self._all('tasks')
                      if t['id'] == owner_id or t.get('_relay_callback_owner') == owner_id]
             # Creation finishes before the scheduler adopts the native task.
-            adopted = {t.get('_native_outcome_id') for t in turns}
+            adopted = {t['id'] for t in turns if t.get('_native_outcome_id')}
             for record in self._native_task_receipts(owner_id):
                 if record['action']['name'] != 'kanban_create':
                     continue
                 created = result_value(record)
                 pending = pending or record['state'] == 'executing' or (
-                    isinstance(created, dict) and created.get('task_id') and created['task_id'] not in adopted)
+                    isinstance(created, dict) and created.get('task_id')
+                    and outcome_owner_id(owner_id, created['task_id']) not in adopted)
+            pending = pending or any(t['id'] != task['id'] and t.get('_native_outcome_id')
+                                     and (self.kanban.tasks.get(t['id'], {}) if self.kanban else {}).get('status')
+                                     not in ('done', 'archived') for t in turns)
             pending = pending or any(self._background_pending(t['id'], finishing_task_id=task['id'])
                                      or (t['id'] != task['id'] and t['status'] in ('queued', 'working', 'needs_you', 'paused'))
                                      for t in turns)

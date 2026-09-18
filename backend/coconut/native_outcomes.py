@@ -5,6 +5,10 @@ import time
 from uuid import UUID, uuid5
 
 
+def outcome_owner_id(origin_id, native_id):
+    return str(uuid5(UUID(origin_id), 'kanban:' + native_id))
+
+
 CHAT_INSTRUCTIONS = (
     'Reply directly to this conversation’s sender. '
     'For work with an outcome beyond this reply, create one native kanban task before starting it. '
@@ -295,7 +299,7 @@ class NativeOutcomes:
                 origin = json.loads(row[0])
                 if native.get('tenant') != origin['bot_id']:
                     continue
-                identity = str(uuid5(UUID(origin_id), 'kanban:' + native['id']))
+                identity = outcome_owner_id(origin_id, native['id'])
                 if not self.db.execute('SELECT 1 FROM tasks WHERE id=?', (identity,)).fetchone():
                     receipt = self.db.execute(
                         "SELECT data FROM native_receipts WHERE json_extract(data,'$.task_id')=? "

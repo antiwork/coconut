@@ -676,6 +676,20 @@ print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve t
         self.service._drain_returns()
         self.assertEqual(len([d for d in self.service._all('deliveries')
                               if d['source_task_id'] == owner['id'] and d['target_bot_id'] == self.bot['id']]), 2)
+        self.service.continue_native_work(source['id'], dict(task_id=identity, message='Verify the later accepted input'))
+        continued = self.service._get('tasks', owner['id'])
+        row = self.service._kanban_row(continued, continued, 'ready', priority=10)
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._reconcile_kanban()
+        successor = self.service._get('tasks', owner['id'])['_native_outcome_id']
+        self.assertNotEqual(successor, identity)
+        self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='Later input verified')", successor)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._reconcile_kanban()
+        self.service._drain_returns()
+        self.assertEqual([d['text'] for d in self.service._all('deliveries') if d['source_task_id'] == owner['id']],
+                         ['The worker failed', 'The requested result is ready', 'Later input verified'])
 
     def test_each_native_result_returns_after_shared_callback_work_finishes(self):
         import json
@@ -707,6 +721,10 @@ for title in ('First result', 'Second result'):
         for owner in owners:
             row = self.service._kanban_row(owner, owner, 'ready', priority=10)
             self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+        with self.service.transaction():
+            second = next(t for t in owners if t['_native_outcome_id'] == identities[1])
+            second['status'] = 'completed'
+            self.service._put('tasks', second)
         self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='First result verified')", identities[0])
         self.service.kanban.call({'op': 'snapshot'})
         self.service._reconcile_kanban()
