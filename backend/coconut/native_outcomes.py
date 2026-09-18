@@ -333,7 +333,7 @@ class NativeOutcomes:
             self.kanban.call({'op': 'snapshot'})
 
     def _native_retry(self, task, native):
-        from .service import now
+        from .service import now, uid
         if (task['status'] not in ('completed', 'failed') or native['status'] != 'ready'
                 or self._task_paused(task) or self._automatic_work_is_paused(task)
                 or any(d['task_id'] == task['id'] and d['status'] == 'pending' for d in self._all('decisions'))):
@@ -345,6 +345,7 @@ class NativeOutcomes:
         records = list({r['id']: r for r in previous.get('unknown_tools', []) + records}.values())
         self._advance_input(task)
         task.update(status='queued', summary='Checking the previous result', updated_at=now(),
+            _background_return_after=now(), _background_return_id=uid(),
             _self_recovery=dict(previous, attempt=native.get('consecutive_failures', 0), previous_task_id=task['id'],
                 failure=native.get('last_failure_error'), unknown_tools=records,
                 work=previous.get('work', []), decisions=previous.get('decisions', [])))

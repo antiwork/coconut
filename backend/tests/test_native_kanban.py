@@ -613,6 +613,15 @@ print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve t
         with self.assertRaises(ServiceError) as rejected:
             self.service.continue_native_work(other['id'], dict(task_id=identity, message='Continue'))
         self.assertEqual(rejected.exception.status, 403)
+        with self.service.transaction():
+            owner = self.service._get('tasks', owner['id'])
+            owner.update(status='failed', summary='The worker failed')
+            self.service._prepare_return(owner, owner['summary'], 'failed')
+            self.service._put('tasks', owner)
+        self.service._drain_returns()
+        with self.service.transaction():
+            owner = self.service._get('tasks', owner['id'])
+            self.service._native_retry(owner, {'status': 'ready'})
         import json
         owner = self.service._get('tasks', owner['id'])
         row = self.service._kanban_row(owner, owner, 'ready', priority=10)
@@ -623,7 +632,7 @@ print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve t
             self.service._prepare_return(owner, owner['summary'], 'completed')
             self.service._put('tasks', owner)
         self.assertNotIn('_return_pending', owner)
-        self.assertNotIn('_native_reply_pending', self.service._get('tasks', origin['task_id']))
+        self.assertTrue(self.service._get('tasks', origin['task_id'])['_native_relay_result']['failed'])
         self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='The requested result is ready')", identity)
         self.service.kanban.call({'op': 'snapshot'})
         self.service._reconcile_kanban()
@@ -633,8 +642,12 @@ print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve t
         self.service._drain_returns()
         returned = [d for d in self.service._all('deliveries')
                     if d['source_task_id'] == owner['id'] and d['target_bot_id'] == self.bot['id']]
-        self.assertEqual(len(returned), 1)
-        self.assertEqual(returned[0]['text'], 'The requested result is ready')
+        self.assertEqual(len(returned), 2)
+        self.assertEqual(returned[-1]['text'], 'The requested result is ready')
+        self.service._reconcile_kanban()
+        self.service._drain_returns()
+        self.assertEqual(len([d for d in self.service._all('deliveries')
+                              if d['source_task_id'] == owner['id'] and d['target_bot_id'] == self.bot['id']]), 2)
 
     def test_native_intake_is_idempotent_and_followup_keeps_owner(self):
         origin = self.task('Fix two separate defects')
