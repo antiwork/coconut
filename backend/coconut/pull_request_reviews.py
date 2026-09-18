@@ -20,6 +20,10 @@ PR_REVIEW_INSTRUCTIONS = (
     'Recommend Merge when justified and include a Leave open option. '
     'Reuse an existing pending merge decision for this PR. A choice must identify the PR and the scope of the merge. '
     'Set merge_pr_url on that coconut_ask card to the tracked PR URL so an external merge retires it. '
+    'For a merged or closed PR, verify its current GitHub state and the original accepted scope. '
+    'Verify whether the accepted outcome is complete and record evidence on the existing native task. '
+    'A closed PR does not prove the accepted outcome is complete. Preserve unfinished work and human stops. '
+    'Do not merge, reopen, publish, or deploy in response to a merged or closed observation. '
     'Do not merge now. After explicit authorization, recheck the exact head and use a merge operation that rejects a changed head. '
 )
 
@@ -275,13 +279,20 @@ class PullRequestReviews:
                     for artifact in self._all('artifacts'):
                         if (artifact['bot_id'] != bot_id or artifact['kind'] != 'pr'
                                 or not artifact.get('_review_task_id') or artifact.get('refresh_error')
-                                or artifact.get('pr_state') != 'open'
-                                or not (artifact.get('checks_state') in ('passed', 'failed')
+                                or (artifact.get('pr_state') != 'open' and not artifact.get('_terminal_review_pending'))
+                                or not (artifact.get('_terminal_review_pending') or artifact.get('checks_state') in ('passed', 'failed')
                                         or artifact.get('required_checks_state') in ('passed', 'failed', 'unverified')
                                         or artifact.get('review_checks'))
                                 or not artifact.get('head_sha')):
                             continue
+                        terminal = artifact.get('pr_state') in ('merged', 'closed')
                         task = self._get('tasks', artifact['_review_task_id'])
+                        native = self.kanban.tasks.get(task['id'], {}) if self.kanban else {}
+                        if terminal:
+                            if task.get('_native_outcome_id') and native.get('id') != task['_native_outcome_id']:
+                                continue
+                            if native.get('status') in ('done', 'archived'):
+                                continue
                         if not self._can_resume_process(task, bot) or self._task_paused(task):
                             continue
                         # One outstanding review per PR, even when several bots register it.
@@ -291,16 +302,19 @@ class PullRequestReviews:
                         owner = self._pr_review_owner(peers)
                         if not owner or owner['id'] != artifact['id']:
                             continue
-                        if self._pr_has_recorded_merge_decision(artifact, peers):
+                        if not terminal and self._pr_has_recorded_merge_decision(artifact, peers):
                             continue
+                        review_key = f"{artifact['pr_state']}:{artifact['head_sha']}" if terminal else artifact['head_sha']
                         signal = json.dumps([artifact['head_sha'], artifact.get('checks_state'),
                                              artifact.get('required_checks_state'), artifact.get('review_checks'),
                                              artifact.get('check_failures')])
-                        assessed = [a for a in peers if artifact['head_sha'] in a.get('_reviewed_states', {})]
+                        assessed = [a for a in peers if review_key in a.get('_reviewed_states', {})]
                         latest = max(assessed, key=lambda a: a.get('_review_checked_at', ''), default=None)
-                        seen = (latest['_reviewed_states'][artifact['head_sha']] == signal if latest else
-                                any(artifact['head_sha'] in self._pr_reviewed_heads(a) for a in peers))
+                        seen = (latest['_reviewed_states'][review_key] == signal if latest else
+                                not terminal and any(artifact['head_sha'] in self._pr_reviewed_heads(a) for a in peers))
                         if seen:
+                            if terminal:
+                                continue
                             from datetime import datetime, timezone
                             from .decision_freshness import age
                             checked = max((a.get('_review_checked_at') or self._get('tasks', a['_review_task_id']).get('updated_at', '')
@@ -310,23 +324,25 @@ class PullRequestReviews:
                             projected = next(a for a in self._work_projection([dict(p) for p in peers]) if a['id'] == artifact['id'])
                             if projected['work_state'] not in ('waiting', 'needs_recovery') or projected['work_dependencies']:
                                 continue
+                        summary = 'Checking the final PR result.' if terminal else 'Checking merge readiness.'
                         assignment = self._assignment(task)
                         if assignment.get('_waiting_on') or self._background_pending(assignment['id']):
                             continue
                         if assignment['id'] != task['id'] and assignment['status'] == 'failed':
-                            assignment.update(status='waiting', summary='Checking merge readiness.', updated_at=now())
+                            assignment.update(status='waiting', summary=summary, updated_at=now())
                             self._put('tasks', assignment)
                             self._event('task.updated', self._public(assignment), assignment['bot_id'], assignment['id'])
                         epoch = task.get('_conversation_epoch')
                         self._advance_input(task)
-                        task.update(status='queued', updated_at=now(), summary='Checking merge readiness.',
+                        task.update(status='queued', updated_at=now(), summary=summary,
                             _conversation_epoch=epoch,
-                            _pr_review={k: artifact.get(k) for k in ('url', 'head_sha', 'checked_at', 'draft',
+                            _pr_review={k: artifact.get(k) for k in ('url', 'pr_state', 'head_sha', 'checked_at', 'draft',
                                                                   'checks_state', 'required_checks_state', 'review_checks', 'check_failures')},
                             _background_return_after=now(), _background_return_id=uid())
                         artifact['_reviewed_heads'] = sorted(self._pr_reviewed_heads(artifact) | {artifact['head_sha']})
                         artifact['_reviewed_head'] = artifact['head_sha']
-                        artifact['_reviewed_states'] = dict(artifact.get('_reviewed_states', {}), **{artifact['head_sha']: signal})
+                        artifact['_reviewed_states'] = dict(artifact.get('_reviewed_states', {}), **{review_key: signal})
+                        artifact.pop('_terminal_review_pending', None)
                         artifact['_review_checked_at'] = now()
                         self._put('artifacts', artifact)
                         self._put('tasks', task)

@@ -2448,6 +2448,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         continue
                     current['checked_at'] = observation.checked_at
                     if observation.observed:
+                        if current.get('pr_state') == 'open' and observation.pr_state in ('merged', 'closed'):
+                            current['_terminal_review_pending'] = True
                         current.update(status=observation.state, title=(observation.title or current['title'])[:200], preview=observation.detail, head_sha=observation.head_sha, observed_at=observation.checked_at, refresh_error=None, pr_state=observation.pr_state, draft=observation.draft, checks_state=observation.checks_state, required_checks_state=observation.required_checks_state, review_checks=observation.review_checks, check_failures=observation.check_failures)
                     else:
                         current.update(refresh_error=observation.detail, preview=observation.detail)

@@ -106,6 +106,86 @@ class PRReviewTests(unittest.TestCase):
         self.green()
         self.assertEqual(len(self.service.snapshot()['decisions']), 1)
 
+    def test_external_merge_resumes_original_owner_once(self):
+        from coconut.hermes_worker import conversation_input
+        self.green(pr_state='merged', checks_state='unknown')
+        task = self.service._get('tasks', self.child_id)
+        self.assertEqual(task['status'], 'queued')
+        self.assertEqual(task['_pr_review']['pr_state'], 'merged')
+        prompt, _ = conversation_input({'operation': 'start', 'task': task, 'history': []})
+        self.assertIn('Verify whether the accepted outcome is complete', prompt)
+        self.assertIn('Do not merge, reopen, publish, or deploy', prompt)
+        task['status'] = 'completed'
+        self.service._put('tasks', task)
+        self.service._queue_pr_reviews()
+        self.assertEqual(self.service._get('tasks', self.child_id)['status'], 'completed')
+
+    def test_external_close_waits_for_active_owner(self):
+        task = self.service._get('tasks', self.child_id)
+        task['status'] = 'working'
+        self.service._put('tasks', task)
+        self.green(pr_state='closed', checks_state='unknown')
+        self.assertEqual(self.service._get('tasks', self.child_id)['status'], 'working')
+        task['status'] = 'completed'
+        self.service._put('tasks', task)
+        self.service._queue_pr_reviews()
+        task = self.service._get('tasks', self.child_id)
+        self.assertEqual(task['status'], 'queued')
+        self.assertEqual(task['_pr_review']['pr_state'], 'closed')
+
+    def test_external_close_preserves_cancelled_work(self):
+        self.write('/v1/work/items/' + self.artifact_id + '/cancel', {})
+        self.green(pr_state='closed', checks_state='unknown')
+        self.assertEqual(self.service._get('tasks', self.child_id)['status'], 'cancelled')
+
+    def test_terminal_observation_keeps_completed_native_outcome_closed(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        native = SimpleNamespace(tasks={self.child_id: {'id': 't_finished', 'status': 'done'}})
+        self.green(pr_state='merged', checks_state='unknown')
+        task = self.service._get('tasks', self.child_id)
+        task['status'] = 'completed'
+        self.service._put('tasks', task)
+        artifact = self.service._get('artifacts', self.artifact_id)
+        artifact['_terminal_review_pending'] = True
+        artifact.pop('_reviewed_states', None)
+        self.service._put('artifacts', artifact)
+        with patch.object(self.service, 'kanban', native):
+            self.service._queue_pr_reviews()
+        self.assertEqual(self.service._get('tasks', self.child_id)['status'], 'completed')
+
+    def test_terminal_observation_waits_for_its_native_snapshot(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        task = self.service._get('tasks', self.child_id)
+        task['_native_outcome_id'] = 't_original'
+        self.service._put('tasks', task)
+        artifact = self.service._get('artifacts', self.artifact_id)
+        artifact.update(pr_state='merged', _terminal_review_pending=True)
+        self.service._put('artifacts', artifact)
+        for rows in ({}, {self.child_id: {'id': 't_other', 'status': 'scheduled'}}):
+            with self.subTest(rows=rows), patch.object(self.service, 'kanban', SimpleNamespace(tasks=rows)):
+                self.service._queue_pr_reviews()
+                self.assertEqual(self.service._get('tasks', self.child_id)['status'], 'completed')
+        native = SimpleNamespace(tasks={self.child_id: {'id': 't_original', 'status': 'scheduled'}})
+        with patch.object(self.service, 'kanban', native):
+            self.service._queue_pr_reviews()
+        self.assertEqual(self.service._get('tasks', self.child_id)['status'], 'queued')
+
+    def test_terminal_observation_preserves_human_pause(self):
+        from unittest.mock import patch
+        with patch.object(self.service, '_work_pause', return_value={'id': 'human-stop'}):
+            self.green(pr_state='merged', checks_state='unknown')
+        self.assertEqual(self.service._get('tasks', self.child_id)['status'], 'completed')
+        self.assertTrue(self.service._get('artifacts', self.artifact_id)['_terminal_review_pending'])
+
+    def test_retained_closed_pr_does_not_reopen_history(self):
+        artifact = self.service._get('artifacts', self.artifact_id)
+        artifact.update(pr_state='merged', checks_state='passed')
+        self.service._put('artifacts', artifact)
+        self.service._queue_pr_reviews()
+        self.assertEqual(self.service._get('tasks', self.child_id)['status'], 'completed')
+
     def test_restart_does_not_duplicate_queued_review(self):
         self.green()
         turn=self.service._get('tasks',self.child_id)['_native_turn_id']
