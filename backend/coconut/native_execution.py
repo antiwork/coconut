@@ -108,6 +108,16 @@ class NativeExecution:
                 if subscription(record):
                     record['_process_registered'] = True
                 self._put('native_receipts', record)
+                if record['action']['name'] == 'kanban_comment':
+                    try:
+                        result = json.loads(record['result'])
+                    except (ValueError, TypeError):
+                        result = {}
+                    identity = record['action']['arguments'].get('task_id')
+                    if (isinstance(result, dict) and result.get('ok') is True
+                            and result.get('task_id') == identity and result.get('comment_id') is not None):
+                        task['_source_native_ids'] = sorted(set(task.get('_source_native_ids', [])) | {identity})
+                        self._put('tasks', task)
                 for decision in self._all('decisions'):
                     if decision['task_id'] == task_id and decision['status'] == 'approved' and decision.get('_action_hash') == record['action_hash']:
                         try:
