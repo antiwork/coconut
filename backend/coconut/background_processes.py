@@ -74,7 +74,7 @@ class BackgroundProcesses:
                 record['_process_registered'] = True
                 self._put('native_receipts', record)
 
-    def _background_pending(self, task_id, *, finishing_task_id=None):
+    def _background_pending(self, task_id, *, finishing_task_id=None, excluding_task_ids=()):
         with self.lock:
             turns = [json.loads(row[0]) for row in self.db.execute(
                 "SELECT data FROM tasks WHERE id=? OR json_extract(data, '$._assignment_task_id')=?",
@@ -87,6 +87,7 @@ class BackgroundProcesses:
                     AND json_extract(contexts.data, '$._decision_refresh')=1)""",
                 (task_id, task_id))
             return (any((subscription(r) or r.get('_relay_task_id') or r.get('_wait_task_id') or r.get('_wait_process_receipt') or r.get('_wait_decision_id')) and not r.get('_process_delivery')
+                        and not (r.get('_relay_task_id') in excluding_task_ids or r.get('_wait_task_id') in excluding_task_ids)
                         for r in (json.loads(row[0]) for row in receipts))
                     or any(t['id'] != finishing_task_id and t.get('_background_completion')
                            and t['status'] in ('queued', 'working', 'needs_you', 'paused') for t in turns))
@@ -317,6 +318,7 @@ class BackgroundProcesses:
                 bot_lock.release()
 
     def _prepare_native_reply(self, task, text, result_status):
+        ready = True
         owners = {task['id']} if task.get('_native_relay') else set()
         if task.get('_relay_callback_owner'):
             owners.add(task['_relay_callback_owner'])
@@ -337,11 +339,13 @@ class BackgroundProcesses:
                                      or (t['id'] != task['id'] and t['status'] in ('queued', 'working', 'needs_you', 'paused'))
                                      for t in turns)
             if result_status != 'failed' and pending:
+                ready = False
                 continue
             owner['_native_reply_pending'] = dict(owner['_native_relay'], text=text, failed=result_status == 'failed')
             owner['_native_relay_result'] = dict(owner['_native_reply_pending'])
             if owner_id != task['id']:
                 self._put('tasks', owner)
+        return ready
 
     def _can_resume_process(self, task, bot):
         assignment = self._assignment(task)

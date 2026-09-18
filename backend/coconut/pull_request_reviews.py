@@ -101,13 +101,17 @@ class PullRequestReviews:
                 owner = tasks.get(artifact.get('_review_task_id'))
                 if owner:
                     linked.update(self._work_chain(owner, tasks, records, include_continuations=True))
+        # The request to offer this card cannot require the card's own answer first.
+        decision_tasks = {task['id'], self._assignment(task)['id']}
         for owner, _ in linked.values():
             if (owner['status'] == 'cancelled' or self._assignment(owner)['status'] == 'cancelled'
                     or self._get('exchanges', owner['exchange_id']).get('cancelled')):
                 continue
             resolved = task.get('_resolved_dependency_id') if task.get('_assignment_task_id') == owner['id'] else None
-            waiting = [identity for identity in owner.get('_waiting_on', []) if identity != resolved]
-            if self._background_pending(owner['id'], finishing_task_id=task['id']) or waiting:
+            waiting = [identity for identity in owner.get('_waiting_on', [])
+                       if identity != resolved and identity not in decision_tasks]
+            if self._background_pending(owner['id'], finishing_task_id=task['id'],
+                                        excluding_task_ids=decision_tasks) or waiting:
                 raise ServiceError(400, 'The PR review still has a pending worker or delegated result. '
                     'Read its result before offering a merge decision.')
         return requested_at

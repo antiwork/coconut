@@ -1647,7 +1647,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             task['_native_return_prepared'] = list(result_key)
         if result_status == 'failed':
             self._hold_failed_followup(task)
-        self._prepare_native_reply(task, text, result_status)
+        if not self._prepare_native_reply(task, text, result_status):
+            return
         if not task.get('source_bot_id') or task.get('_is_return'):
             return
         turn_ids = {t['id'] for t in self._all('tasks') if t['id'] == task['id'] or t.get('_assignment_task_id') == task['id']}

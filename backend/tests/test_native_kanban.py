@@ -592,9 +592,13 @@ print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve t
         with self.service.transaction():
             intake = self.service._get('tasks', origin['task_id'])
             intake['status'] = 'completed'
-            self.service._prepare_native_reply(intake, 'I started the work', 'completed')
+            self.service._finish_assignment_turn(intake, 'I started the work', 'completed')
             self.service._put('tasks', intake)
         self.assertNotIn('_native_relay_result', intake)
+        self.assertNotIn('_return_pending', intake)
+        self.service._drain_returns()
+        self.assertFalse(any(d['source_task_id'] == intake['id'] for d in self.service._all('deliveries')))
+        self.assertIn(intake['id'], self.service._get('tasks', source['id'])['_waiting_on'])
         with self.service.transaction():
             owner.update(status='failed', _conversation_epoch=self.service._setting('conversation_epoch'))
             self.service._put('tasks', owner)
