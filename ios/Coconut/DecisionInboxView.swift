@@ -176,7 +176,7 @@ struct DecisionInboxView: View {
             if decisionsAfter(decision).count > 1 {
                 RoundedRectangle(cornerRadius: 24)
                     .fill(BoardStyle.surface)
-                    .overlay(RoundedRectangle(cornerRadius: 24).stroke(.white.opacity(0.12)))
+                    .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(BoardStyle.line))
                     .frame(height: cardHeight)
                     .scaleEffect(0.92 + progress * 0.04, anchor: .bottom)
                     .offset(y: 20 - progress * 10)
@@ -185,7 +185,7 @@ struct DecisionInboxView: View {
             if let next = decisionsAfter(decision).first {
                 nextCard(next)
                     .frame(height: cardHeight)
-                    .overlay(RoundedRectangle(cornerRadius: 24).stroke(.white.opacity(0.16)))
+                    .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(BoardStyle.line))
                     .scaleEffect(0.96 + progress * 0.04, anchor: .bottom)
                     .offset(y: 10 * (1 - progress))
                     .allowsHitTesting(false).accessibilityHidden(true)
@@ -251,13 +251,8 @@ struct DecisionInboxView: View {
                 Image(systemName: "chevron.right").font(.caption2)
             }.frame(height: 44).padding(.horizontal, 16)
             Divider()
-            VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(decision.title).font(.body.weight(.semibold))
-                    if let context = decision.cardContext {
-                        Text(context).font(.subheadline).foregroundStyle(.secondary)
-                    }
-                }
+            VStack(alignment: .leading, spacing: 16) {
+                DecisionIntroduction(decision: decision)
                 if let draft = decision.draft {
                     MessageDraftContent(draft: draft)
                     MessageDraftActions()

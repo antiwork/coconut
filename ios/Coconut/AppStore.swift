@@ -1695,7 +1695,11 @@ private enum ProtectedCache {
 
 private extension AppStore {
     static func previewSnapshot() -> StateSnapshot {
-        do { return try PreviewStateFixture.load() }
+        var resource = "PreviewState"
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("--card-sources-preview") { resource = "CardSourcesPreview" }
+        #endif
+        do { return try PreviewStateFixture.load(resource: resource) }
         catch { preconditionFailure("The bundled preview fixture could not be loaded: \(error)") }
     }
 }

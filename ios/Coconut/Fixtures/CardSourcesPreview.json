@@ -1,0 +1,205 @@
+{
+  "artifacts": [],
+  "bots": [
+    {
+      "archived": false,
+      "avatar": "fruit.coconut",
+      "color": "DA7756",
+      "created_at": "2026-09-07T12:00:00Z",
+      "id": "00000000-0000-4000-8000-000000000001",
+      "instructions": "Keep progress brief. Prepare local changes. Ask before actions outside the working directory.",
+      "last_message": "The patch is ready. One decision needs you.",
+      "name": "Desk",
+      "pinned": false,
+      "role": "Code & pull requests",
+      "session_id": "00000000-0000-4000-8000-000000000011",
+      "status": "needs_you",
+      "unread_count": 0,
+      "model_override": null,
+      "effective_model": {
+        "model": "preview-standard",
+        "provider": "preview",
+        "reasoning_effort": "medium"
+      }
+    }
+  ],
+  "cursor": 0,
+  "decisions": [
+    {
+      "action_type": "question",
+      "bot_id": "00000000-0000-4000-8000-000000000001",
+      "consequences": "",
+      "created_at": "2026-09-08T11:16:00Z",
+      "explanation": "",
+      "id": "preview-payout-alerts",
+      "options": [
+        {
+          "id": "include",
+          "label": "Include both",
+          "explanation": "Check both types of alert automatically.",
+          "answer": "approve"
+        },
+        {
+          "id": "keep",
+          "label": "Keep current routing",
+          "explanation": "Keep these alerts outside the automatic checks.",
+          "answer": "approve"
+        }
+      ],
+      "proposal_preview": "--- a/retry.py\n+++ b/retry.py\n@@ -8,1 +8,1 @@\n-    execute(action, new_id())\n+    execute(action, action.id)\n",
+      "recommended": "approve",
+      "recommended_option_id": "include",
+      "resource": "",
+      "revision": 1,
+      "status": "pending",
+      "task_id": "00000000-0000-4000-8000-000000000021",
+      "title": "Include payout alerts in finance checks?",
+      "urgency": "normal",
+      "evidence": "",
+      "uncertainty": "",
+      "risk": "",
+      "previews": [],
+      "previous_decision_id": null,
+      "selected_option_id": null,
+      "selected_option_label": null,
+      "context": "Weekly payout failures and negative-balance reports currently miss the automatic finance checks. Include both so the finance bot can investigate them.\n\nThis changes routing only. It does not authorize financial actions.",
+      "sources": [
+        {
+          "kind": "email",
+          "title": "Weekly payout failures",
+          "url": "https://example.com/email/weekly-payout-failures"
+        },
+        {
+          "kind": "email",
+          "title": "Negative-balance reports",
+          "url": "https://example.com/email/negative-balance-reports"
+        }
+      ]
+    },
+    {
+      "action_type": "question",
+      "bot_id": "00000000-0000-4000-8000-000000000001",
+      "consequences": "",
+      "created_at": "2026-09-08T11:17:00Z",
+      "explanation": "",
+      "id": "preview-connection-fix",
+      "options": [
+        {
+          "id": "merge",
+          "label": "Merge the fix",
+          "explanation": "Include this change in the next app update.",
+          "answer": "approve"
+        },
+        {
+          "id": "wait",
+          "label": "Wait",
+          "explanation": "Keep the pull request open.",
+          "answer": "approve"
+        }
+      ],
+      "proposal_preview": "--- a/retry.py\n+++ b/retry.py\n@@ -8,1 +8,1 @@\n-    execute(action, new_id())\n+    execute(action, action.id)\n",
+      "recommended": "approve",
+      "recommended_option_id": "merge",
+      "resource": "",
+      "revision": 1,
+      "status": "pending",
+      "task_id": "00000000-0000-4000-8000-000000000021",
+      "title": "Merge the connection fix?",
+      "urgency": "normal",
+      "evidence": "",
+      "uncertainty": "",
+      "risk": "",
+      "previews": [],
+      "previous_decision_id": null,
+      "selected_option_id": null,
+      "selected_option_label": null,
+      "context": "Coconut reconnects when you return to the app. Tests pass, and the review has no open findings.\n\nMerge this fix to prepare the next app update.",
+      "sources": [
+        {
+          "kind": "pull_request",
+          "title": "coconut #42",
+          "url": "https://example.com/coconut/pull/42"
+        },
+        {
+          "kind": "issue",
+          "title": "coconut #37",
+          "url": "https://example.com/coconut/issues/37"
+        }
+      ]
+    }
+  ],
+  "messages": [],
+  "model": "preview-standard",
+  "model_configured": true,
+  "provider": "preview",
+  "server_time": "2026-09-08T12:00:00Z",
+  "tasks": [
+    {
+      "bot_id": "00000000-0000-4000-8000-000000000001",
+      "created_at": "2026-09-08T11:29:00Z",
+      "id": "00000000-0000-4000-8000-000000000021",
+      "session_id": "00000000-0000-4000-8000-000000000011",
+      "status": "needs_you",
+      "summary": "Waiting for approval to save the patch.",
+      "thread_id": "00000000-0000-4000-8000-000000000021",
+      "title": "Review finance alerts",
+      "updated_at": "2026-09-08T11:42:00Z"
+    }
+  ],
+  "model_catalog": {
+    "default": {
+      "model": "preview-standard",
+      "provider": "preview",
+      "base_url": null,
+      "reasoning_effort": "medium"
+    },
+    "models": [
+      {
+        "id": "preview-standard",
+        "name": "Preview Standard",
+        "provider": "preview",
+        "base_url": null,
+        "reasoning_efforts": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "default_reasoning_effort": "medium"
+      },
+      {
+        "id": "preview-focused",
+        "name": "Preview Focused",
+        "provider": "preview",
+        "base_url": null,
+        "reasoning_efforts": [
+          "low",
+          "high"
+        ],
+        "default_reasoning_effort": "high"
+      }
+    ],
+    "model_source": "Explicit preview fixture",
+    "default_source": "Explicit preview fixture"
+  },
+  "approvals": {
+    "default": "off",
+    "modes": [
+      {
+        "id": "off",
+        "label": "Full access",
+        "description": "Hermes skips approval prompts."
+      },
+      {
+        "id": "smart",
+        "label": "Auto",
+        "description": "Hermes reviews flagged actions."
+      },
+      {
+        "id": "manual",
+        "label": "Ask for flagged actions",
+        "description": "Hermes asks before flagged actions."
+      }
+    ]
+  },
+  "routines": []
+}

@@ -234,6 +234,8 @@ class DecisionInbox:
             if payload.get('choice') == 'modify':
                 revision = payload.get('revision', {})
                 from .decision_previews import attach_previews
+                from .decision_sources import attach_sources
+                attach_sources(decision, revision)
                 attach_previews(self, decision, revision)
                 result = self.edit_message_draft(decision, task,
                     dict(revision=decision['revision'], draft=revision.get('draft')), context['_reply_device'])
@@ -285,6 +287,8 @@ class DecisionInbox:
                 raise ServiceError(400, 'Use concise text for decision details.')
             decision[field] = value
         from .decision_previews import attach_previews
+        from .decision_sources import attach_sources
+        attach_sources(decision, revision)
         attach_previews(self, decision, revision)
         decision.setdefault('_answers', []).append({'choice': 'revise', 'correction': reason, 'decided_by': actor})
         self._put('decisions', decision)
@@ -327,6 +331,11 @@ DECISION_INSTRUCTIONS = (
     'production access, or a real product choice that the person has not already settled. '
     'When a delegated task needs a human answer, create its card; do not relay a prose question for another bot to repeat. '
     'If a card already asks the same question, refer to it without creating another card. '
+    'Use one card per human decision, even when several emails or issues trigger the same choice. '
+    'State the combined scope. Keep separate choices when their actions or risks differ. '
+    'Include the triggering issue, PR, email, or document in sources, with its exact link when available. '
+    'For email sources, use the subject as the title. If no link is available, omit the URL and retain the source label. '
+    'Never invent source links. New evidence for a pending choice belongs in the existing card. '
     'When answering a question about an existing card, explain in chat and leave that card pending. '
     'A text response with status replied closes its card and resumes the task. Apply the response in the normal conversation. '
     'Create a new card only if a human choice is still needed. Include the answer and current evidence in that card. '

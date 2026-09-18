@@ -12,8 +12,8 @@ enum PreviewStateFixture {
         "checked_at", "observed_at", "next_run_at", "last_run_at"
     ]
 
-    static func load(bundle: Bundle = .main, now: Date = Date()) throws -> StateSnapshot {
-        guard let url = bundle.url(forResource: "PreviewState", withExtension: "json") else {
+    static func load(bundle: Bundle = .main, now: Date = Date(), resource: String = "PreviewState") throws -> StateSnapshot {
+        guard let url = bundle.url(forResource: resource, withExtension: "json") else {
             throw Failure.missingResource
         }
         return try decode(Data(contentsOf: url), now: now)

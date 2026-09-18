@@ -173,6 +173,8 @@ class NativeExecution:
                             _action=action, _action_hash=digest(encoded(action)), _native=True,
                             _predicted_option_id=payload.get('predicted_option_id'), _receipt_id=payload.get('receipt_id'), _answers=[])
             from .decision_previews import attach_previews
+            from .decision_sources import attach_sources
+            attach_sources(decision, payload)
             attach_previews(self, decision, payload)
             if draft is not None:
                 decision['draft'] = draft

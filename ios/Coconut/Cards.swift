@@ -53,11 +53,17 @@ struct DecisionCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 24))
         .clipShape(RoundedRectangle(cornerRadius: 24))
+        .overlay {
+            if showsBot {
+                RoundedRectangle(cornerRadius: 24).strokeBorder(BoardStyle.line, lineWidth: 1)
+                    .allowsHitTesting(false).accessibilityHidden(true)
+            }
+        }
         .sheet(item: $editingDraft) { original in MessageDraftEditor(decision: original) }
     }
 
     private var cardContent: some View {
-        VStack(alignment: .leading, spacing: showsBot ? 10 : 14) {
+        VStack(alignment: .leading, spacing: 16) {
             if let previousId = decision.previousDecisionId,
                store.decisions.first(where: { $0.id == previousId })?.status != "replied" {
                 let previous = store.decisions.first { $0.id == previousId }
@@ -79,15 +85,8 @@ struct DecisionCard: View {
                 .accessibilityIdentifier("previous-decision-\(decision.id)")
             }
             HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(decision.title).font(.body.weight(.semibold))
-                        .fixedSize(horizontal: false, vertical: true)
-                    if !showsSelection, let summary = decision.cardContext {
-                        Text(summary).font(.subheadline).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                DecisionIntroduction(decision: decision, showsContext: !showsSelection)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 if !showsBot && !showsSelection {
                     Button(action: dismiss) {
                         Image(systemName: "xmark").font(.body).foregroundStyle(.secondary)
@@ -238,6 +237,55 @@ struct DecisionCard: View {
     }
 
 
+}
+
+struct DecisionIntroduction: View {
+    let decision: Decision
+    var showsContext = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(decision.title).font(.body.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                if !decision.cardSources.isEmpty {
+                    DecisionSources(sources: decision.cardSources)
+                }
+            }
+            if showsContext, let context = decision.cardContext {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(Array(context.components(separatedBy: "\n\n").enumerated()), id: \.offset) { _, paragraph in
+                        Text(paragraph).font(.subheadline).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct DecisionSources: View {
+    let sources: [DecisionSource]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(sources, id: \.self) { source in
+                Text(reference(source))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .font(.footnote)
+        .foregroundStyle(.secondary)
+        .tint(.secondary)
+    }
+
+    private func reference(_ source: DecisionSource) -> AttributedString {
+        var text = AttributedString("\(source.label) · \(source.title)" + (source.link == nil ? "" : " ↗"))
+        if let url = source.link {
+            text.link = url
+        }
+        return text
+    }
 }
 
 
