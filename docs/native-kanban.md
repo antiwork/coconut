@@ -16,6 +16,11 @@ The task's tenant and body identify the real Coconut bot.
 The adapter starts that bot's existing Hermes profile in a process dedicated to the work session.
 A card maps to native `review`. Native review dispatch is disabled for this board because the human answers through Inbox.
 Card replies reopen review through the native kernel. Duplicate phone requests retain their existing execution receipt.
+
+Hermes prevents automatic dispatch when a recent task comment links to a PR.
+For new accepted input, Coconut claims that existing task through the native kernel after checking worker capacity and the other native guards.
+The adapter records the input so an interrupted follow-up can retry without creating another task or workspace.
+Pending cards and paused work remain ineligible. Failed follow-ups retain the normal native retry path.
 A new request after completion creates a new native execution record and retains the previous result.
 
 Coconut supplies readiness for application dependencies and scheduled requests.
