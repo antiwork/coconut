@@ -310,9 +310,8 @@ class NativeOutcomes:
             "AND json_extract(data,'$.status')!='cancelled' "
             "AND json_extract(data,'$._same_outcome_as') IS NULL "
             "AND coalesce(json_extract(data,'$._hidden'),0)=0")]
+        candidates = [item for item in candidates if not self._retained_terminal_work(item)]
         for item in candidates:
-            if self._retained_terminal_work(item):
-                continue
             owner = self._get('tasks', item['task_id'])
             if (owner['status'] in ('working', 'cancelled') or owner.get('_assignment_task_id')
                     or self._task_paused(owner) or self._automatic_work_is_paused(owner) or self._work_pause(item)

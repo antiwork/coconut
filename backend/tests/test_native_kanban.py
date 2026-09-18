@@ -832,6 +832,20 @@ for title in ('First defect', 'Second defect'):
         self.service._migrate_native_work()
         self.assertTrue(self.service._get('tasks', owner['id'])['_native_outcome_id'])
 
+    def test_completed_report_does_not_block_a_different_outcome_for_its_owner(self):
+        task, item = self.legacy_work('The completed outcome')
+        self.provider.supports_native_outcomes = True
+        owner = self.service._get('tasks', task['id'])
+        owner['status'] = 'completed'
+        self.service._put('tasks', owner)
+        item.update(status='completed', completion_evidence='Verified the result.')
+        self.service._put('artifacts', item)
+        other = dict(item, id=str(uuid4()), title='The unfinished outcome', status='working', completion_evidence=None)
+        self.service._put('artifacts', other)
+        self.service._migrate_native_work()
+        self.assertIn('_completed_history', self.service._get('artifacts', item['id']))
+        self.assertTrue(self.service._get('artifacts', other['id'])['_native_outcome_id'])
+
     def test_completed_report_with_a_pending_decision_migrates_without_completion(self):
         task, item = self.legacy_work()
         self.provider.supports_native_outcomes = True
@@ -846,7 +860,7 @@ for title in ('First defect', 'Second defect'):
         self.assertNotIn('_completed_history', current)
         self.assertTrue(current['_native_outcome_id'])
         self.service.kanban.call({'op': 'snapshot'})
-        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'review')
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'scheduled')
         self.assertEqual(self.service._work_projection([current])[0]['work_state'], 'needs_decision')
 
     def test_native_work_only_view_keeps_the_linked_pr_decision(self):
