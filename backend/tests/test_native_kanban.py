@@ -564,6 +564,7 @@ board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the expo
 
     def test_native_intake_retains_the_requesting_bot(self):
         from coconut.service import ServiceError
+        self.provider.supports_native_outcomes = True
         source = self.task('Delegate an accepted outcome')
         developer = self.write('/v1/bots', {'name': 'Developer', 'role': 'Implement requested fixes'})
         with self.service.transaction():
@@ -577,6 +578,11 @@ board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the expo
 print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve the approved scope', assignee='default',
     tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked'))
 """, developer['id'], origin['task_id'])
+        from coconut.work_progress import NativeWork
+        intake = self.service._get('tasks', origin['task_id'])
+        tracking = NativeWork(dict(operation='start', task=intake))
+        self.assertFalse(tracking.enabled)
+        self.assertFalse(tracking.capture)
         self.service.kanban.call({'op': 'snapshot'})
         self.service._adopt_native_outcomes()
         owner = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
@@ -607,11 +613,20 @@ print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve t
         with self.assertRaises(ServiceError) as rejected:
             self.service.continue_native_work(other['id'], dict(task_id=identity, message='Continue'))
         self.assertEqual(rejected.exception.status, 403)
+        import json
+        owner = self.service._get('tasks', owner['id'])
+        row = self.service._kanban_row(owner, owner, 'ready', priority=10)
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
         with self.service.transaction():
             owner = self.service._get('tasks', owner['id'])
             owner.update(status='completed', summary='The requested result is ready')
             self.service._prepare_return(owner, owner['summary'], 'completed')
             self.service._put('tasks', owner)
+        self.assertNotIn('_return_pending', owner)
+        self.assertNotIn('_native_reply_pending', self.service._get('tasks', origin['task_id']))
+        self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='The requested result is ready')", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._reconcile_kanban()
         callback = self.service._get('tasks', origin['task_id'])
         self.assertEqual(callback['_native_reply_pending']['text'], 'The requested result is ready')
         self.assertFalse(callback['_native_reply_pending']['failed'])

@@ -1635,6 +1635,16 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self._event('task.updated', self._public(assignment), assignment['bot_id'], assignment['id'])
 
     def _prepare_return(self, task: dict, text: str, result_status: str):
+        if task.get('_native_outcome_id') and result_status == 'completed':
+            native = self.kanban.tasks.get(task['id'], {}) if self.kanban else {}
+            if native.get('id') != task['_native_outcome_id'] or native.get('status') != 'done':
+                return
+            result_key = (native['id'], str(task.get('_native_turn_id') or task.get('_message_id') or task['id']))
+            if native.get('input_id') != result_key[1]:
+                return
+            if task.get('_native_return_prepared') == list(result_key):
+                return
+            task['_native_return_prepared'] = list(result_key)
         if result_status == 'failed':
             self._hold_failed_followup(task)
         self._prepare_native_reply(task, text, result_status)
@@ -1892,6 +1902,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         parent = self._get('tasks', parent_task_id) if parent_task_id and not source_task else None
         title = work_item['title'] if work_item else (parent['title'] if parent and parent['status'] == 'failed' else text[:72])
         task = dict(id=task_id, thread_id=thread_id or task_id, parent_task_id=parent_task_id, bot_id=bot['id'], conversation_bot_id=conversation_bot_id, session_id=bot['session_id'], source_bot_id=source_task['bot_id'] if source_task else None, source_task_id=source_task['id'] if source_task else None, exchange_id=exchange_id or self._new_exchange(), exchange_depth=source_task.get('exchange_depth', 0) + 1 if source_task else 0, title=title, status=status, summary='Waiting for its scheduled time.' if scheduled else 'Queued', created_at=now(), updated_at=now(), scheduled_at=scheduled, _attachment_ids=attachments)
+        if getattr(self.provider, 'supports_native_outcomes', False) and source_task:
+            task['_native_intake'] = True
         if (getattr(self.provider, 'supports_native_outcomes', False) and human_authored
                 and not work_item and not source_task and (not parent or parent.get('_chat_session')) and not scheduled):
             task['_chat_session'] = True
@@ -2736,7 +2748,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 provider_task = self._public(task) | {'_native_turn_id': task['_native_turn_id'], '_execution_session_id': task.get('_execution_session_id'),
                                                        '_kanban_external_id': task.get('_kanban_claim', {}).get('external_id'),
                                                        '_kanban_workspace': task.get('_kanban_claim', {}).get('workspace')}
-                for field in ('_work_todos', '_work_resume', '_source_audit_prompt', '_self_recovery', '_chat_session', '_native_outcome_id', '_direct_reply_message_id'):
+                for field in ('_work_todos', '_work_resume', '_source_audit_prompt', '_self_recovery', '_chat_session', '_native_intake', '_native_outcome_id', '_direct_reply_message_id'):
                     if field in task:
                         provider_task[field] = task[field]
                 if task.get('_native_outcome_id'):

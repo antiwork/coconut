@@ -39,6 +39,8 @@ def snapshot(value):
 
 def work_enabled(operation, task):
     """One predicate decides native todo restoration and the dependency prompt for a turn."""
+    if task.get('_native_intake') and not task.get('_work_todos') and not task.get('_work_context_id'):
+        return False
     return operation != 'context' and not task.get('_native_outcome_id') and not task.get('_pr_review') and bool(
         task.get('_work_todos') or (task.get('source_bot_id') and not task.get('_is_return'))
         or task.get('_handoff_assignment', {}).get('return_to_bot_id'))
@@ -49,6 +51,8 @@ class NativeWork:
         task = request['task']
         self.enabled = work_enabled(request['operation'], task)
         self.capture = request['operation'] != 'context' and not task.get('_native_outcome_id') and not task.get('_pr_review')
+        if task.get('_native_intake') and not self.enabled:
+            self.capture = False
         self.saved = task.get('_work_todos')
         self.request = (task.get('_handoff_assignment', {}).get('request')
                         or '\n'.join(m['text'] for m in task.get('_bot_messages', []) if m.get('text'))

@@ -303,6 +303,10 @@ class NativeKanban(NativeOutcomes):
                             self._put(table, item)
                             self._event('task.updated', self._public(item), item['bot_id'], identity)
                             self._refresh_bot(item['bot_id'])
+                        if (native['status'] == 'done' and native.get('input_id') == accepted
+                                and item['status'] == 'completed' and not item.get('_steering')):
+                            self._prepare_return(item, native.get('outcome_summary') or item['summary'], 'completed')
+                            self._put(table, item)
                         self._native_retry(item, native)
                     refused = native.get('dispatch_blocker') == 'blocker_auth'
                     failed = native['status'] in ('blocked', 'triage') and native.get('consecutive_failures', 0)
