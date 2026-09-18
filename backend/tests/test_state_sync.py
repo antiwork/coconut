@@ -86,28 +86,39 @@ class StateSyncTests(unittest.TestCase):
         from types import SimpleNamespace
         cursor = self.service._cursor()
         self.service.provider.supports_native_outcomes = True
-        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={})), \
+        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={}, observed_at='2099-01-01T00:00:00Z')), \
              patch('coconut.service.now', return_value='2099-01-01T00:00:00Z'), \
              patch.object(Service, '_all', side_effect=AssertionError('No native collection changed')), \
              patch.object(Service, '_work_projection', side_effect=AssertionError('No native work changed')):
-            page = self.service.updates(cursor, collection_deltas=True)
+            page = self.service.updates(cursor, collection_deltas=True, native_events=True)
         self.assertEqual(page, dict(after=cursor, cursor=cursor,
-            server_time='2099-01-01T00:00:00Z', collection_deltas=True))
+            server_time='2099-01-01T00:00:00Z', collection_deltas=True, native_work_observed_at='2099-01-01T00:00:00Z'))
 
     def test_native_progress_event_delivers_after_an_idle_read(self):
         from types import SimpleNamespace
         self.service.provider.supports_native_outcomes = True
         cursor = self.service._cursor()
-        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={})), \
+        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={}, observed_at='2099-01-01T00:00:00Z')), \
              patch('coconut.service.now', return_value='2099-01-01T00:00:00Z'):
-            idle = self.service.updates(cursor, collection_deltas=True)
+            idle = self.service.updates(cursor, collection_deltas=True, native_events=True)
             with self.service.transaction():
                 self.service._event('work.updated', {})
             observation = {'id': 'native-work', 'work_state': 'completed'}
             with patch.object(Service, '_work_projection', return_value=[observation]):
-                page = self.service.updates(idle['cursor'], collection_deltas=True)
+                page = self.service.updates(idle['cursor'], collection_deltas=True, native_events=True)
         self.assertEqual(page['artifacts'], [observation])
         self.assertGreater(page['cursor'], cursor)
+
+    def test_native_old_clients_keep_periodic_artifact_refreshes(self):
+        from types import SimpleNamespace
+        cursor = self.service._cursor()
+        self.service.provider.supports_native_outcomes = True
+        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={})), \
+             patch('coconut.service.now', return_value='2099-01-01T00:00:00Z'), \
+             patch.object(Service, '_work_projection', return_value=[{'id': 'work'}]):
+            page = self.service.updates(cursor, collection_deltas=True)
+        self.assertEqual(page['artifacts'], [{'id': 'work'}])
+        self.assertNotIn('native_work_observed_at', page)
 
     def test_native_work_event_refreshes_an_idle_delta(self):
         cursor = self.service._cursor()

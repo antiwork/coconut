@@ -185,7 +185,6 @@ struct WorkView: View {
         .task(id: isVisible && scenePhase == .active) {
             guard isVisible && scenePhase == .active else { return }
             while !Task.isCancelled {
-                await store.refreshWork()
                 orderingDate = Date()
                 do { try await Task.sleep(for: .seconds(15)) }
                 catch { return }

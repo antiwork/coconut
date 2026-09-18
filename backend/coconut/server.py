@@ -147,7 +147,8 @@ class Handler(BaseHTTPRequestHandler):
                         wait = float(query.get('wait', ['0'])[0])
                     except ValueError:
                         raise ServiceError(400, 'after and wait must contain numbers.')
-                    self._json(200, service.updates(after, wait, collection_deltas=self.headers.get('X-Coconut-Updates') == '2'))
+                    self._json(200, service.updates(after, wait, collection_deltas=self.headers.get('X-Coconut-Updates') in ('2', '3'),
+                        native_events=self.headers.get('X-Coconut-Updates') == '3'))
                 elif url.path == '/v1/settings/google':
                     self._json(200, service.google_connection('status', {}, device))
                 elif url.path == '/v1/push/config':

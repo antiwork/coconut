@@ -403,6 +403,7 @@ struct Artifact: Codable, Identifiable, Equatable, Sendable {
     var url: String?
     var createdAt: String
     var workOutcomeId: String? = nil
+    var nativeTaskId: String? = nil
     var checkedAt: String? = nil
     var observedAt: String? = nil
     var headSha: String? = nil

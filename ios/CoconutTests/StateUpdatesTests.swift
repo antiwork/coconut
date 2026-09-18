@@ -2,6 +2,35 @@ import XCTest
 @testable import Coconut
 
 final class StateUpdatesTests: XCTestCase {
+    func testNativeFreshnessKeepsUnchangedWorkVisibleWithoutReplacingArtifacts() throws {
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10
+        var work = state.artifacts[0]
+        work.nativeTaskId = "t_native"
+        work.workState = "working"
+        work.activity = "Running tests"
+        work.activityObservedAt = "2026-09-18T12:00:00Z"
+        var legacy = work
+        legacy.id = "legacy"
+        legacy.nativeTaskId = nil
+        state.artifacts = [work, legacy]
+        let observed = "2026-09-18T12:05:00Z"
+        let page = StateUpdates(after: 10, cursor: 10, serverTime: observed,
+            collectionDeltas: true, nativeWorkObservedAt: observed)
+        let updated = try XCTUnwrap(page.applying(to: state))
+        let item = TrackedWorkItem(artifact: updated.artifacts[0], pullRequests: [])
+        let current = try XCTUnwrap(observed.apiDate)
+        XCTAssertEqual(item.activity(at: current), "Running tests")
+        XCTAssertTrue(item.isWorking(at: current))
+        XCTAssertEqual(updated.artifacts[1], legacy)
+        XCTAssertEqual(updated.artifacts[0].title, work.title)
+        XCTAssertFalse(item.isWorking(at: current.addingTimeInterval(61)))
+        let stale = StateUpdates(after: 10, cursor: 10, serverTime: "2026-09-18T12:10:00Z",
+            collectionDeltas: true, nativeWorkObservedAt: observed)
+        let staleState = try XCTUnwrap(stale.applying(to: updated))
+        XCTAssertEqual(staleState.artifacts[0].activityObservedAt, observed)
+    }
+
     func testUpdatesAddTasksReplaceCardsAndRemoveHiddenMessages() throws {
         var state = try PreviewStateFixture.load()
         state.cursor = 10

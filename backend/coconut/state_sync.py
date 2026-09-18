@@ -116,7 +116,7 @@ class StateSync:
         from .service import ServiceError
         raise ServiceError(503, 'Settings changed during this request. Try again.')
 
-    def updates(self, after, wait=0, *, collection_deltas=False):
+    def updates(self, after, wait=0, *, collection_deltas=False, native_events=False):
         from .service import ServiceError
         if after < 0:
             raise ServiceError(400, 'The event cursor must be zero or greater.')
@@ -128,13 +128,13 @@ class StateSync:
                     break
                 self.stopping.wait(min(remaining, .1))
             with view._read_transaction():
-                result = view._replay_changes(after, collection_deltas=collection_deltas)
+                result = view._replay_changes(after, collection_deltas=collection_deltas, native_events=native_events)
             if result is not None:
                 return result
             state = view._snapshot(content_only=True)
             return dict(after=after, cursor=state['cursor'], server_time=state['server_time'], reset=state)
 
-    def _replay_changes(self, after, *, collection_deltas=False):
+    def _replay_changes(self, after, *, collection_deltas=False, native_events=False):
         import json
         from .service import now
         from .work_capacity import state as capacity_state
@@ -153,16 +153,17 @@ class StateSync:
             return None
         from datetime import datetime
         server_time = now()
-        native = self.kanban is not None and getattr(self.provider, 'supports_native_outcomes', False)
+        native = native_events and self.kanban is not None and getattr(self.provider, 'supports_native_outcomes', False)
         previous = None if native else self._read_one('SELECT created_at FROM events WHERE seq=?', (after,))
         refresh_activity = not native and (previous is None or
             int(datetime.fromisoformat(previous[0].replace('Z', '+00:00')).timestamp() // 15) !=
             int(datetime.fromisoformat(server_time.replace('Z', '+00:00')).timestamp() // 15))
+        freshness = {'native_work_observed_at': self.kanban.observed_at} if native else {}
         if not rows and collection_deltas and not refresh_activity:
-            return dict(after=after, cursor=cursor, server_time=server_time, collection_deltas=True)
+            return dict(after=after, cursor=cursor, server_time=server_time, collection_deltas=True, **freshness)
         bots = [self._bot_view(b, None) for b in self._all('bots') if not b.get('_deleted')]
         visible = {b['id'] for b in bots}
-        result = dict(after=after, cursor=cursor, server_time=server_time, bots=bots)
+        result = dict(after=after, cursor=cursor, server_time=server_time, bots=bots, **freshness)
         task_ids, message_ids, decision_ids, artifact_ids = set(), set(), set(), set()
         if collection_deltas:
             result['collection_deltas'] = True

@@ -490,7 +490,7 @@ class NativeOutcomes:
             activity = native.get('outcome_summary') or native.get('last_failure_error') or activity
         if native and state == 'working':
             activity = native.get('progress_note') or activity
-        return dict(title=native['title'] if native else item['title'],
+        return dict(title=native['title'] if native else item['title'], native_task_id=item['_native_outcome_id'],
             work_state=state, activity=activity, work_next_step='Review decision' if state == 'needs_decision' else None,
             work_decision_id=pending[0]['id'] if state == 'needs_decision' else None,
             work_queue_position=(queue_positions or {}).get(owner.get('id')) if state == 'queued' else None,

@@ -28,6 +28,7 @@ struct StateUpdates: Decodable, Sendable {
     var workCapacity: ParallelWorkSettings?
     var settingsChanged: Bool?
     var confirmedRequestIds: [String]?
+    var nativeWorkObservedAt: String?
 
     func applying(to snapshot: StateSnapshot) -> StateSnapshot? {
         guard after == snapshot.cursor else { return nil }
@@ -50,6 +51,11 @@ struct StateUpdates: Decodable, Sendable {
         } else {
             if let decisions { result.decisions = decisions }
             if let artifacts { result.artifacts = artifacts }
+        }
+        if let nativeWorkObservedAt, nativeWorkObservedAt.apiDate != nil {
+            for index in result.artifacts.indices where result.artifacts[index].nativeTaskId != nil {
+                result.artifacts[index].activityObservedAt = nativeWorkObservedAt
+            }
         }
         if let workCapacity { result.workCapacity = workCapacity }
         if let confirmedRequestIds { result.confirmedRequestIds = confirmedRequestIds }
