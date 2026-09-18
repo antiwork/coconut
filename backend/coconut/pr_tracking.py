@@ -318,7 +318,11 @@ class GitHubPRTracker:
         try:
             owner, repo, number = parse_pr_url(url)
             deadline = time.monotonic() + 20
-            records = []
+            details = self._get(f'/repos/{owner}/{repo}/pulls/{number}', deadline)
+            if not isinstance(details, dict) or 'body' not in details:
+                return None
+            records = [('details', {key: details.get(key) for key in (
+                'body', 'updated_at', 'labels', 'assignees', 'requested_reviewers', 'milestone')})]
             for route in (f'issues/{number}/comments', f'pulls/{number}/comments', f'pulls/{number}/reviews'):
                 for page in range(1, 11):
                     values = self._get(f'/repos/{owner}/{repo}/{route}?per_page=100&page={page}', deadline)

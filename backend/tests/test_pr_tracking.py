@@ -64,10 +64,13 @@ class PRStateTests(unittest.TestCase):
         self.assertIsNone(PayloadTracker([URLError('offline')]).observe_issue('https://github.com/example/project/issues/12'))
 
     def test_pr_discussion_signal_includes_edits_reviews_and_pagination(self):
-        first = PayloadTracker([[dict(id=1, body='Before', updated_at='same')], [], [dict(id=2, state='APPROVED')]])
-        second = PayloadTracker([[dict(id=1, body='After', updated_at='same')], [], [dict(id=2, state='APPROVED')]])
+        first = PayloadTracker([{'body': 'Scope'}, [dict(id=1, body='Before', updated_at='same')], [], [dict(id=2, state='APPROVED')]])
+        second = PayloadTracker([{'body': 'Scope'}, [dict(id=1, body='After', updated_at='same')], [], [dict(id=2, state='APPROVED')]])
         self.assertNotEqual(first.observe_discussion(URL), second.observe_discussion(URL))
-        paged = PayloadTracker([[dict(id=i) for i in range(100)], [dict(id=101)], [], []])
+        before = PayloadTracker([{'body': 'Old scope'}, [], [], []])
+        after = PayloadTracker([{'body': 'New scope'}, [], [], []])
+        self.assertNotEqual(before.observe_discussion(URL), after.observe_discussion(URL))
+        paged = PayloadTracker([{'body': 'Scope'}, [dict(id=i) for i in range(100)], [dict(id=101)], [], []])
         self.assertIsNotNone(paged.observe_discussion(URL))
         self.assertIn('/repos/example/project/issues/42/comments?per_page=100&page=2', paged.paths)
         self.assertIsNone(PayloadTracker([URLError('offline')]).observe_discussion(URL))
