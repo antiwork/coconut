@@ -22,6 +22,16 @@ def head_log(path):
         return b''
 
 
+def stable_head(path):
+    for _ in range(3):
+        before = head_log(path)
+        branch = git(path, 'branch', '--show-current')
+        after = head_log(path)
+        if before == after and git(path, 'branch', '--show-current') == branch:
+            return branch, after
+    raise ValueError('The worktree changed during inspection. Try again after Git finishes.')
+
+
 def remember_head(binding, log):
     binding['_head_log'] = dict(size=len(log), digest=hashlib.sha256(log).hexdigest())
 
@@ -35,9 +45,8 @@ def validate_binding(binding, *, allow_rename=False):
         raise ValueError('The saved workspace is no longer a linked worktree.')
     if Path(git(path, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve() != repository / '.git':
         raise ValueError('The saved worktree belongs to another repository.')
-    current = git(path, 'branch', '--show-current')
+    current, log = stable_head(path)
     if current != binding['branch']:
-        log = head_log(path)
         checkpoint = binding.get('_head_log', {})
         size = checkpoint.get('size', 0)
         continuous = (size > 0 and len(log) >= size
@@ -60,8 +69,7 @@ def validate_binding(binding, *, allow_rename=False):
         if not renamed:
             raise ValueError('The saved worktree changed branches. Inspect it before continuing.')
         binding['branch'] = current
-    if allow_rename:
-        remember_head(binding, head_log(path))
+    remember_head(binding, log)
     return path
 
 
@@ -126,7 +134,7 @@ def acquire(root, outcome, repository, existing_worktree=None):
         if any(Path(item['path']).resolve() == path for item in saved.values()):
             raise ValueError('Another outcome owns this worktree. Use its existing work item to continue it.')
         binding = dict(path=str(path), branch=branch, repository=str(repository), outcome=outcome)
-        remember_head(binding, head_log(path))
+        validate_binding(binding)
         saved[identity] = binding
         save_bindings(manifest, saved)
         return binding

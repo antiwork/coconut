@@ -84,6 +84,35 @@ class WorkWorkspaceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'changed branches'):
             preferred(self.saved, outcome)
 
+    def test_accepted_branch_switch_sets_a_new_rename_checkpoint(self):
+        from coconut.work_workspace import validate_binding
+        outcome = str(uuid4())
+        binding = acquire(self.saved, outcome, str(self.repo))
+        git(binding['path'], 'switch', '-c', 'approved-recovery')
+        replacement = dict(binding, branch='approved-recovery')
+        validate_binding(replacement)
+        git(binding['path'], 'branch', '-m', 'approved-published-name')
+        validate_binding(replacement, allow_rename=True)
+        self.assertEqual(replacement['branch'], 'approved-published-name')
+
+    def test_rename_during_inspection_retries_the_git_snapshot(self):
+        from coconut import work_workspace
+        from unittest.mock import patch
+        outcome = str(uuid4())
+        binding = acquire(self.saved, outcome, str(self.repo))
+        original = work_workspace.head_log
+        calls = 0
+        def rename_after_first_read(path):
+            nonlocal calls
+            result = original(path)
+            calls += 1
+            if calls == 1:
+                git(path, 'branch', '-m', 'concurrent-rename')
+            return result
+        with patch.object(work_workspace, 'head_log', side_effect=rename_after_first_read):
+            self.assertEqual(preferred(self.saved, outcome), Path(binding['path']))
+        self.assertEqual(acquire(self.saved, outcome, str(self.repo))['branch'], 'concurrent-rename')
+
     def test_existing_worktree_is_adopted_once_without_moving_its_branch(self):
         path = self.root / 'existing'
         git(self.repo, 'worktree', 'add', '-b', 'existing-pr', str(path))
