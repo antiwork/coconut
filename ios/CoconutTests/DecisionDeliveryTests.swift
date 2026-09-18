@@ -5,7 +5,7 @@ import Network
 final class DecisionDeliveryTests: XCTestCase {
     @MainActor
     func testChoiceSavesBeforeNetworkResponseAndRestoresAfterRestart() async throws {
-        try await exercise(retry: false, reject: false)
+        try await exercise(retry: false, reject: false, restart: true)
     }
 
     @MainActor
@@ -24,7 +24,7 @@ final class DecisionDeliveryTests: XCTestCase {
     }
 
     @MainActor
-    private func exercise(retry: Bool, reject: Bool, parallel: Bool = false) async throws {
+    private func exercise(retry: Bool, reject: Bool, parallel: Bool = false, restart: Bool = false) async throws {
         #if !(DEBUG && targetEnvironment(simulator))
         throw XCTSkip("This fixture requires a debug simulator.")
         #else
@@ -50,7 +50,10 @@ final class DecisionDeliveryTests: XCTestCase {
         let previous = ProcessInfo.processInfo.environment
         for (key, value) in variables { setenv(key, value, 1) }
         let store = AppStore(demo: false)
+        var restartedStore: AppStore?
         defer {
+            restartedStore?.setForeground(false)
+            restartedStore?.disconnect()
             store.setForeground(false)
             store.disconnect()
             for key in variables.keys {
@@ -90,18 +93,38 @@ final class DecisionDeliveryTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(200))
             store.setForeground(true)
         }
+        var activeStore = store
+        if restart {
+            for _ in 0..<40 {
+                if server.answers == 1 { break }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            XCTAssertEqual(server.answers, 1)
+            let pendingFiles = paths.map { try? Data(contentsOf: $0) }
+            let pendingToken = PairingToken.read()
+            store.disconnect()
+            // Simulate termination without the intentional unpairing performed by disconnect.
+            for (path, data) in zip(paths, pendingFiles) {
+                if let data { try data.write(to: path, options: .atomic) }
+            }
+            if let pendingToken { try PairingToken.save(pendingToken) }
+            let resumed = AppStore(demo: false)
+            restartedStore = resumed
+            activeStore = resumed
+            resumed.setForeground(true)
+        }
         for _ in 0..<100 {
-            if !store.answeringDecisionIds.contains(decision.id) { break }
+            if !activeStore.answeringDecisionIds.contains(decision.id) { break }
             try await Task.sleep(for: .milliseconds(50))
         }
-        XCTAssertFalse(store.answeringDecisionIds.contains(decision.id))
+        XCTAssertFalse(activeStore.answeringDecisionIds.contains(decision.id))
         if reject {
             XCTAssertEqual(store.inboxBadgeCount, 1)
             queue.reconcile(store.decisions.filter { $0.isPending && !store.answeringDecisionIds.contains($0.id) }, sort: .recommended)
             XCTAssertEqual(queue.ids, [decision.id], "A rejected choice must restore the visible card, not only the badge.")
             XCTAssertEqual(store.decisionReplyDrafts[decision.id], "Please explain the effect first.")
         }
-        XCTAssertEqual(server.answers, retry ? 3 : parallel ? 2 : 1)
+        XCTAssertEqual(server.answers, retry ? 3 : parallel || restart ? 2 : 1)
         XCTAssertEqual(Set(server.keys).count, parallel ? 2 : 1, "A retry must keep the original idempotency key.")
         #endif
     }
