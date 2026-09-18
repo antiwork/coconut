@@ -375,7 +375,9 @@ class NativeOutcomes:
             related = attempts - {owner['id']}
             waiters = {i for i in related if pr_reports and i in tasks and tasks[i]['status'] == 'waiting'
                        and owner['id'] in tasks[i].get('_waiting_on', [])}
-            if (any(tasks[i]['status'] in self.ACTIVE or self._background_pending(i) for i in related - waiters if i in tasks)
+            if (any((i not in waiters and tasks[i]['status'] in self.ACTIVE)
+                    or self._background_pending(i, excluding_task_ids={owner['id']} if i in waiters else ())
+                    for i in related if i in tasks)
                     or any(d['task_id'] in related and d['status'] == 'pending' for d in self._all('decisions'))
                     or any(c['task_id'] in attempts and c['status'] in ('queued', 'working') for c in self._all('contexts'))):
                 continue

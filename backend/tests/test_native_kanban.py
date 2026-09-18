@@ -869,6 +869,15 @@ for title in ('First defect', 'Second defect'):
         self.service._put('tasks', owner)
         peer = dict(report, id=str(uuid4()), task_id=source['id'], _review_task_id=source['id'])
         self.service._put('artifacts', peer)
+        import json
+        receipt = dict(id=str(uuid4()), task_id=source['id'], state='completed',
+            action=dict(name='terminal', arguments={}),
+            result=json.dumps(dict(session_id='separate-writer', notify_on_complete=True)))
+        self.service._put('native_receipts', receipt)
+        self.service._migrate_native_work()
+        self.assertNotIn('_native_outcome_id', self.service._get('tasks', owner['id']))
+        receipt['_process_delivery'] = 'consumed'
+        self.service._put('native_receipts', receipt)
         self.service._migrate_native_work()
         migrated = self.service._get('tasks', owner['id'])
         self.assertTrue(migrated['_native_outcome_id'])
