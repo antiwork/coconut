@@ -45,6 +45,7 @@ class PRObservation:
     review_checks: str | None = None
     check_failures: str | None = None
     required_checks_observed: bool = False
+    base_branch: str | None = None
 
 
 class PRTrackingError(ValueError):
@@ -391,7 +392,7 @@ class GitHubPRTracker:
                 if failures:
                     check_failures = hashlib.sha256(json.dumps(sorted(failures)).encode()).hexdigest()
             return PRObservation(result, sha, title, url, detail, checked_at, True, "merged" if merged else state,
-                                 draft, checks_state, required_checks_state, review_checks, check_failures, required_checks_observed)
+                                 draft, checks_state, required_checks_state, review_checks, check_failures, required_checks_observed, (initial.get("base") or {}).get("ref"))
         except HTTPError as error:
             detail = f"GitHub refresh failed (HTTP {error.code})."
             error.close()

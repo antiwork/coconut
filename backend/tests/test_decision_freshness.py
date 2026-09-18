@@ -124,7 +124,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         url = 'https://github.com/example/project/pull/42'
         decision['merge_pr_url'] = url
         self.service._put('decisions', decision)
-        observation = SimpleNamespace(observed=True, pr_state='open', head_sha='head', title='Fix', draft=False,
+        observation = SimpleNamespace(observed=True, pr_state='open', base_branch='main', head_sha='head', title='Fix', draft=False,
             checks_state='passed', required_checks_state='passed', review_checks='first-review', check_failures=None)
         tracker = Mock()
         tracker.observe_discussion.return_value = 'first-discussion'
@@ -148,7 +148,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         url = 'https://github.com/example/project/pull/42'
         decision['merge_pr_url'] = url
         self.service._put('decisions', decision)
-        observation = SimpleNamespace(observed=True, pr_state='open', head_sha='head', title='Fix', draft=False,
+        observation = SimpleNamespace(observed=True, pr_state='open', base_branch='main', head_sha='head', title='Fix', draft=False,
             checks_state='passed', required_checks_state='passed', review_checks='same-review', check_failures=None)
         tracker = Mock()
         tracker.observe_discussion.return_value = 'before-comment'
@@ -184,7 +184,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         url = 'https://github.com/example/project/pull/42'
         decision['merge_pr_url'] = url
         self.service._put('decisions', decision)
-        value = SimpleNamespace(observed=True, pr_state='open', head_sha='head', title='Fix', draft=False,
+        value = SimpleNamespace(observed=True, pr_state='open', base_branch='main', head_sha='head', title='Fix', draft=False,
             checks_state='passed', required_checks_state='passed', review_checks=None, check_failures=None)
         artifact = dict(id='linked-facts', kind='pr', task_id=self.task['id'], bot_id=self.bot['id'],
             title='Fix', status='ready_for_review', created_at=decision['created_at'], url=url, head_sha='head',
@@ -208,6 +208,12 @@ class DecisionFreshnessTests(unittest.TestCase):
             self.service._put('decisions', saved)
             self.service._queue_decision_refreshes()
             self.assertEqual(len(self.service._all('contexts')), 1)
+            value.base_branch = 'release'
+            self.service._refresh_decision_sources({(decision['bot_id'], url): value})
+            self.assertIsNone(self.service._get('decisions', decision['id'])['_source_facts'][url]['required_checks_state'])
+            value.required_checks_state = 'passed'
+            self.service._refresh_decision_sources({(decision['bot_id'], url): value})
+            value.required_checks_state = None
             value.required_checks_observed = True
             self.service._refresh_decision_sources({(decision['bot_id'], url): value})
             self.assertIsNone(self.service._get('decisions', decision['id'])['_source_facts'][url]['required_checks_state'])
