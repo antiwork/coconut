@@ -16,6 +16,7 @@ import sqlite3
 import threading
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4, uuid5
@@ -2369,6 +2370,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._bind_pr_review(existing, review_task, transfer=task_id is None and bool(payload.get('review_task_id')))
                 with self.transaction():
                     self._set_work_activity(existing, task, payload)
+                self.pr_refresh_requested.set()
                 return self._public(existing)
         # GitHub reads must not hold the service lock or delay other bots.
         observation = self._pr_tracker_for(task['bot_id']).observe(url)
@@ -2393,6 +2395,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._set_work_activity(existing, task, payload)
                 self._put('artifacts', existing)
                 self._event('artifact.updated', self._public(existing), existing['bot_id'], existing['task_id'])
+                self.pr_refresh_requested.set()
                 return self._public(existing)
             artifact = dict(id=uid(), bot_id=task['bot_id'], task_id=task_id, title=(observation.title or 'Pull request')[:200], kind='pr', status=observation.state, preview=observation.detail, url=url, created_at=now(), checked_at=observation.checked_at, observed_at=observation.checked_at, head_sha=observation.head_sha, refresh_error=None, pr_state=observation.pr_state, draft=observation.draft, checks_state=observation.checks_state, required_checks_state=observation.required_checks_state, review_checks=observation.review_checks, check_failures=observation.check_failures)
             if review_task:
@@ -2403,6 +2406,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._message(task['bot_id'], artifact['title'], task_id=task_id, kind='artifact', artifact_id=artifact['id'])
             self._event('artifact.created', artifact, task['bot_id'], task_id)
             self._refresh_bot(task['bot_id'])
+            self.pr_refresh_requested.set()
             return self._public(artifact)
 
     def _pr_tracker_for(self, bot_id):
@@ -2436,31 +2440,50 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             if self.stopping.is_set():
                 return
             artifacts = [a for a in self._all('artifacts') if a['kind'] == 'pr' and a['status'] != 'merged' and a.get('pr_state') not in ('closed', 'merged') and not self._get('bots', a['bot_id']).get('_deleted')]
-        observations = {}
+        observations, grouped = {}, {}
         for artifact in artifacts:
-            if self.stopping.is_set():
-                return
             key = (artifact['bot_id'], artifact['url'].lower())
-            if key not in observations:
-                observations[key] = self._pr_tracker_for(artifact['bot_id']).observe(artifact['url'])
-            observation = observations[key]
-            with self.lock:
+            grouped.setdefault(key, []).append(artifact)
+        # Each profile keeps its own credentials. Bound concurrent GitHub requests.
+        def observe(key, url):
+            if self.stopping.is_set():
+                return None
+            tracker = self._pr_tracker_for(key[0])
+            return None if self.stopping.is_set() else tracker.observe(url)
+
+        pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix='pr-observation')
+        try:
+            pending = {pool.submit(observe, key, items[0]['url']): key for key, items in grouped.items()}
+            for future in as_completed(pending):
                 if self.stopping.is_set():
                     return
-                with self.transaction():
-                    current = self._get('artifacts', artifact['id'])
-                    if current['url'] != artifact['url'] or self._get('bots', current['bot_id']).get('_deleted'):
-                        continue
-                    current['checked_at'] = observation.checked_at
-                    if observation.observed:
-                        if current.get('pr_state') == 'open' and observation.pr_state in ('merged', 'closed'):
-                            current['_terminal_review_pending'] = True
-                        current.update(status=observation.state, title=(observation.title or current['title'])[:200], preview=observation.detail, head_sha=observation.head_sha, observed_at=observation.checked_at, refresh_error=None, pr_state=observation.pr_state, draft=observation.draft, checks_state=observation.checks_state, required_checks_state=observation.required_checks_state, review_checks=observation.review_checks, check_failures=observation.check_failures)
-                    else:
-                        current.update(refresh_error=observation.detail, preview=observation.detail)
-                    self._restore_active_work(current)
-                    self._put('artifacts', current)
-                    self._event('artifact.updated', self._public(current), current['bot_id'], current['task_id'])
+                key = pending[future]
+                observation = future.result()
+                if observation is None:
+                    continue
+                observations[key] = observation
+                for artifact in grouped[key]:
+                    with self.lock:
+                        if self.stopping.is_set():
+                            return
+                        with self.transaction():
+                            current = self._get('artifacts', artifact['id'])
+                            if current['url'] != artifact['url'] or self._get('bots', current['bot_id']).get('_deleted'):
+                                continue
+                            current['checked_at'] = observation.checked_at
+                            if observation.observed:
+                                if current.get('pr_state') == 'open' and observation.pr_state in ('merged', 'closed'):
+                                    current['_terminal_review_pending'] = True
+                                current.update(status=observation.state, title=(observation.title or current['title'])[:200], preview=observation.detail, head_sha=observation.head_sha, observed_at=observation.checked_at, refresh_error=None, pr_state=observation.pr_state, draft=observation.draft, checks_state=observation.checks_state, required_checks_state=observation.required_checks_state, review_checks=observation.review_checks, check_failures=observation.check_failures)
+                            else:
+                                current.update(refresh_error=observation.detail, preview=observation.detail)
+                            self._restore_active_work(current)
+                            self._put('artifacts', current)
+                            self._event('artifact.updated', self._public(current), current['bot_id'], current['task_id'])
+                self._resolve_merged_pr_decisions()
+                self._queue_pr_reviews(artifact_ids={item['id'] for item in grouped[key]})
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
         self._refresh_decision_sources(observations)
 
     def _dispatch(self):
