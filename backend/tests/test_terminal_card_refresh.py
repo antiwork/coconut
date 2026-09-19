@@ -32,9 +32,8 @@ class TerminalCardTests(unittest.TestCase):
             self.assertEqual(self.service._public(card)['status'], 'refreshing')
             visible = {d['id']: d for d in self.service.snapshot()['decisions']}
             self.assertEqual(visible[card['id']]['status'], 'refreshing')
-            task = self.service._get('tasks', card['task_id'])
             with self.assertRaisesRegex(ServiceError, 'source changed'):
-                self.service.answer_native(card, task, dict(revision=card['revision'], choice='approve'), 'device', [])
+                self.write("POST", f"/v1/decisions/{card['id']}/answer", dict(revision=card['revision'], choice='approve'))
         finally:
             release.set()
             worker.join(5)
