@@ -126,6 +126,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.pr_tracker = pr_tracker
         self.pr_refresh_requested = threading.Event()
         self.pr_refresh_lock = threading.Lock()
+        self._pending_decision_sources = set()
+        self._ready_decision_sources = None
         self.pr_follow_lock = threading.Lock()
         self.pr_last_request = float('-inf')
         self.lock = threading.RLock()
@@ -2492,34 +2494,53 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 except Empty:
                     continue
                 try:
-                    result = self._refresh_decision_sources(known, decision_ids={identity}, read_cache=read_source)
+                    result = self._refresh_decision_sources(known, decision_ids={identity},
+                        read_cache=read_source, cancelled=finished)
                 except Exception as error:
                     result = error
                 results.put(('source', identity, result))
 
         remaining, pending_sources, scheduled = len(grouped), 0, set()
+        ready = {}
         def schedule_sources():
             nonlocal pending_sources
-            for decision in decisions:
-                if decision['id'] in scheduled:
-                    continue
-                keys = {(decision['bot_id'], url.lower()) for url in github_links(decision)
-                        if github_source(url)[0] == 'pulls'}
-                # A card receives all its linked PR facts together, including discussion evidence.
-                if not keys.intersection(grouped).issubset(observations):
-                    continue
-                scheduled.add(decision['id'])
-                pending_sources += 1
-                source_jobs.put((decision['id'], dict(observations)))
+            with self.lock:
+                self._pending_decision_sources.clear()
+                for decision in self._all('decisions'):
+                    if (decision['status'] != 'pending' or decision.get('_hidden') or decision.get('_deleted')
+                            or self._get('bots', decision['bot_id']).get('_deleted')):
+                        continue
+                    links = github_links(decision)
+                    if ready.get(decision['id']) == (decision['revision'], links):
+                        continue
+                    self._pending_decision_sources.add(decision['id'])
+                    if decision['id'] in scheduled:
+                        continue
+                    keys = {(decision['bot_id'], url.lower()) for url in links
+                            if github_source(url)[0] == 'pulls'}
+                    # A card receives all its linked PR facts together, including discussion evidence.
+                    if not keys.intersection(grouped).issubset(observations):
+                        continue
+                    scheduled.add(decision['id'])
+                    pending_sources += 1
+                    source_jobs.put((decision['id'], dict(observations)))
 
-        # Active HTTP reads retain their timeout and never delay process shutdown.
-        for _ in range(min(4, len(grouped))):
-            threading.Thread(target=observe, name='pr-observation', daemon=True).start()
-        for _ in range(min(2, len(decisions))):
-            threading.Thread(target=refresh_sources, name='decision-observation', daemon=True).start()
-        schedule_sources()
+        # Fence global scheduling before any observation can change card evidence.
+        with self.lock:
+            self._pending_decision_sources.update(d['id'] for d in decisions)
+            self._ready_decision_sources = ready
         try:
-            while (remaining or pending_sources) and not self.stopping.is_set():
+            # Active HTTP reads retain their timeout and never delay process shutdown.
+            for _ in range(min(4, len(grouped))):
+                threading.Thread(target=observe, name='pr-observation', daemon=True).start()
+            # Workers also serve cards created after an empty decision snapshot.
+            for _ in range(2):
+                threading.Thread(target=refresh_sources, name='decision-observation', daemon=True).start()
+            while not self.stopping.is_set():
+                # Revisit live identities even when every outstanding HTTP read is blocked.
+                schedule_sources()
+                if not remaining and not pending_sources:
+                    break
                 try:
                     kind, key, observation = results.get(timeout=.2)
                 except Empty:
@@ -2528,8 +2549,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     raise observation
                 if kind == 'source':
                     pending_sources -= 1
-                    if observation:
-                        self._queue_decision_refreshes()
+                    scheduled.remove(key)
+                    with self.lock:
+                        # Admission and rescheduling both compare these identities with live cards.
+                        ready.update(observation)
+                    schedule_sources()
+                    self._queue_decision_refreshes()
                     continue
                 remaining -= 1
                 observations[key] = observation
@@ -2553,9 +2578,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                             self._event('artifact.updated', self._public(current), current['bot_id'], current['task_id'])
                 self._resolve_merged_pr_decisions()
                 self._queue_pr_reviews(artifact_ids={item['id'] for item in grouped[key]})
-                schedule_sources()
         finally:
-            finished.set()
+            with self.lock:
+                # Invalidate active writes before releasing their admission fences.
+                finished.set()
+                self._pending_decision_sources.clear()
+                self._ready_decision_sources = None
 
     def _dispatch(self):
         next_routine_tick = 0
