@@ -1302,10 +1302,12 @@ def run_turn(request, emit, request_receipt):
         setup_lock.release()
         preparing = False
         trace.mark('model_start')
-        result = agent.run_conversation(prompt, conversation_history=conversation.history, task_id=request['task']['id'],
-                                        stream_callback=collect_response,
-                                        persist_user_message=current['text'] if current else request.get('question'),
-                                        persist_user_platform_id='coconut:' + current['id'] if current else None)
+        from turn_timings import native_request_timings
+        with native_request_timings(trace, agent):
+            result = agent.run_conversation(prompt, conversation_history=conversation.history, task_id=request['task']['id'],
+                                            stream_callback=collect_response,
+                                            persist_user_message=current['text'] if current else request.get('question'),
+                                            persist_user_platform_id='coconut:' + current['id'] if current else None)
         trace.mark('model_end')
         if scope.unconfirmed:
             raise TurnUnconfirmed()

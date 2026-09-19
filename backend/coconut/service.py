@@ -2770,12 +2770,17 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                             "WHERE j.type='text'")
             self.db.execute("INSERT INTO settings VALUES ('message_audience_indexed','true')")
 
-    def _history(self, bot_id: str) -> list[dict]:
+    def _history(self, bot_id: str, *, task_id=None, shared_message_ids=()) -> list[dict]:
         # Threads organize Inbox decisions. They never restrict a bot's own recall.
+        selection, values = '', [bot_id]
+        if task_id is not None:
+            selection = ("AND m.id IN (SELECT id FROM messages WHERE json_extract(data, '$.task_id')=? "
+                         "UNION SELECT value FROM json_each(?)) ")
+            values.extend((task_id, json.dumps(shared_message_ids)))
         row = self.db.execute("SELECT json_group_array(json(data)) FROM (SELECT m.data FROM "
             "message_audience a JOIN messages m ON m.id=a.message_id WHERE a.bot_id=? "
             "AND COALESCE(json_extract(m.data, '$._hidden'),0)=0 "
-            "AND COALESCE(json_extract(m.data, '$._deleted'),0)=0 ORDER BY m.rowid)", (bot_id,)).fetchone()
+            "AND COALESCE(json_extract(m.data, '$._deleted'),0)=0 " + selection + "ORDER BY m.rowid)", values).fetchone()
         return [self._public(message) for message in json.loads(row[0])]
 
     def _task_messages(self, task_id):
@@ -2856,8 +2861,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     task.setdefault('_native_turn_id', uid())
                     task.setdefault('_conversation_epoch', self._setting('conversation_epoch'))
                     if '_turn_message_ids' not in task:
-                        messages = [m for m in self._history(bot['id']) if (m['task_id'] == task_id or m['id'] in task.get('_shared_message_ids', []))
-                                    and m['role'] == 'user' and m['kind'] == 'text' and not m.get('decision_id')]
+                        messages = [m for m in self._history(bot['id'], task_id=task_id,
+                                    shared_message_ids=task.get('_shared_message_ids', []))
+                                    if m['role'] == 'user' and m['kind'] == 'text' and not m.get('decision_id')]
                         after = task.get('_input_after_message_id')
                         if after:
                             boundary = next((i for i, m in enumerate(messages) if m['id'] == after), -1)
@@ -2956,7 +2962,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     if assignment.get('_work_todos'):
                         provider_task['_work_todos'] = assignment['_work_todos']
                     if task.get('_assignment_task_id'):
-                        instructions = [m['text'] for m in view._history(bot['id']) if m['task_id'] == assignment['id'] and m['role'] == 'user' and m['kind'] == 'text' and not m.get('decision_id')]
+                        instructions = [m['text'] for m in view._history(bot['id'], task_id=assignment['id'])
+                                        if m['role'] == 'user' and m['kind'] == 'text' and not m.get('decision_id')]
                         provider_task['_handoff_assignment'] = {
                             'task_id': assignment['id'], 'request': '\n\n'.join([*[m['text'] for m in assignment.get('_bot_messages', [])], *instructions]) or assignment['title'],
                             'return_to_bot_id': assignment.get('source_bot_id'),
