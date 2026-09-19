@@ -15,6 +15,9 @@ class TerminalCardTests(unittest.TestCase):
 
     def test_terminal_source_hides_card_before_slow_discussion_finishes(self):
         self.cards()
+        card = self.service._get('decisions', 'older-card')
+        card.update(title='Approve the appearance?', options=[dict(id='approve', label='Approve appearance', answer='approve')], _answers=[])
+        self.service._put('decisions', card)
         entered, release = threading.Event(), threading.Event()
         self.tracker.observe = lambda url: replace(fixture.fixture.observation('merged'), url=url, pr_state='merged')
         def discussion(url):
@@ -33,7 +36,7 @@ class TerminalCardTests(unittest.TestCase):
             visible = {d['id']: d for d in self.service.snapshot()['decisions']}
             self.assertEqual(visible[card['id']]['status'], 'refreshing')
             with self.assertRaisesRegex(ServiceError, 'source changed'):
-                self.write("POST", f"/v1/decisions/{card['id']}/answer", dict(revision=card['revision'], choice='approve'))
+                self.write("POST", f"/v1/decisions/{card['id']}/answer", dict(revision=card['revision'], choice='approve', option_id='approve'))
         finally:
             release.set()
             worker.join(5)
