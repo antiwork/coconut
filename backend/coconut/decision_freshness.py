@@ -55,6 +55,8 @@ class DecisionFreshness:
                     or observation.url.lower() not in {url.lower() for url in github_links(decision)}):
                 continue
             url = next(url for url in github_links(decision) if url.lower() == observation.url.lower())
+            if observation.pr_state == 'merged' and (decision.get('merge_pr_url') or '').lower() == url.lower():
+                continue
             previous = decision.get('_source_facts', {}).get(url, {}).get('pr_state')
             if previous == observation.pr_state or decision.get('_source_recheck'):
                 continue
