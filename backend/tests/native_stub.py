@@ -63,6 +63,11 @@ def resolve_gateway_approval(*args, **kwargs): return 1
     def __init__(self, **kwargs): pass
 class PluginContext:
     def __init__(self, *args): pass
+    def register_hook(self, name, callback):
+        hooks.setdefault(name, []).append(callback)
+        class Registration:
+            def dispose(self): hooks[name].remove(callback)
+        return Registration()
     def register_middleware(self, kind, callback):
         from tools.registry import registry
         original=registry.dispatch
@@ -79,6 +84,7 @@ class PluginContext:
         class Registration:
             def dispose(self): registry.dispatch=original
         return Registration()
+hooks = {}
 def get_plugin_manager(): return None
 ''')
     (source / 'hermes_cli/tools_config.py').write_text("def _get_platform_tools(config, platform): return config.get('platform_toolsets', {}).get(platform, ['hermes-cli'])\n")
