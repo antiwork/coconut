@@ -15,6 +15,17 @@ The private JSON config contains:
 
 The helper must support `archive --source --receipt`, `status --build`, and `upload --source --expected-build`. The archive command must write a new receipt with its build, source, and source hash while holding its archive lock. It must validate the expected build against its archive record while holding its archive lock. Keep signing keys and App Store credentials outside the repository.
 
+The `status --build` command uses this protocol:
+
+- Exit code 0 means the build is available to the configured private testers. It must not mean only that Apple accepted an upload.
+- A nonzero exit with JSON on stdout means Apple has the build. The JSON `processing` field reports Apple's state.
+- `processing` values `FAILED` and `INVALID` mark a rejected build. Other values leave the build pending without another upload.
+- A nonzero exit with `Build is not listed yet.` on stdout permits an upload attempt.
+- Other failures report an error. They must not contain the not-listed text.
+
+The upload command must check Apple for an existing build before each attempt. It must refuse a duplicate upload. An archive receipt contains `source`, `source_hash`, and `build`. The source hash uses the same input paths and SHA-256 calculation as `ios_hash()` in the updater.
+
+
 The updater requires a merged PR with completed, successful checks. It uses Coconut's existing package installer, verifies installed file hashes, and checks local TLS health. The installer preserves runtime data and controls deployment rollback. A lock prevents overlapping automatic runs.
 
 The updater stores its progress beside the config in `automatic-state.json`. A changed iOS input hash schedules an archive and TestFlight upload. Backend-only changes do not create another build. Apple processing does not prevent later backend deployments. A missing initial iOS hash creates one baseline build; an operator may seed a verified existing build and its exact input hash.
