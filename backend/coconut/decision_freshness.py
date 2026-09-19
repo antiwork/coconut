@@ -311,6 +311,7 @@ class DecisionFreshness:
 
     def _queue_decision_refreshes(self):
         from .service import now, uid
+        from .decision_sources import github_links
         with self.transaction():
             if self.stopping.is_set() or self.restart_pending:
                 return
@@ -331,6 +332,9 @@ class DecisionFreshness:
                 task = tasks[decision['task_id']]
                 if (decision['status'] != 'pending' or decision['action_type'] not in ('question', 'draft_message')
                         or decision['id'] in self._pending_decision_sources
+                        or (self._ready_decision_sources is not None
+                            and self._ready_decision_sources.get(decision['id'])
+                            != (decision['revision'], github_links(decision)))
                         or not decision.get('_native') or self._task_paused(task) or task['status'] == 'cancelled'
                         or not self._process_observation_current(task, self._get('bots', task['bot_id']))
                         or self._human_reply_pending(task, contexts) or self._refresh_session_busy(task)

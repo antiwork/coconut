@@ -293,16 +293,197 @@ class PRSourceRefreshTests(unittest.TestCase):
     def test_source_change_after_write_retries_before_admission(self):
         self.check_revised_read(change_links=True, after_write=True)
 
+    def check_midpoll_card(self, change, *, admission=False, cleanup=None):
+        second_url = self.cards()
+        new_url = fixture.URL.replace('/42', '/44')
+        # The first card's initial read changes no evidence and needs no refresh.
+        self.tracker.observe = lambda url: replace(fixture.observation(), url=url)
+        self.service._refresh_decision_sources({})
+        for card in self.service._all('decisions'):
+            self.service._initialize_decision_freshness(card)
+        creating = change in ('create', 'empty')
+        target = 'late-card' if creating else 'older-card'
+        template = self.service._get('decisions', 'older-card')
+        if creating:
+            with self.service.transaction():
+                for card in self.service._all('decisions'):
+                    if change == 'empty' or card['id'] == 'older-card':
+                        card['status'] = 'resolved'
+                        self.service._put('decisions', card)
+        anchor_blocked, release_anchor = threading.Event(), threading.Event()
+        completed, changed, target_blocked = (threading.Event() for _ in range(3))
+        release_target, target_returned, queued = (threading.Event() for _ in range(3))
+        errors, source_errors, calls, discussions = [], [], [], []
+        original = self.service._refresh_decision_sources
+        queue = self.service._queue_decision_refreshes
+
+        def observe(url):
+            if url == second_url:
+                anchor_blocked.set()
+                if not release_anchor.wait(5):
+                    raise TimeoutError('Test did not release unrelated PR observation')
+                if cleanup == 'failure':
+                    raise RuntimeError('unrelated PR failed')
+            return replace(fixture.observation(), url=url)
+
+        def discussion(url):
+            discussions.append(url)
+            return {'fingerprint': 'current'}
+
+        def source(*args, **kwargs):
+            is_target = kwargs['decision_ids'] == {target}
+            if is_target:
+                calls.append(target)
+            late = is_target and changed.is_set()
+            try:
+                if late:
+                    target_blocked.set()
+                    if not release_target.wait(5):
+                        raise TimeoutError('Test did not release new or revised card read')
+                return original(*args, **kwargs)
+            except Exception as error:
+                source_errors.append(error)
+                raise
+            finally:
+                if late:
+                    target_returned.set()
+
+        def queue_and_signal():
+            queue()
+            if target not in self.service._pending_decision_sources:
+                completed.set()  # Completion has been consumed and its fence released.
+            if any(c['decision_id'] == target and c['status'] == 'queued'
+                   for c in self.service._all('contexts')):
+                queued.set()
+
+        def refresh():
+            try:
+                self.service.refresh_pull_requests()
+            except Exception as error:
+                errors.append(error)
+
+        self.tracker.observe = observe
+        self.tracker.observe_discussion = discussion
+        worker = threading.Thread(target=refresh)
+        with patch.object(self.service, '_refresh_decision_sources', side_effect=source), \
+                patch.object(self.service, '_queue_decision_refreshes', side_effect=queue_and_signal):
+            worker.start()
+            try:
+                self.assertTrue(anchor_blocked.wait(2))
+                if not creating:
+                    self.assertTrue(completed.wait(2))
+                    self.assertEqual(self.service._all('contexts'), [])
+                    self.assertNotIn(target, self.service._pending_decision_sources)
+                with self.service.lock:
+                    with self.service.transaction():
+                        card = dict(template, id=target, status='pending') if creating else self.service._get('decisions', target)
+                        if creating:
+                            card.pop('_source_facts', None)
+                            card.pop('_freshness', None)
+                        elif change == 'revision':
+                            card['revision'] += 1
+                        else:
+                            card['sources'][0]['url'] = new_url  # Same revision, different links.
+                        self.service._put('decisions', card)
+                        artifact = next(a for a in self.service._all('artifacts') if a['url'] == fixture.URL)
+                        artifact['head_sha'] = 'c' * 40  # A later artifact change makes the card eligible.
+                        self.service._put('artifacts', artifact)
+                    changed.set()
+                    if admission:
+                        queue()  # Periodic tick before the poll can rediscover this identity.
+                        self.assertEqual(self.service._all('contexts'), [],
+                                         'Global admission must reject missing or stale cycle readiness')
+                self.assertTrue(target_blocked.wait(2),
+                                'New or revised cards must join the active poll while unrelated reads wait')
+                self.assertTrue(worker.is_alive())
+                queue()
+                self.assertEqual(self.service._all('contexts'), [])
+                if cleanup:
+                    before = self.service._get('decisions', target).get('_source_facts')
+                    if cleanup == 'shutdown':
+                        self.service.stopping.set()
+                    else:
+                        release_anchor.set()
+                    worker.join(2)
+                    self.assertFalse(worker.is_alive(), 'Cleanup must not wait for the late card read')
+                    self.assertEqual(self.service._pending_decision_sources, set())
+                    self.assertIsNone(self.service._ready_decision_sources)
+                    with patch.object(self.service, 'transaction', side_effect=AssertionError('late database access')):
+                        release_target.set()
+                        self.assertTrue(target_returned.wait(2))
+                    self.assertEqual(self.service._get('decisions', target).get('_source_facts'), before)
+                else:
+                    release_target.set()
+                    self.assertTrue(queued.wait(2), 'The current card must progress in this same poll')
+                    self.assertFalse(release_anchor.is_set())
+                    self.assertTrue(worker.is_alive())
+                    current = self.service._get('decisions', target)
+                    expected_url = new_url if change == 'links' else fixture.URL
+                    self.assertEqual(set(current['_source_facts']), {expected_url})
+                    self.assertEqual(current['_source_facts'][expected_url]['discussion'], {'fingerprint': 'current'})
+                    context, = self.service._all('contexts')
+                    self.assertEqual(context['_decision_revision'], current['revision'])
+                    tasks = {t['id']: t for t in self.service._all('tasks')}
+                    artifacts = self.service._all('artifacts')
+                    fingerprint, _ = self.service._decision_evidence(current, tasks,
+                        self.service._decision_records(current, tasks, artifacts), artifacts)
+                    self.assertEqual(context['_evidence_fingerprint'], fingerprint)
+            finally:
+                release_target.set()
+                release_anchor.set()
+                worker.join(5)
+                if target_blocked.is_set():
+                    self.assertTrue(target_returned.wait(2))
+        self.assertFalse(worker.is_alive())
+        self.assertEqual([str(error) for error in errors], ['unrelated PR failed'] if cleanup == 'failure' else [])
+        self.assertEqual(source_errors, [])
+        self.assertEqual(calls, [target] * (1 if creating else 2), 'Stable identities must not spin or duplicate jobs')
+        self.assertEqual(len(discussions), len(set(discussions)), 'Retries must reuse the poll source cache')
+        self.assertEqual(self.service._pending_decision_sources, set())
+        self.assertIsNone(self.service._ready_decision_sources)
+
+    def test_midpoll_creation_is_fenced_at_global_admission(self):
+        self.check_midpoll_card('create', admission=True)
+
+    def test_midpoll_creation_joins_active_poll(self):
+        self.check_midpoll_card('create')
+
+    def test_revision_after_completed_read_is_fenced_at_global_admission(self):
+        self.check_midpoll_card('revision', admission=True)
+
+    def test_revision_after_completed_read_rejoins_active_poll(self):
+        self.check_midpoll_card('revision')
+
+    def test_links_after_completed_read_are_fenced_at_global_admission(self):
+        self.check_midpoll_card('links', admission=True)
+
+    def test_links_after_completed_read_rejoin_active_poll(self):
+        self.check_midpoll_card('links')
+
+    def test_empty_snapshot_later_card_is_fenced_at_global_admission(self):
+        self.check_midpoll_card('empty', admission=True)
+
+    def test_empty_snapshot_later_card_joins_active_poll(self):
+        self.check_midpoll_card('empty')
+
+    def test_midpoll_creation_cleanup_on_failure(self):
+        self.check_midpoll_card('create', cleanup='failure')
+
+    def test_midpoll_creation_cleanup_on_shutdown(self):
+        self.check_midpoll_card('create', cleanup='shutdown')
+
     def test_pending_sources_cleared_after_read_or_worker_start_failure(self):
         self.cards()
         with patch.object(threading.Thread, 'start', side_effect=RuntimeError('thread start failed')):
             with self.assertRaisesRegex(RuntimeError, 'thread start failed'):
                 self.service.refresh_pull_requests()
         self.assertEqual(self.service._pending_decision_sources, set())
+        self.assertIsNone(self.service._ready_decision_sources)
         with patch.object(self.service, '_refresh_decision_sources', side_effect=RuntimeError('source failed')):
             with self.assertRaisesRegex(RuntimeError, 'source failed'):
                 self.service.refresh_pull_requests()
         self.assertEqual(self.service._pending_decision_sources, set())
+        self.assertIsNone(self.service._ready_decision_sources)
         self.service.refresh_pull_requests()
         self.assertEqual([c['decision_id'] for c in self.service._all('contexts')], ['older-card'])
 
