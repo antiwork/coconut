@@ -84,6 +84,7 @@ def verify_contract():
     from hermes_cli.plugins import PluginContext
     from hermes_cli.middleware import run_tool_execution_middleware
     require_keywords(PluginContext.register_middleware, {'kind', 'callback'})
+    require_keywords(PluginContext.register_hook, {'hook_name', 'callback'})
     require_keywords(run_tool_execution_middleware, {'tool_name', 'args', 'next_call'})
     from .model_catalog import _read_profile, _write_profile
 
@@ -190,6 +191,19 @@ def verify_contract():
     dispatch()
     if calls != ['coconut_create_bot']:
         raise ValueError('Hermes did not remove the previous turn middleware.')
+    from types import SimpleNamespace
+    from hermes_cli.plugins import invoke_hook
+    from .turn_timings import TurnTrace, native_request_timings
+    traces = []
+    trace = TurnTrace({'id': 'request-contract'}, 'start', lambda kind, data: traces.append(data))
+    hooks = ('pre_api_request', 'post_api_request', 'api_request_error')
+    with native_request_timings(trace, SimpleNamespace(session_id='request-contract')):
+        for hook in hooks:
+            invoke_hook(hook, task_id='request-contract', session_id='request-contract', api_call_count=1)
+    for hook in hooks:
+        invoke_hook(hook, task_id='request-contract', session_id='request-contract', api_call_count=2)
+    if [row['stage'] for row in traces] != ['api_request_start', 'api_request_end', 'api_request_error']:
+        raise ValueError('Hermes changed request hook delivery or cleanup.')
     for name in names:
         registry.deregister(name)
     if registry.get_definitions(names, quiet=True):
