@@ -17,7 +17,7 @@ class AutomaticUpdateTests(unittest.TestCase):
     def test_only_successful_merged_commit_passes(self):
         pull = dict(merged_at='today', merge_commit_sha='abc', number=3, base=dict(ref='main'))
         record = dict(state='MERGED', mergeCommit=dict(oid='abc'), statusCheckRollup=[dict(conclusion='SUCCESS')])
-        checked = dict(total_count=1, check_runs=[dict(status='completed', conclusion='success')])
+        checked = dict(total_count=2, check_runs=[dict(name=name, head_sha='abc', app=dict(id=15368, slug='github-actions'), status='completed', conclusion='success') for name in ('contracts', 'native-kanban')])
         values = [json.dumps([pull]), json.dumps(record), json.dumps(checked), '{"statuses":[]}']
         with patch.object(update, 'run', side_effect=values) as calls:
             update.reviewed_merge('owner/repo', 'abc')
@@ -110,7 +110,7 @@ class AutomaticUpdateTests(unittest.TestCase):
                 if 'receive' in args:
                     received.append(args)
                     (live / '.runtime/hermes').mkdir()
-                    (live / '.runtime/hermes/install.json').write_text('{}')
+                    (live / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit='runtime')))
                     return 'COCONUT_DEPLOY_RESULT={"ok":true}'
                 return ''
             def package(path):
@@ -135,15 +135,246 @@ class AutomaticUpdateTests(unittest.TestCase):
             source = Path(directory) / 'source'
             source.mkdir()
             receipt = Path(directory) / 'archive.json'
-            receipt.write_text(json.dumps(dict(source=str(source), source_hash='hash', build=162)))
+            receipt.write_text(json.dumps(dict(source=str(source), source_hash='hash', build=162, version='2026.9.19')))
             state = dict(pending_ios=dict(hash='hash', source_sha='sha', receipt=str(receipt)))
             config = dict(release_helper='/release/release.py', release_source=str(source))
-            with patch.object(update, 'run', return_value='') as command, \
+            with patch.object(update, 'run', side_effect=lambda args, **kw: 'sha' if args[:2] == ['git', 'rev-parse'] else '') as command, \
                  patch.object(update, 'ios_hash', return_value='hash'), \
                  patch.object(update.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '{}', '')):
                 update.release_ios(config, state, Path(directory) / 'state.json')
             self.assertFalse(any('archive' in call.args[0] for call in command.call_args_list))
             self.assertEqual(state['ios_build'], 162)
+
+
+
+
+class PostmergeRegressionTests(unittest.TestCase):
+    """Real updater entry points; external operations use only temporary fixtures."""
+
+    def ci(self, checks, *, total=None, statuses=None, merge_sha='abc'):
+        values = [
+            [dict(merged_at='today', merge_commit_sha='abc', number=3, base=dict(ref='main'))],
+            dict(state='MERGED', mergeCommit=dict(oid=merge_sha), statusCheckRollup=[dict(conclusion='SUCCESS')]),
+            dict(total_count=len(checks) if total is None else total, check_runs=checks),
+            statuses or dict(statuses=[]),
+        ]
+        with patch.object(update, 'run', side_effect=[json.dumps(value) for value in values]):
+            update.reviewed_merge('owner/repo', 'abc')
+
+    def checks(self):
+        return [dict(name=name, head_sha='abc', app=dict(id=15368, slug='github-actions'),
+                     status='completed', conclusion='success') for name in ('contracts', 'native-kanban')]
+
+    def test_expected_trusted_ci_passes(self):
+        self.ci(self.checks())
+
+    def test_unrelated_success_is_not_expected_ci(self):
+        checks = self.checks()[:1]
+        checks[0]['name'] = 'unrelated'
+        with self.assertRaises(ValueError):
+            self.ci(checks)
+
+    def test_ci_provenance_completeness_and_failures(self):
+        cases = [[], self.checks()[:1], [None], ['invalid']]
+        for field, value in [('head_sha', 'different'), ('name', []), ('app', None), ('app', {}),
+                             ('app', dict(id=999, slug='github-actions')),
+                             ('app', dict(id=15368, slug='untrusted')),
+                             ('conclusion', 'neutral'), ('conclusion', 'skipped'),
+                             ('conclusion', 'failure'), ('status', 'in_progress')]:
+            checks = self.checks()
+            checks[0][field] = value
+            cases.append(checks)
+        for conclusion in ('failure', None):
+            checks = self.checks()
+            checks.append(dict(name='extra', head_sha='abc', status='completed', conclusion=conclusion))
+            cases.append(checks)
+        for checks in cases:
+            with self.subTest(checks=checks), self.assertRaises(ValueError):
+                self.ci(checks)
+        for options in [dict(total=101), dict(merge_sha='other'),
+                        dict(statuses=dict(state='pending', statuses=[dict(state='pending')])),
+                        dict(statuses=dict(state='failure', statuses=[dict(state='failure')])),
+                        dict(statuses=dict(state='success', total_count=101, statuses=[dict(state='success')]))]:
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                self.ci(self.checks(), **options)
+
+    def runtime_case(self, *, damaged=True, repaired=True, runtime_text='{"commit":', post_runtime=None):
+        import sys
+        tests = str(Path(__file__).resolve().parents[1] / 'backend/tests')
+        with patch.object(sys, 'path', [tests] + sys.path):
+            from test_runtime_deployment import deploy, archive, package_files, RuntimeOperations, NEW
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            live, source = root / 'live', root / 'source'
+            source.mkdir()
+            address = 'https://mini.example:8960'
+            files = package_files(**{'scripts/hermes.py': f"REVISION = '{NEW}'\n".encode()})
+            deploy.receive('live', address, archive(package_files() if damaged else files),
+                           home=root, operations=RuntimeOperations(mode='managed'))
+            if damaged:
+                with self.assertRaises(deploy.DeployError):
+                    deploy.receive('live', address, archive(files), home=root,
+                                   operations=RuntimeOperations(mode='managed', fail='prepare', fail_stop_after=1),
+                                   update_runtime=True)
+                (live / '.runtime/hermes/install.json').write_text(runtime_text)
+                self.assertTrue((live / '.runtime/deploy/update.json').exists())
+            (live / '.runtime/host').mkdir(parents=True, exist_ok=True)
+            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address=address)))
+            state_path = root / 'state.json'
+            received = []
+            def command(args, **kwargs):
+                if args[:3] == ['git', 'remote', 'get-url']: return 'https://github.com/owner/repo.git'
+                if args[:2] == ['git', 'rev-parse']: return 'sha'
+                if args[:2] == ['git', 'ls-files']: return '\n'.join(files)
+                if 'receive' in args:
+                    received.append(args)
+                    if repaired:
+                        result = deploy.receive('live', address, kwargs['stdin'], home=root,
+                                                operations=RuntimeOperations(mode='managed'),
+                                                update_runtime='--update-runtime' in args)
+                        return 'COCONUT_DEPLOY_RESULT=' + json.dumps(dict(result, ok=True))
+                    if post_runtime is not None:
+                        (live / '.runtime/hermes/install.json').write_text(post_runtime)
+                    return 'COCONUT_DEPLOY_RESULT={"ok":true}'
+                return ''
+            def package(path):
+                path.write_bytes(archive(files).getvalue())
+                return dict(package_id='package')
+            packaging = SimpleNamespace(package=package, source_files=lambda: files)
+            installer = SimpleNamespace(validate_package=deploy.validate_package,
+                                        Operations=lambda: RuntimeOperations(mode='managed'))
+            config = dict(repository='owner/repo', source=str(source), live=str(live))
+            with patch.object(update, 'run', side_effect=command), \
+                 patch.object(update, 'module', side_effect=lambda source, name: packaging if name == 'remote' else installer), \
+                 patch.object(update, 'reviewed_merge'), patch.object(update, 'ios_hash', return_value='hash'), \
+                 patch.object(update.Path, 'home', return_value=root):
+                if not repaired:
+                    with self.assertRaises((ValueError, RuntimeError)):
+                        update.update(config, state_path)
+                    self.assertFalse(state_path.exists())
+                    return
+                update.update(config, state_path)
+                update.update(config, state_path)
+            self.assertEqual(len(received), int(damaged))
+            self.assertEqual(json.loads(state_path.read_text())['source_sha'], 'sha')
+            self.assertEqual(json.loads((live / '.runtime/hermes/install.json').read_text())['commit'], NEW)
+            self.assertFalse((live / '.runtime/deploy/update.json').exists())
+
+    def test_truncated_runtime_reaches_real_receive_and_retry_is_noop(self):
+        self.runtime_case()
+
+    def test_wrong_type_runtime_reaches_recovery(self):
+        for value in ('null', '[]', 'true', '42'):
+            with self.subTest(receipt=value):
+                self.runtime_case(runtime_text=value)
+
+    def test_healthy_runtime_does_not_deploy(self):
+        self.runtime_case(damaged=False)
+
+    def test_unrepaired_runtime_cannot_record_success(self):
+        for value in ('{', 'null', '[]', '{}', '{"commit":"wrong"}'):
+            with self.subTest(receipt=value):
+                self.runtime_case(repaired=False, post_runtime=value)
+
+    def archive_case(self, receipt_text='{"source":', *, helper_change=None, helper_text=None,
+                     status=None, expected_error=False, head='sha', recovered=False):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'source'
+            source.mkdir()
+            helper = root / 'helper/release.py'
+            helper.parent.mkdir()
+            receipt = root / 'receipt.json'
+            if receipt_text is not None:
+                receipt.write_text(receipt_text)
+            record = dict(source=str(source), source_hash='hash', build='162', version='2026.9.19')
+            snapshot_record = record.copy()
+            record.update(helper_change or {})
+            authoritative = helper.parent / 'archive.json'
+            authoritative.write_text(json.dumps(record) if helper_text is None else helper_text)
+            before = authoritative.read_bytes()
+            pending = dict(hash='hash', source_sha='sha', receipt=str(receipt))
+            if recovered:
+                snapshot = root / 'recovered.json'
+                snapshot.write_text(json.dumps(snapshot_record))
+                pending['recovered_receipt'] = str(snapshot)
+            state = dict(pending_ios=pending)
+            state_path = root / 'state.json'
+            update.save(state_path, state)
+            events = []
+            def command(args, **kwargs):
+                events.append(args)
+                if args[:2] == ['git', 'rev-parse']: return head
+                if args[0] != 'git':
+                    self.assertIn('upload', args)
+                    self.assertIn('status', events[-2])
+                return ''
+            def check_status(args, **kwargs):
+                events.append(args)
+                return status or subprocess.CompletedProcess([], 0, '{}', '')
+            config = dict(release_helper=str(helper), release_source=str(source))
+            with patch.object(update, 'run', side_effect=command), patch.object(update, 'ios_hash', return_value='hash'), \
+                 patch.object(update.subprocess, 'run', side_effect=check_status):
+                if expected_error:
+                    for _ in range(2):
+                        with self.assertRaisesRegex(ValueError, 'recover archive receipt|source commit'):
+                            update.release_ios(config, state, state_path)
+                    self.assertFalse(any(args[0] != 'git' and ('status' in args or 'upload' in args) for args in events))
+                    self.assertNotIn('build', state['pending_ios'])
+                else:
+                    update.release_ios(config, state, state_path)
+                    self.assertEqual(pending['build'], 162)
+                    self.assertEqual(pending['version'], '2026.9.19')
+                    if receipt_text != json.dumps(record):
+                        self.assertEqual(json.loads(Path(pending['recovered_receipt']).read_text()), snapshot_record if recovered else record)
+                    if status and status.returncode:
+                        update.release_ios(config, state, state_path)
+            self.assertEqual(authoritative.read_bytes(), before)
+            if receipt_text is not None:
+                self.assertEqual(receipt.read_text(), receipt_text)
+            else:
+                self.assertFalse(receipt.exists())
+            self.assertFalse(any('archive' in args for args in events))
+            return events
+
+    def test_partial_archive_recovers_authoritative_receipt_without_rebuild(self):
+        events = self.archive_case()
+        self.assertFalse(any('upload' in args for args in events))
+
+    def test_saved_recovery_snapshot_keeps_original_build_identity(self):
+        self.archive_case(recovered=True, helper_change=dict(build='163'))
+
+    def test_archive_recovery_handles_empty_missing_and_incomplete_receipts(self):
+        for receipt in ('', None, '{}', '{"build":"162"}',
+                        '{"build":"162","version":', '{"source_hash":"hash","build":'):
+            with self.subTest(receipt=receipt):
+                self.archive_case(receipt)
+
+    def test_archive_recovery_rejects_invalid_or_conflicting_records(self):
+        for text in ('', '{', '[]', 'null', '162', '"record"'):
+            with self.subTest(helper=text):
+                self.archive_case(helper_text=text, expected_error=True)
+        for change in (dict(source='/other'), dict(source_hash='other'), dict(build=True), dict(build=0),
+                       dict(build=1.5), dict(build=[]), dict(version=None), dict(version='bad')):
+            with self.subTest(change=change):
+                self.archive_case(helper_change=change, expected_error=True)
+        for text in ('[]', 'null', 'garbage', '{"build":"163"}', '{"version":"1.2.3"}',
+                     '{"source_hash":"other"}', '{"build":"163","version":',
+                     '{"source_hash":"other","build":', '{"version":"1.2.3",',
+                     '{"source":"/other","source_hash":'):
+            with self.subTest(receipt=text):
+                self.archive_case(text, expected_error=True)
+        self.archive_case(head='different', expected_error=True)
+
+    def test_recovered_processing_build_never_uploads(self):
+        events = self.archive_case(status=subprocess.CompletedProcess([], 1, '{"processing":"PROCESSING"}', ''))
+        self.assertEqual(sum(args[0] != 'git' and 'status' in args for args in events), 2)
+        self.assertFalse(any('upload' in args for args in events))
+
+    def test_recovered_missing_build_checks_status_before_upload(self):
+        events = self.archive_case(status=subprocess.CompletedProcess([], 1, 'Build is not listed yet.', ''))
+        self.assertEqual(sum(args[0] != 'git' and 'status' in args for args in events), 2)
+        self.assertTrue(any('upload' in args for args in events))
 
 
 if __name__ == '__main__':
