@@ -78,6 +78,28 @@ class NativeKanbanTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
 
+    def test_saved_reply_wait_does_not_stop_unrelated_native_execution(self):
+        held = self.task('Keep the result until this task can return it')
+        recipient = self.write('/v1/bots', {'name': 'Independent worker'})
+        with self.service.transaction():
+            task = self.service._get('tasks', held['id'])
+            task.update(status='waiting', _return_pending=dict(target_bot_id=recipient['id'],
+                text='Saved result', result_status='completed', return_id='saved-result'))
+            self.service._put('tasks', task)
+        runnable = self.write('/v1/bots/' + recipient['id'] + '/messages', {'text': 'Complete independent work', 'mode': 'queue'})
+        self.settle(lambda: self.service._get('tasks', runnable['id'])['status'] == 'completed')
+        self.assertIn(runnable['id'], self.provider.started)
+        self.assertIn('_return_pending', self.service._get('tasks', held['id']))
+        self.assertFalse(self.service._all('deliveries'))
+        with self.service.transaction():
+            task = self.service._get('tasks', held['id'])
+            task['status'] = 'completed'
+            self.service._put('tasks', task)
+        self.service._drain_returns()
+        self.service._drain_returns()
+        self.assertNotIn('_return_pending', self.service._get('tasks', held['id']))
+        self.assertEqual(len(self.service._all('deliveries')), 1)
+
     def test_restart_drain_retries_adapter_failures_then_dispatches_after_deadline(self):
         from contextlib import ExitStack
         active = self.task('Finish the current turn')

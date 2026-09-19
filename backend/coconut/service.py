@@ -1726,6 +1726,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 cancelled = (task['status'] == 'cancelled' and not task.get('_dependency_cancelled')) or self._get('exchanges', task['exchange_id']).get('cancelled')
                 if not cancelled and not any(bot.get('_deleted') for bot in recipients) and any(bot['archived'] for bot in recipients):
                     continue
+                # Recovery can queue a new turn while an earlier reply remains saved.
+                # Keep that reply pending without blocking unrelated native claims.
+                if not cancelled and task['status'] not in ('completed', 'failed') and not task.get('_dependency_cancelled'):
+                    continue
                 try:
                     self._store_bot_message(task_id, payload, returning=True)
                 except ServiceError as error:
