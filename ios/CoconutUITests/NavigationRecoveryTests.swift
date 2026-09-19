@@ -44,7 +44,7 @@ final class NavigationRecoveryTests: XCTestCase {
             XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 3) && app.buttons["app-settings"].isHittable)
             XCTAssertTrue(search.isHittable)
             if app.buttons["close-search"].exists { app.buttons["close-search"].tap() }
-            app.tabBars.buttons["Work"].tap()
+            app.tabBars.buttons["Inbox"].tap()
             app.tabBars.buttons["Bots"].tap()
             XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 3))
             if attempt == 2 {

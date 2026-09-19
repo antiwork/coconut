@@ -27,6 +27,17 @@ print(board.kb.create_task(board.conn, title='Fix the accepted defect', body='Ve
         self.service.kanban.call({'op': 'snapshot'})
         return self.service._work_projection([dict(item)])[0]
 
+    def test_legacy_reports_do_not_start_a_second_status_projection(self):
+        identity, item = self.outcome()
+        retained = dict(item, activity='Still running old tests', status='working')
+        retained.pop('_native_outcome_id')
+        with patch.object(self.service, '_project_work_outcomes', side_effect=AssertionError('Legacy tracker ran')):
+            projected = self.service._work_projection([retained])[0]
+        self.assertEqual(projected['activity'], 'Status unavailable')
+        self.assertEqual(projected['work_state'], 'waiting')
+        self.assertIsNone(projected['activity_observed_at'])
+        self.assertEqual(self.service.kanban.tasks[item['task_id']]['id'], identity)
+
     def test_blocked_work_does_not_present_an_old_summary_as_current_activity(self):
         identity, item = self.outcome()
         self.native_program("board.kb.block_task(board.conn, sys.argv[2], reason='Tests failed on old commit abc123', kind='capability')", identity)
@@ -66,6 +77,19 @@ board.dispatch.heartbeat_worker(board.conn,sys.argv[2],note='Running the focused
         projected = self.project(item)
         self.assertEqual(projected['work_state'], 'working')
         self.assertEqual(projected['activity'], 'Waiting for worker output')
+
+    def test_unchanged_progress_text_still_publishes_a_new_native_heartbeat(self):
+        identity, item = self.outcome()
+        self.native_program("board.kb.unblock_task(board.conn,sys.argv[2]); board.kb.claim_task(board.conn,sys.argv[2]); board.dispatch.heartbeat_worker(board.conn,sys.argv[2],note='Running tests'); board.conn.execute(\"UPDATE task_events SET created_at=created_at-10 WHERE task_id=? AND kind='heartbeat'\",(sys.argv[2],)); board.conn.execute('UPDATE tasks SET last_heartbeat_at=last_heartbeat_at-10 WHERE id=?',(sys.argv[2],)); board.conn.commit()", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._publish_kanban_changes()
+        cursor = self.service._cursor()
+        self.native_program("board.dispatch.heartbeat_worker(board.conn,sys.argv[2],note='Running tests')", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._publish_kanban_changes()
+        page = self.service.updates(cursor, collection_deltas=True, native_events=True)
+        self.assertEqual({a['id'] for a in page['artifacts']}, {item['id']})
+        self.assertEqual(page['artifacts'][0]['work_state'], 'working')
 
     def test_native_change_sends_only_affected_work_and_queued_positions(self):
         first, item = self.outcome()

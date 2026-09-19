@@ -41,7 +41,7 @@ enum HomeDestination: Hashable {
     case inbox, archived
 }
 
-enum HomeTab: Hashable { case bots, work, inbox }
+enum HomeTab: Hashable { case bots, inbox }
 
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
@@ -55,12 +55,11 @@ struct CoconutHome: View {
     @State private var previewedNotification: NotificationTarget?
     @State private var botsPath = NavigationPath()
     @State private var inboxPath = NavigationPath()
-    @State private var workPath = NavigationPath()
     @State private var keyboardVisible = false
     @FocusState private var searchFocused: Bool
 
     private var tabBarVisibility: Visibility {
-        let activePath = selectedTab == .inbox ? inboxPath : selectedTab == .work ? workPath : botsPath
+        let activePath = selectedTab == .inbox ? inboxPath : botsPath
         return keyboardVisible || !activePath.isEmpty ? .hidden : .automatic
     }
 
@@ -73,13 +72,6 @@ struct CoconutHome: View {
                     Image(systemName: "bubble.left.and.bubble.right").environment(\.symbolVariants, .none)
                 }
             }.accessibilityIdentifier("home-bots")
-            Tab(value: HomeTab.work) {
-                root(tab: .work, path: $workPath)
-            } label: {
-                Label { Text("Work") } icon: {
-                    Image(systemName: "checklist").environment(\.symbolVariants, .none)
-                }
-            }.accessibilityIdentifier("home-work")
             Tab(value: HomeTab.inbox) {
                 root(tab: .inbox, path: $inboxPath)
             } label: {
@@ -94,7 +86,6 @@ struct CoconutHome: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
         .onChange(of: selectedTab) { _, tab in
             searchFocused = false
-            if tab == .work { workPath = NavigationPath() }
             if previewedNotification?.decisionId != nil && tab != .inbox {
                 PushNotifications.shared.target = nil
                 previewedNotification = nil
@@ -112,15 +103,10 @@ struct CoconutHome: View {
         NavigationStack(path: path) {
             Group {
                 if tab == .inbox { DecisionInboxView(focusDecisionId: $notificationDecisionId, refreshingDecisionId: PushNotifications.shared.target?.decisionId) }
-                else if tab == .work {
-                    WorkView(isVisible: selectedTab == .work && workPath.isEmpty) { route in
-                        workPath.append(route)
-                    }
-                }
                 else { HomeLaunchView(searchText: searchText) }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
-                .navigationTitle(tab == .work ? "Work" : "")
+                .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { rootToolbar(inbox: tab != .bots) }
                 .safeAreaInset(edge: .top, spacing: 0) {

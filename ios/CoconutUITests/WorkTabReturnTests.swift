@@ -2,7 +2,7 @@ import XCTest
 
 final class WorkTabReturnTests: XCTestCase {
     @MainActor
-    func testWorkReturnsToItsListAfterNotificationOpensAnotherTab() async throws {
+    func testTaskDetailsDoNotReplaceBotsAfterNotification() async throws {
         guard let address = ProcessInfo.processInfo.environment["COCONUT_NOTIFICATION_TEST_URL"] else {
             throw XCTSkip("Run scripts/test_notification_categories.py --work-navigation.")
         }
@@ -22,11 +22,12 @@ final class WorkTabReturnTests: XCTestCase {
         }
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.buttons["close-settings"].tap()
-        app.tabBars.buttons["Work"].tap()
-        let item = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "work-item-")).firstMatch
-        XCTAssertTrue(item.waitForExistence(timeout: 5))
-        item.tap()
-        XCTAssertTrue(app.buttons["Remove work context"].waitForExistence(timeout: 5))
+        let chat = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bot-conversation-")).firstMatch
+        XCTAssertTrue(chat.waitForExistence(timeout: 5)); chat.tap()
+        app.buttons["Bot options"].tap()
+        app.buttons["chat-task-details"].tap()
+        XCTAssertTrue(app.navigationBars["Task details"].waitForExistence(timeout: 5))
+        app.buttons["Done"].tap()
         XCUIDevice.shared.press(.home)
         var request = URLRequest(url: URL(string: address + "/test/push?kind=message")!)
         request.httpMethod = "POST"
@@ -38,10 +39,10 @@ final class WorkTabReturnTests: XCTestCase {
         notification.tap()
         XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 10))
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.tabBars.buttons["Work"].waitForExistence(timeout: 5))
-        app.tabBars.buttons["Work"].tap()
-        XCTAssertTrue(item.waitForExistence(timeout: 5) && item.isHittable)
-        XCTAssertFalse(app.buttons["bot-settings"].exists)
-        XCTAssertTrue(app.navigationBars["Work"].exists)
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.tabBars.buttons["Work"].exists)
+        app.tabBars.buttons["Bots"].tap()
+        XCTAssertTrue(chat.waitForExistence(timeout: 5) && chat.isHittable)
+        XCTAssertFalse(app.navigationBars["Task details"].exists)
     }
 }

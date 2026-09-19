@@ -21,6 +21,14 @@ struct TrackedWorkItem: Identifiable {
         return pullRequests.isEmpty ? ["completed", "cancelled"].contains(artifact.status) : pullRequests.allSatisfy(\.isFinished)
     }
 
+    static func nativeTasks(in artifacts: [Artifact], botId: String, tasks: [AgentTask] = []) -> [Self] {
+        let conversationTasks = Set(tasks.filter { $0.conversationBotId == botId }.map(\.id))
+        let identities = Set(artifacts.filter {
+            $0.nativeTaskId != nil && ($0.botId == botId || $0.taskId.map(conversationTasks.contains) == true)
+        }.map(\.workIdentity))
+        return tracked(in: artifacts.filter { identities.contains($0.workIdentity) })
+    }
+
     static func tracked(in artifacts: [Artifact], visibility: [String: Bool] = [:], at date: Date = Date()) -> [Self] {
         let allRequests = TrackedPullRequest.tracked(in: artifacts, visibility: visibility)
         let represented = Set(allRequests.map { $0.artifact.workIdentity })

@@ -8,6 +8,30 @@ final class TrackedWorkItemTests: XCTestCase {
                  activityState: status, activityObservedAt: "2026-09-13T00:00:00Z")
     }
 
+    func testNativeTaskDetailsKeepLinksReportedByAnotherBot() {
+        var native = item()
+        native.nativeTaskId = "native-export"
+        var pr = native
+        pr.id = "pr"; pr.botId = "reviewer"; pr.kind = "pr"
+        pr.nativeTaskId = nil; pr.workOutcomeId = native.id
+        pr.url = "https://github.com/example/project/pull/42"
+        var legacy = item(); legacy.id = "legacy"
+        let rows = TrackedWorkItem.nativeTasks(in: [native, pr, legacy], botId: "bot")
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.pullRequest?.number, "42")
+        XCTAssertTrue(TrackedWorkItem.nativeTasks(in: [native, pr, legacy], botId: "unrelated").isEmpty)
+    }
+
+    func testNativeTaskDetailsIncludeDelegatedWorkInItsOriginalConversation() {
+        var native = item(); native.nativeTaskId = "native-export"; native.taskId = "owner"
+        let owner = AgentTask(id: "owner", botId: "bot", sessionId: "session", title: "Export account data",
+                              status: "working", summary: "", createdAt: "", updatedAt: "", threadId: "thread",
+                              conversationBotId: "desk", sourceBotId: "desk")
+        XCTAssertEqual(TrackedWorkItem.nativeTasks(in: [native], botId: "desk", tasks: [owner]).count, 1)
+        XCTAssertEqual(TrackedWorkItem.nativeTasks(in: [native], botId: "bot", tasks: [owner]).count, 1)
+        XCTAssertTrue(TrackedWorkItem.nativeTasks(in: [native], botId: "unrelated", tasks: [owner]).isEmpty)
+    }
+
     func testWorkIncludesExplicitItemsButNotFiles() {
         let file = Artifact(id: "file", botId: "bot", title: "Notes", kind: "file", status: "ready", preview: "", createdAt: "")
         XCTAssertEqual(TrackedWorkItem.tracked(in: [file, item()]).map(\.id), ["work:export"])

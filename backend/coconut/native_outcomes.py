@@ -514,11 +514,14 @@ class NativeOutcomes:
     def _native_work_view(self, artifacts):
         from datetime import datetime, timezone
         timestamp = datetime.now(timezone.utc)
-        groups, legacy = {}, []
+        groups = {}
+        pending_decisions = None
         for item in artifacts:
             if item['kind'] not in ('work', 'pr'):
                 continue
             root = self._work_outcome_artifact(item)
+            if root['id'] != item['id'] or item.get('work_outcome_id'):
+                item['work_outcome_id'] = root['id']
             if not root.get('_native_outcome_id'):
                 terminal = self._retained_terminal_work(root)
                 if terminal:
@@ -530,7 +533,23 @@ class NativeOutcomes:
                     if item['kind'] == 'work':
                         item['status'] = terminal['activity_state']
                 else:
-                    legacy.append(item)
+                    item.update(work_state="waiting", activity_state="waiting", activity="Status unavailable",
+                        activity_observed_at=None, work_decision_id=None, work_next_step=None,
+                        work_queue_position=None, work_dependencies=[], work_attempts=[])
+                    if pending_decisions is None:
+                        pending_decisions = [json.loads(row[0]) for row in self.db.execute(
+                            "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending' "
+                            "AND NOT coalesce(json_extract(data,'$._hidden'),0) AND NOT coalesce(json_extract(data,'$._deleted'),0)")]
+                    pending = next((d for d in pending_decisions if d['task_id'] == root['task_id'] or any(
+                        p['kind'] == 'pr' and p.get('url') and d.get('merge_pr_url') == p['url']
+                        for p in (root, item))), None)
+                    if pending:
+                        item.update(work_state='needs_decision', activity='Waiting for your decision',
+                            work_decision_id=pending['id'], work_next_step='Review decision')
+                    elif root.get('paused_by_decision_id'):
+                        pause = self._get('decisions', root['paused_by_decision_id'])
+                        if self._work_pause(root, decisions=[pause], peers=[root]):
+                            item['activity'] = 'Paused by your decision'
                 continue
             if root['id'] != item['id'] or item.get('work_outcome_id'):
                 item['work_outcome_id'] = root['id']
@@ -560,10 +579,6 @@ class NativeOutcomes:
                     if item['kind'] == 'work':
                         item['status'] = outcome['activity_state']
                     item['work_dismissal_id'] = self._setting('work.dismissed.' + self._work_identity(root))
-        # Retained work must finish migration with its original waits and decisions.
-        if legacy:
-            self._project_work_outcomes(legacy, {t['id']: t for t in self._all('tasks')},
-                self._pending_completion_receipts(), self._all('decisions'), timestamp)
         return artifacts
 
     def _native_outcome_projection(self, item, tasks, records, decisions, timestamp, queue_positions, peers=None):
