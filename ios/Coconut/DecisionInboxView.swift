@@ -251,20 +251,21 @@ struct DecisionInboxView: View {
                 Image(systemName: "chevron.right").font(.caption2)
             }.frame(height: 44).padding(.horizontal, 16)
             Divider()
-            VStack(alignment: .leading, spacing: 16) {
-                DecisionIntroduction(decision: decision)
-                if let draft = decision.draft {
-                    MessageDraftContent(draft: draft)
-                    MessageDraftActions()
-                } else {
-                VStack(spacing: 8) {
-                    ForEach(decision.cardOptions, id: \.id) { option in
-                        DecisionChoiceContent(option: option, isRecommended: decision.recommendedOptionId == option.id, isCompact: true)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    DecisionIntroduction(decision: decision)
+                    if let draft = decision.draft {
+                        MessageDraftContent(draft: draft)
+                        MessageDraftActions()
+                    } else {
+                        VStack(spacing: 8) {
+                            ForEach(decision.cardOptions, id: \.id) { option in
+                                DecisionChoiceContent(option: option, isRecommended: decision.recommendedOptionId == option.id, isCompact: true)
+                            }
+                        }
                     }
-                }
-                }
-            }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
-            Spacer(minLength: 0)
+                }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            }
             HStack {
                 Text("Reply…").font(.subheadline).foregroundStyle(.tertiary).padding(.leading, 12)
                 Spacer()
