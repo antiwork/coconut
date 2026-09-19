@@ -45,6 +45,27 @@ def age(value, current):
 
 
 class DecisionFreshness:
+    def _invalidate_terminal_pr_cards(self, bot_id, observation):
+        from .decision_sources import github_links
+        if not observation.observed or observation.pr_state not in ('merged', 'closed'):
+            return
+        for decision in self._all('decisions'):
+            if (not decision.get('_native') or decision.get('action_type') not in ('question', 'draft_message')
+                    or decision['bot_id'] != bot_id or decision['status'] != 'pending'
+                    or observation.url.lower() not in {url.lower() for url in github_links(decision)}):
+                continue
+            url = next(url for url in github_links(decision) if url.lower() == observation.url.lower())
+            if observation.pr_state == 'merged' and (decision.get('merge_pr_url') or '').lower() == url.lower():
+                continue
+            previous = decision.get('_source_facts', {}).get(url, {}).get('pr_state')
+            if previous == observation.pr_state or decision.get('_source_recheck'):
+                continue
+            # Hide the obsolete choice immediately; the owner still decides whether follow-up work remains.
+            decision['_source_recheck'] = True
+            decision['revision'] += 1
+            self._put('decisions', decision)
+            self._event('decision.updated', self._public(decision), bot_id, decision['task_id'])
+
     def _refresh_decision_sources(self, observations, *, decision_ids=None, read_cache=None, cancelled=None):
         """Return the revision and links actually observed, including unchanged facts."""
         from .decision_sources import github_links, github_source
@@ -73,6 +94,11 @@ class DecisionFreshness:
                     if key not in observations:
                         observations[key] = read(('pr', *key), lambda: tracker.observe(url))
                     value = observations[key]
+                    with self.lock:
+                        if self.stopping.is_set() or (cancelled is not None and cancelled.is_set()):
+                            return {}
+                        with self.transaction():
+                            self._invalidate_terminal_pr_cards(decision['bot_id'], value)
                     current_facts = dict(facts.get(url, {}))
                     identity = {field: getattr(value, field, None) for field in ('head_sha', 'base_branch')}
                     changed = any(fact and fact != current_facts.get(field) for field, fact in identity.items())
@@ -425,6 +451,7 @@ class DecisionFreshness:
             elif status != 'current':
                 raise ServiceError(400, 'Choose current, revise, or withdraw. This check cannot grant approval.')
             fingerprint, _ = self._decision_evidence(decision, {t['id']: t for t in self._all('tasks')}, records, artifacts)
+            decision.pop('_source_recheck', None)
             decision['_freshness'] = dict(decision.get('_freshness', {}), checked_at=now(), fingerprint=fingerprint, evidence=evidence)
             self._put('decisions', decision)
             self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])

@@ -38,6 +38,10 @@ jobs:
           done
       - name: Check automatic deployment and releases
         run: python -m unittest discover -s scripts -p test_automatic_update.py
+      - name: Check stale decision retirement
+        env:
+          PYTHONPATH: backend
+        run: python -m unittest discover -s backend/tests -p test_terminal_card_refresh.py
       - name: Check delayed tool confirmations
         env:
           PYTHONPATH: backend:backend/tests

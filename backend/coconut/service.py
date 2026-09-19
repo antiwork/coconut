@@ -583,7 +583,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
     @staticmethod
     def _public(obj: dict) -> dict:
-        return {key: value for key, value in obj.items() if not key.startswith('_')}
+        result = {key: value for key, value in obj.items() if not key.startswith('_')}
+        if obj.get('_source_recheck') and obj.get('status') == 'pending':
+            result['status'] = 'refreshing'
+        return result
 
     def pairing_code(self, lifetime: int = 300) -> str:
         code = ''.join(secrets.choice('0123456789') for _ in range(10))
@@ -2229,6 +2232,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         return message['id']
 
     def _answer(self, decision: dict, task: dict, data: dict, device: str) -> dict:
+        if decision.get('_source_recheck'):
+            raise ServiceError(409, 'The source changed. Coconut is updating this decision.')
         if not isinstance(data.get('revision'), int) or isinstance(data['revision'], bool) or data['revision'] != decision['revision']:
             raise ServiceError(409, 'This decision changed. Refresh it before answering.')
         if data.get('option') is not None:
@@ -2568,6 +2573,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                                 continue
                             current['checked_at'] = observation.checked_at
                             if observation.observed:
+                                self._invalidate_terminal_pr_cards(current['bot_id'], observation)
                                 if current.get('pr_state') == 'open' and observation.pr_state in ('merged', 'closed'):
                                     current['_terminal_review_pending'] = True
                                 current.update(status=observation.state, title=(observation.title or current['title'])[:200], preview=observation.detail, head_sha=observation.head_sha, observed_at=observation.checked_at, refresh_error=None, pr_state=observation.pr_state, draft=observation.draft, checks_state=observation.checks_state, required_checks_state=observation.required_checks_state, review_checks=observation.review_checks, check_failures=observation.check_failures)
