@@ -45,18 +45,21 @@ def age(value, current):
 
 
 class DecisionFreshness:
-    def _refresh_decision_sources(self, observations, *, decision_ids=None, read_cache=None):
+    def _refresh_decision_sources(self, observations, *, decision_ids=None, read_cache=None, cancelled=None):
+        """Return the revision and links actually observed, including unchanged facts."""
         from .decision_sources import github_links, github_source
         with self.lock:
+            if self.stopping.is_set() or (cancelled is not None and cancelled.is_set()):
+                return {}
             decisions = [d for d in self._all('decisions') if d['status'] == 'pending'
                 and not d.get('_hidden') and not d.get('_deleted')
                 and not self._get('bots', d['bot_id']).get('_deleted')]
         issues, discussions, trackers = {}, {}, {}
         read = read_cache or (lambda key, load: load())
-        updated = False
+        completed = {}
         for decision in decisions:
-            if self.stopping.is_set():
-                return
+            if self.stopping.is_set() or (cancelled is not None and cancelled.is_set()):
+                return {}
             links = github_links(decision)
             if decision_ids is not None and decision['id'] not in decision_ids:
                 continue
@@ -99,14 +102,18 @@ class DecisionFreshness:
                         issues[key] = read(('issue', *key), lambda: tracker.observe_issue(url))
                     if issues[key] is not None:
                         facts[url] = issues[key]
-            with self.transaction():
-                current = self._get('decisions', decision['id'])
-                if (current['status'] == 'pending' and current['revision'] == decision['revision']
-                        and github_links(current) == links and current.get('_source_facts', {}) != facts):
-                    current['_source_facts'] = facts
-                    self._put('decisions', current)
-                    updated = True
-        return updated
+            with self.lock:
+                if self.stopping.is_set() or (cancelled is not None and cancelled.is_set()):
+                    return {}
+                with self.transaction():
+                    current = self._get('decisions', decision['id'])
+                    if (current['status'] == 'pending' and current['revision'] == decision['revision']
+                            and github_links(current) == links):
+                        if current.get('_source_facts', {}) != facts:
+                            current['_source_facts'] = facts
+                            self._put('decisions', current)
+                        completed[decision['id']] = (decision['revision'], links)
+        return completed
 
     def _decision_human_messages(self, task):
         assignment = self._assignment(task)
@@ -323,6 +330,7 @@ class DecisionFreshness:
             for decision in sorted(decisions, key=lambda d: d.get('_freshness', {}).get('queued_at', d['created_at'])):
                 task = tasks[decision['task_id']]
                 if (decision['status'] != 'pending' or decision['action_type'] not in ('question', 'draft_message')
+                        or decision['id'] in self._pending_decision_sources
                         or not decision.get('_native') or self._task_paused(task) or task['status'] == 'cancelled'
                         or not self._process_observation_current(task, self._get('bots', task['bot_id']))
                         or self._human_reply_pending(task, contexts) or self._refresh_session_busy(task)

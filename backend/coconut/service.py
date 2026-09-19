@@ -126,6 +126,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.pr_tracker = pr_tracker
         self.pr_refresh_requested = threading.Event()
         self.pr_refresh_lock = threading.Lock()
+        self._pending_decision_sources = set()
         self.pr_follow_lock = threading.Lock()
         self.pr_last_request = float('-inf')
         self.lock = threading.RLock()
@@ -2492,7 +2493,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 except Empty:
                     continue
                 try:
-                    result = self._refresh_decision_sources(known, decision_ids={identity}, read_cache=read_source)
+                    result = self._refresh_decision_sources(known, decision_ids={identity},
+                        read_cache=read_source, cancelled=finished)
                 except Exception as error:
                     result = error
                 results.put(('source', identity, result))
@@ -2503,6 +2505,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             for decision in decisions:
                 if decision['id'] in scheduled:
                     continue
+                with self.lock:
+                    decision = self._get('decisions', decision['id'])
                 keys = {(decision['bot_id'], url.lower()) for url in github_links(decision)
                         if github_source(url)[0] == 'pulls'}
                 # A card receives all its linked PR facts together, including discussion evidence.
@@ -2512,13 +2516,16 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 pending_sources += 1
                 source_jobs.put((decision['id'], dict(observations)))
 
-        # Active HTTP reads retain their timeout and never delay process shutdown.
-        for _ in range(min(4, len(grouped))):
-            threading.Thread(target=observe, name='pr-observation', daemon=True).start()
-        for _ in range(min(2, len(decisions))):
-            threading.Thread(target=refresh_sources, name='decision-observation', daemon=True).start()
-        schedule_sources()
+        # Fence global scheduling before any observation can change card evidence.
+        with self.lock:
+            self._pending_decision_sources.update(d['id'] for d in decisions)
         try:
+            # Active HTTP reads retain their timeout and never delay process shutdown.
+            for _ in range(min(4, len(grouped))):
+                threading.Thread(target=observe, name='pr-observation', daemon=True).start()
+            for _ in range(min(2, len(decisions))):
+                threading.Thread(target=refresh_sources, name='decision-observation', daemon=True).start()
+            schedule_sources()
             while (remaining or pending_sources) and not self.stopping.is_set():
                 try:
                     kind, key, observation = results.get(timeout=.2)
@@ -2528,8 +2535,18 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     raise observation
                 if kind == 'source':
                     pending_sources -= 1
-                    if observation:
-                        self._queue_decision_refreshes()
+                    with self.lock:
+                        current = self._get('decisions', key)
+                        if (current['status'] == 'pending' and not current.get('_hidden')
+                                and not current.get('_deleted')
+                                and not self._get('bots', current['bot_id']).get('_deleted')
+                                and observation.get(key) != (current['revision'], github_links(current))):
+                            # A discarded read cannot admit a revised card with old facts.
+                            scheduled.remove(key)
+                        else:
+                            self._pending_decision_sources.discard(key)
+                    schedule_sources()
+                    self._queue_decision_refreshes()
                     continue
                 remaining -= 1
                 observations[key] = observation
@@ -2555,7 +2572,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._queue_pr_reviews(artifact_ids={item['id'] for item in grouped[key]})
                 schedule_sources()
         finally:
-            finished.set()
+            with self.lock:
+                # Invalidate active writes before releasing their admission fences.
+                finished.set()
+                self._pending_decision_sources.difference_update(d['id'] for d in decisions)
 
     def _dispatch(self):
         next_routine_tick = 0
