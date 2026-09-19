@@ -137,7 +137,7 @@ class AutomaticUpdateTests(unittest.TestCase):
             receipt = Path(directory) / 'archive.json'
             receipt.write_text(json.dumps(dict(source=str(source), source_hash='hash', build=162, version='2026.9.19')))
             state = dict(pending_ios=dict(hash='hash', source_sha='sha', receipt=str(receipt)))
-            config = dict(release_helper='/release/release.py', release_source=str(source))
+            config = dict(release_helper=str(Path(directory) / 'release.py'), release_source=str(source))
             with patch.object(update, 'run', side_effect=lambda args, **kw: 'sha' if args[:2] == ['git', 'rev-parse'] else '') as command, \
                  patch.object(update, 'ios_hash', return_value='hash'), \
                  patch.object(update.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '{}', '')):
@@ -293,7 +293,8 @@ class PostmergeRegressionTests(unittest.TestCase):
             authoritative = helper.parent / 'archive.json'
             authoritative.write_text(json.dumps(record) if helper_text is None else helper_text)
             before = authoritative.read_bytes()
-            pending = dict(hash='hash', source_sha='sha', receipt=str(receipt))
+            pending = dict(hash='hash', source_sha='sha', receipt=str(receipt),
+                           archive_attempt=dict(helper=str(helper.resolve()), previous=None))
             if recovered:
                 snapshot = root / 'recovered.json'
                 snapshot.write_text(json.dumps(snapshot_record))
@@ -375,6 +376,313 @@ class PostmergeRegressionTests(unittest.TestCase):
         events = self.archive_case(status=subprocess.CompletedProcess([], 1, 'Build is not listed yet.', ''))
         self.assertEqual(sum(args[0] != 'git' and 'status' in args for args in events), 2)
         self.assertTrue(any('upload' in args for args in events))
+
+
+class ArchiveCrash(BaseException):
+    """Abrupt process loss; callers must reload only persisted state."""
+
+
+class ArchiveAttemptTests(unittest.TestCase):
+    """Exercise release_ios/save/recovery; only git and release effects are synthetic."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.source = self.root / 'source'
+        self.source.mkdir()
+        self.helper = self.root / 'helper/release.py'
+        self.helper.parent.mkdir()
+        self.record_path = self.helper.parent / 'archive.json'
+        self.old = dict(source=str(self.source), source_hash='hash', build='159', version='2026.9.19')
+        self.new = dict(self.old, build='162')
+        self.record_path.write_text(json.dumps(self.old))
+        self.state_path = self.root / 'state.json'
+        update.save(self.state_path, dict(pending_ios=dict(hash='hash', source_sha='sha')))
+        self.config = dict(release_helper=str(self.helper), release_source=str(self.source))
+        self.events = []
+        self.boundary = None
+        self.status = subprocess.CompletedProcess([], 1, '{"processing":"PROCESSING"}', '')
+
+    def command(self, args, **kwargs):
+        if args[:2] == ['git', 'rev-parse']:
+            return 'sha'
+        if args[0] == 'git':
+            return ''
+        if 'upload' in args:
+            self.events.append('upload')
+            return ''
+        self.assertIn('archive', args)
+        self.events.append('invoke')
+        if self.boundary == 'before_invocation':
+            raise ArchiveCrash()
+        receipt = Path(args[args.index('--receipt') + 1])
+        self.assertFalse(receipt.exists(), 'exclusive helper receipt must never be overwritten')
+        self.record_path.unlink(missing_ok=True)
+        self.events.append('archive')
+        if self.boundary == 'after_unlink':
+            raise ArchiveCrash()
+        if self.boundary == 'partial_helper':
+            self.record_path.write_text('{"source":')
+            raise ArchiveCrash()
+        self.record_path.write_text(json.dumps(self.new))
+        if self.boundary == 'after_helper':
+            raise ArchiveCrash()
+        with receipt.open('x') as stream:
+            if self.boundary == 'empty_receipt':
+                raise ArchiveCrash()
+            if self.boundary == 'partial_receipt':
+                stream.write('{"source":' + json.dumps(str(self.source)) + ',"build":"162","version":')
+                raise ArchiveCrash()
+            stream.write(json.dumps(self.new))
+        if self.boundary == 'completed_receipt':
+            raise ArchiveCrash()
+        return ''
+
+    def check_status(self, args, **kwargs):
+        self.assertIn('status', args)
+        self.assertEqual(args[-1], '162')
+        self.events.append('status')
+        return self.status
+
+    def release(self, save_hook=None):
+        # Reload disk every time, as an actual restart would.
+        state = json.loads(self.state_path.read_text())
+        with patch.object(update, 'run', side_effect=self.command), \
+             patch.object(update, 'ios_hash', return_value='hash'), \
+             patch.object(update.subprocess, 'run', side_effect=self.check_status):
+            if save_hook:
+                with patch.object(update, 'save', side_effect=save_hook):
+                    update.release_ios(self.config, state, self.state_path)
+            else:
+                update.release_ios(self.config, state, self.state_path)
+        return json.loads(self.state_path.read_text())
+
+    def assert_recovered(self, archive_count):
+        self.boundary = None
+        state = self.release()
+        self.assertEqual(state['pending_ios']['build'], 162)
+        self.assertEqual(state['pending_ios']['hash'], 'hash')
+        self.assertEqual(state['pending_ios']['source_sha'], 'sha')
+        self.release()
+        self.assertEqual(self.events.count('archive'), archive_count)
+        self.assertNotIn('upload', self.events)
+        self.status = subprocess.CompletedProcess([], 0, '{}', '')
+        self.assertEqual(self.release(), dict(ios_hash='hash', ios_build=162))
+        self.assertEqual(self.events.count('archive'), archive_count)
+        self.assertNotIn('upload', self.events)
+
+    def test_intent_save_crashes_with_stale_same_source_record(self):
+        for after in (False, True):
+            with self.subTest(after=after):
+                self.setUp()
+                original_save = update.save
+                def crash(path, value):
+                    if after:
+                        original_save(path, value)
+                    raise ArchiveCrash()
+                with self.assertRaises(ArchiveCrash):
+                    self.release(crash)
+                self.assertEqual(json.loads(self.record_path.read_text()), self.old)
+                self.assert_recovered(1)
+
+    def test_persisted_intent_without_helper_record_retries_archive(self):
+        self.record_path.unlink()
+        original_save = update.save
+        def crash(path, value):
+            original_save(path, value)
+            raise ArchiveCrash()
+        with self.assertRaises(ArchiveCrash):
+            self.release(crash)
+        self.assert_recovered(1)
+
+    def test_every_helper_write_boundary(self):
+        for boundary, archives in [('before_invocation', 1), ('after_unlink', 2), ('after_helper', 1),
+                                   ('empty_receipt', 1), ('partial_receipt', 1), ('completed_receipt', 1)]:
+            with self.subTest(boundary=boundary):
+                self.setUp()
+                self.boundary = boundary
+                with self.assertRaises(ArchiveCrash):
+                    self.release()
+                pending = json.loads(self.state_path.read_text())['pending_ios']
+                receipt = Path(pending['receipt'])
+                original_receipt = receipt.read_bytes() if receipt.exists() else None
+                self.assert_recovered(archives)
+                if original_receipt is not None:
+                    self.assertEqual(receipt.read_bytes(), original_receipt)
+
+    def test_partial_helper_record_blocks_without_rebuild_or_upload(self):
+        self.boundary = 'partial_helper'
+        with self.assertRaises(ArchiveCrash):
+            self.release()
+        self.boundary = None
+        for _ in range(2):
+            with self.assertRaises(ValueError):
+                self.release()
+        self.assertEqual(self.events.count('archive'), 1)
+        self.assertNotIn('status', self.events)
+        self.assertNotIn('upload', self.events)
+        self.assertEqual(self.record_path.read_text(), '{"source":')
+
+    def test_empty_or_partial_receipt_cannot_adopt_unchanged_prior_record(self):
+        for text in ('', '{"source":', '{}', '{"build":"159"}'):
+            with self.subTest(receipt=text):
+                self.setUp()
+                self.boundary = 'before_invocation'
+                with self.assertRaises(ArchiveCrash):
+                    self.release()
+                pending = json.loads(self.state_path.read_text())['pending_ios']
+                Path(pending['receipt']).write_text(text)
+                self.boundary = None
+                for _ in range(2):
+                    with self.assertRaises(ValueError):
+                        self.release()
+                self.assertNotIn('archive', self.events)
+                self.assertNotIn('status', self.events)
+                self.assertNotIn('upload', self.events)
+                self.assertEqual(Path(pending['receipt']).read_text(), text)
+
+    def test_legacy_missing_and_partial_receipts_require_reconciliation(self):
+        for text in (None, '', '{"source":', '{}'):
+            with self.subTest(receipt=text):
+                self.setUp()
+                receipt = self.root / 'legacy.json'
+                if text is not None:
+                    receipt.write_text(text)
+                update.save(self.state_path, dict(pending_ios=dict(hash='hash', source_sha='sha', receipt=str(receipt))))
+                with self.assertRaises(ValueError):
+                    self.release()
+                self.assertEqual(self.events, [])
+
+    def test_build_identity_save_crashes_reuse_completed_receipt(self):
+        for after in (False, True):
+            with self.subTest(after=after):
+                self.setUp()
+                original_save = update.save
+                def crash(path, value):
+                    selected = 'build' in value.get('pending_ios', {})
+                    if not selected or after:
+                        original_save(path, value)
+                    if selected:
+                        raise ArchiveCrash()
+                with self.assertRaises(ArchiveCrash):
+                    self.release(crash)
+                self.assert_recovered(1)
+
+    def test_recovery_state_and_snapshot_crash_boundaries(self):
+        for boundary in ('before_selection', 'after_selection', 'before_snapshot', 'after_snapshot'):
+            with self.subTest(boundary=boundary):
+                self.setUp()
+                self.boundary = 'partial_receipt'
+                with self.assertRaises(ArchiveCrash):
+                    self.release()
+                self.boundary = None
+                original_save = update.save
+                def crash(path, value):
+                    selected = path == self.state_path and 'recovered_receipt' in value.get('pending_ios', {})
+                    snapshot = path != self.state_path
+                    hit = (selected and boundary.endswith('selection')) or (snapshot and boundary.endswith('snapshot'))
+                    if not hit or boundary.startswith('after'):
+                        original_save(path, value)
+                    if hit:
+                        raise ArchiveCrash()
+                with self.assertRaises(ArchiveCrash):
+                    self.release(crash)
+                # Once selected durably, later helper state cannot replace it.
+                if boundary != 'before_selection':
+                    self.record_path.write_text(json.dumps(dict(self.new, build='163')))
+                self.assert_recovered(1)
+
+    def test_recovered_build_status_and_upload_guards(self):
+        for report, uploaded, rejected in [
+                (subprocess.CompletedProcess([], 1, '{"processing":"PROCESSING"}', ''), False, False),
+                (subprocess.CompletedProcess([], 0, '{}', ''), False, False),
+                (subprocess.CompletedProcess([], 1, 'Build is not listed yet.', ''), True, False),
+                (subprocess.CompletedProcess([], 1, '', 'API failure'), False, True),
+                (subprocess.CompletedProcess([], 1, '{"processing":"FAILED"}', ''), False, True)]:
+            with self.subTest(report=report):
+                self.setUp()
+                self.boundary = 'partial_receipt'
+                with self.assertRaises(ArchiveCrash):
+                    self.release()
+                self.boundary = None
+                self.status = report
+                if rejected:
+                    with self.assertRaises(RuntimeError):
+                        self.release()
+                else:
+                    self.release()
+                self.assertEqual(self.events.count('archive'), 1)
+                self.assertEqual('upload' in self.events, uploaded)
+                if uploaded:
+                    self.assertEqual(self.events[-2:], ['status', 'upload'])
+                    self.status = subprocess.CompletedProcess([], 1, '{"processing":"PROCESSING"}', '')
+                    self.release()
+                    self.assertEqual(self.events.count('upload'), 1)
+
+    def test_helper_lock_blocks_source_changes_and_recovery(self):
+        import fcntl
+        with (self.helper.parent / 'release.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch.object(update, 'run') as command, patch.object(update.subprocess, 'run') as status:
+                with self.assertRaises(BlockingIOError):
+                    update.release_ios(self.config, json.loads(self.state_path.read_text()), self.state_path)
+                command.assert_not_called()
+                status.assert_not_called()
+
+    def symlink_helper(self):
+        self.helper.touch()
+        link = self.root / 'linked-release.py'
+        link.symlink_to(self.helper)
+        self.config['release_helper'] = str(link)
+
+    def test_symlinked_helper_uses_real_release_lock(self):
+        self.symlink_helper()
+        self.test_helper_lock_blocks_source_changes_and_recovery()
+        self.assertFalse((self.root / 'release.lock').exists())
+
+    def test_symlinked_helper_recovers_actual_archive_without_rebuild(self):
+        self.symlink_helper()
+        self.boundary = 'partial_receipt'
+        with self.assertRaises(ArchiveCrash):
+            self.release()
+        self.assert_recovered(1)
+        self.assertFalse((self.root / 'release.lock').exists())
+
+    def test_real_child_inherits_helper_lock_and_preserves_cli_contract(self):
+        # Run only this generated harmless helper, never the private helper.
+        self.helper.write_text("""import fcntl, json, os, sys
+from pathlib import Path
+ROOT = Path(__file__).parent
+def main():
+    assert sys.argv[1] == 'archive'
+    assert os.umask(0o077) == 0o077
+    with (ROOT / 'release.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            pass
+        else:
+            raise AssertionError('inherited lock is not held')
+    source = sys.argv[sys.argv.index('--source') + 1]
+    receipt = Path(sys.argv[sys.argv.index('--receipt') + 1])
+    record = dict(source=source, source_hash='hash', build='162', version='2026.9.19')
+    (ROOT / 'archive.json').unlink(missing_ok=True)
+    (ROOT / 'archive.json').write_text(json.dumps(record))
+    with receipt.open('x') as stream:
+        json.dump(record, stream)
+if __name__ == '__main__':
+    raise AssertionError('script guard must not acquire a conflicting second lock')
+""")
+        original_run = update.run
+        def command(args, **kwargs):
+            if args[0] == 'git':
+                return 'sha' if args[1] == 'rev-parse' else ''
+            return original_run(args, **kwargs)
+        state = json.loads(self.state_path.read_text())
+        with patch.object(update, 'run', side_effect=command), patch.object(update, 'ios_hash', return_value='hash'):
+            update.prepare_archive(state['pending_ios'], self.helper, self.source, state, self.state_path)
+        self.assertEqual(state['pending_ios']['build'], 162)
 
 
 if __name__ == '__main__':
