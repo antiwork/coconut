@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise work questions through the iOS app and the real Coconut API."""
+"""Check delegated task details and cancellation through iOS and native Hermes."""
 import argparse
 import json
 from pathlib import Path
@@ -52,11 +52,12 @@ def main():
         def write(path, data):
             return service.mutate('POST', path, data, str(uuid4()), 'test')
         bot = write('/v1/bots', dict(name='Desk', role='Coordinates work', avatar='fruit.coconut'))
+        executor = write('/v1/bots', dict(name='Dev', role='Implements work', avatar='fruit.apple'))
         provider.supports_native_outcomes = True
-        original = write(f'/v1/bots/{bot["id"]}/messages', dict(text='Export account data', mode='queue'))
+        original = write(f'/v1/bots/{executor["id"]}/messages', dict(text='Export account data', mode='queue'))
         with service.transaction():
             origin = service._get('tasks', original['id'])
-            origin.update(status='completed', summary='Request recorded')
+            origin.update(status='completed', summary='Request recorded', conversation_bot_id=bot['id'], source_bot_id=bot['id'])
             service._put('tasks', origin)
         import os
         source_path = os.environ['COCONUT_HERMES_ROOT']
@@ -66,7 +67,7 @@ def main():
                 str(service.root / 'kanban'), *values], env=dict(os.environ,
                 PYTHONPATH=str(ROOT / 'backend') + os.pathsep + source_path), capture_output=True, text=True, check=True)
             return result.stdout.strip()
-        identity = native("print(board.kb.create_task(board.conn,title='Export account data',body='Export data',assignee='default',tenant=sys.argv[2],session_id=sys.argv[3],initial_status='blocked'))", bot['id'], original['id'])
+        identity = native("print(board.kb.create_task(board.conn,title='Export account data',body='Export data',assignee='default',tenant=sys.argv[2],session_id=sys.argv[3],initial_status='blocked'))", executor['id'], original['id'])
         service.kanban.call({'op': 'snapshot'})
         service._adopt_native_outcomes()
         owner = next(t for t in service._all('tasks') if t.get('_native_outcome_id') == identity)
@@ -95,7 +96,8 @@ def main():
             if target.get('BlueprintName') == 'CoconutUITests':
                 target.setdefault('EnvironmentVariables', {}).update(
                     COCONUT_WORK_CHAT_URL=f'http://127.0.0.1:{server.server_port}',
-                    COCONUT_WORK_CHAT_CODE=service.pairing_code(), COCONUT_WORK_CHAT_ID=item['id'])
+                    COCONUT_WORK_CHAT_CODE=service.pairing_code(), COCONUT_WORK_CHAT_ID=item['id'],
+                    COCONUT_TASK_BOT_ID=bot['id'])
         runfile = Path(folder) / 'WorkChat.xctestrun'; runfile.write_bytes(plistlib.dumps(document))
         try:
             result = subprocess.run(['xcodebuild', 'test-without-building', '-xctestrun', str(runfile),

@@ -22,6 +22,16 @@ final class TrackedWorkItemTests: XCTestCase {
         XCTAssertTrue(TrackedWorkItem.nativeTasks(in: [native, pr, legacy], botId: "unrelated").isEmpty)
     }
 
+    func testNativeTaskDetailsIncludeDelegatedWorkInItsOriginalConversation() {
+        var native = item(); native.nativeTaskId = "native-export"; native.taskId = "owner"
+        let owner = AgentTask(id: "owner", botId: "bot", sessionId: "session", title: "Export account data",
+                              status: "working", summary: "", createdAt: "", updatedAt: "", threadId: "thread",
+                              conversationBotId: "desk", sourceBotId: "desk")
+        XCTAssertEqual(TrackedWorkItem.nativeTasks(in: [native], botId: "desk", tasks: [owner]).count, 1)
+        XCTAssertEqual(TrackedWorkItem.nativeTasks(in: [native], botId: "bot", tasks: [owner]).count, 1)
+        XCTAssertTrue(TrackedWorkItem.nativeTasks(in: [native], botId: "unrelated", tasks: [owner]).isEmpty)
+    }
+
     func testWorkIncludesExplicitItemsButNotFiles() {
         let file = Artifact(id: "file", botId: "bot", title: "Notes", kind: "file", status: "ready", preview: "", createdAt: "")
         XCTAssertEqual(TrackedWorkItem.tracked(in: [file, item()]).map(\.id), ["work:export"])

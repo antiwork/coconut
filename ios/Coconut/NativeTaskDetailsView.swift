@@ -86,9 +86,10 @@ struct NativeTaskDetailsView: View {
     let botId: String
     @State private var cancelling: Set<String> = []
     @State private var error: String?
+    @State private var taskToStop: TrackedWorkItem?
 
     private var items: [TrackedWorkItem] {
-        TrackedWorkItem.nativeTasks(in: store.artifacts, botId: botId)
+        TrackedWorkItem.nativeTasks(in: store.artifacts, botId: botId, tasks: store.tasks)
     }
 
     var body: some View {
@@ -110,11 +111,7 @@ struct NativeTaskDetailsView: View {
                     }
                     if !item.isFinished {
                         Button(cancelling.contains(item.id) ? "Stopping…" : "Stop task", role: .destructive) {
-                            cancelling.insert(item.id)
-                            Task {
-                                error = await store.cancelWork(item)
-                                cancelling.remove(item.id)
-                            }
+                            taskToStop = item
                         }
                         .disabled(cancelling.contains(item.id))
                         .accessibilityIdentifier("task-stop-" + item.artifact.id)
@@ -128,6 +125,20 @@ struct NativeTaskDetailsView: View {
         .navigationTitle("Task details")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        .alert("Stop this task?", isPresented: Binding(
+            get: { taskToStop != nil }, set: { if !$0 { taskToStop = nil } }),
+            presenting: taskToStop) { item in
+            Button("Cancel", role: .cancel) { taskToStop = nil }
+            Button("Stop task", role: .destructive) {
+                cancelling.insert(item.id)
+                Task {
+                    error = await store.cancelWork(item)
+                    cancelling.remove(item.id)
+                }
+            }.accessibilityIdentifier("confirm-stop-task")
+        } message: { _ in
+            Text("The Mac records the stop request. An action already executing can finish before it stops.")
+        }
         .alert("Stop not confirmed", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK") { error = nil }
         } message: { Text(error ?? "") }

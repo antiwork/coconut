@@ -42,8 +42,7 @@ final class AppPerformanceTests: XCTestCase {
         measure(metrics: [XCTClockMetric(), XCTCPUMetric(application: app)], options: options()) {
             openChat(app)
             app.navigationBars.buttons.element(boundBy: 0).tap()
-            app.tabBars.buttons["Work"].tap()
-            XCTAssertTrue(app.staticTexts["No tracked work"].waitForExistence(timeout: 5))
+            XCTAssertFalse(app.tabBars.buttons["Work"].exists)
             app.tabBars.buttons["Inbox"].tap()
             XCTAssertTrue(app.staticTexts["Review the old report?"].waitForExistence(timeout: 5))
             app.tabBars.buttons["Bots"].tap()
