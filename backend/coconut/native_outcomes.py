@@ -514,7 +514,7 @@ class NativeOutcomes:
     def _native_work_view(self, artifacts):
         from datetime import datetime, timezone
         timestamp = datetime.now(timezone.utc)
-        groups, legacy = {}, []
+        groups = {}
         for item in artifacts:
             if item['kind'] not in ('work', 'pr'):
                 continue
@@ -530,7 +530,9 @@ class NativeOutcomes:
                     if item['kind'] == 'work':
                         item['status'] = terminal['activity_state']
                 else:
-                    legacy.append(item)
+                    item.update(work_state="waiting", activity_state="waiting", activity="Status unavailable",
+                        activity_observed_at=None, work_decision_id=None, work_next_step=None,
+                        work_queue_position=None, work_dependencies=[], work_attempts=[])
                 continue
             if root['id'] != item['id'] or item.get('work_outcome_id'):
                 item['work_outcome_id'] = root['id']
@@ -560,10 +562,6 @@ class NativeOutcomes:
                     if item['kind'] == 'work':
                         item['status'] = outcome['activity_state']
                     item['work_dismissal_id'] = self._setting('work.dismissed.' + self._work_identity(root))
-        # Retained work must finish migration with its original waits and decisions.
-        if legacy:
-            self._project_work_outcomes(legacy, {t['id']: t for t in self._all('tasks')},
-                self._pending_completion_receipts(), self._all('decisions'), timestamp)
         return artifacts
 
     def _native_outcome_projection(self, item, tasks, records, decisions, timestamp, queue_positions, peers=None):

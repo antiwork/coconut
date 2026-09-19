@@ -30,6 +30,9 @@ class Provider:
         emit('text_delta', {'text': text})
         emit('completed', {'summary': 'Complete.'})
 
+    def prepare_kanban_worker(self, *args):
+        raise AssertionError('Task details must not start a worker.')
+
     def cancel_task(self, task_id):
         pass
 
@@ -42,21 +45,42 @@ def main():
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='coconut-work-chat-') as folder:
         provider = Provider()
+        import os
+        provider.hermes_root = Path(os.environ['COCONUT_HERMES_ROOT'])
+        provider.python = os.environ['COCONUT_HERMES_PYTHON']
         service = Service(folder, provider, start_workers=False)
         def write(path, data):
             return service.mutate('POST', path, data, str(uuid4()), 'test')
         bot = write('/v1/bots', dict(name='Desk', role='Coordinates work', avatar='fruit.coconut'))
+        provider.supports_native_outcomes = True
         original = write(f'/v1/bots/{bot["id"]}/messages', dict(text='Export account data', mode='queue'))
         with service.transaction():
-            task = service._get('tasks', original['id']); task['status'] = 'working'
-            service._put('tasks', task)
-        item = service._register_work(task['id'], dict(key='export', title='Export account data',
-            activity='Waiting for the final check', status='waiting'))
+            origin = service._get('tasks', original['id'])
+            origin.update(status='completed', summary='Request recorded')
+            service._put('tasks', origin)
+        import os
+        source_path = os.environ['COCONUT_HERMES_ROOT']
+        python = os.environ['COCONUT_HERMES_PYTHON']
+        def native(program, *values):
+            result = subprocess.run([python, '-c', "import sys\nfrom coconut.kanban_runtime import Board\nboard=Board(sys.argv[1])\n" + program,
+                str(service.root / 'kanban'), *values], env=dict(os.environ,
+                PYTHONPATH=str(ROOT / 'backend') + os.pathsep + source_path), capture_output=True, text=True, check=True)
+            return result.stdout.strip()
+        identity = native("print(board.kb.create_task(board.conn,title='Export account data',body='Export data',assignee='default',tenant=sys.argv[2],session_id=sys.argv[3],initial_status='blocked'))", bot['id'], original['id'])
+        service.kanban.call({'op': 'snapshot'})
+        service._adopt_native_outcomes()
+        owner = next(t for t in service._all('tasks') if t.get('_native_outcome_id') == identity)
+        item = service._get('artifacts', owner['_work_context_id'])
+        earlier = write(f'/v1/bots/{bot["id"]}/messages', dict(text='Earlier request', mode='queue'))
         with service.transaction():
-            task['status'] = 'waiting'; service._put('tasks', task)
-        before = json.dumps(service._get('tasks', original['id']), sort_keys=True)
+            retired = service._get('tasks', earlier['id'])
+            retired['status'] = 'cancelled'
+            service._put('tasks', retired)
+            legacy = dict(item, id=str(uuid4()), task_id=earlier['id'], title='Obsolete progress label', _native_outcome_id=None)
+            service._put('artifacts', legacy)
         server = APIServer(('127.0.0.1', 0), service)
         threading.Thread(target=server.serve_forever, daemon=True).start()
+
         service.start()
         source = args.xctestrun.resolve()
         def absolute(value):
@@ -76,13 +100,12 @@ def main():
         try:
             result = subprocess.run(['xcodebuild', 'test-without-building', '-xctestrun', str(runfile),
                 '-destination', 'platform=iOS Simulator,id=' + args.simulator,
-                '-only-testing:CoconutUITests/WorkChatTests', '-parallel-testing-enabled', 'NO',
+                '-only-testing:CoconutUITests/TaskDetailsFlowTests', '-parallel-testing-enabled', 'NO',
                 '-resultBundlePath', str(args.result)])
             if result.returncode: raise SystemExit(result.returncode)
-            assert len(provider.requests) == 2, 'Expected one question and one update.'
-            assert len([m for m in service._all('messages') if m['role'] == 'assistant' and m['kind'] == 'text']) == 2
-            assert json.dumps(service._get('tasks', original['id']), sort_keys=True) == before
-            assert len([a for a in service._all('artifacts') if a['kind'] == 'work']) == 1
+            service.kanban.call({'op': 'snapshot'})
+            assert service.kanban.tasks[owner['id']]['status'] == 'archived', 'Cancellation must reach native Hermes.'
+            assert not provider.requests, 'Reading task details must not start a model turn.'
         finally:
             server.shutdown(); server.server_close(); service.close()
 

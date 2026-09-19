@@ -19,6 +19,7 @@ struct ConversationView: View {
     @State private var messageScheduling = false
     @State private var messageScheduledAt = Date().addingTimeInterval(3600)
     @State private var messageMentions: [SelectedBotMention] = []
+    @State private var taskDetailsOpen = false
     @State private var stopOpen = false
     @State private var taskToStop: AgentTask? = nil
     @State private var didFocusDecision = false
@@ -209,6 +210,9 @@ struct ConversationView: View {
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
                             NavigationLink("Bot settings", value: BotSettingsRoute(botId: bot.id))
+                            Button("Task details", systemImage: "list.bullet.rectangle") {
+                                taskDetailsOpen = true
+                            }.accessibilityIdentifier("chat-task-details")
                             if let activeTask {
                                 Button("Stop \(executorName(activeTask))'s task", systemImage: "stop.circle", role: .destructive) {
                                     taskToStop = activeTask
@@ -231,6 +235,9 @@ struct ConversationView: View {
             } else {
                 QuietEmptyState(symbol: "bubble.left", title: "Conversation unavailable", message: "This bot may have been deleted. Return to your team to continue.")
             }
+        }
+        .sheet(isPresented: $taskDetailsOpen) {
+            NavigationStack { NativeTaskDetailsView(botId: botId) }
         }
         .navigationBarTitleDisplayMode(.inline)
     }
