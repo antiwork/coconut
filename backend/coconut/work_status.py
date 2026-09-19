@@ -447,14 +447,18 @@ class WorkStatus:
         return artifacts
 
     def _tracked_pr_observations(self, task, urls):
+        import json
         fields = ('url', 'head_sha', 'pr_state', 'draft', 'checks_state', 'required_checks_state',
                   'review_checks', 'check_failures', 'checked_at', 'refresh_error')
-        artifacts = [a for a in self._all('artifacts') if a['kind'] == 'pr']
+        artifacts = [json.loads(row[0]) for row in self.db.execute(
+            "SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='pr' ORDER BY rowid")]
         owners = {task['id']}
         if task.get('_is_return'):
             owners.update(filter(None, (task.get('source_task_id'), task.get('_resolved_dependency_id'))))
         related = {url.lower() for url in urls}
-        related.update(url for source in self._all('tasks') if source['id'] in owners
+        sources = [json.loads(row[0]) for row in self.db.execute(
+            "SELECT data FROM tasks WHERE id IN (SELECT value FROM json_each(?))", (json.dumps(sorted(owners)),))]
+        related.update(url for source in sources
                        for url in source.get('_reported_pr_urls', []))
         related.update(a['url'].lower() for a in artifacts
                        if owners.intersection((a.get('_review_task_id'), a.get('_activity_task_id')))
