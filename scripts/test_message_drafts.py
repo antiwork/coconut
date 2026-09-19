@@ -22,6 +22,7 @@ def main():
     parser.add_argument('--xctestrun', type=Path, required=True)
     parser.add_argument('--simulator', required=True)
     parser.add_argument('--result', type=Path, required=True)
+    parser.add_argument('--layout-only', action='store_true')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='coconut-drafts-') as folder:
         root = Path(folder)
@@ -38,7 +39,7 @@ def main():
                        body='Hi Sarah,\n\nCould we move Friday’s review to 2 PM?\n\nThanks,\nAlex')))
         service.emit(task['id'], 'native_proposal', dict(key='notes', title='Share the meeting notes?',
             draft=dict(channel='GitHub', recipient='https://github.com/example/project/issues/42',
-                       body='The updated notes are ready.')))
+                       body=('Long background draft with details for the recipient.\n\n' * 30) if args.layout_only else 'The updated notes are ready.')))
         service.emit(task['id'], 'completed', dict(summary='Drafts prepared.'))
         code = create_pairing_code(root, lifetime=900)
         server = APIServer(('127.0.0.1', 0), service)
@@ -61,13 +62,18 @@ def main():
         try:
             result = subprocess.run(['xcodebuild', 'test-without-building', '-xctestrun', str(runfile),
                 '-destination', 'platform=iOS Simulator,id=' + args.simulator,
-                '-only-testing:CoconutUITests/MessageDraftFlowTests', '-parallel-testing-enabled', 'NO',
+                '-only-testing:CoconutUITests/MessageDraftFlowTests/' + ('testLongBackgroundDraftStaysInsideStack' if args.layout_only else 'testEditSendAndDiscardAcrossChatAndInbox'), '-parallel-testing-enabled', 'NO',
                 '-resultBundlePath', str(args.result)])
             if result.returncode: raise SystemExit(result.returncode)
             decisions = service._all('decisions')
             email = next(d for d in decisions if d['_proposal_key'] == 'friday-review')
             comment = next(d for d in decisions if d['_proposal_key'] == 'notes')
-            assert email['status'] == 'approved' and email['revision'] == 2
+            assert email['status'] == 'approved'
+            if args.layout_only:
+                assert comment['status'] == 'rejected'
+                print('Verified: long background draft stays bounded and scrolls when selected.')
+                return
+            assert email['revision'] == 2
             assert email['draft']['subject'] == 'Updated Friday review'
             assert comment['status'] == 'rejected'
             assert len(service._all('tasks')) == 2, 'Only Send may create a continuation.'
