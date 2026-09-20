@@ -159,7 +159,7 @@ else:
         release.set()
         worker.join(10)
         self.assertFalse(worker.is_alive())
-        self.assertEqual(self.provider.started, [owner['id']])
+        self.assertEqual(self.provider.started, [owner['id']], self.service._get('tasks', owner['id']))
         self.assertEqual(len(captured), 1)
         from coconut.hermes_worker import conversation_input
         prompt = conversation_input(dict(operation='start', task=captured[0], history=[]))[0]
@@ -216,6 +216,41 @@ else:
         self.assertEqual(len(approvals), 1)
         self.assertEqual(approvals[0]['decided_by'], 'human')
         self.assertEqual(approvals[0]['status'], 'replied')
+
+    def test_completed_cross_bot_pr_peer_keeps_original_execution(self):
+        prepare = self.prepare
+        peers = []
+        def prepare_pr(*args):
+            owner, source, identity, workspace = prepare(*args)
+            peer = self.write('/v1/bots/' + owner['source_bot_id'] + '/messages', {'text': 'Track the same PR.'})
+            peer = self.service._get('tasks', peer['id'])
+            peer.update(status='completed', _execution_session_id=peer['id'],
+                        _conversation_epoch=self.service._setting('conversation_epoch'))
+            self.service._put('tasks', peer)
+            row = self.service._kanban_row(peer, peer, 'ready', 10)
+            self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+            self.service.kanban.call({'op': 'snapshot'})
+            peer_native = self.service.kanban.tasks[peer['id']]['id']
+            self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='PR observation complete')",
+                                peer_native)
+            peer['_kanban_claim'] = dict(native_id=peer_native, input=row['input'], run_id='peer-run')
+            self.service._put('tasks', peer)
+            self.service.kanban.call({'op': 'snapshot'})
+            self.assertEqual(peer['status'], 'completed')
+            self.assertNotEqual(peer['bot_id'], owner['bot_id'])
+            for task in (owner, peer):
+                item = dict(id=str(uuid4()), task_id=task['id'], bot_id=task['bot_id'],
+                    kind='pr', title='Prepared draft', status='open', pr_state='open',
+                    created_at=task['created_at'],
+                    url='https://github.com/example/repo/pull/15',
+                    _review_task_id=task['id'], _activity_task_id=task['id'])
+                self.service._put('artifacts', item)
+                if task == peer:
+                    peers.append(item)
+            return owner, source, identity, workspace
+        self.prepare = prepare_pr
+        self.check_dispatch('done', 'owner', aged=True)
+        self.assertEqual(self.service._get('artifacts', peers[0]['id']), peers[0])
 
     def test_aged_claim_still_requires_requester_or_owner(self):
         owner, source, identity, _ = self.prepare(caller='stranger')

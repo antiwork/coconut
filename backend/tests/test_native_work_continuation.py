@@ -1,5 +1,6 @@
 import copy
 import os
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -194,6 +195,294 @@ class NativeWorkContinuationTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaisesRegex(ServiceError, 'another execution'):
                 self.resume(source)
             self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def completed_pr_peer(self):
+        from uuid import uuid4
+        owner, source = self.scheduled_native()
+        self.service.kanban.tasks[owner['id']]['status'] = 'done'
+        peer = self.write('/v1/bots/' + source['bot_id'] + '/messages', {'text': 'Track this PR.'})
+        peer = self.service._get('tasks', peer['id'])
+        peer.update(status='completed', _execution_session_id=peer['id'],
+                    _conversation_epoch=self.service._setting('conversation_epoch'))
+        self.service._put('tasks', peer)
+        items = []
+        for task in (owner, peer):
+            item = dict(id=str(uuid4()), task_id=task['id'], bot_id=task['bot_id'],
+                kind='pr', title='Prepared draft', status='open', pr_state='open',
+                created_at=task['created_at'],
+                url='https://github.com/example/repo/pull/15',
+                _review_task_id=task['id'], _activity_task_id=task['id'])
+            self.service._put('artifacts', item)
+            items.append(item)
+        return owner, source, peer, items
+
+    def concurrent_snapshot(self, missing_owner=False, change=None):
+        owner, source, peer, items = self.completed_pr_peer()
+        peer['_kanban_claim'] = dict(native_id='t_peer', input='peer-input')
+        self.service._put('tasks', peer)
+        snapshots = {owner['id']: dict(self.service.kanban.tasks[owner['id']]),
+                     peer['id']: dict(id='t_peer', status='done')}
+        adapter = Mock(tasks={} if missing_owner else {owner['id']: snapshots[owner['id']]})
+        adapter.lock = threading.Lock()
+        locked, requested = threading.Event(), threading.Event()
+        errors, results, held = [], [], []
+
+        def call(request, spawn=None):
+            if request['op'] == 'snapshot':
+                held.append(self.service.lock._is_owned())
+                requested.set()
+            with adapter.lock:
+                if request['op'] == 'tick':
+                    locked.set()
+                    if not requested.wait(5):
+                        raise AssertionError('Continuation never requested its missing snapshot')
+                    spawn()
+                else:
+                    # Match the real adapter: replace, rather than merge, its cache.
+                    adapter.tasks = {i: dict(snapshots[i]) for i in request['external_ids'] if i in snapshots}
+            return {}
+
+        adapter.call.side_effect = call
+        self.service.kanban = adapter
+
+        def spawn():
+            # A bounded acquire lets the negative control unwind both real threads.
+            if not self.service.lock.acquire(timeout=2):
+                raise AssertionError('Adapter -> service lock deadlocked with continuation')
+            try:
+                if change:
+                    change(owner, source, peer, items, snapshots)
+            finally:
+                self.service.lock.release()
+
+        def run_tick():
+            try:
+                adapter.call({'op': 'tick'}, spawn=spawn)
+            except BaseException as error:
+                errors.append(error)
+
+        def run_continue():
+            try:
+                results.append(self.resume(source))
+            except BaseException as error:
+                results.append(error)
+
+        tick = threading.Thread(target=run_tick, daemon=True)
+        continuation = threading.Thread(target=run_continue, daemon=True)
+        tick.start()
+        self.assertTrue(locked.wait(5))
+        continuation.start()
+        continuation.join(10)
+        tick.join(10)
+        self.assertFalse(continuation.is_alive(), 'Continuation did not finish')
+        self.assertFalse(tick.is_alive(), 'Scheduler tick did not finish')
+        self.assertEqual(errors, [])
+        self.assertTrue(held)
+        self.assertFalse(any(held), 'Snapshot called under the service transaction lock')
+        self.assertEqual(len(results), 1)
+        return owner, peer, items, results[0]
+
+    def test_uncached_peer_snapshot_does_not_deadlock_scheduler_spawn(self):
+        owner, peer, items, receipt = self.concurrent_snapshot()
+        self.assertIsInstance(receipt, dict)
+        self.assertEqual(receipt['task_id'], owner['id'])
+        self.assertEqual(self.service._get('artifacts', items[1]['id']), items[1])
+        self.assertEqual(self.service._get('tasks', peer['id']), peer)
+
+    def test_aged_owner_and_peer_snapshots_do_not_deadlock_scheduler_spawn(self):
+        owner, _, _, receipt = self.concurrent_snapshot(missing_owner=True)
+        self.assertIsInstance(receipt, dict)
+        self.assertEqual(receipt['task_id'], owner['id'])
+
+    def test_snapshot_wait_revalidates_changed_peer_state(self):
+        def change(owner, source, peer, items, snapshots):
+            self.service._put('tasks', dict(peer, _return_pending={'text': 'New result'}))
+        owner, _, items, result = self.concurrent_snapshot(change=change)
+        self.assertIsInstance(result, ServiceError)
+        self.assertIn('another execution', str(result))
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.service._get('artifacts', items[0]['id']), items[0])
+
+    def test_snapshot_wait_revalidates_owner_mapping(self):
+        def change(owner, source, peer, items, snapshots):
+            self.service._put('tasks', dict(owner, _native_outcome_id='t_rebound'))
+        owner, _, _, result = self.concurrent_snapshot(missing_owner=True, change=change)
+        self.assertIsInstance(result, ServiceError)
+        self.assertIn('mapping does not match', str(result))
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'completed')
+
+    def test_snapshot_wait_revalidates_human_pause(self):
+        def change(owner, source, peer, items, snapshots):
+            self.service._put('decisions', dict(id='new-pause', task_id=owner['id'], status='pending'))
+        owner, _, _, result = self.concurrent_snapshot(change=change)
+        self.assertIsInstance(result, ServiceError)
+        self.assertIn('existing decision', str(result))
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_snapshot_wait_revalidates_source(self):
+        def change(owner, source, peer, items, snapshots):
+            self.service._put('tasks', dict(source, status='completed'))
+        owner, _, _, result = self.concurrent_snapshot(change=change)
+        self.assertIsInstance(result, ServiceError)
+        self.assertIn('cannot continue work now', str(result))
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_snapshot_wait_revalidates_peer_links(self):
+        def change(owner, source, peer, items, snapshots):
+            self.service._put('artifacts', dict(items[1], _activity_task_id=source['id']))
+        owner, _, _, result = self.concurrent_snapshot(change=change)
+        self.assertIsInstance(result, ServiceError)
+        self.assertIn('another execution', str(result))
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_snapshot_wait_fails_closed_for_missing_native_peer(self):
+        def change(owner, source, peer, items, snapshots):
+            snapshots.pop(peer['id'])
+        owner, _, _, result = self.concurrent_snapshot(change=change)
+        self.assertIsInstance(result, ServiceError)
+        self.assertIn('another execution', str(result))
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_snapshot_wait_fails_closed_for_rebound_native_peer(self):
+        def change(owner, source, peer, items, snapshots):
+            snapshots[peer['id']] = dict(id='t_rebound', status='done')
+        owner, _, _, result = self.concurrent_snapshot(change=change)
+        self.assertIsInstance(result, ServiceError)
+        self.assertIn('another execution', str(result))
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_owner_lookup_without_deferred_callback_keeps_aged_binding(self):
+        owner, _ = self.scheduled_native()
+        snapshot = self.service.kanban.tasks.pop(owner['id'])
+        def refresh(request):
+            self.assertEqual(request, {'op': 'snapshot', 'external_ids': [owner['id']]})
+            self.service.kanban.tasks[owner['id']] = snapshot
+        self.service.kanban.call.side_effect = refresh
+        resolved, native = self.service._native_continuation_owner('t_existing')
+        self.assertEqual(resolved, owner)
+        self.assertEqual(native, snapshot)
+        self.service.kanban.call.assert_called_once()
+
+    def test_aged_owner_batches_all_missing_peer_chains(self):
+        from uuid import uuid4
+        owner, source, peer, items = self.completed_pr_peer()
+        snapshots = {owner['id']: dict(self.service.kanban.tasks[owner['id']])}
+        for index in range(8):
+            identity = str(uuid4())
+            task = dict(peer, id=identity, _execution_session_id=identity,
+                        _kanban_claim=dict(native_id='t_peer_' + str(index), input='finished'))
+            self.service._put('tasks', task)
+            snapshots[identity] = dict(id=task['_kanban_claim']['native_id'], status='done')
+            self.service._put('artifacts', dict(items[1], id=str(uuid4()), task_id=identity,
+                _review_task_id=identity, _activity_task_id=identity))
+        self.service.kanban.tasks = {}
+        def snapshot(request):
+            self.assertFalse(self.service.lock._is_owned())
+            self.service.kanban.tasks = {i: snapshots[i] for i in request['external_ids']}
+        self.service.kanban.call.side_effect = snapshot
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+        self.assertEqual(self.service.kanban.call.call_count, 2)
+        self.assertEqual(set(self.service.kanban.call.call_args.args[0]['external_ids']), set(snapshots))
+
+    def test_completed_cross_bot_pr_peer_retains_original_owner(self):
+        owner, source, peer, items = self.completed_pr_peer()
+        receipt = self.resume(source)
+        self.assertEqual(receipt['task_id'], owner['id'])
+        continued = self.service._get('tasks', owner['id'])
+        self.assertEqual(continued['_execution_session_id'], owner['_execution_session_id'])
+        self.assertEqual(continued['_work_context_id'], items[0]['id'])
+        self.assertEqual(self.service._get('artifacts', items[0]['id'])['task_id'], owner['id'])
+        self.assertEqual(self.service._get('artifacts', items[1]['id']), items[1])
+        self.assertEqual(self.service._get('tasks', peer['id']), peer)
+        self.assertEqual(self.resume(source), receipt)
+
+    def test_completed_peer_with_unresolved_work_still_blocks(self):
+        owner, source, peer, items = self.completed_pr_peer()
+        cases = [dict(status=s) for s in ('queued', 'working', 'waiting', 'needs_you', 'paused', 'cancelled', 'failed')]
+        cases += [dict(_waiting_on=['undelivered']), dict(_return_pending={'text': 'Result'}),
+                  dict(_work_todos={'todos': [{'id': 'pending', 'status': 'pending'}]}),
+                  dict(bot_id=owner['bot_id'])]
+        for changes in cases:
+            with self.subTest(changes=changes):
+                self.service._put('tasks', dict(peer, **changes))
+                with self.assertRaisesRegex(ServiceError, 'another execution'):
+                    self.resume(source)
+                self.assertEqual(self.service._get('tasks', owner['id']), owner)
+                self.assertEqual(self.service._get('artifacts', items[0]['id']), items[0])
+
+    def test_completed_peer_keeps_pending_callbacks_decisions_and_processes(self):
+        owner, source, peer, items = self.completed_pr_peer()
+        for table, value in (
+                ('decisions', dict(id='pending', task_id=peer['id'], status='pending')),
+                ('contexts', dict(id='callback', task_id=peer['id'], status='queued')),
+                ('native_receipts', dict(id='tool', task_id=peer['id'], state='executing',
+                                         action={'name': 'terminal', 'arguments': {}}, created_at=peer['created_at'])),
+                ('native_receipts', dict(id='wait', task_id=peer['id'], state='completed',
+                                         action={'name': 'coconut_wait', 'arguments': {}},
+                                         _wait_task_id=owner['id'], created_at=peer['created_at']))):
+            with self.subTest(table=table, identity=value['id']):
+                self.service._put(table, value)
+                with self.assertRaisesRegex(ServiceError, 'another execution'):
+                    self.resume(source)
+                self.service.db.execute('DELETE FROM ' + table + ' WHERE id=?', (value['id'],))
+                self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_completed_peer_requires_terminal_native_binding(self):
+        owner, source, peer, items = self.completed_pr_peer()
+        for retained in ({'_native_outcome_id': 't_peer'},
+                         {'_kanban_claim': {'native_id': 't_peer', 'input': 'peer-input'}}):
+            self.service._put('tasks', dict(peer, **retained))
+            for snapshot in ({'id': 't_peer', 'status': s} for s in
+                             ('scheduled', 'running', 'ready', 'blocked', 'triage', 'archived')):
+                self.service.kanban.tasks[peer['id']] = snapshot
+                with self.subTest(retained=retained, snapshot=snapshot):
+                    with self.assertRaisesRegex(ServiceError, 'another execution'):
+                        self.resume(source)
+            for snapshot in ({'id': 'different', 'status': 'done'},
+                             {'id': 't_peer', 'status': 'done', 'worker_pid': 123},
+                             {'id': 't_peer', 'status': 'done', 'current_run_id': 'run'}):
+                self.service.kanban.tasks[peer['id']] = snapshot
+                with self.assertRaisesRegex(ServiceError, 'another execution'):
+                    self.resume(source)
+            del self.service.kanban.tasks[peer['id']]
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(source)
+            self.service.kanban.call.assert_called_with({'op': 'snapshot', 'external_ids': [peer['id']]})
+        self.service.kanban.tasks[peer['id']] = {'id': 't_peer', 'status': 'done'}
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
+    def test_completed_peer_reporter_keeps_active_execution_owner(self):
+        from uuid import uuid4
+        owner, source, peer, items = self.completed_pr_peer()
+        reporter = dict(peer, id=str(uuid4()), _assignment_task_id=peer['id'])
+        self.service._put('tasks', reporter)
+        self.service._put('artifacts', dict(items[1], _review_task_id=reporter['id'],
+                                          _activity_task_id=reporter['id']))
+        for changes in ({'status': 'working'}, {'_return_pending': {'text': 'Undelivered result'}}):
+            with self.subTest(changes=changes):
+                self.service._put('tasks', dict(peer, **changes))
+                with self.assertRaisesRegex(ServiceError, 'another execution'):
+                    self.resume(source)
+                self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_completed_peer_keeps_active_continuation_and_human_pause(self):
+        from uuid import uuid4
+        owner, source, peer, items = self.completed_pr_peer()
+        child = dict(peer, id=str(uuid4()), status='working', _assignment_task_id=peer['id'])
+        self.service._put('tasks', child)
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(source)
+        self.service._put('tasks', dict(child, status='completed'))
+        decision = dict(id='pause', task_id=peer['id'], status='rejected', decided_by='human')
+        self.service._put('decisions', decision)
+        self.service._put('artifacts', dict(items[1], paused_by_decision_id=decision['id']))
+        with self.assertRaisesRegex(ServiceError, 'paused'):
+            self.resume(source)
+        self.service._put('artifacts', items[1])
+        self.service.db.execute('INSERT INTO settings VALUES (?,?)',
+                                ('work.cancelled.' + items[1]['url'], '"cancelled"'))
+        with self.assertRaisesRegex(ServiceError, 'cancelled'):
+            self.resume(source)
 
     def test_claim_promotion_preserves_cancellation_of_its_retained_pr(self):
         owner, source = self.scheduled_native()
