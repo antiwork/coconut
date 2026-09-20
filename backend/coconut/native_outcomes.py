@@ -104,9 +104,9 @@ class NativeOutcomes:
             if claimed:
                 if claimed != identity or (mapped and mapped != identity):
                     mismatch = True
-                elif mapped == identity and native.get('status') == 'scheduled':
-                    # A completed Coconut input can leave its native outcome
-                    # parked pending fresh input before ownership was recorded.
+                elif mapped == identity and owner['_kanban_claim'].get('input'):
+                    # Older inputs can finish before native outcome ownership
+                    # is retained. The matching claim also identifies their input.
                     candidates.append((owner, native))
         if mismatch:
             raise ServiceError(409, 'The saved Coconut and native outcome mapping does not match.')
