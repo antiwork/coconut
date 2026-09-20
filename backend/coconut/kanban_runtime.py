@@ -48,6 +48,13 @@ class Board:
             intent = fingerprint({k: row[k] for k in ('state', 'input')})
             if row.get('native_id'):
                 task = self.kb.get_task(self.conn, old[0] if old else row['native_id'])
+                if old and old[0] == row['native_id'] and row.get('previous_input'):
+                    # Reconcile a legacy claim before comparing accepted input.
+                    # Keep the original result addressable when a follow-up moves
+                    # its binding, and never replace an already accepted input.
+                    self.conn.execute('INSERT INTO coconut_outcomes(native_id,input_id) VALUES (?,?) '
+                        'ON CONFLICT(native_id) DO UPDATE SET input_id=excluded.input_id '
+                        "WHERE coconut_outcomes.input_id=''", (task.id, row['previous_input']))
                 previous_input = self.conn.execute('SELECT input_id FROM coconut_outcomes WHERE native_id=?', (task.id,)).fetchone()
                 new_input = not old or bool(previous_input and previous_input[0] and previous_input[0] != row['input'])
                 if task.status in ('done', 'archived') and row['state'] in ('ready', 'scheduled') and new_input:

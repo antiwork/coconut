@@ -1488,7 +1488,7 @@ board.kb.block_task(board.conn, sys.argv[4], reason='Worker setup failed')
         self.assertEqual(current['workspace_path'], workspace)
         self.assertEqual(continued['_execution_session_id'], original_execution)
 
-    def test_claim_only_terminal_continuation_is_rejected_without_mutation(self):
+    def test_claim_only_terminal_continuation_requires_saved_input(self):
         import copy
         import json
         from coconut.service import ServiceError
@@ -1503,7 +1503,7 @@ board.kb.block_task(board.conn, sys.argv[4], reason='Worker setup failed')
             "board.kb.complete_task(board.conn, sys.argv[2], summary='Original input complete')", identity)
         self.service.kanban.call({'op': 'snapshot'})
         owner.update(status='completed', _kanban_claim={
-            'native_id': identity, 'input': original['input'], 'run_id': 'completed-run'})
+            'native_id': identity, 'run_id': 'completed-run'})
         owner.pop('_native_outcome_id', None)
         self.service._put('tasks', owner)
         source = self.service._get('tasks', self.task('Try to continue the terminal claim')['id'])
