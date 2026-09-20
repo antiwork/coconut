@@ -338,6 +338,12 @@ struct MessageBubble: View {
     var onReply: (() -> Void)? = nil
     private var isUser: Bool { message.role == "user" }
     private var displayText: String { message.text.trimmingCharacters(in: .newlines) }
+    private var cardReference: MessageReference? {
+        guard isUser, let id = message.decisionId else { return nil }
+        if let reference = message.replyTo, reference.messageId == id { return reference }
+        guard store.decisions.first(where: { $0.id == id })?.status == "replied" else { return nil }
+        return store.decisionReference(for: id)
+    }
 
     var body: some View {
         HStack {
@@ -348,13 +354,17 @@ struct MessageBubble: View {
                     Label(work.title, systemImage: "checklist").font(.caption).foregroundStyle(.secondary)
                         .accessibilityIdentifier("message-work-context")
                 }
-                if let reference = message.replyTo {
+                if let reference = cardReference {
+                    MessageQuote(reference: reference)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("decision-reply-quote-\(message.decisionId ?? message.id)")
+                } else if let reference = message.replyTo {
                     Button { scrollToDecision(reference.messageId) } label: {
                         MessageQuote(reference: reference)
                     }.buttonStyle(.plain).accessibilityLabel("View replied message from \(reference.author)")
                         .accessibilityIdentifier("message-quote-\(message.id)")
                 }
-                if let decisionId = message.decisionId,
+                if cardReference == nil, let decisionId = message.decisionId,
                    store.decisions.first(where: { $0.id == decisionId })?.status != "replied" {
                     Button { scrollToDecision(decisionId) } label: {
                         Label("View decision", systemImage: "arrow.turn.up.left")
