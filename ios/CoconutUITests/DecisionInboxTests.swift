@@ -404,7 +404,9 @@ final class DecisionInboxTests: XCTestCase {
         app.tabBars.buttons["Bots"].tap()
         app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Forge")).firstMatch.tap()
         XCTAssertTrue(app.staticTexts["What did you verify?"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.staticTexts[title].exists)
+        let quote = app.descendants(matching: .any)["decision-reply-quote-" + id]
+        XCTAssertTrue(quote.waitForExistence(timeout: 5))
+        XCTAssertTrue(quote.label.contains(title))
         XCTAssertFalse(app.buttons["View decision"].exists)
     }
 
@@ -419,15 +421,9 @@ final class DecisionInboxTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Inbox"].tap()
-        var field = app.textFields["decision-reply-" + id]
+        let field = app.textFields["decision-reply-" + id]
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap(); field.typeText("What did you verify?")
-        app.buttons["send-decision-reply-" + id].tap()
-        XCTAssertTrue(app.buttons["Dismiss error"].waitForExistence(timeout: 8))
-        field = app.textFields["decision-reply-" + id]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
-        XCTAssertEqual(field.value as? String, "What did you verify?")
-        app.buttons["Dismiss error"].tap()
         app.buttons["send-decision-reply-" + id].tap()
         XCTAssertTrue(app.staticTexts["All caught up"].waitForExistence(timeout: 8))
         XCTAssertFalse(app.staticTexts["What did you verify?"].exists)
@@ -445,7 +441,10 @@ final class DecisionInboxTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["What did you verify?"].exists)
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "inbox-context-")).firstMatch.tap()
         XCTAssertTrue(app.staticTexts["What did you verify?"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.staticTexts["Save the report?"].exists)
+        let quote = app.descendants(matching: .any)["decision-reply-quote-" + id]
+        XCTAssertTrue(quote.waitForExistence(timeout: 5))
+        XCTAssertTrue(quote.label.contains("Save the report?"))
+        XCTAssertFalse(app.buttons["decision-option-leave"].exists)
         XCTAssertTrue(app.staticTexts["I verified the local report."].exists)
         let proof = XCTAttachment(screenshot: app.screenshot())
         proof.name = "Text reply continues in the normal conversation"; proof.lifetime = .keepAlways; add(proof)

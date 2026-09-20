@@ -45,6 +45,7 @@ def main():
         original = question('Save the report?', 'The report is ready.',
             [dict(id='save', label='Save report'), dict(id='leave', label='Leave unchanged')])
         attempted = []
+        accepted = threading.Event()
         class ReplyHandler(Handler):
             def do_POST(self):
                 if self.path == f'/v1/decisions/{original["id"]}/answer':
@@ -54,6 +55,7 @@ def main():
                         self._json(503, {'error': 'The test connection failed. Try again.'})
                         return
                 if self.path == '/test/continue':
+                    assert accepted.wait(10), 'The saved reply must retry after restart.'
                     def resume(task, bot, history, decision, emit):
                         assert decision['status'] == 'replied'
                         assert decision['correction'] == 'What did you verify?'
@@ -65,6 +67,8 @@ def main():
                     self._json(200, {'ok': True})
                     return
                 super().do_POST()
+                if self.path == f'/v1/decisions/{original["id"]}/answer':
+                    accepted.set()
         server = APIServer(('127.0.0.1', 0), service)
         server.RequestHandlerClass = ReplyHandler
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -93,6 +97,7 @@ def main():
             assert len([d for d in service._all('decisions') if d['status'] == 'pending']) == 1
             assert len([m for m in service._all('messages') if m['role'] == 'user' and m.get('decision_id') == original['id']]) == 1
             assert not service._all('contexts')
+            assert len(attempted) >= 2 and len(set(attempted)) == 1, 'Retry must reuse the saved answer.'
             print('Verified one text reply, one fresh card, and no nested conversation.')
         finally:
             print('Answer attempts:', len(attempted), 'Decision states:', [d['status'] for d in service._all('decisions')], flush=True)

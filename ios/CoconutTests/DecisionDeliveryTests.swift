@@ -81,6 +81,10 @@ final class DecisionDeliveryTests: XCTestCase {
         XCTAssertFalse(queue.ids.contains(decision.id))
         let restored = AppStore(demo: false)
         XCTAssertTrue(restored.answeringDecisionIds.contains(decision.id), "The saved response must survive app termination.")
+        let reply = try XCTUnwrap(restored.outgoingAnswers.first?.message)
+        XCTAssertEqual(reply.decisionId, decision.id)
+        XCTAssertEqual(reply.replyTo?.text, decision.title)
+        XCTAssertEqual(reply.replyTo?.messageId, decision.id)
         let duplicate = await store.answer(decision, choice: "reply", correction: "Different reply")
         XCTAssertFalse(duplicate)
         if parallel {

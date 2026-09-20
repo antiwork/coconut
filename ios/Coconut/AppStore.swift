@@ -525,6 +525,12 @@ final class AppStore {
         try ProtectedCache.write(OutgoingCache(deviceId: pairing.deviceId, messages: outgoingMessages, answers: outgoingAnswers), name: "outgoing.json")
     }
 
+    func decisionReference(for id: String) -> MessageReference? {
+        guard let decision = decisions.first(where: { $0.id == id }) else { return nil }
+        return MessageReference(messageId: id, text: decision.title,
+            author: bots.first { $0.id == decision.botId }?.name ?? "Bot", role: "assistant")
+    }
+
     func messageReference(for message: Message) -> MessageReference? {
         guard message.kind == "text", ["user", "assistant"].contains(message.role),
               !message.streaming, message.reactionEvent == nil, !message.isBotExchange,
@@ -742,7 +748,8 @@ final class AppStore {
             botId: conversationBotId(for: decision), createdAt: Self.now, sequence: nextDeliverySequence,
             text: correction ?? decision.options.first { $0.id == optionId }?.label ?? choice.capitalized,
             request: AnswerRequest(choice: choice, revision: decision.revision, correction: correction,
-                optionId: optionId, draftHash: decision.draftHash, previewsHash: decision.previewsHash))
+                optionId: optionId, draftHash: decision.draftHash, previewsHash: decision.previewsHash),
+            replyTo: choice == "reply" ? decisionReference(for: decision.id) : nil)
         outgoingAnswers.append(queued)
         do { try saveOutgoing() }
         catch {
@@ -1777,9 +1784,11 @@ struct OutgoingAnswer: Codable, Identifiable {
     let sequence: Int
     let text: String
     let request: AnswerRequest
+    var replyTo: MessageReference? = nil
     var message: Message {
         Message(id: "outgoing-" + id, botId: botId, taskId: nil, role: "user", kind: "text", text: text,
-                decisionId: nil, artifactId: nil, createdAt: createdAt, streaming: false, clientRequestId: id)
+                decisionId: request.choice == "reply" ? decisionId : nil, artifactId: nil, createdAt: createdAt,
+                streaming: false, clientRequestId: id, replyTo: replyTo)
     }
 }
 struct AnswerRequest: Codable { let choice: String; let revision: Int; let correction: String?; let optionId: String?; let draftHash: String?; let previewsHash: String? }
