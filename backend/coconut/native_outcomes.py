@@ -45,8 +45,13 @@ CONTINUE_SCHEMA = {
 }
 
 
+class _NativeSnapshotsNeeded(Exception):
+    def __init__(self, identities):
+        self.identities = identities
+
+
 class NativeOutcomes:
-    def _retain_native_work(self, owner, native):
+    def _retain_native_work(self, owner, native, snapshot_missing=None):
         from .service import ServiceError, now
         from .work_capacity import execution_key
         if owner.get('_work_context_id'):
@@ -64,10 +69,45 @@ class NativeOutcomes:
             peers = self._work_pause_peers(item)
             if self._setting('work.cancelled.' + self._work_identity(item)) or self._work_pause(item, peers=peers):
                 raise ServiceError(409, 'This work is paused or cancelled.')
+            tasks = {t['id']: t for t in self._all('tasks')}
+            records = self._pending_completion_receipts()
+            peer_chains = []
             for peer in peers:
                 for field in ('_review_task_id', '_activity_task_id'):
-                    if peer.get(field) and execution_key(self._get('tasks', peer[field])) != execution_key(owner):
-                        raise ServiceError(409, 'This Work item has another execution. Continue its current owner.')
+                    if not peer.get(field):
+                        continue
+                    reporter = tasks[peer[field]]
+                    if execution_key(reporter) == execution_key(owner):
+                        continue
+                    # A finished observer on another bot does not own this execution.
+                    # Keep its dependency chain in the check, including undelivered results.
+                    root = self._work_execution_owner(reporter, tasks)
+                    linked = self._work_chain(root, tasks, records, include_continuations=True)
+                    linked[root['id']] = (root, 0)
+                    linked[reporter['id']] = (reporter, 0)
+                    native_tasks = [t for t, _ in linked.values()
+                                    if t.get('_native_outcome_id') or t.get('_kanban_claim')]
+                    peer_chains.append((peer, reporter, linked, native_tasks))
+            missing = sorted({t['id'] for _, _, _, native_tasks in peer_chains for t in native_tasks
+                              if t['id'] not in self.kanban.tasks})
+            if missing and snapshot_missing:
+                snapshot_missing(missing)
+            for peer, reporter, linked, native_tasks in peer_chains:
+                native_pending = any(
+                    (snapshot := self.kanban.tasks.get(t['id'], {})).get('status') != 'done'
+                    or snapshot.get('id') != (t.get('_native_outcome_id') or t['_kanban_claim'].get('native_id'))
+                    or snapshot.get('current_run_id') or snapshot.get('worker_pid') for t in native_tasks)
+                if (native_pending or peer['kind'] != 'pr' or peer['bot_id'] == owner['bot_id'] or reporter['bot_id'] == owner['bot_id']
+                        or any(t['status'] != 'completed' or t.get('_waiting_on') or t.get('_return_pending')
+                               or self._task_paused(t) or self._get('exchanges', t['exchange_id']).get('cancelled')
+                               or self._background_pending(t['id']) or self._unfinished_work(t)
+                               or (self.running.get(t['id']) and self.running[t['id']].is_alive())
+                               or self._native_task_receipts(t['id'], state='executing')
+                               for t, _ in linked.values())
+                        or any(d['status'] == 'pending' and d['task_id'] in linked for d in self._all('decisions'))
+                        or any(c['status'] in ('queued', 'working') and c['task_id'] in linked
+                               for c in self._all('contexts'))):
+                    raise ServiceError(409, 'This Work item has another execution. Continue its current owner.')
             item['_native_outcome_id'] = native['id']
         else:
             title = native.get('title') or owner['title']
@@ -80,7 +120,7 @@ class NativeOutcomes:
         self._put('artifacts', item)
         self._event('artifact.updated' if items else 'artifact.created', self._public(item), owner['bot_id'], owner['id'])
 
-    def _native_continuation_owner(self, identity):
+    def _native_continuation_owner(self, identity, snapshot_missing=None):
         """Resolve the caller's native ID through Coconut's durable owner mapping."""
         from .service import ServiceError
         if not self.kanban:
@@ -89,9 +129,12 @@ class NativeOutcomes:
         missing = [owner['id'] for owner in owners if owner['id'] not in self.kanban.tasks
             and identity in (owner.get('_native_outcome_id'), (owner.get('_kanban_claim') or {}).get('native_id'))]
         if missing:
-            # Periodic snapshots omit older terminal bindings. Read the durable
-            # mapping before resolving a retained claim, including after restart.
-            self.kanban.call({'op': 'snapshot', 'external_ids': missing})
+            # Periodic snapshots omit older terminal bindings. Continuation
+            # requests defer this lookup until their transaction has rolled back.
+            if snapshot_missing:
+                snapshot_missing(missing)
+            else:
+                self.kanban.call({'op': 'snapshot', 'external_ids': missing})
         candidates = []
         mismatch = False
         for owner in owners:
@@ -186,6 +229,28 @@ class NativeOutcomes:
         self._event('artifact.updated', self._public(item), item['bot_id'], owner['id'])
 
     def continue_native_work(self, source_id, payload):
+        requested = set()
+
+        def snapshot_missing(identities):
+            missing = set(identities) - requested
+            if missing:
+                raise _NativeSnapshotsNeeded(sorted(missing))
+
+        # The scheduler holds its adapter lock while spawn takes self.lock.
+        # Roll back and release the service transaction before querying it, then
+        # re-read all ownership, peer links and pause guards in a new transaction.
+        for attempt in range(5):
+            try:
+                return self._continue_native_work(source_id, payload, snapshot_missing)
+            except _NativeSnapshotsNeeded as pending:
+                if attempt == 4:
+                    break
+                requested.update(pending.identities)
+                self.kanban.call({'op': 'snapshot', 'external_ids': sorted(requested)})
+        from .service import ServiceError
+        raise ServiceError(409, 'The native work changed while checking it. Read its current activity and retry.')
+
+    def _continue_native_work(self, source_id, payload, snapshot_missing):
         from .service import ServiceError, now, uid, digest, encoded, require_text
         from .work_capacity import execution_key
         with self.transaction():
@@ -198,7 +263,7 @@ class NativeOutcomes:
             previous = self.db.execute('SELECT data FROM deliveries WHERE id=?', (key,)).fetchone()
             if previous:
                 return json.loads(previous[0])['receipt']
-            owner, native = self._native_continuation_owner(identity)
+            owner, native = self._native_continuation_owner(identity, snapshot_missing)
             if source['bot_id'] not in (owner['bot_id'], owner.get('source_bot_id')):
                 raise ServiceError(403, 'Only the owner or its requesting bot can continue this work.')
             bot = self._get('bots', owner['bot_id'])
@@ -227,7 +292,7 @@ class NativeOutcomes:
                    for d in self._all('decisions')):
                 raise ServiceError(409, 'The existing decision must be answered before work continues.')
             if not owner.get('_native_outcome_id'):
-                self._retain_native_work(owner, native)
+                self._retain_native_work(owner, native, snapshot_missing)
             owner['_native_outcome_id'] = identity
             self._restore_native_work_owner(owner)
             related_ids = {t['id'] for t in related}
