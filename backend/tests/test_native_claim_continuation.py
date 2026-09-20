@@ -68,8 +68,28 @@ class NativeClaimContinuationTests(unittest.TestCase):
         return self.service.emit(source['id'], 'work_continue', dict(
             task_id=identity, message='The review passed. Verify locally; do not publish.'))
 
-    def check_dispatch(self, state, caller='requester', interrupt_binding=False):
+    def age_binding_and_restart(self, owner):
+        # Real bridge snapshots retain only the latest 32 legacy terminal bindings.
+        self.native_program('''
+import json
+row = json.loads(sys.argv[2])
+for index in range(33):
+    newer = dict(row, id='newer-' + str(index), input='newer-' + str(index))
+    board.sync([newer])
+    native_id = board.conn.execute('SELECT native_id FROM coconut_bindings WHERE external_id=?',
+                                   (newer['id'],)).fetchone()[0]
+    board.kb.complete_task(board.conn, native_id, summary='Newer input complete')
+''', json.dumps(self.service._kanban_row(owner, owner, 'ready', 10)))
+        from coconut.kanban_scheduler import KanbanScheduler
+        self.service.kanban.close()
+        self.service.kanban = KanbanScheduler(self.provider, self.service.root)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.assertNotIn(owner['id'], self.service.kanban.tasks)
+
+    def check_dispatch(self, state, caller='requester', interrupt_binding=False, aged=False):
         owner, source, identity, workspace = self.prepare(state, caller)
+        if aged:
+            self.age_binding_and_restart(owner)
         decision = dict(id=str(uuid4()), task_id=owner['id'], bot_id=owner['bot_id'],
                         status='rejected', title='Publish?', decided_by='human',
                         created_at=owner['created_at'], outcome='Keep the correction local.')
@@ -86,7 +106,8 @@ class NativeClaimContinuationTests(unittest.TestCase):
         for key in ('id', '_execution_session_id', 'thread_id', 'session_id', 'exchange_id',
                     'source_bot_id', 'source_task_id', 'conversation_bot_id'):
             self.assertEqual(queued[key], owner[key], key)
-        self.assertEqual(queued['_self_recovery']['decisions'], [self.service._public(decision)])
+        self.assertEqual(queued['_self_recovery']['decisions'], [self.service._public(d)
+            for d in self.service._all('decisions') if d['task_id'] == owner['id']])
 
         if interrupt_binding:
             row = next(r for r in self.service._kanban_rows() if r['id'] == owner['id'])
@@ -172,6 +193,57 @@ else:
                 'idempotency_key LIKE ?", ("coconut-followup:" + sys.argv[2] + ":%",)).fetchone()[0])', owner['id']), '1')
             self.assertIn(identity, self.native_program(
                 'print(board.kb.task_graph_contexts(board.conn, [sys.argv[2]]))', successor))
+
+    def test_aged_completed_claim_dispatches_after_adapter_restart(self):
+        self.check_dispatch('done', aged=True)
+
+    def test_aged_completed_claim_dispatches_for_owner_after_restart(self):
+        self.check_dispatch('done', 'owner', aged=True)
+
+    def test_aged_completed_claim_keeps_pr_approval_after_restart(self):
+        prepare = self.prepare
+        def prepare_pr(*args):
+            owner, source, identity, workspace = prepare(*args)
+            self.service._put('artifacts', dict(id=str(uuid4()), task_id=owner['id'],
+                bot_id=owner['bot_id'], kind='pr', title='Prepared draft', status='open',
+                url='https://github.com/example/repo/pull/15'))
+            self.service._put('decisions', dict(id=str(uuid4()), task_id=owner['id'],
+                bot_id=owner['bot_id'], status='replied', answer='publish_draft', decided_by='human'))
+            return owner, source, identity, workspace
+        self.prepare = prepare_pr
+        self.check_dispatch('done', aged=True)
+        approvals = [d for d in self.service._all('decisions') if d.get('answer') == 'publish_draft']
+        self.assertEqual(len(approvals), 1)
+        self.assertEqual(approvals[0]['decided_by'], 'human')
+        self.assertEqual(approvals[0]['status'], 'replied')
+
+    def test_aged_claim_still_requires_requester_or_owner(self):
+        owner, source, identity, _ = self.prepare(caller='stranger')
+        self.age_binding_and_restart(owner)
+        with self.assertRaisesRegex(ServiceError, 'owner or its requesting bot'):
+            self.resume(source, identity)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertFalse(self.service._all('artifacts'))
+
+    def test_aged_claim_still_requires_input(self):
+        owner, source, identity, _ = self.prepare()
+        self.age_binding_and_restart(owner)
+        owner['_kanban_claim'].pop('input')
+        self.service._put('tasks', owner)
+        with self.assertRaisesRegex(ServiceError, 'Choose one existing native outcome'):
+            self.resume(source, identity)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertFalse(self.service._all('artifacts'))
+
+    def test_aged_claim_still_requires_matching_durable_binding(self):
+        owner, source, identity, _ = self.prepare()
+        self.age_binding_and_restart(owner)
+        owner['_native_outcome_id'] = 'different'
+        self.service._put('tasks', owner)
+        with self.assertRaisesRegex(ServiceError, 'mapping does not match'):
+            self.resume(source, identity)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertFalse(self.service._all('artifacts'))
 
     def test_completed_claim_dispatches_one_successor_for_original_requester(self):
         self.check_dispatch('done')

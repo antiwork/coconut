@@ -85,9 +85,16 @@ class NativeOutcomes:
         from .service import ServiceError
         if not self.kanban:
             raise ServiceError(409, 'Choose one existing native outcome from kanban_show.')
+        owners = self._all('tasks')
+        missing = [owner['id'] for owner in owners if owner['id'] not in self.kanban.tasks
+            and identity in (owner.get('_native_outcome_id'), (owner.get('_kanban_claim') or {}).get('native_id'))]
+        if missing:
+            # Periodic snapshots omit older terminal bindings. Read the durable
+            # mapping before resolving a retained claim, including after restart.
+            self.kanban.call({'op': 'snapshot', 'external_ids': missing})
         candidates = []
         mismatch = False
-        for owner in self._all('tasks'):
+        for owner in owners:
             explicit = owner.get('_native_outcome_id')
             claimed = (owner.get('_kanban_claim') or {}).get('native_id')
             native = self.kanban.tasks.get(owner['id'], {})
