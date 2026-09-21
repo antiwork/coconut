@@ -144,6 +144,9 @@ class DecisionInbox:
                     decision['status'] = 'pending'
                     data = dict(choice='reject', revision=decision['revision'])
                     if decision.get('_native'):
+                        # The person already dismissed this card. Finalize only
+                        # that rejection, including swipes saved before upgrade.
+                        decision.pop('_source_recheck', None)
                         self.answer_native(decision, task, data, device, callbacks)
                     else:
                         self._answer(decision, task, data, device)

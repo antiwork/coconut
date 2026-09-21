@@ -57,8 +57,12 @@ class DecisionFreshness:
             url = next(url for url in github_links(decision) if url.lower() == observation.url.lower())
             if observation.pr_state == 'merged' and (decision.get('merge_pr_url') or '').lower() == url.lower():
                 continue
-            previous = decision.get('_source_facts', {}).get(url, {}).get('pr_state')
-            if previous == observation.pr_state or decision.get('_source_recheck'):
+            checked = decision.get('_source_check', {})
+            source = checked.get('facts', {}).get(url, {})
+            if (decision.get('_source_recheck') or (checked.get('revision') == decision['revision']
+                    and checked.get('links') == github_links(decision)
+                    and source.get('pr_state') == observation.pr_state
+                    and source.get('head_sha') == observation.head_sha)):
                 continue
             # Hide the obsolete choice immediately; the owner still decides whether follow-up work remains.
             decision['_source_recheck'] = True
@@ -452,6 +456,11 @@ class DecisionFreshness:
                 raise ServiceError(400, 'Choose current, revise, or withdraw. This check cannot grant approval.')
             fingerprint, _ = self._decision_evidence(decision, {t['id']: t for t in self._all('tasks')}, records, artifacts)
             decision.pop('_source_recheck', None)
+            # Observed facts (including pre-upgrade terminal facts) are not a
+            # completed check of the choices. Only this fenced result is one.
+            from .decision_sources import github_links
+            decision['_source_check'] = dict(revision=decision['revision'], links=github_links(decision),
+                                            facts=decision.get('_source_facts', {}))
             decision['_freshness'] = dict(decision.get('_freshness', {}), checked_at=now(), fingerprint=fingerprint, evidence=evidence)
             self._put('decisions', decision)
             self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])

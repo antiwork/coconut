@@ -107,3 +107,25 @@ class DraftFreshnessTests(unittest.TestCase):
         self.service._queue_decision_refreshes()
         self.assertEqual(len(self.service._all('contexts')), 1)
         self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'pending')
+
+    def test_refreshing_draft_wire_stays_pending_for_legacy_cards(self):
+        from dataclasses import replace
+        from test_service_pr import URL, observation
+        decision = self.draft()
+        decision['sources'] = [dict(kind='pull_request', title='Synthetic PR', url=URL)]
+        self.service._put('decisions', decision)
+        self.service._invalidate_terminal_pr_cards(self.bot['id'], replace(observation('merged'), pr_state='merged'))
+        saved = self.service._get('decisions', decision['id'])
+        wire = next(d for d in self.service.snapshot()['decisions'] if d['id'] == decision['id'])
+        # b566e3b Cards.swift renders its receipt (including the green draft
+        # approval fallback) only for !isPending. Unknown fields are ignored.
+        self.assertEqual(wire['status'], 'pending')
+        self.assertTrue(wire.get('source_refreshing'))
+        self.assertEqual(wire['draft'], decision['draft'])
+        self.assertEqual(saved['_answers'], [])
+        self.assertIsNone(saved.get('decided_by'))
+        for revision in (decision['revision'], saved['revision']):
+            with self.subTest(revision=revision), self.assertRaises(ServiceError):
+                self.write('POST', f"/v1/decisions/{decision['id']}/answer", dict(
+                    revision=revision, option_id='send', choice='approve', draft_hash=decision['draft_hash']))
+        self.assertNotIn('_execution_task_id', self.service._get('decisions', decision['id']))
