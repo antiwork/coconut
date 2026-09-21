@@ -255,8 +255,8 @@ else:
             self.provider.started.append(task['id'])
             if not release.wait(15):
                 raise AssertionError('Test did not release the dispatched worker')
-            self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='Follow-up verified locally')",
-                                task['_native_outcome_id'])
+            self.native_program("assert board.kb.complete_task(board.conn, sys.argv[2], summary='Follow-up verified locally', expected_run_id=int(sys.argv[3]))",
+                                task['_native_outcome_id'], str(task['_kanban_claim']['run_id']))
             emit('completed', {'summary': 'Follow-up verified locally'})
         self.provider.start_task = run
         self.service._dispatch_pending()
