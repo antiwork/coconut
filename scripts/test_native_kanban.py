@@ -63,7 +63,19 @@ def check(source, python):
                         binding = json.loads(results[-1]['content'])
                         assert 'path' in binding, binding
                         name, arguments = 'terminal', {'command': "printf 'isolated change\\n' > proof.txt"}
+                    elif len(results) == 2:
+                        assert any('native process(action="wait")' in str(m.get('content')) for m in messages[:1])
+                        name, arguments = 'terminal', dict(command="sleep 0.2; printf 'native-child-finished'",
+                            background=True, notify=True)
+                    elif len(results) == 3:
+                        process = json.loads(results[-1]['content'])
+                        assert process.get('notify_on_complete') is False, process
+                        assert process.get('notify_unsupported'), process
+                        name, arguments = 'process_manage', dict(action='wait', session_id=process['session_id'], timeout=5)
                     else:
+                        process = json.loads(results[-1]['content'])
+                        assert process.get('status') == 'exited' and process.get('exit_code') == 0, process
+                        assert 'native-child-finished' in process.get('output', ''), process
                         name, arguments = 'coconut_ask', {'title': 'Accept the isolated result?',
                             'context': 'The local worker wrote proof.txt in its own Git worktree.',
                             'options': [{'id': 'accept', 'label': 'human-accepted-probe', 'explanation': 'Complete this local check.'}]}
@@ -153,7 +165,8 @@ def check(source, python):
             settle(lambda: all(n['status'] == 'done' for n in service.kanban.tasks.values()))
             assert calls.count('kanban_create') == 2, calls
             assert calls.count('kanban_complete') == 2, calls
-            assert calls.count('terminal') == 4, calls
+            assert calls.count('terminal') == 6, calls
+            assert calls.count('process_manage') == 2, calls
             assert not failures, failures
             print(json.dumps(dict(passed=True, native_workers=2, worktrees=2, isolated_tool_writes=2,
                                   review_waits=2, restored_workspaces=2, duplicate_answers='handled once', completed_tasks=2)))

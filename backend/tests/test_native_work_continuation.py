@@ -109,6 +109,42 @@ class NativeWorkContinuationTests(unittest.TestCase):
         return self.service.emit(source['id'], 'work_continue',
             dict(task_id='t_existing', message='The corrected commit passed review. Finish its acceptance check.'))
 
+    def test_context_identity_resumes_its_original_outcome(self):
+        owner, source = self.native()
+        self.service._put('contexts', dict(id='context', task_id=owner['id'],
+            bot_id=owner['bot_id'], status='completed',
+            _kanban_claim={'native_id': 't_context'}))
+        self.service.kanban.tasks['context'] = dict(id='t_context', status='done')
+        receipt = self.service.emit(source['id'], 'work_continue',
+            dict(task_id='t_context', message='Continue the authorized acceptance check.'))
+        self.assertEqual(receipt['task_id'], owner['id'])
+        self.assertEqual(receipt['native_task_id'], 't_existing')
+        self.assertEqual(self.service._get('tasks', owner['id'])['_native_outcome_id'], 't_existing')
+
+    def test_context_identity_preserves_pending_decision(self):
+        owner, source = self.native()
+        self.service._put('contexts', dict(id='context', task_id=owner['id'],
+            bot_id=owner['bot_id'], status='completed',
+            _kanban_claim={'native_id': 't_context'}))
+        self.service.kanban.tasks['context'] = dict(id='t_context', status='done')
+        self.service._put('decisions', dict(id='pending', task_id=owner['id'], status='pending'))
+        with self.assertRaisesRegex(ServiceError, 'decision must be answered'):
+            self.service.emit(source['id'], 'work_continue',
+                dict(task_id='t_context', message='Continue the acceptance check.'))
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.service._get('decisions', 'pending')['status'], 'pending')
+
+    def test_context_native_claim_prevents_resuming_its_parent(self):
+        owner, source = self.native()
+        self.service._put('contexts', dict(id='context', task_id=owner['id'],
+            bot_id=owner['bot_id'], status='completed',
+            _kanban_claim={'native_id': 't_context'}))
+        self.service.kanban.tasks['context'] = dict(id='t_context', status='running', current_run_id=42)
+        with self.assertRaisesRegex(ServiceError, 'context task to finish'):
+            self.service.emit(source['id'], 'work_continue',
+                dict(task_id='t_context', message='Continue the acceptance check.'))
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
     def scheduled_native(self):
         owner, source = self.prepare()
         owner.update(status='completed', _native_turn_id='completed-input',

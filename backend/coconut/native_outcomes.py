@@ -27,7 +27,10 @@ WORK_INSTRUCTIONS = (
     'A question about a decision does not complete its unfinished outcome. Answer it and retain the remaining work. '
     'If a decision is still needed, create an updated card with the concrete next action. '
     'Use coconut_ask when a human decision is required. Coconut connects the card to this same native task. '
-    'Use coconut_wait for an existing process or bot result. Finish the turn after registering the wait. '
+    'Use coconut_wait for an existing bot result. Finish the turn only after the wait succeeds. '
+    'Hermes Kanban workers cannot receive detached process notifications. '
+    'For background commands, use native process(action="wait") until the process exits. '
+    'Keep this worker active while its process runs. A wait timeout does not mean the process failed. '
     'Before repeating an action from an earlier attempt, check its receipt and destination. '
     'An absent result does not prove the action failed. Preserve approval limits and unresolved effects. '
     'Use a native dependency or scheduled check for a valid external wait. Do not create a recovery task. '
@@ -125,6 +128,30 @@ class NativeOutcomes:
         from .service import ServiceError
         if not self.kanban:
             raise ServiceError(409, 'Choose one existing native outcome from kanban_show.')
+        contexts = [context for context in self._all('contexts') if identity in (
+            (context.get('_kanban_claim') or {}).get('native_id'),
+            self.kanban.tasks.get(context['id'], {}).get('id'))]
+        if contexts:
+            if len(contexts) != 1 or contexts[0]['status'] != 'completed':
+                raise ServiceError(409, 'Wait for the existing context task to finish.')
+            context = contexts[0]
+            if snapshot_missing:
+                snapshot_missing([context['id']])
+            else:
+                self.kanban.call({'op': 'snapshot', 'external_ids': [context['id']]})
+            context_native = self.kanban.tasks.get(context['id'], {})
+            if context_native.get('id') != identity:
+                raise ServiceError(409, 'The saved Coconut and native context mapping does not match.')
+            if (context_native.get('status') not in ('done', 'archived')
+                    or context_native.get('current_run_id') or context_native.get('worker_pid')):
+                raise ServiceError(409, 'Wait for the existing context task to finish.')
+            parent = self._get('tasks', context['task_id'])
+            if parent['bot_id'] != context['bot_id']:
+                raise ServiceError(409, 'The context task does not match its owner.')
+            # A context job shares its parent's execution and is not a new outcome.
+            identity = parent.get('_native_outcome_id') or (parent.get('_kanban_claim') or {}).get('native_id')
+            if not identity:
+                raise ServiceError(409, 'The context task has no retained native outcome.')
         owners = self._all('tasks')
         missing = [owner['id'] for owner in owners if owner['id'] not in self.kanban.tasks
             and identity in (owner.get('_native_outcome_id'), (owner.get('_kanban_claim') or {}).get('native_id'))]
@@ -264,6 +291,7 @@ class NativeOutcomes:
             if previous:
                 return json.loads(previous[0])['receipt']
             owner, native = self._native_continuation_owner(identity, snapshot_missing)
+            identity = native['id']
             if source['bot_id'] not in (owner['bot_id'], owner.get('source_bot_id')):
                 raise ServiceError(403, 'Only the owner or its requesting bot can continue this work.')
             bot = self._get('bots', owner['bot_id'])

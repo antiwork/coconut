@@ -1216,11 +1216,13 @@ def run_turn(request, emit, request_receipt):
                         'After login, start a fresh CLI command in the same profile and verify a real authenticated request. '
                         'A success banner or saved account name alone does not prove authentication works. '
                         'Diagnose storage and process errors yourself before asking the person to repeat login or use Mac Terminal. '
-                        'Use terminal notify=true for background work that must return a result. '
-                        'Coconut resumes this task when Hermes reports completion. Use notify=false for persistent servers. '
+                        'Use notify=false for persistent servers. '
                         'Verify gh api user from this bot\'s terminal before reporting GitHub connected. '
                         'Share explicit task context only. Do not copy private memory or credentials between bots. '
                         'A queued message is not a reply. Never claim success without a tool result. ')
+        if not os.environ.get('HERMES_KANBAN_TASK'):
+            instructions += ('Use terminal notify=true for background work that must return a result. '
+                             'Coconut resumes this task when Hermes reports completion. ')
         if request['task'].get('_tracked_prs'):
             instructions += ('\nWork already tracks these PRs for this assignment and its callbacks: '
                              + json.dumps(request['task']['_tracked_prs'])

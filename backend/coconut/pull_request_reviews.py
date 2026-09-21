@@ -315,17 +315,7 @@ class PullRequestReviews:
                         seen = (latest['_reviewed_states'][review_key] == signal if latest else
                                 not terminal and any(artifact['head_sha'] in self._pr_reviewed_heads(a) for a in peers))
                         if seen:
-                            if terminal:
-                                continue
-                            from datetime import datetime, timezone
-                            from .decision_freshness import age
-                            checked = max((a.get('_review_checked_at') or self._get('tasks', a['_review_task_id']).get('updated_at', '')
-                                           for a in peers if a.get('_review_task_id')), default='')
-                            if age(checked, datetime.now(timezone.utc)) < 3600:
-                                continue
-                            projected = next(a for a in self._work_projection([dict(p) for p in peers]) if a['id'] == artifact['id'])
-                            if projected['work_state'] not in ('waiting', 'needs_recovery') or projected['work_dependencies']:
-                                continue
+                            continue
                         summary = 'Checking the final PR result.' if terminal else 'Checking merge readiness.'
                         assignment = self._assignment(task)
                         if assignment.get('_waiting_on') or self._background_pending(assignment['id']):
