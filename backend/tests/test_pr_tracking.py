@@ -32,6 +32,10 @@ class PayloadTracker(GitHubPRTracker):
         super().__init__(token="")
         self.payloads = list(payloads)
         self.paths = []
+        self.reviews = []
+
+    def _reviews(self, path, deadline):
+        return self.reviews
 
     def _get(self, path, deadline):
         self.paths.append(path)
@@ -74,6 +78,25 @@ class PRStateTests(unittest.TestCase):
         self.assertIsNotNone(paged.observe_discussion(URL))
         self.assertIn('/repos/example/project/issues/42/comments?per_page=100&page=2', paged.paths)
         self.assertIsNone(PayloadTracker([URLError('offline')]).observe_discussion(URL))
+
+    def test_same_head_human_review_changes_readiness_signal(self):
+        before = tracker_for([check()])
+        after = tracker_for([check()])
+        after.reviews = [('review', 7, 'APPROVED', SHA, '2026-09-21T12:00:00Z', 'Looks good')]
+        self.assertNotEqual(before.observe(URL).review_checks, after.observe(URL).review_checks)
+
+    def test_review_pagination_and_access_failure(self):
+        tracker = PayloadTracker([[dict(id=i, state='COMMENTED', commit_id=SHA) for i in range(100)],
+                                  [dict(id=101, state='APPROVED', commit_id=SHA)]])
+        reviews = GitHubPRTracker._reviews(tracker, '/repos/example/project/pulls/42', 0)
+        self.assertEqual(len(reviews), 101)
+        self.assertEqual(reviews[-1][1:4], (101, 'APPROVED', SHA))
+        self.assertIn('/repos/example/project/pulls/42/reviews?per_page=100&page=2', tracker.paths)
+        denied = tracker_for([check()])
+        with patch.object(denied, '_reviews', side_effect=URLError('offline')):
+            self.assertFalse(denied.observe(URL).observed)
+        with self.assertRaises(PRTrackingError):
+            GitHubPRTracker._reviews(PayloadTracker([[dict(id=1, state='unknown')]]), '/pulls/42', 0)
 
     def test_no_checks_stays_opened(self):
         observation = tracker_for().observe(URL)

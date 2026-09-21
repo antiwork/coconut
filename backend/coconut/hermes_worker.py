@@ -1133,7 +1133,8 @@ def run_turn(request, emit, request_receipt):
                 'Wait for existing work. Call without arguments to list tasks, decisions, and background processes in this exchange. '
                 'Supply task_id, process_id, or decision_id and a short reason to register a durable wait. '
                 'Use decision_id for an existing card, including when its owner waits for your work. '
-                'Use process_id when awaiting a background process, '
+                'Use process_id only when the terminal result confirms notify_on_complete=true. '
+                'Otherwise use native process(action="wait") until the process exits. '
                 'especially if its owner task already depends on your reply. Finish your turn after registration; '
                 'Coconut resumes it once the task finishes or fails. A completed process returns its saved result immediately; '
                 'use that result without waiting again. This does not send a message or create new work.',
@@ -1216,11 +1217,17 @@ def run_turn(request, emit, request_receipt):
                         'After login, start a fresh CLI command in the same profile and verify a real authenticated request. '
                         'A success banner or saved account name alone does not prove authentication works. '
                         'Diagnose storage and process errors yourself before asking the person to repeat login or use Mac Terminal. '
-                        'Use terminal notify=true for background work that must return a result. '
-                        'Coconut resumes this task when Hermes reports completion. Use notify=false for persistent servers. '
+                        'Use notify=false for persistent servers. '
                         'Verify gh api user from this bot\'s terminal before reporting GitHub connected. '
                         'Share explicit task context only. Do not copy private memory or credentials between bots. '
                         'A queued message is not a reply. Never claim success without a tool result. ')
+        if os.environ.get('HERMES_KANBAN_TASK'):
+            instructions += ('Hermes Kanban workers cannot receive detached process notifications. '
+                             'For background commands, use native process(action="wait") until the process exits. '
+                             'Keep this worker active while its process runs. A wait timeout does not mean the process failed. ')
+        else:
+            instructions += ('Use terminal notify=true for background work that must return a result. '
+                             'Coconut resumes this task when Hermes reports completion. ')
         if request['task'].get('_tracked_prs'):
             instructions += ('\nWork already tracks these PRs for this assignment and its callbacks: '
                              + json.dumps(request['task']['_tracked_prs'])

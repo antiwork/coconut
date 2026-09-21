@@ -21,16 +21,10 @@ class PRReviewFreshnessTests(unittest.TestCase):
         self.service._put('tasks', task)
         return artifact, task
 
-    def test_old_passing_review_without_a_card_gets_a_continuation(self):
+    def test_unchanged_review_does_not_restart_after_an_hour(self):
         artifact, task = self.prepare()
         self.service._queue_pr_reviews()
-        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'queued')
-        self.assertEqual(self.service._get('tasks', task['id'])['_pr_review']['head_sha'], artifact['head_sha'])
-        task = self.service._get('tasks', task['id'])
-        task['status'] = 'completed'
-        self.service._put('tasks', task)
-        self.service._queue_pr_reviews()
-        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.service._get('tasks', task['id']), task)
 
     def test_rejected_merge_is_not_offered_again_for_the_same_head(self):
         artifact, task = self.prepare()
@@ -41,6 +35,8 @@ class PRReviewFreshnessTests(unittest.TestCase):
 
     def test_old_head_rejection_does_not_suppress_a_new_heads_freshness_check(self):
         artifact, task = self.prepare()
+        artifact['head_sha'] = 'new-unreviewed-head'
+        self.service._put('artifacts', artifact)
         self.service._put('decisions', dict(id='declined-old-head', bot_id=task['bot_id'], task_id=task['id'],
             status='rejected', merge_pr_url=artifact['url'], _merge_pr_head='previous-head', created_at=task['created_at']))
         self.service._queue_pr_reviews()
@@ -48,6 +44,8 @@ class PRReviewFreshnessTests(unittest.TestCase):
 
     def test_legacy_rejection_before_the_new_review_does_not_suppress_it(self):
         artifact, task = self.prepare()
+        artifact['head_sha'] = 'new-unreviewed-head'
+        self.service._put('artifacts', artifact)
         self.service._put('decisions', dict(id='declined-before-review', bot_id=task['bot_id'], task_id=task['id'],
             status='rejected', merge_pr_url=artifact['url'], created_at='2000-01-01T00:00:00Z'))
         self.service._queue_pr_reviews()
