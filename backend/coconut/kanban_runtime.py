@@ -50,7 +50,7 @@ class Board:
                 task = self.kb.get_task(self.conn, old[0] if old else row['native_id'])
                 # A reviewer can claim after continuation's snapshot. Leave the
                 # pending input unconsumed until that native run has finished.
-                if task.status == 'running':
+                if task.status == 'running' and row['state'] != 'archived':
                     continue
                 if old and old[0] == row['native_id'] and row.get('previous_input'):
                     # Reconcile a legacy claim before comparing accepted input.
@@ -74,6 +74,8 @@ class Board:
                     task = self.kb.get_task(self.conn, identity)
                 self.bind(task.id, row['id'])
                 task = self.kb.get_task(self.conn, task.id)
+                if task.status == 'running' and row['state'] != 'archived':
+                    continue
                 old = self.conn.execute('SELECT native_id,intent FROM coconut_bindings WHERE external_id=?', (row['id'],)).fetchone()
                 if row.get('workspace_changed') and Path(row['workspace']).is_dir() and task.workspace_path != row['workspace']:
                     self.workspace.set_workspace_path(self.conn, task.id, row['workspace'])

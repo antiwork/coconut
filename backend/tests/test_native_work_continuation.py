@@ -34,6 +34,12 @@ class NativeReviewerRuntimeTests(unittest.TestCase):
         self.assertEqual(list(board.conn.iterdump()), before)
         board.bind.assert_not_called()
 
+    def test_explicit_cancellation_still_archives_running_task(self):
+        board, task, row = self.board()
+        row['state'] = 'archived'
+        board.sync([row])
+        board.kb.archive_task.assert_called_once_with(board.conn, task.id)
+
     def test_reviewer_claim_winning_reopen_does_not_consume_input(self):
         board, task, row = self.board('review')
         def claim(*args):
@@ -43,6 +49,15 @@ class NativeReviewerRuntimeTests(unittest.TestCase):
         before = list(board.conn.iterdump())
         board.sync([row])
         board.kb.reopen_review_task.assert_called_once()
+        self.assertEqual(list(board.conn.iterdump()), before)
+
+    def test_reviewer_claim_during_bind_does_not_consume_input(self):
+        from types import SimpleNamespace
+        board, task, row = self.board('review')
+        running = SimpleNamespace(id=task.id, status='running', current_run_id=47)
+        board.kb.get_task.side_effect = [task, running]
+        before = list(board.conn.iterdump())
+        board.sync([row])
         self.assertEqual(list(board.conn.iterdump()), before)
 
     def test_finish_cannot_end_native_reviewer_run(self):

@@ -89,7 +89,10 @@ class NativeClaimContinuationTests(unittest.TestCase):
     def test_review_claim_during_reopen_preserves_pending_input(self):
         self.check_late_reviewer_claim(during_reopen=True)
 
-    def check_late_reviewer_claim(self, during_reopen=False):
+    def test_review_claim_during_bind_preserves_pending_input(self):
+        self.check_late_reviewer_claim(during_bind=True)
+
+    def check_late_reviewer_claim(self, during_reopen=False, during_bind=False):
         owner, source, identity, workspace = self.prepare('review')
         evidence = self.review_evidence(identity)
         adapter_call = self.service.kanban.call
@@ -98,7 +101,7 @@ class NativeClaimContinuationTests(unittest.TestCase):
             if request['op'] == 'snapshot':
                 self.native_program("assert board.kb.claim_review_task(board.conn, sys.argv[2])", identity)
             return result
-        if during_reopen:
+        if during_reopen or during_bind:
             receipt = self.resume(source, identity)
         else:
             with patch.object(self.service.kanban, 'call', side_effect=claim_after_snapshot):
@@ -107,6 +110,12 @@ class NativeClaimContinuationTests(unittest.TestCase):
         row = next(r for r in self.service._kanban_rows() if r['id'] == owner['id'])
         self.native_program('''import json
 row = json.loads(sys.argv[2])
+if sys.argv[4] == 'True':
+    bind = board.bind
+    def raced_bind(identity, external_id):
+        bind(identity, external_id)
+        assert board.kb.claim_review_task(board.conn, identity)
+    board.bind = raced_bind
 if sys.argv[3] == 'True':
     reopen = board.kb.reopen_review_task
     def raced_reopen(conn, identity):
@@ -114,7 +123,7 @@ if sys.argv[3] == 'True':
         return reopen(conn, identity)
     board.kb.reopen_review_task = raced_reopen
 board.sync([row])
-''', json.dumps(row), str(during_reopen))
+''', json.dumps(row), str(during_reopen), str(during_bind))
         self.service.kanban.call({'op': 'snapshot'})
         native = copy.deepcopy(self.service.kanban.tasks[owner['id']])
         self.assertEqual(native['status'], 'running')
