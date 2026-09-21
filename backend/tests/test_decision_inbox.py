@@ -469,3 +469,75 @@ class DecisionInboxTests(unittest.TestCase):
         self.service._run_task(continuation['id'])
         delivered = self.service.provider.resume_task.call_args.args[0]
         self.assertEqual(delivered['attachments'][0]['content_base64'], content)
+
+    def refreshing_question(self):
+        from dataclasses import replace
+        from test_service_pr import URL, observation
+        decision = self.question()
+        saved = self.service._get('decisions', decision['id'])
+        saved['sources'] = [dict(kind='pull_request', title='Synthetic PR', url=URL)]
+        self.service._put('decisions', saved)
+        self.service._invalidate_terminal_pr_cards(self.bot['id'], replace(observation('merged'), pr_state='merged'))
+        return self.service._get('decisions', decision['id'])
+
+    def test_refreshing_required_dismissal_records_only_rejection(self):
+        decision = self.refreshing_question()
+        self.write('POST', f"/v1/decisions/{decision['id']}/inbox", dict(action='dismiss', revision=decision['revision']))
+        self.service.finish_inbox_swipes()
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'needs_you')
+        self.expire_swipe(decision)
+        self.service.finish_inbox_swipes()
+        saved = self.service._get('decisions', decision['id'])
+        self.assertEqual(saved['status'], 'rejected')
+        self.assertEqual([answer['choice'] for answer in saved['_answers']], ['reject'])
+        self.assertFalse(saved.get('_source_recheck'))
+        self.assertFalse(saved.get('_inbox_reject_device'))
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'queued')
+
+    def test_preexisting_refreshing_dismissal_does_not_block_dispatch(self):
+        import threading
+        decision = self.refreshing_question()
+        # Durable state saved by the old /inbox endpoint; no new swipe needed.
+        decision.update(status='dismissed', _inbox_reject_device='synthetic-phone',
+                        inbox_swipe_id='old-swipe', inbox_undo_until='2000-01-01T00:00:00Z')
+        self.service._put('decisions', decision)
+        self.restart()
+        # Admit both the dismissal resume and unrelated work in this dispatch,
+        # even when the host's automatic capacity is only one worker.
+        self.write('PUT', '/v1/settings/work-capacity', {'limit': 2})
+        bot = self.write('POST', '/v1/bots', dict(name='Independent synthetic worker'))
+        other = self.write('POST', f"/v1/bots/{bot['id']}/messages", dict(text='Independent fixture work', mode='queue'))
+        progressed = threading.Event()
+        original = self.service.provider.start_task
+        def start(task, *args):
+            if task['id'] == other['id']:
+                progressed.set()
+            return original(task, *args)
+        self.service.provider.start_task = start
+        self.service._dispatch_pending()
+        self.assertTrue(progressed.wait(3), 'The unrelated task must reach its fixture provider.')
+        self.service._dispatch_pending()
+        saved = self.service._get('decisions', decision['id'])
+        self.assertEqual(saved['_answers'][0]['choice'], 'reject')
+        self.assertEqual(len(saved['_answers']), 1)
+        self.assertEqual(saved['decided_by'], 'synthetic-phone')
+        self.assertFalse(saved.get('_inbox_reject_device'))
+
+    def test_refreshing_dismissal_undo_retains_refresh_and_answer_fence(self):
+        decision = self.refreshing_question()
+        path = f"/v1/decisions/{decision['id']}/inbox"
+        dismissed = self.write('POST', path, dict(action='dismiss', revision=decision['revision']))
+        restored = self.write('POST', path, dict(action='restore', revision=decision['revision'], swipe_id=dismissed['inbox_swipe_id']))
+        saved = self.service._get('decisions', decision['id'])
+        self.assertTrue(saved.get('_source_recheck'))
+        self.assertEqual(saved['status'], 'pending')
+        self.assertEqual(saved['_answers'], [])
+        self.assertEqual(restored['revision'], decision['revision'] + 1)
+        self.assertFalse(saved.get('_inbox_reject_device'))
+        self.service.finish_inbox_swipes()
+        for revision in (decision['revision'], restored['revision']):
+            for choice in ('approve', 'reject'):
+                with self.subTest(revision=revision, choice=choice), self.assertRaises(ServiceError):
+                    self.write('POST', f"/v1/decisions/{decision['id']}/answer", dict(
+                        choice=choice, option_id='check' if choice == 'approve' else None, revision=revision))
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'needs_you')

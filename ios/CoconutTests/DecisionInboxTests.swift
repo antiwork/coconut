@@ -2,6 +2,24 @@ import XCTest
 @testable import Coconut
 
 final class DecisionInboxTests: XCTestCase {
+    func testRefreshingWireFlagPreservesUpdatingPresentation() throws {
+        var decision = try XCTUnwrap(PreviewStateFixture.load().decisions.first)
+        decision.status = "pending"
+        XCTAssertTrue(decision.isPending)
+        XCTAssertFalse(decision.isRefreshing)
+        decision.sourceRefreshing = true
+        let decoded = try APIJSON.decoder().decode(Decision.self, from: APIJSON.encoder().encode(decision))
+        XCTAssertEqual(decoded.status, "pending")
+        XCTAssertTrue(decoded.isRefreshing)
+        XCTAssertFalse(decoded.isPending)
+        decision.sourceRefreshing = nil
+        decision.status = "refreshing"
+        XCTAssertTrue(decision.isRefreshing)
+        decision.status = "dismissed"
+        decision.sourceRefreshing = true
+        XCTAssertFalse(decision.isRefreshing)
+    }
+
     @MainActor
     func testTextReplyRemovesCardAndKeepsMessage() async throws {
         let store = AppStore(demo: true)

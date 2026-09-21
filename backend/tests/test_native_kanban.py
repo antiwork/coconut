@@ -78,6 +78,30 @@ class NativeKanbanTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
 
+    def test_saved_refreshing_dismissal_does_not_stop_unrelated_native_execution(self):
+        from coconut.service import YieldForDecision
+        task = self.task('Synthetic required decision')
+        stored = self.service._get('tasks', task['id'])
+        stored['status'] = 'working'
+        self.service._put('tasks', stored)
+        with self.assertRaises(YieldForDecision):
+            self.service.native_event(task['id'], 'native_question', dict(
+                title='Continue synthetic work?', options=[dict(id='continue', label='Continue')]))
+        decision = self.service._all('decisions')[-1]
+        decision.update(status='dismissed', _source_recheck=True,
+                        _inbox_reject_device='synthetic-phone', inbox_swipe_id='old-swipe',
+                        inbox_undo_until='2000-01-01T00:00:00Z')
+        self.service._put('decisions', decision)
+        recipient = self.write('/v1/bots', {'name': 'Independent synthetic worker'})
+        unrelated = self.write('/v1/bots/' + recipient['id'] + '/messages',
+                               {'text': 'Independent fixture work', 'mode': 'queue'})
+        self.settle(lambda: unrelated['id'] in self.provider.started)
+        saved = self.service._get('decisions', decision['id'])
+        self.assertEqual([answer['choice'] for answer in saved['_answers']], ['reject'])
+        self.assertEqual(saved['decided_by'], 'synthetic-phone')
+        self.assertFalse(saved.get('_inbox_reject_device'))
+        self.assertFalse(saved.get('_source_recheck'))
+
     def test_saved_reply_wait_does_not_stop_unrelated_native_execution(self):
         held = self.task('Keep the result until this task can return it')
         recipient = self.write('/v1/bots', {'name': 'Independent worker'})

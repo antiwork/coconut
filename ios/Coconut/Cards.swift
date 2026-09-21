@@ -113,7 +113,7 @@ struct DecisionCard: View {
                     Text(responseError).font(.caption).foregroundStyle(BoardStyle.accent)
                         .textSelection(.enabled)
                 }
-            } else if decision.status == "refreshing" {
+            } else if decision.isRefreshing {
                 Text("Updating this decision…").font(.subheadline).foregroundStyle(.secondary)
                     .accessibilityIdentifier("decision-refreshing-\(decision.id)")
             } else {
