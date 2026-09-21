@@ -8,8 +8,9 @@ Each test file runs in a separate process to prevent collisions between test mod
 Before an upgrade, also test the target runtime with isolated native profiles:
 
 1. Run `python3 scripts/test_native_routines.py`.
-2. Run `python3 scripts/test_native_relay.py`.
-3. Run `python3 scripts/test_native_profiles.py`.
+2. Run `python3 scripts/test_script_routines.py`.
+3. Run `python3 scripts/test_native_relay.py`.
+4. Run `python3 scripts/test_native_profiles.py`.
 
 These commands use the configured Mac mini and its managed Hermes installation.
 The routine test checks ownership after a helper exits, concurrent claims, saved routes, and repeated completion.
@@ -17,7 +18,8 @@ It makes no model requests.
 The relay test checks a busy recipient, independent work, pending decisions, replies, approval, and restart recovery.
 The profile test checks native settings, approval recovery, and routine execution without repetition.
 The latter two tests use model credentials already configured on the Mac.
-All three use disposable profiles. They do not use the user's bot conversations as fixtures.
+The script test checks native output, silence, failure, cancellation, and completion without model access.
+All four use disposable profiles. They do not use the user's bot conversations as fixtures.
 
 To test a candidate before installation, execute each script's `PROGRAM` with the candidate Python.
 For the routine and relay programs, provide the runtime root and the candidate Coconut checkout as arguments.

@@ -441,6 +441,7 @@ struct Routine: Codable, Identifiable, Equatable, Sendable {
     var lastTaskId: String?
     var createdAt: String
     var updatedAt: String
+    var script: String? = nil
     var error: String? = nil
     var scheduleLabel: String { enabled ? cron : "Paused · " + cron }
 }

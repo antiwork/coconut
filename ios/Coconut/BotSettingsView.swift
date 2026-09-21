@@ -150,16 +150,24 @@ private struct RoutineEditorView: View {
     private var current: Routine? { store.routines.first { $0.id == routine?.id } ?? routine }
     private var canSave: Bool {
         !saving && !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (current?.script != nil || !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             && !schedule.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
         Form {
             Section("Name") { TextField("Morning brief", text: $name).accessibilityIdentifier("routine-name") }
-            Section("Instructions") {
-                TextField("What should this bot do?", text: $prompt, axis: .vertical)
-                    .lineLimit(4...12).accessibilityIdentifier("routine-prompt")
+            if let script = current?.script {
+                Section {
+                    Text(script).font(.footnote.monospaced()).textSelection(.enabled)
+                } header: { Text("Script") } footer: {
+                    Text("Runs on the Mac without model tokens. Ask this bot to change the script.")
+                }
+            } else {
+                Section("Instructions") {
+                    TextField("What should this bot do?", text: $prompt, axis: .vertical)
+                        .lineLimit(4...12).accessibilityIdentifier("routine-prompt")
+                }
             }
             Section {
                 TextField("Weekdays at 8am", text: $schedule)

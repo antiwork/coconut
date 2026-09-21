@@ -83,3 +83,21 @@ def job_context(request, runtime, config):
     finally:
         clear_session_cwd(task_id)
         clear_session_vars(tokens)
+
+
+def run_script_job(job, cancel_event, emit):
+    """Use Hermes execution and silence rules without constructing an agent."""
+    from native_routines import unsupported
+    error = unsupported(job)
+    if error or job.get('no_agent') is not True:
+        raise ValueError(error or 'This routine requires a model.')
+    from cron.scheduler import run_job, _is_cron_silence_response
+    success, document, response, failure = run_job(job, cancel_event=cancel_event)
+    silent = _is_cron_silence_response(response or '')
+    if response and not silent:
+        emit('text_delta', {'text': response})
+    emit('completed' if success else 'failed', {
+        'summary': 'Complete.' if success else 'The routine script failed.',
+        'routine_silent': silent, 'silent_response': silent,
+    })
+    return 0 if success else 1

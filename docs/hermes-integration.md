@@ -90,7 +90,11 @@ The compatibility check verifies these interfaces before accepting an update.
 Jobs keep their saved model and provider when the bot default changes. Explicit job settings take priority.
 Coconut supplies a stable native claim identity because its settings subprocess exits before the job finishes.
 Native claim tokens, heartbeats, and completion checks still control ownership.
-Jobs with scripts, monitors, skills, delivery targets, or execution overrides require native Hermes execution.
+Script-only jobs (`no_agent=true`) call the native Hermes runner without resolving a model or loading model credentials.
+Hermes handles script paths, time limits, cancellation, output redaction, and silent success.
+Create these jobs through the bot with the native cron tool. Scripts must be inside the profile’s `scripts` directory.
+The app shows the script and supports schedule changes, pause, manual run, and deletion.
+Prompt jobs with pre-run scripts, monitors, external delivery targets, or unsupported execution overrides require the Hermes gateway.
 The app displays that limitation instead of discarding the unsupported settings.
 
 ## Recovery and limits
