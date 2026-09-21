@@ -585,7 +585,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
     def _public(obj: dict) -> dict:
         result = {key: value for key, value in obj.items() if not key.startswith('_')}
         if obj.get('_source_recheck') and obj.get('status') == 'pending':
-            result['status'] = 'refreshing'
+            # Older clients render unknown statuses as approved draft receipts.
+            # Keep their pending presentation; answers remain fenced server-side.
+            result['source_refreshing'] = True
         return result
 
     def pairing_code(self, lifetime: int = 300) -> str:

@@ -295,6 +295,7 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     var replyPending: Bool? = nil
     var sources: [DecisionSource]? = nil
     var mergePrUrl: String? = nil
+    var sourceRefreshing: Bool? = nil
 
     var cardSources: [DecisionSource] {
         var result = sources ?? []
@@ -332,7 +333,8 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     }
 
     var isProposal: Bool { inboxKind == "proposal" }
-    var isPending: Bool { status == "pending" }
+    var isRefreshing: Bool { status == "refreshing" || (status == "pending" && sourceRefreshing == true) }
+    var isPending: Bool { status == "pending" && !isRefreshing }
 }
 
 struct DecisionSource: Codable, Hashable, Sendable {
