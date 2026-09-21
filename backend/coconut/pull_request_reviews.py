@@ -312,9 +312,14 @@ class PullRequestReviews:
                                              artifact.get('check_failures')])
                         assessed = [a for a in peers if review_key in a.get('_reviewed_states', {})]
                         latest = max(assessed, key=lambda a: a.get('_review_checked_at', ''), default=None)
-                        seen = (latest['_reviewed_states'][review_key] == signal if latest else
-                                not terminal and any(artifact['head_sha'] in self._pr_reviewed_heads(a) for a in peers))
-                        if seen:
+                        if (not latest and not terminal
+                                and any(artifact['head_sha'] in self._pr_reviewed_heads(a) for a in peers)):
+                            # Legacy heads have no signal to compare. Save one baseline without
+                            # repeating the review; later result changes use the normal path.
+                            artifact['_reviewed_states'] = dict(artifact.get('_reviewed_states', {}), **{review_key: signal})
+                            self._put('artifacts', artifact)
+                            continue
+                        if latest and latest['_reviewed_states'][review_key] == signal:
                             continue
                         summary = 'Checking the final PR result.' if terminal else 'Checking merge readiness.'
                         assignment = self._assignment(task)
