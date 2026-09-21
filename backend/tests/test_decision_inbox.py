@@ -502,6 +502,9 @@ class DecisionInboxTests(unittest.TestCase):
                         inbox_swipe_id='old-swipe', inbox_undo_until='2000-01-01T00:00:00Z')
         self.service._put('decisions', decision)
         self.restart()
+        # Admit both the dismissal resume and unrelated work in this dispatch,
+        # even when the host's automatic capacity is only one worker.
+        self.write('PUT', '/v1/settings/work-capacity', {'limit': 2})
         bot = self.write('POST', '/v1/bots', dict(name='Independent synthetic worker'))
         other = self.write('POST', f"/v1/bots/{bot['id']}/messages", dict(text='Independent fixture work', mode='queue'))
         progressed = threading.Event()
