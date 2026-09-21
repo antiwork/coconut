@@ -76,6 +76,49 @@ try:
             assert any(k == 'text_delta' and p['text'] == 'cleanup receipt' for k,p in events), events
             catalog.resolve_runtime.assert_not_called()
             report['provider_transport_without_model_credentials'] = True
+            from coconut.providers import FixtureProvider
+            from coconut.service import Service
+            from coconut.worker_protocol import event_frame, MAX_EVENT_CHARACTERS
+            service = Service(home/'service', FixtureProvider(home/'service'), start_workers=False)
+            bot = service.mutate('POST', '/v1/bots', {'name': 'Script check'}, str(uuid4()))
+            try:
+                for name, output, failed in [('large', 'x' * 2_100_000, False),
+                                             ('escaped', '\x00😀"\\' * 400_000, False),
+                                             ('error', '\x00😀"\\' * 400_000, True)]:
+                    (scripts/(name+'.py')).write_text('import sys\nsys.stdout.write(' + repr(output) + ')\n' +
+                                                     ('raise SystemExit(7)\n' if failed else ''))
+                    task = service.mutate('POST', '/v1/bots/' + bot['id'] + '/messages',
+                                          {'text': name}, str(uuid4()))
+                    with service.transaction():
+                        saved = service._get('tasks', task['id'])
+                        saved['status'] = 'working'
+                        service._put('tasks', saved)
+                    events = []
+                    def receive(kind, payload):
+                        assert len(event_frame(kind, payload)) < MAX_EVENT_CHARACTERS
+                        events.append((kind, payload))
+                        return service.emit(task['id'], kind, payload)
+                    provider._run_turn('start', dict(task, _native_job=dict(
+                        id=name, name=name, no_agent=True, script=name+'.py')),
+                        dict(bot, session_id=str(uuid4()), _model_error='No model available'), [], receive, isolated=True)
+                    terminal = [(kind,payload) for kind,payload in events if kind in ('completed','failed')]
+                    assert len(terminal) == 1 and terminal[0][0] == ('failed' if failed else 'completed'), terminal
+                    text = ''.join(p['text'] for k,p in events if k == 'text_delta')
+                    assert output in text
+                    saved = service._get('tasks', task['id'])
+                    assert saved['status'] == ('failed' if failed else 'completed'), saved['status']
+                    if not failed:
+                        stored = [m for m in service._task_messages(task['id'])
+                                  if m.get('role') == 'assistant' and not m.get('_hidden')]
+                        assert any(m['text'] == output for m in stored), 'Complete successful output was not persisted'
+                        assert len([1 for k,p in events if k == 'text_delta']) <= 20, 'Excessive persistence updates'
+                    if failed:
+                        assert 'code 7' in saved['summary'], saved['summary']
+                        assert '[Error details truncated.]' in terminal[0][1]['summary']
+                        assert len(terminal[0][1]['summary']) < 17_000
+                report['large_escaped_output_and_durable_terminal_outcomes'] = True
+            finally:
+                service.close()
         finally:
             provider.close()
     report.update(passed=True, scratch_removed=not home.exists())
