@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import threading
 import unittest
+from unittest.mock import patch
 from uuid import uuid4
 
 from coconut.service import ServiceError
@@ -69,6 +70,9 @@ class NativeClaimContinuationTests(unittest.TestCase):
         self.assertIsNone(self.service.kanban.tasks[owner['id']]['input_id'])
         return owner, source, identity, workspace
 
+    def test_ready_claim_continues_during_service_idle_then_dispatches(self):
+        self.check_dispatch('ready', dispatch_idle=True)
+
     def resume(self, source, identity):
         return self.service.emit(source['id'], 'work_continue', dict(
             task_id=identity, message='The review passed. Verify locally; do not publish.'))
@@ -91,7 +95,7 @@ for index in range(33):
         self.service.kanban.call({'op': 'snapshot'})
         self.assertNotIn(owner['id'], self.service.kanban.tasks)
 
-    def check_dispatch(self, state, caller='requester', interrupt_binding=False, aged=False):
+    def check_dispatch(self, state, caller='requester', interrupt_binding=False, aged=False, dispatch_idle=False):
         owner, source, identity, workspace = self.prepare(state, caller)
         if aged:
             self.age_binding_and_restart(owner)
@@ -102,7 +106,17 @@ for index in range(33):
         previous_runs = int(self.native_program('print(board.conn.execute("SELECT count(*) FROM task_runs WHERE task_id=?", '
                                                '(sys.argv[2],)).fetchone()[0])', identity))
         before = len(self.service._all('tasks'))
-        receipt = self.resume(source, identity)
+        if dispatch_idle:
+            receipts = []
+            def continue_at_idle(timeout=None):
+                self.assertTrue(self.service._kanban_dispatching)
+                receipts.append(self.resume(source, identity))
+            with patch.object(self.service.changed, 'wait', side_effect=continue_at_idle):
+                self.service._dispatch_pending()
+            self.assertEqual(len(receipts), 1)
+            receipt = receipts[0]
+        else:
+            receipt = self.resume(source, identity)
         queued = self.service._get('tasks', owner['id'])
         self.assertEqual(self.resume(source, identity), receipt)
         self.assertEqual(len(self.service._all('tasks')), before)

@@ -279,7 +279,7 @@ class NativeOutcomes:
                 raise ServiceError(409, 'This native outcome is not blocked or completed or quiescent queued work. Read its current result or activity.')
             # Fresh input can continue an existing PR, but no other respawn guard.
             # Native claim_task still enforces dependencies at dispatch time.
-            if queued and getattr(self, '_kanban_dispatching', 0):
+            if queued and (self._kanban_claiming or self._kanban_dispatch_uncertain):
                 raise ServiceError(409, 'Native dispatch is in progress. Read its current activity and retry.')
             if queued and native.get('dispatch_blocker') not in (None, 'active_pr'):
                 raise ServiceError(409, 'This native outcome is guarded. Wait for its current activity.')
