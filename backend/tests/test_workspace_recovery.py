@@ -563,7 +563,7 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         start = self.provider.start_task
         def complete(task, *args):
             self.program('assert board.kb.complete_task(board.conn, sys.argv[2], summary="Verified resumed outcome", expected_run_id=int(sys.argv[3]))',
-                         self.native_id, str(task['_kanban_claim']['run_id']))
+                         self.native_id, str(self.service._get('tasks', task['id'])['_kanban_claim']['run_id']))
             return start(task, *args)
         with patch.object(self.provider, 'start_task', side_effect=complete):
             deadline = time.monotonic() + 15
