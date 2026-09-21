@@ -107,6 +107,11 @@ try:
                     assert output in text
                     saved = service._get('tasks', task['id'])
                     assert saved['status'] == ('failed' if failed else 'completed'), saved['status']
+                    if not failed:
+                        stored = [m for m in service._task_messages(task['id'])
+                                  if m.get('role') == 'assistant' and not m.get('_hidden')]
+                        assert any(m['text'] == output for m in stored), 'Complete successful output was not persisted'
+                        assert len([1 for k,p in events if k == 'text_delta']) <= 20, 'Excessive persistence updates'
                     if failed:
                         assert 'code 7' in saved['summary'], saved['summary']
                         assert '[Error details truncated.]' in terminal[0][1]['summary']

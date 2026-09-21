@@ -94,14 +94,15 @@ def run_script_job(job, cancel_event, emit):
     from cron.scheduler import run_job, _is_cron_silence_response
     success, document, response, failure = run_job(job, cancel_event=cancel_event)
     silent = _is_cron_silence_response(response or '')
-    # Even six-character JSON escapes stay well below the worker frame limit.
-    chunk_size = 16_000
+    # Non-BMP characters use up to twelve JSON characters; leave frame headroom
+    # without making the service persist the accumulated message too often.
+    chunk_size = 128_000
     if response and not silent:
         for start in range(0, len(response), chunk_size):
             emit('text_delta', {'text': response[start:start + chunk_size]})
     detail = failure or response or 'No error details returned.'
-    if len(detail) > chunk_size:
-        detail = detail[:chunk_size] + '\n[Error details truncated.]'
+    if len(detail) > 16_000:
+        detail = detail[:16_000] + '\n[Error details truncated.]'
     emit('completed' if success else 'failed', {
         'summary': 'Complete.' if success else 'The routine script failed: ' + detail,
         'routine_silent': silent, 'silent_response': silent,
