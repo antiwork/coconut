@@ -206,6 +206,7 @@ class NativeKanban(NativeOutcomes):
             self.kanban.call({'op': 'snapshot'})
             self._reconcile_kanban()
             with self.changed:
+                self._kanban_dispatch_uncertain = False
                 self.changed.wait(.2)
             return
         self.finish_inbox_swipes()
@@ -217,6 +218,7 @@ class NativeKanban(NativeOutcomes):
         self._adopt_native_outcomes()
         self._reconcile_kanban()
         with self.changed:
+            self._kanban_dispatch_uncertain = False
             if self.restart_pending or self.stopping.is_set():
                 self.changed.wait(.2)
                 return
@@ -234,7 +236,9 @@ class NativeKanban(NativeOutcomes):
             capacity = max(0, capacity - max(0, foreground - 1))
             # READY continuation must not change input between row capture and
             # native claim/spawn. Never wait for the adapter under the service lock.
-            self._kanban_dispatching = getattr(self, '_kanban_dispatching', 0) + 1
+            self._kanban_claiming += 1
+            # A lost response stays fenced until a later snapshot is reconciled.
+            self._kanban_dispatch_uncertain = True
         def spawn(claim):
             row = by_id.get(claim['external_id'])
             if row is None or row['state'] != 'ready':
@@ -258,9 +262,11 @@ class NativeKanban(NativeOutcomes):
         try:
             self.kanban.call({'op': 'tick', 'rows': rows, 'capacity': capacity}, spawn)
             self._reconcile_kanban()
+            with self.lock:
+                self._kanban_dispatch_uncertain = False
         finally:
             with self.lock:
-                self._kanban_dispatching -= 1
+                self._kanban_claiming -= 1
         if hasattr(self.provider, 'trim_kanban_workers'):
             with self.lock:
                 owners = {r['task_id'] for r in self._pending_completion_receipts()}

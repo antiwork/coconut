@@ -129,7 +129,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
         adapter.call.side_effect = call
         def dispatch():
             try:
-                self.service._dispatch_kanban()
+                self.service._dispatch_pending()
             except BaseException as error:
                 errors.append(error)
 
@@ -150,12 +150,15 @@ class NativeWorkContinuationTests(unittest.TestCase):
                 release.set()
                 tick.join(5)
             self.assertFalse(tick.is_alive(), 'Adapter -> service callback deadlocked')
-        self.assertEqual(self.service._kanban_dispatching, 0)
+        self.assertEqual(self.service._kanban_claiming, 0)
         self.assertEqual(len(captured), 1)
         if fail_tick:
             self.assertEqual([str(error) for error in errors], ['Lost tick response'])
-            self.assertEqual(self.resume(source)['task_id'], owner['id'])
+            self.assertTrue(self.service._kanban_dispatching)
+            with self.assertRaisesRegex(ServiceError, 'dispatch is in progress'):
+                self.resume(source)
         else:
+            self.assertFalse(self.service._kanban_dispatching)
             self.assertEqual(errors, [])
             saved = self.service._get('tasks', owner['id'])
             self.assertEqual(saved['_kanban_claim']['input'], captured[0]['input'])
@@ -164,8 +167,102 @@ class NativeWorkContinuationTests(unittest.TestCase):
     def test_ready_continuation_cannot_race_captured_dispatch_input(self):
         self.check_ready_dispatch_race()
 
-    def test_ready_dispatch_failure_releases_admission_gate(self):
+    def test_ready_dispatch_failure_retains_uncertain_response_fence(self):
         self.check_ready_dispatch_race(fail_tick=True)
+
+    def check_ready_dispatch_idle(self, failure=None, restart=False):
+        from contextlib import ExitStack
+        owner, source = self.ready_native()
+        adapter = self.service.kanban
+        adapter.lock = threading.Lock()
+        idle, release = threading.Event(), threading.Event()
+        errors, rows = [], []
+        phase = {'failure': failure}
+        reconcile = self.service._reconcile_kanban
+        wait = self.service.changed.wait
+
+        def call(request, spawn=None):
+            with adapter.lock:
+                if request['op'] == 'tick':
+                    rows.extend(r for r in request['rows'] if r['id'] == owner['id'])
+                if request['op'] == phase['failure']:
+                    raise RuntimeError('Lost native response')
+                return {}
+
+        def reconcile_snapshot():
+            if phase['failure'] == 'reconcile' and rows:
+                raise RuntimeError('Reconciliation failed')
+            return reconcile()
+
+        def idle_wait(timeout=None):
+            idle.set()
+            # Use the real condition so admission must acquire the service lock.
+            while not release.is_set():
+                if not wait(5):
+                    raise AssertionError('Continuation did not release dispatch idle wait')
+
+        def dispatch():
+            try:
+                self.service._dispatch_pending()
+            except BaseException as error:
+                errors.append(error)
+
+        adapter.call.side_effect = call
+        with ExitStack() as stack:
+            for name in ('_migrate_native_work', '_adopt_native_outcomes',
+                         '_dispatch_chat', '_publish_kanban_changes'):
+                stack.enter_context(patch.object(self.service, name))
+            stack.enter_context(patch.object(self.service, '_reconcile_kanban', side_effect=reconcile_snapshot))
+            stack.enter_context(patch.object(self.service.changed, 'wait', side_effect=idle_wait))
+            if failure:
+                with self.assertRaisesRegex(RuntimeError, 'Lost native response|Reconciliation failed'):
+                    self.service._dispatch_pending()
+                with self.assertRaisesRegex(ServiceError, 'dispatch is in progress'):
+                    self.resume(source)
+                self.assertEqual(self.service._get('tasks', owner['id']), owner)
+                # A failed recovery snapshot must not clear the retained fence.
+                phase['failure'] = 'snapshot'
+                with self.assertRaisesRegex(RuntimeError, 'Lost native response'):
+                    self.service._dispatch_pending()
+                with self.assertRaisesRegex(ServiceError, 'dispatch is in progress'):
+                    self.resume(source)
+            phase['failure'] = None
+            self.service.restart_pending = restart
+            tick = threading.Thread(target=dispatch, daemon=True)
+            tick.start()
+            try:
+                self.assertTrue(idle.wait(5), errors)
+                self.assertTrue(self.service._kanban_dispatching)
+                receipt = self.resume(source)
+                self.assertEqual(receipt['task_id'], owner['id'])
+                self.assertEqual(self.resume(source), receipt)
+                continued = self.service._get('tasks', owner['id'])
+                self.assertNotEqual(continued['_native_turn_id'], owner['_native_turn_id'])
+                for key in ('id', '_execution_session_id', 'source_bot_id', 'source_task_id', 'thread_id'):
+                    self.assertEqual(continued[key], owner[key])
+                self.assertTrue(all(r['input'] == owner['_native_turn_id'] for r in rows))
+            finally:
+                release.set()
+                with self.service.changed:
+                    self.service.changed.notify_all()
+                tick.join(5)
+            self.assertFalse(tick.is_alive(), 'Service dispatch did not leave its idle wait')
+            self.assertEqual(errors, [])
+        self.assertFalse(self.service._kanban_dispatching)
+        self.assertEqual(self.service._kanban_claiming, 0)
+        self.assertFalse(self.service._kanban_dispatch_uncertain)
+
+    def test_ready_continuation_admitted_during_service_dispatch_idle(self):
+        self.check_ready_dispatch_idle()
+
+    def test_ready_continuation_after_lost_tick_waits_for_reconciliation(self):
+        self.check_ready_dispatch_idle(failure='tick')
+
+    def test_ready_continuation_after_failed_reconciliation_recovers(self):
+        self.check_ready_dispatch_idle(failure='reconcile')
+
+    def test_ready_continuation_after_drain_reconciliation_recovers(self):
+        self.check_ready_dispatch_idle(failure='tick', restart=True)
 
     def test_requester_resumes_same_outcome_and_preserves_its_result_route(self):
         owner, source = self.native()
