@@ -343,6 +343,21 @@ class GitHubPRTracker:
             pass
         return None
 
+    def _reviews(self, path: str, deadline: float) -> list:
+        reviews = []
+        for page in range(1, 11):
+            values = self._get(f'{path}/reviews?per_page=100&page={page}', deadline)
+            if (not isinstance(values, list) or any(not isinstance(value, dict)
+                    or type(value.get('id')) is not int
+                    or value.get('state') not in ('APPROVED', 'CHANGES_REQUESTED', 'COMMENTED', 'DISMISSED', 'PENDING')
+                    for value in values)):
+                raise PRTrackingError('GitHub returned incomplete pull request reviews.')
+            reviews.extend(('review', value['id'], value['state'], value.get('commit_id'),
+                            value.get('submitted_at'), value.get('body')) for value in values)
+            if len(values) < 100:
+                return reviews
+        raise PRTrackingError('GitHub reviews exceed the refresh page limit.')
+
     def observe(self, url: str) -> PRObservation:
         """Errors carry no replacement state. Keep the last state and mark it stale."""
         checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -375,6 +390,7 @@ class GitHubPRTracker:
                     raise PRTrackingError('GitHub returned incomplete commit status data.')
                 result, detail = _classify(draft, checks, status, sha)
                 required_checks_state, required_checks_observed = self._required_checks(prefix, initial, checks, status, deadline)
+                review_events = self._reviews(path, deadline)
                 final = self._get(path, deadline)
                 after = _pr_fields(final)
                 sha, base_branch = after[0], (final.get("base") or {}).get("ref")
@@ -384,10 +400,11 @@ class GitHubPRTracker:
                     raise PRTrackingError('The target branch changed during refresh. Refresh again.')
                 title = after[4]
                 checks_state = {"failed": "failed", "checks_running": "running", "opened": "none", "ready_for_review": "passed"}[_classify(False, checks, status, sha)[0]]
-                reviews = sorted((c['id'], c.get('conclusion'), c.get('completed_at')) for c in checks
+                reviews = sorted(('check', c['id'], c.get('conclusion'), c.get('completed_at')) for c in checks
                                  if 'greptile' in str(c.get('name') or '').lower() and c.get('status') == 'completed')
+                reviews.extend(review_events)
                 if reviews:
-                    review_checks = hashlib.sha256(json.dumps(reviews).encode()).hexdigest()
+                    review_checks = hashlib.sha256(json.dumps(sorted(reviews)).encode()).hexdigest()
                 failures = [('check', str(c['id']), c.get('conclusion'), c.get('completed_at')) for c in checks
                             if c.get('status') == 'failure' or (c.get('status') == 'completed' and c.get('conclusion') in _FAIL)]
                 failures += [('status', str(s.get('id')), s.get('context'), s.get('updated_at')) for s in status['statuses']

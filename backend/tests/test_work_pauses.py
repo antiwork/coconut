@@ -91,6 +91,9 @@ class WorkPauseTests(unittest.TestCase):
         self.service._register_pr_artifact(self.task['id'], dict(url=URL,
             activity='Implementing the new scope', activity_state='working'))
         self.task_state('completed')
+        item = self.service._all('artifacts')[0]
+        item['head_sha'] = 'b' * 40
+        self.service._put('artifacts', item)
         self.service._queue_pr_reviews()
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'queued')
 
