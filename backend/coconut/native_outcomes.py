@@ -563,8 +563,20 @@ class NativeOutcomes:
             for native in self.kanban.tasks.values():
                 if not native.get('unbound'):
                     continue
-                # The origin is supplied by Coconut's native tool middleware, not by model text.
+                # Hermes now retains only persisted native session IDs. Coconut's
+                # creation receipt keeps the distinct task owner across that normalization.
+                receipt = self.db.execute(
+                    "SELECT data FROM native_receipts WHERE json_extract(data,'$.action.name')='kanban_create' "
+                    "AND json_extract(data,'$.action.arguments.idempotency_key')=? LIMIT 1",
+                    (native.get('idempotency_key'),)).fetchone()
                 origin_id = native.get('session_id')
+                if receipt:
+                    creation = json.loads(receipt[0])
+                    arguments = creation['action']['arguments']
+                    if (arguments.get('session_id') != creation['task_id']
+                            or arguments.get('tenant') != native.get('tenant')):
+                        continue
+                    origin_id = creation['task_id']
                 row = self.db.execute('SELECT data FROM tasks WHERE id=?', (origin_id,)).fetchone()
                 if not row:
                     continue
