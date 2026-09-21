@@ -8,6 +8,63 @@ from coconut.service import ServiceError
 import test_targeted_bot_continuation as fixtures
 
 
+class NativeReviewerRuntimeTests(unittest.TestCase):
+    def board(self, status='running'):
+        import sqlite3
+        from types import SimpleNamespace
+        from coconut.kanban_runtime import Board
+        board = Board.__new__(Board)
+        board.conn = sqlite3.connect(':memory:', isolation_level=None)
+        self.addCleanup(board.conn.close)
+        board.conn.execute('CREATE TABLE coconut_bindings (external_id TEXT, native_id TEXT, intent TEXT)')
+        board.conn.execute('CREATE TABLE coconut_outcomes (native_id TEXT PRIMARY KEY, input_id TEXT)')
+        board.conn.execute("INSERT INTO coconut_bindings VALUES ('owner', 'native', 'old-intent')")
+        board.conn.execute("INSERT INTO coconut_outcomes VALUES ('native', 'old-input')")
+        task = SimpleNamespace(id='native', status=status, current_run_id=47)
+        board.kb = Mock(get_task=Mock(return_value=task), _retry_status_for_run=Mock(return_value='review'))
+        board.bind = Mock()
+        board.dispatch = Mock()
+        row = dict(id='owner', native_id='native', input='new-input', previous_input='old-input', state='ready')
+        return board, task, row
+
+    def test_running_reviewer_does_not_consume_pending_input(self):
+        board, task, row = self.board()
+        before = list(board.conn.iterdump())
+        board.sync([row])
+        self.assertEqual(list(board.conn.iterdump()), before)
+        board.bind.assert_not_called()
+
+    def test_reviewer_claim_winning_reopen_does_not_consume_input(self):
+        board, task, row = self.board('review')
+        def claim(*args):
+            task.status = 'running'
+            return False
+        board.kb.reopen_review_task.side_effect = claim
+        before = list(board.conn.iterdump())
+        board.sync([row])
+        board.kb.reopen_review_task.assert_called_once()
+        self.assertEqual(list(board.conn.iterdump()), before)
+
+    def test_finish_cannot_end_native_reviewer_run(self):
+        board, task, row = self.board()
+        for state in ('ready', 'done', 'blocked', 'scheduled', 'review', 'archived'):
+            with self.subTest(state=state):
+                self.assertFalse(board.finish(task.id, task.current_run_id, state, 'Stale preparation'))
+        board.dispatch._record_task_failure.assert_not_called()
+        board.kb.schedule_task.assert_not_called()
+        board.kb.archive_task.assert_not_called()
+        board.kb.request_review.assert_not_called()
+
+    def test_finish_still_recovers_implementation_preparation(self):
+        board, task, row = self.board()
+        board.kb._retry_status_for_run.return_value = 'ready'
+        board.kb.unblock_task.return_value = True
+        self.assertTrue(board.finish(task.id, task.current_run_id, 'ready', 'Interrupted preparation'))
+        board.kb.schedule_task.assert_called_once_with(board.conn, task.id,
+            reason='Interrupted preparation', expected_run_id=task.current_run_id)
+        board.kb.unblock_task.assert_called_once_with(board.conn, task.id)
+
+
 class NativeWorkContinuationTests(unittest.TestCase):
     setUp = fixtures.TargetedBotContinuationTests.setUp
     tearDown = fixtures.TargetedBotContinuationTests.tearDown
@@ -63,6 +120,31 @@ class NativeWorkContinuationTests(unittest.TestCase):
         for key in ('id', '_execution_session_id', 'source_bot_id', 'source_task_id', 'thread_id', '_kanban_claim'):
             self.assertEqual(queued[key], owner[key])
         self.assertEqual(queued['_self_recovery']['decisions'][0]['status'], 'rejected')
+
+    def test_review_stale_idle_snapshot_refreshes_external_claim(self):
+        owner, source = self.review_native()
+        adapter = self.service.kanban
+        def call(request):
+            self.assertEqual(request, {'op': 'snapshot', 'external_ids': [owner['id']]})
+            adapter.tasks[owner['id']].update(status='running', current_run_id=47)
+        adapter.call.side_effect = call
+        with self.assertRaises(ServiceError):
+            self.resume(source)
+        adapter.call.assert_called_once()
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_review_claim_after_refresh_is_not_reclaimed_as_preparation(self):
+        owner, source = self.review_native()
+        self.resume(source)
+        adapter = self.service.kanban
+        adapter.tasks[owner['id']].update(status='running', current_run_id=47,
+            worker_pid=None, claim_source_status='review')
+        adapter.call.reset_mock()
+        self.service._reconcile_kanban()
+        adapter.call.assert_not_called()
+        queued = self.service._get('tasks', owner['id'])
+        self.assertEqual(queued['status'], 'queued')
+        self.assertNotEqual(queued['_native_turn_id'], owner['_kanban_claim']['input'])
 
     def test_review_accepts_owner_input(self):
         owner, source = self.review_native()

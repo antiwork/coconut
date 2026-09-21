@@ -348,6 +348,8 @@ class NativeKanban(NativeOutcomes):
                         self._put(table, item)
                         self._event('task.updated' if table == 'tasks' else 'context.failed', self._public(item), item.get('bot_id'), item.get('task_id', identity))
                         self._refresh_bot(item['bot_id'])
+                    if native.get('claim_source_status') == 'review':
+                        continue
                     if (native['status'] == 'running' and not native.get('worker_pid')
                             and item['status'] != 'working'):
                         # No turn starts before the native PID commit. Reclaim an interrupted preparation.

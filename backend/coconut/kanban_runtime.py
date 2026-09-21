@@ -48,6 +48,10 @@ class Board:
             intent = fingerprint({k: row[k] for k in ('state', 'input')})
             if row.get('native_id'):
                 task = self.kb.get_task(self.conn, old[0] if old else row['native_id'])
+                # A reviewer can claim after continuation's snapshot. Leave the
+                # pending input unconsumed until that native run has finished.
+                if task.status == 'running':
+                    continue
                 if old and old[0] == row['native_id'] and row.get('previous_input'):
                     # Reconcile a legacy claim before comparing accepted input.
                     # Keep the original result addressable when a follow-up moves
@@ -80,7 +84,8 @@ class Board:
                     self.kb.schedule_task(self.conn, task.id, reason=row.get('summary') or 'Waiting for delivery.')
                 elif row['state'] == 'ready' and (task.status == 'scheduled' or old[1] and old[1] != intent):
                     if task.status == 'review':
-                        self.kb.reopen_review_task(self.conn, task.id)
+                        if not self.kb.reopen_review_task(self.conn, task.id):
+                            continue
                     elif task.status in ('scheduled', 'blocked'):
                         self.kb.unblock_task(self.conn, task.id)
                     elif task.status == 'triage':
@@ -189,6 +194,10 @@ class Board:
         task = self.kb.get_task(self.conn, identity)
         if not task or task.current_run_id != run_id or task.status != 'running':
             return False
+        # Reviewer runs belong to the native reviewer, including the PID-less
+        # interval after claim. Coconut must never finish one as a preparation.
+        if self.kb._retry_status_for_run(self.conn, identity, run_id) == 'review':
+            return False
         owned = self.conn.execute('SELECT 1 FROM coconut_outcomes WHERE native_id=?', (identity,)).fetchone()
         if owned and state in ('done', 'blocked'):
             # Hermes retries a stopped worker. A Coconut reply cannot complete the outcome.
@@ -227,6 +236,7 @@ class Board:
                 (task.id, task.current_run_id)).fetchone()
             accepted = self.conn.execute('SELECT input_id FROM coconut_outcomes WHERE native_id=?', (task.id,)).fetchone()
             result.append(dict(external_id=binding[0], dispatch_blocker=blocker, input_id=accepted[0] if accepted else None,
+                claim_source_status=self.kb._retry_status_for_run(self.conn, task.id) if task.status == 'running' else None,
                 progress_note=progress[0] if progress and 0 <= time.time() - progress[1] < 120 else None,
                 progress_at=progress[1] if progress else None, outcome_summary=self.kb.latest_summary(self.conn, task.id), **asdict(task)))
         for row in self.conn.execute('SELECT id FROM tasks WHERE id NOT IN (SELECT native_id FROM coconut_bindings) AND id NOT IN (SELECT native_id FROM coconut_outcomes)'):

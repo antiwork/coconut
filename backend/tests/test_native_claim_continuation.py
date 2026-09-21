@@ -71,6 +71,91 @@ class NativeClaimContinuationTests(unittest.TestCase):
         self.assertIsNone(self.service.kanban.tasks[owner['id']]['input_id'])
         return owner, source, identity, workspace
 
+    def test_review_stale_cache_rejects_native_reviewer_claim(self):
+        owner, source, identity, workspace = self.prepare('review')
+        self.native_program("assert board.kb.claim_review_task(board.conn, sys.argv[2])", identity)
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'review')
+        with self.assertRaises(ServiceError):
+            self.resume(source, identity)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'running')
+        self.service._reconcile_kanban()
+        self.assertEqual(self.native_program(
+            "print(board.kb.get_task(board.conn, sys.argv[2]).status)", identity), 'running')
+
+    def test_review_claim_after_refresh_preserves_pending_input(self):
+        self.check_late_reviewer_claim()
+
+    def test_review_claim_during_reopen_preserves_pending_input(self):
+        self.check_late_reviewer_claim(during_reopen=True)
+
+    def check_late_reviewer_claim(self, during_reopen=False):
+        owner, source, identity, workspace = self.prepare('review')
+        evidence = self.review_evidence(identity)
+        adapter_call = self.service.kanban.call
+        def claim_after_snapshot(request, *args, **kwargs):
+            result = adapter_call(request, *args, **kwargs)
+            if request['op'] == 'snapshot':
+                self.native_program("assert board.kb.claim_review_task(board.conn, sys.argv[2])", identity)
+            return result
+        if during_reopen:
+            receipt = self.resume(source, identity)
+        else:
+            with patch.object(self.service.kanban, 'call', side_effect=claim_after_snapshot):
+                receipt = self.resume(source, identity)
+        queued = self.service._get('tasks', owner['id'])
+        row = next(r for r in self.service._kanban_rows() if r['id'] == owner['id'])
+        self.native_program('''import json
+row = json.loads(sys.argv[2])
+if sys.argv[3] == 'True':
+    reopen = board.kb.reopen_review_task
+    def raced_reopen(conn, identity):
+        assert board.kb.claim_review_task(conn, identity)
+        return reopen(conn, identity)
+    board.kb.reopen_review_task = raced_reopen
+board.sync([row])
+''', json.dumps(row), str(during_reopen))
+        self.service.kanban.call({'op': 'snapshot'})
+        native = copy.deepcopy(self.service.kanban.tasks[owner['id']])
+        self.assertEqual(native['status'], 'running')
+        self.assertEqual(native['claim_source_status'], 'review')
+        self.assertIsNone(native['worker_pid'])
+        self.assertNotEqual(native['input_id'], queued['_native_turn_id'])
+        self.service._reconcile_kanban()
+        # Even a stale finish message that lacks the projected source cannot
+        # turn the reviewer's PID-less run into an interrupted preparation.
+        self.native_program('''task = board.kb.get_task(board.conn, sys.argv[2])
+for state in ('ready', 'done', 'blocked', 'review', 'scheduled', 'archived'):
+    assert not board.finish(task.id, task.current_run_id, state, 'Stale preparation')
+assert board.kb.get_task(board.conn, task.id) == task
+''', identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.assertEqual(self.service.kanban.tasks[owner['id']], native)
+        self.assertEqual(self.service._get('tasks', owner['id']), queued)
+        self.assertEqual(self.review_evidence(identity), evidence)
+        self.native_program("assert board.kb.complete_task(board.conn, sys.argv[2], summary='Reviewer accepted')", identity)
+        captured, release = [], threading.Event()
+        self.addCleanup(release.set)
+        def run(task, bot, history, emit):
+            captured.append(copy.deepcopy(task))
+            release.wait(10)
+            emit('completed', {'summary': 'Follow-up received'})
+        self.provider.start_task = run
+        self.service._dispatch_pending()
+        worker = self.service.running.get(owner['id'])
+        self.assertIsNotNone(worker)
+        release.set()
+        worker.join(10)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(captured), 1)
+        current = self.service.kanban.tasks[owner['id']]
+        self.assertNotEqual(current['id'], identity)
+        self.assertEqual(current['input_id'], queued['_native_turn_id'])
+        self.assertEqual(captured[0]['_execution_session_id'], owner['_execution_session_id'])
+        self.assertEqual(captured[0]['_kanban_workspace'], str(workspace))
+        self.assertEqual(self.resume(source, identity), receipt)
+        self.assertEqual((workspace / 'pending.txt').read_text(), 'Uncommitted correction')
+
     def test_ready_claim_continues_during_service_idle_then_dispatches(self):
         self.check_dispatch('ready', dispatch_idle=True)
 
