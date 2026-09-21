@@ -232,6 +232,9 @@ class NativeKanban(NativeOutcomes):
             foreground = sum(bool(self._get('tasks', i).get('_chat_session') or
                 self._get('tasks', i).get('_work_status_only')) for i in self.running)
             capacity = max(0, capacity - max(0, foreground - 1))
+            # READY continuation must not change input between row capture and
+            # native claim/spawn. Never wait for the adapter under the service lock.
+            self._kanban_dispatching = getattr(self, '_kanban_dispatching', 0) + 1
         def spawn(claim):
             row = by_id.get(claim['external_id'])
             if row is None or row['state'] != 'ready':
@@ -252,8 +255,12 @@ class NativeKanban(NativeOutcomes):
                 item['_kanban_claim'] = dict(claim, pid=pid, input=row['input'], generation=self.generation)
                 self._put(table, item)
             return pid
-        self.kanban.call({'op': 'tick', 'rows': rows, 'capacity': capacity}, spawn)
-        self._reconcile_kanban()
+        try:
+            self.kanban.call({'op': 'tick', 'rows': rows, 'capacity': capacity}, spawn)
+            self._reconcile_kanban()
+        finally:
+            with self.lock:
+                self._kanban_dispatching -= 1
         if hasattr(self.provider, 'trim_kanban_workers'):
             with self.lock:
                 owners = {r['task_id'] for r in self._pending_completion_receipts()}

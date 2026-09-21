@@ -35,7 +35,7 @@ WORK_INSTRUCTIONS = (
 
 CONTINUE_SCHEMA = {
     'name': 'coconut_continue_work',
-    'description': 'Continue a quiescent scheduled, blocked, or completed Hermes outcome with new facts. Use the native task ID from kanban_show. '
+    'description': 'Continue a quiescent queued, scheduled, blocked, or completed Hermes outcome with new facts. Use the native task ID from kanban_show. '
         'You must own the work or be its requesting bot. This keeps its task, workspace, decisions, and result route. '
         'Hermes preserves completed results and creates a linked follow-up with the same workspace. '
         'This does not approve actions. The result goes to the original requester.',
@@ -274,17 +274,24 @@ class NativeOutcomes:
                     or self._task_work_is_paused(owner)):
                 raise ServiceError(409, 'This work is paused, cancelled, or belongs to an earlier conversation.')
             scheduled = native.get('status') == 'scheduled'
-            if native.get('status') not in ('triage', 'blocked', 'done', 'scheduled'):
-                raise ServiceError(409, 'This native outcome is not blocked or completed. Read its current result or activity.')
+            queued = native.get('status') == 'ready' and owner['status'] == 'queued'
+            if native.get('status') not in ('triage', 'blocked', 'done', 'scheduled') and not queued:
+                raise ServiceError(409, 'This native outcome is not blocked or completed or quiescent queued work. Read its current result or activity.')
+            # Fresh input can continue an existing PR, but no other respawn guard.
+            # Native claim_task still enforces dependencies at dispatch time.
+            if queued and getattr(self, '_kanban_dispatching', 0):
+                raise ServiceError(409, 'Native dispatch is in progress. Read its current activity and retry.')
+            if queued and native.get('dispatch_blocker') not in (None, 'active_pr'):
+                raise ServiceError(409, 'This native outcome is guarded. Wait for its current activity.')
             if (owner['status'] not in ('completed', 'failed', 'waiting') and not
-                    (scheduled and owner['status'] == 'scheduled')) or owner.get('_waiting_on'):
+                    (scheduled and owner['status'] == 'scheduled') and not queued) or owner.get('_waiting_on'):
                 raise ServiceError(409, 'Wait for this task and its existing dependencies.')
             if owner.get('_return_pending'):
                 raise ServiceError(409, 'Wait for the previous result to be delivered before continuing this work.')
             related = [t for t in self._all('tasks') if execution_key(t) == execution_key(owner)]
             worker = self.running.get(owner['id'])
             active_worker = bool(worker and worker.is_alive())
-            if (scheduled and (native.get('current_run_id') or native.get('worker_pid') or active_worker)) or any(
+            if ((scheduled or queued) and (native.get('current_run_id') or native.get('worker_pid') or active_worker)) or any(
                     (t['id'] != owner['id'] and t['status'] in self.ACTIVE)
                     or self._background_pending(t['id']) for t in related):
                 raise ServiceError(409, 'This execution has active work. Wait for its result.')

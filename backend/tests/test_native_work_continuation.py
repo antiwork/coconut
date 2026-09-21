@@ -36,6 +36,137 @@ class NativeWorkContinuationTests(unittest.TestCase):
             id='t_existing', status='scheduled', current_run_id=None, worker_pid=None)})
         return owner, source
 
+    def ready_native(self):
+        owner, source = self.scheduled_native()
+        owner['status'] = 'queued'
+        self.service._put('tasks', owner)
+        self.service.kanban.tasks[owner['id']].update(status='ready', dispatch_blocker='active_pr')
+        return owner, source
+
+    def test_ready_queued_accepts_requester_input_once(self):
+        owner, source = self.ready_native()
+        receipt = self.resume(source)
+        queued = self.service._get('tasks', owner['id'])
+        self.assertEqual(self.resume(source), receipt)
+        self.assertEqual(self.service._get('tasks', owner['id']), queued)
+        row = next(r for r in self.service._kanban_rows() if r['id'] == owner['id'])
+        self.assertEqual(row['previous_input'], 'completed-input')
+        self.assertNotEqual(row['input'], row['previous_input'])
+        for key in ('id', '_execution_session_id', 'source_bot_id', 'source_task_id', 'thread_id'):
+            self.assertEqual(queued[key], owner[key])
+
+    def test_ready_queued_rejects_active_workers(self):
+        owner, source = self.ready_native()
+        native = self.service.kanban.tasks[owner['id']]
+        for field in ('current_run_id', 'worker_pid'):
+            native[field] = 123
+            with self.subTest(field=field), self.assertRaisesRegex(ServiceError, 'active work'):
+                self.resume(source)
+            native[field] = None
+        self.service.running[owner['id']] = Mock(is_alive=lambda: True)
+        with self.assertRaisesRegex(ServiceError, 'active work'):
+            self.resume(source)
+        self.service.running.clear()
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_ready_queued_preserves_other_respawn_guards(self):
+        owner, source = self.ready_native()
+        for guard in ('blocker_auth', 'rate_limit_cooldown', 'recent_success'):
+            self.service.kanban.tasks[owner['id']]['dispatch_blocker'] = guard
+            with self.subTest(guard=guard), self.assertRaisesRegex(ServiceError, 'guarded'):
+                self.resume(source)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_ready_queued_preserves_decision_dependency_and_authority(self):
+        owner, source = self.ready_native()
+        self.service._put('decisions', dict(id='pending', task_id=owner['id'], status='pending'))
+        with self.assertRaisesRegex(ServiceError, 'existing decision'):
+            self.resume(source)
+        self.service._put('decisions', dict(id='pending', task_id=owner['id'], status='rejected'))
+        owner['_waiting_on'] = ['dependency']
+        self.service._put('tasks', owner)
+        with self.assertRaisesRegex(ServiceError, 'dependencies'):
+            self.resume(source)
+        other = self.write('/v1/bots', {'name': 'Unrelated'})
+        self.service._put('tasks', dict(source, bot_id=other['id']))
+        with self.assertRaisesRegex(ServiceError, 'owner or its requesting bot'):
+            self.resume(source)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_ready_snapshot_wait_revalidates_live_worker_without_deadlock(self):
+        def change(owner, source, peer, items, snapshots):
+            self.service._put('tasks', dict(owner, status='queued'))
+            snapshots[owner['id']].update(status='ready', current_run_id=123)
+        owner, _, _, result = self.concurrent_snapshot(missing_owner=True, change=change)
+        self.assertIsInstance(result, ServiceError)
+        self.assertIn('active work', str(result))
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'queued')
+
+    def check_ready_dispatch_race(self, fail_tick=False):
+        from contextlib import ExitStack
+        owner, source = self.ready_native()
+        adapter = self.service.kanban
+        adapter.lock = threading.Lock()
+        entered, release = threading.Event(), threading.Event()
+        errors, captured = [], []
+
+        def call(request, spawn=None):
+            with adapter.lock:
+                if request['op'] != 'tick':
+                    return {}
+                captured.extend(r for r in request['rows'] if r['id'] == owner['id'])
+                entered.set()
+                if not release.wait(5):
+                    raise AssertionError('Continuation did not release the native tick')
+                if fail_tick:
+                    raise RuntimeError('Lost tick response')
+                # The real callback takes the service lock under the adapter lock.
+                spawn(dict(external_id=owner['id'], native_id='t_existing',
+                           run_id='new-run', workspace='/tmp/retained-native-workspace'))
+                adapter.tasks[owner['id']].update(status='running', current_run_id='new-run')
+                return {}
+
+        adapter.call.side_effect = call
+        def dispatch():
+            try:
+                self.service._dispatch_kanban()
+            except BaseException as error:
+                errors.append(error)
+
+        with ExitStack() as stack:
+            for name in ('_migrate_native_work', '_adopt_native_outcomes', '_reconcile_kanban',
+                         '_dispatch_chat', '_publish_kanban_changes'):
+                stack.enter_context(patch.object(self.service, name))
+            stack.enter_context(patch.object(self.service.provider, 'prepare_kanban_worker',
+                                            return_value=123, create=True))
+            tick = threading.Thread(target=dispatch, daemon=True)
+            tick.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                with self.assertRaisesRegex(ServiceError, 'dispatch is in progress'):
+                    self.resume(source)
+                self.assertEqual(self.service._get('tasks', owner['id']), owner)
+            finally:
+                release.set()
+                tick.join(5)
+            self.assertFalse(tick.is_alive(), 'Adapter -> service callback deadlocked')
+        self.assertEqual(self.service._kanban_dispatching, 0)
+        self.assertEqual(len(captured), 1)
+        if fail_tick:
+            self.assertEqual([str(error) for error in errors], ['Lost tick response'])
+            self.assertEqual(self.resume(source)['task_id'], owner['id'])
+        else:
+            self.assertEqual(errors, [])
+            saved = self.service._get('tasks', owner['id'])
+            self.assertEqual(saved['_kanban_claim']['input'], captured[0]['input'])
+            self.assertEqual(saved['_native_turn_id'], owner['_native_turn_id'])
+
+    def test_ready_continuation_cannot_race_captured_dispatch_input(self):
+        self.check_ready_dispatch_race()
+
+    def test_ready_dispatch_failure_releases_admission_gate(self):
+        self.check_ready_dispatch_race(fail_tick=True)
+
     def test_requester_resumes_same_outcome_and_preserves_its_result_route(self):
         owner, source = self.native()
         before = len(self.service._all('tasks'))

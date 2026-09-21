@@ -44,11 +44,16 @@ class NativeClaimContinuationTests(unittest.TestCase):
         identity = self.service.kanban.tasks[owner['id']]['id']
         operation = {'done': "complete_task(board.conn, sys.argv[2], summary='Original input complete')",
                      'scheduled': "schedule_task(board.conn, sys.argv[2], reason='Waiting for fresh input')",
-                     'blocked': "block_task(board.conn, sys.argv[2], reason='Waiting for corrected facts')"}[state]
+                     'blocked': "block_task(board.conn, sys.argv[2], reason='Waiting for corrected facts')",
+                     'ready': "add_comment(board.conn, sys.argv[2], 'default', 'https://github.com/example/app/pull/6')"}[state]
         self.native_program('board.kb.' + operation, identity)
         self.service.kanban.call({'op': 'snapshot'})
         owner.update(status='completed', summary='Original input complete', _kanban_claim=dict(
             native_id=identity, input=row['input'], run_id='completed-run'))
+        if state == 'ready':
+            owner['status'] = 'queued'
+            self.assertEqual(self.service.kanban.tasks[owner['id']]['dispatch_blocker'], 'active_pr')
+            self.assertIsNone(self.service.kanban.tasks[owner['id']]['current_run_id'])
         self.service._put('tasks', owner)
         original['status'] = 'completed'
         self.service._put('tasks', original)
@@ -154,6 +159,10 @@ else:
         self.assertEqual(current['workspace_path'], str(workspace))
         self.assertEqual(successor == identity, state != 'done')
         self.assertEqual(self.resume(source, identity), receipt)
+        if state == 'ready':
+            with self.assertRaises(ServiceError):
+                self.service.emit(source['id'], 'work_continue', dict(
+                    task_id=identity, message='Do not start a second worker while this input runs.'))
         # Repeated sync/dispatch while the worker holds its claim cannot spawn twice.
         self.service._dispatch_pending()
         release.set()
@@ -288,6 +297,49 @@ else:
 
     def test_interrupted_successor_binding_dispatches_once(self):
         self.check_dispatch('done', interrupt_binding=True)
+
+    def test_ready_claim_dispatches_fresh_input_for_requester(self):
+        self.check_dispatch('ready')
+
+    def test_ready_claim_dispatches_fresh_input_for_owner(self):
+        self.check_dispatch('ready', 'owner')
+
+    def test_ready_claim_rejects_wrong_owner(self):
+        owner, source, identity, _ = self.prepare('ready', 'stranger')
+        with self.assertRaisesRegex(ServiceError, 'owner or its requesting bot'):
+            self.resume(source, identity)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_ready_claim_preserves_pending_decision(self):
+        owner, source, identity, _ = self.prepare('ready')
+        decision = dict(id=str(uuid4()), task_id=owner['id'], status='pending')
+        self.service._put('decisions', decision)
+        with self.assertRaisesRegex(ServiceError, 'existing decision'):
+            self.resume(source, identity)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.service._get('decisions', decision['id']), decision)
+
+    def test_ready_claim_rejects_live_native_run(self):
+        owner, source, identity, _ = self.prepare('ready')
+        self.native_program('assert board.kb.claim_task(board.conn, sys.argv[2])', identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        with self.assertRaises(ServiceError):
+            self.resume(source, identity)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'running')
+        self.assertFalse(self.provider.started)
+
+    def test_ready_accepted_input_cannot_dispatch_past_native_dependency(self):
+        owner, source, identity, _ = self.prepare('ready')
+        self.resume(source, identity)
+        self.native_program('''
+parent = board.kb.create_task(board.conn, title='Unfinished prerequisite')
+board.kb.link_tasks(board.conn, parent, sys.argv[2])
+''', identity)
+        self.service._dispatch_pending()
+        self.assertNotIn(owner['id'], self.provider.started)
+        self.assertNotIn(owner['id'], self.service.running)
+        self.assertIsNone(self.service.kanban.tasks[owner['id']]['current_run_id'])
 
     def test_scheduled_claim_dispatches_fresh_input(self):
         self.check_dispatch('scheduled')
