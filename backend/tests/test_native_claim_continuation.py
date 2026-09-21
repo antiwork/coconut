@@ -46,6 +46,7 @@ class NativeClaimContinuationTests(unittest.TestCase):
         operation = {'done': "complete_task(board.conn, sys.argv[2], summary='Original input complete')",
                      'scheduled': "schedule_task(board.conn, sys.argv[2], reason='Waiting for fresh input')",
                      'blocked': "block_task(board.conn, sys.argv[2], reason='Waiting for corrected facts')",
+                     'review': "request_review(board.conn, sys.argv[2], summary='Original review evidence', metadata={'acceptance': 'Local previews only'})",
                      'ready': "add_comment(board.conn, sys.argv[2], 'default', 'https://github.com/example/app/pull/6')"}[state]
         self.native_program('board.kb.' + operation, identity)
         self.service.kanban.call({'op': 'snapshot'})
@@ -97,6 +98,7 @@ for index in range(33):
 
     def check_dispatch(self, state, caller='requester', interrupt_binding=False, aged=False, dispatch_idle=False):
         owner, source, identity, workspace = self.prepare(state, caller)
+        review_evidence = self.review_evidence(identity) if state == 'review' else None
         if aged:
             self.age_binding_and_restart(owner)
         decision = dict(id=str(uuid4()), task_id=owner['id'], bot_id=owner['bot_id'],
@@ -173,7 +175,7 @@ else:
         self.assertEqual(current['workspace_path'], str(workspace))
         self.assertEqual(successor == identity, state != 'done')
         self.assertEqual(self.resume(source, identity), receipt)
-        if state == 'ready':
+        if state in ('ready', 'review'):
             with self.assertRaises(ServiceError):
                 self.service.emit(source['id'], 'work_continue', dict(
                     task_id=identity, message='Do not start a second worker while this input runs.'))
@@ -200,6 +202,9 @@ else:
         self.assertEqual(returned[0]['target_bot_id'], owner['source_bot_id'])
         self.assertEqual(returned[0]['text'], 'Follow-up verified locally')
         self.assertEqual(self.service._get('decisions', decision['id']), decision)
+        if state == 'review':
+            self.assertEqual(self.review_evidence(identity), review_evidence)
+            self.assertIn('Original review evidence', review_evidence)
         self.assertEqual((workspace / 'pending.txt').read_text(), 'Uncommitted correction')
         item = self.service._get('artifacts', queued['_work_context_id'])
         self.assertEqual(item['_native_outcome_id'], successor)
@@ -314,6 +319,53 @@ else:
 
     def test_ready_claim_dispatches_fresh_input_for_requester(self):
         self.check_dispatch('ready')
+
+    def review_evidence(self, identity):
+        return self.native_program('import json; print(json.dumps([dict(r) for r in board.conn.execute('
+            '"SELECT * FROM task_events WHERE task_id=? AND kind=\'review_requested\'", (sys.argv[2],))]))', identity)
+
+    def test_review_claim_dispatches_once_for_requester_with_retained_evidence(self):
+        self.check_dispatch('review')
+
+    def test_review_claim_dispatches_once_for_owner_with_retained_evidence(self):
+        self.check_dispatch('review', 'owner')
+
+    def test_review_claim_rejects_wrong_owner(self):
+        owner, source, identity, _ = self.prepare('review', 'stranger')
+        with self.assertRaisesRegex(ServiceError, 'owner or its requesting bot'):
+            self.resume(source, identity)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_review_claim_preserves_pending_decision(self):
+        owner, source, identity, _ = self.prepare('review')
+        decision = dict(id=str(uuid4()), task_id=owner['id'], status='pending')
+        self.service._put('decisions', decision)
+        with self.assertRaisesRegex(ServiceError, 'existing decision'):
+            self.resume(source, identity)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.service._get('decisions', decision['id']), decision)
+
+    def test_review_claim_rejects_live_reviewer(self):
+        owner, source, identity, _ = self.prepare('review')
+        self.native_program('assert board.kb.claim_review_task(board.conn, sys.argv[2])', identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        with self.assertRaises(ServiceError):
+            self.resume(source, identity)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'running')
+        self.assertFalse(self.provider.started)
+
+    def test_review_input_cannot_dispatch_past_native_dependency(self):
+        owner, source, identity, _ = self.prepare('review')
+        self.resume(source, identity)
+        self.native_program('''
+parent = board.kb.create_task(board.conn, title='Unfinished prerequisite')
+board.kb.link_tasks(board.conn, parent, sys.argv[2])
+''', identity)
+        self.service._dispatch_pending()
+        self.assertNotIn(owner['id'], self.provider.started)
+        self.assertNotIn(owner['id'], self.service.running)
+        self.assertIsNone(self.service.kanban.tasks[owner['id']]['current_run_id'])
 
     def test_ready_claim_dispatches_fresh_input_for_owner(self):
         self.check_dispatch('ready', 'owner')

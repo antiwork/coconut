@@ -43,6 +43,107 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.service.kanban.tasks[owner['id']].update(status='ready', dispatch_blocker='active_pr')
         return owner, source
 
+    def review_native(self):
+        owner, source = self.scheduled_native()
+        self.service.kanban.tasks[owner['id']].update(
+            status='review', outcome_summary='Saved review evidence')
+        return owner, source
+
+    def test_review_accepts_requester_input_once_preserving_identity_and_evidence(self):
+        owner, source = self.review_native()
+        snapshot = copy.deepcopy(self.service.kanban.tasks)
+        self.service._put('decisions', dict(id='answered', task_id=owner['id'], status='rejected'))
+        receipt = self.resume(source)
+        queued = self.service._get('tasks', owner['id'])
+        self.assertEqual(receipt['task_id'], owner['id'])
+        self.assertEqual(self.resume(source), receipt)
+        self.assertEqual(self.service._get('tasks', owner['id']), queued)
+        self.assertEqual(self.service.kanban.tasks, snapshot)
+        self.assertNotEqual(queued['_native_turn_id'], owner['_native_turn_id'])
+        for key in ('id', '_execution_session_id', 'source_bot_id', 'source_task_id', 'thread_id', '_kanban_claim'):
+            self.assertEqual(queued[key], owner[key])
+        self.assertEqual(queued['_self_recovery']['decisions'][0]['status'], 'rejected')
+
+    def test_review_accepts_owner_input(self):
+        owner, source = self.review_native()
+        self.service._put('tasks', dict(source, bot_id=owner['bot_id']))
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
+    def test_review_explicit_owner_continues_same_execution(self):
+        owner, source = self.review_native()
+        owner['_native_outcome_id'] = 't_existing'
+        self.service._put('tasks', owner)
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+        self.assertEqual(self.service._get('tasks', owner['id'])['_execution_session_id'], owner['_execution_session_id'])
+
+    def test_review_preserves_explicit_human_work_pause(self):
+        owner, source = self.review_native()
+        item = dict(id='paused-work', task_id=owner['id'], bot_id=owner['bot_id'], kind='work',
+                    title=owner['title'], status='waiting', paused_by_decision_id='human-pause')
+        decision = dict(id='human-pause', task_id=owner['id'], status='rejected', decided_by='human')
+        self.service._put('artifacts', item)
+        self.service._put('decisions', decision)
+        with self.assertRaisesRegex(ServiceError, 'paused'):
+            self.resume(source)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.service._get('artifacts', item['id']), item)
+        self.assertEqual(self.service._get('decisions', decision['id']), decision)
+
+    def test_review_rejects_native_and_local_workers(self):
+        self.ready_native = self.review_native
+        self.test_ready_queued_rejects_active_workers()
+
+    def test_review_preserves_decision_dependency_and_authority(self):
+        self.ready_native = self.review_native
+        self.test_ready_queued_preserves_decision_dependency_and_authority()
+
+    def test_review_preserves_human_pause_and_needs_you(self):
+        owner, source = self.review_native()
+        for state in ('needs_you', 'paused', 'working', 'queued'):
+            changed = dict(owner, status=state)
+            self.service._put('tasks', changed)
+            with self.subTest(state=state), self.assertRaises(ServiceError):
+                self.resume(source)
+            self.assertEqual(self.service._get('tasks', owner['id']), changed)
+
+    def test_review_continuation_cannot_race_captured_dispatch_input(self):
+        self.ready_native = self.review_native
+        self.check_ready_dispatch_race()
+
+    def test_review_dispatch_failure_retains_uncertain_response_fence(self):
+        self.ready_native = self.review_native
+        self.check_ready_dispatch_race(fail_tick=True)
+
+    def test_review_snapshot_revalidates_worker(self):
+        def change(owner, source, peer, items, snapshots):
+            snapshots[owner['id']].update(status='review', current_run_id=123)
+        owner, _, _, result = self.concurrent_snapshot(missing_owner=True, change=change)
+        self.assertIsInstance(result, ServiceError)
+        self.assertIn('active work', str(result))
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], owner['status'])
+
+    def test_review_concurrent_distinct_requests_accept_only_one_input(self):
+        owner, source = self.review_native()
+        barrier = threading.Barrier(3)
+        results = []
+        def resume(message):
+            barrier.wait(5)
+            try:
+                results.append(self.service.emit(source['id'], 'work_continue',
+                    dict(task_id='t_existing', message=message)))
+            except ServiceError as error:
+                results.append(error)
+        threads = [threading.Thread(target=resume, args=(message,)) for message in ('First input', 'Second input')]
+        for thread in threads:
+            thread.start()
+        barrier.wait(5)
+        for thread in threads:
+            thread.join(5)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(sum(isinstance(result, dict) for result in results), 1)
+        self.assertEqual(sum(isinstance(result, ServiceError) for result in results), 1)
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'queued')
+
     def test_ready_queued_accepts_requester_input_once(self):
         owner, source = self.ready_native()
         receipt = self.resume(source)
@@ -106,6 +207,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
         from contextlib import ExitStack
         owner, source = self.ready_native()
         adapter = self.service.kanban
+        review = adapter.tasks[owner['id']]['status'] == 'review'
         adapter.lock = threading.Lock()
         entered, release = threading.Event(), threading.Event()
         errors, captured = [], []
@@ -120,6 +222,8 @@ class NativeWorkContinuationTests(unittest.TestCase):
                     raise AssertionError('Continuation did not release the native tick')
                 if fail_tick:
                     raise RuntimeError('Lost tick response')
+                if review:
+                    return {}
                 # The real callback takes the service lock under the adapter lock.
                 spawn(dict(external_id=owner['id'], native_id='t_existing',
                            run_id='new-run', workspace='/tmp/retained-native-workspace'))
@@ -161,7 +265,10 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.assertFalse(self.service._kanban_dispatching)
             self.assertEqual(errors, [])
             saved = self.service._get('tasks', owner['id'])
-            self.assertEqual(saved['_kanban_claim']['input'], captured[0]['input'])
+            if review:
+                self.assertEqual(saved, owner)
+            else:
+                self.assertEqual(saved['_kanban_claim']['input'], captured[0]['input'])
             self.assertEqual(saved['_native_turn_id'], owner['_native_turn_id'])
 
     def test_ready_continuation_cannot_race_captured_dispatch_input(self):
