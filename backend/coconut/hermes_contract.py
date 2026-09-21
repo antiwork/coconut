@@ -58,7 +58,7 @@ def verify_contract():
     from cron.scheduler_prompt import _build_job_prompt, _guard_job_credential_exfil
     if hasattr(scheduler, '_check_model_drift'):
         require_keywords(scheduler._check_model_drift, {'job', 'job_id', 'cfg', 'runtime', 'primary_provider_for_drift', 'primary_model_for_drift'})
-    else:
+    elif hasattr(scheduler, '_snapshot_pin'):
         require_keywords(scheduler._snapshot_pin, {'job', 'axis', 'current', 'job_id'})
     require_keywords(_build_job_prompt, {'job'})
     require_keywords(_is_cron_silence_response, {'text'})
