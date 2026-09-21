@@ -42,7 +42,8 @@ try:
             output = '\n'.join(p['text'] for k,p in events if k == 'text_delta')
             if name == 'output': assert output == 'cleanup receipt', events
             if silent: assert not output, events
-            if name == 'failure': assert 'code 7' in output, events
+            if name == 'failure':
+                assert 'code 7' in output and 'code 7' in payload['summary'], events
             assert finish(home, job['id'], jobs, owner=claimed['fire_claim']['by'], success=success,
                           output=output, failure=None if success else output)['ok']
             saved = jobs.get_job(job['id'])
@@ -84,4 +85,20 @@ print('COCONUT_CREATION_RESULT=' + json.dumps(report))
 '''
 
 if __name__ == '__main__':
-    main(PROGRAM, 'mac-mini-script-routines.json')
+    import os, sys, tempfile, subprocess, json
+    from pathlib import Path
+    if '--local' in sys.argv:
+        with tempfile.TemporaryDirectory(prefix='native-script-check-') as folder:
+            root = Path(folder)
+            (root/'.runtime/hermes').mkdir(parents=True)
+            (root/'.runtime/checks').mkdir()
+            (root/'.runtime/hermes/source').symlink_to(Path(os.environ['COCONUT_HERMES_ROOT']).resolve())
+            result = subprocess.run([os.environ['COCONUT_HERMES_PYTHON'], '-c', PROGRAM, str(root),
+                                     str(Path(__file__).resolve().parents[1])], capture_output=True, text=True, timeout=180)
+            print(result.stdout)
+            reports = [line.split('=', 1)[1] for line in result.stdout.splitlines() if line.startswith('COCONUT_CREATION_RESULT=')]
+            if result.returncode or len(reports) != 1 or not json.loads(reports[0])['passed']:
+                print(result.stderr, file=sys.stderr)
+                raise SystemExit(1)
+    else:
+        main(PROGRAM, 'mac-mini-script-routines.json')

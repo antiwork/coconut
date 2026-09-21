@@ -97,7 +97,7 @@ def run_script_job(job, cancel_event, emit):
     if response and not silent:
         emit('text_delta', {'text': response})
     emit('completed' if success else 'failed', {
-        'summary': 'Complete.' if success else 'The routine script failed.',
+        'summary': 'Complete.' if success else 'The routine script failed: ' + (failure or response or 'No error details returned.'),
         'routine_silent': silent, 'silent_response': silent,
     })
     return 0 if success else 1

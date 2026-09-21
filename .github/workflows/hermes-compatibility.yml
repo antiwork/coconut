@@ -83,4 +83,5 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_targeted_bot_continuation.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_kanban_workers.py
           "$COCONUT_HERMES_PYTHON" scripts/test_native_kanban.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON"
+          "$COCONUT_HERMES_PYTHON" scripts/test_script_routines.py --local
           test -z "$(git -C .runtime/hermes-source status --porcelain --untracked-files=no)"
