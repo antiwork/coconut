@@ -196,6 +196,8 @@ class HermesProvider(FixtureProvider):
 
     def resolve_task_model(self, bot, task):
         job = task.get('_native_job') or {}
+        if job.get('no_agent') is True and job.get('script'):
+            return dict(model=None, provider=None)
         model = job.get('model') or job.get('model_snapshot')
         provider = job.get('provider') or job.get('provider_snapshot')
         selection = {} if model and provider else self.resolve_model(bot)
@@ -435,7 +437,8 @@ class HermesProvider(FixtureProvider):
         bot = self.observe_bot(bot)
         timing.mark('profile_read')
         selection = self.resolve_task_model(bot, task)
-        runtime_config = self.catalog.resolve_runtime(selection, bot_id=bot['id'])
+        script_only = (task.get('_native_job') or {}).get('no_agent') is True
+        runtime_config = None if script_only else self.catalog.resolve_runtime(selection, bot_id=bot['id'])
         timing.mark('model_resolution')
         from .profiles import HermesProfiles
         if not isolated:

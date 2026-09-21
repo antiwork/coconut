@@ -911,6 +911,11 @@ def run_turn(request, emit, request_receipt):
                               HERMES_KANBAN_CLAIM_LOCK=claim['claim_lock'])
         if scope.cancelled.is_set():
             raise InterruptedError('The task was cancelled.')
+        if (request['task'].get('_native_job') or {}).get('no_agent') is True:
+            from native_routine_execution import run_script_job
+            setup_lock.release()
+            preparing = False
+            return run_script_job(request['task']['_native_job'], scope.cancelled, emit)
         from native_fallback import for_turn
         fallback = for_turn()
         if request['task'].get('_work_status_only'):

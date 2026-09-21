@@ -16,10 +16,12 @@ def profile(home):
 
 
 def unsupported(job, config=None):
-    fields = ('script', 'no_agent', 'monitor_script', 'monitor_url', 'base_url', 'enabled_toolsets')
+    script_only = job.get('no_agent') is True and bool(job.get('script'))
+    fields = ('monitor_script', 'monitor_url') if script_only else ('script', 'no_agent', 'monitor_script', 'monitor_url', 'base_url', 'enabled_toolsets')
     present = [field for field in fields if job.get(field)]
     cron_config = (config or {}).get('cron') or {}
-    present.extend('cron.' + field for field in ('model', 'model_provider') if cron_config.get(field))
+    if not script_only:
+        present.extend('cron.' + field for field in ('model', 'model_provider') if cron_config.get(field))
     if job.get('deliver') not in (None, '', 'local', 'origin'):
         present.append('deliver')
     return 'Run this routine through Hermes: ' + ', '.join(present) + '.' if present else None
@@ -35,6 +37,7 @@ def view(bot_id, job):
     schedule = job.get('schedule') or {}
     identity = str(uuid5(UUID(bot_id), 'cron:' + job['id']))
     return dict(id=identity, bot_id=bot_id, name=job.get('name') or 'Routine', prompt=job.get('prompt') or '',
+                script=job.get('script') if job.get('no_agent') else None,
                 cron=schedule.get('expr') or schedule.get('display') or '',
                 timezone=config.get('timezone') or 'UTC',
                 enabled=job.get('enabled', True) and not job.get('paused_at'),
