@@ -34,6 +34,18 @@ class NativeReviewerRuntimeTests(unittest.TestCase):
         self.assertEqual(list(board.conn.iterdump()), before)
         board.bind.assert_not_called()
 
+    def test_answer_reopens_review_when_snapshot_missed_the_pause(self):
+        from coconut.kanban_runtime import fingerprint
+        board, task, row = self.board('review')
+        # A decision resumes the same input. Its review pause can occur between
+        # snapshots, leaving the previous ready intent in the binding.
+        row['input'] = row['previous_input']
+        intent = fingerprint({key: row[key] for key in ('state', 'input')})
+        board.conn.execute('UPDATE coconut_bindings SET intent=?', (intent,))
+        board.kb.reopen_review_task.return_value = True
+        board.sync([row])
+        board.kb.reopen_review_task.assert_called_once_with(board.conn, task.id)
+
     def test_explicit_cancellation_still_archives_running_task(self):
         board, task, row = self.board()
         row['state'] = 'archived'

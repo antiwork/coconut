@@ -84,7 +84,9 @@ class Board:
                     self.kb.archive_task(self.conn, task.id)
                 elif task.status == 'ready' and row['state'] in ('scheduled', 'review'):
                     self.kb.schedule_task(self.conn, task.id, reason=row.get('summary') or 'Waiting for delivery.')
-                elif row['state'] == 'ready' and (task.status == 'scheduled' or old[1] and old[1] != intent):
+                # An answered decision resumes the same input even when the
+                # review pause occurred entirely between synchronization ticks.
+                elif row['state'] == 'ready' and (task.status in ('scheduled', 'review') or old[1] and old[1] != intent):
                     if task.status == 'review':
                         if not self.kb.reopen_review_task(self.conn, task.id):
                             continue
