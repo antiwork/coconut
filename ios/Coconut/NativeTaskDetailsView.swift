@@ -44,7 +44,7 @@ struct TrackedPullRequest: Identifiable {
     }
 
     func isStale(at date: Date) -> Bool {
-        artifact.refreshError != nil || artifact.observedAt?.apiDate.map { date.timeIntervalSince($0) > 120 } != false
+        artifact.isPRStatusStale(at: date)
     }
 
     func activityLabel(at date: Date) -> String? {
