@@ -776,6 +776,13 @@ def main():
                         elif scope.agent is not None and hasattr(scope.agent, 'hard_interrupt'):
                             scope.agent.hard_interrupt('The card changed.')
                     continue
+                if isinstance(frame.get('steer_task'), str):
+                    with active_lock:
+                        scope = active.get(frame['steer_task'])
+                    live = getattr(scope, 'live_messages', None)
+                    if live is not None and getattr(scope, 'turn_id', None) == frame.get('turn_id'):
+                        live.deliver(frame.get('messages', []))
+                    continue
                 if isinstance(frame.get('cancel_task'), str):
                     with active_lock:
                         cancelled.add(frame['cancel_task'])
@@ -1192,6 +1199,9 @@ def run_turn(request, emit, request_receipt):
                         'Treat new human messages as one continuous conversation. Decide whether each message revises current work or adds a request. '
                         'Preserve unfinished requests unless the person changes or cancels them. Ask only when ambiguity changes the outcome. '
                         'Do not ask the person to choose a queue or steering mode. '
+                        'Answer acknowledgments briefly and end the chat turn. Do not start new checks for an acknowledgment. '
+                        'A new topic does not cancel unrelated work. Apply explicit stops only to the work the person identifies. '
+                        'Do not hold a chat turn open by polling for another bot. Register a native wait, reply, and finish. '
                         'Use coconut_ask when the person must choose. Write choices for the current task and saved preferences. '
                         'Normal tool work does not need a question unless Hermes approval checks require one. '
                         'Within an approved task, read source and perform routine local diagnosis without another card. '
@@ -1303,6 +1313,10 @@ def run_turn(request, emit, request_receipt):
                         skip_context_files=False, load_soul_identity=True, skip_memory=False, skip_background_review=False,
                         save_trajectories=False, run_budget_seconds=None)
         scope.agent = agent
+        from live_messages import LiveMessages
+        scope.turn_id = request['task'].get('_native_turn_id')
+        scope.live_messages = LiveMessages(agent, lambda identities: emit(
+            'steering_consumed', {'message_ids': identities, 'turn_id': request['task'].get('_native_turn_id')}))
         if scope.cancelled.is_set():
             raise InterruptedError('The task was cancelled.')
         work.restore(agent)
@@ -1320,6 +1334,7 @@ def run_turn(request, emit, request_receipt):
                                             stream_callback=collect_response,
                                             persist_user_message=current['text'] if current else request.get('question'),
                                             persist_user_platform_id='coconut:' + current['id'] if current else None)
+        scope.live_messages.finish(result)
         trace.mark('model_end')
         if scope.unconfirmed:
             raise TurnUnconfirmed()
