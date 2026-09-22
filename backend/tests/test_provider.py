@@ -498,7 +498,7 @@ class ProviderTests(unittest.TestCase):
         marker = self.root / 'initializing'
         gate = self.root / 'continue-initializing'
         provider = self.fake_hermes("""
-            text = self._drain_pending_redirect()
+            text = prompt
             return {'completed': True, 'final_response': text or 'missed input',
                     'messages': [{'role': 'user', 'content': text}]}
         """)

@@ -1326,6 +1326,22 @@ def run_turn(request, emit, request_receipt):
             scope.live_messages = LiveMessages(None, None)
         scope.live_messages.consumed = lambda identities: emit(
             'steering_consumed', {'message_ids': identities, 'turn_id': request['task'].get('_native_turn_id')})
+        def accept_live_message(message):
+            # Only the service pipe supplies bot_source, after _human_source
+            # validation. Message text/IDs alone never establish authority.
+            source = message.get('bot_source')
+            if source is not None:
+                if (not isinstance(source, dict) or source.get('id') != message.get('id')
+                        or not isinstance(source.get('text'), str)):
+                    return False
+                if not creation_sources or not deletion_sources:
+                    # These tools were unavailable at turn setup. Retain input
+                    # for a fresh turn with authenticated sources and tools.
+                    return False
+                creation_sources[source['id']] = source
+                deletion_sources[source['id']] = source
+            return True
+        scope.live_messages.accept = accept_live_message
         scope.live_messages.bind(agent)
         emit('steering_ready', {'turn_id': scope.turn_id})
         if scope.cancelled.is_set():
@@ -1341,7 +1357,7 @@ def run_turn(request, emit, request_receipt):
         trace.mark('model_start')
         from turn_timings import native_request_timings
         with native_request_timings(trace, agent):
-            result = agent.run_conversation(prompt, conversation_history=conversation.history, task_id=request['task']['id'],
+            result = scope.live_messages.run_conversation(prompt, conversation_history=conversation.history, task_id=request['task']['id'],
                                             stream_callback=collect_response,
                                             persist_user_message=current['text'] if current else request.get('question'),
                                             persist_user_platform_id='coconut:' + current['id'] if current else None)

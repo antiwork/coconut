@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import Mock
 from coconut.live_messages import LiveMessages
 import test_service
 
@@ -23,6 +24,40 @@ class Agent:
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_startup_preserves_multimodal_input_and_only_acknowledges_success(self):
+        consumed = []
+        live = LiveMessages(None, consumed.append)
+        message = dict(id='correction', text='Use this correction.')
+        live.deliver([message, message])
+        agent = Mock()
+        live.bind(agent)
+        prompt = [{'type': 'text', 'text': 'Read this image.'},
+                  {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,fixture'}}]
+        agent.run_conversation.side_effect = lambda text, **kw: dict(
+            completed=True, messages=[dict(role='user', content=text)])
+        result = live.run_conversation(prompt, persist_user_message='Read this image.')
+        received = agent.run_conversation.call_args.args[0]
+        self.assertEqual(received[:2], prompt)
+        self.assertEqual(len(received), 3)
+        self.assertEqual(consumed, [])
+        live.finish(result | {'failed': True})
+        self.assertEqual(consumed, [])
+        live.finish(result)
+        self.assertEqual(consumed, [['correction']])
+        agent.redirect.assert_not_called()
+
+    def test_deferred_startup_input_cannot_be_skipped_by_later_live_delivery(self):
+        live = LiveMessages(None, lambda identities: self.fail('Deferred input was consumed'))
+        live.accept = lambda message: False
+        live.deliver([dict(id='first', text='Needs a fresh turn.')])
+        agent = Mock()
+        live.bind(agent)
+        live.run_conversation('Original input')
+        live.accept = lambda message: True
+        live.deliver([dict(id='later', text='Must follow the first input.')])
+        agent.redirect.assert_not_called()
+        self.assertEqual(live.pending, {})
+
     def test_acknowledge_only_consumed_input_and_deduplicate_frames(self):
         agent, consumed = Agent(), []
         live = LiveMessages(agent, consumed.append)

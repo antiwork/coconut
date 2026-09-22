@@ -1997,11 +1997,22 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             task = self._get('tasks', task_id)
             from .native_conversation import chat_message_content
             messages = []
-            for identity in task.get('_live_messages', {}):
-                message = self._get('messages', identity)
+            # encoded() sorts mapping keys; database insertion order is the
+            # conversation order, including messages with equal timestamps.
+            for message in self._task_messages(task_id):
+                identity = message['id']
+                if identity not in task.get('_live_messages', {}):
+                    continue
                 current = dict(task, _visible_reply_contexts={identity: message.get('_visible_reply_context')})
-                messages.append(dict(id=identity, text=chat_message_content(
-                    {'operation': 'start', 'task': current}, message)))
+                delivery = dict(id=identity, text=chat_message_content(
+                    {'operation': 'start', 'task': current}, message))
+                try:
+                    source = self._human_source(task, identity, task, 'create or delete bots')
+                except ServiceError:
+                    pass
+                else:
+                    delivery['bot_source'] = {'id': source['id'], 'text': source['text']}
+                messages.append(delivery)
             turn_id = task.get('_native_turn_id')
         if messages:
             try:
