@@ -475,6 +475,7 @@ struct LearningGroup: Codable, Identifiable, Equatable, Sendable {
 }
 
 struct StateSnapshot: Codable, Sendable {
+    var conversationBotId: String? = nil
     var syncVersion: Int? = nil
     var contentOnly: Bool? = nil
     var historyBefore: [String: Int]? = nil

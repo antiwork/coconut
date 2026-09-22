@@ -9,6 +9,7 @@ import OSLog
 final class AppStore {
     private static let deliveryLog = Logger(subsystem: "com.gumroad.coconut", category: "delivery")
     var bots: [Bot] = []
+    var conversationBotId: String?
     var tasks: [AgentTask] = []
     var messages: [Message] = []
     var outgoingMessages: [OutgoingMessage] = []
@@ -288,6 +289,7 @@ final class AppStore {
         PairingToken.delete()
         ProtectedCache.remove("pairing.json")
         cacheQueue.sync { ProtectedCache.remove("snapshot.json") }
+        conversationBotId = nil
         bots = []; tasks = []; messages = []; decisions = []; artifacts = []; learning = []
         routines = []
         approvals = nil; parallelWork = nil; apiFallback = nil; workCapacity = nil; mcpServers = []
@@ -1446,6 +1448,7 @@ final class AppStore {
             outgoingMessages.removeAll { confirmed.contains($0.id) }
             try? saveOutgoing()
         }
+        conversationBotId = snapshot.conversationBotId
         if bots != snapshot.bots { bots = snapshot.bots }
         if tasks != snapshot.tasks { tasks = snapshot.tasks }
         if messages != snapshot.messages { messages = snapshot.messages }
@@ -1605,6 +1608,7 @@ final class AppStore {
                 if let configured = native.pushConfigured { self.pushConfigured = configured }
                 self.nativeSettingsReadAt = Date()
                 if var state = self.cachedState {
+                    state.conversationBotId = native.conversationBotId
                     state.bots = self.bots
                     state.pushConfigured = self.pushConfigured
                     self.apply(state, persist: true)
