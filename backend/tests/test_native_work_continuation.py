@@ -98,11 +98,15 @@ class NativeWorkContinuationTests(unittest.TestCase):
     write = fixtures.TargetedBotContinuationTests.write
     prepare = fixtures.TargetedBotContinuationTests.prepare
 
+    def snapshot_result(self):
+        return {'tasks': [dict(row, external_id=identity) for identity, row in self.service.kanban.tasks.items()]}
+
     def native(self):
         owner, source = self.prepare()
         owner.update(status='completed', _native_outcome_id='t_existing')
         self.service._put('tasks', owner)
         self.service.kanban = Mock(tasks={owner['id']: dict(id='t_existing', status='triage')})
+        self.service.kanban.call.side_effect = lambda request: self.snapshot_result()
         return owner, source
 
     def resume(self, source):
@@ -153,7 +157,8 @@ class NativeWorkContinuationTests(unittest.TestCase):
         owner.pop('_native_outcome_id', None)
         self.service._put('tasks', owner)
         self.service.kanban = Mock(tasks={owner['id']: dict(
-            id='t_existing', status='scheduled', current_run_id=None, worker_pid=None)})
+            external_id=owner['id'], id='t_existing', status='scheduled', current_run_id=None, worker_pid=None)})
+        self.service.kanban.call.side_effect = lambda request: self.snapshot_result()
         return owner, source
 
     def ready_native(self):
@@ -190,6 +195,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
         def call(request):
             self.assertEqual(request, {'op': 'snapshot', 'external_ids': [owner['id']]})
             adapter.tasks[owner['id']].update(status='running', current_run_id=47)
+            return self.snapshot_result()
         adapter.call.side_effect = call
         with self.assertRaises(ServiceError):
             self.resume(source)
@@ -720,7 +726,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
                 else:
                     # Match the real adapter: replace, rather than merge, its cache.
                     adapter.tasks = {i: dict(snapshots[i]) for i in request['external_ids'] if i in snapshots}
-            return {}
+                return self.snapshot_result()
 
         adapter.call.side_effect = call
         self.service.kanban = adapter
@@ -837,6 +843,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
         def refresh(request):
             self.assertEqual(request, {'op': 'snapshot', 'external_ids': [owner['id']]})
             self.service.kanban.tasks[owner['id']] = snapshot
+            return self.snapshot_result()
         self.service.kanban.call.side_effect = refresh
         resolved, native = self.service._native_continuation_owner('t_existing')
         self.assertEqual(resolved, owner)
@@ -859,6 +866,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
         def snapshot(request):
             self.assertFalse(self.service.lock._is_owned())
             self.service.kanban.tasks = {i: snapshots[i] for i in request['external_ids']}
+            return self.snapshot_result()
         self.service.kanban.call.side_effect = snapshot
         self.assertEqual(self.resume(source)['task_id'], owner['id'])
         self.assertEqual(self.service.kanban.call.call_count, 2)
