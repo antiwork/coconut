@@ -95,7 +95,7 @@ class NativeOutcomes:
                 for field in ('_review_task_id', '_activity_task_id'):
                     if not peer.get(field):
                         continue
-                    if (linked_parent and peer['kind'] == 'pr'
+                    if (field == '_review_task_id' and linked_parent and peer['kind'] == 'pr'
                             and peer['bot_id'] == linked_parent['bot_id']
                             and peer.get('work_outcome_id') == linked_parent['id']
                             and peer.get('url') == item.get('url')

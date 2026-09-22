@@ -750,8 +750,11 @@ class NativeWorkContinuationTests(unittest.TestCase):
         with self.assertRaisesRegex(ServiceError, 'another execution'):
             self.resume(source)
         self.service._put('tasks', tracker)
-        report['url'] = 'https://github.com/example/project/pull/2'
         report['_activity_task_id'] = source['id']
+        self.service._put('artifacts', report)
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(source)
+        report['url'] = 'https://github.com/example/project/pull/2'
         self.service._put('artifacts', report)
         with self.assertRaisesRegex(ServiceError, 'another execution'):
             self.resume(source)
