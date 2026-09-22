@@ -798,7 +798,8 @@ for title in ('First result', 'Second result'):
             self.service._put('tasks', stored)
         for title in ('First defect', 'Second defect'):
             self.service.native_event(origin['id'], 'native_call',
-                {'name': 'kanban_create', 'arguments': {'idempotency_key': title}})
+                {'name': 'kanban_create', 'arguments': {'idempotency_key': title,
+                 'session_id': origin['id'], 'tenant': self.bot['id']}})
         with self.service.transaction():
             stored = self.service._get('tasks', origin['id'])
             self.service._advance_input(stored)

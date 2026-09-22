@@ -19,7 +19,7 @@ from coconut.work_workspace import git
 
 
 def check(source, python):
-    failures, calls = [], []
+    failures, calls, receipts = [], [], []
     barrier = threading.Barrier(2)
     with tempfile.TemporaryDirectory(prefix='coconut-kanban-') as temporary:
         home = Path(temporary).resolve()
@@ -37,6 +37,8 @@ def check(source, python):
                         return
                     messages = request['messages']
                     results = [m for m in messages if m.get('role') == 'tool']
+                    if results:
+                        receipts.append(results[-1])
                     if len(results) > 12:
                         raise AssertionError('Unexpected tool retry: ' + results[-1]['content'][:1000])
                     chat = 'create one native kanban task before starting it' in json.dumps(messages[:1])
@@ -133,7 +135,7 @@ def check(source, python):
                 service._dispatch_pending()
                 if failures: raise AssertionError(failures)
                 if predicate(): return
-            raise AssertionError({'tasks': [(t['status'], t.get('summary')) for t in service._all('tasks')], 'calls': calls[:12]})
+            raise AssertionError({'tasks': [(t['status'], t.get('summary')) for t in service._all('tasks')], 'calls': calls[:12], 'receipts': receipts, 'native': list(service.kanban.tasks.values())})
         try:
             bot = write('/v1/bots', {'name': 'Local integration check', 'role': ''})
             service.mutate('PUT', '/v1/settings/work-capacity', {'limit': 2}, str(uuid4()))
