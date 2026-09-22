@@ -55,6 +55,17 @@ class NativeBridge:
                     # Native callbacks can ignore ordinary exceptions. A failed
                     # ownership check must stop execution instead.
                     raise TurnPaused('The routine claim could not be confirmed.') from error
+                if not owns_claim and self.request['task'].get('_native_job_finished'):
+                    try:
+                        from cron import jobs
+                        from hermes_constants import get_hermes_home
+                        if __package__:
+                            from .native_routine_receipts import completed
+                        else:
+                            from native_routine_receipts import completed
+                        owns_claim = completed(get_hermes_home(), job['id'], job['fire_claim']['by'], jobs)
+                    except Exception as error:
+                        raise TurnPaused('The routine completion could not be confirmed.') from error
                 if not owns_claim:
                     raise TurnPaused('This routine no longer owns its native execution claim.')
                 yield

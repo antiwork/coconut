@@ -1,5 +1,6 @@
 """Reconcile the handoff from a native cron claim to a Coconut task."""
 import fcntl
+import hashlib
 import json
 from contextlib import contextmanager
 from pathlib import Path
@@ -65,11 +66,32 @@ def issue(home, job):
     return None
 
 
+def completion_id(identity, owner):
+    return 'completed-' + hashlib.sha256(json.dumps([identity, owner]).encode()).hexdigest()
+
+
+def completed(home, identity, owner, jobs):
+    """Require native completion provenance, never a task's finished flag alone."""
+    expected = dict(job_id=identity, owner=owner, success=True)
+    if read(home, completion_id(identity, owner)) == expected:
+        return True
+    # Older installations retained the exact completing owner in the native job.
+    job = jobs.get_job(identity) or {}
+    return (job.get('_coconut_completion_owner') == owner and job.get('last_status') == 'ok'
+            and (job.get('fire_claim') or {}).get('by') != owner)
+
+
 def finish(home, identity, jobs, *, owner, success, output='', failure=None):
     with locked(home, identity):
+        def confirmed(job):
+            if job.get('last_status') == 'ok':
+                # Keep proof for this occurrence before another native fire can replace it.
+                save(home, completion_id(identity, owner), dict(job_id=identity, owner=owner, success=True))
+            return True
+
         def complete(all_jobs, index, job):
             if job.get('_coconut_completion_owner') == owner:
-                return True
+                return confirmed(job)
             if (job.get('fire_claim') or {}).get('by') != owner:
                 return False
             if output:
@@ -80,9 +102,9 @@ def finish(home, identity, jobs, *, owner, success, output='', failure=None):
             jobs._advance_after_run(job, stamp)
             job['_coconut_completion_owner'] = owner
             jobs.save_jobs(all_jobs)
-            return True
+            return confirmed(job)
 
-        confirmed = jobs._under_fire_fence(identity, lambda: jobs._with_job(identity, complete, False))
-        if confirmed:
+        result = jobs._under_fire_fence(identity, lambda: jobs._with_job(identity, complete, False))
+        if result:
             save(home, identity, {'phase': 'finished', 'owner': owner})
-        return {'ok': bool(confirmed)}
+        return {'ok': bool(result)}
