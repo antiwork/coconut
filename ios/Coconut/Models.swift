@@ -390,6 +390,24 @@ struct WorkReference: Codable, Hashable, Sendable {
 }
 
 struct Artifact: Codable, Identifiable, Equatable, Sendable {
+    func isPRStatusStale(at date: Date) -> Bool {
+        guard kind == "pr", status != "merged", !["closed", "merged"].contains(prState ?? "") else { return false }
+        return refreshError != nil || observedAt?.apiDate.map { date.timeIntervalSince($0) > 120 } != false
+    }
+
+    func cardStatus(at date: Date) -> String {
+        if isPRStatusStale(at: date) { return "status_out_of_date" }
+        if kind == "pr", ["merged", "closed"].contains(prState ?? "") { return prState! }
+        return status
+    }
+
+    func cardPreview(at date: Date) -> String {
+        if isPRStatusStale(at: date) { return "The saved status is out of date. Open the pull request for its current status." }
+        if kind == "pr", prState == "merged" || status == "merged" { return "GitHub confirms this pull request merged." }
+        if kind == "pr", prState == "closed" { return "The pull request closed without a merge." }
+        return preview
+    }
+
     var workIdentity: String {
         if kind == "work" || workOutcomeId != nil { return "work:" + (workOutcomeId ?? id) }
         return url?.lowercased() ?? id

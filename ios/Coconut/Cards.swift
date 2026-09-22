@@ -349,55 +349,57 @@ struct ArtifactCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: artifact.kind == "pr" ? "arrow.triangle.pull" : artifact.kind == "task" ? "checkmark.circle" : "doc.text")
-                    .font(.title3).foregroundStyle(.secondary)
-                    .frame(width: 30, height: 36)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(artifact.title).font(.subheadline.weight(.semibold))
-                    StatusLabel(status: artifact.status)
-                }
-                Spacer(minLength: 0)
-            }
-            if !artifact.preview.isEmpty {
-                Text(.init(artifact.preview)).font(.subheadline).foregroundStyle(.secondary)
-                    .lineLimit(expanded || (artifact.kind == "task" && shortResult) ? nil : 3).textSelection(.enabled)
-            }
-            if artifact.kind == "task" && !shortResult {
-                Button(expanded ? "Show less" : "Show full result") { expanded.toggle() }
-                    .font(.subheadline).frame(minHeight: 44)
-            }
-            if artifact.kind == "pr", let error = artifact.refreshError, !error.isEmpty {
-                Label("Status could not refresh", systemImage: "exclamationmark.circle")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-            HStack {
-                if let externalURL {
-                    Link(destination: externalURL) {
-                        Label(artifact.kind == "pr" ? "Open pull request" : "Open result", systemImage: "arrow.up.right")
-                            .font(.subheadline.weight(.medium)).frame(minHeight: 44)
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: artifact.kind == "pr" ? "arrow.triangle.pull" : artifact.kind == "task" ? "checkmark.circle" : "doc.text")
+                        .font(.title3).foregroundStyle(.secondary)
+                        .frame(width: 30, height: 36)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(artifact.title).font(.subheadline.weight(.semibold))
+                        StatusLabel(status: artifact.cardStatus(at: context.date))
                     }
-                    Spacer()
-                    ShareLink(item: externalURL) { Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44) }
-                } else if artifact.kind != "task" {
-                    Button {
-                        downloading = true
-                        Task {
-                            previewURL = await store.downloadArtifact(artifact)
-                            downloading = false
+                    Spacer(minLength: 0)
+                }
+                if !artifact.cardPreview(at: context.date).isEmpty {
+                    Text(.init(artifact.cardPreview(at: context.date))).font(.subheadline).foregroundStyle(.secondary)
+                        .lineLimit(expanded || (artifact.kind == "task" && shortResult) ? nil : 3).textSelection(.enabled)
+                }
+                if artifact.kind == "task" && !shortResult {
+                    Button(expanded ? "Show less" : "Show full result") { expanded.toggle() }
+                        .font(.subheadline).frame(minHeight: 44)
+                }
+                if artifact.kind == "pr", let error = artifact.refreshError, !error.isEmpty {
+                    Label("Status could not refresh", systemImage: "exclamationmark.circle")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                HStack {
+                    if let externalURL {
+                        Link(destination: externalURL) {
+                            Label(artifact.kind == "pr" ? "Open pull request" : "Open result", systemImage: "arrow.up.right")
+                                .font(.subheadline.weight(.medium)).frame(minHeight: 44)
                         }
-                    } label: {
-                        Label(downloading ? "Opening…" : "Preview file", systemImage: "doc.text.magnifyingglass")
-                            .font(.subheadline.weight(.medium)).frame(minHeight: 44)
+                        Spacer()
+                        ShareLink(item: externalURL) { Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44) }
+                    } else if artifact.kind != "task" {
+                        Button {
+                            downloading = true
+                            Task {
+                                previewURL = await store.downloadArtifact(artifact)
+                                downloading = false
+                            }
+                        } label: {
+                            Label(downloading ? "Opening…" : "Preview file", systemImage: "doc.text.magnifyingglass")
+                                .font(.subheadline.weight(.medium)).frame(minHeight: 44)
+                        }
+                        .disabled(downloading)
                     }
-                    .disabled(downloading)
                 }
             }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 20))
+            .quickLookPreview($previewURL)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 20))
-        .quickLookPreview($previewURL)
     }
 }

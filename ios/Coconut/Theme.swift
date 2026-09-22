@@ -50,6 +50,7 @@ struct StatusLabel: View {
         case "opened": "Opened"
         case "merged": "Merged"
         case "preparing": "Preparing"
+        case "status_out_of_date": "Status out of date"
         case "cancelled", "canceled": "Stopped"
         default: status.replacingOccurrences(of: "_", with: " ").capitalized
         }
