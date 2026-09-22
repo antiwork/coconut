@@ -493,6 +493,43 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue(any('Unrelated: answer this now.' in data.get('text', '')
                             for kind, data in events if kind == 'text_delta'))
 
+    def test_live_input_during_worker_initialization_reaches_first_turn(self):
+        marker = self.root / 'initializing'
+        gate = self.root / 'continue-initializing'
+        provider = self.fake_hermes("""
+            text = self._drain_pending_redirect()
+            return {'completed': True, 'final_response': text or 'missed input',
+                    'messages': [{'role': 'user', 'content': text}]}
+        """)
+        source = provider.hermes_root / 'run_agent.py'
+        content = source.read_text()
+        content = content.replace('from tools.bot_relay import message_agent',
+            "import time; from pathlib import Path\n"
+            f"        Path({str(marker)!r}).write_text('ready')\n"
+            f"        while not Path({str(gate)!r}).exists(): time.sleep(.01)\n"
+            "        from tools.bot_relay import message_agent")
+        source.write_text(content)
+        events = []
+        task = dict(self.task, _native_turn_id=str(uuid4()))
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            worker = threading.Thread(target=lambda: provider.start_task(task, self.bot, [],
+                                      lambda kind, data: events.append((kind, data))))
+            worker.start()
+            try:
+                deadline = time.monotonic() + 4
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue(marker.exists())
+                provider.steer_task(task['id'], task['_native_turn_id'],
+                                    [dict(id='early-message', text='Answer this first.')])
+                time.sleep(.1)
+            finally:
+                gate.touch()
+                worker.join(6)
+            self.assertFalse(worker.is_alive())
+        self.assertIn(('steering_consumed', dict(message_ids=['early-message'],
+                                               turn_id=task['_native_turn_id'])), events)
+
     def test_delayed_service_receipts_do_not_abandon_or_repeat_tools(self):
         output = self.root / 'tool-output'
         provider = self.fake_hermes("""

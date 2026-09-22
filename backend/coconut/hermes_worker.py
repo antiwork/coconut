@@ -796,7 +796,15 @@ def main():
                     stop_native_processes(frame['cancel_task'])
                     continue
                 if 'operation' in frame:
-                    requests.put(frame)
+                    scope = None
+                    if frame.get('task'):
+                        from live_messages import LiveMessages
+                        scope = TurnScope(frame['task']['id'])
+                        scope.turn_id = frame['task'].get('_native_turn_id')
+                        scope.live_messages = LiveMessages(None, None)
+                        with active_lock:
+                            active[scope.task_id] = scope
+                    requests.put((frame, scope))
                     continue
                 with receipt_lock:
                     response = pending_receipts.get(frame.get('request_id'))
@@ -810,9 +818,8 @@ def main():
     threading.Thread(target=watch_parent, daemon=True, name='service-liveness').start()
     from native_settings import install_approval_inheritance
     install_approval_inheritance(os.environ['COCONUT_DEFAULT_HOME'])
-    def execute(request):
+    def execute(request, scope):
         identity = request.get('turn_id')
-        scope = TurnScope(request['task']['id']) if request.get('task') else None
         token = current_turn.set(scope)
         outcome_sent = False
         def send(kind, data):
@@ -864,8 +871,8 @@ def main():
             current_turn.reset(token)
 
     while True:
-        request = requests.get()
-        threading.Thread(target=execute, args=(request,), daemon=True, name='native-turn').start()
+        request, scope = requests.get()
+        threading.Thread(target=execute, args=(request, scope), daemon=True, name='native-turn').start()
 
 
 def run_turn(request, emit, request_receipt):
@@ -1315,8 +1322,11 @@ def run_turn(request, emit, request_receipt):
         scope.agent = agent
         from live_messages import LiveMessages
         scope.turn_id = request['task'].get('_native_turn_id')
-        scope.live_messages = LiveMessages(agent, lambda identities: emit(
-            'steering_consumed', {'message_ids': identities, 'turn_id': request['task'].get('_native_turn_id')}))
+        if not hasattr(scope, 'live_messages'):
+            scope.live_messages = LiveMessages(None, None)
+        scope.live_messages.consumed = lambda identities: emit(
+            'steering_consumed', {'message_ids': identities, 'turn_id': request['task'].get('_native_turn_id')})
+        scope.live_messages.bind(agent)
         if scope.cancelled.is_set():
             raise InterruptedError('The task was cancelled.')
         work.restore(agent)

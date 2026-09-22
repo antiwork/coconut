@@ -8,9 +8,19 @@ class LiveMessages:
         self.consumed = consumed
         self.lock = RLock()
         self.pending = {}
+        self.waiting = {}
+
+    def bind(self, agent):
+        with self.lock:
+            self.agent = agent
+            self.deliver(list(self.waiting.values()))
+            self.waiting.clear()
 
     def deliver(self, messages):
         with self.lock:
+            if self.agent is None:
+                self.waiting.update((message['id'], message) for message in messages)
+                return
             for message in messages:
                 identity = message['id']
                 if identity in self.pending:
@@ -18,7 +28,10 @@ class LiveMessages:
                 content = (f'[New chat message {identity}; it may concern another topic. '
                            'Respond to the latest intent. Keep unrelated work separate.]\n'
                            + message['text'])
-                if not self.agent.redirect(content):
+                accepted = self.agent.redirect(content)
+                if not accepted and hasattr(self.agent, 'steer'):
+                    accepted = self.agent.steer(content)
+                if not accepted:
                     break
                 self.pending[identity] = content
 

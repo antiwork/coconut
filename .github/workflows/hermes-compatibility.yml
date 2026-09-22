@@ -46,7 +46,7 @@ jobs:
       - name: Check delayed tool confirmations
         env:
           PYTHONPATH: backend:backend/tests
-        run: python -m unittest test_provider.ProviderTests.test_delayed_service_receipts_do_not_abandon_or_repeat_tools test_provider.ProviderTests.test_worker_exits_when_the_service_pipe_closes test_provider.ProviderTests.test_cancel_stops_a_blocked_model_call
+        run: python -m unittest test_provider.ProviderTests.test_live_input_crosses_worker_pipe_and_reports_consumption test_provider.ProviderTests.test_live_input_during_worker_initialization_reaches_first_turn test_provider.ProviderTests.test_delayed_service_receipts_do_not_abandon_or_repeat_tools test_provider.ProviderTests.test_worker_exits_when_the_service_pipe_closes test_provider.ProviderTests.test_cancel_stops_a_blocked_model_call
 
   native-kanban:
     runs-on: ubuntu-latest

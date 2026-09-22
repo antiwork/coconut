@@ -484,12 +484,17 @@ class HermesProvider(FixtureProvider):
             if transport is None:
                 transport = self._transports[process] = WorkerTransport(process, MAX_EVENT_CHARACTERS)
             channel_id, channel, request = transport.open(request)
+            try:
+                self._send(process, request)
+            except Exception:
+                transport.release(channel_id)
+                self._terminate(process)
+                raise
             self._processes[task_id] = process
         reusable = False
         deferred = None
         paused = False
         try:
-            self._send(process, request)
             timing.mark('worker_request')
             timing.report()
             # Keep stdin open. EOF lets the worker stop if the service disappears.
