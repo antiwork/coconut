@@ -537,6 +537,31 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(self.resume(source), result)
         self.assertEqual(self.service._get('tasks', owner['id']), continued)
 
+    def test_resumed_requester_receives_the_native_result_after_its_old_turn_failed(self):
+        owner, original = self.native()
+        self.service._put('tasks', dict(original, status='failed'))
+        reply = self.write('/v1/tasks/' + original['id'] + '/replies', {'text': 'Continue the status check.'})
+        source = self.service._get('tasks', reply['id'])
+        source['status'] = 'working'
+        self.service._put('tasks', source)
+        self.assertEqual(source['_execution_session_id'], original['_execution_session_id'])
+        self.resume(source)
+        continued = self.service._get('tasks', owner['id'])
+        self.assertEqual(continued['source_task_id'], original['id'])
+        self.assertEqual(continued['_reply_to_task_id'], source['id'])
+        continued['status'] = 'completed'
+        self.service.kanban.tasks[owner['id']].update(status='done', input_id=continued['_native_turn_id'])
+        self.service._prepare_return(continued, 'Assessment complete.', 'completed')
+        self.service._put('tasks', continued)
+        self.service._put('tasks', dict(source, status='completed'))
+        self.service._drain_returns()
+        returned = [t for t in self.service._all('tasks') if t.get('_is_return')]
+        self.assertEqual(len(returned), 1)
+        self.assertEqual(returned[0]['_assignment_task_id'], source['id'])
+        self.service._run_task(returned[0]['id'])
+        self.assertEqual(self.service._get('tasks', returned[0]['id'])['status'], 'completed')
+        self.assertEqual(self.service._get('tasks', original['id'])['status'], 'failed')
+
     def test_new_chat_can_continue_work_without_replacing_the_original_requester(self):
         owner, original = self.native()
         new = self.write('/v1/bots/' + original['bot_id'] + '/messages', {'text': 'Continue the original correction.'})
