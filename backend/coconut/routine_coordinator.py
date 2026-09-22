@@ -1,9 +1,43 @@
 """Dispatch native schedules while Coconut owns their durable conversation tasks."""
 from datetime import datetime, timezone
 import time
+import json
+from uuid import UUID, uuid5
 
 
 class NativeRoutines:
+    def native_routine_completion_input(self, task):
+        job = task.get('_native_job') or {}
+        owner = (job.get('fire_claim') or {}).get('by')
+        if (not owner or not job.get('id') or not task.get('_native_job_finished')
+                or task.get('status') in ('failed', 'cancelled')):
+            return {}
+        routine_id = str(uuid5(UUID(task['bot_id']), 'cron:' + job['id']))
+        if task.get('routine_id') != routine_id:
+            return {}
+        expected = dict(job_id=job['id'], owner=owner, success=True)
+        if task.get('_native_job_completion_receipt') == expected:
+            return dict(expected, native_confirmed=True)
+        triggered, succeeded = False, False
+        rows = self.db.execute('SELECT type,data FROM events WHERE task_id=? AND bot_id=? ORDER BY seq',
+                               (task['id'], task['bot_id']))
+        for kind, raw in rows:
+            data = json.loads(raw)
+            if kind == 'routine.triggered':
+                if data.get('routine_id') != routine_id or data.get('task_id') != task['id'] or triggered:
+                    return {}
+                triggered = True
+            if kind == 'task.updated' and triggered:
+                # Reject ambiguous histories: a later successful turn cannot
+                # establish that an earlier native finish was successful.
+                if data.get('status') in ('failed', 'cancelled'):
+                    return {}
+                if data.get('status') == 'completed':
+                    if data.get('routine_id') != routine_id or data.get('id') != task['id']:
+                        return {}
+                    succeeded = True
+        return dict(job_id=job['id'], owner=owner, success=True) if triggered and succeeded else {}
+
     def _migrate_native_routine_prompts(self):
         tasks = {task['id']: task for task in self._all('tasks')
                  if task.get('routine_id') and task.get('_native_job')}
@@ -31,13 +65,35 @@ class NativeRoutines:
             bot = next((b for b in bots if b['id'] == routine['bot_id']), None)
             if bot:
                 self.provider.native_settings('routine_create', [bot], bot_id=bot['id'], changes=routine, request_key=routine['id'])
-        native = self.provider.native_settings('routines_read', bots)['routines']
+        snapshot = self.provider.native_settings('routines_read', bots)
+        native = snapshot['routines']
+        completions = snapshot.get('completions', {})
         with self.transaction():
+            from .native_routine_receipts import completion_id
+            for task in self._all('tasks'):
+                job = task.get('_native_job') or {}
+                owner = (job.get('fire_claim') or {}).get('by')
+                if job.get('id') and owner:
+                    proof = completions.get(task['bot_id'], {}).get(completion_id(job['id'], owner))
+                    if proof:
+                        task['_native_job_completion_receipt'] = proof
+                        self._put('tasks', task)
+                        # An in-flight request still holds its pre-migration copy.
+                        if task['id'] in self.running or task['status'] == 'working':
+                            completions[task['bot_id']].pop(completion_id(job['id'], owner))
             previous = {r['id']: r for r in self._all('routines')}
             self.db.execute('DELETE FROM routines')
             for routine in native:
                 routine['last_task_id'] = previous.get(routine['id'], {}).get('last_task_id')
                 self._put('routines', routine)
+
+        # Persist proof with its task before removing the redundant native file.
+        # Unowned captured receipts can go too; later completions are untouched.
+        for bot in bots:
+            candidates = completions.get(bot['id'], {})
+            if candidates:
+                self.provider.native_settings('routine_prune_completions', [bot], bot_id=bot['id'],
+                                              completions=candidates)
 
     def mutate_native_routine(self, method, parts, data, key):
         from .service import ServiceError

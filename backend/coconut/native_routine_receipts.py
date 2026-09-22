@@ -1,5 +1,6 @@
 """Reconcile the handoff from a native cron claim to a Coconut task."""
 import fcntl
+import hashlib
 import json
 from contextlib import contextmanager
 from pathlib import Path
@@ -65,11 +66,43 @@ def issue(home, job):
     return None
 
 
+def completion_id(identity, owner):
+    return 'completed-' + hashlib.sha256(json.dumps([identity, owner]).encode()).hexdigest()
+
+
+def completed(home, identity, owner, jobs, provenance=None):
+    """Require native completion provenance, never a task's finished flag alone."""
+    expected = dict(job_id=identity, owner=owner, success=True)
+    if provenance == dict(expected, native_confirmed=True):
+        return True
+    with locked(home, identity):
+        if read(home, completion_id(identity, owner)) == expected:
+            return True
+        job = jobs.get_job(identity) or {}
+        outcome = job.get('_coconut_completion') or {}
+        if outcome.get('owner') == owner:
+            return outcome == expected
+        # Validate and preserve legacy proof before a later claim can replace
+        # the mutable finished receipt. This uses the same lock as claim/finish.
+        if (provenance == expected and job.get('_coconut_completion_owner') == owner
+                and read(home, identity) == dict(phase='finished', owner=owner)
+                and (job.get('fire_claim') or {}).get('by') != owner):
+            save(home, completion_id(identity, owner), expected)
+            return True
+        return False
+
+
 def finish(home, identity, jobs, *, owner, success, output='', failure=None):
     with locked(home, identity):
+        def confirmed(job):
+            if job.get('_coconut_completion') == dict(job_id=identity, owner=owner, success=True):
+                # Keep proof for this occurrence before another native fire can replace it.
+                save(home, completion_id(identity, owner), dict(job_id=identity, owner=owner, success=True))
+            return True
+
         def complete(all_jobs, index, job):
             if job.get('_coconut_completion_owner') == owner:
-                return True
+                return confirmed(job)
             if (job.get('fire_claim') or {}).get('by') != owner:
                 return False
             if output:
@@ -79,10 +112,42 @@ def finish(home, identity, jobs, *, owner, success, output='', failure=None):
             jobs._record_run_outcome(job, success, failure, None, None, stamp)
             jobs._advance_after_run(job, stamp)
             job['_coconut_completion_owner'] = owner
+            job['_coconut_completion'] = dict(job_id=identity, owner=owner, success=bool(success))
             jobs.save_jobs(all_jobs)
-            return True
+            return confirmed(job)
 
-        confirmed = jobs._under_fire_fence(identity, lambda: jobs._with_job(identity, complete, False))
-        if confirmed:
+        result = jobs._under_fire_fence(identity, lambda: jobs._with_job(identity, complete, False))
+        if result:
             save(home, identity, {'phase': 'finished', 'owner': owner})
-        return {'ok': bool(confirmed)}
+        return {'ok': bool(result)}
+
+
+def completion_receipts(home):
+    """Read only our exact legacy occurrence format; leave other receipts alone."""
+    result = {}
+    for path in (Path(home) / 'coconut-runs').glob('completed-*.json'):
+        try:
+            value = json.loads(path.read_text())
+            if (isinstance(value, dict) and isinstance(value.get('job_id'), str)
+                    and isinstance(value.get('owner'), str)
+                    and value == dict(job_id=value['job_id'], owner=value['owner'], success=True)
+                    and path.stem == completion_id(value['job_id'], value['owner'])):
+                result[path.stem] = value
+                # Bound each provider transfer, not the lifetime of saved proof.
+                if len(result) == 128:
+                    break
+        except (OSError, ValueError):
+            continue
+    return result
+
+
+def prune_completions(home, candidates):
+    # Candidates were captured before the service task snapshot and migrated in
+    # its committed transaction. Never sweep receipts created after that snapshot.
+    for identity, value in candidates.items():
+        if identity != completion_id(value['job_id'], value['owner']):
+            raise ValueError('Invalid completion receipt.')
+        with locked(home, value['job_id']):
+            if read(home, identity) == value:
+                receipt_path(home, identity).unlink(missing_ok=True)
+    return {'ok': True}

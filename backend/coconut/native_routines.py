@@ -50,11 +50,13 @@ def view(bot_id, job):
 def worker(operation, request, homes):
     from cron import jobs
     if operation == 'routines_read':
-        result = []
+        from native_routine_receipts import completion_receipts
+        result, completions = [], {}
         for bot_id, home in homes.items():
             with profile(home):
                 result.extend(view(bot_id, job) for job in jobs.list_jobs(include_disabled=True))
-        return {'routines': result}
+                completions[bot_id] = completion_receipts(home)
+        return {'routines': result, 'completions': completions}
     bot_id = request['bot_id']
     with profile(homes[bot_id]):
         if operation == 'routine_create':
@@ -69,6 +71,9 @@ def worker(operation, request, homes):
                                   origin={'platform': 'coconut', 'chat_id': bot_id, 'coconut_request': source},
                                   paused=not data.get('enabled', True))
             return view(bot_id, job)
+        if operation == 'routine_prune_completions':
+            from native_routine_receipts import prune_completions
+            return prune_completions(homes[bot_id], request['completions'])
         identity = request['native_id']
         if operation == 'routine_update':
             changes = request['changes']

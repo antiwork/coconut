@@ -3006,6 +3006,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     provider_task['_pr_review'] = task['_pr_review']
                 if task.get('_native_job'):
                     provider_task['_native_job'] = task['_native_job']
+                    provider_task['_native_job_finished'] = task.get('_native_job_finished', False)
+                    with self.lock:
+                        provider_task['_native_job_completion'] = self.native_routine_completion_input(task)
                 with self.lock:
                     provider_task['_native_receipts'] = [json.loads(row[0]) for row in self.db.execute(
                         "SELECT data FROM native_receipts WHERE json_extract(data, '$.task_id')=? "
