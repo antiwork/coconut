@@ -95,6 +95,15 @@ class NativeOutcomes:
                 for field in ('_review_task_id', '_activity_task_id'):
                     if not peer.get(field):
                         continue
+                    if (field == '_review_task_id' and linked_parent and peer['kind'] == 'pr'
+                            and peer['bot_id'] == linked_parent['bot_id']
+                            and peer.get('work_outcome_id') == linked_parent['id']
+                            and peer.get('url') and item.get('url')
+                            and peer['url'].lower() == item['url'].lower()
+                            and peer['task_id'] == linked_parent['task_id']
+                            and peer[field] == linked_parent['task_id']):
+                        # The requester's own report of this same PR is not a second writer.
+                        continue
                     reporter = tasks[peer[field]]
                     if execution_key(reporter) == execution_key(owner):
                         continue
