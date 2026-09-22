@@ -721,6 +721,43 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(len([a for a in self.service._all('artifacts') if a['kind'] == 'work']), 1)
         self.assertEqual(self.resume(source), receipt)
 
+    def requester_pr_report(self):
+        owner, source, work, pr = self.linked_requester_pr()
+        tracker = self.write('/v1/bots/' + source['bot_id'] + '/messages',
+                             {'text': 'Track the delegated PR.'})
+        tracker = self.service._get('tasks', tracker['id'])
+        tracker['status'] = 'completed'
+        self.service._put('tasks', tracker)
+        report = dict(id='requester-pr-report', task_id=source['id'],
+            bot_id=source['bot_id'], kind='pr', title='The delegated PR',
+            status='preparing', url=pr['url'], work_outcome_id=work['id'],
+            _review_task_id=source['id'], _activity_task_id=tracker['id'])
+        self.service._put('artifacts', report)
+        return owner, source, work, pr, tracker, report
+
+    def test_requester_report_of_same_pr_does_not_own_delegate_execution(self):
+        owner, source, work, pr, tracker, report = self.requester_pr_report()
+        receipt = self.resume(source)
+        self.assertEqual(receipt['task_id'], owner['id'])
+        self.assertEqual(self.service._get('tasks', owner['id'])['_work_context_id'], pr['id'])
+        self.assertEqual(self.service._get('artifacts', work['id']), work)
+        self.assertEqual(self.service._get('artifacts', report['id']), report)
+        self.assertEqual(self.service._get('tasks', tracker['id']), tracker)
+
+    def test_requester_report_preserves_active_tracker_and_other_pr_guard(self):
+        owner, source, work, pr, tracker, report = self.requester_pr_report()
+        self.service._put('tasks', dict(tracker, status='working'))
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(source)
+        self.service._put('tasks', tracker)
+        report['url'] = 'https://github.com/example/project/pull/2'
+        report['_activity_task_id'] = source['id']
+        self.service._put('artifacts', report)
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(source)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.service._get('artifacts', work['id']), work)
+
     def test_linked_delegated_pr_preserves_requester_work_pause(self):
         owner, source, work, pr = self.linked_requester_pr()
         work['paused_by_decision_id'] = 'held'
