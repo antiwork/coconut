@@ -1327,6 +1327,7 @@ def run_turn(request, emit, request_receipt):
         scope.live_messages.consumed = lambda identities: emit(
             'steering_consumed', {'message_ids': identities, 'turn_id': request['task'].get('_native_turn_id')})
         scope.live_messages.bind(agent)
+        emit('steering_ready', {'turn_id': scope.turn_id})
         if scope.cancelled.is_set():
             raise InterruptedError('The task was cancelled.')
         work.restore(agent)

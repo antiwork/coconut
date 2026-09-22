@@ -85,6 +85,21 @@ class LiveServiceTests(unittest.TestCase):
     write = test_service.ServiceTests.write
     wait = test_service.ServiceTests.wait
 
+    def test_worker_ready_retries_input_sent_before_process_started(self):
+        bot = self.bot()
+        task = self.send(bot, 'Hold this task')
+        self.service.start()
+        self.assertTrue(self.provider.started.wait(2))
+        self.write('POST', f'/v1/bots/{bot["id"]}/messages', dict(text='Answer this first.', mode='auto'))
+        received = []
+        self.provider.steer_task = lambda task_id, turn_id, messages: received.extend(messages)
+        turn_id = self.service._get('tasks', task['id'])['_native_turn_id']
+        self.service.emit(task['id'], 'steering_ready', dict(turn_id='old-turn'))
+        self.assertEqual(received, [])
+        self.service.emit(task['id'], 'steering_ready', dict(turn_id=turn_id))
+        self.assertEqual([row['text'] for row in received], ['Answer this first.'])
+        self.provider.hold.set()
+
     def test_new_topic_reaches_live_turn_without_waiting_for_completion(self):
         bot = self.bot()
         task = self.send(bot, 'Hold this task')

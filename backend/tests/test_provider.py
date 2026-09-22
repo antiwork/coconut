@@ -294,6 +294,7 @@ class ProviderTests(unittest.TestCase):
         class ReceiptProvider(HermesProvider):
             def _run(self, operation, task, bot, history, emit, **extra):
                 def acknowledge(kind, payload):
+                    if kind == 'steering_ready': return None
                     if kind == 'native_call': return {'status': 'recorded', 'id': str(uuid4())}
                     if kind == 'native_result': return {'status': 'recorded'}
                     return emit(kind, payload)
@@ -512,7 +513,7 @@ class ProviderTests(unittest.TestCase):
         events = []
         task = dict(self.task, _native_turn_id=str(uuid4()))
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            worker = threading.Thread(target=lambda: provider.start_task(task, self.bot, [],
+            worker = threading.Thread(target=lambda: HermesProvider._run(provider, 'start', task, self.bot, [],
                                       lambda kind, data: events.append((kind, data))))
             worker.start()
             try:
@@ -527,6 +528,7 @@ class ProviderTests(unittest.TestCase):
                 gate.touch()
                 worker.join(6)
             self.assertFalse(worker.is_alive())
+        self.assertIn(('steering_ready', dict(turn_id=task['_native_turn_id'])), events)
         self.assertIn(('steering_consumed', dict(message_ids=['early-message'],
                                                turn_id=task['_native_turn_id'])), events)
 

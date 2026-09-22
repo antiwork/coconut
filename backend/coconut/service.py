@@ -3104,6 +3104,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         self._refresh_bot(task['bot_id'])
 
     def emit(self, task_id: str, kind: str, payload: dict):
+        if kind == 'steering_ready':
+            with self.lock:
+                if payload.get('turn_id') != self._get('tasks', task_id).get('_native_turn_id'):
+                    return
+            return self._deliver_live_messages(task_id)
         if kind == 'work_continue':
             return self.continue_native_work(task_id, payload)
         if kind == 'work_wait':
