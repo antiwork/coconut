@@ -2,6 +2,21 @@ import XCTest
 
 final class MessageInteractionFlowTests: XCTestCase {
     @MainActor
+    func testSelectingMainChatDoesNotWaitForRefresh() throws {
+        guard let address = ProcessInfo.processInfo.environment["COCONUT_LAYOUT_TEST_URL"] else { throw XCTSkip("Run the selection fixture.") }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
+        app.launch()
+        let choice = app.buttons["select-conversation-00000000-0000-4000-8000-000000000002"]
+        XCTAssertTrue(choice.waitForExistence(timeout: 15))
+        choice.tap()
+        XCTAssertTrue(app.buttons["manage-bots"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "message-input").firstMatch.exists)
+        capture(app, "Committed selection opens Coconut while refresh fails")
+    }
+
+    @MainActor
     func testSingleChatQuotesWorkerAndKeepsDraft() async throws {
         guard let address = ProcessInfo.processInfo.environment["COCONUT_LAYOUT_TEST_URL"] else { throw XCTSkip("Run the single chat fixture.") }
         continueAfterFailure = false

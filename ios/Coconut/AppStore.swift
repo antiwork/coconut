@@ -437,7 +437,12 @@ final class AppStore {
     func selectConversationBot(_ bot: Bot) async {
         if isDemo { conversationBotId = bot.id; return }
         let _: ConversationSelection? = await write("settings/conversation", method: "PUT",
-            payload: ConversationSetting(botId: bot.id), as: ConversationSelection.self)
+            payload: ConversationSetting(botId: bot.id), as: ConversationSelection.self,
+            onSuccess: { [weak self] receipt in
+                guard let self else { return }
+                self.conversationBotId = receipt.conversationBotId
+                self.cachedState?.conversationBotId = receipt.conversationBotId
+            })
     }
 
     func replyInCoconut(to message: Message) {
