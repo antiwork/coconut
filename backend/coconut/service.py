@@ -3584,6 +3584,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 chunks = []
                 context_failure = {}
                 def emit(kind, payload):
+                    if kind == 'steering_ready':
+                        # Context workers announce readiness but do not accept chat steering.
+                        return
                     if kind == 'decision_response':
                         if context.get('_decision_refresh'):
                             return self.refresh_decision(context_id, payload)

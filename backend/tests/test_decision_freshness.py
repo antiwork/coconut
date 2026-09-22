@@ -1216,6 +1216,31 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'pending')
         self.assertEqual(self.service._get('tasks', self.task['id'])['_native_job'], job)
 
+    def test_worker_ready_event_does_not_fail_refresh_or_repeat_it(self):
+        decision = self.question()
+        self.service._queue_decision_refreshes()
+        context = self.service._all('contexts')[-1]
+        messages = self.service._all('messages')
+
+        def answer(task, bot, history, question, emit):
+            emit('steering_ready', {'turn_id': None})
+            emit('decision_response', dict(status='current', evidence='Verified the pending choice still applies.'))
+
+        self.provider.answer_context = answer
+        self.service._start_context(context['id'])
+        self.service.context_threads[context['id']].join(timeout=5)
+        saved = self.service._get('contexts', context['id'])
+        self.assertEqual(saved['status'], 'completed')
+        self.assertTrue(saved['_refresh_recorded'])
+        self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'pending')
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'needs_you')
+        self.assertEqual(self.service._all('messages'), messages)
+        decision = self.service._get('decisions', decision['id'])
+        decision['_freshness']['queued_at'] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        self.service._put('decisions', decision)
+        self.service._queue_decision_refreshes()
+        self.assertEqual(len(self.service._all('contexts')), 1)
+
     def test_real_context_worker_records_refresh_and_stays_silent(self):
         decision = self.question()
         self.service._queue_decision_refreshes()
