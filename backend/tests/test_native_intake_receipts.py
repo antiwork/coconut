@@ -32,6 +32,23 @@ class NativeIntakeReceiptTests(unittest.TestCase):
     def owners(self):
         return [t for t in self.service._all('tasks') if t.get('_native_outcome_id') == 't_123abc']
 
+    def test_adoption_does_not_scan_unrelated_tool_receipts(self):
+        import json
+        self.prepare()
+        self.service.db.executemany('INSERT INTO native_receipts (id,data) VALUES (?,?)',
+            [(f'old-{i}', json.dumps(dict(id=f'old-{i}', task_id='old-task',
+              action=dict(name='terminal', arguments=dict(command='true'))))) for i in range(5000)])
+        self.service.kanban.tasks['native:missing'] = dict(id='t_missing', unbound=True,
+            session_id='unknown', tenant=self.bot['id'], idempotency_key='missing')
+        steps = []
+        self.service.db.set_progress_handler(lambda: steps.append(1000) or 0, 1000)
+        try:
+            self.service._adopt_native_outcomes()
+        finally:
+            self.service.db.set_progress_handler(None, 0)
+        self.assertEqual(len(self.owners()), 1)
+        self.assertLess(sum(steps), 10000, 'Adoption scans the tool receipt history under the service lock')
+
     def test_normalized_session_uses_durable_intent_before_result(self):
         origin, native = self.prepare()
         self.service._adopt_native_outcomes()
