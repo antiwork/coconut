@@ -21,6 +21,30 @@ final class DecisionInboxTests: XCTestCase {
     }
 
     @MainActor
+    func testRefreshingCardOutsideLoadedHistoryKeepsItsChatPosition() throws {
+        let store = AppStore(demo: true)
+        var decision = try XCTUnwrap(store.decisions.first)
+        store.messages = []
+        store.decisions = [decision]
+        let botId = store.conversationBotId(for: decision)
+        for legacyStatus in [false, true] {
+            decision.status = legacyStatus ? "refreshing" : "pending"
+            decision.sourceRefreshing = !legacyStatus
+            store.decisions = [decision]
+            let rows = store.conversationTranscript(for: botId)
+            XCTAssertEqual(rows.map(\.decisionId), [decision.id])
+            XCTAssertEqual(rows.first?.createdAt, decision.createdAt)
+            XCTAssertEqual(store.inboxBadgeCount, 0)
+            store.messages = rows
+            XCTAssertEqual(store.conversationTranscript(for: botId).count, 1)
+            store.messages = []
+        }
+        decision.status = "rejected"
+        store.decisions = [decision]
+        XCTAssertTrue(store.conversationTranscript(for: botId).isEmpty)
+    }
+
+    @MainActor
     func testTextReplyRemovesCardAndKeepsMessage() async throws {
         let store = AppStore(demo: true)
         let decision = try XCTUnwrap(store.decisions.first)

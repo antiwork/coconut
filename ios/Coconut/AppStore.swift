@@ -595,7 +595,7 @@ final class AppStore {
         }
         let represented = Set(messages.filter { $0.kind == "decision" }.compactMap(\.decisionId))
         let missing = decisions.filter {
-            conversationBotId(for: $0) == botId && ($0.isPending || $0.id == focusDecisionId)
+            conversationBotId(for: $0) == botId && ($0.isPending || $0.isRefreshing || $0.id == focusDecisionId)
                 && !represented.contains($0.id)
         }.map { decision in
             Message(id: decision.id, botId: botId, taskId: decision.taskId, role: "assistant", kind: "decision",
