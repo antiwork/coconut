@@ -20,7 +20,8 @@ from coconut.service import Service
 
 def check(source, python):
     with tempfile.TemporaryDirectory(prefix='routine-continuation-', dir=Path(source).resolve().parent) as temporary:
-        root = Path(temporary)
+        root = Path(temporary).resolve()
+        assert root.is_relative_to(Path(source).resolve().parent)
         proof = root / 'proof.txt'
         proof.write_text('Exact routine continuation proof')
         errors, tool_results = [], []
@@ -66,6 +67,8 @@ def check(source, python):
         catalog = HermesModelCatalog(data, python=python, source=source)
         catalog.root = root / 'hermes'
         catalog.private_home = root / 'home'
+        assert catalog.root.resolve().is_relative_to(root)
+        assert catalog.private_home.resolve().is_relative_to(root)
         catalog.root.mkdir(parents=True, exist_ok=True)
         (catalog.root / 'config.yaml').write_text('{}')
         class Provider(HermesProvider):
@@ -158,7 +161,20 @@ def check(source, python):
             forged = copy.deepcopy(job)
             forged['fire_claim']['by'] = 'lost-owner'
             run(forged, True, False)
-            print(json.dumps(dict(passed=True, active_fenced=True, completed_continuation=True,
+            # Migrate existing saved proof through the real service/provider boundary.
+            unrelated = receipt.parent / 'completed-unrelated.json'
+            unrelated.write_text('{"unrelated": true}')
+            from coconut.routine_coordinator import NativeRoutines
+            NativeRoutines.refresh_native_routines(service)
+            assert not receipt.exists(), 'Saved completion file was not retired'
+            assert unrelated.read_text() == '{"unrelated": true}'
+            stored = service._get('tasks', legacy_task['id'])
+            durable = service.native_routine_completion_input(stored)
+            assert durable == dict(job_id=identity, owner=owner, success=True, native_confirmed=True), durable
+            run(job, True, True, durable)
+            run(forged, True, False, durable)
+            run(later, True, False, durable)
+            print(json.dumps(dict(passed=True, completion_retention=True, active_fenced=True, completed_continuation=True,
                 legacy_completed_continuation=True, later_occurrence_preserved=True, failed_and_lost_rejected=True,
                 execution_provenance_preserved=True, tool_results=len(tool_results))))
         finally:

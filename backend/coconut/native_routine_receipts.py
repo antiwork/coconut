@@ -73,6 +73,8 @@ def completion_id(identity, owner):
 def completed(home, identity, owner, jobs, provenance=None):
     """Require native completion provenance, never a task's finished flag alone."""
     expected = dict(job_id=identity, owner=owner, success=True)
+    if provenance == dict(expected, native_confirmed=True):
+        return True
     if read(home, completion_id(identity, owner)) == expected:
         return True
     job = jobs.get_job(identity) or {}
@@ -114,3 +116,34 @@ def finish(home, identity, jobs, *, owner, success, output='', failure=None):
         if result:
             save(home, identity, {'phase': 'finished', 'owner': owner})
         return {'ok': bool(result)}
+
+
+def completion_receipts(home):
+    """Read only our exact legacy occurrence format; leave other receipts alone."""
+    result = {}
+    for path in (Path(home) / 'coconut-runs').glob('completed-*.json'):
+        try:
+            value = json.loads(path.read_text())
+            if (isinstance(value, dict) and isinstance(value.get('job_id'), str)
+                    and isinstance(value.get('owner'), str)
+                    and value == dict(job_id=value['job_id'], owner=value['owner'], success=True)
+                    and path.stem == completion_id(value['job_id'], value['owner'])):
+                result[path.stem] = value
+                # Bound each provider transfer, not the lifetime of saved proof.
+                if len(result) == 128:
+                    break
+        except (OSError, ValueError):
+            continue
+    return result
+
+
+def prune_completions(home, candidates):
+    # Candidates were captured before the service task snapshot and migrated in
+    # its committed transaction. Never sweep receipts created after that snapshot.
+    for identity, value in candidates.items():
+        if identity != completion_id(value['job_id'], value['owner']):
+            raise ValueError('Invalid completion receipt.')
+        with locked(home, value['job_id']):
+            if read(home, identity) == value:
+                receipt_path(home, identity).unlink(missing_ok=True)
+    return {'ok': True}
