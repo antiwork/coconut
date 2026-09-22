@@ -737,12 +737,15 @@ class NativeWorkContinuationTests(unittest.TestCase):
 
     def test_requester_report_of_same_pr_does_not_own_delegate_execution(self):
         owner, source, work, pr, tracker, report = self.requester_pr_report()
+        report['url'] = pr['url'].upper()
+        self.service._put('artifacts', report)
         receipt = self.resume(source)
         self.assertEqual(receipt['task_id'], owner['id'])
         self.assertEqual(self.service._get('tasks', owner['id'])['_work_context_id'], pr['id'])
         self.assertEqual(self.service._get('artifacts', work['id']), work)
         self.assertEqual(self.service._get('artifacts', report['id']), report)
         self.assertEqual(self.service._get('tasks', tracker['id']), tracker)
+        self.assertEqual(self.resume(source), receipt)
 
     def test_requester_report_preserves_active_tracker_and_other_pr_guard(self):
         owner, source, work, pr, tracker, report = self.requester_pr_report()
