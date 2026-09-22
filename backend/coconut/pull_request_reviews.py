@@ -158,16 +158,19 @@ class PullRequestReviews:
             artifact['_review_task_id'] = task['id']
             self._put('artifacts', artifact)
 
-    def _pr_review_source(self, bot_id, task_id):
+    def _pr_review_source(self, bot_id, task_id, *, tasks=None):
         if not task_id:
             return None
         from .service import ServiceError
         if not isinstance(task_id, str):
             raise ServiceError(400, 'Choose the task that owns this pull request.')
-        task = self._get('tasks', task_id)
+        task = tasks[task_id] if tasks is not None else self._get('tasks', task_id)
         if task['bot_id'] != bot_id:
             raise ServiceError(400, 'The pull request and its task must belong to the same bot.')
-        return task
+        if tasks is None:
+            tasks = {t['id']: t for t in self._all('tasks')}
+        owner = self._work_execution_owner(task, tasks)
+        return owner if owner.get('_native_outcome_id') else task
 
     def _pr_review_source_current(self, artifact):
         if self._setting('work.cancelled.' + self._work_identity(artifact)) or not artifact.get('_review_task_id'):
@@ -264,7 +267,17 @@ class PullRequestReviews:
 
     def _queue_pr_reviews(self, *, artifact_ids=None):
         from .service import now, uid
-        with self.lock:
+        with self.transaction():
+            tasks = {t['id']: t for t in self._all('tasks')}
+            # A retry keeps the native execution and its delegated return route.
+            # Repair saved retry bindings before comparing owners across bots.
+            for artifact in self._all('artifacts'):
+                if artifact['kind'] != 'pr' or not artifact.get('_review_task_id'):
+                    continue
+                owner = self._pr_review_source(artifact['bot_id'], artifact['_review_task_id'], tasks=tasks)
+                if owner['id'] != artifact['_review_task_id']:
+                    artifact['_review_task_id'] = owner['id']
+                    self._put('artifacts', artifact)
             bot_ids = {a['bot_id'] for a in self._all('artifacts') if a['kind'] == 'pr' and a.get('_review_task_id')
                        and (artifact_ids is None or a['id'] in artifact_ids)}
         for bot_id in bot_ids:

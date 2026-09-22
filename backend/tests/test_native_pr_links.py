@@ -45,3 +45,30 @@ class NativePRLinksTests(unittest.TestCase):
         with self.assertRaises(ServiceError):
             self.service._register_pr_artifact(owner['id'], dict(url=URL, work_id=None))
         self.assertEqual(self.service._get('artifacts', pr['id'])['work_outcome_id'], item['id'])
+
+    def test_check_signal_resumes_original_native_task_after_retry(self):
+        from dataclasses import replace
+        from uuid import uuid4
+        from unittest.mock import patch
+        identity, item, owner, pr = self.report(lambda native: dict(work_id=native))
+        owner.update(status='queued', _execution_session_id=owner['id'])
+        self.service._put('tasks', owner)
+        self.service.kanban.call({'op': 'tick', 'rows': self.service._kanban_rows(), 'capacity': 0})
+        owner['status'] = 'completed'
+        self.service._put('tasks', owner)
+        retry = dict(owner, id=str(uuid4()), parent_task_id=owner['id'],
+                     source_task_id=None, source_bot_id=None, exchange_depth=0)
+        retry.pop('_native_outcome_id')
+        self.service._put('tasks', retry)
+        pr['_review_task_id'] = retry['id']
+        self.service._put('artifacts', pr)
+        self.native_program("board.kb.block_task(board.conn, sys.argv[2], reason='Worker stopped before recording its outcome')", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service.pr_tracker.observations.append(replace(observation(), pr_state='open', draft=False, checks_state='passed'))
+        self.service.refresh_pull_requests()
+        self.assertEqual(self.service._get('artifacts', pr['id'])['_review_task_id'], owner['id'])
+        with patch.object(self.service, '_run_task') as start:
+            self.service._dispatch_kanban()
+        start.assert_any_call(owner['id'])
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['id'], identity)
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'running')
