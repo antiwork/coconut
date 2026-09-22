@@ -51,9 +51,10 @@ class _NativeSnapshotsNeeded(Exception):
 
 
 class NativeOutcomes:
-    def _retain_native_work(self, owner, native, snapshot_missing=None):
+    def _retain_native_work(self, owner, native, snapshot_missing=None, snapshots=None):
         from .service import ServiceError, now
         from .work_capacity import execution_key
+        snapshots = self.kanban.tasks if snapshots is None else snapshots
         if owner.get('_work_context_id'):
             items = [self._get('artifacts', owner['_work_context_id'])]
         else:
@@ -89,12 +90,12 @@ class NativeOutcomes:
                                     if t.get('_native_outcome_id') or t.get('_kanban_claim')]
                     peer_chains.append((peer, reporter, linked, native_tasks))
             missing = sorted({t['id'] for _, _, _, native_tasks in peer_chains for t in native_tasks
-                              if t['id'] not in self.kanban.tasks})
+                              if t['id'] not in snapshots})
             if missing and snapshot_missing:
                 snapshot_missing(missing)
             for peer, reporter, linked, native_tasks in peer_chains:
                 native_pending = any(
-                    (snapshot := self.kanban.tasks.get(t['id'], {})).get('status') != 'done'
+                    (snapshot := snapshots.get(t['id'], {})).get('status') != 'done'
                     or snapshot.get('id') != (t.get('_native_outcome_id') or t['_kanban_claim'].get('native_id'))
                     or snapshot.get('current_run_id') or snapshot.get('worker_pid') for t in native_tasks)
                 if (native_pending or peer['kind'] != 'pr' or peer['bot_id'] == owner['bot_id'] or reporter['bot_id'] == owner['bot_id']
@@ -120,14 +121,15 @@ class NativeOutcomes:
         self._put('artifacts', item)
         self._event('artifact.updated' if items else 'artifact.created', self._public(item), owner['bot_id'], owner['id'])
 
-    def _native_continuation_owner(self, identity, snapshot_missing=None):
+    def _native_continuation_owner(self, identity, snapshot_missing=None, snapshots=None):
         """Resolve the caller's native ID through Coconut's durable owner mapping."""
         from .service import ServiceError
         if not self.kanban:
             raise ServiceError(409, 'Choose one existing native outcome from kanban_show.')
+        snapshots = dict(self.kanban.tasks) if snapshots is None else snapshots
         contexts = [context for context in self._all('contexts') if identity in (
             (context.get('_kanban_claim') or {}).get('native_id'),
-            self.kanban.tasks.get(context['id'], {}).get('id'))]
+            snapshots.get(context['id'], {}).get('id'))]
         if contexts:
             if len(contexts) != 1 or contexts[0]['status'] != 'completed':
                 raise ServiceError(409, 'Wait for the existing context task to finish.')
@@ -135,8 +137,9 @@ class NativeOutcomes:
             if snapshot_missing:
                 snapshot_missing([context['id']])
             else:
-                self.kanban.call({'op': 'snapshot', 'external_ids': [context['id']]})
-            context_native = self.kanban.tasks.get(context['id'], {})
+                result = self.kanban.call({'op': 'snapshot', 'external_ids': [context['id']]})
+                snapshots = {t['external_id']: t for t in result['tasks']}
+            context_native = snapshots.get(context['id'], {})
             if context_native.get('id') != identity:
                 raise ServiceError(409, 'The saved Coconut and native context mapping does not match.')
             if (context_native.get('status') not in ('done', 'archived')
@@ -150,7 +153,7 @@ class NativeOutcomes:
             if not identity:
                 raise ServiceError(409, 'The context task has no retained native outcome.')
         owners = self._all('tasks')
-        missing = [owner['id'] for owner in owners if owner['id'] not in self.kanban.tasks
+        missing = [owner['id'] for owner in owners if owner['id'] not in snapshots
             and identity in (owner.get('_native_outcome_id'), (owner.get('_kanban_claim') or {}).get('native_id'))]
         if missing:
             # Periodic snapshots omit older terminal bindings. Continuation
@@ -158,13 +161,14 @@ class NativeOutcomes:
             if snapshot_missing:
                 snapshot_missing(missing)
             else:
-                self.kanban.call({'op': 'snapshot', 'external_ids': missing})
+                result = self.kanban.call({'op': 'snapshot', 'external_ids': missing})
+                snapshots = {t['external_id']: t for t in result['tasks']}
         candidates = []
         mismatch = False
         for owner in owners:
             explicit = owner.get('_native_outcome_id')
             claimed = (owner.get('_kanban_claim') or {}).get('native_id')
-            native = self.kanban.tasks.get(owner['id'], {})
+            native = snapshots.get(owner['id'], {})
             mapped = native.get('id')
             if identity not in {value for value in (explicit, claimed, mapped) if value}:
                 continue
@@ -254,6 +258,7 @@ class NativeOutcomes:
 
     def continue_native_work(self, source_id, payload):
         requested = set()
+        snapshots = {}
 
         def snapshot_missing(identities):
             missing = set(identities) - requested
@@ -265,19 +270,26 @@ class NativeOutcomes:
         # re-read all ownership, peer links and pause guards in a new transaction.
         for attempt in range(5):
             try:
-                return self._continue_native_work(source_id, payload, snapshot_missing)
+                return self._continue_native_work(source_id, payload, snapshot_missing, snapshots)
             except _NativeSnapshotsNeeded as pending:
                 if attempt == 4:
                     break
                 requested.update(pending.identities)
-                self.kanban.call({'op': 'snapshot', 'external_ids': sorted(requested)})
+                result = self.kanban.call({'op': 'snapshot', 'external_ids': sorted(requested)})
+                # A periodic snapshot can evict terminal bindings before we retry.
+                # Replace the request-local fallback on every fetch so missing or
+                # rebound bindings cannot reuse an earlier successful lookup.
+                snapshots = {t['external_id']: t for t in result['tasks']}
         from .service import ServiceError
         raise ServiceError(409, 'The native work changed while checking it. Read its current activity and retry.')
 
-    def _continue_native_work(self, source_id, payload, snapshot_missing):
+    def _continue_native_work(self, source_id, payload, snapshot_missing, snapshots):
         from .service import ServiceError, now, uid, digest, encoded, require_text
         from .work_capacity import execution_key
         with self.transaction():
+            # Read one cache generation for both owner and peer admission. Newer
+            # cached claims win over the targeted fallback; eviction cannot erase it.
+            snapshots = snapshots | (self.kanban.tasks if self.kanban else {})
             source = self._get('tasks', source_id)
             if source['status'] != 'working' or self._task_paused(source):
                 raise ServiceError(409, 'This task cannot continue work now.')
@@ -287,7 +299,7 @@ class NativeOutcomes:
             previous = self.db.execute('SELECT data FROM deliveries WHERE id=?', (key,)).fetchone()
             if previous:
                 return json.loads(previous[0])['receipt']
-            owner, native = self._native_continuation_owner(identity, snapshot_missing)
+            owner, native = self._native_continuation_owner(identity, snapshot_missing, snapshots)
             identity = native['id']
             if source['bot_id'] not in (owner['bot_id'], owner.get('source_bot_id')):
                 raise ServiceError(403, 'Only the owner or its requesting bot can continue this work.')
@@ -331,7 +343,7 @@ class NativeOutcomes:
                    for d in self._all('decisions')):
                 raise ServiceError(409, 'The existing decision must be answered before work continues.')
             if not owner.get('_native_outcome_id'):
-                self._retain_native_work(owner, native, snapshot_missing)
+                self._retain_native_work(owner, native, snapshot_missing, snapshots)
             owner['_native_outcome_id'] = identity
             self._restore_native_work_owner(owner)
             related_ids = {t['id'] for t in related}
