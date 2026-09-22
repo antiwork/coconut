@@ -375,8 +375,8 @@ class NativeOutcomes:
             owner.setdefault('_bot_messages', []).append(dict(sender_bot_id=source['bot_id'],
                 sender_name=self._get('bots', source['bot_id'])['name'], text=text,
                 result_status=None, progress_only=False))
-            requester_id = owner.get('_reply_to_task_id') or owner.get('source_task_id')
-            if requester_id and source.get('parent_task_id') == requester_id:
+            requester_id = source.get('parent_task_id')
+            if requester_id and requester_id in (owner.get('_reply_to_task_id'), owner.get('source_task_id')):
                 requester = self._get('tasks', requester_id)
                 if (requester['status'] == 'failed' and source['bot_id'] == owner.get('source_bot_id')
                         and all(source.get(k) == requester.get(k) for k in
