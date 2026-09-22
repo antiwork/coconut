@@ -65,7 +65,13 @@ def job_context(request, runtime, config):
         scheduler._check_model_drift(job, job['id'], config, runtime, runtime.get('provider'), request['model'])
     else:
         for axis, current in (('model', request['model']), ('provider', request.get('provider') or runtime.get('provider'))):
-            expected = job.get(axis) or scheduler._snapshot_pin(job, axis, current, job['id']) or current
+            # New Hermes releases removed drift snapshots. Retain saved Coconut
+            # routes without depending on that removed scheduler helper.
+            expected = job.get(axis)
+            if not expected:
+                expected = (scheduler._snapshot_pin(job, axis, current, job['id'])
+                            if hasattr(scheduler, '_snapshot_pin') else job.get(axis + '_snapshot'))
+            expected = expected or current
             if expected != current:
                 raise ValueError('The scheduled ' + axis + ' differs from its saved route.')
     _guard_job_credential_exfil(job)

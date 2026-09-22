@@ -470,7 +470,9 @@ class WorkspaceRecoveryTests(unittest.TestCase):
             self.assertIn('Verify before completing', captured)
             self.assertEqual(self.service.kanban.tasks[result['id']]['id'], current['id'])
             self.assertFalse(self.service._get('tasks', result['id']).get('_steering'))
-            self.program('board.kb.complete_task(board.conn, sys.argv[2], summary="Verified followup")', current['id'])
+            claim = self.service._get('tasks', result['id'])['_kanban_claim']
+            self.program('assert board.kb.complete_task(board.conn, sys.argv[2], summary="Verified followup", expected_run_id=int(sys.argv[3]))',
+                         current['id'], str(claim['run_id']))
             self.service.kanban.call({'op': 'snapshot'})
             self.service._reconcile_kanban()
             self.assertEqual(self.service._get('tasks', result['id'])['status'], 'completed')
@@ -560,7 +562,8 @@ class WorkspaceRecoveryTests(unittest.TestCase):
     def complete_continued_outcome(self):
         start = self.provider.start_task
         def complete(task, *args):
-            self.program('assert board.kb.complete_task(board.conn, sys.argv[2], summary="Verified resumed outcome")', self.native_id)
+            self.program('assert board.kb.complete_task(board.conn, sys.argv[2], summary="Verified resumed outcome", expected_run_id=int(sys.argv[3]))',
+                         self.native_id, str(self.service._get('tasks', task['id'])['_kanban_claim']['run_id']))
             return start(task, *args)
         with patch.object(self.provider, 'start_task', side_effect=complete):
             deadline = time.monotonic() + 15
@@ -615,7 +618,20 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         self.assertEqual(self.native_run_count(), runs + 1)
 
     def test_unselected_dependency_wait_survives_until_native_promotion(self):
-        parent = self.program('board.kb.unblock_task(board.conn, sys.argv[2]); assert board.kb.claim_task(board.conn, sys.argv[2]); parent=board.kb.create_task(board.conn, title="Prerequisite", initial_status="blocked", workspace_kind="dir", workspace_path=sys.argv[3]); board.kb.link_tasks(board.conn, parent_id=parent, child_id=sys.argv[2]); assert board.kb.block_task(board.conn, sys.argv[2], kind="dependency", reason="Wait for prerequisite"); print(parent)', self.native_id, str(self.workspace))
+        parent = self.program('''
+import inspect
+board.kb.unblock_task(board.conn, sys.argv[2])
+claim = board.kb.claim_task(board.conn, sys.argv[2])
+assert claim
+parent = board.kb.create_task(board.conn, title="Prerequisite", initial_status="blocked",
+                              workspace_kind="dir", workspace_path=sys.argv[3])
+# Newer kernels require the worker's claim when linking its running child.
+kwargs = ({'expected_child_run_id': claim.current_run_id}
+          if 'expected_child_run_id' in inspect.signature(board.kb.link_tasks).parameters else {})
+board.kb.link_tasks(board.conn, parent_id=parent, child_id=sys.argv[2], **kwargs)
+assert board.kb.block_task(board.conn, sys.argv[2], kind="dependency", reason="Wait for prerequisite")
+print(parent)
+''', self.native_id, str(self.workspace))
         runs = self.native_run_count()
         for _ in range(3):
             self.service._dispatch_pending()
