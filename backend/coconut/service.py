@@ -366,6 +366,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         task = self._get('tasks', task_id) if task_id else None
         thread_id = task['thread_id'] if task else None
         display_bot_id = (task['bot_id'] if task.get('source_bot_id') else task['conversation_bot_id']) if task else bot_id
+        if role == 'user' and kind == 'artifact' and self._message_interaction:
+            display_bot_id = self._message_interaction.get('bot_id', display_bot_id)
         if sender_bot_id is None and task and role != 'user':
             sender_bot_id = task['bot_id']
         recipients = recipient_bot_ids if recipient_bot_ids is not None else ([task['bot_id']] if task and role == 'user' else [])
@@ -377,8 +379,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             direct_reply_message_id = direct_reply_message_id or (task or {}).get('_direct_reply_message_id')
             if direct_reply_message_id:
                 message['_direct_reply_message_id'] = direct_reply_message_id
-                display_bot_id = self._get('messages', direct_reply_message_id)['bot_id']
+                direct = self._get('messages', direct_reply_message_id)
+                display_bot_id = direct['bot_id']
                 message['bot_id'] = display_bot_id
+                if task and task['bot_id'] != display_bot_id and direct.get('reply_to'):
+                    message['reply_to'] = self._reply_reference(direct)
             elif task and task.get('source_bot_id') and not task.get('_is_return') and not decision_id:
                 message['exchange_recipient_bot_ids'] = [task['source_bot_id']]
         if human_authored and self._request_device_id is not None:
@@ -387,6 +392,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 message['client_request_id'] = self._request_key
         if human_authored and role == 'user' and self._message_interaction:
             message.update(self._message_interaction)
+            display_bot_id = message['bot_id']
             if message.get('reaction_event'):
                 message['_human_source_kind'] = 'reaction'
         if human_authored and role == 'user' and kind == 'text':
@@ -742,7 +748,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     "SELECT id FROM tasks WHERE json_extract(data,'$.bot_id') IN (SELECT value FROM json_each(?)) "
                     "AND json_extract(data,'$.conversation_bot_id') IN (SELECT value FROM json_each(?))",
                     (json.dumps(sorted(visible)), json.dumps(sorted(visible))))}
-                state = {'bots': bots, 'work_capacity': capacity_state(self._setting('work_capacity'))}
+                state = {'bots': bots, 'work_capacity': capacity_state(self._setting('work_capacity')),
+                         'conversation_bot_id': self._setting('conversation_bot_id')}
                 for table in self.TABLES[1:]:
                     if content_only and table == 'tasks':
                         continue
@@ -1068,6 +1075,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             affected = expanded
 
     def _delete_bot(self, bot: dict, callbacks: list, *, audit: dict | None = None):
+        if bot['id'] == self._setting('conversation_bot_id'):
+            raise ServiceError(409, 'Choose another Coconut chat bot before deleting this bot.')
         if not bot.get('_deleted'):
             affected = self._bot_deletion_scope(bot['id'])
             cancelled = []
@@ -1161,6 +1170,17 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
     def _write(self, method: str, parts: list[str], data: dict, device: str, callbacks: list) -> dict:
         if not isinstance(data, dict) or not parts or parts[0] != 'v1':
             raise ServiceError(400, 'Send a JSON object to a v1 route.')
+        if parts == ['v1', 'settings', 'conversation'] and method == 'PUT':
+            if set(data) != {'bot_id'}:
+                raise ServiceError(400, 'Choose the bot for Coconut chat.')
+            bot = self._get('bots', require_text(data, 'bot_id', 100))
+            if bot.get('_deleted') or bot['archived']:
+                raise ServiceError(409, 'Choose an active bot for Coconut chat.')
+            self.db.execute('INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                            ('conversation_bot_id', encoded(bot['id'])))
+            result = {'conversation_bot_id': bot['id']}
+            self._event('settings.updated', result)
+            return result
         if method == 'POST' and len(parts) == 5 and parts[:2] == ['v1', 'work'] and parts[2] in ('pull-requests', 'items') and parts[4] == 'dismiss':
             return self._dismiss_work(parts[3], data)
         if method == 'POST' and len(parts) == 5 and parts[:3] == ['v1', 'work', 'items'] and parts[4] == 'cancel':
@@ -1197,6 +1217,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             if bot.get('_deleted'):
                 raise ServiceError(404, 'This bot was deleted.')
             if len(parts) == 3 and method == 'PATCH':
+                if data.get('archived') and bot['id'] == self._setting('conversation_bot_id'):
+                    raise ServiceError(409, 'Choose another Coconut chat bot before archiving this bot.')
                 if 'model_override' in data:
                     bot['model_override'] = self._model_override(data['model_override'], self._request_model_catalog)
                 if 'profile_id' in data and data['profile_id'] != bot['profile_id']:
@@ -1795,14 +1817,26 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             raise ServiceError(400, 'A mention cannot change the message recipient.')
         interaction = dict(bot_mentions=[dict(id=identity, name=self._get('bots', identity)['name'])
                                          for identity in mentioned]) if mentioned else None
+        quoted_task = None
         if target_id is not None:
-            target = self._interaction_target(target_id, bot['id'])
+            primary = bot['id'] == self._setting('conversation_bot_id')
+            target = self._interaction_target(target_id, None if primary else bot['id'])
             interaction = (interaction or {}) | dict(reply_to=self._reply_reference(target))
+            owner = self._get('tasks', target['task_id']) if primary and target.get('task_id') else None
+            if primary and (target['bot_id'] != bot['id'] or owner and owner['bot_id'] != bot['id']):
+                if task or work_item or data.get('recipient_bot_ids') or data.get('scheduled_at'):
+                    raise ServiceError(400, 'Send this quoted reply without another task, recipient, or schedule.')
+                if not target.get('task_id'):
+                    raise ServiceError(409, 'This message has no task to reply to.')
+                quoted_task = owner
+                interaction['bot_id'] = bot['id']
         if work_item:
             interaction = (interaction or {}) | dict(work_context=dict(id=work_item['id'], title=work_item['title']))
             data = dict(data, mode='queue')
         self._message_interaction = interaction
         try:
+            if quoted_task:
+                return self._reply(quoted_task, data)
             return self._send(bot, data, work_item=work_item) if work_item else (self._reply(task, data) if task else self._send(bot, data))
         finally:
             self._message_interaction = None
@@ -1887,7 +1921,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             if mode == 'steer':
                 raise ServiceError(400, 'Mentioned bots receive separate messages.')
             return self._dispatch_user(origin, data, recipients, thread_id=thread_id, parent_task_id=parent_task_id)
-        attachments = self._validate_attachments(conversation_bot_id, data.get('attachment_ids', []))
+        attachment_owner = (self._message_interaction or {}).get('bot_id', conversation_bot_id)
+        attachments = self._validate_attachments(attachment_owner, data.get('attachment_ids', []))
         if work_item and work_item.get('_native_outcome_id') and not data.get('work_status_only'):
             owner = self._get('tasks', work_item['task_id'])
             native = self.kanban.tasks.get(owner['id'], {}) if self.kanban else {}
@@ -1986,9 +2021,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
     def _record_direct_reply(self, task):
         bot_id = task['bot_id']
         direct = next((m for m in (self._get('messages', identity) for identity in reversed(task['_turn_message_ids']))
-                       if m['role'] == 'user' and m['bot_id'] == bot_id
+                       if m['role'] == 'user'
                        and not m.get('sender_bot_id') and not m.get('reaction_event')
-                       and m.get('recipient_bot_ids') == [bot_id]), None) if task.get('source_bot_id') else None
+                       and m.get('recipient_bot_ids') == [bot_id]), None)
         if direct:
             task['_direct_reply_message_id'] = direct['id']
 
@@ -2105,7 +2140,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             if data.get('decision_id'):
                 raise ServiceError(400, 'Ask decision context or address bots in separate replies.')
             return self._dispatch_user(origin, data, recipients, thread_id=task['thread_id'], parent_task_id=task['id']) | {'reply_status': 'queued_recipients'}
-        attachments = self._validate_attachments(origin['id'], data.get('attachment_ids', []))
+        attachment_owner = (self._message_interaction or {}).get('bot_id', origin['id'])
+        attachments = self._validate_attachments(attachment_owner, data.get('attachment_ids', []))
         thread_tasks = {t['id'] for t in self._all('tasks') if t['thread_id'] == task['thread_id']}
         pending = [d for d in self._all('decisions') if d['task_id'] in thread_tasks and d['status'] == 'pending' and d.get('inbox_kind') != 'proposal']
         if data.get('decision_id'):
@@ -3232,7 +3268,16 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     if text in task.get('_steering', []):
                         task['_steering'].remove(text)
                     task.setdefault('_turn_message_ids', []).append(identity)
+                previous_reply = task.get('_direct_reply_message_id')
                 self._record_direct_reply(task)
+                if task.get('_direct_reply_message_id') != previous_reply:
+                    # Consumed input starts a new answer with its own destination.
+                    for message in self._task_messages(task_id):
+                        if message.get('streaming'):
+                            message['streaming'] = False
+                            self._put('messages', message)
+                            self._event('message.updated', message, message['bot_id'], task_id)
+                            self.push.record('message.completed', message, message['bot_id'], task_id)
                 self._put('tasks', task)
             elif kind in ('completed', 'failed'):
                 if kind == 'failed':
