@@ -52,9 +52,30 @@ class CompletedRoutineTests(unittest.TestCase):
         bridge = self.bridge()
         self.assertTrue(self.finish()['ok'])
         receipts.receipt_path(self.home, receipts.completion_id('job', 'owner')).unlink()
+        self.job.pop('_coconut_completion')
+        bridge.request['task']['_native_job_completion'] = dict(job_id='job', owner='owner', success=True)
         self.assertEqual(self.run_tool(bridge), 'executed')
         self.job['_coconut_completion_owner'] = 'other-owner'
         with self.assertRaises(TurnPaused): self.run_tool(bridge)
+
+    def test_later_native_success_does_not_authorize_failed_owner(self):
+        bridge = self.bridge()
+        self.request['success'] = False
+        self.assertTrue(self.finish()['ok'])
+        self.job['fire_claim'] = {'by': 'native-owner'}
+        self.assertTrue(fixtures.NativeCompletionReceiptTests.mark_job_run(
+            self, 'job', True, expected_fire_owner='native-owner'))
+        with self.assertRaises(TurnPaused): self.run_tool(bridge)
+
+    def test_finish_retry_cannot_launder_later_native_success(self):
+        self.request['success'] = False
+        self.assertTrue(self.finish()['ok'])
+        self.job['fire_claim'] = {'by': 'native-owner'}
+        fixtures.NativeCompletionReceiptTests.mark_job_run(
+            self, 'job', True, expected_fire_owner='native-owner')
+        self.assertTrue(self.finish()['ok'])
+        self.assertNotEqual(receipts.read(self.home, receipts.completion_id('job', 'owner')),
+                            dict(job_id='job', owner='owner', success=True))
 
     def test_finished_flag_does_not_authorize_a_lost_claim(self):
         bridge = self.bridge()
@@ -99,6 +120,50 @@ class CompletedRoutineTests(unittest.TestCase):
         self.job['fire_claim'] = None
         with patch.object(receipts, 'read', side_effect=OSError('unavailable')):
             with self.assertRaises(TurnPaused): self.run_tool(bridge)
+
+
+class ServiceCompletionTests(unittest.TestCase):
+    def setUp(self):
+        from uuid import UUID, uuid4, uuid5
+        import tempfile
+        from coconut.service import Service
+        from coconut.providers import FixtureProvider
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.service = Service(self.tmp.name, FixtureProvider(self.tmp.name), start_workers=False)
+        self.addCleanup(self.service.close)
+        self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'Cron'}, str(uuid4()))
+        routine = dict(id=str(uuid5(UUID(self.bot['id']), 'cron:job')), bot_id=self.bot['id'],
+                       name='Probe', _native_id='job')
+        self.service.provider.native_settings = lambda *a, **kw: dict(job=dict(id='job', fire_claim={'by': 'owner'}))
+        with self.service.transaction():
+            task = self.service.claim_native_routine(routine)
+            self.task = self.service._get('tasks', task['id'])
+            self.task['status'] = 'working'
+            self.service._put('tasks', self.task)
+        self.service.emit(task['id'], 'completed', {'summary': 'Successful routine'})
+        self.task = self.service._get('tasks', task['id'])
+        self.task['_native_job_finished'] = True
+        self.expected = dict(job_id='job', owner='owner', success=True)
+
+    def test_durable_service_completion_recovers_legacy_owner(self):
+        self.assertEqual(self.service.native_routine_completion_input(self.task), self.expected)
+        self.task['status'] = 'working'
+        self.assertEqual(self.service.native_routine_completion_input(self.task), self.expected)
+
+    def test_failed_history_cannot_be_replaced_by_later_success(self):
+        with self.service.transaction():
+            self.service._event('task.updated', dict(self.task, status='failed'), self.bot['id'], self.task['id'])
+            self.service._event('task.updated', dict(self.task, status='completed'), self.bot['id'], self.task['id'])
+        self.assertEqual(self.service.native_routine_completion_input(self.task), {})
+
+    def test_missing_completion_or_wrong_routine_or_cancelled_fails_closed(self):
+        for changes in ({'routine_id': 'other'}, {'status': 'cancelled'}, {'_native_job_finished': False}):
+            with self.subTest(changes=changes):
+                self.assertEqual(self.service.native_routine_completion_input(dict(self.task, **changes)), {})
+        with self.service.transaction():
+            self.service.db.execute("DELETE FROM events WHERE type='task.updated'")
+        self.assertEqual(self.service.native_routine_completion_input(self.task), {})
 
 
 if __name__ == '__main__':

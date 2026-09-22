@@ -14,11 +14,12 @@ from uuid import uuid4
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'backend'))
 from coconut.model_catalog import HermesModelCatalog
-from coconut.providers import HermesProvider
+from coconut.providers import HermesProvider, FixtureProvider
+from coconut.service import Service
 
 
 def check(source, python):
-    with tempfile.TemporaryDirectory(prefix='routine-continuation-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='routine-continuation-', dir=Path(source).resolve().parent) as temporary:
         root = Path(temporary)
         proof = root / 'proof.txt'
         proof.write_text('Exact routine continuation proof')
@@ -63,6 +64,8 @@ def check(source, python):
         address = f'http://127.0.0.1:{server.server_port}/v1'
         data = root / 'data'
         catalog = HermesModelCatalog(data, python=python, source=source)
+        catalog.root = root / 'hermes'
+        catalog.private_home = root / 'home'
         catalog.root.mkdir(parents=True, exist_ok=True)
         (catalog.root / 'config.yaml').write_text('{}')
         class Provider(HermesProvider):
@@ -72,14 +75,17 @@ def check(source, python):
         catalog.resolve_runtime = lambda *args, **kwargs: dict(provider='custom', api_mode='chat_completions',
                                                                base_url=address, api_key='local-test')
         provider = Provider(data, python=python, hermes_root=source, catalog=catalog)
-        bot = dict(id=str(uuid4()), session_id=str(uuid4()), instructions='Read the requested file.')
+        service = Service(root / 'service', FixtureProvider(root / 'service'), start_workers=False)
+        bot = service.mutate('POST', '/v1/bots', {'name': 'Probe'}, str(uuid4()))
+        bot.update(instructions='Read the requested file.')
         provider.environment(bot['id'])
         def native(operation, **kwargs):
             return provider.native_settings(operation, [bot], bot_id=bot['id'], **kwargs)
         execution_id = str(uuid4())
-        def run(job, finished, allowed):
+        def run(job, finished, allowed, provenance=None):
             task = dict(id=execution_id, bot_id=bot['id'], title='Read the requested file.',
-                        _native_job=job, _native_job_finished=finished, _conversation_epoch=str(uuid4()))
+                        _native_job=job, _native_job_finished=finished, _conversation_epoch=str(uuid4()),
+                        _native_job_completion=provenance)
             original = copy.deepcopy(task)
             events = []
             def emit(kind, payload):
@@ -102,6 +108,13 @@ def check(source, python):
             identity = routine['_native_id']
             job = native('routine_claim', native_id=identity, manual=True)['job']
             owner = job['fire_claim']['by']
+            service.provider = provider
+            with service.transaction():
+                legacy_task = service.claim_native_routine(routine)
+                stored = service._get('tasks', legacy_task['id'])
+                stored['status'] = 'working'
+                service._put('tasks', stored)
+            service.emit(stored['id'], 'completed', {'summary': 'Routine succeeded'})
             run(job, False, True)
             assert native('routine_heartbeat', native_id=identity, owner=owner)['ok']
             assert native('routine_finish', native_id=identity, owner=owner, success=True, output='Done')['ok']
@@ -111,7 +124,30 @@ def check(source, python):
             receipt = data / 'bots' / bot['id'] / 'home/coconut-runs' / (completion_id(identity, owner) + '.json')
             saved = receipt.read_bytes()
             receipt.unlink()
-            run(job, True, True)
+            jobs_path = data / 'bots' / bot['id'] / 'home/cron/jobs.json'
+            jobs_data = json.loads(jobs_path.read_text())
+            for row in jobs_data['jobs']:
+                if row['id'] == identity:
+                    row.pop('_coconut_completion', None)
+            jobs_path.write_text(json.dumps(jobs_data))
+            run(job, True, False)
+            service.refresh_native_routines = lambda: None
+            service.tick_native_routines()
+            stored = service._get('tasks', legacy_task['id'])
+            assert stored['_native_job_finished'], stored
+            provenance = service.native_routine_completion_input(stored)
+            assert provenance == dict(job_id=identity, owner=owner, success=True), provenance
+            run(job, True, True, provenance)
+            # Exercise the actual service-to-provider request, including private fields.
+            with service.transaction():
+                stored['status'] = 'queued'
+                service._advance_input(stored)
+                service._put('tasks', stored)
+            before = len(tool_results)
+            service._run_task(stored['id'])
+            assert len(tool_results) > before, service._get('tasks', stored['id'])
+            assert service._get('tasks', stored['id'])['status'] == 'completed'
+
             receipt.write_bytes(saved)
             later = native('routine_claim', native_id=identity, manual=True)['job']
             assert later['fire_claim']['by'] != owner
@@ -126,6 +162,7 @@ def check(source, python):
                 legacy_completed_continuation=True, later_occurrence_preserved=True, failed_and_lost_rejected=True,
                 execution_provenance_preserved=True, tool_results=len(tool_results))))
         finally:
+            service.close()
             provider.close()
             server.shutdown()
             server.server_close()

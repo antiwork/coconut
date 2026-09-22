@@ -63,7 +63,8 @@ class NativeBridge:
                             from .native_routine_receipts import completed
                         else:
                             from native_routine_receipts import completed
-                        owns_claim = completed(get_hermes_home(), job['id'], job['fire_claim']['by'], jobs)
+                        owns_claim = completed(get_hermes_home(), job['id'], job['fire_claim']['by'], jobs,
+                                               self.request['task'].get('_native_job_completion'))
                     except Exception as error:
                         raise TurnPaused('The routine completion could not be confirmed.') from error
                 if not owns_claim:

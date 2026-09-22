@@ -70,21 +70,26 @@ def completion_id(identity, owner):
     return 'completed-' + hashlib.sha256(json.dumps([identity, owner]).encode()).hexdigest()
 
 
-def completed(home, identity, owner, jobs):
+def completed(home, identity, owner, jobs, provenance=None):
     """Require native completion provenance, never a task's finished flag alone."""
     expected = dict(job_id=identity, owner=owner, success=True)
     if read(home, completion_id(identity, owner)) == expected:
         return True
-    # Older installations retained the exact completing owner in the native job.
     job = jobs.get_job(identity) or {}
-    return (job.get('_coconut_completion_owner') == owner and job.get('last_status') == 'ok'
+    outcome = job.get('_coconut_completion') or {}
+    if outcome.get('owner') == owner:
+        return outcome == expected
+    # Legacy native receipts have no outcome. Only the service's persisted
+    # successful task history can supply it, bound to this exact occurrence.
+    return (provenance == expected and job.get('_coconut_completion_owner') == owner
+            and read(home, identity) == dict(phase='finished', owner=owner)
             and (job.get('fire_claim') or {}).get('by') != owner)
 
 
 def finish(home, identity, jobs, *, owner, success, output='', failure=None):
     with locked(home, identity):
         def confirmed(job):
-            if job.get('last_status') == 'ok':
+            if job.get('_coconut_completion') == dict(job_id=identity, owner=owner, success=True):
                 # Keep proof for this occurrence before another native fire can replace it.
                 save(home, completion_id(identity, owner), dict(job_id=identity, owner=owner, success=True))
             return True
@@ -101,6 +106,7 @@ def finish(home, identity, jobs, *, owner, success, output='', failure=None):
             jobs._record_run_outcome(job, success, failure, None, None, stamp)
             jobs._advance_after_run(job, stamp)
             job['_coconut_completion_owner'] = owner
+            job['_coconut_completion'] = dict(job_id=identity, owner=owner, success=bool(success))
             jobs.save_jobs(all_jobs)
             return confirmed(job)
 

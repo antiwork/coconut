@@ -1,9 +1,40 @@
 """Dispatch native schedules while Coconut owns their durable conversation tasks."""
 from datetime import datetime, timezone
 import time
+import json
+from uuid import UUID, uuid5
 
 
 class NativeRoutines:
+    def native_routine_completion_input(self, task):
+        job = task.get('_native_job') or {}
+        owner = (job.get('fire_claim') or {}).get('by')
+        if (not owner or not job.get('id') or not task.get('_native_job_finished')
+                or task.get('status') in ('failed', 'cancelled')):
+            return {}
+        routine_id = str(uuid5(UUID(task['bot_id']), 'cron:' + job['id']))
+        if task.get('routine_id') != routine_id:
+            return {}
+        triggered, succeeded = False, False
+        rows = self.db.execute('SELECT type,data FROM events WHERE task_id=? AND bot_id=? ORDER BY seq',
+                               (task['id'], task['bot_id']))
+        for kind, raw in rows:
+            data = json.loads(raw)
+            if kind == 'routine.triggered':
+                if data.get('routine_id') != routine_id or data.get('task_id') != task['id'] or triggered:
+                    return {}
+                triggered = True
+            if kind == 'task.updated' and triggered:
+                # Reject ambiguous histories: a later successful turn cannot
+                # establish that an earlier native finish was successful.
+                if data.get('status') in ('failed', 'cancelled'):
+                    return {}
+                if data.get('status') == 'completed':
+                    if data.get('routine_id') != routine_id or data.get('id') != task['id']:
+                        return {}
+                    succeeded = True
+        return dict(job_id=job['id'], owner=owner, success=True) if triggered and succeeded else {}
+
     def _migrate_native_routine_prompts(self):
         tasks = {task['id']: task for task in self._all('tasks')
                  if task.get('routine_id') and task.get('_native_job')}
