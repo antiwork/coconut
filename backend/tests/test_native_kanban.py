@@ -22,10 +22,12 @@ class Provider(FixtureProvider):
         self.hermes_root, self.python = Path(SOURCE), PYTHON
         self.processes = []
         self.started = []
+        self.prepared = []
         self.release = threading.Event()
         self.release.set()
 
     def prepare_kanban_worker(self, identity, bot, workspace, execution_id):
+        self.prepared.append((identity, str(workspace), execution_id))
         process = subprocess.Popen(['sleep', '90'])
         self.processes.append(process)
         return process.pid
@@ -1512,6 +1514,59 @@ board.kb.block_task(board.conn, sys.argv[4], reason='Worker setup failed')
         self.assertEqual(current['status'], 'ready')
         self.assertEqual(current['workspace_path'], workspace)
         self.assertEqual(continued['_execution_session_id'], original_execution)
+
+    def test_linked_delegated_pr_dispatches_in_original_native_workspace(self):
+        import json
+        source = self.task('Coordinate the correction')
+        dev = self.write('/v1/bots', {'name': 'Dev'})
+        owner = self.write('/v1/bots/' + dev['id'] + '/messages',
+            {'text': 'Review the correction', 'mode': 'queue'})
+        source = self.service._get('tasks', source['id'])
+        owner = self.service._get('tasks', owner['id'])
+        workspace = Path(self.tmp.name) / 'original-dev-workspace'
+        workspace.mkdir()
+        (workspace / 'receipt.txt').write_text('Original Dev execution')
+        owner.update(status='completed', source_bot_id=source['bot_id'],
+            source_task_id=source['id'], parent_task_id=source['id'],
+            _execution_session_id=owner['id'])
+        original = self.service._kanban_row(owner, owner, 'ready', 10)
+        original['workspace'] = str(workspace)
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(original))
+        self.service.kanban.call({'op': 'snapshot'})
+        identity = self.service.kanban.tasks[owner['id']]['id']
+        self.native_program(
+            "board.kb.complete_task(board.conn, sys.argv[2], summary='Review finished')", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        owner.update(_kanban_claim={'native_id': identity, 'input': original['input'],
+                                    'workspace': str(workspace), 'run_id': 'completed-run'})
+        owner.pop('_native_outcome_id', None)
+        self.service._put('tasks', owner)
+        source['status'] = 'working'
+        self.service._put('tasks', source)
+        work = dict(id='requester-work', task_id=source['id'], bot_id=source['bot_id'],
+            kind='work', title='Existing request', status='waiting', _native_outcome_id='t_requester')
+        pr = dict(id='dev-pr', task_id=owner['id'], bot_id=owner['bot_id'],
+            kind='pr', title='Existing draft', status='open', pr_state='open',
+            url='https://github.com/example/project/pull/2', work_outcome_id=work['id'],
+            _review_task_id=owner['id'], _activity_task_id=owner['id'])
+        self.service._put('artifacts', work)
+        self.service._put('artifacts', pr)
+        receipt = self.service.emit(source['id'], 'work_continue', dict(
+            task_id=identity, message='Continue the approved correction in the original workspace.'))
+        continued = self.service._get('tasks', receipt['task_id'])
+        row = self.service._kanban_row(continued, continued, 'ready', 10)
+        self.assertEqual(row['workspace'], str(workspace))
+        self.assertEqual(row['execution_id'], owner['id'])
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+        self.service.kanban.call({'op': 'snapshot'})
+        current = self.service.kanban.tasks[owner['id']]
+        self.assertEqual(current['status'], 'ready')
+        self.assertEqual(current['workspace_path'], str(workspace))
+        self.settle(lambda: owner['id'] in self.provider.started)
+        self.assertIn((owner['id'], str(workspace), owner['id']), self.provider.prepared)
+        self.assertEqual((workspace / 'receipt.txt').read_text(), 'Original Dev execution')
+        self.assertEqual(self.service._get('artifacts', work['id']), work)
+        self.assertEqual(self.service._get('artifacts', pr['id'])['work_outcome_id'], work['id'])
 
     def test_claim_only_terminal_continuation_requires_saved_input(self):
         import copy
