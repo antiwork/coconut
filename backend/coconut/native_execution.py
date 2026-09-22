@@ -88,7 +88,10 @@ class NativeExecution:
                         and not task.get('routine_id')):
                     binding = context or task
                     sources = []
-                    for identity in binding.get('_preference_source_ids', []):
+                    candidates = (binding.get('_preference_source_ids', []) if context
+                                  else task.get('_turn_message_ids', binding.get('_preference_source_ids', [])))
+                    # Keep consumed requests and clarifications, excluding earlier turns and unread follow-ups.
+                    for identity in candidates:
                         try:
                             self._human_source(task, identity, binding, 'schedule bot changes')
                         except ServiceError:
