@@ -75,7 +75,7 @@ def main():
     state['messages'] = [message(row['role'], row['text']) for row in rows]
     latest = state['messages'][-1]
     latest['text'] = 'Latest response stays visible.\n\n' + latest['text']
-    latest['streaming'] = True
+    latest['streaming'] = not args.keyboard_anchor
     if args.message_interactions:
         state['messages'] = [message('user', 'Compare the two folders.'),
                              message('assistant', 'The blue folder has the complete report.'),
@@ -84,9 +84,9 @@ def main():
         state['bots'].append(peer)
         state['messages'] = [message('assistant', 'How can I help?')]
         worker_task = dict(task, id='worker-task', bot_id=peer['id'], session_id=peer['session_id'])
-        state['tasks'].append(worker_task)
+        if args.single_chat_order: state['tasks'].append(worker_task)
         worker_message = dict(message('assistant', 'The form is ready for review.'), id='worker-answer',
-                              bot_id=peer['id'], task_id=worker_task['id'])
+                              bot_id=peer['id'], task_id=worker_task['id'], sender_bot_id=peer['id'])
         state['messages'].append(worker_message)
         if args.single_chat_order:
             worker_task.update(conversation_bot_id=bot['id'], status='needs_you')

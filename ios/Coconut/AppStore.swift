@@ -488,9 +488,10 @@ final class AppStore {
         let request = MessageRequest(text: text, mode: selectedMode,
             taskId: selectedMode == "steer" ? currentTask?.id : nil, scheduledAt: scheduledAt,
             attachmentIds: attachments, recipientBotIds: [], replyToMessageId: replyTo?.messageId, mentionedBotIds: mentionedBotIds, workArtifactId: workContext?.id, workStatusOnly: workStatusOnly)
-        let quotedTask = replyTo.flatMap { quote in messages.first { $0.id == quote.messageId }?.taskId }
-            .flatMap { id in tasks.first { $0.id == id } }
-        let executorId = quotedTask?.botId ?? (selectedMode == "steer" ? currentTask!.botId : bot.id)
+        let quotedMessage = replyTo.flatMap { quote in messages.first { $0.id == quote.messageId } }
+        let quotedTask = quotedMessage?.taskId.flatMap { id in tasks.first { $0.id == id } }
+        let quotedExecutor = quotedTask?.botId ?? quotedMessage?.senderBotId ?? quotedMessage?.recipientBotIds?.first ?? replyTo?.botId
+        let executorId = quotedExecutor ?? (selectedMode == "steer" ? currentTask!.botId : bot.id)
         let outgoing = OutgoingMessage(id: UUID().uuidString, botId: bot.id,
             executorIds: [executorId],
             request: request, createdAt: Self.now, status: .sending, replyTo: replyTo, workContext: workContext, sequence: nextDeliverySequence)
