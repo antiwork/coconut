@@ -56,7 +56,10 @@ class NativeBridge:
                     # ownership check must stop execution instead.
                     raise TurnPaused('The routine claim could not be confirmed.') from error
                 if not owns_claim and self.request['task'].get('_native_job_finished'):
+                    # Completion takes the receipt lock; claim/finish take that
+                    # lock before the native fence, so release this failed fence.
                     try:
+                        fence.close()
                         from cron import jobs
                         from hermes_constants import get_hermes_home
                         if __package__:

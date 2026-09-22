@@ -129,7 +129,6 @@ def check(source, python):
             # Reproduce a pre-repair completion, which lacks the occurrence receipt.
             from coconut.native_routine_receipts import completion_id
             receipt = data / 'bots' / bot['id'] / 'home/coconut-runs' / (completion_id(identity, owner) + '.json')
-            saved = receipt.read_bytes()
             receipt.unlink()
             jobs_path = data / 'bots' / bot['id'] / 'home/cron/jobs.json'
             jobs_data = json.loads(jobs_path.read_text())
@@ -155,10 +154,10 @@ def check(source, python):
             assert len(tool_results) > before, service._get('tasks', stored['id'])
             assert service._get('tasks', stored['id'])['status'] == 'completed'
 
-            receipt.write_bytes(saved)
             later = native('routine_claim', native_id=identity, manual=True)['job']
             assert later['fire_claim']['by'] != owner
-            run(job, True, True)
+            run(job, True, True, provenance)
+            assert receipt.exists(), 'Validated legacy completion proof was not persisted'
             assert native('routine_finish', native_id=identity, owner=later['fire_claim']['by'], success=False)['ok']
             run(later, True, False)
             run(job, True, True)

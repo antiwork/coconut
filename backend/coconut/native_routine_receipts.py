@@ -75,17 +75,21 @@ def completed(home, identity, owner, jobs, provenance=None):
     expected = dict(job_id=identity, owner=owner, success=True)
     if provenance == dict(expected, native_confirmed=True):
         return True
-    if read(home, completion_id(identity, owner)) == expected:
-        return True
-    job = jobs.get_job(identity) or {}
-    outcome = job.get('_coconut_completion') or {}
-    if outcome.get('owner') == owner:
-        return outcome == expected
-    # Legacy native receipts have no outcome. Only the service's persisted
-    # successful task history can supply it, bound to this exact occurrence.
-    return (provenance == expected and job.get('_coconut_completion_owner') == owner
-            and read(home, identity) == dict(phase='finished', owner=owner)
-            and (job.get('fire_claim') or {}).get('by') != owner)
+    with locked(home, identity):
+        if read(home, completion_id(identity, owner)) == expected:
+            return True
+        job = jobs.get_job(identity) or {}
+        outcome = job.get('_coconut_completion') or {}
+        if outcome.get('owner') == owner:
+            return outcome == expected
+        # Validate and preserve legacy proof before a later claim can replace
+        # the mutable finished receipt. This uses the same lock as claim/finish.
+        if (provenance == expected and job.get('_coconut_completion_owner') == owner
+                and read(home, identity) == dict(phase='finished', owner=owner)
+                and (job.get('fire_claim') or {}).get('by') != owner):
+            save(home, completion_id(identity, owner), expected)
+            return True
+        return False
 
 
 def finish(home, identity, jobs, *, owner, success, output='', failure=None):
