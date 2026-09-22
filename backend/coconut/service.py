@@ -895,6 +895,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self.db.execute('INSERT INTO requests VALUES (?,?,?)', (key, fingerprint, encoded(response)))
         for callback in callbacks:
             callback()
+        if isinstance(response, dict) and response.get('steering_status') == 'next_safe_turn':
+            self._deliver_live_messages(response['id'])
         return response
 
     @staticmethod
@@ -1978,6 +1980,35 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self._refresh_bot(bot['id'])
         return self._public(task)
 
+    def _record_direct_reply(self, task):
+        bot_id = task['bot_id']
+        direct = next((m for m in (self._get('messages', identity) for identity in reversed(task['_turn_message_ids']))
+                       if m['role'] == 'user' and m['bot_id'] == bot_id
+                       and not m.get('sender_bot_id') and not m.get('reaction_event')
+                       and m.get('recipient_bot_ids') == [bot_id]), None) if task.get('source_bot_id') else None
+        if direct:
+            task['_direct_reply_message_id'] = direct['id']
+
+    def _deliver_live_messages(self, task_id):
+        deliver = getattr(self.provider, 'steer_task', None)
+        if deliver is None:
+            return
+        with self.lock:
+            task = self._get('tasks', task_id)
+            from .native_conversation import chat_message_content
+            messages = []
+            for identity in task.get('_live_messages', {}):
+                message = self._get('messages', identity)
+                current = dict(task, _visible_reply_contexts={identity: message.get('_visible_reply_context')})
+                messages.append(dict(id=identity, text=chat_message_content(
+                    {'operation': 'start', 'task': current}, message)))
+            turn_id = task.get('_native_turn_id')
+        if messages:
+            try:
+                deliver(task_id, turn_id, messages)
+            except (OSError, RuntimeError):
+                logging.getLogger(__name__).exception('Live input delivery failed; input remains queued.')
+
     def _steer_task(self, task, text, attachments, conversation_bot_id, human_authored=True):
         message = self._message(task['bot_id'], text, task_id=task['id'], role='user', human_authored=human_authored)
         task.setdefault('_preference_source_ids', [])
@@ -1985,6 +2016,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             task['_preference_source_ids'].append(message['id'])
         self._record_attachments(conversation_bot_id, task, attachments)
         task.setdefault('_steering', []).append(text)
+        # Never advance live input past an earlier message reserved for the next turn.
+        if human_authored and not attachments and len(task['_steering']) == len(task.get('_live_messages', {})) + 1:
+            task.setdefault('_live_messages', {})[message['id']] = text
         task.update(updated_at=now(), steering_status='next_safe_turn', exchange_id=self._new_exchange(), exchange_depth=0)
         self._put('tasks', task)
         self._event('task.steered', self._public(task), conversation_bot_id, task['id'])
@@ -2911,13 +2945,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                             boundary = next((i for i, m in enumerate(messages) if m['id'] == after), -1)
                             messages = messages[boundary + 1:]
                         task.update(_turn_message_ids=[m['id'] for m in messages], _turn_started_at=now(),
-                                    _steering=[], _turn_preference_source_ids=list(task.get('_preference_source_ids', [])))
-                    direct = next((m for m in (self._get('messages', identity) for identity in reversed(task['_turn_message_ids']))
-                                   if m['role'] == 'user' and m['bot_id'] == bot['id']
-                                   and not m.get('sender_bot_id') and not m.get('reaction_event')
-                                   and m.get('recipient_bot_ids') == [bot['id']]), None) if task.get('source_bot_id') else None
-                    if direct:
-                        task['_direct_reply_message_id'] = direct['id']
+                                    _steering=[], _live_messages={}, _turn_preference_source_ids=list(task.get('_preference_source_ids', [])))
+                    self._record_direct_reply(task)
                     task.setdefault('_reaction_feedback', [] if task.get('_work_status_only') else list(bot.get('_pending_reactions', {}).values()))
                     task.setdefault('_turn_attachment_ids', list(task.get('_attachment_ids', [])))
                     task.pop('error_code', None)
@@ -3075,6 +3104,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         self._refresh_bot(task['bot_id'])
 
     def emit(self, task_id: str, kind: str, payload: dict):
+        if kind == 'steering_ready':
+            with self.lock:
+                if payload.get('turn_id') != self._get('tasks', task_id).get('_native_turn_id'):
+                    return
+            return self._deliver_live_messages(task_id)
         if kind == 'work_continue':
             return self.continue_native_work(task_id, payload)
         if kind == 'work_wait':
@@ -3170,6 +3204,18 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._put('artifacts', artifact)
                 self._message(bot_id, artifact['title'], task_id=task_id, kind='artifact', artifact_id=artifact['id'])
                 self._event('artifact.created', artifact, bot_id, task_id)
+            elif kind == 'steering_consumed':
+                if payload.get('turn_id') != task.get('_native_turn_id'):
+                    return
+                for identity in payload.get('message_ids', []):
+                    text = task.get('_live_messages', {}).pop(identity, None)
+                    if text is None:
+                        continue
+                    if text in task.get('_steering', []):
+                        task['_steering'].remove(text)
+                    task.setdefault('_turn_message_ids', []).append(identity)
+                self._record_direct_reply(task)
+                self._put('tasks', task)
             elif kind in ('completed', 'failed'):
                 if kind == 'failed':
                     self._withdraw_stream(task_id)

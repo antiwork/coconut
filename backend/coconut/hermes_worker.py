@@ -776,6 +776,13 @@ def main():
                         elif scope.agent is not None and hasattr(scope.agent, 'hard_interrupt'):
                             scope.agent.hard_interrupt('The card changed.')
                     continue
+                if isinstance(frame.get('steer_task'), str):
+                    with active_lock:
+                        scope = active.get(frame['steer_task'])
+                    live = getattr(scope, 'live_messages', None)
+                    if live is not None and getattr(scope, 'turn_id', None) == frame.get('turn_id'):
+                        live.deliver(frame.get('messages', []))
+                    continue
                 if isinstance(frame.get('cancel_task'), str):
                     with active_lock:
                         cancelled.add(frame['cancel_task'])
@@ -789,7 +796,15 @@ def main():
                     stop_native_processes(frame['cancel_task'])
                     continue
                 if 'operation' in frame:
-                    requests.put(frame)
+                    scope = None
+                    if frame.get('task'):
+                        from live_messages import LiveMessages
+                        scope = TurnScope(frame['task']['id'])
+                        scope.turn_id = frame['task'].get('_native_turn_id')
+                        scope.live_messages = LiveMessages(None, None)
+                        with active_lock:
+                            active[scope.task_id] = scope
+                    requests.put((frame, scope))
                     continue
                 with receipt_lock:
                     response = pending_receipts.get(frame.get('request_id'))
@@ -803,9 +818,8 @@ def main():
     threading.Thread(target=watch_parent, daemon=True, name='service-liveness').start()
     from native_settings import install_approval_inheritance
     install_approval_inheritance(os.environ['COCONUT_DEFAULT_HOME'])
-    def execute(request):
+    def execute(request, scope):
         identity = request.get('turn_id')
-        scope = TurnScope(request['task']['id']) if request.get('task') else None
         token = current_turn.set(scope)
         outcome_sent = False
         def send(kind, data):
@@ -857,8 +871,8 @@ def main():
             current_turn.reset(token)
 
     while True:
-        request = requests.get()
-        threading.Thread(target=execute, args=(request,), daemon=True, name='native-turn').start()
+        request, scope = requests.get()
+        threading.Thread(target=execute, args=(request, scope), daemon=True, name='native-turn').start()
 
 
 def run_turn(request, emit, request_receipt):
@@ -1192,6 +1206,9 @@ def run_turn(request, emit, request_receipt):
                         'Treat new human messages as one continuous conversation. Decide whether each message revises current work or adds a request. '
                         'Preserve unfinished requests unless the person changes or cancels them. Ask only when ambiguity changes the outcome. '
                         'Do not ask the person to choose a queue or steering mode. '
+                        'Answer acknowledgments briefly and end the chat turn. Do not start new checks for an acknowledgment. '
+                        'A new topic does not cancel unrelated work. Apply explicit stops only to the work the person identifies. '
+                        'Do not hold a chat turn open by polling for another bot. Register a native wait, reply, and finish. '
                         'Use coconut_ask when the person must choose. Write choices for the current task and saved preferences. '
                         'Normal tool work does not need a question unless Hermes approval checks require one. '
                         'Within an approved task, read source and perform routine local diagnosis without another card. '
@@ -1303,6 +1320,14 @@ def run_turn(request, emit, request_receipt):
                         skip_context_files=False, load_soul_identity=True, skip_memory=False, skip_background_review=False,
                         save_trajectories=False, run_budget_seconds=None)
         scope.agent = agent
+        from live_messages import LiveMessages
+        scope.turn_id = request['task'].get('_native_turn_id')
+        if not hasattr(scope, 'live_messages'):
+            scope.live_messages = LiveMessages(None, None)
+        scope.live_messages.consumed = lambda identities: emit(
+            'steering_consumed', {'message_ids': identities, 'turn_id': request['task'].get('_native_turn_id')})
+        scope.live_messages.bind(agent)
+        emit('steering_ready', {'turn_id': scope.turn_id})
         if scope.cancelled.is_set():
             raise InterruptedError('The task was cancelled.')
         work.restore(agent)
@@ -1320,6 +1345,7 @@ def run_turn(request, emit, request_receipt):
                                             stream_callback=collect_response,
                                             persist_user_message=current['text'] if current else request.get('question'),
                                             persist_user_platform_id='coconut:' + current['id'] if current else None)
+        scope.live_messages.finish(result)
         trace.mark('model_end')
         if scope.unconfirmed:
             raise TurnUnconfirmed()
