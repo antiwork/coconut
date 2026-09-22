@@ -100,6 +100,10 @@ class PRReviewTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'queued')
         self.assertNotEqual(self.service._get('tasks', coordinator['id'])['status'], 'queued')
         self.assertEqual(self.service._pr_review_source(self.dev['id'], retry['id'])['id'], owner['id'])
+        from unittest.mock import patch
+        tasks = {t['id']: t for t in self.service._all('tasks')}
+        with patch.object(self.service, '_all', side_effect=AssertionError('Repeated task scan')):
+            self.assertEqual(self.service._pr_review_source(self.dev['id'], retry['id'], tasks=tasks)['id'], owner['id'])
 
     def test_verified_owner_offers_card_without_coordinator_turn(self):
         from coconut.pull_request_reviews import PR_REVIEW_INSTRUCTIONS
