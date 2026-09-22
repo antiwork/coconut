@@ -694,6 +694,68 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(self.service._get('artifacts', 'retained-pr')['_native_outcome_id'], 't_existing')
         self.assertEqual(len(self.service._all('artifacts')), 1)
 
+    def linked_requester_pr(self):
+        owner, source = self.scheduled_native()
+        self.service.kanban.tasks[owner['id']]['status'] = 'done'
+        work = dict(id='requester-work', task_id=source['id'], bot_id=source['bot_id'],
+            kind='work', title='The request', status='waiting', _native_outcome_id='t_requester')
+        pr = dict(id='delegated-pr', task_id=owner['id'], bot_id=owner['bot_id'],
+            kind='pr', title='Draft correction', status='open', pr_state='open',
+            url='https://github.com/example/project/pull/1', work_outcome_id=work['id'],
+            _review_task_id=owner['id'], _activity_task_id=owner['id'])
+        self.service._put('artifacts', work)
+        self.service._put('artifacts', pr)
+        return owner, source, work, pr
+
+    def test_requester_continues_linked_delegated_pr_without_taking_its_work(self):
+        owner, source, work, pr = self.linked_requester_pr()
+        receipt = self.resume(source)
+        continued = self.service._get('tasks', owner['id'])
+        self.assertEqual(receipt['task_id'], owner['id'])
+        self.assertEqual(receipt['native_task_id'], 't_existing')
+        self.assertEqual(continued['_execution_session_id'], owner['_execution_session_id'])
+        self.assertEqual(continued['_work_context_id'], pr['id'])
+        self.assertEqual(self.service._get('artifacts', work['id']), work)
+        self.assertEqual(self.service._get('artifacts', pr['id'])['work_outcome_id'], work['id'])
+        self.assertEqual(self.service._get('artifacts', pr['id'])['_native_outcome_id'], 't_existing')
+        self.assertEqual(len([a for a in self.service._all('artifacts') if a['kind'] == 'work']), 1)
+        self.assertEqual(self.resume(source), receipt)
+
+    def test_linked_delegated_pr_preserves_requester_work_pause(self):
+        owner, source, work, pr = self.linked_requester_pr()
+        work['paused_by_decision_id'] = 'held'
+        self.service._put('artifacts', work)
+        self.service._put('decisions', dict(id='held', task_id=source['id'],
+            status='rejected', decided_by='human'))
+        with self.assertRaisesRegex(ServiceError, 'paused, cancelled'):
+            self.resume(source)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.service._get('artifacts', pr['id']), pr)
+
+    def test_linked_requester_pr_still_blocks_an_active_other_pr_peer(self):
+        owner, source, work, pr = self.linked_requester_pr()
+        reporter = self.service._get('tasks', source['id']).copy()
+        reporter['id'] = 'other-requester-pr-writer'
+        reporter['status'] = 'working'
+        self.service._put('tasks', reporter)
+        other_pr = dict(id='other-requester-pr', task_id=reporter['id'],
+            bot_id=source['bot_id'], kind='pr', title='Another PR linked to the Work',
+            status='open', work_outcome_id=work['id'], _activity_task_id=reporter['id'])
+        self.service._put('artifacts', other_pr)
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(source)
+        self.assertEqual(self.service._get('artifacts', pr['id']), pr)
+        self.assertEqual(self.service._get('artifacts', work['id']), work)
+
+    def test_unrelated_pr_cannot_borrow_requester_work(self):
+        owner, source, work, pr = self.linked_requester_pr()
+        pr['work_outcome_id'] = 'other-work'
+        self.service._put('artifacts', pr)
+        self.service._put('artifacts', dict(work, id='other-work', bot_id='other-bot'))
+        with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+            self.resume(source)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
     def test_claim_promotion_cannot_take_a_pr_from_another_execution(self):
         owner, source = self.scheduled_native()
         from uuid import uuid4

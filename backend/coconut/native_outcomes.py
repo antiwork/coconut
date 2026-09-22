@@ -59,7 +59,21 @@ class NativeOutcomes:
             items = [self._get('artifacts', owner['_work_context_id'])]
         else:
             items = [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr') and a['task_id'] == owner['id']]
-        items = list({a['id']: a for a in (self._work_outcome_artifact(item) for item in items)}.values())
+        linked_parent = None
+        retained = []
+        for candidate in items:
+            root = self._work_outcome_artifact(candidate)
+            if (root['bot_id'] != owner['bot_id'] and candidate['kind'] == 'pr'
+                    and candidate['bot_id'] == owner['bot_id'] and candidate['task_id'] == owner['id']
+                    and candidate.get('work_outcome_id') == root['id'] and root['kind'] == 'work'
+                    and root['bot_id'] == owner.get('source_bot_id')
+                    and root['task_id'] == owner.get('source_task_id')):
+                # A delegated PR shares the requester's Work presentation, not its execution.
+                linked_parent = root
+                retained.append(candidate)
+            else:
+                retained.append(root)
+        items = list({a['id']: a for a in retained}.values())
         if len(items) > 1:
             raise ServiceError(409, 'Choose one retained Work item for this native outcome.')
         if items:
@@ -74,6 +88,10 @@ class NativeOutcomes:
             records = self._pending_completion_receipts()
             peer_chains = []
             for peer in peers:
+                if linked_parent and peer['id'] == linked_parent['id']:
+                    # The coordinating Work may remain active while its delegated PR resumes.
+                    # Other PRs linked to it remain independent writer/review peers.
+                    continue
                 for field in ('_review_task_id', '_activity_task_id'):
                     if not peer.get(field):
                         continue
