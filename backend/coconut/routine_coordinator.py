@@ -78,6 +78,9 @@ class NativeRoutines:
                     if proof:
                         task['_native_job_completion_receipt'] = proof
                         self._put('tasks', task)
+                        # An in-flight request still holds its pre-migration copy.
+                        if task['id'] in self.running or task['status'] == 'working':
+                            completions[task['bot_id']].pop(completion_id(job['id'], owner))
             previous = {r['id']: r for r in self._all('routines')}
             self.db.execute('DELETE FROM routines')
             for routine in native:

@@ -235,6 +235,20 @@ class CompletionRetentionTests(ServiceCompletionTests):
         self.assertEqual(receipts.read(self.home, 'completed-unrelated'), dict(unrelated=True))
         self.assertTrue(receipts.receipt_path(self.home, later_id).exists())
 
+    def test_inflight_request_keeps_receipt_until_worker_exits(self):
+        old_request = NativeBridge({'task': copy.deepcopy(self.task)}, lambda *a: None, lambda *a: None)
+        self.service.running[self.task['id']] = SimpleNamespace(is_alive=lambda: True)
+        self.service.refresh_native_routines()
+        self.assertEqual(receipts.read(self.home, self.identity), self.expected)
+        jobs = SimpleNamespace(get_job=lambda _: {'_coconut_completion': dict(job_id='job', owner='next', success=True)})
+        self.assertTrue(receipts.completed(self.home, 'job', 'owner', jobs,
+                                          old_request.request['task'].get('_native_job_completion')))
+        self.service.running.clear()
+        self.service.refresh_native_routines()
+        self.assertFalse(receipts.receipt_path(self.home, self.identity).exists())
+        proof = self.service.native_routine_completion_input(self.service._get('tasks', self.task['id']))
+        self.assertTrue(receipts.completed(self.home, 'job', 'owner', jobs, proof))
+
     def test_failed_task_commit_keeps_native_proof_for_retry(self):
         original = self.service._put
         def fail(table, value):

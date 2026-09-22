@@ -25,6 +25,7 @@ def check(source, python):
         proof = root / 'proof.txt'
         proof.write_text('Exact routine continuation proof')
         errors, tool_results = [], []
+        hold_request, request_entered, release_request = threading.Event(), threading.Event(), threading.Event()
         class Model(BaseHTTPRequestHandler):
             def log_message(self, *_): pass
             def do_POST(self):
@@ -33,6 +34,9 @@ def check(source, python):
                     return
                 try:
                     request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                    if hold_request.is_set():
+                        request_entered.set()
+                        assert release_request.wait(30), 'Migration did not release the worker'
                     messages = request['messages']
                     last_user = max(i for i, row in enumerate(messages) if row['role'] == 'user')
                     results = [row for row in messages[last_user:] if row['role'] == 'tool']
@@ -165,6 +169,29 @@ def check(source, python):
             unrelated = receipt.parent / 'completed-unrelated.json'
             unrelated.write_text('{"unrelated": true}')
             from coconut.routine_coordinator import NativeRoutines
+            hold_request.set()
+            execution_id = stored['id']
+            worker_errors = []
+            def inflight():
+                try:
+                    run(job, True, True)
+                except BaseException as error:
+                    worker_errors.append(error)
+            worker = threading.Thread(target=inflight)
+            service.running[stored['id']] = worker
+            worker.start()
+            try:
+                assert request_entered.wait(30), 'Continuation never entered the model'
+                NativeRoutines.refresh_native_routines(service)
+                assert receipt.exists(), 'Migration revoked an in-flight request'
+                next_job = native('routine_claim', native_id=identity, manual=True)['job']
+                assert native('routine_finish', native_id=identity, owner=next_job['fire_claim']['by'], success=False)['ok']
+            finally:
+                release_request.set()
+                worker.join(30)
+                assert not worker.is_alive(), 'Continuation worker did not finish'
+                service.running.pop(stored['id'], None)
+            assert not worker_errors, worker_errors
             NativeRoutines.refresh_native_routines(service)
             assert not receipt.exists(), 'Saved completion file was not retired'
             assert unrelated.read_text() == '{"unrelated": true}'
@@ -174,7 +201,7 @@ def check(source, python):
             run(job, True, True, durable)
             run(forged, True, False, durable)
             run(later, True, False, durable)
-            print(json.dumps(dict(passed=True, completion_retention=True, active_fenced=True, completed_continuation=True,
+            print(json.dumps(dict(passed=True, completion_retention=True, inflight_preserved=True, active_fenced=True, completed_continuation=True,
                 legacy_completed_continuation=True, later_occurrence_preserved=True, failed_and_lost_rejected=True,
                 execution_provenance_preserved=True, tool_results=len(tool_results))))
         finally:
