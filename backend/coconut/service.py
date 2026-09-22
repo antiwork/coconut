@@ -2987,6 +2987,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                                        if task.get('_chat_session') else {})
                 timing.mark('history')
                 provider_task = self._public(task) | {'_native_turn_id': task['_native_turn_id'], '_execution_session_id': task.get('_execution_session_id'),
+                                                       '_kanban_claim': task.get('_kanban_claim'),
                                                        '_kanban_external_id': task.get('_kanban_claim', {}).get('external_id'),
                                                        '_kanban_workspace': task.get('_kanban_claim', {}).get('workspace')}
                 for field in ('_work_todos', '_work_resume', '_source_audit_prompt', '_self_recovery', '_chat_session', '_native_intake', '_native_outcome_id', '_work_context_id', '_direct_reply_message_id'):

@@ -303,6 +303,32 @@ class ProviderTests(unittest.TestCase):
         self.addCleanup(provider.close)
         return provider
 
+    def test_context_does_not_receive_the_source_claim(self):
+        provider = self.fake_hermes("""
+            import os
+            assert not os.environ.get('HERMES_KANBAN_TASK')
+            return {'completed': True, 'final_response': 'Context remains separate.'}
+        """)
+        task = dict(self.task, _kanban_claim=dict(native_id='t_source', run_id=17, claim_lock='claim-source'))
+        events = []
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.answer_context(task, self.bot, [], 'Explain the result.', lambda kind, data: events.append((kind, data)))
+        self.assertEqual(events, [('text_delta', {'text': 'Context remains separate.'})])
+
+    def test_source_worker_receives_its_native_claim(self):
+        provider = self.fake_hermes("""
+            import os
+            assert os.environ.get('HERMES_KANBAN_TASK') == 't_source'
+            assert os.environ.get('HERMES_KANBAN_RUN_ID') == '17'
+            assert os.environ.get('HERMES_KANBAN_CLAIM_LOCK') == 'claim-source'
+            return {'completed': True, 'final_response': 'Claim retained.'}
+        """)
+        task = dict(self.task, _kanban_claim=dict(native_id='t_source', run_id=17, claim_lock='claim-source'))
+        events = []
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(task, self.bot, [], lambda kind, data: events.append((kind, data)))
+        self.assertTrue(any(kind == 'completed' for kind, _ in events), events)
+
     def test_nested_tool_on_a_native_context_thread_finishes(self):
         provider = self.fake_hermes("""
             import contextvars, threading

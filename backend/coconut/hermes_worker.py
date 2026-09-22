@@ -912,15 +912,15 @@ def run_turn(request, emit, request_receipt):
             scope.interrupt_scope = InterruptScope()
             interrupt_binding = bind_interrupt_scope(scope.interrupt_scope)
         interrupt_binding.__enter__()
+        claim = (request['task'].get('_native_outcome') or request['task'].get('_kanban_claim')) if request['operation'] != 'context' else None
         native_owner = bool(request['task'].get('_native_outcome')) and request['operation'] != 'context'
         os.environ['HERMES_KANBAN_STOP_NUDGE'] = '1' if native_owner else '0'
-        if request['operation'] == 'context' or (not native_owner and os.environ.get('HERMES_KANBAN_TASK')):
+        if request['operation'] == 'context' or (not claim and os.environ.get('HERMES_KANBAN_TASK')):
             # Reused workers must not lend their earlier claim to a helper callback.
             from agent.delegation_context import non_dispatcher_owned_context
             board_binding = non_dispatcher_owned_context()
         board_binding.__enter__()
-        if request['task'].get('_native_outcome'):
-            claim = request['task']['_native_outcome']
+        if claim:
             os.environ.update(HERMES_KANBAN_TASK=claim['native_id'], HERMES_KANBAN_RUN_ID=str(claim['run_id']),
                               HERMES_KANBAN_CLAIM_LOCK=claim['claim_lock'])
         if scope.cancelled.is_set():
