@@ -375,6 +375,15 @@ class NativeOutcomes:
             owner.setdefault('_bot_messages', []).append(dict(sender_bot_id=source['bot_id'],
                 sender_name=self._get('bots', source['bot_id'])['name'], text=text,
                 result_status=None, progress_only=False))
+            requester_id = source.get('parent_task_id')
+            if requester_id and requester_id in (owner.get('_reply_to_task_id'), owner.get('source_task_id')):
+                requester = self._get('tasks', requester_id)
+                if (requester['status'] == 'failed' and source['bot_id'] == owner.get('source_bot_id')
+                        and all(source.get(k) == requester.get(k) for k in
+                                ('bot_id', 'session_id', 'thread_id', 'conversation_bot_id'))
+                        and execution_key(source) == execution_key(requester)):
+                    # A direct retry receives the result; the failed turn remains historical.
+                    owner['_reply_to_task_id'] = source['id']
             owner.update(status='queued', summary='Continuing with the new information.', updated_at=now(),
                 _background_return_after=now(), _background_return_id=uid())
             self._put('tasks', owner)
