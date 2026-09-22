@@ -78,6 +78,29 @@ class PRReviewTests(unittest.TestCase):
         self.assertEqual(len(self.provider.starts),count)
         self.assertEqual(self.service._get('tasks',self.child_id)['status'],'completed')
 
+    def test_retry_tracker_keeps_native_owner_and_wakes_it_before_coordinator(self):
+        owner = self.service._get('tasks', self.child_id)
+        owner.update(_execution_session_id=owner['id'], _native_outcome_id='native-original')
+        self.service._put('tasks', owner)
+        retry = dict(owner, id=str(uuid4()), parent_task_id=owner['id'],
+                     source_bot_id=None, source_task_id=None, exchange_depth=0,
+                     exchange_id=self.service._new_exchange())
+        retry.pop('_native_outcome_id')
+        self.service._put('tasks', retry)
+        artifact = self.service._get('artifacts', self.artifact_id)
+        artifact['_review_task_id'] = retry['id']
+        self.service._put('artifacts', artifact)
+        coordinator = self.service._get('tasks', owner['source_task_id'])
+        peer = dict(artifact, id=str(uuid4()), bot_id=self.desk['id'],
+                    task_id=coordinator['id'], _review_task_id=coordinator['id'],
+                    created_at='2000-01-01T00:00:00Z')
+        self.service._put('artifacts', peer)
+        self.green()
+        self.assertEqual(self.service._get('artifacts', self.artifact_id)['_review_task_id'], owner['id'])
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'queued')
+        self.assertNotEqual(self.service._get('tasks', coordinator['id'])['status'], 'queued')
+        self.assertEqual(self.service._pr_review_source(self.dev['id'], retry['id'])['id'], owner['id'])
+
     def test_verified_owner_offers_card_without_coordinator_turn(self):
         from coconut.pull_request_reviews import PR_REVIEW_INSTRUCTIONS
         self.assertIn('Offer one coconut_ask merge decision yourself', PR_REVIEW_INSTRUCTIONS)
