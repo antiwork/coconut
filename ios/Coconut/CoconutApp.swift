@@ -38,25 +38,21 @@ struct BotSettingsRoute: Hashable {
 }
 
 enum HomeDestination: Hashable {
-    case inbox, archived
+    case inbox, archived, bots
 }
 
-enum HomeTab: Hashable { case bots, inbox }
+enum HomeTab: Hashable { case coconut, inbox }
 
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
     @State private var settingsOpen = false
-    @State private var createOpen = false
-    @State private var searchOpen = false
-    @State private var searchText = ""
-    @State private var selectedTab: HomeTab = .bots
+    @State private var selectedTab: HomeTab = .coconut
     @State private var notificationDecisionId: String?
     @State private var openingNotification = false
     @State private var previewedNotification: NotificationTarget?
     @State private var botsPath = NavigationPath()
     @State private var inboxPath = NavigationPath()
     @State private var keyboardVisible = false
-    @FocusState private var searchFocused: Bool
 
     private var tabBarVisibility: Visibility {
         let activePath = selectedTab == .inbox ? inboxPath : botsPath
@@ -65,13 +61,13 @@ struct CoconutHome: View {
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            Tab(value: HomeTab.bots) {
-                root(tab: .bots, path: $botsPath)
+            Tab(value: HomeTab.coconut) {
+                root(tab: .coconut, path: $botsPath)
             } label: {
-                Label { Text("Bots") } icon: {
+                Label { Text("Coconut") } icon: {
                     Image(systemName: "bubble.left.and.bubble.right").environment(\.symbolVariants, .none)
                 }
-            }.accessibilityIdentifier("home-bots")
+            }.accessibilityIdentifier("home-coconut")
             Tab(value: HomeTab.inbox) {
                 root(tab: .inbox, path: $inboxPath)
             } label: {
@@ -85,52 +81,50 @@ struct CoconutHome: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
         .onChange(of: selectedTab) { _, tab in
-            searchFocused = false
             if previewedNotification?.decisionId != nil && tab != .inbox {
                 PushNotifications.shared.target = nil
                 previewedNotification = nil
             }
         }
         .sheet(isPresented: $settingsOpen) { AppSettingsView() }
-        .sheet(isPresented: $createOpen) { BotEditorView() }
         .onChange(of: PushNotifications.shared.target) { _, _ in openNotification() }
         .onChange(of: store.lastSync) { _, _ in openNotification() }
         .onChange(of: store.connection) { _, _ in openNotification() }
         .onAppear { openNotification() }
+        .onChange(of: store.activityReference) { _, route in
+            guard let route else { return }
+            settingsOpen = false
+            if selectedTab == .inbox { inboxPath.append(route) } else { botsPath.append(route) }
+            store.activityReference = nil
+        }
+        .onChange(of: store.coconutReply) { _, reply in
+            guard reply != nil else { return }
+            settingsOpen = false
+            selectedTab = .coconut
+            botsPath = NavigationPath()
+        }
     }
 
     private func root(tab: HomeTab, path: Binding<NavigationPath>) -> some View {
         NavigationStack(path: path) {
             Group {
                 if tab == .inbox { DecisionInboxView(focusDecisionId: $notificationDecisionId, refreshingDecisionId: PushNotifications.shared.target?.decisionId) }
-                else { HomeLaunchView(searchText: searchText) }
+                else if let bot = store.conversationBot {
+                    ConversationView(botId: bot.id, isRoot: true, openSettings: { settingsOpen = true }).id(bot.id)
+                } else { ConversationSetupView() }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { rootToolbar(inbox: tab != .bots) }
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    if searchOpen && tab == .bots {
-                        HStack(spacing: 10) {
-                            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                            TextField("Search conversations", text: $searchText)
-                                .focused($searchFocused).textInputAutocapitalization(.never)
-                                .autocorrectionDisabled().accessibilityIdentifier("home-search-input")
-                            Button { searchFocused = false; searchOpen = false; searchText = "" } label: {
-                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary).frame(width: 44, height: 44)
-                            }.accessibilityLabel("Close search").accessibilityIdentifier("close-search")
-                        }
-                        .padding(.leading, 16).padding(.trailing, 4)
-                        .background(.regularMaterial, in: Capsule())
-                        .padding(.horizontal, 16).padding(.bottom, 8)
-                    }
-                }
+
                 .navigationDestination(for: HomeDestination.self) { destination in
                     switch destination {
                     case .inbox:
                         DecisionInboxView().navigationTitle("Inbox").navigationBarTitleDisplayMode(.inline)
                     case .archived:
                         ArchivedBotsView()
+                    case .bots:
+                        BotDirectoryView()
                     }
                 }
                 .navigationDestination(for: ConversationRoute.self) { route in
@@ -148,28 +142,6 @@ struct CoconutHome: View {
                         ErrorBanner(message: error) { store.error = nil }.padding(.horizontal, 16)
                     }
                 }
-        }
-    }
-
-    @ToolbarContentBuilder
-    private func rootToolbar(inbox: Bool) -> some ToolbarContent {
-        if !inbox {
-            ToolbarItem(placement: .topBarLeading) {
-                Button { settingsOpen = true } label: {
-                    Image(systemName: "person.crop.circle")
-                }.accessibilityLabel("App settings").accessibilityIdentifier("app-settings")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { searchOpen = true; searchFocused = true } label: {
-                    Image(systemName: "magnifyingglass")
-                }.accessibilityLabel("Search conversations").accessibilityIdentifier("search-conversations")
-            }
-            if #available(iOS 26.0, *) { ToolbarSpacer(.fixed, placement: .topBarTrailing) }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { createOpen = true } label: {
-                    Image(systemName: "plus")
-                }.accessibilityLabel("Create bot").accessibilityIdentifier("create-bot")
-            }
         }
     }
 
@@ -203,7 +175,7 @@ struct CoconutHome: View {
     }
 
     private func showNotification(_ destination: NotificationDestination) {
-        settingsOpen = false; createOpen = false; searchOpen = false; searchFocused = false
+        settingsOpen = false
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         switch destination {
         case .inbox(let decisionId):
@@ -212,7 +184,7 @@ struct CoconutHome: View {
             selectedTab = .inbox
         case .conversation(let route):
             notificationDecisionId = nil
-            selectedTab = .bots
+            selectedTab = .coconut
             botsPath = NavigationPath()
             botsPath.append(route)
         }

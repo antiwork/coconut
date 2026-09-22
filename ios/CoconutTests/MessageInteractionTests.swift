@@ -3,6 +3,30 @@ import XCTest
 
 final class MessageInteractionTests: XCTestCase {
     @MainActor
+    func testWorkerQuoteKeepsMainConversationAndRespondingState() throws {
+        let store = AppStore(demo: true)
+        let main = try XCTUnwrap(store.conversationBot)
+        let worker = try XCTUnwrap(store.bots.first { $0.id != main.id })
+        var task = try XCTUnwrap(store.tasks.first)
+        task.botId = worker.id
+        task.conversationBotId = worker.id
+        task.status = "working"
+        store.tasks = [task]
+        let message = Message(id: "source", botId: worker.id, taskId: task.id, role: "assistant", kind: "text", text: "Ready.", decisionId: nil, artifactId: nil, createdAt: "2026-09-22T10:00:00Z", streaming: false)
+        store.messages = [message]
+        store.replyInCoconut(to: message)
+        XCTAssertEqual(store.coconutReply?.messageId, message.id)
+        XCTAssertEqual(store.coconutReply?.botId, worker.id)
+        var request = message
+        request.id = "request"; request.botId = main.id; request.role = "user"; request.replyTo = store.coconutReply
+        store.messages = [request]
+        XCTAssertEqual(store.referenceBotId(message.id, in: request), worker.id)
+        XCTAssertTrue(store.isConversationResponding(main.id))
+        store.tasks[0].status = "completed"
+        XCTAssertFalse(store.isConversationResponding(main.id))
+    }
+
+    @MainActor
     func testReplyUsesServerIdentityAfterOptimisticReplacement() throws {
         let store = AppStore(demo: true)
         var saved = try XCTUnwrap(store.messages.first { $0.kind == "text" })

@@ -68,7 +68,7 @@ final class ModelSettingsFlowTests: XCTestCase {
     @MainActor
     private func openBotModelSettings(in app: XCUIApplication) {
         app.buttons["app-settings"].tap()
-        let bot = app.buttons["Forge"]
+        let bot = app.buttons["settings-bot-\(forgeId)"]
         for _ in 0..<5 where !bot.isHittable { app.swipeUp() }
         XCTAssertTrue(bot.waitForExistence(timeout: 5))
         bot.tap()

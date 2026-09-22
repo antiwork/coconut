@@ -46,6 +46,7 @@ class MainConversationTests(unittest.TestCase):
         request = next(m for m in history if m['task_id'] == reply['id'] and m['role'] == 'user')
         self.assertEqual(request['bot_id'], self.main['id'])
         self.assertEqual(request['reply_to']['message_id'], message['id'])
+        self.assertEqual(request['reply_to']['bot_id'], message['bot_id'])
         answer = self.service._all('messages')[-1]
         self.assertEqual(answer['bot_id'], self.main['id'])
         self.assertEqual(answer['sender_bot_id'], self.worker['id'])

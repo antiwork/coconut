@@ -10,9 +10,7 @@ final class ConversationLayoutFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
-        XCTAssertTrue(bot.waitForExistence(timeout: 15))
-        bot.tap()
+        XCTAssertTrue(app.buttons["manage-bots"].waitForExistence(timeout: 15))
         let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         var latest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Latest response stays visible.")).firstMatch
@@ -52,9 +50,7 @@ final class ConversationLayoutFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
-        XCTAssertTrue(bot.waitForExistence(timeout: 15))
-        bot.tap()
+        XCTAssertTrue(app.buttons["manage-bots"].waitForExistence(timeout: 15))
         let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         let transcript = app.scrollViews["conversation-transcript"]
@@ -76,7 +72,8 @@ final class ConversationLayoutFlowTests: XCTestCase {
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3),
                       "Tapping message text must dismiss the keyboard.")
         input.tap()
-        app.buttons["bot-settings"].tap()
+        app.buttons["Bot options"].tap()
+        app.buttons["Bot settings"].tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3),
                       "Leaving the conversation must release its text field.")
         app.navigationBars.buttons.element(boundBy: 0).tap()
@@ -99,9 +96,7 @@ final class ConversationLayoutFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
-        XCTAssertTrue(bot.waitForExistence(timeout: 15))
-        bot.tap()
+        XCTAssertTrue(app.buttons["manage-bots"].waitForExistence(timeout: 15))
         let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         let latest = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Latest response stays visible.")).firstMatch

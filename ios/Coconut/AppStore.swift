@@ -10,6 +10,9 @@ final class AppStore {
     private static let deliveryLog = Logger(subsystem: "com.gumroad.coconut", category: "delivery")
     var bots: [Bot] = []
     var conversationBotId: String?
+    var coconutReply: MessageReference?
+    var activityReference: ConversationRoute?
+    var conversationBot: Bot? { bots.first { $0.id == conversationBotId && !$0.archived } }
     var tasks: [AgentTask] = []
     var messages: [Message] = []
     var outgoingMessages: [OutgoingMessage] = []
@@ -93,7 +96,8 @@ final class AppStore {
     func isConversationResponding(_ botId: String) -> Bool {
         if outgoingMessages.contains(where: { $0.botId == botId && $0.expectsResponse }) { return true }
         guard isDemo || connection == .connected else { return false }
-        return tasks.contains { $0.chatBotId == botId && ["working", "running"].contains($0.status) }
+        let quotedTaskIds = Set(messages.filter { $0.botId == botId && $0.role == "user" && $0.replyTo != nil }.compactMap(\.taskId))
+        return tasks.contains { ($0.chatBotId == botId || quotedTaskIds.contains($0.id)) && ["working", "running"].contains($0.status) }
             || messages.contains { $0.botId == botId && $0.role == "assistant" && $0.streaming }
     }
     func conversationBotId(for decision: Decision) -> String {
@@ -289,7 +293,7 @@ final class AppStore {
         PairingToken.delete()
         ProtectedCache.remove("pairing.json")
         cacheQueue.sync { ProtectedCache.remove("snapshot.json") }
-        conversationBotId = nil
+        conversationBotId = nil; coconutReply = nil
         bots = []; tasks = []; messages = []; decisions = []; artifacts = []; learning = []
         routines = []
         approvals = nil; parallelWork = nil; apiFallback = nil; workCapacity = nil; mcpServers = []
@@ -430,6 +434,17 @@ final class AppStore {
         let _: Acknowledgement? = await write("bots/\(bot.id)", method: "DELETE", payload: EmptyRequest(), as: Acknowledgement.self)
     }
 
+    func selectConversationBot(_ bot: Bot) async {
+        if isDemo { conversationBotId = bot.id; return }
+        let _: ConversationSelection? = await write("settings/conversation", method: "PUT",
+            payload: ConversationSetting(botId: bot.id), as: ConversationSelection.self)
+    }
+
+    func replyInCoconut(to message: Message) {
+        guard conversationBot != nil, let reference = messageReference(for: message) else { return }
+        coconutReply = reference
+    }
+
     func markRead(_ bot: Bot) async {
         guard bot.unreadCount > 0 else { return }
         if isDemo {
@@ -473,8 +488,11 @@ final class AppStore {
         let request = MessageRequest(text: text, mode: selectedMode,
             taskId: selectedMode == "steer" ? currentTask?.id : nil, scheduledAt: scheduledAt,
             attachmentIds: attachments, recipientBotIds: [], replyToMessageId: replyTo?.messageId, mentionedBotIds: mentionedBotIds, workArtifactId: workContext?.id, workStatusOnly: workStatusOnly)
+        let quotedTask = replyTo.flatMap { quote in messages.first { $0.id == quote.messageId }?.taskId }
+            .flatMap { id in tasks.first { $0.id == id } }
+        let executorId = quotedTask?.botId ?? (selectedMode == "steer" ? currentTask!.botId : bot.id)
         let outgoing = OutgoingMessage(id: UUID().uuidString, botId: bot.id,
-            executorIds: [selectedMode == "steer" ? currentTask!.botId : bot.id],
+            executorIds: [executorId],
             request: request, createdAt: Self.now, status: .sending, replyTo: replyTo, workContext: workContext, sequence: nextDeliverySequence)
         outgoingMessages.append(outgoing)
         do { try saveOutgoing() }
@@ -530,7 +548,7 @@ final class AppStore {
     func decisionReference(for id: String) -> MessageReference? {
         guard let decision = decisions.first(where: { $0.id == id }) else { return nil }
         return MessageReference(messageId: id, text: decision.title,
-            author: bots.first { $0.id == decision.botId }?.name ?? "Bot", role: "assistant")
+            author: bots.first { $0.id == decision.botId }?.name ?? "Bot", role: "assistant", botId: conversationBotId(for: decision))
     }
 
     func messageReference(for message: Message) -> MessageReference? {
@@ -539,7 +557,12 @@ final class AppStore {
               let saved = messages.first(where: { $0.id == message.id || (message.clientRequestId != nil && $0.clientRequestId == message.clientRequestId) }) else { return nil }
         return MessageReference(messageId: saved.id, text: saved.text,
             author: saved.role == "user" ? "You" : bots.first { $0.id == (saved.senderBotId ?? saved.botId) }?.name ?? "Bot",
-            role: saved.role)
+            role: saved.role, botId: saved.botId)
+    }
+
+    func referenceBotId(_ id: String, in message: Message) -> String? {
+        messages.first { $0.id == id }?.botId
+            ?? (message.replyTo?.messageId == id ? message.replyTo?.botId : nil)
     }
 
     func reactions(for message: Message) -> [String] {
@@ -751,7 +774,8 @@ final class AppStore {
             text: correction ?? decision.options.first { $0.id == optionId }?.label ?? choice.capitalized,
             request: AnswerRequest(choice: choice, revision: decision.revision, correction: correction,
                 optionId: optionId, draftHash: decision.draftHash, previewsHash: decision.previewsHash),
-            replyTo: choice == "reply" ? decisionReference(for: decision.id) : nil)
+            replyTo: choice == "reply" ? decisionReference(for: decision.id) : nil,
+            executorId: tasks.first { $0.id == decision.taskId }?.botId ?? decision.botId)
         outgoingAnswers.append(queued)
         do { try saveOutgoing() }
         catch {
@@ -773,18 +797,22 @@ final class AppStore {
         deliveryTasks = [:]
     }
 
+    private func answerDeliveryBotId(_ answer: OutgoingAnswer) -> String {
+        answer.executorId ?? decisions.first { $0.id == answer.decisionId }?.botId ?? answer.botId
+    }
+
     private func scheduleDelivery() {
         guard !isDemo, hasPairing else { return }
         let identity = deliveryID
-        let bots = Set(outgoingMessages.filter { [.sending, .failed].contains($0.status) }.map(\.botId))
-            .union(outgoingAnswers.map(\.botId))
+        let bots = Set(outgoingMessages.filter { [.sending, .failed].contains($0.status) }.map(\.deliveryBotId))
+            .union(outgoingAnswers.map(answerDeliveryBotId))
         for botId in bots where deliveryTasks[botId] == nil {
             deliveryTasks[botId] = Task { [weak self] in
                 guard let self else { return }
                 defer { if self.deliveryID == identity { self.deliveryTasks[botId] = nil } }
                 while !Task.isCancelled, self.deliveryID == identity {
-                    let message = self.outgoingMessages.first { $0.botId == botId && [.sending, .failed].contains($0.status) }
-                    let answer = self.outgoingAnswers.first { $0.botId == botId }
+                    let message = self.outgoingMessages.first { $0.deliveryBotId == botId && [.sending, .failed].contains($0.status) }
+                    let answer = self.outgoingAnswers.first { self.answerDeliveryBotId($0) == botId }
                     if let message, answer == nil || (message.sequence ?? 0) < answer!.sequence {
                         await self.deliverOutgoing(message.id)
                         if self.outgoingMessages.contains(where: { $0.id == message.id && $0.status == .failed }) { break }
@@ -1767,6 +1795,7 @@ struct OutgoingMessage: Codable, Identifiable {
     var replyTo: MessageReference? = nil
     var workContext: WorkReference? = nil
     var sequence: Int? = nil
+    var deliveryBotId: String { executorIds.first ?? botId }
     var expectsResponse: Bool { [.sending, .accepted].contains(status) && request.scheduledAt == nil }
     var afterRestart: Self {
         var restored = self
@@ -1789,6 +1818,7 @@ struct OutgoingAnswer: Codable, Identifiable {
     let text: String
     let request: AnswerRequest
     var replyTo: MessageReference? = nil
+    var executorId: String? = nil
     var message: Message {
         Message(id: "outgoing-" + id, botId: botId, taskId: nil, role: "user", kind: "text", text: text,
                 decisionId: request.choice == "reply" ? decisionId : nil, artifactId: nil, createdAt: createdAt,
@@ -1853,3 +1883,6 @@ private struct WorkRefreshResponse: Decodable { let ok: Bool }
 
 struct WorkDismissal: Identifiable { let id: String; let artifactId: String; let url: String }
 private struct WorkDismissRequest: Encodable { let dismissalId: String; let undo: Bool }
+
+private struct ConversationSetting: Codable { let botId: String }
+private struct ConversationSelection: Decodable { let conversationBotId: String }

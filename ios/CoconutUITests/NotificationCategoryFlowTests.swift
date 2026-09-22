@@ -30,7 +30,7 @@ final class NotificationCategoryFlowTests: XCTestCase {
         }
         for kind in ["decision", "message"] {
             XCUIDevice.shared.press(.home)
-            if kind == "decision" { app.terminate() }
+            // Keep Settings presented to verify that notification routing dismisses it.
             var request = URLRequest(url: URL(string: address + "/test/push?kind=" + kind)!)
             request.httpMethod = "POST"
             let sent = expectation(description: "Queue notification")

@@ -7,6 +7,8 @@ final class BotCharacterFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
+        XCTAssertTrue(app.buttons["manage-bots"].waitForExistence(timeout: 10))
+        app.buttons["manage-bots"].tap()
         let forge = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
         XCTAssertTrue(forge.waitForExistence(timeout: 10))
         forge.tap()
@@ -31,6 +33,8 @@ final class BotCharacterFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
+        XCTAssertTrue(app.buttons["manage-bots"].waitForExistence(timeout: 10))
+        app.buttons["manage-bots"].tap()
         let id = "00000000-0000-4000-8000-000000000002"
         let row = app.buttons["bot-conversation-\(id)"]
         XCTAssertTrue(row.waitForExistence(timeout: 10))
@@ -45,8 +49,8 @@ final class BotCharacterFlowTests: XCTestCase {
         XCTAssertTrue(working.waitForExistence(timeout: 5))
         XCTAssertEqual(working.progressIndicators.count, 0)
         let composer = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
-        XCTAssertTrue(composer.exists)
-        XCTAssertLessThanOrEqual(working.frame.maxY, composer.frame.minY)
+        XCTAssertFalse(composer.exists, "Worker activity is read-only.")
+        XCTAssertLessThanOrEqual(working.frame.maxY, app.frame.maxY)
         capture("Coconut replaces the conversation spinner")
     }
 

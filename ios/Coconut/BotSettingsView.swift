@@ -10,6 +10,7 @@ struct BotSettingsView: View {
     @State private var routineOpen = false
     @State private var deleteOpen = false
     @State private var saving = false
+    @FocusState private var editingInstructions: Bool
 
     var body: some View {
         Form {
@@ -27,12 +28,17 @@ struct BotSettingsView: View {
                 }
                 Section("Description") {
                     TextField("What should this bot do?", text: field(\.instructions), axis: .vertical)
-                        .lineLimit(5...18).accessibilityIdentifier("bot-instructions")
+                        .lineLimit(5...18).focused($editingInstructions).accessibilityIdentifier("bot-instructions")
                 }
                 Section {
                     Toggle("Notifications", isOn: Binding(get: { self.draft?.notifications ?? true }, set: { self.draft?.notifications = $0 }))
                         .tint(BoardStyle.green)
                 } footer: { Text("Get notified when this bot needs a decision, finishes work, or fails.") }
+                Section {
+                    NavigationLink("Model") { ModelSettingsView(botId: botId) }
+                    NavigationLink("Access") { ApprovalSettingsView(botId: botId) }
+                    NavigationLink("Parallel work") { ParallelWorkSettingsView(botId: botId) }
+                }
                 Section("Routines") {
                     ForEach(store.routines.filter { $0.botId == botId }) { routine in
                         NavigationLink { RoutineEditorView(botId: botId, routine: routine) } label: {
@@ -47,12 +53,14 @@ struct BotSettingsView: View {
             }
             if let error = store.error { Section { Text(error).foregroundStyle(BoardStyle.accent) } }
         }
+        .scrollDismissesKeyboard(.interactively)
         .scrollContentBackground(.hidden).background(BoardStyle.paper)
         .navigationTitle(draft?.name ?? "Bot").navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if let draft, let original, draft != original {
                     Button(saving ? "Saving…" : "Save") {
+                        editingInstructions = false
                         saving = true
                         Task {
                             await store.updateBot(draft, comparedTo: original)
@@ -63,7 +71,7 @@ struct BotSettingsView: View {
                     .accessibilityIdentifier("save-bot")
                 } else {
                     Menu {
-                        if let draft {
+                        if let draft, botId != store.conversationBotId {
                             Button(draft.archived ? "Restore bot" : "Archive bot") {
                                 Task { await store.archiveBot(draft); if store.error == nil { dismiss() } }
                             }
@@ -73,6 +81,7 @@ struct BotSettingsView: View {
                 }
             }
         }
+        .onDisappear { editingInstructions = false }
         .onAppear {
             if draft == nil { draft = store.bots.first { $0.id == botId }; original = draft }
         }
@@ -187,7 +196,7 @@ private struct RoutineEditorView: View {
                         Task { _ = await store.runRoutine(current) }
                     }.disabled(saving || current.error != nil).accessibilityIdentifier("run-routine")
                     if current.lastTaskId != nil {
-                        NavigationLink("Open conversation", value: ConversationRoute(botId: botId))
+                        Button("Open activity") { store.activityReference = ConversationRoute(botId: botId) }
                     }
                     Button("Delete routine", role: .destructive) { deleteOpen = true }
                 }

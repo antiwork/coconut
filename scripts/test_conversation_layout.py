@@ -23,6 +23,8 @@ def main():
     parser.add_argument('--simulator', required=True)
     parser.add_argument('--result', type=Path, required=True)
     parser.add_argument('--google-connection', action='store_true')
+    parser.add_argument('--single-chat', action='store_true')
+    parser.add_argument('--single-chat-order', action='store_true')
     parser.add_argument('--message-interactions', action='store_true')
     parser.add_argument('--inbox-choice', action='store_true')
     parser.add_argument('--inbox-stack', action='store_true')
@@ -43,6 +45,7 @@ def main():
     parser.add_argument('--decision-receipt', action='store_true')
     parser.add_argument('--transcript', type=Path, default=ROOT/'ios/CoconutUITests/Fixtures/ConversationLayoutMessages.json')
     args = parser.parse_args()
+    if args.single_chat_order: args.single_chat = True
     if args.send_from_history:
         args.instant_send = True
         args.keyboard_recovery = True
@@ -54,7 +57,7 @@ def main():
     peer = dict(state['bots'][0], pinned=False, status='idle', unread_count=0)
     bot = state['bots'][1]
     bot.update(status='idle', unread_count=0, pinned=False)
-    state.update(bots=[bot], messages=[], decisions=[], artifacts=[], tasks=[], routines=[], cursor=50)
+    state.update(conversation_bot_id=bot['id'], bots=[bot], messages=[], decisions=[], artifacts=[], tasks=[], routines=[], cursor=50)
     task = dict(id=str(uuid4()), bot_id=bot['id'], session_id=bot['session_id'], title='Conversation layout',
                 status='completed', summary='', created_at=state['server_time'], updated_at=state['server_time'])
     task['thread_id'] = task['id']
@@ -77,6 +80,19 @@ def main():
         state['messages'] = [message('user', 'Compare the two folders.'),
                              message('assistant', 'The blue folder has the complete report.'),
                              message('assistant', 'The green folder contains an older draft.')]
+    if args.single_chat:
+        state['bots'].append(peer)
+        state['messages'] = [message('assistant', 'How can I help?')]
+        worker_task = dict(task, id='worker-task', bot_id=peer['id'], session_id=peer['session_id'])
+        state['tasks'].append(worker_task)
+        worker_message = dict(message('assistant', 'The form is ready for review.'), id='worker-answer',
+                              bot_id=peer['id'], task_id=worker_task['id'])
+        state['messages'].append(worker_message)
+        if args.single_chat_order:
+            worker_task.update(conversation_bot_id=bot['id'], status='needs_you')
+            fixture = json.loads((ROOT/'ios/Coconut/Fixtures/PreviewState.json').read_text())
+            state['decisions'] = [dict(fixture['decisions'][0], bot_id=peer['id'], task_id=worker_task['id'])]
+
     if args.bot_references:
         state['bots'].append(peer)
         state['messages'] = [message('assistant', 'Ready for your message.')]
@@ -313,7 +329,15 @@ def main():
                                     decided_by='fixture', outcome='Answer recorded. Hermes will continue.')
                     publish('decision.updated', decision)
                 self.respond(decision)
+            elif args.single_chat_order and self.path.endswith('/answer'):
+                release_send.wait(90)
+                with changed:
+                    decision = state['decisions'][0]
+                    decision['status'] = 'approved'
+                    publish('decision.updated', decision)
+                self.respond(decision)
             elif args.message_interactions and self.path.endswith('/messages'):
+
                 target = next(m for m in state['messages'] if m['id'] == body['reply_to_message_id'])
                 row = message('user', body['text'])
                 row.update(client_request_id=self.headers.get('Idempotency-Key'),
@@ -323,6 +347,11 @@ def main():
             elif self.path.endswith('/messages'):
                 sent_requests.append(dict(path=self.path, body=body))
                 key = self.headers.get('Idempotency-Key')
+                if args.single_chat_order and body.get('reply_to_message_id') and state['decisions'][0]['status'] == 'pending':
+                    self.respond(dict(error='The decision is still pending.'), status=409)
+                    return
+                if args.single_chat and not args.single_chat_order and body['text'] == 'Keep this draft':
+                    release_send.wait(20)
                 if args.instant_send:
                     send_keys.append(key)
                     send_modes.append(body.get("mode"))
@@ -344,6 +373,9 @@ def main():
                     publish('task.updated', task)
                     row = message('user', body['text'])
                     row['client_request_id'] = key
+                    if body.get('reply_to_message_id'):
+                        original = next(m for m in state['messages'] if m['id'] == body['reply_to_message_id'])
+                        row['reply_to'] = dict(message_id=original['id'], bot_id=original['bot_id'], text=original['text'], author=peer['name'], role=original['role'])
                     responses[key] = dict(task)
                     state['messages'].append(row)
                     publish('message.created', row)
@@ -401,12 +433,13 @@ def main():
         for target in targets:
             if target.get('BlueprintName') == 'CoconutUITests':
                 target.setdefault('EnvironmentVariables', {})['COCONUT_LAYOUT_TEST_URL'] = f'http://127.0.0.1:{server.server_port}'
+                if args.single_chat_order: target['EnvironmentVariables']['COCONUT_ORDER_TEST'] = '1'
         with tempfile.TemporaryDirectory(prefix='coconut-layout-test-') as folder:
             runfile = Path(folder)/'Layout.xctestrun'
             runfile.write_bytes(plistlib.dumps(document))
             command = ['xcodebuild', 'test-without-building', '-xctestrun', str(runfile),
                             '-destination', 'platform=iOS Simulator,id='+args.simulator,
-                            '-only-testing:CoconutUITests/' + ('SendFromHistoryTests/testSendingFromHistoryShowsMessageBeforeServerAcceptance' if args.send_from_history else 'BotMentionsFlowTests/testMentionKeepsOwnerOnWire' if args.bot_references else 'GoogleConnectionFlowTests/testSystemSignInReturnsToCoconut' if args.google_connection else 'MessageInteractionFlowTests/testRepliesReactionsAndCopy' if args.message_interactions else 'DecisionInboxTests/testChoicesAdvanceBeforeConfirmationAndRecoverFailure' if args.inbox_choice else 'DecisionInboxTests/testReopeningFromPendingListEndsUndoBeforeDelayedReceipt' if args.inbox_revisit else 'DecisionInboxTests/testOldSnapshotCannotRemoveConfirmedUndo' if args.inbox_stale else 'DecisionInboxTests/testUndoRecoversAnUncertainSwipeWithTheSameKey' if args.inbox_uncertain else 'DecisionInboxTests/testUndoSendsRestoreWhileSnapshotRefreshIsBlocked' if args.inbox_refresh else 'DecisionInboxTests/testUndoTargetsLatestSwipeWhenEarlierWriteFinishesLast' if args.inbox_undo_order else 'DecisionInboxTests/testUndoDuringPendingSwipeKeepsCardAndHeaderStable' if args.inbox_undo else 'DecisionInboxTests/testOpenChatShowsSelectedCard' if args.inbox_link else 'DecisionInboxTests/testSwipeStackKeepsDecisionsAndSupportsUndo' if args.inbox_stack else 'DecisionInboxTests/testNativeNavigation' if args.navigation else 'NativeDecisionFlowTests/testChoiceReceiptStaysStableDuringServerConfirmation' if args.decision_receipt else 'BotExchangeFlowTests' if args.exchange else 'InstantSendFlowTests' if args.instant_send else 'ConversationSendRecoveryTests' if args.keyboard_recovery else 'ConversationLayoutFlowTests/testKeyboardKeepsBottomPinnedAndPreservesHistory' if args.keyboard_anchor else 'ConversationLayoutFlowTests'), '-parallel-testing-enabled', 'NO',
+                            '-only-testing:CoconutUITests/' + ('MessageInteractionFlowTests/testSingleChatQuotesWorkerAndKeepsDraft' if args.single_chat else 'SendFromHistoryTests/testSendingFromHistoryShowsMessageBeforeServerAcceptance' if args.send_from_history else 'BotMentionsFlowTests/testMentionKeepsOwnerOnWire' if args.bot_references else 'GoogleConnectionFlowTests/testSystemSignInReturnsToCoconut' if args.google_connection else 'MessageInteractionFlowTests/testRepliesReactionsAndCopy' if args.message_interactions else 'DecisionInboxTests/testChoicesAdvanceBeforeConfirmationAndRecoverFailure' if args.inbox_choice else 'DecisionInboxTests/testReopeningFromPendingListEndsUndoBeforeDelayedReceipt' if args.inbox_revisit else 'DecisionInboxTests/testOldSnapshotCannotRemoveConfirmedUndo' if args.inbox_stale else 'DecisionInboxTests/testUndoRecoversAnUncertainSwipeWithTheSameKey' if args.inbox_uncertain else 'DecisionInboxTests/testUndoSendsRestoreWhileSnapshotRefreshIsBlocked' if args.inbox_refresh else 'DecisionInboxTests/testUndoTargetsLatestSwipeWhenEarlierWriteFinishesLast' if args.inbox_undo_order else 'DecisionInboxTests/testUndoDuringPendingSwipeKeepsCardAndHeaderStable' if args.inbox_undo else 'DecisionInboxTests/testOpenChatShowsSelectedCard' if args.inbox_link else 'DecisionInboxTests/testSwipeStackKeepsDecisionsAndSupportsUndo' if args.inbox_stack else 'DecisionInboxTests/testNativeNavigation' if args.navigation else 'NativeDecisionFlowTests/testChoiceReceiptStaysStableDuringServerConfirmation' if args.decision_receipt else 'BotExchangeFlowTests' if args.exchange else 'InstantSendFlowTests' if args.instant_send else 'ConversationSendRecoveryTests' if args.keyboard_recovery else 'ConversationLayoutFlowTests/testKeyboardKeepsBottomPinnedAndPreservesHistory' if args.keyboard_anchor else 'ConversationLayoutFlowTests'), '-parallel-testing-enabled', 'NO',
                             '-resultBundlePath', str(args.result)]
             with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as process:
                 for line in process.stdout:
