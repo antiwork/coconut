@@ -74,6 +74,7 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_kanban.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_claim_continuation.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_work_continuation.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_continuation_snapshot_eviction.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_foreground_dispatch.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_source_ownership.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_work_display.py
