@@ -2201,6 +2201,28 @@ board.sync([row])
 assert board.kb.get_task(board.conn, sys.argv[3]).status == 'ready'
 """, json.dumps(fresh), identity)
 
+    def test_source_check_passes_its_claim_to_the_provider(self):
+        task = self.task('Reconcile the assigned issue')
+        received = []
+        def start(value, bot, history, emit):
+            import json
+            received.append(value)
+            result = self.native_program('''
+import json, os
+claim = json.loads(sys.argv[2])
+os.environ.update(HERMES_KANBAN_TASK=claim['native_id'], HERMES_KANBAN_RUN_ID=str(claim['run_id']),
+                  HERMES_KANBAN_CLAIM_LOCK=claim['claim_lock'])
+from tools.kanban_tools import _handle_complete
+print(_handle_complete(dict(task_id=claim['native_id'], summary='Source checked')))
+''', json.dumps(value['_kanban_claim']))
+            self.assertNotIn('error', json.loads(result), result)
+            emit('completed', {'summary': 'Source checked'})
+        self.provider.start_task = start
+        self.settle(lambda: self.service._get('tasks', task['id'])['status'] == 'completed')
+        self.assertEqual(len(received), 1)
+        self.assertNotIn('_native_outcome_id', received[0])
+        self.assertEqual(received[0]['_kanban_claim'], self.service._get('tasks', task['id'])['_kanban_claim'])
+
     def test_queued_dependency_remains_available_to_wait(self):
         self.service.mutate('PUT', '/v1/settings/work-capacity', {'limit': 1}, str(uuid4()))
         parent = self.task('Inspect the change')
