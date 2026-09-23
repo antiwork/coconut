@@ -16,7 +16,7 @@ final class DecisionInboxTests: XCTestCase {
         app.buttons["decision-option-option-1-0"].tap()
         XCTAssertTrue(app.staticTexts["Review the onboarding copy?"].waitForExistence(timeout: 1))
         app.buttons["decision-option-option-2-0"].tap()
-        let empty = app.staticTexts["All caught up"]
+        let empty = app.staticTexts["All caught up."]
         XCTAssertTrue(empty.waitForExistence(timeout: 1))
         let before = empty.frame
         releaseFixture(address)
@@ -89,7 +89,7 @@ final class DecisionInboxTests: XCTestCase {
         let proposal = app.staticTexts["Review the onboarding copy?"]
         XCTAssertTrue(proposal.waitForExistence(timeout: 5))
         card.swipeRight()
-        XCTAssertTrue(app.staticTexts["All caught up"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["All caught up."].waitForExistence(timeout: 5))
         XCTAssertFalse(first.isHittable)
         XCTAssertTrue(app.buttons["undo-inbox-dismiss"].waitForExistence(timeout: 5))
         app.buttons["undo-inbox-dismiss"].tap()
@@ -376,7 +376,7 @@ final class DecisionInboxTests: XCTestCase {
         app.tabBars.buttons["Bots"].tap()
         XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 5))
         app.tabBars.buttons["Inbox"].tap()
-        XCTAssertTrue(app.staticTexts["All caught up"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["All caught up."].waitForExistence(timeout: 5))
         app.tabBars.buttons["Bots"].tap()
         let bot = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bot-conversation-")).firstMatch
         bot.tap()
@@ -429,14 +429,14 @@ final class DecisionInboxTests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap(); field.typeText("What did you verify?")
         app.buttons["send-decision-reply-" + id].tap()
-        XCTAssertTrue(app.staticTexts["All caught up"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["All caught up."].waitForExistence(timeout: 8))
         XCTAssertFalse(app.staticTexts["What did you verify?"].exists)
         app.terminate()
         app.launchEnvironment.removeValue(forKey: "COCONUT_PAIR_CODE")
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Inbox"].tap()
-        XCTAssertTrue(app.staticTexts["All caught up"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["All caught up."].waitForExistence(timeout: 5))
         var request = URLRequest(url: URL(string: address + "/test/continue")!)
         request.httpMethod = "POST"
         _ = try await URLSession.shared.data(for: request)
@@ -491,7 +491,7 @@ final class DecisionInboxTests: XCTestCase {
         let option = app.buttons["decision-option-00000000-0000-4000-8000-000000000061"]
         XCTAssertTrue(option.waitForExistence(timeout: 5))
         option.tap()
-        XCTAssertTrue(app.staticTexts["All caught up"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["All caught up."].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["undo-inbox-dismiss"].exists)
     }
 

@@ -44,7 +44,7 @@ final class MessageDraftFlowTests: XCTestCase {
         app.scrollViews["inbox-card-scroll"].buttons["draft-send"].tap()
         XCTAssertTrue(app.staticTexts["Share the meeting notes?"].waitForExistence(timeout: 10))
         app.scrollViews["inbox-card-scroll"].buttons["draft-discard"].tap()
-        XCTAssertTrue(app.staticTexts["All caught up"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["All caught up."].waitForExistence(timeout: 10))
         app.tabBars.buttons["Bots"].tap()
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bot-conversation-")).firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Approved for sending"].waitForExistence(timeout: 10))
@@ -79,7 +79,7 @@ final class MessageDraftFlowTests: XCTestCase {
         }
         XCTAssertTrue(discard.isHittable)
         discard.tap()
-        XCTAssertTrue(app.staticTexts["All caught up"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["All caught up."].waitForExistence(timeout: 10))
     }
 
     @MainActor private func assertNoCardAboveInbox(_ app: XCUIApplication) {
