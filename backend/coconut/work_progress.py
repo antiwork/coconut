@@ -86,6 +86,26 @@ class NativeWork:
 
 
 class WorkProgress:
+    def _native_wait_cycle(self, task_id, target_id):
+        if not self.kanban:
+            return False
+        snapshots = self.kanban.tasks
+        source = snapshots.get(task_id, {}).get('id')
+        target = snapshots.get(target_id, {})
+        if not source or not target:
+            return False
+        native = {row['id']: row for row in snapshots.values()}
+        pending, visited = [target['id']], set()
+        while pending:
+            identity = pending.pop()
+            if identity == source:
+                return True
+            if identity in visited:
+                continue
+            visited.add(identity)
+            pending.extend(parent['id'] for parent in native.get(identity, {}).get('dependencies', []))
+        return False
+
     @staticmethod
     def _unfinished_work(task):
         if task.get('_native_outcome_id'):
@@ -180,6 +200,9 @@ class WorkProgress:
 
     def wait_for_task(self, task_id, payload):
         from .service import ServiceError, digest, encoded, now, require_text
+        if self.kanban and isinstance(payload.get('task_id'), str):
+            # Dispatch callbacks acquire the service lock while holding the adapter lock.
+            self.kanban.call({'op': 'snapshot', 'external_ids': [task_id, payload['task_id']]})
         with self.transaction():
             task = self._get('tasks', task_id)
             if task['status'] != 'working' or self._task_paused(task) or self.stopping.is_set():
@@ -250,7 +273,8 @@ class WorkProgress:
             target = peers[target_id]
             tasks = {t['id']: t for t in self._all('tasks')}
             records = self._pending_completion_receipts()
-            if task_id in self._work_chain(target, tasks, records, include_continuations=True):
+            if (task_id in self._work_chain(target, tasks, records, include_continuations=True)
+                    or self._native_wait_cycle(task_id, target_id)):
                 raise ServiceError(409, 'This task already depends on your result. Do not create a circular wait.')
             assignment = self._assignment(task)
             turn_ids = {t['id'] for t in tasks.values() if self._assignment(t)['id'] == assignment['id']}
@@ -320,6 +344,10 @@ class WorkProgress:
             return source.get('_completion_text') or (
                 'The process finished earlier. Its output is unavailable in this saved record. Check the existing result before repeating work.'
                 if source.get('_process_delivery') else None)
+        if self._native_wait_cycle(task['id'], target['id']):
+            return ('This saved wait conflicts with a Hermes dependency: the target task waits for your result. '
+                    'Read your saved results and finish your assigned scope, or wait for the specific decision. '
+                    'Do not wait for that task to finish. This does not approve any new action.')
         if target['status'] in ('failed', 'cancelled'):
             return f"Task {target['id']} {target['status']}: {target['summary']}"
         if target['status'] == 'completed' and not self._background_pending(target['id']) and not target.get('_waiting_on'):

@@ -1,5 +1,8 @@
 import json
+import threading
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from coconut.service import Service, ServiceError, now
@@ -98,6 +101,60 @@ class WorkWaitTests(unittest.TestCase):
             self.service._put('tasks', task)
         self.service.wait_for_task(self.child, {'task_id': target, 'reason': 'Waiting for publication'})
         self.assertEqual(len([r for r in self.service._all('native_receipts') if r.get('_wait_task_id')]), 1)
+
+    def native_dependency(self, target):
+        return SimpleNamespace(call=Mock(), tasks={
+            self.child: {'id': 'native-child', 'dependencies': []},
+            target: {'id': 'native-target', 'dependencies': [{'id': 'native-middle'}]},
+            'middle': {'id': 'native-middle', 'dependencies': [{'id': 'native-child'}]},
+        })
+
+    def test_rejects_wait_when_native_dependency_already_waits_for_caller(self):
+        target = self.target()
+        with self.service.transaction():
+            task = self.service._get('tasks', self.child)
+            task.update(status='working', _conversation_epoch=self.service._setting('conversation_epoch'))
+            self.service._put('tasks', task)
+        native = self.native_dependency(target)
+        def snapshot(_):
+            acquired = []
+            def callback():
+                if self.service.lock.acquire(timeout=1):
+                    acquired.append(True)
+                    self.service.lock.release()
+            thread = threading.Thread(target=callback)
+            thread.start()
+            thread.join(2)
+            self.assertEqual(acquired, [True], 'Snapshot must not hold the service lock.')
+        native.call.side_effect = snapshot
+        with patch.object(self.service, 'kanban', native), self.assertRaisesRegex(ServiceError, 'circular wait'):
+            self.service.wait_for_task(self.child, {'task_id': target, 'reason': 'Wait for merge'})
+        native.call.assert_called_once_with({'op': 'snapshot', 'external_ids': [self.child, target]})
+        self.assertFalse(any(r.get('_wait_task_id') for r in self.service._all('native_receipts')))
+
+    def test_saved_native_cycle_wakes_original_waiter_once(self):
+        target = self.target()
+        self.wait(target)
+        count = len(self.service._all('tasks'))
+        with patch.object(self.service, 'kanban', self.native_dependency(target)):
+            self.service._drain_task_completions()
+            resumed = self.service._get('tasks', self.child)
+            self.assertEqual(resumed['status'], 'queued')
+            self.assertIn('target task waits for your result', resumed['_background_completion'][0])
+            turn = resumed['_native_turn_id']
+            self.service._drain_task_completions()
+        self.assertEqual(self.service._get('tasks', self.child)['_native_turn_id'], turn)
+        self.assertEqual(len(self.service._all('tasks')), count)
+        self.assertEqual(self.service._get('tasks', target)['status'], 'queued')
+
+    def test_finished_native_dependency_does_not_interrupt_saved_wait(self):
+        target = self.target()
+        self.wait(target)
+        native = self.native_dependency(target)
+        native.tasks['middle']['dependencies'] = []
+        with patch.object(self.service, 'kanban', native):
+            self.service._drain_task_completions()
+        self.assertEqual(self.service._get('tasks', self.child)['status'], 'waiting')
 
     def test_continuation_cannot_wait_on_its_own_assignment(self):
         with self.service.transaction():
