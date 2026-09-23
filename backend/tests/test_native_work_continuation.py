@@ -721,6 +721,95 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(len([a for a in self.service._all('artifacts') if a['kind'] == 'work']), 1)
         self.assertEqual(self.resume(source), receipt)
 
+    def assert_pr_only_requester_and_completed_owner_report(self, pr_status):
+        from uuid import uuid4
+        owner, source = self.scheduled_native()
+        self.service.kanban.tasks[owner['id']]['status'] = 'done'
+        url = 'https://github.com/example/project/pull/1'
+        requester_update = dict(source, id=str(uuid4()), status='completed',
+            _execution_session_id=source['id'],
+            _kanban_claim={'native_id': 't_requester_update', 'input': 'report'})
+        owner_update = dict(owner, id=str(uuid4()), status='completed',
+            _execution_session_id=str(uuid4()), source_task_id=source['id'],
+            _reply_to_task_id=source['id'],
+            _kanban_claim={'native_id': 't_owner_update', 'input': 'report'})
+        for task, native_id in ((requester_update, 't_requester_update'),
+                                (owner_update, 't_owner_update')):
+            task.pop('_work_todos', None)
+            task.pop('_waiting_on', None)
+            self.service._put('tasks', task)
+            self.service.kanban.tasks[task['id']] = dict(id=native_id, status='done')
+        original = dict(id='original-pr', task_id=owner['id'], bot_id=owner['bot_id'],
+            kind='pr', title='The original PR', status=pr_status, url=url, pr_state=pr_status,
+            _review_task_id=owner['id'], _activity_task_id=owner_update['id'])
+        requester = dict(id='requester-pr', task_id=source['id'], bot_id=source['bot_id'],
+            kind='pr', title='The same PR', status=pr_status, url=url.upper(), pr_state=pr_status,
+            _review_task_id=source['id'], _activity_task_id=requester_update['id'])
+        self.service._put('artifacts', original)
+        self.service._put('artifacts', requester)
+        receipt = self.resume(source)
+        self.assertEqual(receipt['task_id'], owner['id'])
+        self.assertEqual(receipt['native_task_id'], 't_existing')
+        continued = self.service._get('tasks', owner['id'])
+        self.assertEqual(continued['_execution_session_id'], owner['_execution_session_id'])
+        self.assertEqual(continued['_work_context_id'], original['id'])
+        self.assertEqual(self.service._get('artifacts', requester['id']), requester)
+        self.assertEqual(self.service._get('tasks', owner_update['id']), owner_update)
+
+    def test_pr_only_requester_and_completed_owner_report_keep_original_execution(self):
+        self.assert_pr_only_requester_and_completed_owner_report('open')
+
+    def test_merged_pr_only_requester_keeps_original_postmerge_execution(self):
+        self.assert_pr_only_requester_and_completed_owner_report('merged')
+
+    def test_pr_only_passive_report_blocks_active_or_unknown_writer(self):
+        from uuid import uuid4
+        owner, source = self.scheduled_native()
+        self.service.kanban.tasks[owner['id']]['status'] = 'done'
+        reporter = dict(owner, id=str(uuid4()), status='completed',
+            _execution_session_id=str(uuid4()),
+            _kanban_claim={'native_id': 't_reporter', 'input': 'report'})
+        self.service._put('tasks', reporter)
+        item = dict(id='original-pr', task_id=owner['id'], bot_id=owner['bot_id'],
+            kind='pr', title='The original PR', status='open', pr_state='open',
+            url='https://github.com/example/project/pull/1',
+            _review_task_id=owner['id'], _activity_task_id=reporter['id'])
+        self.service._put('artifacts', item)
+        for snapshot in (None, dict(id='t_reporter', status='running'),
+                         dict(id='different', status='done')):
+            if snapshot is None:
+                self.service.kanban.tasks.pop(reporter['id'], None)
+            else:
+                self.service.kanban.tasks[reporter['id']] = snapshot
+            with self.subTest(snapshot=snapshot), self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(source)
+        self.service.kanban.tasks[reporter['id']] = dict(id='t_reporter', status='done')
+        self.service._put('tasks', dict(reporter, _return_pending={'text': 'Undelivered'}))
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(source)
+
+    def test_pr_only_owner_report_does_not_hide_an_active_other_coordinator(self):
+        from uuid import uuid4
+        owner, source = self.scheduled_native()
+        self.service.kanban.tasks[owner['id']]['status'] = 'done'
+        other = dict(source, id=str(uuid4()), status='working',
+            _execution_session_id=str(uuid4()))
+        reporter = dict(owner, id=str(uuid4()), status='completed',
+            _execution_session_id=str(uuid4()), source_task_id=other['id'],
+            _reply_to_task_id=other['id'],
+            _kanban_claim={'native_id': 't_reporter', 'input': 'report'})
+        reporter.pop('_work_todos', None)
+        reporter.pop('_waiting_on', None)
+        self.service._put('tasks', other)
+        self.service._put('tasks', reporter)
+        self.service.kanban.tasks[reporter['id']] = dict(id='t_reporter', status='done')
+        self.service._put('artifacts', dict(id='original-pr', task_id=owner['id'],
+            bot_id=owner['bot_id'], kind='pr', title='Original PR', status='open', pr_state='open',
+            url='https://github.com/example/project/pull/1',
+            _review_task_id=owner['id'], _activity_task_id=reporter['id']))
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(source)
+
     def requester_pr_report(self):
         owner, source, work, pr = self.linked_requester_pr()
         tracker = self.write('/v1/bots/' + source['bot_id'] + '/messages',

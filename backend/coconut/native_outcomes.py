@@ -92,40 +92,69 @@ class NativeOutcomes:
                     # The coordinating Work may remain active while its delegated PR resumes.
                     # Other PRs linked to it remain independent writer/review peers.
                     continue
+                requester_report = (item['kind'] == 'pr' and not item.get('work_outcome_id')
+                    and peer['kind'] == 'pr' and peer['bot_id'] == owner.get('source_bot_id')
+                    and peer['task_id'] == owner.get('source_task_id')
+                    and peer.get('url') and item.get('url')
+                    and peer['url'].lower() == item['url'].lower())
                 for field in ('_review_task_id', '_activity_task_id'):
                     if not peer.get(field):
                         continue
-                    if (field == '_review_task_id' and linked_parent and peer['kind'] == 'pr'
-                            and peer['bot_id'] == linked_parent['bot_id']
-                            and peer.get('work_outcome_id') == linked_parent['id']
-                            and peer.get('url') and item.get('url')
-                            and peer['url'].lower() == item['url'].lower()
-                            and peer['task_id'] == linked_parent['task_id']
-                            and peer[field] == linked_parent['task_id']):
-                        # The requester's own report of this same PR is not a second writer.
+                    if (field == '_review_task_id' and peer['kind'] == 'pr'
+                            and ((linked_parent and peer['bot_id'] == linked_parent['bot_id']
+                                  and peer.get('work_outcome_id') == linked_parent['id']
+                                  and peer.get('url') and item.get('url')
+                                  and peer['url'].lower() == item['url'].lower()
+                                  and peer['task_id'] == linked_parent['task_id']
+                                  and peer[field] == linked_parent['task_id'])
+                                 or (requester_report and peer[field] == owner['source_task_id']))):
+                        # The requester's own same-PR report is not a second writer.
                         continue
                     reporter = tasks[peer[field]]
                     if execution_key(reporter) == execution_key(owner):
                         continue
-                    # A finished observer on another bot does not own this execution.
-                    # Keep its dependency chain in the check, including undelivered results.
-                    root = self._work_execution_owner(reporter, tasks)
+                    requester_activity = (requester_report and
+                        self._work_execution_owner(reporter, tasks)['id'] == owner.get('source_task_id'))
+                    reporter_source = tasks.get(reporter.get('source_task_id'))
+                    owner_report = (peer['id'] == item['id'] and peer['task_id'] == owner['id']
+                        and reporter['bot_id'] == owner['bot_id']
+                        and reporter.get('_reply_to_task_id') == owner.get('source_task_id')
+                        and reporter_source is not None
+                        and self._work_execution_owner(reporter_source, tasks)['id'] == owner.get('source_task_id'))
+                    passive_report = (field == '_activity_task_id' and peer['kind'] == 'pr'
+                        and peer.get('url') and item.get('url')
+                        and peer['url'].lower() == item['url'].lower()
+                        and (requester_activity or owner_report))
+                    # A passive same-PR report can finish independently of its
+                    # coordinator. Its own callbacks, native claim, and pauses must
+                    # still be terminal before the original execution resumes.
+                    root = reporter if passive_report else self._work_execution_owner(reporter, tasks)
                     linked = self._work_chain(root, tasks, records, include_continuations=True)
                     linked[root['id']] = (root, 0)
                     linked[reporter['id']] = (reporter, 0)
+                    if owner_report and reporter_source and reporter_source['id'] not in (owner['id'], owner['source_task_id']):
+                        linked[reporter_source['id']] = (reporter_source, 0)
+                    if passive_report and requester_activity:
+                        # A completed reporter may be chained back to the
+                        # requester's coordinator; that coordinator is the
+                        # source of this continuation, not a competing writer.
+                        linked.pop(owner['source_task_id'], None)
+                        linked.pop(owner['id'], None)
                     native_tasks = [t for t, _ in linked.values()
                                     if t.get('_native_outcome_id') or t.get('_kanban_claim')]
-                    peer_chains.append((peer, reporter, linked, native_tasks))
-            missing = sorted({t['id'] for _, _, _, native_tasks in peer_chains for t in native_tasks
+                    peer_chains.append((peer, reporter, linked, native_tasks, passive_report))
+            missing = sorted({t['id'] for _, _, _, native_tasks, _ in peer_chains for t in native_tasks
                               if t['id'] not in snapshots})
             if missing and snapshot_missing:
                 snapshot_missing(missing)
-            for peer, reporter, linked, native_tasks in peer_chains:
+            for peer, reporter, linked, native_tasks, passive_report in peer_chains:
                 native_pending = any(
                     (snapshot := snapshots.get(t['id'], {})).get('status') != 'done'
                     or snapshot.get('id') != (t.get('_native_outcome_id') or t['_kanban_claim'].get('native_id'))
                     or snapshot.get('current_run_id') or snapshot.get('worker_pid') for t in native_tasks)
-                if (native_pending or peer['kind'] != 'pr' or peer['bot_id'] == owner['bot_id'] or reporter['bot_id'] == owner['bot_id']
+                if (native_pending or peer['kind'] != 'pr'
+                        or ((peer['bot_id'] == owner['bot_id'] or reporter['bot_id'] == owner['bot_id'])
+                            and not passive_report)
                         or any(t['status'] != 'completed' or t.get('_waiting_on') or t.get('_return_pending')
                                or self._task_paused(t) or self._get('exchanges', t['exchange_id']).get('cancelled')
                                or self._background_pending(t['id']) or self._unfinished_work(t)
