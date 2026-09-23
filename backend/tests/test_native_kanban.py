@@ -2142,6 +2142,45 @@ assert started == [identities['followup']], started
     def test_interrupted_preparation_before_coconut_claim_recovers(self):
         self.interrupt_before_pid_commit(save_claim=False)
 
+    def test_reused_worker_pid_moves_to_new_native_run(self):
+        program = '''
+import subprocess, sys, tempfile, time
+from coconut.kanban_runtime import Board
+with tempfile.TemporaryDirectory() as root:
+    board = Board(root)
+    task_id = board.kb.create_task(board.conn, title='Lease transfer probe', body='probe',
+        assignee='default', created_by='probe', tenant='probe', workspace_kind='dir',
+        workspace_path=root, priority=0, initial_status='blocked', idempotency_key='probe')
+    board.kb.unblock_task(board.conn, task_id)
+    first = board.kb.claim_task(board.conn, task_id)
+    process = subprocess.Popen(['sleep', '120'])
+    try:
+        board.dispatch._set_worker_pid(board.conn, task_id, process.pid)
+        board.kb.block_task(board.conn, task_id, reason='Wait for next run', kind='capability')
+        board.kb.unblock_task(board.conn, task_id)
+        second = board.kb.claim_task(board.conn, task_id)
+        with board.kb.write_txn(board.conn):
+            board.record_worker_pid(second, process.pid)
+        rows = board.conn.execute('SELECT id,worker_pid FROM task_runs WHERE task_id=? ORDER BY id',
+                                  (task_id,)).fetchall()
+        assert first.current_run_id != second.current_run_id
+        assert rows[0]['worker_pid'] is None and rows[1]['worker_pid'] == process.pid
+        with board.kb.write_txn(board.conn):
+            board.conn.execute('UPDATE task_runs SET ended_at=? WHERE id=?',
+                               (int(time.time()) - 600, rows[0]['id']))
+        signals = []
+        board.dispatch.reap_terminal_workers(board.conn,
+            signal_fn=lambda pid, sig: signals.append((pid, sig)))
+        assert not signals and process.poll() is None
+    finally:
+        process.terminate()
+        process.wait()
+'''
+        result = subprocess.run([PYTHON, '-c', program],
+            env=dict(os.environ, PYTHONPATH=os.pathsep.join((str(Path(__file__).resolve().parents[1]), SOURCE))),
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_interrupted_preparation_after_coconut_claim_recovers(self):
         self.interrupt_before_pid_commit(save_claim=True)
 

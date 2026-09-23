@@ -41,6 +41,24 @@ class Board:
         if 'input_id' not in {r[1] for r in self.conn.execute('PRAGMA table_info(coconut_outcomes)')}:
             self.conn.execute("ALTER TABLE coconut_outcomes ADD COLUMN input_id TEXT NOT NULL DEFAULT ''")
 
+    def record_worker_pid(self, claimed, pid):
+        """Move a reused worker lease to this run before Hermes reaps the old one."""
+        pid = int(pid)
+        fingerprint = (self.dispatch._process_fingerprint(pid)
+                       or self.dispatch.UNVERIFIED_WORKER_FINGERPRINT)
+        self.conn.execute(
+            'UPDATE task_runs SET worker_pid=NULL,worker_started_at=NULL '
+            'WHERE task_id=? AND id<>? AND ended_at IS NOT NULL '
+            'AND worker_pid=? AND worker_started_at=?',
+            (claimed.id, claimed.current_run_id, pid, fingerprint))
+        self.conn.execute('UPDATE tasks SET worker_pid=?,worker_started_at=? WHERE id=?',
+                          (pid, fingerprint, claimed.id))
+        self.conn.execute('UPDATE task_runs SET worker_pid=?,worker_started_at=? WHERE id=?',
+                          (pid, fingerprint, claimed.current_run_id))
+        self.kb._append_event(self.conn, claimed.id, 'spawned',
+                              {'pid': pid, 'started_at': fingerprint},
+                              run_id=claimed.current_run_id)
+
     def sync(self, rows):
         for row in rows:
             old = self.conn.execute('SELECT native_id,intent FROM coconut_bindings WHERE external_id=?',
@@ -319,9 +337,12 @@ class Board:
                     else:
                         workspace = self.workspace.resolve_workspace(claimed)
                     self.workspace.set_workspace_path(self.conn, claimed.id, str(workspace))
-                    pid = spawn(claimed, str(workspace))
-                    if pid:
-                        self.dispatch._set_worker_pid(self.conn, claimed.id, int(pid))
+                    # Hold the native write lock across reuse and lease transfer.
+                    # The reaper must not see the old terminal lease in between.
+                    with self.kb.write_txn(self.conn):
+                        pid = spawn(claimed, str(workspace))
+                        if pid:
+                            self.record_worker_pid(claimed, pid)
                     self.kb._fire_worker_spawned_hook(self.conn, claimed, str(workspace), pid)
                     result.spawned.append((claimed.id, claimed.assignee or '', str(workspace)))
                 except Exception as error:

@@ -329,17 +329,11 @@ class HermesProvider(FixtureProvider):
             if self._closed or bot['id'] in self._stopped_bots:
                 raise RuntimeError('This bot stopped before worker preparation.')
             previous = self._kanban_runtimes.get(execution_id)
-            if (previous is not None and self._prepared.get(identity) is previous and previous.poll() is None
+            if (previous is not None and previous.poll() is None
                     and not getattr(self._transports.get(previous), 'closed', False)):
+                self._prepared[identity] = previous
                 return previous.pid
         if previous is not None:
-            with self._lock:
-                if previous in self._processes.values() or previous in self._prepared.values():
-                    raise RuntimeError('The previous native worker is still in use.')
-                self._paused_processes = {task: process for task, process in self._paused_processes.items()
-                                          if process is not previous}
-            # Hermes reaps a terminal run's PID. A new claim needs a new process,
-            # including when the old process stayed alive after a question.
             self._terminate(previous)
         env, _ = self.environment(bot['id'])
         env['COCONUT_DEFAULT_HOME'] = str(self.catalog.root)
