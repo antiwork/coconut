@@ -59,6 +59,7 @@ class WorkSourceTests(unittest.TestCase):
         result = captured[0]
         self.assertIn(self.item['id'], str(result))
         self.assertIn('answered or dismissed', str(result))
+        self.assertIn('If an approved step is complete but the assignment is not', str(result))
         with self.service.transaction():
             task['status'] = 'completed'
             self.service._put('tasks', task)

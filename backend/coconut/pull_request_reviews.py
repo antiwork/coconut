@@ -8,6 +8,8 @@ PR_MERGE_INSTRUCTIONS = (
     'Standing approval applies only to its stated repository, changes, and conditions. Green CI alone does not grant permission. '
     'If that approval covers the current changes and all conditions pass, mark the draft ready and merge without another card. '
     'Preserve explicit human holds, rejected decisions, visual approval requirements, and native tool approval checks. '
+    'While required checks run, finish the local verification the merge decision needs, such as tests that CI does not select. '
+    'When required checks pass on that head, offer the merge decision without starting new local work. '
     'If merge permission is missing, ask once. Offer one coconut_ask merge decision yourself when the evidence supports it. '
     'Coconut preserves the recorded conversation route. Do not wait for the requesting bot to present the card. '
     'Reuse an existing pending merge decision for this PR. Do not bypass its unanswered choice or duplicate its action. '
