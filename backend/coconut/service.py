@@ -1739,6 +1739,18 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
     def _drain_returns(self):
         self._restore_saved_delegation_results()
+        # A result can arrive after the owner failed on an unrelated tool.
+        # Consume only the exact persisted delivery; never restart that tool.
+        with self.lock:
+            stopped = [row[0] for row in self.db.execute(
+                "SELECT id FROM tasks WHERE json_extract(data,'$.status')='failed' "
+                "AND json_extract(data,'$.summary')='The original assignment stopped. Reply to continue.' "
+                "AND json_type(data,'$._resolved_dependency_id')='text'")]
+        for task_id in stopped:
+            with self.transaction():
+                task = self._get('tasks', task_id)
+                if task['status'] == 'failed' and task.get('summary') == 'The original assignment stopped. Reply to continue.':
+                    self._consume_stopped_dependency_result(task, self._assignment(task))
         with self.lock:
             native_replies = [(task['id'], task['_native_reply_pending']) for task in self._all('tasks') if task.get('_native_reply_pending')]
         for task_id, reply in native_replies:
@@ -2955,6 +2967,35 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         task['_preference_source_ids'] = [source_id for source_id in task.get('_preference_source_ids', [])
                                           if source_id not in task.get('_turn_preference_source_ids', [])]
 
+    def _consume_stopped_dependency_result(self, task, assignment):
+        dependency_id = task.get('_resolved_dependency_id')
+        result = (task.get('_bot_messages') or [None])[0]
+        source_row = (self.db.execute('SELECT data FROM tasks WHERE id=?', (dependency_id,)).fetchone()
+                      if dependency_id else None)
+        source = json.loads(source_row[0]) if source_row else None
+        if not (assignment['status'] == 'failed' and task.get('_is_return')
+                and task.get('_assignment_task_id') == assignment['id']
+                and dependency_id and dependency_id == task.get('source_task_id')
+                and dependency_id in assignment.get('_waiting_on', [])
+                and task['bot_id'] == assignment['bot_id'] and result
+                and source and source['status'] in ('completed', 'failed')
+                and self.db.execute("SELECT 1 FROM deliveries WHERE "
+                    "json_extract(data,'$.receipt.task_id')=? AND "
+                    "json_extract(data,'$.source_task_id')=? AND "
+                    "json_extract(data,'$.target_bot_id')=? AND "
+                    "json_extract(data,'$.text')=? LIMIT 1",
+                    (task['id'], dependency_id, task['bot_id'], result['text'])).fetchone()):
+            return False
+        # The failed owner cannot execute this callback, but its saved result
+        # must be part of the next continuation in the original execution.
+        assignment.setdefault('_bot_messages', []).append(result)
+        self._put('tasks', assignment)
+        task.update(status='completed', summary='The result was saved for the stopped assignment.', updated_at=now())
+        self._finish_assignment_turn(task, task['summary'], 'completed')
+        self._put('tasks', task)
+        self._event('task.updated', self._public(task), task['bot_id'], task['id'])
+        return True
+
     def _run_task(self, task_id: str):
         from .turn_timings import TurnTimings
         timing = TurnTimings(task_id, 'service')
@@ -2973,10 +3014,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         return
                     assignment = self._assignment(task)
                     if task.get('_assignment_task_id') and assignment['status'] in ('failed', 'cancelled'):
-                        task.update(status=assignment['status'], summary='The original assignment stopped. Reply to continue.', updated_at=now())
-                        self._prepare_return(task, task['summary'], task['status'])
-                        self._put('tasks', task)
-                        self._event('task.updated', self._public(task), bot['id'], task_id)
+                        if not self._consume_stopped_dependency_result(task, assignment):
+                            task.update(status=assignment['status'], summary='The original assignment stopped. Reply to continue.', updated_at=now())
+                            self._prepare_return(task, task['summary'], task['status'])
+                            self._put('tasks', task)
+                            self._event('task.updated', self._public(task), bot['id'], task_id)
                         return
                     if self._task_paused(task) or self._continuation_blocked(task) or self._automatic_work_is_paused(task):
                         return
