@@ -35,37 +35,25 @@ class DecisionCallRecoveryTests(unittest.TestCase):
         self.assertEqual(self.service._get('decisions', draft['id'])['status'], 'approved')
 
     def test_draft_that_carries_out_an_answer_links_to_that_answer(self):
-        source = dict(source_id='github-assigned', id='https://github.com/example/support/issues/7', updated_at='2026-09-23T17:53:22Z')
-        with self.service.transaction():
-            task = self.service._get('tasks', self.task['id'])
-            task['_source_assignment'] = source
-            self.service._put('tasks', task)
         with self.assertRaises(YieldForDecision):
             self.event('native_question', dict(title='Ask the seller for more proof?',
                 options=[dict(id='more_proof', label='Request more proof'), dict(id='decline', label='Decline the claim')]))
         ruling = self.service.snapshot()['decisions'][-1]
         self.write('POST', f"/v1/decisions/{ruling['id']}/answer", {'option_id': 'more_proof', 'revision': 1})
-        # A later source audit carries out the answer without seeing the earlier card ID.
+        # A later source audit task carries out the answer from its listed earlier answers.
         later = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Reconcile the issue', 'mode': 'queue'})
         with self.service.transaction():
             task = self.service._get('tasks', later['id'])
-            task.update(status='working', _source_assignment=source)
+            task['status'] = 'working'
             self.service._put('tasks', task)
         body = dict(channel='Gmail', sender='support@example.com', recipient='seller@example.com',
                     subject='Account recovery', body='Please send two more details.')
-        self.service.emit(later['id'], 'native_proposal', dict(key='proof-request',
-                                                              title='Send the proof request to the seller?', draft=body))
+        self.service.emit(later['id'], 'native_proposal', dict(key='proof-request', title='Send the proof request to the seller?',
+                                                              draft=body, previous_decision_id=ruling['id']))
         draft = self.service.snapshot()['decisions'][-1]
         self.assertEqual(draft['action_type'], 'draft_message')
         self.assertEqual(draft['previous_decision_id'], ruling['id'])
         self.assertEqual(draft['status'], 'pending')
-        # The same item ID from another configured source is a different assignment.
-        with self.service.transaction():
-            task = self.service._get('tasks', later['id'])
-            task['_source_assignment'] = dict(source, source_id='email-assigned')
-            self.service._put('tasks', task)
-        self.service.emit(later['id'], 'native_proposal', dict(key='other-source', title='Reply to the other request?', draft=body))
-        self.assertIsNone(self.service.snapshot()['decisions'][-1].get('previous_decision_id'))
 
     def test_pending_draft_still_cannot_be_used_as_an_answer(self):
         draft = self.draft()

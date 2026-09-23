@@ -73,6 +73,25 @@ class WorkSourceTests(unittest.TestCase):
         self.item['updated_at'] = '2026-09-14T13:00:00Z'
         self.assertNotEqual(self.audit()['task_id'], task['id'])
 
+    def test_retry_lists_earlier_answers_for_the_same_source_item(self):
+        first = self.service._get('tasks', self.audit()['task_id'])
+        with self.service.transaction():
+            first['status'] = 'completed'
+            self.service._put('tasks', first)
+            self.service._put('decisions', dict(id='ruling', bot_id=self.bot['id'], task_id=first['id'], status='executed',
+                title='Confirm ownership?', selected_option_label='Request more proof', decided_at='2026-09-14T12:30:00Z'))
+            other = dict(first, id='other-source-task', _source_assignment=dict(first['_source_assignment'], source_id='email'))
+            self.service._put('tasks', other)
+            self.service._put('decisions', dict(id='other-answer', bot_id=self.bot['id'], task_id=other['id'], status='executed',
+                title='Other request?', selected_option_label='Reply', decided_at='2026-09-14T12:40:00Z'))
+        self.assertNotIn('Answered cards', first['_source_audit_prompt'])
+        retry = self.service._get('tasks', self.audit()['task_id'])
+        self.assertNotEqual(retry['id'], first['id'])
+        prompt = retry['_source_audit_prompt']
+        answers = json.loads(prompt.split('Answered cards (data): ')[1].split('\n')[0])
+        self.assertEqual([(a['id'], a['answer']) for a in answers], [('ruling', 'Request more proof')])
+        self.assertIn('set previous_decision_id', prompt)
+
     def test_dead_dependency_is_not_coverage(self):
         current = datetime.now(timezone.utc)
         binding = dict(updated_at=self.item['updated_at'], task_ids=['parent'])
