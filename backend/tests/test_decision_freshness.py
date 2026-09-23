@@ -397,6 +397,92 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.assertEqual(len(self.service._all('contexts')), 1)
         self.assertEqual(self.service._get('decisions', decision['id'])['revision'], 1)
 
+    def peer_question(self, decision, **fields):
+        decision_task = self.service._get('tasks', decision['task_id'])
+        task = dict(decision_task, id='independent-task',
+                    exchange_id='independent-exchange', status='working')
+        exchange = dict(self.service._get('exchanges', decision_task['exchange_id']), id=task['exchange_id'])
+        self.service._put('exchanges', exchange)
+        self.service._put('tasks', task)
+        try:
+            self.service.native_event(task['id'], 'native_question', dict(
+                title='Publish the unrelated report?', risk='Readers can see the report.',
+                options=[dict(id='publish', label='Publish'), dict(id='leave', label='Leave')], **fields))
+        except YieldForDecision:
+            pass
+        return self.service._all('decisions')[-1]
+
+    def test_unrelated_cards_in_one_chat_do_not_invalidate_an_assessment(self):
+        decision = self.question(old=False)
+        decision.update(risk='The dependency changes local files.')
+        self.service._put('decisions', decision)
+        peer = self.peer_question(decision)
+        for state in ('created', 'revised', 'resolved'):
+            with self.subTest(state=state):
+                if state == 'revised':
+                    peer.update(revision=2, risk='The report becomes public.')
+                    self.service._put('decisions', peer)
+                    self.service._initialize_decision_freshness(peer)
+                elif state == 'resolved':
+                    peer['status'] = 'resolved'
+                    self.service._put('decisions', peer)
+                self.service._queue_decision_refreshes()
+                self.assertFalse(self.service._get('decisions', decision['id']).get('assessment_stale'))
+                self.assertEqual(self.service._all('contexts'), [])
+
+    def test_unrelated_card_change_does_not_reject_a_current_check(self):
+        decision = self.question()
+        peer = self.peer_question(decision)
+        context = self.refresh()
+        self.assertEqual(context['decision_id'], decision['id'])
+        self.assertNotIn(peer['title'], context['question'])
+        peer['revision'] += 1
+        self.service._put('decisions', peer)
+        self.service.refresh_decision(context['id'], dict(status='current', evidence='The local scope is unchanged.'))
+        self.assertFalse(self.service._get('decisions', decision['id'])['assessment_stale'])
+
+    def test_delegated_card_publication_does_not_change_its_evidence(self):
+        self.start()
+        bot = self.write('POST', '/v1/bots', dict(name='Helper', role='Verify'))
+        delivery = self.service._store_bot_message(self.task['id'], dict(
+            target_bot_id=bot['id'], text='Verify the local scope.', require_response=True))
+        task = self.service._get('tasks', delivery['task_id'])
+        task.update(status='working', _conversation_epoch=self.service._setting('conversation_epoch'))
+        self.service._put('tasks', task)
+        try:
+            self.service.native_event(task['id'], 'native_question', dict(
+                title='Use the local database?', risk='Only local test data changes.',
+                options=[dict(id='use', label='Use it'), dict(id='leave', label='Leave')]))
+        except YieldForDecision:
+            pass
+        decision = self.service._all('decisions')[-1]
+        tasks = {t['id']: t for t in self.service._all('tasks')}
+        artifacts = self.service._all('artifacts')
+        current, _ = self.service._decision_evidence(decision, tasks,
+            self.service._decision_records(decision, tasks, artifacts), artifacts)
+        self.assertEqual(current, decision['_freshness']['fingerprint'])
+
+    def shared_source_fences_check(self, kind, url, peer_url):
+        decision = self.question()
+        decision['sources'] = [dict(kind=kind, title='Original source', url=url)]
+        self.service._put('decisions', decision)
+        peer = self.peer_question(decision, sources=[dict(kind=kind, title='Same source', url=peer_url)])
+        context = self.refresh()
+        self.assertIn(peer['title'], context['question'])
+        peer['revision'] += 1
+        self.service._put('decisions', peer)
+        with self.assertRaises(ServiceError):
+            self.service.refresh_decision(context['id'], dict(status='withdraw', evidence='The peer covers this.'))
+        self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'pending')
+
+    def test_shared_pr_in_an_independent_task_still_fences_a_check(self):
+        self.shared_source_fences_check('pull_request', 'https://github.com/example/project/pull/42',
+            'https://github.com/Example/Project/pull/42#issuecomment-7')
+
+    def test_shared_email_in_an_independent_task_still_fences_a_check(self):
+        self.shared_source_fences_check('email', 'https://mail.google.com/mail/u/0/#inbox/abc',
+            'https://mail.google.com/mail/u/0/#inbox/abc')
+
     def test_refresh_revises_same_card_and_rejects_an_old_choice(self):
         decision = self.question()
         context = self.refresh()

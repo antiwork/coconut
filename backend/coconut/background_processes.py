@@ -279,7 +279,7 @@ class BackgroundProcesses:
             task = tasks[context['task_id']]
             context.update(_evidence_fingerprint=fingerprint,
                            _human_input_ids=[m['id'] for m in self._decision_human_messages(task)],
-                           question=self._decision_refresh_prompt(task, work, self._all('decisions')))
+                           question=self._decision_refresh_prompt(decision, task, work, self._all('decisions')))
         self._put('contexts', context)
         self._event('context.queued', {'id': context['id'], 'decision_id': context['decision_id']},
                     context['bot_id'], context['task_id'])
