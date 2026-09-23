@@ -2292,6 +2292,25 @@ print(_handle_complete(dict(task_id=claim['native_id'], summary='Source checked'
         result = self.service.wait_for_task(parent['id'], dict(task_id=child['id'], reason='Waiting for dependencies'))
         self.assertEqual(result['status'], 'waiting')
 
+    def test_coconut_wait_rejects_cycle_through_native_dependency(self):
+        from coconut.service import ServiceError
+        self.service.mutate('PUT', '/v1/settings/work-capacity', {'limit': 1}, str(uuid4()))
+        parent = self.task('Deliver the prepared result')
+        child = self.task('Act on the prepared result')
+        with self.service.transaction():
+            saved = self.service._get('tasks', child['id'])
+            saved['exchange_id'] = parent['exchange_id']
+            self.service._put('tasks', saved)
+        self.provider.release.clear()
+        self.settle(lambda: self.provider.started == [parent['id']])
+        parent_native = self.service.kanban.tasks[parent['id']]['id']
+        child_native = self.service.kanban.tasks[child['id']]['id']
+        self.native_program('board.kb.link_tasks(board.conn, sys.argv[2], sys.argv[3])',
+                            parent_native, child_native)
+        with self.assertRaisesRegex(ServiceError, 'circular wait'):
+            self.service.wait_for_task(parent['id'], dict(task_id=child['id'], reason='Waiting for its action'))
+        self.assertFalse(any(r.get('_wait_task_id') for r in self.service._all('native_receipts')))
+
     def test_status_question_runs_when_native_capacity_is_full(self):
         self.service.mutate('PUT', '/v1/settings/work-capacity', {'limit': 1}, str(uuid4()))
         owner = self.task('Inspect the change')
