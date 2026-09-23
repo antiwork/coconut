@@ -91,6 +91,25 @@ for line in sys.stdin:
         with self.assertRaisesRegex(RuntimeError, 'stopped'):
             self.provider.prepare_kanban_worker('late', first_bot, str(self.root), str(uuid4()))
 
+    def test_native_tasks_keep_distinct_workers_and_one_workspace_owner(self):
+        from unittest.mock import patch
+        bot = {'id': str(uuid4())}
+        execution_id = str(uuid4())
+        first_id, second_id = str(uuid4()), str(uuid4())
+        first_pid = self.provider.prepare_kanban_worker('first', bot, str(self.root), execution_id, first_id)
+        second_pid = self.provider.prepare_kanban_worker('second', bot, str(self.root), execution_id, second_id)
+        self.assertNotEqual(first_pid, second_pid)
+        self.assertEqual(self.provider._runtime_envs[self.provider._kanban_runtimes[first_id]][0]
+                         ['COCONUT_WORKSPACE_OUTCOME'], execution_id)
+        self.assertEqual(self.provider._runtime_envs[self.provider._kanban_runtimes[second_id]][0]
+                         ['COCONUT_WORKSPACE_OUTCOME'], execution_id)
+        items = [dict(id='first', native_worker_id=first_id, execution_session_id=execution_id),
+                 dict(id='second', native_worker_id=second_id, execution_session_id=execution_id)]
+        with patch.object(self.provider, '_process_completions',
+                          side_effect=lambda _bot, group, key: [(key, group[0]['id'])]):
+            self.assertEqual(set(self.provider.process_completions(bot, items)),
+                             {(first_id, 'first'), (second_id, 'second')})
+
     def test_idle_eviction_preserves_a_server_without_notifications(self):
         first, one = self.spawn_background()
         second, _ = self.spawn_background()

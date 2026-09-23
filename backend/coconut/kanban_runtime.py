@@ -41,6 +41,28 @@ class Board:
         if 'input_id' not in {r[1] for r in self.conn.execute('PRAGMA table_info(coconut_outcomes)')}:
             self.conn.execute("ALTER TABLE coconut_outcomes ADD COLUMN input_id TEXT NOT NULL DEFAULT ''")
 
+    def transfer_worker_pid(self, claimed, pid):
+        """Remove prior leases before Hermes assigns this worker to a new run."""
+        pid = int(pid)
+        fingerprint = (self.dispatch._process_fingerprint(pid)
+                       or self.dispatch.UNVERIFIED_WORKER_FINGERPRINT)
+        self.conn.execute(
+            'UPDATE task_runs SET worker_pid=NULL,worker_started_at=NULL '
+            'WHERE task_id=? AND id<>? AND ended_at IS NOT NULL AND worker_pid=?',
+            (claimed.id, claimed.current_run_id, pid))
+        return fingerprint
+
+    def record_worker_pid(self, claimed, pid, *, emit_event=True):
+        fingerprint = self.transfer_worker_pid(claimed, pid)
+        self.conn.execute('UPDATE tasks SET worker_pid=?,worker_started_at=? WHERE id=?',
+                          (pid, fingerprint, claimed.id))
+        self.conn.execute('UPDATE task_runs SET worker_pid=?,worker_started_at=? WHERE id=?',
+                          (pid, fingerprint, claimed.current_run_id))
+        if emit_event:
+            self.kb._append_event(self.conn, claimed.id, 'spawned',
+                                  {'pid': pid, 'started_at': fingerprint},
+                                  run_id=claimed.current_run_id)
+
     def sync(self, rows):
         for row in rows:
             old = self.conn.execute('SELECT native_id,intent FROM coconut_bindings WHERE external_id=?',
@@ -261,6 +283,7 @@ class Board:
         from hermes_cli.kanban_db_connect import _dispatch_tick_lock
         result = self.dispatch.DispatchResult()
         candidates = {row['id']: row for row in rows if row['state'] == 'ready'}
+        # Hermes holds this same lock around its terminal reaper and dispatch.
         with _dispatch_tick_lock(self.kb.kanban_db_path()) as acquired:
             if not acquired:
                 result.skipped_locked = True
@@ -296,9 +319,15 @@ class Board:
                               and row.get('previous_input') == row['input'])
                 guard = self.dispatch.check_respawn_guard(self.conn, task['id'])
                 if not (continuing or (new_input or recovering) and guard == 'active_pr'):
+                    def spawn_with_lease(claimed, workspace):
+                        pid = spawn(claimed, workspace)
+                        if pid:
+                            with self.kb.write_txn(self.conn):
+                                self.record_worker_pid(claimed, pid, emit_event=False)
+                        return pid
                     self.dispatch._dispatch_lane_task(self.conn, task, task['assignee'], result,
                         lane='ready', dry_run=False, ttl_seconds=None, board=None,
-                        failure_limit=self.dispatch.DEFAULT_FAILURE_LIMIT, spawn_fn=spawn,
+                        failure_limit=self.dispatch.DEFAULT_FAILURE_LIMIT, spawn_fn=spawn_with_lease,
                         per_profile_cap=None, per_profile_running={})
                     continue
                 if guard not in (None, 'active_pr'):
@@ -319,9 +348,11 @@ class Board:
                     else:
                         workspace = self.workspace.resolve_workspace(claimed)
                     self.workspace.set_workspace_path(self.conn, claimed.id, str(workspace))
+                    # The dispatch lock excludes the native reaper during preparation.
                     pid = spawn(claimed, str(workspace))
                     if pid:
-                        self.dispatch._set_worker_pid(self.conn, claimed.id, int(pid))
+                        with self.kb.write_txn(self.conn):
+                            self.record_worker_pid(claimed, pid)
                     self.kb._fire_worker_spawned_hook(self.conn, claimed, str(workspace), pid)
                     result.spawned.append((claimed.id, claimed.assignee or '', str(workspace)))
                 except Exception as error:

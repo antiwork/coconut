@@ -26,8 +26,8 @@ class Provider(FixtureProvider):
         self.release = threading.Event()
         self.release.set()
 
-    def prepare_kanban_worker(self, identity, bot, workspace, execution_id):
-        self.prepared.append((identity, str(workspace), execution_id))
+    def prepare_kanban_worker(self, identity, bot, workspace, execution_id, worker_id=None):
+        self.prepared.append((identity, str(workspace), execution_id, worker_id))
         process = subprocess.Popen(['sleep', '90'])
         self.processes.append(process)
         return process.pid
@@ -1563,7 +1563,7 @@ board.kb.block_task(board.conn, sys.argv[4], reason='Worker setup failed')
         self.assertEqual(current['status'], 'ready')
         self.assertEqual(current['workspace_path'], str(workspace))
         self.settle(lambda: owner['id'] in self.provider.started)
-        self.assertIn((owner['id'], str(workspace), owner['id']), self.provider.prepared)
+        self.assertIn((owner['id'], str(workspace), owner['id'], current['id']), self.provider.prepared)
         self.assertEqual((workspace / 'receipt.txt').read_text(), 'Original Dev execution')
         self.assertEqual(self.service._get('artifacts', work['id']), work)
         self.assertEqual(self.service._get('artifacts', pr['id'])['work_outcome_id'], work['id'])
@@ -2141,6 +2141,86 @@ assert started == [identities['followup']], started
 
     def test_interrupted_preparation_before_coconut_claim_recovers(self):
         self.interrupt_before_pid_commit(save_claim=False)
+
+    def test_reused_worker_pid_moves_to_new_native_run(self):
+        program = '''
+import subprocess, sys, tempfile, time
+from coconut.kanban_runtime import Board
+with tempfile.TemporaryDirectory() as root:
+    board = Board(root)
+    task_id = board.kb.create_task(board.conn, title='Lease transfer probe', body='probe',
+        assignee='default', created_by='probe', tenant='probe', workspace_kind='dir',
+        workspace_path=root, priority=0, initial_status='blocked', idempotency_key='probe')
+    board.kb.unblock_task(board.conn, task_id)
+    first = board.kb.claim_task(board.conn, task_id)
+    process = subprocess.Popen(['sleep', '120'])
+    try:
+        board.dispatch._set_worker_pid(board.conn, task_id, process.pid)
+        board.kb.block_task(board.conn, task_id, reason='Wait for next run', kind='capability')
+        board.kb.unblock_task(board.conn, task_id)
+        second = board.kb.claim_task(board.conn, task_id)
+        original_fingerprint = board.dispatch._process_fingerprint
+        try:
+            board.dispatch._process_fingerprint = lambda pid: None
+            with board.kb.write_txn(board.conn):
+                board.record_worker_pid(second, process.pid)
+        finally:
+            board.dispatch._process_fingerprint = original_fingerprint
+        rows = board.conn.execute('SELECT id,worker_pid FROM task_runs WHERE task_id=? ORDER BY id',
+                                  (task_id,)).fetchall()
+        assert first.current_run_id != second.current_run_id
+        assert rows[0]['worker_pid'] is None and rows[1]['worker_pid'] == process.pid
+        with board.kb.write_txn(board.conn):
+            board.conn.execute('UPDATE task_runs SET ended_at=? WHERE id=?',
+                               (int(time.time()) - 600, rows[0]['id']))
+        signals = []
+        board.dispatch.reap_terminal_workers(board.conn,
+            signal_fn=lambda pid, sig: signals.append((pid, sig)))
+        assert not signals and process.poll() is None
+    finally:
+        process.terminate()
+        process.wait()
+'''
+        result = subprocess.run([PYTHON, '-c', program],
+            env=dict(os.environ, PYTHONPATH=os.pathsep.join((str(Path(__file__).resolve().parents[1]), SOURCE))),
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_normal_dispatch_keeps_each_active_task_pid(self):
+        self.native_program('''
+import os, subprocess, time
+workspace = board.kb.kanban_db_path().parent / 'reuse'
+workspace.mkdir()
+rows = [dict(id=name, bot_id='owner', title=name, state='ready', input='one',
+    previous_input=None, workspace=str(workspace), priority=10, summary='')
+    for name in ('first', 'second')]
+rows[1]['state'] = 'scheduled'
+board.sync(rows)
+ids = {item['external_id']: item['id'] for item in board.snapshot()}
+processes = [subprocess.Popen(['sleep', '120']) for _ in rows]
+try:
+    started = []
+    def spawn(task, path):
+        assert not board.conn.in_transaction
+        started.append(task.id)
+        return processes[len(started) - 1].pid
+    board.tick(rows, 2, spawn)
+    assert started == [ids['first']], started
+    rows[0]['state'] = 'scheduled'
+    rows[1]['state'] = 'ready'
+    board.tick(rows, 2, spawn)
+    assert started == [ids['first'], ids['second']], started
+    first_run = board.conn.execute('SELECT id,worker_pid FROM task_runs WHERE task_id=? ORDER BY id DESC',
+                                   (ids['first'],)).fetchone()
+    second_run = board.conn.execute('SELECT worker_pid FROM task_runs WHERE task_id=? ORDER BY id DESC',
+                                    (ids['second'],)).fetchone()
+    assert first_run['worker_pid'] == processes[0].pid
+    assert second_run['worker_pid'] == processes[1].pid
+finally:
+    for process in processes:
+        process.terminate()
+        process.wait()
+''')
 
     def test_interrupted_preparation_after_coconut_claim_recovers(self):
         self.interrupt_before_pid_commit(save_claim=True)

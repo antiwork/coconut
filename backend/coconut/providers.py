@@ -225,7 +225,7 @@ class HermesProvider(FixtureProvider):
     def process_completions(self, bot, processes):
         groups = {}
         for item in processes:
-            groups.setdefault(item.get('execution_session_id'), []).append(item)
+            groups.setdefault(item.get('native_worker_id') or item.get('execution_session_id'), []).append(item)
         return [result for execution, items in groups.items()
                 for result in self._process_completions(bot, items, execution)]
 
@@ -323,12 +323,13 @@ class HermesProvider(FixtureProvider):
                    HERMES_KANBAN_WORKSPACES_ROOT=str(self.data_dir / 'kanban/kanban/workspaces'))
         return env, root / 'workspace'
 
-    def prepare_kanban_worker(self, identity, bot, workspace, execution_id):
+    def prepare_kanban_worker(self, identity, bot, workspace, execution_id, worker_id=None):
         """Start a dedicated process before Hermes records its claim PID."""
+        cache_key = worker_id or execution_id
         with self._lock:
             if self._closed or bot['id'] in self._stopped_bots:
                 raise RuntimeError('This bot stopped before worker preparation.')
-            previous = self._kanban_runtimes.get(execution_id)
+            previous = self._kanban_runtimes.get(cache_key)
             if (previous is not None and previous.poll() is None
                     and not getattr(self._transports.get(previous), 'closed', False)):
                 self._prepared[identity] = previous
@@ -349,7 +350,7 @@ class HermesProvider(FixtureProvider):
             stopped = self._closed or bot['id'] in self._stopped_bots
             if not stopped:
                 self._prepared[identity] = process
-                self._kanban_runtimes[execution_id] = process
+                self._kanban_runtimes[cache_key] = process
                 self._runtime_bots[process] = bot['id']
         if stopped:
             self._terminate(process)

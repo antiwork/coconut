@@ -68,6 +68,29 @@ class BackgroundProcessTests(unittest.TestCase):
         self.assertEqual(len(self.provider.starts), 2)
         self.assertEqual(len(self.service._all('tasks')), 1)
 
+    def test_completion_poll_uses_the_claimed_native_worker(self):
+        task_id = self.start()
+        with self.service.transaction():
+            task = self.service._get('tasks', task_id)
+            task['_native_outcome_id'] = 't_old'
+            task['_kanban_claim'] = {'native_id': 't_current'}
+            self.service._put('tasks', task)
+        self.service._drain_process_completions()
+        self.assertEqual(self.provider.polls[-1][1][0]['native_worker_id'], 't_current')
+
+    def test_context_receipt_uses_its_own_native_worker(self):
+        task_id = self.start()
+        record = self.service._all('native_receipts')[0]
+        with self.service.transaction():
+            self.service._put('contexts', dict(id='context-probe', task_id=task_id, status='completed',
+                _kanban_claim={'native_id': 't_context'}))
+            record['turn_id'] = 'context-probe'
+            self.service._put('native_receipts', record)
+            task = self.service._get('tasks', task_id)
+            task['_kanban_claim'] = {'native_id': 't_parent'}
+            self.service._put('tasks', task)
+        self.assertEqual(self.service._receipt_native_worker_id(record), 't_context')
+
     def test_pending_check_reads_only_the_assignment_receipts(self):
         task_id = self.start()
         original = self.service._all('native_receipts')[0]

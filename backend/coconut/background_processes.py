@@ -159,10 +159,12 @@ class BackgroundProcesses:
                     processes, cached = [], []
                     for record in records:
                         task = self._get('tasks', record['task_id'])
+                        native_worker_id = self._receipt_native_worker_id(record, task)
                         if record.get('_delegation_ack_pending'):
                             processes.append(dict(id=record['id'], task_id=task['id'],
                                                   delegation_ids=delegation_ids(record), epoch=task.get('_conversation_epoch'),
-                                                  execution_session_id=task.get('_execution_session_id'), acknowledge=True))
+                                                  execution_session_id=task.get('_execution_session_id'),
+                                                  native_worker_id=native_worker_id, acknowledge=True))
                             continue
                         if not self._process_observation_current(task, bot):
                             continue
@@ -173,6 +175,7 @@ class BackgroundProcesses:
                             continue
                         processes.append(dict(id=record['id'], session_id=subscription(record), task_id=task['id'],
                                               epoch=task.get('_conversation_epoch'), execution_session_id=task.get('_execution_session_id'),
+                                              native_worker_id=native_worker_id,
                                               delegation_ids=delegation_ids(record)))
                 if not processes and not cached:
                     continue
@@ -241,6 +244,12 @@ class BackgroundProcesses:
     def _completion_context(self, record):
         row = self.db.execute('SELECT data FROM contexts WHERE id=?', (record.get('turn_id'),)).fetchone()
         return json.loads(row[0]) if row else None
+
+    def _receipt_native_worker_id(self, record, task=None):
+        owner = self._completion_context(record) or task or self._get('tasks', record['task_id'])
+        claim = owner.get('_kanban_claim') or {}
+        native = self.kanban.tasks.get(owner['id'], {}) if self.kanban else {}
+        return claim.get('native_id') or owner.get('_native_outcome_id') or native.get('id')
 
     def _can_resume_completion(self, task, bot, record):
         context = self._completion_context(record)
