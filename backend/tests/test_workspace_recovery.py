@@ -850,7 +850,7 @@ print(parent)
         self.assertEqual(self.service.kanban.tasks[self.task['id']]['id'], self.native_id)
         self.assertEqual(self.service.kanban.tasks[self.task['id']]['workspace_path'], str(self.workspace))
         self.assertEqual((self.workspace / 'retained.patch').read_text(), 'Original approved Gumroad patch fixture\n')
-        runtime = self.provider._kanban_runtimes[self.owner]
+        runtime = self.provider._kanban_runtimes[self.native_id]
         env, cwd = self.provider._runtime_envs[runtime]
         self.assertEqual(cwd, self.workspace)
         self.assertEqual(env['HOME'], os.environ['HOME'])
