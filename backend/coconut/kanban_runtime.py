@@ -41,16 +41,23 @@ class Board:
         if 'input_id' not in {r[1] for r in self.conn.execute('PRAGMA table_info(coconut_outcomes)')}:
             self.conn.execute("ALTER TABLE coconut_outcomes ADD COLUMN input_id TEXT NOT NULL DEFAULT ''")
 
-    def record_worker_pid(self, claimed, pid):
-        """Move a reused worker lease to this run before Hermes reaps the old one."""
+    def transfer_worker_pid(self, claimed, pid):
+        """Remove prior leases before Hermes assigns this worker to a new run."""
         pid = int(pid)
         fingerprint = (self.dispatch._process_fingerprint(pid)
                        or self.dispatch.UNVERIFIED_WORKER_FINGERPRINT)
         self.conn.execute(
             'UPDATE task_runs SET worker_pid=NULL,worker_started_at=NULL '
-            'WHERE id<>? AND ended_at IS NOT NULL '
+            'WHERE id<>? '
             'AND worker_pid=? AND worker_started_at=?',
             (claimed.current_run_id, pid, fingerprint))
+        self.conn.execute('UPDATE tasks SET worker_pid=NULL,worker_started_at=NULL '
+                          'WHERE id<>? AND worker_pid=? AND worker_started_at=?',
+                          (claimed.id, pid, fingerprint))
+        return fingerprint
+
+    def record_worker_pid(self, claimed, pid):
+        fingerprint = self.transfer_worker_pid(claimed, pid)
         self.conn.execute('UPDATE tasks SET worker_pid=?,worker_started_at=? WHERE id=?',
                           (pid, fingerprint, claimed.id))
         self.conn.execute('UPDATE task_runs SET worker_pid=?,worker_started_at=? WHERE id=?',
@@ -314,9 +321,15 @@ class Board:
                               and row.get('previous_input') == row['input'])
                 guard = self.dispatch.check_respawn_guard(self.conn, task['id'])
                 if not (continuing or (new_input or recovering) and guard == 'active_pr'):
+                    def spawn_with_lease(claimed, workspace):
+                        with self.kb.write_txn(self.conn):
+                            pid = spawn(claimed, workspace)
+                            if pid:
+                                self.transfer_worker_pid(claimed, pid)
+                        return pid
                     self.dispatch._dispatch_lane_task(self.conn, task, task['assignee'], result,
                         lane='ready', dry_run=False, ttl_seconds=None, board=None,
-                        failure_limit=self.dispatch.DEFAULT_FAILURE_LIMIT, spawn_fn=spawn,
+                        failure_limit=self.dispatch.DEFAULT_FAILURE_LIMIT, spawn_fn=spawn_with_lease,
                         per_profile_cap=None, per_profile_running={})
                     continue
                 if guard not in (None, 'active_pr'):

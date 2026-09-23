@@ -2193,6 +2193,47 @@ with tempfile.TemporaryDirectory() as root:
             capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_normal_dispatch_transfers_worker_before_prior_run_ends(self):
+        self.native_program('''
+import os, subprocess, time
+workspace = board.kb.kanban_db_path().parent / 'reuse'
+workspace.mkdir()
+rows = [dict(id=name, bot_id='owner', title=name, state='ready', input='one',
+    previous_input=None, workspace=str(workspace), priority=10, summary='')
+    for name in ('first', 'second')]
+rows[1]['state'] = 'scheduled'
+board.sync(rows)
+ids = {item['external_id']: item['id'] for item in board.snapshot()}
+process = subprocess.Popen(['sleep', '120'])
+try:
+    started = []
+    def spawn(task, path):
+        started.append(task.id)
+        return process.pid
+    board.tick(rows, 2, spawn)
+    assert started == [ids['first']], started
+    rows[0]['state'] = 'scheduled'
+    rows[1]['state'] = 'ready'
+    board.tick(rows, 2, spawn)
+    assert started == [ids['first'], ids['second']], started
+    first_run = board.conn.execute('SELECT id,worker_pid FROM task_runs WHERE task_id=? ORDER BY id DESC',
+                                   (ids['first'],)).fetchone()
+    second_run = board.conn.execute('SELECT worker_pid FROM task_runs WHERE task_id=? ORDER BY id DESC',
+                                    (ids['second'],)).fetchone()
+    assert first_run['worker_pid'] is None and second_run['worker_pid'] == process.pid, (dict(first_run), dict(second_run))
+    board.kb.block_task(board.conn, ids['first'], reason='First task ended', kind='capability')
+    with board.kb.write_txn(board.conn):
+        board.conn.execute('UPDATE task_runs SET ended_at=? WHERE id=?',
+                           (int(time.time()) - 600, first_run['id']))
+    signals = []
+    board.dispatch.reap_terminal_workers(board.conn,
+        signal_fn=lambda pid, sig: signals.append((pid, sig)))
+    assert not signals and process.poll() is None
+finally:
+    process.terminate()
+    process.wait()
+''')
+
     def test_interrupted_preparation_after_coconut_claim_recovers(self):
         self.interrupt_before_pid_commit(save_claim=True)
 
