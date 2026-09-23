@@ -148,40 +148,6 @@ class NativeRoutines:
         return {'success': True, 'scheduler': 'coconut', 'job_id': identity,
                 'task_id': queued['id'], 'status': queued['status']}
 
-    def _routine_bot_authority(self, bot_id, job):
-        # Reuse the native creation receipt. A changed prompt needs a new request.
-        rows = self.db.execute("SELECT data FROM native_receipts WHERE "
-            "json_extract(data,'$.action.name')='cronjob_manage' AND "
-            "json_extract(data,'$.state')='completed' ORDER BY rowid DESC")
-        for (raw,) in rows:
-            record = json.loads(raw)
-            arguments = record['action']['arguments']
-            if arguments.get('action') != 'create' or not record.get('_bot_source_ids'):
-                continue
-            try:
-                result = json.loads(record['result']) if isinstance(record['result'], str) else record['result']
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(result, dict) or result.get('success') is not True or result.get('job_id') != job['id']:
-                continue
-            owner = self._get('tasks', record['task_id'])
-            if (owner['bot_id'] != bot_id or owner.get('routine_id')
-                    or not arguments.get('prompt')
-                    or arguments['prompt'].strip() != job.get('prompt', '').strip()):
-                continue
-            from .service import ServiceError
-            sources = []
-            for identity in record['_bot_source_ids']:
-                try:
-                    self._human_source(owner, identity, {'_preference_source_ids': record['_bot_source_ids']}, 'schedule bot changes')
-                except ServiceError:
-                    continue
-                sources.append(identity)
-            return dict(_preference_source_ids=sources, _routine_source_ids=sources,
-                        _routine_source_thread_id=owner['thread_id'],
-                        _bot_change_scope=job['id'] + ':' + job['fire_claim']['by'])
-        return {}
-
     def claim_native_routine(self, routine, manual=False):
         from .service import ServiceError, now
         bot = self._get('bots', routine['bot_id'])
@@ -201,7 +167,7 @@ class NativeRoutines:
             return self._public(previous)
         task = self._send(bot, {'text': routine['name'], 'mode': 'queue'}, record_message=False, human_authored=False)
         task = self._get('tasks', task['id'])
-        task.update(routine_id=routine['id'], _native_job=job, **self._routine_bot_authority(bot['id'], job))
+        task.update(routine_id=routine['id'], _native_job=job)
         self._put('tasks', task)
         routine.update(last_task_id=task['id'], next_run_at=job.get('next_run_at'))
         self._put('routines', routine)

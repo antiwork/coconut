@@ -143,7 +143,6 @@ struct CardSnapshot: Decodable, Sendable {
 }
 
 struct NativeSnapshot: Decodable, Sendable {
-    var conversationBotId: String? = nil
     let cursor: Int
     let bots: [Bot]
     let modelCatalog: ModelCatalog?

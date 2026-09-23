@@ -4,10 +4,6 @@ import UniformTypeIdentifiers
 struct ConversationView: View {
     @Environment(AppStore.self) private var store
     let botId: String
-    var isRoot = false
-    private var isMain: Bool { botId == store.conversationBotId }
-    var openSettings: (() -> Void)? = nil
-    @State private var isVisible = false
     var focusDecisionId: String? = nil
     var focusMessageId: String? = nil
     private var focusTarget: String? { focusDecisionId ?? focusMessageId.map { store.displayedMessageId(for: $0) } }
@@ -31,10 +27,8 @@ struct ConversationView: View {
     @State private var userScrolling = false
     @FocusState private var composerFocused: Bool
 
-    init(botId: String, focusDecisionId: String? = nil, focusMessageId: String? = nil, attachedWork: WorkReference? = nil, isRoot: Bool = false, openSettings: (() -> Void)? = nil) {
+    init(botId: String, focusDecisionId: String? = nil, focusMessageId: String? = nil, attachedWork: WorkReference? = nil) {
         self.botId = botId
-        self.isRoot = isRoot
-        self.openSettings = openSettings
         self.focusDecisionId = focusDecisionId
         self.focusMessageId = focusMessageId
         _workContext = State(initialValue: attachedWork)
@@ -186,26 +180,18 @@ struct ConversationView: View {
                     }
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if isMain {
                     ConversationComposer(bot: bot, task: activeTask, text: $messageDraft,
                                          attachments: $messageAttachments, scheduling: $messageScheduling,
                                          scheduledAt: $messageScheduledAt, mentions: $messageMentions,
                                          focused: $composerFocused, replyTo: $replyTo, workContext: $workContext)
                         .fixedSize(horizontal: false, vertical: true)
-                    }
                 }
-                .onAppear { isVisible = true; receiveQuote() }
-                .onChange(of: store.coconutReply) { _, _ in if isRoot && isVisible { receiveQuote() } }
-                .onDisappear { isVisible = false; composerFocused = false }
+                .onDisappear { composerFocused = false }
                 .toolbar {
-                    if !isRoot, #available(iOS 26.0, *) {
+                    if #available(iOS 26.0, *) {
                         ToolbarSpacer(.fixed, placement: .topBarLeading)
                     }
                     ToolbarItem(placement: .topBarLeading) {
-                        if isRoot {
-                            Button("Settings", systemImage: "person.crop.circle") { openSettings?() }
-                                .accessibilityIdentifier("app-settings")
-                        } else {
                         NavigationLink(value: BotSettingsRoute(botId: bot.id)) {
                             HStack(spacing: 8) {
                                 LiveBotAvatar(bot: bot, size: 28)
@@ -220,15 +206,6 @@ struct ConversationView: View {
                         .buttonStyle(.plain).labelStyle(.titleAndIcon).accessibilityLabel("\(bot.name) settings")
                         .accessibilityIdentifier("bot-settings")
                         .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
-                        }
-                    }
-                    if isRoot {
-                        ToolbarItem(placement: .principal) { Text("Coconut").font(.headline) }
-                        ToolbarItem(placement: .topBarTrailing) {
-                            NavigationLink(value: HomeDestination.bots) { Image(systemName: "person.2") }
-                                .accessibilityLabel("Bots").accessibilityIdentifier("manage-bots")
-                                .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
-                        }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
@@ -279,8 +256,8 @@ struct ConversationView: View {
             if messages.isEmpty {
                 VStack(spacing: 10) {
                     BotAvatar(bot: bot, size: 68)
-                    Text(isMain ? "Coconut" : bot.name).font(.title2.weight(.semibold))
-                    Text(isMain ? "Ask anything. Your bots can work in parallel while you continue here." : "Activity appears here when this bot starts work.")
+                    Text("Meet \(bot.name)").font(.title2.weight(.semibold))
+                    Text("Give \(bot.name) a task. You can leave while the work continues.")
                         .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }.frame(maxWidth: .infinity).padding(.vertical, 45)
             }
@@ -289,42 +266,16 @@ struct ConversationView: View {
 
 
 
-    private func receiveQuote() {
-        guard isMain, let quote = store.coconutReply else { return }
-        replyTo = quote
-        workContext = nil
-        messageScheduling = false
-        store.coconutReply = nil
-    }
-
     private func executorName(_ task: AgentTask) -> String {
         store.bots.first { $0.id == task.botId }?.name ?? "Bot"
     }
 
     @ViewBuilder
     private func transcriptRow(_ message: Message, scrollToDecision: @escaping (String) -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            TranscriptMessageRow(message: message, scrollToDecision: { id in
-                if let sourceBotId = store.referenceBotId(id, in: message), sourceBotId != botId {
-                    // Cross-conversation references open their original activity.
-                    store.activityReference = store.decisions.contains { $0.id == id }
-                        ? ConversationRoute(botId: sourceBotId, decisionId: id)
-                        : ConversationRoute(botId: sourceBotId, messageId: id)
-                } else { scrollToDecision(id) }
-            }, onReply: {
-                if isMain {
-                    replyTo = store.messageReference(for: message)
-                    workContext = nil; messageScheduling = false
-                    composerFocused = true
-                } else { store.replyInCoconut(to: message) }
-            })
-            if !isMain, store.conversationBot != nil, store.messageReference(for: message) != nil {
-                Button("Reply in Coconut", systemImage: "arrowshape.turn.up.left") { store.replyInCoconut(to: message) }
-                    .font(.caption).foregroundStyle(.secondary).buttonStyle(.plain)
-                    .frame(minHeight: 44).padding(.horizontal, 14)
-                    .accessibilityIdentifier("reply-in-coconut-\(message.id)")
-            }
-        }
+        TranscriptMessageRow(message: message, scrollToDecision: scrollToDecision, onReply: {
+            replyTo = store.messageReference(for: message)
+            composerFocused = true
+        })
     }
 }
 
@@ -452,14 +403,12 @@ struct MessageBubble: View {
             .popover(isPresented: $actionsOpen, arrowEdge: .bottom) {
                 VStack(spacing: 8) {
                     if onReply != nil, store.messageReference(for: message) != nil {
-                        if message.botId == store.conversationBotId {
-                            HStack(spacing: 4) {
-                                ForEach(MessageReactions.selectable.indices, id: \.self) { reactionButton($0) }
-                            }
-                            Divider()
+                        HStack(spacing: 4) {
+                            ForEach(MessageReactions.selectable.indices, id: \.self) { reactionButton($0) }
                         }
+                        Divider()
                         Button { actionsOpen = false; onReply?() } label: {
-                            Label(message.botId == store.conversationBotId ? "Reply" : "Reply in Coconut", systemImage: "arrowshape.turn.up.left").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            Label("Reply", systemImage: "arrowshape.turn.up.left").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         }
                     }
                     Button { UIPasteboard.general.string = message.text; actionsOpen = false } label: {
@@ -475,7 +424,7 @@ struct MessageBubble: View {
                             Button { Task { await store.react(to: message, emoji: emoji) } } label: {
                                 Text(emoji).font(.caption).frame(minWidth: 28, minHeight: 32)
                             }.buttonStyle(.plain).accessibilityLabel("Remove \(emoji) reaction")
-                                .disabled(onReply == nil || message.botId != store.conversationBotId)
+                                .disabled(onReply == nil)
                         }
                     }.padding(.horizontal, 5)
                         .background(BoardStyle.surface, in: Capsule()).overlay(Capsule().stroke(BoardStyle.line))
@@ -494,7 +443,7 @@ struct MessageBubble: View {
                 if shouldReply { onReply?() }
                 withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.8)) { replyOffset = 0 }
             }))
-        .accessibilityAction(named: message.botId == store.conversationBotId ? "Reply" : "Reply in Coconut") { onReply?() }
+        .accessibilityAction(named: "Reply") { onReply?() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(isUser ? "You" : store.bots.first { $0.id == (message.senderBotId ?? message.botId) }?.name ?? "Deleted bot")")
         .sheet(item: $editingOutgoing) { RejectedMessageEditor(outgoing: $0) }
@@ -647,7 +596,7 @@ struct ConversationComposer: View {
                             Task { await store.cancel(task) }
                         }
                     }
-                    if workContext == nil && replyTo == nil {
+                    if workContext == nil {
                         Button(scheduling ? "Send now" : "Schedule task", systemImage: "clock") {
                             scheduling.toggle()
                         }
@@ -659,7 +608,7 @@ struct ConversationComposer: View {
                 .disabled(!connected || uploading)
                 .accessibilityLabel("Add attachment or schedule")
                 HStack(alignment: .bottom, spacing: 4) {
-                TextField("Message Coconut", text: $text, selection: $selection, axis: .vertical)
+                TextField("Message \(bot.name)", text: $text, selection: $selection, axis: .vertical)
                     .lineLimit(1...5).font(.body)
                     .padding(.vertical, 12)
                     .focused($focused)
