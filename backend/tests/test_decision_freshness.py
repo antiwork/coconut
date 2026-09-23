@@ -479,6 +479,24 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.shared_source_fences_check('pull_request', 'https://github.com/example/project/pull/42',
             'https://github.com/Example/Project/pull/42#issuecomment-7')
 
+    def test_shared_pr_issue_alias_still_fences_a_check(self):
+        self.shared_source_fences_check('pull_request', 'https://github.com/example/project/pull/42',
+            'https://github.com/Example/Project/issues/42#issuecomment-7')
+
+    def test_distinct_github_numbers_do_not_share_assessment_changes(self):
+        decision = self.question(old=False)
+        decision['sources'] = [dict(kind='issue', title='First issue',
+                                   url='https://github.com/example/project/issues/42')]
+        self.service._put('decisions', decision)
+        peer = self.peer_question(decision, sources=[dict(kind='pull_request', title='Other PR',
+            url='https://github.com/example/project/pull/43')])
+        peer['revision'] += 1
+        self.service._put('decisions', peer)
+        self.service._initialize_decision_freshness(peer)
+        self.service._queue_decision_refreshes()
+        self.assertFalse(self.service._get('decisions', decision['id']).get('assessment_stale'))
+        self.assertEqual(self.service._all('contexts'), [])
+
     def test_shared_email_in_an_independent_task_still_fences_a_check(self):
         self.shared_source_fences_check('email', 'https://mail.google.com/mail/u/0/#inbox/18f2c9a10b7d4321',
             'https://mail.google.com/mail/u/1/#all/18f2c9a10b7d4321')
