@@ -30,7 +30,6 @@ PR_REVIEW_INSTRUCTIONS = (
     'If CI failed, inspect the failure and continue the authorized fix. Do not ask permission for a routine retry or review. '
     'If an external requirement remains, record its specific reason on the existing task. '
     'Coconut monitors this PR without model calls and resumes you when results change. Do not start gh pr checks --watch. '
-    + PR_MERGE_INSTRUCTIONS +
     'For a merged or closed PR, verify its current GitHub state and the original accepted scope. '
     'Verify whether the accepted outcome is complete and record evidence on the existing native task. '
     'A closed PR does not prove the accepted outcome is complete. Preserve unfinished work and human stops. '
