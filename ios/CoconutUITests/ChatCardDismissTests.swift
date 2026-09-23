@@ -39,7 +39,7 @@ final class ChatCardDismissTests: XCTestCase {
         proof.lifetime = .keepAlways
         add(proof)
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.staticTexts["All caught up"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["All caught up."].waitForExistence(timeout: 8))
         XCTAssertFalse(app.staticTexts["Delete the sample export?"].exists)
     }
 }
