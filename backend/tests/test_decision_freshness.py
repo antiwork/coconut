@@ -404,12 +404,17 @@ class DecisionFreshnessTests(unittest.TestCase):
         exchange = dict(self.service._get('exchanges', decision_task['exchange_id']), id=task['exchange_id'])
         self.service._put('exchanges', exchange)
         self.service._put('tasks', task)
-        try:
-            self.service.native_event(task['id'], 'native_question', dict(
-                title='Publish the unrelated report?', risk='Readers can see the report.',
-                options=[dict(id='publish', label='Publish'), dict(id='leave', label='Leave')], **fields))
-        except YieldForDecision:
-            pass
+        from coconut.decision_sources import github_links
+        revision = '2026-09-23T11:46:31Z'
+        fields['source_revisions'] = {url: revision for url in github_links(fields)}
+        tracker = SimpleNamespace(observe_issue=lambda url: dict(updated_at=revision))
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            try:
+                self.service.native_event(task['id'], 'native_question', dict(
+                    title='Publish the unrelated report?', risk='Readers can see the report.',
+                    options=[dict(id='publish', label='Publish'), dict(id='leave', label='Leave')], **fields))
+            except YieldForDecision:
+                pass
         return self.service._all('decisions')[-1]
 
     def test_unrelated_cards_in_one_chat_do_not_invalidate_an_assessment(self):

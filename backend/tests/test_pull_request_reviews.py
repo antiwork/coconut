@@ -108,11 +108,13 @@ class PRReviewTests(unittest.TestCase):
     def test_verified_owner_offers_card_without_coordinator_turn(self):
         from coconut.pull_request_reviews import PR_MERGE_INSTRUCTIONS
         self.assertIn('Offer one coconut_ask merge decision yourself', PR_MERGE_INSTRUCTIONS)
+        revision = '2026-09-23T11:46:31Z'
+        self.tracker.observe_issue = lambda url: dict(updated_at=revision)
         original_start = self.provider.start_task
         def start(task, bot, history, emit):
             if not task.get('_pr_review'):
                 return original_start(task, bot, history, emit)
-            emit('native_question', {'title': 'Merge PR #42?', 'merge_pr_url': URL,
+            emit('native_question', {'title': 'Merge PR #42?', 'merge_pr_url': URL, 'source_revisions': {URL: revision},
                 'recommended_option_id': 'merge',
                 'options': [{'id': 'merge', 'label': 'Merge',
                              'explanation': 'Merge the verified changes into main.'},

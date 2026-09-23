@@ -449,6 +449,32 @@ class ProviderTests(unittest.TestCase):
         provider.cancel_task(self.task['id'])
         self.assertIsNone(process.poll())
 
+    def test_rejected_source_check_keeps_the_same_worker_running_without_a_card(self):
+        provider = self.fake_hermes("""
+            import json
+            assert 'If the choice is already settled' in self.system_prompt
+            result = json.loads(registry.dispatch('coconut_ask', {
+                'title': 'Repair?', 'options': [{'id': 'fix', 'label': 'Repair'}]}))
+            assert result['status'] == 'validation_failed'
+            assert 'No card was created' in result['error']
+            return {'completed': True, 'final_response': 'The source already settles this choice.'}
+        """)
+        events = []
+        def receipt(kind, data):
+            events.append((kind, data))
+            if kind == 'native_call':
+                return {'status': 'recorded', 'id': str(uuid4())}
+            if kind == 'native_question':
+                raise ServiceError(400, 'No card was created. The GitHub source changed.')
+            if kind == 'native_result':
+                return {'status': 'recorded'}
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            HermesProvider._run(provider, 'start', self.task, self.bot, [], receipt)
+        self.assertEqual([data['text'] for kind, data in events if kind == 'text_delta'],
+                         ['The source already settles this choice.'])
+        self.assertFalse(any(kind == 'failed' for kind, _ in events))
+        self.assertEqual(sum(kind == 'native_question' for kind, _ in events), 1)
+
     def test_queued_tool_cannot_run_after_a_question_pauses_the_turn(self):
         side_effect = self.root / 'unexpected-write'
         provider = self.fake_hermes("""

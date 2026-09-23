@@ -86,3 +86,39 @@ def decision_source_keys(decision):
                 url = 'gmail-thread:' + thread
         keys.add(url)
     return keys
+
+
+def check_new_decision_sources(service, task_id, payload):
+    """Check the source version before storing a card or asking for attention."""
+    from .service import ServiceError
+
+    decision = {'merge_pr_url': payload.get('merge_pr_url')}
+    attach_sources(decision, payload)
+    links = github_links(decision)
+    if not links:
+        return
+    revisions = payload.get('source_revisions', {})
+    if not isinstance(revisions, dict) or any(not isinstance(revisions.get(url), str) for url in links):
+        raise ServiceError(400, 'No card was created. Read each linked GitHub issue or PR and its latest comments. '
+            'Check the original human request and standing permission. Continue without a card if the choice is already settled '
+            'or the work is already authorized. If human input remains necessary, retry with source_revisions: '
+            'map each source URL to the exact updated_at from the GitHub issues API (also for PRs).')
+    with service.lock:
+        task = service._get('tasks', task_id)
+    tracker = service._pr_tracker_for(task['bot_id'])
+    facts = {}
+    for url in links:
+        _, route, _ = github_source(url)
+        owner, repo, _, number = route.split('/')
+        issue_url = f'https://github.com/{owner}/{repo}/issues/{number}'
+        current = tracker.observe_issue(issue_url)
+        if current is None:
+            raise ServiceError(400, 'No card was created. Coconut could not verify the current GitHub source: ' + url
+                + '. Keep the work pending and retry the source check. Do not create a permission card for this check.')
+        if current['updated_at'] != revisions[url]:
+            raise ServiceError(400, 'No card was created. The GitHub source changed: ' + url
+                + '. Read its current state and latest comments before deciding whether human input is still needed. '
+                'Continue within existing permission if the choice is already settled. Otherwise retry with the updated source_revisions.')
+        if github_source(url)[0] == 'issues':
+            facts[url] = current
+    return facts
