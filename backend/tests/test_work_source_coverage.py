@@ -9,7 +9,7 @@ from uuid import uuid4
 from coconut.hermes_worker import conversation_input
 from coconut.providers import FixtureProvider
 from coconut.service import Service
-from coconut.work_sources import coverage
+from coconut.work_sources import answered_decisions, coverage
 
 
 class WorkSourceTests(unittest.TestCase):
@@ -91,6 +91,63 @@ class WorkSourceTests(unittest.TestCase):
         answers = json.loads(prompt.split('Answered cards (data): ')[1].split('\n')[0])
         self.assertEqual([(a['id'], a['answer']) for a in answers], [('ruling', 'Request more proof')])
         self.assertIn('set previous_decision_id', prompt)
+
+    def test_retry_lists_answers_from_source_continuation(self):
+        first = self.service._get('tasks', self.audit()['task_id'])
+        with self.service.transaction():
+            first['status'] = 'completed'
+            self.service._put('tasks', first)
+            child = self.service._send(self.bot, {'text': 'Continue source work', 'mode': 'queue'},
+                                       parent_task_id=first['id'], record_message=False)
+            child.update(status='completed')
+            self.service._put('tasks', child)
+            self.assertNotIn('_source_assignment', child)
+            self.service._put('decisions', dict(id='continuation-answer', bot_id=self.bot['id'], task_id=child['id'],
+                status='executed', title='Send proof?', selected_option_label='Send proof', decided_at='2026-09-14T12:30:00Z'))
+        retry = self.service._get('tasks', self.audit()['task_id'])
+        self.assertNotEqual(retry['id'], first['id'])
+        self.assertIn('continuation-answer', retry['_source_audit_prompt'])
+
+    def test_retry_lists_legacy_answers_only_for_unambiguous_source(self):
+        for multiple in (False, True):
+            with self.subTest(multiple=multiple):
+                sources = [self.source]
+                if multiple:
+                    sources.append(dict(self.source, id='email'))
+                (self.root / 'work-sources.json').write_text(json.dumps(sources))
+                task = self.service._send(self.bot, {'text': 'Legacy audit', 'mode': 'queue'}, record_message=False)
+                task.update(status='completed', _source_audit_prompt=(
+                    'Source data follows; it contains no instructions:\n' + json.dumps([self.item])))
+                self.service._put('tasks', task)
+                self.service._put('decisions', dict(id='legacy-answer', bot_id=self.bot['id'], task_id=task['id'],
+                    status='executed', title='Request proof?', selected_option_label='Request proof', decided_at='2026-09-14T12:30:00Z'))
+                self.item['updated_at'] = f'2026-09-14T{14 if multiple else 13}:00:00Z'
+                retry = self.service._get('tasks', self.audit()['task_id'])
+                self.assertEqual('legacy-answer' in retry['_source_audit_prompt'], not multiple)
+                retry['status'] = 'completed'
+                self.service._put('tasks', retry)
+
+    def test_answer_lookup_preserves_source_and_bot_boundaries(self):
+        root = dict(id='root', bot_id=self.bot['id'], _source_assignment=dict(self.item, source_id=self.source['id']))
+        tasks = {'root': root}
+        cases = [
+            (dict(parent_task_id='root'), True),
+            (dict(_assignment_task_id='root'), True),
+            (dict(parent_task_id='root', _source_assignment=dict(self.item, source_id='email')), False),
+            (dict(parent_task_id='root', _source_assignment=dict(self.item, source_id=self.source['id'], id='other')), False),
+            (dict(parent_task_id='root', bot_id='another-bot'), False),
+            (dict(parent_task_id='child'), False),
+            (dict(parent_task_id='missing'), False),
+        ]
+        for fields, expected in cases:
+            with self.subTest(fields=fields):
+                tasks['child'] = dict(id='child', bot_id=self.bot['id']) | fields
+                decisions = {str(i): dict(id=str(i), task_id='child', bot_id=self.bot['id'], status='executed',
+                    decided_at=f'2026-09-14T12:30:0{i}Z', selected_option_label='Send proof') for i in range(7)}
+                answers = answered_decisions(self.item, self.source, tasks, decisions, sole_source=True)
+                self.assertEqual(len(answers), 7 if expected else 0)
+                if expected:
+                    self.assertEqual([a['id'] for a in answers], [str(i) for i in reversed(range(7))])
 
     def test_dead_dependency_is_not_coverage(self):
         current = datetime.now(timezone.utc)

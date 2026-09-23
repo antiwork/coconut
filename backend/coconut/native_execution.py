@@ -210,8 +210,8 @@ class NativeExecution:
                 decision['_recovery_work_ids'] = recovery_work_ids
             decision.update(self.decision_origin(task))
             if not approval:
-                # A draft is often the next step of an answered question.
-                decision.update(self.decision_followup(task, payload))
+                # A resumed task can also prepare an unrelated draft. Require its explicit link.
+                decision.update(self.decision_followup(task, payload, allow_resume=draft is None))
             if not approval and draft is None:
                 decision['merge_pr_url'] = self._merge_decision_url(payload, task)
                 decision['_merge_pr_head'] = self._merge_decision_head(decision['merge_pr_url'], task)

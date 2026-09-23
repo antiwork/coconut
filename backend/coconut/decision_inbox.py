@@ -82,12 +82,12 @@ class DecisionInbox:
         self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
         return self._public(decision)
 
-    def decision_followup(self, task, payload):
+    def decision_followup(self, task, payload, *, allow_resume=True):
         from .service import ServiceError
         explicit = payload.get('previous_decision_id')
         if explicit is not None and (not isinstance(explicit, str) or not explicit.strip()):
             raise ServiceError(400, 'Link an answered question from this conversation.')
-        previous_id = explicit or task.get('_resume_decision')
+        previous_id = explicit or (task.get('_resume_decision') if allow_resume else None)
         if not previous_id:
             return {}
         previous = next((d for d in self._all('decisions') if d['id'] == previous_id), None)

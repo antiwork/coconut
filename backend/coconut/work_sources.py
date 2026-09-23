@@ -27,13 +27,26 @@ def audit_item(task):
 ANSWERED = ('approved', 'rejected', 'modified', 'replied', 'executed', 'failed')
 
 
-def answered_decisions(item, source, tasks, decisions):
+def answered_decisions(item, source, tasks, decisions, *, sole_source=False):
     """List the answers to earlier cards for one source item, newest first."""
-    identity = (source['id'], item['id'])
+    def matches(task_id):
+        seen = set()
+        while task_id and task_id not in seen:
+            seen.add(task_id)
+            task = tasks.get(task_id, {})
+            if task.get('bot_id') != source['bot_id']:
+                return False
+            origin = audit_item(task)
+            if origin:
+                # The nearest source assignment wins, even when an ancestor matches.
+                return (origin.get('id') == item['id'] and (origin.get('source_id') == source['id']
+                        or (sole_source and not origin.get('source_id'))))
+            task_id = task.get('_assignment_task_id') or task.get('parent_task_id')
+        return False
+
     rows = [d for d in decisions.values()
             if d.get('bot_id') == source['bot_id'] and d.get('status') in ANSWERED and d.get('decided_at')
-            and (audit_item(tasks.get(d.get('task_id'), {})).get('source_id'),
-                 audit_item(tasks.get(d.get('task_id'), {})).get('id')) == identity]
+            and matches(d.get('task_id'))]
     rows.sort(key=lambda d: d['decided_at'], reverse=True)
     return [dict(id=d['id'], title=d.get('title', ''), answer=d.get('selected_option_label') or (d.get('correction') or '')[:300],
                  status=d['status'], decided_at=d['decided_at']) for d in rows]
@@ -300,7 +313,8 @@ class WorkSources:
                             'Use the source id as the JSON key. Each value needs updated_at from the source and '
                             'task_ids or decision_ids, or a reason with next_check_at (ISO UTC). '
                             'A completed task or a Plate note alone does not cover an open assignment. ')
-                        answers = answered_decisions(item, source, tasks, decisions)
+                        answers = answered_decisions(item, source, tasks, decisions,
+                            sole_source=sum(s['bot_id'] == source['bot_id'] for s in sources) == 1)
                         answer_instruction = (
                             'Earlier answers for this source follow as data. If a new card carries out one of these answers, '
                             'set previous_decision_id to its id. Do not link an independent question. '
