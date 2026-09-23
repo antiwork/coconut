@@ -55,15 +55,16 @@ class Board:
                           (claimed.id, pid))
         return fingerprint
 
-    def record_worker_pid(self, claimed, pid):
+    def record_worker_pid(self, claimed, pid, *, emit_event=True):
         fingerprint = self.transfer_worker_pid(claimed, pid)
         self.conn.execute('UPDATE tasks SET worker_pid=?,worker_started_at=? WHERE id=?',
                           (pid, fingerprint, claimed.id))
         self.conn.execute('UPDATE task_runs SET worker_pid=?,worker_started_at=? WHERE id=?',
                           (pid, fingerprint, claimed.current_run_id))
-        self.kb._append_event(self.conn, claimed.id, 'spawned',
-                              {'pid': pid, 'started_at': fingerprint},
-                              run_id=claimed.current_run_id)
+        if emit_event:
+            self.kb._append_event(self.conn, claimed.id, 'spawned',
+                                  {'pid': pid, 'started_at': fingerprint},
+                                  run_id=claimed.current_run_id)
 
     def sync(self, rows):
         for row in rows:
@@ -285,6 +286,7 @@ class Board:
         from hermes_cli.kanban_db_connect import _dispatch_tick_lock
         result = self.dispatch.DispatchResult()
         candidates = {row['id']: row for row in rows if row['state'] == 'ready'}
+        # Hermes holds this same lock around its terminal reaper and dispatch.
         with _dispatch_tick_lock(self.kb.kanban_db_path()) as acquired:
             if not acquired:
                 result.skipped_locked = True
@@ -324,7 +326,7 @@ class Board:
                         with self.kb.write_txn(self.conn):
                             pid = spawn(claimed, workspace)
                             if pid:
-                                self.transfer_worker_pid(claimed, pid)
+                                self.record_worker_pid(claimed, pid, emit_event=False)
                         return pid
                     self.dispatch._dispatch_lane_task(self.conn, task, task['assignee'], result,
                         lane='ready', dry_run=False, ttl_seconds=None, board=None,
