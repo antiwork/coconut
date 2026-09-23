@@ -721,7 +721,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(len([a for a in self.service._all('artifacts') if a['kind'] == 'work']), 1)
         self.assertEqual(self.resume(source), receipt)
 
-    def assert_pr_only_requester_and_completed_owner_report(self, pr_status):
+    def assert_pr_only_requester_and_completed_owner_report(self, pr_status, active_sibling=False):
         from uuid import uuid4
         owner, source = self.scheduled_native()
         self.service.kanban.tasks[owner['id']]['status'] = 'done'
@@ -747,6 +747,16 @@ class NativeWorkContinuationTests(unittest.TestCase):
             _review_task_id=source['id'], _activity_task_id=requester_update['id'])
         self.service._put('artifacts', original)
         self.service._put('artifacts', requester)
+        if active_sibling:
+            sibling = dict(source, id=str(uuid4()), status='working',
+                _execution_session_id=str(uuid4()), _assignment_task_id=source['id'])
+            sibling.pop('_waiting_on', None)
+            sibling.pop('_work_todos', None)
+            self.service._put('tasks', sibling)
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(source)
+            self.assertEqual(self.service._get('tasks', owner['id']), owner)
+            return
         receipt = self.resume(source)
         self.assertEqual(receipt['task_id'], owner['id'])
         self.assertEqual(receipt['native_task_id'], 't_existing')
@@ -761,6 +771,9 @@ class NativeWorkContinuationTests(unittest.TestCase):
 
     def test_merged_pr_only_requester_keeps_original_postmerge_execution(self):
         self.assert_pr_only_requester_and_completed_owner_report('merged')
+
+    def test_pr_only_requester_sibling_must_finish_before_continuation(self):
+        self.assert_pr_only_requester_and_completed_owner_report('open', active_sibling=True)
 
     def test_pr_only_passive_report_blocks_active_or_unknown_writer(self):
         from uuid import uuid4

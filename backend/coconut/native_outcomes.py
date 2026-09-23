@@ -125,19 +125,19 @@ class NativeOutcomes:
                         and peer.get('url') and item.get('url')
                         and peer['url'].lower() == item['url'].lower()
                         and (requester_activity or owner_report))
-                    # A passive same-PR report can finish independently of its
-                    # coordinator. Its own callbacks, native claim, and pauses must
-                    # still be terminal before the original execution resumes.
-                    root = reporter if passive_report else self._work_execution_owner(reporter, tasks)
+                    # A passive same-PR report belongs to the original
+                    # requester, not to an independent writer. Keep all of
+                    # that requester's other branches in the guard.
+                    root = tasks[owner['source_task_id']] if passive_report else self._work_execution_owner(reporter, tasks)
                     linked = self._work_chain(root, tasks, records, include_continuations=True)
                     linked[root['id']] = (root, 0)
                     linked[reporter['id']] = (reporter, 0)
                     if owner_report and reporter_source and reporter_source['id'] not in (owner['id'], owner['source_task_id']):
                         linked[reporter_source['id']] = (reporter_source, 0)
-                    if passive_report and requester_activity:
-                        # A completed reporter may be chained back to the
-                        # requester's coordinator; that coordinator is the
-                        # source of this continuation, not a competing writer.
+                    if passive_report:
+                        # The coordinator and the owner under continuation
+                        # are not competing writers. Their other descendants
+                        # still need terminal claims, returns, and decisions.
                         linked.pop(owner['source_task_id'], None)
                         linked.pop(owner['id'], None)
                     native_tasks = [t for t, _ in linked.values()
