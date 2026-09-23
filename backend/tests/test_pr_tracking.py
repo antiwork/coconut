@@ -3,6 +3,8 @@ import io
 import json
 from http.client import IncompleteRead
 import unittest
+import time
+from email.message import Message
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
@@ -290,6 +292,129 @@ class PRTransportTests(unittest.TestCase):
         for timeout in (0, -1, 11, float("inf"), float("nan")):
             with self.subTest(timeout=timeout), self.assertRaises(ValueError):
                 GitHubPRTracker(timeout=timeout)
+
+
+class ConditionalReadTests(unittest.TestCase):
+    def setUp(self):
+        from coconut.pr_tracking import _RESPONSE_CACHE, _RETRY_AFTER
+        _RESPONSE_CACHE.clear()
+        _RETRY_AFTER.clear()
+
+    def response(self, value, etag='"first"', **headers):
+        response = io.BytesIO(json.dumps(value).encode())
+        response.status = 200
+        response.headers = Message()
+        response.headers['ETag'] = etag
+        for key, value in headers.items():
+            response.headers[key] = value
+        return response
+
+    def get(self, tracker, path='/one'):
+        return tracker._get(path, time.monotonic() + 20)
+
+    def test_new_profile_tracker_revalidates_cached_data_and_does_not_share_mutations(self):
+        first, second = GitHubPRTracker(token='a'), GitHubPRTracker(token='a')
+        with patch.object(first._opener, 'open', return_value=self.response({'state': 'open'})):
+            self.get(first)['state'] = 'mutated'
+        unchanged = HTTPError(URL, 304, 'Not Modified', {}, None)
+        with patch.object(second._opener, 'open', side_effect=unchanged) as request:
+            self.assertEqual(self.get(second), {'state': 'open'})
+        self.assertEqual(request.call_args.args[0].get_header('If-none-match'), '"first"')
+
+    def test_changed_response_replaces_validator_and_body(self):
+        tracker = GitHubPRTracker(token='a')
+        with patch.object(tracker._opener, 'open', return_value=self.response({'head': 'old'})):
+            self.get(tracker)
+        with patch.object(tracker._opener, 'open', return_value=self.response({'head': 'new'}, '"second"')):
+            self.assertEqual(self.get(tracker), {'head': 'new'})
+        with patch.object(tracker._opener, 'open', side_effect=HTTPError(URL, 304, '', {}, None)) as request:
+            self.assertEqual(self.get(tracker), {'head': 'new'})
+        self.assertEqual(request.call_args.args[0].get_header('If-none-match'), '"second"')
+
+    def test_credentials_and_paths_do_not_share_cached_content(self):
+        tracker = GitHubPRTracker(token='a')
+        with patch.object(tracker._opener, 'open', return_value=self.response({'private': True})):
+            self.get(tracker)
+        for token, path in [('b', '/one'), ('a', '/two'), ('', '/one')]:
+            other = GitHubPRTracker(token=token)
+            with patch.object(other._opener, 'open', side_effect=HTTPError(URL, 304, '', {}, None)) as request:
+                with self.assertRaises(HTTPError):
+                    self.get(other, path)
+            self.assertIsNone(request.call_args.args[0].get_header('If-none-match'))
+
+    def test_access_failure_never_returns_cached_data(self):
+        tracker = GitHubPRTracker(token='a')
+        with patch.object(tracker._opener, 'open', return_value=self.response({'state': 'merged'})):
+            self.get(tracker)
+        with patch.object(tracker._opener, 'open', side_effect=[HTTPError(URL, 403, '', {}, None) for _ in range(2)]) as request:
+            for _ in range(2):
+                with self.assertRaises(HTTPError):
+                    self.get(tracker)
+            self.assertEqual(request.call_count, 2)  # Ordinary access denial is not a rate limit.
+
+    def test_rate_limit_backoff_survives_new_tracker_until_reset(self):
+        tracker = GitHubPRTracker(token='a')
+        with patch('coconut.pr_tracking.time.time', return_value=100):
+            error = HTTPError(URL, 403, '', {'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': '200'}, None)
+            with patch.object(tracker._opener, 'open', side_effect=error):
+                with self.assertRaises(HTTPError):
+                    self.get(tracker)
+            second = GitHubPRTracker(token='a')
+            with patch.object(second._opener, 'open') as request:
+                with self.assertRaisesRegex(PRTrackingError, 'reset time'):
+                    self.get(second)
+                request.assert_not_called()
+            other = GitHubPRTracker(token='b')
+            with patch.object(other._opener, 'open', return_value=self.response({'ok': True})):
+                self.assertTrue(self.get(other)['ok'])
+        with patch('coconut.pr_tracking.time.time', return_value=201):
+            with patch.object(second._opener, 'open', return_value=self.response({'ok': True})):
+                self.assertTrue(self.get(second)['ok'])
+
+    def test_retry_after_and_success_exhaustion_stop_further_reads(self):
+        for code in (200, 429):
+            self.setUp()
+            tracker = GitHubPRTracker(token='a')
+            with patch('coconut.pr_tracking.time.time', return_value=100):
+                if code == 200:
+                    with patch.object(tracker._opener, 'open', return_value=self.response({}, **{'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': '200'})):
+                        self.get(tracker)
+                else:
+                    with patch.object(tracker._opener, 'open', side_effect=HTTPError(URL, 429, '', {'Retry-After': '120'}, None)):
+                        with self.assertRaises(HTTPError):
+                            self.get(tracker)
+                with patch.object(tracker._opener, 'open') as request:
+                    with self.assertRaises(PRTrackingError):
+                        self.get(tracker)
+                    request.assert_not_called()
+
+    def test_secondary_limit_without_retry_header_uses_minimum_backoff(self):
+        tracker = GitHubPRTracker(token='a')
+        body = io.BytesIO(b'{"message":"You have exceeded a secondary rate limit."}')
+        error = HTTPError(URL, 403, '', {'X-RateLimit-Remaining': '100'}, body)
+        with patch('coconut.pr_tracking.time.time', return_value=100):
+            with patch.object(tracker._opener, 'open', side_effect=error):
+                with self.assertRaises(HTTPError):
+                    self.get(tracker)
+            self.assertTrue(body.closed)
+        with patch('coconut.pr_tracking.time.time', return_value=159):
+            with patch.object(tracker._opener, 'open') as request:
+                with self.assertRaises(PRTrackingError):
+                    self.get(tracker)
+                request.assert_not_called()
+        with patch('coconut.pr_tracking.time.time', return_value=161):
+            with patch.object(tracker._opener, 'open', return_value=self.response({})):
+                self.assertEqual(self.get(tracker), {})
+
+    def test_cache_evicts_old_payloads_to_bound_memory(self):
+        from coconut.pr_tracking import _RESPONSE_CACHE
+        tracker = GitHubPRTracker(token='a')
+        with patch('coconut.pr_tracking._CACHE_BYTES', 100):
+            for path in ['/one', '/two', '/three']:
+                with patch.object(tracker._opener, 'open', return_value=self.response({'text': 'x' * 50})):
+                    self.get(tracker, path)
+        self.assertEqual(len(_RESPONSE_CACHE), 1)
+        self.assertLessEqual(sum(len(v[1]) for v in _RESPONSE_CACHE.values()), 100)
 
 
 if __name__ == "__main__":

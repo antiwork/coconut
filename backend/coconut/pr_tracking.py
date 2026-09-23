@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.client import HTTPException
@@ -12,6 +13,7 @@ import re
 import subprocess
 import shutil
 import time
+import threading
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -50,6 +52,43 @@ class PRObservation:
 
 class PRTrackingError(ValueError):
     """The poll cannot establish a complete, current observation."""
+
+
+# Profile trackers are short-lived. Reuse only responses authorized by the same token.
+_RESPONSE_CACHE = OrderedDict()
+_RETRY_AFTER = OrderedDict()
+_CACHE_LOCK = threading.Lock()
+_CACHE_BYTES = 8 * 1024 * 1024
+
+
+def _remember_response(key, etag, body):
+    with _CACHE_LOCK:
+        _RESPONSE_CACHE.pop(key, None)
+        if etag:
+            _RESPONSE_CACHE[key] = (etag, bytes(body))
+        while (len(_RESPONSE_CACHE) > 256
+               or sum(len(value[1]) for value in _RESPONSE_CACHE.values()) > _CACHE_BYTES):
+            _RESPONSE_CACHE.popitem(last=False)
+
+
+def _rate_limit(scope, headers, status, *, secondary=False):
+    if status not in (403, 429) and headers.get('X-RateLimit-Remaining') != '0':
+        return
+    if (status == 403 and not secondary and not headers.get('Retry-After')
+            and headers.get('X-RateLimit-Remaining') != '0'):
+        return
+    now = time.time()
+    try:
+        until = max(now + float(headers.get('Retry-After', 0)),
+                    float(headers.get('X-RateLimit-Reset', 0))
+                    if headers.get('X-RateLimit-Remaining') == '0' else 0)
+    except (TypeError, ValueError):
+        until = now
+    with _CACHE_LOCK:
+        _RETRY_AFTER[scope] = max(_RETRY_AFTER.get(scope, 0), until if until > now else now + 60)
+        _RETRY_AFTER.move_to_end(scope)
+        while len(_RETRY_AFTER) > 256:
+            _RETRY_AFTER.popitem(last=False)
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -145,8 +184,34 @@ class GitHubPRTracker:
         }
         if self._token:
             headers["Authorization"] = "Bearer " + self._token
+        scope = hashlib.sha256(self._token.encode()).digest()
+        key = (scope, path)
+        with _CACHE_LOCK:
+            if _RETRY_AFTER.get(scope, 0) > time.time():
+                raise PRTrackingError("GitHub rate limit reached. Refresh resumes after its reset time.")
+            cached = _RESPONSE_CACHE.get(key) if self._token else None
+            if cached:
+                _RESPONSE_CACHE.move_to_end(key)
+        if cached:
+            headers['If-None-Match'] = cached[0]
         request = Request(_API + path, headers=headers, method="GET")
-        with self._opener.open(request, timeout=min(self._timeout, remaining)) as response:
+        try:
+            response = self._opener.open(request, timeout=min(self._timeout, remaining))
+        except HTTPError as error:
+            try:
+                secondary = False
+                if error.code == 403:
+                    message = error.read(4096).lower()
+                    secondary = b'secondary rate limit' in message or b'abuse detection' in message
+                _rate_limit(scope, error.headers, error.code, secondary=secondary)
+                if error.code == 304 and cached:
+                    return json.loads(cached[1])
+            finally:
+                error.close()
+            raise
+        with response:
+            response_headers = getattr(response, 'headers', {})
+            _rate_limit(scope, response_headers, response.status)
             if response.status != 200:
                 raise PRTrackingError("GitHub did not return a complete response.")
             body = bytearray()
@@ -162,6 +227,8 @@ class GitHubPRTracker:
         payload = json.loads(body)
         if not isinstance(payload, (dict, list)):
             raise PRTrackingError("GitHub returned an unexpected response.")
+        if self._token:
+            _remember_response(key, response_headers.get('ETag'), body)
         return payload
 
     def _checks(self, prefix: str, sha: str, deadline: float) -> list[dict[str, Any]]:
