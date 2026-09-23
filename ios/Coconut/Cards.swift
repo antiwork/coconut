@@ -150,21 +150,31 @@ struct DecisionCard: View {
     private var choices: some View {
         VStack(spacing: 8) {
             ForEach(decision.cardOptions, id: \.id) { option in
-                Button { answer(option.answer, optionId: decision.options.isEmpty ? nil : option.id) } label: {
-                    DecisionChoiceContent(option: option, isRecommended: decision.recommendedOptionId == option.id, isSending: submittingOptionId == option.id, isSelected: confirmingOptionId == option.id, isCompact: showsBot, showsAssessment: decision.assessmentStale != true)
-                }
-                .buttonStyle(HomePressStyle())
-                .disabled(!canRespond || submitting || store.answeringDecisionIds.contains(decision.id)
-                    || (option.answer == "approve" && (decision.previews ?? []).contains { !loadedPreviewIds.contains($0.id) }))
-                .accessibilityIdentifier("decision-option-\(option.id)")
-                .accessibilityLabel(option.label + (decision.recommendedOptionId == option.id ? ", Recommended" : ""))
-                .accessibilityHint("Submits this choice. " + option.explanation
-                    + (decision.assessmentStale != true && !(option.risk ?? "").isEmpty
-                        ? " \(DecisionRisk.label(option.riskLevel)). \(option.risk!)" : ""))
-                .accessibilityValue(submittingOptionId == option.id ? "Sending choice" : confirmingOptionId == option.id ? "Selected" : "")
-                .accessibilityAddTraits(confirmingOptionId == option.id ? .isSelected : [])
+                choiceButton(option)
             }
         }
+    }
+
+    private func choiceButton(_ option: DecisionOption) -> some View {
+        Button { answer(option.answer, optionId: decision.options.isEmpty ? nil : option.id) } label: {
+            DecisionChoiceContent(option: option, isRecommended: decision.recommendedOptionId == option.id, isSending: submittingOptionId == option.id, isSelected: confirmingOptionId == option.id, isCompact: showsBot, showsAssessment: decision.assessmentStale != true)
+        }
+        .buttonStyle(HomePressStyle())
+        .disabled(!canRespond || submitting || store.answeringDecisionIds.contains(decision.id)
+            || (option.answer == "approve" && (decision.previews ?? []).contains { !loadedPreviewIds.contains($0.id) }))
+        .accessibilityIdentifier("decision-option-\(option.id)")
+        .accessibilityLabel(option.label + (decision.recommendedOptionId == option.id ? ", Recommended" : ""))
+        .accessibilityHint(choiceHint(option))
+        .accessibilityValue(submittingOptionId == option.id ? "Sending choice" : confirmingOptionId == option.id ? "Selected" : "")
+        .accessibilityAddTraits(confirmingOptionId == option.id ? .isSelected : [])
+    }
+
+    private func choiceHint(_ option: DecisionOption) -> String {
+        var hint = "Submits this choice. " + option.explanation
+        if decision.assessmentStale != true, let reason = option.risk, !reason.isEmpty {
+            hint += " \(DecisionRisk.label(option.riskLevel)). \(reason)"
+        }
+        return hint
     }
 
     private var decisionReceipt: some View {
