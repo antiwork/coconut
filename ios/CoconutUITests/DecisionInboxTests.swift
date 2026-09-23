@@ -13,12 +13,8 @@ final class DecisionInboxTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Medium risk"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Customers can read an incorrect date."].exists)
         XCTAssertTrue(app.staticTexts["The release time remains undecided."].exists)
-        let evidence = "Compared every date with the release record."
-        XCTAssertFalse(app.staticTexts[evidence].exists)
-        app.buttons["View evidence"].tap()
-        XCTAssertTrue(app.staticTexts[evidence].waitForExistence(timeout: 2))
         let proof = XCTAttachment(screenshot: app.screenshot())
-        proof.name = "Risk and evidence in Inbox"; proof.lifetime = .keepAlways; add(proof)
+        proof.name = "Risk in Inbox"; proof.lifetime = .keepAlways; add(proof)
         app.scrollViews["inbox-card-scroll"].swipeUp()
         let review = app.buttons["decision-option-option-0-1"]
         XCTAssertTrue(review.exists)
@@ -36,7 +32,6 @@ final class DecisionInboxTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Assessment needs updating"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["Customers can read an incorrect date."].exists)
         XCTAssertFalse(app.staticTexts["The release time remains undecided."].exists)
-        XCTAssertFalse(app.buttons["View evidence"].exists)
         XCTAssertFalse(app.staticTexts["Only the private draft changes."].exists)
     }
 

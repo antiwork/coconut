@@ -40,7 +40,7 @@ class MessageDraftTests(unittest.TestCase):
     def test_edit_invalidates_the_assessment_of_the_old_message(self):
         old = self.draft()
         decision = self.service._get('decisions', old['id'])
-        decision.update(risk_level='low', risk='Only the meeting time changes.', evidence='Checked the recipient and time.')
+        decision.update(risk_level='low', risk='Only the meeting time changes.')
         self.service._put('decisions', decision)
         content = dict(old['draft'], body='Cancel the project.', recipient='team@example.com')
         updated = self.write('POST', '/v1/decisions/' + old['id'] + '/draft', dict(revision=1, draft=content))

@@ -289,7 +289,6 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     var inboxDeferredAt: String? = nil
     var inboxUndoUntil: String? = nil
     var inboxSwipeId: String? = nil
-    var evidence: String? = nil
     var uncertainty: String? = nil
     var risk: String? = nil
     var riskLevel: String? = nil

@@ -181,8 +181,9 @@ class NativeExecution:
                 for field in ('recommended_option_id', 'predicted_option_id'):
                     if payload.get(field) is not None and payload[field] not in {o['id'] for o in options}:
                         raise ServiceError(400, 'Recommendations must refer to a current choice.')
-            from .decision_inbox import decision_risk
+            from .decision_inbox import card_text, decision_risk
             assessment = decision_risk(payload)
+            text = card_text(payload)
             decision = dict(id=str(uuid4()), bot_id=task['bot_id'], task_id=task_id,
                             title=str(payload.get('title', 'Allow this action?'))[:160],
                             explanation=str(payload.get('explanation', ''))[:2000],
@@ -192,10 +193,7 @@ class NativeExecution:
                             status='pending', urgency='normal', created_at=now(), decided_at=None, decided_by=None,
                             decided_by_name=None, correction=None, outcome=None, revision=1,
                             inbox_kind='proposal' if optional else 'decision',
-                            context=str(payload.get('context', ''))[:2000],
-                            evidence=str(payload.get('evidence', ''))[:8000],
-                            uncertainty=str(payload.get('uncertainty', ''))[:2000],
-                            **assessment,
+                            **text, **assessment,
                             _proposal_key=payload.get('key') if optional else None,
                             _action=action, _action_hash=digest(encoded(action)), _native=True,
                             _predicted_option_id=payload.get('predicted_option_id'), _receipt_id=payload.get('receipt_id'), _answers=[])

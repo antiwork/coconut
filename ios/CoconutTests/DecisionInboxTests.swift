@@ -7,7 +7,6 @@ final class DecisionInboxTests: XCTestCase {
         decision.status = "pending"
         decision.riskLevel = "medium"
         decision.risk = "The release date can be wrong."
-        decision.evidence = "Compared release notes."
         decision.context = "Publish the release notes."
         decision.uncertainty = "The release time remains undecided."
         decision.options[0].riskLevel = "low"
@@ -16,7 +15,6 @@ final class DecisionInboxTests: XCTestCase {
         let decoded = try APIJSON.decoder().decode(Decision.self, from: APIJSON.encoder().encode(decision))
         XCTAssertEqual(decoded.riskLevel, "medium")
         XCTAssertEqual(decoded.risk, decision.risk)
-        XCTAssertEqual(decoded.evidence, decision.evidence)
         XCTAssertEqual(decoded.options[0].riskLevel, "low")
         XCTAssertEqual(decoded.options[0].risk, decision.options[0].risk)
         XCTAssertEqual(decoded.assessmentStale, true)

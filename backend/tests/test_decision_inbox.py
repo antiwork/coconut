@@ -18,7 +18,7 @@ class DecisionInboxTests(unittest.TestCase):
 
     def question(self, optional=False):
         payload = dict(key='one-proposal', title='Investigate references?', explanation='The hashes match.',
-                       evidence='Compared hashes.', uncertainty='References are unknown.', risk='Deletion could break a caller.',
+                       uncertainty='References are unknown.', risk='Deletion could break a caller.',
                        options=[{'id': 'check', 'label': 'Check references'}, {'id': 'leave', 'label': 'Leave it'}])
         if optional:
             self.event('native_proposal', payload)
@@ -51,20 +51,18 @@ class DecisionInboxTests(unittest.TestCase):
                    dict(id='wait', label='Wait', risk_level='low', risk='Only the release note is delayed.')]
         with self.assertRaises(YieldForDecision):
             self.event('native_question', dict(title='Publish?', options=options,
-                risk_level='not_assessed', risk='The release date needs confirmation.', evidence='Compared the draft with the release.'))
+                risk_level='not_assessed', risk='The release date needs confirmation.'))
         self.restart()
         decision = self.service.snapshot()['decisions'][-1]
         self.assertEqual(decision['risk_level'], 'not_assessed')
-        self.assertEqual(decision['evidence'], 'Compared the draft with the release.')
         self.assertEqual([o['risk_level'] for o in decision['options']], ['medium', 'low'])
         task = self.service._get('tasks', decision['task_id'])
         self.service._revise_question(decision, task, dict(title='Publish the checked notes?', options=options,
-            risk_level='low', risk='Only the release note changes.', evidence='The release date matches.'), 'Checked the date.')
+            risk_level='low', risk='Only the release note changes.'), 'Checked the date.')
         self.restart()
         revised = self.service.snapshot()['decisions'][-1]
         self.assertEqual(revised['status'], 'pending')
         self.assertEqual(revised['risk_level'], 'low')
-        self.assertEqual(revised['evidence'], 'The release date matches.')
         self.assertEqual(revised['revision'], 2)
         self.service._revise_question(revised, task, dict(title='Which next step?',
             options=[dict(id='wait', label='Wait')]), 'Remove the old assessment.')
@@ -72,6 +70,41 @@ class DecisionInboxTests(unittest.TestCase):
         self.assertIsNone(saved['risk_level'])
         self.assertEqual(saved['risk'], '')
         self.assertFalse(saved['options'][0].get('risk'))
+
+    def test_cards_do_not_store_supporting_evidence(self):
+        with self.assertRaises(YieldForDecision):
+            self.event('native_question', dict(title='Publish?', evidence='Compared the draft with the release.',
+                options=[dict(id='publish', label='Publish')]))
+        decision = self.service.snapshot()['decisions'][-1]
+        self.assertNotIn('evidence', decision)
+        stored = self.service._get('decisions', decision['id'])
+        stored['evidence'] = 'An older card kept its checks here.'
+        self.service._put('decisions', stored)
+        task = self.service._get('tasks', decision['task_id'])
+        self.service._revise_question(stored, task, dict(title='Publish the notes?',
+            options=[dict(id='publish', label='Publish')]), 'Checked the notes.')
+        self.assertNotIn('evidence', self.service._get('decisions', decision['id']))
+
+    def test_card_text_over_the_limits_is_rejected_with_a_shortening_hint(self):
+        from coconut.decision_inbox import CARD_TEXT_LIMITS, OPTION_EXPLANATION_LIMIT, RISK_LIMIT
+        option = dict(id='one', label='Publish')
+        for fields, hint in ((dict(context='x' * (CARD_TEXT_LIMITS['context'] + 1)), 'Shorten the context'),
+                             (dict(uncertainty='x' * (CARD_TEXT_LIMITS['uncertainty'] + 1)), 'Shorten the uncertainty'),
+                             (dict(risk_level='low', risk='x' * (RISK_LIMIT + 1)), 'State the risk in one sentence'),
+                             (dict(options=[dict(option, explanation='x' * (OPTION_EXPLANATION_LIMIT + 1))]), 'one short sentence')):
+            with self.subTest(fields=list(fields)), self.assertRaisesRegex(ServiceError, hint):
+                self.event('native_question', dict(dict(title='Publish?', options=[option]), **fields))
+        self.assertEqual(self.service.snapshot()['decisions'], [])
+        with self.assertRaises(YieldForDecision):
+            self.event('native_question', dict(title='Publish?', options=[option], context='x' * CARD_TEXT_LIMITS['context'],
+                                               uncertainty='x' * CARD_TEXT_LIMITS['uncertainty']))
+        decision = self.service.snapshot()['decisions'][-1]
+        task = self.service._get('tasks', decision['task_id'])
+        with self.assertRaisesRegex(ServiceError, 'Shorten the context'):
+            self.service._revise_question(decision, task, dict(title='Publish now?', options=[option],
+                context='x' * (CARD_TEXT_LIMITS['context'] + 1)), 'Add detail.')
+        saved = self.service._get('decisions', decision['id'])
+        self.assertEqual((saved['title'], saved['revision']), ('Publish?', 1))
 
     def test_fixed_actions_allow_new_assessments_without_changing_the_actions(self):
         decision = self.question()
@@ -142,7 +175,7 @@ class DecisionInboxTests(unittest.TestCase):
         self.assertEqual(result['status'], 'approved')
 
     def test_invalid_option_effects_do_not_create_a_decision(self):
-        for explanation in (42, 'x' * 501):
+        for explanation in (42, 'x' * 201):
             with self.subTest(explanation_type=type(explanation).__name__):
                 with self.assertRaises(ServiceError):
                     self.event('native_question', dict(title='Choose?',
@@ -186,7 +219,7 @@ class DecisionInboxTests(unittest.TestCase):
         self.assertEqual(first['id'], second['id'])
         self.assertEqual(len(self.service.snapshot()['decisions']), 1)
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'working')
-        self.assertEqual(first['evidence'], 'Compared hashes.')
+        self.assertEqual(first['uncertainty'], 'References are unknown.')
         self.assertEqual(first['inbox_kind'], 'proposal')
 
     def test_required_later_survives_reopen_without_resolving(self):
@@ -431,7 +464,7 @@ class DecisionInboxTests(unittest.TestCase):
         delivered = self.service.provider.resume_task.call_args.args[3]
         self.assertEqual(delivered['selected_option_label'], 'Check references')
         self.assertEqual(delivered['title'], stored['title'])
-        self.assertEqual(delivered['evidence'], 'Compared hashes.')
+        self.assertEqual(delivered['uncertainty'], 'References are unknown.')
 
     def test_failed_context_recovery_allows_another_reply(self):
         decision = self.question()

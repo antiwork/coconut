@@ -145,7 +145,7 @@ def main():
         decision = state['decisions'][0]
         decision.update(title='Publish the release notes?', context='This publishes the checked notes on the release page.',
             risk_level='medium', risk='Customers can read an incorrect date.',
-            evidence='Compared every date with the release record.', uncertainty='The release time remains undecided.')
+            uncertainty='The release time remains undecided.')
         decision['options'] = decision['options'][:2]
         decision['options'][1].update(risk_level='low', risk='Only the private draft changes.')
     inbox_actions = []
