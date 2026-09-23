@@ -333,8 +333,13 @@ QUESTION_SCHEMA['parameters']['properties'].update({
     'context': {'type': 'string', 'description': 'Usually two or three short sentences: explain the problem, then name what approval changes and where. State whether this prepares local work, creates or updates a PR, merges, deploys, sends a message, or changes a saved setting directly. Include only verified, authorized stages. Disclose material effects and limits in plain words. Keep low-level commands and detailed evidence in chat. Do not repeat risk or uncertainty.'},
     'evidence': {'type': 'string', 'description': 'One short sentence naming the decisive check or linking its source. Do not repeat context or invent checks.'},
     'uncertainty': {'type': 'string', 'description': 'One short sentence naming a remaining unknown that could change this decision. Resolve allowed checks before asking. Omit unrelated future caveats and unknowns already stated elsewhere.'},
-    'risk': {'type': 'string', 'description': 'One short sentence stating what could go wrong with the proposed action and who or what it affects. Add a verified impact or recovery limit when useful. Omit if there is no material risk. Do not invent reassurance or a risk rating.'},
+    'risk': {'type': 'string', 'description': 'One short sentence stating what could go wrong with the proposed action and who or what it affects. Add a verified impact or recovery limit when useful. Omit if there is no material risk. Explain the risk level when supplied. Do not invent reassurance.'},
 })
+QUESTION_SCHEMA['parameters']['properties']['risk_level'] = {
+    'type': 'string', 'enum': ['low', 'medium', 'high', 'not_assessed'],
+    'description': 'Optional assessment of the proposed action. Low: small verified impact and clear recovery. Medium: meaningful bounded impact. High: broad impact or difficult recovery. Not assessed: evidence is insufficient. Always explain the reason in risk. This does not express confidence or merge readiness.'}
+QUESTION_SCHEMA['parameters']['properties']['options']['items']['properties'].update({
+    key: QUESTION_SCHEMA['parameters']['properties'][key] for key in ('risk_level', 'risk')})
 try:
     from .message_drafts import DRAFT_SCHEMA
 except ImportError:

@@ -292,6 +292,8 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     var evidence: String? = nil
     var uncertainty: String? = nil
     var risk: String? = nil
+    var riskLevel: String? = nil
+    var assessmentStale: Bool? = nil
     var replyPending: Bool? = nil
     var sources: [DecisionSource]? = nil
     var mergePrUrl: String? = nil
@@ -369,6 +371,18 @@ struct DecisionPreview: Codable, Identifiable, Equatable, Sendable {
     var id: String { artifactId }
 }
 
+enum DecisionRisk {
+    static func label(_ level: String?) -> String {
+        switch level {
+        case "low": "Low risk"
+        case "medium": "Medium risk"
+        case "high": "High risk"
+        case "not_assessed": "Risk not assessed"
+        default: "Risk"
+        }
+    }
+}
+
 struct DecisionOption: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var label: String
@@ -376,6 +390,8 @@ struct DecisionOption: Codable, Identifiable, Equatable, Sendable {
     var answer: String
     var action: ProposedFileAction?
     var modification: String?
+    var risk: String? = nil
+    var riskLevel: String? = nil
 }
 
 struct ProposedFileAction: Codable, Equatable, Sendable {
