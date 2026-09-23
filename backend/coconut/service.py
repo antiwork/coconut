@@ -1808,7 +1808,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         interaction = dict(bot_mentions=[dict(id=identity, name=self._get('bots', identity)['name'])
                                          for identity in mentioned]) if mentioned else None
         if target_id is not None:
-            target = self._interaction_target(target_id, bot['id'])
+            # A saved cross-chat quote supplies context; the requested bot remains the recipient.
+            target = self._interaction_target(target_id)
             interaction = (interaction or {}) | dict(reply_to=self._reply_reference(target))
         if work_item:
             interaction = (interaction or {}) | dict(work_context=dict(id=work_item['id'], title=work_item['title']))

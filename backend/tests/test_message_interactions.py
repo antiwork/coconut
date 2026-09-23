@@ -56,15 +56,34 @@ class MessageInteractionTests(unittest.TestCase):
         self.assertEqual(reply['reply_to']['author'], 'You')
         self.assertEqual(reply['reply_to']['role'], 'user')
 
-    def test_cross_conversation_and_unfinished_targets_rejected(self):
+    def test_saved_cross_conversation_reply_keeps_recipient_and_retries_once(self):
         other = self.write('/v1/bots', dict(name='Tuner', role='Assistant'))
-        with self.assertRaises(ServiceError):
-            self.write(f'/v1/bots/{other["id"]}/messages', dict(text='Reply', reply_to_message_id=self.original['id']))
+        original_history = self.service._history(self.bot['id'])
+        payload = dict(text='Explain this result.', reply_to_message_id=self.original['id'], mode='queue')
+        key = str(uuid4())
+        self.service.close()
+        self.service = Service(self.temp.name, self.provider, start_workers=False)
+        task = self.write(f'/v1/bots/{other["id"]}/messages', payload, key)
+        self.assertEqual(self.write(f'/v1/bots/{other["id"]}/messages', payload, key), task)
+        self.assertEqual(task['bot_id'], other['id'])
+        self.assertEqual(self.service._history(self.bot['id']), original_history)
+        history = self.service._history(other['id'])
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]['reply_to']['message_id'], self.original['id'])
+        prompt, _ = conversation_input(dict(operation='start', task=task, bot=other, history=history))
+        self.assertIn("Desk's message", prompt)
+        self.assertNotIn('your previous message', prompt)
+        self.assertIn(self.original['text'], prompt)
+        self.assertTrue(prompt.endswith('Explain this result.'))
+
+    def test_unfinished_targets_rejected(self):
         for flag in ('streaming', '_hidden', '_deleted'):
             target = self.service._get('messages', self.original['id'])
             target[flag] = True
             self.service._put('messages', target)
             with self.assertRaises(ServiceError): self.react()
+            with self.assertRaises(ServiceError):
+                self.send('Reply', reply_to_message_id=target['id'])
             target[flag] = False
             self.service._put('messages', target)
 
