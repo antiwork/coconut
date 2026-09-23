@@ -64,7 +64,7 @@ class DecisionInbox:
         explicit = payload.get('previous_decision_id')
         if explicit is not None and (not isinstance(explicit, str) or not explicit.strip()):
             raise ServiceError(400, 'Link an answered question from this conversation.')
-        previous_id = explicit or task.get('_resume_decision')
+        previous_id = explicit or task.get('_resume_decision') or self._source_followup_id(task)
         if not previous_id:
             return {}
         previous = next((d for d in self._all('decisions') if d['id'] == previous_id), None)
@@ -80,6 +80,22 @@ class DecisionInbox:
                 raise ServiceError(400, 'Link an answered question from this conversation.')
             return {}
         return dict(previous_decision_id=previous_id)
+
+    def _source_followup_id(self, task):
+        # A source audit runs as a new task and cannot see earlier card IDs.
+        # Link its card to the latest answer for the same source item instead.
+        def assignment(item):
+            value = item.get('_source_assignment') or {}
+            return value.get('source_id'), value.get('id')
+        source = assignment(task)
+        if not all(source):
+            return None
+        tasks = {t['id']: t for t in self._all('tasks')}
+        answered = [d for d in self._all('decisions')
+                    if d['task_id'] != task['id'] and d['bot_id'] == task['bot_id'] and d.get('decided_at')
+                    and d['status'] in ('approved', 'rejected', 'modified', 'replied', 'executed', 'failed')
+                    and assignment(tasks.get(d['task_id'], {})) == source]
+        return max(answered, key=lambda d: d['decided_at'])['id'] if answered else None
 
     def decision_origin(self, task, *, messages=None):
         seen = set()

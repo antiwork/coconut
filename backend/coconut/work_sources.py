@@ -288,7 +288,6 @@ class WorkSources:
                         text = ('Reconcile these open assignments against the original sources and existing work. '
                                 + removed_instruction +
                                 'Read prior decisions before asking anything. An answered or dismissed decision is not permission to ask it again. '
-                                'If a new card carries out an answered decision, set previous_decision_id to that decision. '
                                 + tracking_instruction +
                                 'Reuse active work. Inspect unknown outcomes before retrying any external action. '
                                 'Create a concise decision card only when a new human choice is necessary. '
