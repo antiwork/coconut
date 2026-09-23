@@ -165,12 +165,13 @@ struct CoconutHome: View {
 
     @ToolbarContentBuilder
     private func rootToolbar(inbox: Bool) -> some ToolbarContent {
+        // Settings is the one app-wide action, so both tabs show it.
+        ToolbarItem(placement: .topBarLeading) {
+            Button { settingsOpen = true } label: {
+                Image(systemName: "person.crop.circle")
+            }.accessibilityLabel("App settings").accessibilityIdentifier("app-settings")
+        }
         if !inbox {
-            ToolbarItem(placement: .topBarLeading) {
-                Button { settingsOpen = true } label: {
-                    Image(systemName: "person.crop.circle")
-                }.accessibilityLabel("App settings").accessibilityIdentifier("app-settings")
-            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { searchOpen = true; searchFocused = true } label: {
                     Image(systemName: "magnifyingglass")

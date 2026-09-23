@@ -146,7 +146,7 @@ struct DecisionInboxView: View {
                         Spacer()
                         VStack(spacing: 8) {
                             BotAvatar(symbol: "fruit.coconut", color: "64866A", size: 64,
-                                      identity: "inbox-caught-up", animated: false)
+                                      identity: "inbox-caught-up")
                             Text("All caught up.")
                                 .font(.title3.weight(.semibold)).accessibilityIdentifier("inbox-empty")
                         }
