@@ -304,23 +304,8 @@ struct DecisionAssessment: View {
         if decision.assessmentStale == true {
             Text("Assessment needs updating").font(.subheadline).foregroundStyle(.secondary)
                 .accessibilityIdentifier("decision-assessment-stale")
-        } else if !(decision.risk ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || !(decision.evidence ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                DecisionRiskDescription(level: decision.riskLevel, reason: decision.risk)
-                if let evidence = decision.evidence?.trimmingCharacters(in: .whitespacesAndNewlines), !evidence.isEmpty {
-                    DisclosureGroup("View evidence") {
-                        Text(.init(evidence)).font(.subheadline).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 4)
-                    }
-                    .font(.subheadline)
-                    .tint(.secondary)
-                    .accessibilityIdentifier("decision-evidence")
-                }
-            }
+        } else {
+            DecisionRiskDescription(level: decision.riskLevel, reason: decision.risk)
         }
     }
 }

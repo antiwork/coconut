@@ -4,18 +4,40 @@ from __future__ import annotations
 import json
 
 
+# Hard limits back up the writing rules. Recent cards used a median of 324
+# context characters; the rules aim for about 300 and reject longer text.
+CARD_TEXT_LIMITS = dict(context=400, uncertainty=200)
+RISK_LIMIT = 200
+OPTION_EXPLANATION_LIMIT = 200
+
+
 def decision_risk(payload):
     from .service import ServiceError
     level, reason = payload.get('risk_level'), payload.get('risk', '')
     if (level not in (None, 'low', 'medium', 'high', 'not_assessed')
-            or not isinstance(reason, str) or len(reason) > 2000
-            or (level is not None and not reason.strip())):
+            or not isinstance(reason, str) or (level is not None and not reason.strip())):
         raise ServiceError(400, 'Use low, medium, high, or not_assessed for risk_level, with a concrete reason in risk.')
+    if len(reason) > RISK_LIMIT:
+        raise ServiceError(400, f'State the risk in one sentence of at most {RISK_LIMIT} characters.')
     return dict(risk_level=level, risk=reason.strip())
 
 
+def card_text(payload):
+    from .service import ServiceError
+    text = {}
+    for field, limit in CARD_TEXT_LIMITS.items():
+        value = payload.get(field, '')
+        if not isinstance(value, str):
+            raise ServiceError(400, f'Supply the {field} as text.')
+        if len(value) > limit:
+            raise ServiceError(400, f'Shorten the {field} to at most {limit} characters. '
+                                    'Keep only the facts needed to decide, and put detail in chat.')
+        text[field] = value
+    return text
+
+
 def has_assessment(decision):
-    return bool(decision.get('risk') or decision.get('evidence') or decision.get('uncertainty')
+    return bool(decision.get('risk') or decision.get('uncertainty')
                 or any(option.get('risk') for option in decision.get('options', [])))
 
 
@@ -33,10 +55,11 @@ def decision_options(options):
             or any(not isinstance(option, dict)
                    or any(not isinstance(option.get(key), str) or not option[key].strip() or len(option[key]) > limit
                           for key, limit in (('id', 80), ('label', 300)))
-                   or not isinstance(option.get('explanation', ''), str)
-                   or len(option.get('explanation', '')) > 500 for option in options)
+                   or not isinstance(option.get('explanation', ''), str) for option in options)
             or len({option['id'] for option in options}) != len(options)):
         raise ServiceError(400, 'Supply one to eight distinct choices with concise explanations.')
+    if any(len(option.get('explanation', '')) > OPTION_EXPLANATION_LIMIT for option in options):
+        raise ServiceError(400, f'Keep each option explanation to one short sentence of at most {OPTION_EXPLANATION_LIMIT} characters.')
     return [dict(id=option['id'], label=option['label'], answer='approve',
                  explanation=option.get('explanation', ''), **decision_risk(option)) for option in options]
 
@@ -304,6 +327,10 @@ class DecisionInbox:
         title = revision.get('title')
         if not isinstance(title, str) or not title.strip() or len(title) > 160:
             raise ServiceError(400, 'Supply the revised question.')
+        text = card_text(revision)
+        explanation = revision.get('explanation', '')
+        if not isinstance(explanation, str) or len(explanation) > 2000:
+            raise ServiceError(400, 'Use concise text for decision details.')
         recommended = revision.get('recommended_option_id')
         if recommended is not None and recommended not in {o['id'] for o in options}:
             raise ServiceError(400, 'Recommend a current choice.')
@@ -316,11 +343,8 @@ class DecisionInbox:
                         merge_pr_url=merge_url, _merge_pr_head=merge_head, _merge_request_at=requested_at,
                         recommended_option_id=recommended, revision=decision['revision'] + 1,
                         inbox_deferred_at=None)
-        for field, limit in (('context', 2000), ('explanation', 2000), ('evidence', 8000), ('uncertainty', 2000)):
-            value = revision.get(field, '')
-            if not isinstance(value, str) or len(value) > limit:
-                raise ServiceError(400, 'Use concise text for decision details.')
-            decision[field] = value
+        decision.update(text, explanation=explanation)
+        decision.pop('evidence', None)
         from .decision_previews import attach_previews
         from .decision_sources import attach_sources
         attach_sources(decision, revision)
@@ -376,59 +400,53 @@ DECISION_INSTRUCTIONS = (
     'State the combined scope. Keep separate choices when their actions or risks differ. '
     'Include the triggering issue, PR, email, or document in sources, with its exact link when available. '
     'For email sources, use the subject as the title. If no link is available, omit the URL and retain the source label. '
-    'Never invent source links. New evidence for a pending choice belongs in the existing card. '
+    'Never invent source links. New facts for a pending choice belong in the existing card. '
     'When answering a question about an existing card, explain in chat and leave that card pending. '
     'A text response with status replied closes its card and resumes the task. Apply the response in the normal conversation. '
-    'Create a new card only if a human choice is still needed. Include the answer and current evidence in that card. '
+    'Create a new card only if a human choice is still needed. Include the answer and the current facts in that card. '
     'Before ending a turn, check whether your reply asks the human to choose or offers optional work. '
     'Use the appropriate card tool first. Ordinary answers, progress reports, and completed results stay in chat. '
-    'Write decision cards in Simplified Technical English. Use familiar words, active voice, and one idea per sentence. '
-    'Keep the tone calm and neutral. Use the same name for the same thing throughout the card. '
-    'A card must make sense on its own in Inbox. Use this order without forcing headings or empty fields: '
-    'title: the specific action and affected thing, phrased as a short question; '
-    'context: what is wrong or needed, why it matters, and the practical result of approval; '
-    'risk: what could go wrong with this action and any verified limit on its impact; '
-    'uncertainty: a remaining unknown only when it could change this decision; '
-    'options: clear actions with distinct results. '
-    'Usually use two or three short context sentences. Add words only for facts needed to decide. '
-    'Prefer "Correct refunds in the tax report?" to "Fix the tax-report refund error?" '
-    'Explain the effect: "The proposed report counts refunds that should be excluded, making tax totals too low." '
-    'Name the project or record once so the person knows which work this concerns. '
-    'State what approval changes, where it changes, and whether the bot prepares a proposal or applies the change directly. '
-    'For code, distinguish local preparation, creating or updating a PR, merging, and deployment. Name only the stages this choice authorizes. '
-    'For settings, name the affected bot, service, or account and say whether the saved setting takes effect immediately. '
-    'For example: "Update PR #7662 and request review. Live reports stay unchanged." '
+    'Write each card for a busy person who reads it once in Inbox. Make it as short as it can be while it stays clear on its own. '
+    'Every sentence must help the person decide. Remove background, process history, and facts that do not change the choice. '
+    'Use Simplified Technical English: familiar words, the active voice, and a calm, neutral tone. '
+    'Write the context as a short connected paragraph, not a stack of clipped statements. '
+    'Link cause and result with words such as because, so, and but. Do not use labels with colons or start each sentence on a new topic. '
+    'Use the same name for the same thing throughout the card, and name the project or record once. '
+    'title: a short question that names the action and the affected thing, such as "Correct refunds in the tax report?" '
+    'context: one to three sentences, usually under 300 characters. Say what is wrong or needed, why it matters, and what approval does. '
+    'Say whether approval prepares local work, creates or updates a PR, merges, deploys, sends a message, or changes a setting directly. '
+    'For a setting, name the bot, service, or account and say whether the change takes effect immediately. '
+    'Mention something that approval does not do only when the person would otherwise expect it. Never list the stages a choice leaves out. '
+    'Always state public changes, external messages, cost, data loss, and irreversible effects when the choice causes them. '
+    'For example: "PR #7910 lets long discount labels wrap, so sellers can read the full option on mobile. Merging puts it on main for the next release." '
+    'risk: one sentence that names what could go wrong and who or what it affects. Omit it when there is no material risk. '
+    'uncertainty: one sentence, only for an unknown that could change this choice. '
+    'options: specific action labels such as "Update alert rules" or "Create a draft PR", never "Proceed" or "Include both". '
+    'Add an option explanation only for a result or tradeoff that the label and context do not show. Keep it to one short sentence. '
+    'Keep steps, commands, file paths, key or vault names, commit IDs, test lists, and supporting evidence out of the card. Put them in chat. '
+    'State each fact once across the title, context, risk, uncertainty, and options. '
     'Use only verified scope and facts. If the delivery method is unknown, inspect it before asking; never invent a PR or a direct update. '
-    'Keep low-level commands, detailed evidence, and execution limits in the underlying request and chat. '
-    'The visible card must still disclose public changes, external messages, cost, data loss, and other material approval limits. '
-    'Do not replace these effects with a list of tools, tests, review steps, commit IDs, or permission jargon. '
-    'Use specific option labels such as "Update alert rules" or "Create a draft PR", rather than "Include both" or "Proceed". '
-    'Use an option explanation only to add a consequence or tradeoff. Do not repeat the label or context. '
-    'State material risk in one concrete sentence. Describe the failure and who or what it affects. '
-    'Use risk_level only when it helps the decision. Assess the proposed action, not implementation difficulty or CI status. '
+    'Set risk_level when it helps the decision, and use the risk sentence as its reason. Assess the proposed action, not the work to build it. '
     'Use low for a small, verified impact with a clear recovery path; medium for meaningful but bounded impact; '
-    'high for broad impact or difficult recovery. Use not_assessed when missing evidence prevents an assessment. '
-    'Always state the concrete reason in risk. Support the assessment with evidence and state material unknowns in uncertainty. '
-    'When choices have different risks, put risk_level and risk on those options instead of assigning one level to the whole card. '
+    'high for broad impact or difficult recovery. Use not_assessed when missing facts prevent an assessment. '
+    'When choices have different risks, put risk_level and risk on those options instead of on the whole card. '
     'Green checks alone do not establish low risk. A risk label never grants approval or replaces merge checks. '
-    'Do not give confidence percentages, unsupported ratings, or blanket claims that an action is safe. '
-    'Omit an empty risk field. Do not invent a warning merely to fill the structure. '
-    'Keep risk and uncertainty distinct and avoid repeating either in context. '
-    'Match them to the action being approved. A future release caveat belongs here only if it changes this choice. '
-    'Preserve material risk and approval limits when shortening text. '
-    'Before creating or revising a card, read it as the person: Can they identify the action, reason, consequence, and material risk? '
+    'Do not give confidence percentages or blanket claims that an action is safe. Do not invent a warning to fill the structure. '
+    'Keep material risk and approval limits when you shorten text. '
+    'Before you create or revise a card, read it as the person. In a few seconds they must see the action, the reason, the result, and any material risk. '
+    'Then remove every word they do not need. '
     'Never invent a fixed set of choices or limit useful choices to three. '
     'Before asking, verify the decisive facts, access, and scope using current evidence. Resolve material uncertainty within existing authorization. '
     'Prefer a smaller reversible action when it meets the goal and reduces risk. '
-    'If missing evidence prevents a sound recommendation, complete the allowed check or ask for the specific missing input. '
+    'If missing facts prevent a sound recommendation, complete the allowed check or ask for the specific missing input. '
     'Do not ask the person to approve an unclear plan because the investigation is unfinished. '
     'After a requested check, explain what you checked, what changed, and why the next choice is needed. '
     'Link the answered card with previous_decision_id when the follow-up occurs in a later turn. '
     'A request to investigate is not a ruling or permission for the proposed action. '
     'For past decisions, treat summaries as leads. Read the original decision and discussion, including later reversals. '
-    'Cite the original records in evidence or chat. Separate verified facts from inference. '
+    'Cite the original records in chat or card sources. Separate verified facts from inference. '
     'If original records are missing or inaccessible, state that limit once in uncertainty. '
-    'Do not call that check complete or remove a useful read-only next step while material evidence remains missing. '
+    'Do not call that check complete or remove a useful read-only next step while material records remain missing. '
     'Recommend a choice when verified facts support it. State the decisive reason once, in plain language. '
     'Never claim 100 percent confidence, verified access, or completed work without relevant evidence. '
     'Set recommended_option_id when evidence and the user goal give you a clear reason to prefer one choice. '

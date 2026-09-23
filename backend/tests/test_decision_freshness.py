@@ -50,7 +50,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         decision = self.question(old=False)
         url = 'https://github.com/example/project/pull/42'
         decision.update(sources=[dict(kind='pull_request', title='Release', url=url)],
-            risk_level='low', risk='Only the release note changes.', evidence='Checked the release date.',
+            risk_level='low', risk='Only the release note changes.',
             uncertainty='The publication date remains undecided.')
         decision['options'][0].update(risk_level='medium', risk='Customers will see this date.')
         self.service._put('decisions', decision)
@@ -85,13 +85,13 @@ class DecisionFreshnessTests(unittest.TestCase):
 
     def test_changed_work_hides_assessment_and_revision_replaces_it(self):
         decision = self.question()
-        decision.update(risk_level='low', risk='Only the local test folder changes.', evidence='Inspected the setup.')
+        decision.update(risk_level='low', risk='Only the local test folder changes.')
         self.service._put('decisions', decision)
         context = self.refresh()
         self.assertTrue(self.service._get('decisions', decision['id'])['assessment_stale'])
         self.service.refresh_decision(context['id'], dict(status='revise', evidence='The setup now affects shared data.',
             revision=dict(title='Change the shared test setup?', options=decision['options'],
-                risk_level='high', risk='Other tests can lose their data.', evidence='Found a shared database.')))
+                risk_level='high', risk='Other tests can lose their data.')))
         saved = self.service._get('decisions', decision['id'])
         self.assertFalse(saved['assessment_stale'])
         self.assertEqual(saved['risk_level'], 'high')
@@ -100,7 +100,7 @@ class DecisionFreshnessTests(unittest.TestCase):
     def test_work_change_invalidates_assessment_even_when_refresh_cannot_start(self):
         from coconut.service import now
         decision = self.question(old=False)
-        decision.update(risk_level='low', risk='Only local files change.', evidence='Checked the local scope.')
+        decision.update(risk_level='low', risk='Only local files change.')
         self.service._put('decisions', decision)
         task = self.service._get('tasks', self.task['id'])
         task['summary'] = 'The scope now includes shared files.'
@@ -123,7 +123,7 @@ class DecisionFreshnessTests(unittest.TestCase):
     def test_temporary_change_still_gets_a_check_after_facts_return_to_original(self):
         from coconut.service import now
         decision = self.question(old=False)
-        decision.update(risk_level='low', risk='Only local files change.', evidence='Checked the scope.')
+        decision.update(risk_level='low', risk='Only local files change.')
         decision['_freshness']['queued_at'] = now()
         self.service._put('decisions', decision)
         task = self.service._get('tasks', self.task['id'])

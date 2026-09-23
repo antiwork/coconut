@@ -49,6 +49,7 @@ class DraftFreshnessTests(unittest.TestCase):
         self.assertEqual(card['draft'], decision['draft'])
         self.assertEqual(card['resource'], decision['resource'])
         self.assertEqual(card['action_type'], 'draft_message')
+        self.assertNotIn('evidence', card)
         self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'pending')
 
     def test_withdraw_obsolete_draft_never_dispatches_or_grants_send(self):
@@ -99,19 +100,19 @@ class DraftFreshnessTests(unittest.TestCase):
 
     def test_assessment_revision_preserves_edited_draft_and_requires_current_approval(self):
         decision = self.draft()
-        decision.update(risk_level='low', risk='Only the meeting time changes.', evidence='Checked the time.')
+        decision.update(risk_level='low', risk='Only the meeting time changes.')
         self.service._put('decisions', decision)
         updated = self.write('POST', '/v1/decisions/' + decision['id'] + '/draft', dict(
             revision=decision['revision'], draft=dict(decision['draft'], body='Cancel the project.')))
         context = self.refresh()
         self.service.refresh_decision(context['id'], dict(status='revise', evidence='The revised message cancels a project.',
-            revision=dict(risk_level='high', risk='The team could stop active work.', evidence='Read the exact edited message.',
+            revision=dict(risk_level='high', risk='The team could stop active work.',
                           uncertainty='The team may already have started.')))
         saved = self.service._get('decisions', decision['id'])
         self.assertEqual(saved['draft'], updated['draft'])
         self.assertEqual(saved['draft_hash'], updated['draft_hash'])
         self.assertEqual(saved['risk_level'], 'high')
-        self.assertEqual(saved['evidence'], 'Read the exact edited message.')
+        self.assertEqual(saved['uncertainty'], 'The team may already have started.')
         self.assertFalse(saved['assessment_stale'])
         self.assertEqual(saved['status'], 'pending')
         self.assertNotIn('_execution_task_id', saved)
