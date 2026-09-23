@@ -36,7 +36,7 @@
         {
           "id": "include",
           "label": "Update alert rules",
-          "explanation": "Add both reports to the finance bot\u2019s automatic checks.",
+          "explanation": "Add both reports to the finance bot’s automatic checks.",
           "answer": "approve"
         },
         {
@@ -201,6 +201,5 @@
       }
     ]
   },
-  "routines": [],
-  "conversation_bot_id": "00000000-0000-4000-8000-000000000001"
+  "routines": []
 }

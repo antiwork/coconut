@@ -50,7 +50,7 @@ final class ModelSettingsFlowTests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
         app.buttons["close-settings"].tap()
-        XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["home-inbox"].waitForExistence(timeout: 5))
         openBotModelSettings(in: app)
         assertInheritedModel("Preview Focused", effort: "High", in: app)
         capture("Bot inherits the changed host model and effort")
@@ -61,14 +61,14 @@ final class ModelSettingsFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["home-inbox"].waitForExistence(timeout: 10))
         return app
     }
 
     @MainActor
     private func openBotModelSettings(in app: XCUIApplication) {
         app.buttons["app-settings"].tap()
-        let bot = app.buttons["settings-bot-\(forgeId)"]
+        let bot = app.buttons["Forge"]
         for _ in 0..<5 where !bot.isHittable { app.swipeUp() }
         XCTAssertTrue(bot.waitForExistence(timeout: 5))
         bot.tap()

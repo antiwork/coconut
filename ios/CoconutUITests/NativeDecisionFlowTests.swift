@@ -7,8 +7,6 @@ final class NativeDecisionFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        XCTAssertTrue(app.buttons["manage-bots"].waitForExistence(timeout: 10))
-        app.buttons["manage-bots"].tap()
 
         let forge = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
         XCTAssertTrue(forge.waitForExistence(timeout: 10))
@@ -56,8 +54,6 @@ final class NativeDecisionFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        XCTAssertTrue(app.buttons["manage-bots"].waitForExistence(timeout: 10))
-        app.buttons["manage-bots"].tap()
 
         let forge = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
         let scout = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
