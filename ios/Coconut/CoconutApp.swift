@@ -12,8 +12,8 @@ struct CoconutApp: App {
                 .environment(store)
                 .tint(.primary)
                 .task { store.start() }
-                .onChange(of: store.reconciledBadgeCount, initial: true) { _, count in
-                    if !store.isDemo, let count { PushNotifications.shared.setBadgeCount(count) }
+                .onChange(of: store.reconciledBadgeCount, initial: true) { _, _ in
+                    if !store.isDemo { store.reconcileBadge() }
                 }
                 .onChange(of: PushNotifications.shared.deviceToken) { _, _ in
                     Task { await store.syncPushRegistration() }
@@ -24,9 +24,7 @@ struct CoconutApp: App {
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active {
                         store.setForeground(true)
-                        if !store.isDemo, let count = store.reconciledBadgeCount {
-                            PushNotifications.shared.setBadgeCount(count)
-                        }
+                        if !store.isDemo { store.reconcileBadge() }
                     }
                     else if phase == .background { store.setForeground(false) }
                 }

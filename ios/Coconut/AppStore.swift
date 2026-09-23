@@ -81,6 +81,11 @@ final class AppStore {
     var pendingDecisions: [Decision] { decisions.filter(\.isPending) }
     var inboxBadgeCount: Int { pendingDecisions.filter { !answeringDecisionIds.contains($0.id) }.count }
     var reconciledBadgeCount: Int? { lastSync.map { _ in inboxBadgeCount } }
+    @ObservationIgnored var setBadge: (Int) -> Void = { PushNotifications.shared.setBadgeCount($0) }
+
+    func reconcileBadge() {
+        if let count = reconciledBadgeCount { setBadge(count) }
+    }
     var activeTasks: [AgentTask] { tasks.filter(\.isActive) }
     func isBotActive(_ bot: Bot) -> Bool {
         guard !bot.archived else { return false }
@@ -127,6 +132,7 @@ final class AppStore {
     init(demo: Bool = ProcessInfo.processInfo.arguments.contains("--demo")) {
         isDemo = demo
         if demo {
+            setBadge = { _ in }
             apply(Self.previewSnapshot(), persist: false)
             connection = .preview
             return
@@ -284,18 +290,20 @@ final class AppStore {
         uncertainWriteKeys = [:]
         resetDelivery()
         outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []
-        ProtectedCache.remove("outgoing.json")
         pairing = nil
-        PairingToken.delete()
-        ProtectedCache.remove("pairing.json")
-        cacheQueue.sync { ProtectedCache.remove("snapshot.json") }
+        if !isDemo {
+            PairingToken.delete()
+            ProtectedCache.remove("pairing.json")
+            cacheQueue.sync { ProtectedCache.remove("snapshot.json") }
+            ProtectedCache.remove("outgoing.json")
+        }
         bots = []; tasks = []; messages = []; decisions = []; artifacts = []; learning = []
         routines = []
         approvals = nil; parallelWork = nil; apiFallback = nil; workCapacity = nil; mcpServers = []
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
         cursor = 0
         lastSync = nil
-        if !isDemo { PushNotifications.shared.setBadgeCount(0) }
+        setBadge(0)
         model = ""
         modelBaseURL = ""
         modelConfigured = false
