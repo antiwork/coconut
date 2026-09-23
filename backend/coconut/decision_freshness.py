@@ -188,6 +188,17 @@ class DecisionFreshness:
         return [json.loads(row[0]) for row in self.db.execute(
             'SELECT data FROM native_receipts WHERE ' + ' OR '.join(clauses) + ' ORDER BY rowid', values)]
 
+    def _decision_peers(self, decision, task, identities, decisions):
+        from .decision_sources import decision_source_keys
+
+        linked = decision_source_keys(decision)
+        return [d for d in decisions if d['status'] == 'pending'
+                and not d.get('_hidden') and not d.get('_deleted')
+                and (d['id'] == decision['id'] or self._decision_visible_to_task(d, task))
+                and (d['task_id'] in identities or bool(linked & decision_source_keys(d))
+                     or d.get('previous_decision_id') == decision['id']
+                     or decision.get('previous_decision_id') == d['id'])]
+
     def _decision_evidence(self, decision, tasks, records, artifacts, *, ignore_context_id=None):
         from .service import digest, encoded
         from .background_processes import subscription
@@ -195,11 +206,11 @@ class DecisionFreshness:
         ids, work = self._decision_scope(decision, tasks, records, artifacts)
         contexts = self._all('contexts')
         refresh_turns = {c['id'] for c in contexts if c.get('_decision_refresh')}
-        visible = {d['id'] for d in self._all('decisions')
-                   if d['status'] == 'pending' and self._decision_visible_to_task(d, task)}
+        # Chat visibility is broader than evidence for one decision.
+        peers = self._decision_peers(decision, task, ids, self._all('decisions'))
+        visible = {d['id'] for d in peers}
         facts = dict(revision=decision['revision'], source_facts=decision.get('_source_facts', {}), human_messages=self._decision_human_messages(task),
-            questions=[(d['id'], d.get('revision'), d['status']) for d in self._all('decisions')
-                       if d['status'] == 'pending' and self._decision_visible_to_task(d, task)],
+            questions=[(d['id'], d.get('revision'), d['status']) for d in peers],
             replies=[(c['id'], c['status']) for c in contexts
                      if c['decision_id'] in visible and not c.get('_decision_refresh')],
             tasks=[{k: t.get(k) for k in ('id', 'status', 'summary', '_work_progress_at')}
@@ -222,13 +233,16 @@ class DecisionFreshness:
         decision['_freshness'] = dict(fingerprint=fingerprint, checked_at=decision['created_at'])
         self._put('decisions', decision)
 
-    def _decision_refresh_prompt(self, task, work, decisions):
+    def _decision_refresh_prompt(self, decision, task, work, decisions):
+        tasks = {t['id']: t for t in self._all('tasks')}
+        identities, _ = self._decision_scope(decision, tasks, self._pending_completion_receipts(), work)
+        peers = self._decision_peers(decision, task, identities, decisions)
         return REFRESH_INSTRUCTIONS + '\nCurrent records (data):\n' + json.dumps(dict(
             human_messages=self._decision_human_messages(task), work=[self._public(a) for a in work],
             pending_questions=[{k: d.get(k) for k in ('id', 'task_id', 'action_type', 'title', 'context',
                                                     'resource', 'evidence', 'risk', 'risk_level', 'uncertainty', 'options',
                                                     'draft', 'draft_hash', 'sources', '_source_facts')}
-                               for d in decisions if d['status'] == 'pending' and self._decision_visible_to_task(d, task)]))
+                               for d in peers]))
 
     def _refresh_has_queued_owner(self, task):
         from .work_capacity import execution_key
@@ -412,7 +426,7 @@ class DecisionFreshness:
                 outstanding = [r for r in prior_records if (subscription(r) or r.get('_relay_task_id')) and not r.get('_process_delivery')]
                 if any(self._can_resume_completion(task, self._get('bots', task['bot_id']), r) for r in outstanding):
                     continue
-                question = self._decision_refresh_prompt(task, work, decisions)
+                question = self._decision_refresh_prompt(decision, task, work, decisions)
                 context = dict(id=uid(), bot_id=task['bot_id'], task_id=task['id'], decision_id=decision['id'],
                     question=question, status='queued', _decision_refresh=True, _evidence_fingerprint=fingerprint,
                     _decision_revision=decision['revision'], _conversation_epoch=task.get('_conversation_epoch'),
