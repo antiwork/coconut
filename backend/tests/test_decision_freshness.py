@@ -139,6 +139,18 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.service.refresh_decision(context['id'], dict(status='current', evidence='The original scope still applies.'))
         self.assertFalse(self.service._get('decisions', decision['id'])['assessment_stale'])
 
+    def test_uncertainty_alone_is_invalidated_when_work_changes(self):
+        decision = self.question()
+        decision['uncertainty'] = 'The test dependency is unavailable.'
+        self.service._put('decisions', decision)
+        context = self.refresh()
+        self.assertTrue(self.service._get('decisions', decision['id'])['assessment_stale'])
+        self.service.refresh_decision(context['id'], dict(status='revise', evidence='The dependency is now available.',
+            revision=dict(title=decision['title'], options=decision['options'], uncertainty='')))
+        saved = self.service._get('decisions', decision['id'])
+        self.assertFalse(saved['assessment_stale'])
+        self.assertEqual(saved['uncertainty'], '')
+
     def test_no_pending_cards_or_refreshes_skip_historical_collections(self):
         with patch.object(self.service, '_all', side_effect=AssertionError('No card needs observation')):
             self.service._queue_decision_refreshes()

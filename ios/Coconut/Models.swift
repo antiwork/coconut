@@ -325,7 +325,7 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
         let text = recap.isEmpty ? explanation.trimmingCharacters(in: .whitespacesAndNewlines) : recap
         var summary = text == title ? "" : text
         let unknown = uncertainty?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !unknown.isEmpty, !summary.localizedCaseInsensitiveContains(unknown) {
+        if assessmentStale != true, !unknown.isEmpty, !summary.localizedCaseInsensitiveContains(unknown) {
             summary = [summary, unknown].filter { !$0.isEmpty }.joined(separator: "\n\n")
         }
         if actionType == "native_approval", !resource.isEmpty, !summary.contains(resource) {

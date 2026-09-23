@@ -35,6 +35,7 @@ final class DecisionInboxTests: XCTestCase {
         wait(for: [finished], timeout: 5)
         XCTAssertTrue(app.staticTexts["Assessment needs updating"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["Customers can read an incorrect date."].exists)
+        XCTAssertFalse(app.staticTexts["The release time remains undecided."].exists)
         XCTAssertFalse(app.buttons["View evidence"].exists)
         XCTAssertFalse(app.staticTexts["Only the private draft changes."].exists)
     }

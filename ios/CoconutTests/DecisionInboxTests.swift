@@ -8,6 +8,8 @@ final class DecisionInboxTests: XCTestCase {
         decision.riskLevel = "medium"
         decision.risk = "The release date can be wrong."
         decision.evidence = "Compared release notes."
+        decision.context = "Publish the release notes."
+        decision.uncertainty = "The release time remains undecided."
         decision.options[0].riskLevel = "low"
         decision.options[0].risk = "Only the private draft changes."
         decision.assessmentStale = true
@@ -18,6 +20,9 @@ final class DecisionInboxTests: XCTestCase {
         XCTAssertEqual(decoded.options[0].riskLevel, "low")
         XCTAssertEqual(decoded.options[0].risk, decision.options[0].risk)
         XCTAssertEqual(decoded.assessmentStale, true)
+        XCTAssertEqual(decoded.cardContext, "Publish the release notes.")
+        decision.assessmentStale = false
+        XCTAssertTrue(decision.cardContext?.contains("The release time remains undecided.") == true)
         XCTAssertTrue(decoded.isPending, "An assessment must not become a permission gate.")
         XCTAssertEqual(DecisionRisk.label("not_assessed"), "Risk not assessed")
         XCTAssertEqual(DecisionRisk.label("unknown-future-value"), "Risk")

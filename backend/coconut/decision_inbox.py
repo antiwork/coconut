@@ -15,7 +15,7 @@ def decision_risk(payload):
 
 
 def has_assessment(decision):
-    return bool(decision.get('risk') or decision.get('evidence')
+    return bool(decision.get('risk') or decision.get('evidence') or decision.get('uncertainty')
                 or any(option.get('risk') for option in decision.get('options', [])))
 
 
