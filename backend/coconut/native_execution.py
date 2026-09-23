@@ -66,6 +66,21 @@ class NativeExecution:
 
     def native_event(self, task_id, kind, payload, context_id=None, *, recovery_work_ids=None):
         from .service import ServiceError, YieldForDecision, now, digest, encoded
+        source_facts = {}
+        if kind in ('native_question', 'native_proposal'):
+            with self.lock:
+                task = self._get('tasks', task_id)
+                duplicate = kind == 'native_proposal' and any(
+                    d.get('inbox_kind') == 'proposal' and d['task_id'] == task_id
+                    and d.get('_proposal_key') == payload.get('key') for d in self._all('decisions'))
+                context = self._get('contexts', context_id) if context_id else None
+                active = context['status'] == 'working' and context['task_id'] == task_id if context else task['status'] == 'working'
+                if recovery_work_ids and kind == 'native_question' and not context:
+                    active = task['status'] in ('completed', 'failed', 'waiting')
+            if active and not duplicate:
+                # Source reads must not hold the service transaction or block phone requests.
+                from .decision_sources import check_new_decision_sources
+                source_facts = check_new_decision_sources(self, task_id, payload) or {}
         with self.transaction():
             task = self._get('tasks', task_id)
             context = self._get('contexts', context_id) if context_id else None
@@ -187,6 +202,8 @@ class NativeExecution:
             from .decision_previews import attach_previews
             from .decision_sources import attach_sources
             attach_sources(decision, payload)
+            if source_facts:
+                decision['_source_facts'] = source_facts
             attach_previews(self, decision, payload)
             if draft is not None:
                 decision['draft'] = draft

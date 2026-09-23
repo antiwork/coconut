@@ -1,4 +1,6 @@
 import unittest
+from unittest.mock import Mock, patch
+import threading
 
 from coconut.service import ServiceError, YieldForDecision
 import test_decision_inbox as inbox_tests
@@ -77,3 +79,106 @@ class DecisionSourceTests(unittest.TestCase):
             with self.subTest(sources=sources), self.assertRaises(ServiceError):
                 self.create(sources)
         self.assertEqual(self.service.snapshot()['decisions'], [])
+
+
+class DecisionSourcePreflightTests(unittest.TestCase):
+    setUp = DecisionSourceTests.setUp
+    tearDown = DecisionSourceTests.tearDown
+    event = DecisionSourceTests.event
+    write = DecisionSourceTests.write
+
+    url = 'https://github.com/example/project/issues/42'
+    old_revision = '2026-09-23T11:40:00Z'
+    revision = '2026-09-23T11:46:31Z'
+
+    def payload(self, **changes):
+        return dict(title='Repair the record?', context='The record needs a correction.',
+            options=[dict(id='fix', label='Repair'), dict(id='hold', label='Hold')],
+            sources=[dict(kind='issue', title='Record correction', url=self.url)],
+            source_revisions={self.url: self.revision}, **changes)
+
+    def tracker(self, value=True):
+        current = dict(state='closed', state_reason='completed', title='Record correction',
+                       comments=1, updated_at=self.revision) if value else None
+        return Mock(observe_issue=Mock(return_value=current))
+
+    def test_stale_or_missing_source_creates_no_card_message_or_notification(self):
+        for kind in ('native_question', 'native_proposal'):
+            for revisions in ({}, {self.url: self.old_revision}):
+                with self.subTest(kind=kind, revisions=revisions):
+                    payload = self.payload(key='repair')
+                    payload['source_revisions'] = revisions
+                    call = self.event('native_call', dict(name='coconut_ask', arguments=payload))
+                    payload['receipt_id'] = call['id']
+                    before = self.service.snapshot()
+                    with patch.object(self.service, '_pr_tracker_for', return_value=self.tracker()):
+                        with self.assertRaisesRegex(ServiceError, 'No card was created'):
+                            self.event(kind, payload)
+                    self.assertEqual(self.service.snapshot()['decisions'], before['decisions'])
+                    self.assertEqual(self.service.snapshot()['messages'], before['messages'])
+                    self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'working')
+                    self.assertEqual(self.service._get('native_receipts', call['id'])['state'], 'executing')
+                    self.assertFalse(self.service.db.execute("SELECT 1 FROM events WHERE type='decision.created'").fetchone())
+                    self.assertFalse(self.service.db.execute('SELECT 1 FROM push_outbox').fetchone())
+                    self.event('native_result', dict(id=call['id'], result='Source changed; continue within existing permission.'))
+
+    def test_source_outage_does_not_publish_an_unchecked_card(self):
+        with patch.object(self.service, '_pr_tracker_for', return_value=self.tracker(False)):
+            with self.assertRaisesRegex(ServiceError, 'could not verify'):
+                self.event('native_question', self.payload())
+        self.assertEqual(self.service.snapshot()['decisions'], [])
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'working')
+
+    def test_current_closed_source_can_still_need_a_real_followup_choice(self):
+        with patch.object(self.service, '_pr_tracker_for', return_value=self.tracker()):
+            with self.assertRaises(YieldForDecision):
+                self.event('native_question', self.payload())
+        decision = self.service.snapshot()['decisions'][0]
+        self.assertEqual(decision['status'], 'pending')
+        self.assertIsNone(decision['decided_by'])
+        saved = self.service._get('decisions', decision['id'])
+        self.assertEqual(saved['_source_facts'][self.url]['updated_at'], self.revision)
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'needs_you')
+
+    def test_source_read_does_not_hold_service_lock(self):
+        tracker = self.tracker()
+        current = tracker.observe_issue.return_value
+        def read(url):
+            acquired = threading.Event()
+            def check():
+                with self.service.lock:
+                    acquired.set()
+            reader = threading.Thread(target=check)
+            reader.start()
+            self.assertTrue(acquired.wait(1), 'Source reads blocked phone requests')
+            reader.join(1)
+            return current
+        tracker.observe_issue.side_effect = read
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            self.event('native_proposal', self.payload(key='repair'))
+            # An exact retry returns the existing card even if source access fails later.
+            tracker.observe_issue.side_effect = AssertionError('Duplicate card must not recheck')
+            result = self.event('native_proposal', self.payload(key='repair'))
+        self.assertEqual(result['decision_id'], self.service.snapshot()['decisions'][0]['id'])
+        self.assertEqual(len(self.service.snapshot()['decisions']), 1)
+
+    def test_pr_source_uses_issue_api_revision_and_strips_comment_fragment(self):
+        tracker = self.tracker()
+        payload = self.payload()
+        url = self.url.replace('/issues/', '/pull/')
+        payload.update(sources=[dict(kind='pull_request', title='PR review', url=url+'#issuecomment-12')],
+                       source_revisions={url:self.revision}, key='review')
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            self.event('native_proposal', payload)
+        tracker.observe_issue.assert_called_once_with(self.url)
+
+    def test_repository_named_pulls_keeps_its_identity(self):
+        tracker = self.tracker()
+        for route in ('issues', 'pull'):
+            url = f'https://github.com/example/pulls/{route}/42'
+            payload = self.payload(key=route)
+            payload.update(sources=[dict(kind='issue', title='Exact repository', url=url)],
+                           source_revisions={url: self.revision})
+            with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+                self.event('native_proposal', payload)
+            self.assertEqual(tracker.observe_issue.call_args.args, ('https://github.com/example/pulls/issues/42',))

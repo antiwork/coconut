@@ -43,6 +43,11 @@ The adapter uses a runtime hook for inherited approval configuration. It changes
 Coconut adds these tools:
 
 - `coconut_ask` supplies model-generated questions and choices.
+  Before asking, the bot checks existing permission and current source discussion.
+  New GitHub cards include `source_revisions`, mapping each source URL to its issues API `updated_at`.
+  Coconut verifies those revisions before it stores a card, pauses work, or sends a notification.
+  A changed or unavailable source returns to the same worker for reassessment. It creates no card.
+  A current source does not grant permission. The bot still checks whether human input is necessary.
 - `coconut_propose_file` supplies exact file proposals and persistent artifact cards.
 - `coconut_create_bot` creates a bot from a verified direct human request.
 - `coconut_delete_bot` deletes another bot from a verified direct human request.
