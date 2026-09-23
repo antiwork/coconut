@@ -272,6 +272,98 @@ class TeamServiceTests(unittest.TestCase):
         self.service._run_task(reply['id'])
         self.assertEqual(self.service._get('tasks', root['id'])['status'], 'completed')
 
+    def test_completed_dependency_returns_once_after_failed_owner_and_allows_recovery(self):
+        desk = self.working(self.send(self.a, 'Coordinate the fix.'))
+        dev = self.working(self.service._get('tasks', self.deliver(desk, self.b, 'Fix the bug.')['task_id']))
+        care = self.write('POST', '/v1/bots', {'name': 'Care'})
+        dependency = self.working(self.service._get('tasks', self.deliver(dev, care, 'Check setup.')['task_id']))
+        self.service.emit(dev['id'], 'failed', {'summary': 'A tool stopped without a receipt.'})
+        self.finish(dependency, 'The setup check was queued; no capacity was reclaimed.')
+        self.service._drain_returns()
+        callback = next(t for t in self.service._all('tasks') if t.get('_resolved_dependency_id') == dependency['id'])
+        self.assertEqual(callback['_assignment_task_id'], dev['id'])
+        self.assertEqual(self.service._get('tasks', dev['id'])['_waiting_on'], [dependency['id']])
+        self.service._run_task(callback['id'])
+        owner = self.service._get('tasks', dev['id'])
+        self.assertEqual(owner['status'], 'failed')
+        self.assertEqual(owner['_waiting_on'], [])
+        self.assertEqual(owner['_bot_messages'][-1]['text'], 'The setup check was queued; no capacity was reclaimed.')
+        self.assertEqual(self.service._get('tasks', callback['id'])['status'], 'completed')
+        self.restart()
+        self.service._drain_returns()
+        self.service._run_task(callback['id'])
+        self.assertEqual(len(self.service._get('tasks', dev['id'])['_bot_messages']), 2)
+        desk = self.working(desk)
+        continued = self.service.emit(desk['id'], 'bot_message', {'target_bot_id': self.b['id'],
+            'continuation_task_id': dev['id'], 'text': 'Continue only the unfinished test in the saved workspace.'})
+        recovered = self.service._get('tasks', continued['task_id'])
+        self.assertEqual(recovered['_execution_session_id'],
+                         self.service._get('tasks', dev['id'])['_execution_session_id'])
+        self.assertEqual(recovered['_bot_messages'][-2]['text'], 'The setup check was queued; no capacity was reclaimed.')
+        self.assertEqual(len([t for t in self.service._all('tasks') if t.get('_resolved_dependency_id') == dependency['id']]), 1)
+
+    def test_saved_failed_callback_is_consumed_after_restart_without_replaying_dependency(self):
+        desk = self.working(self.send(self.a, 'Coordinate the fix.'))
+        dev = self.working(self.service._get('tasks', self.deliver(desk, self.b, 'Fix the bug.')['task_id']))
+        care = self.write('POST', '/v1/bots', {'name': 'Care'})
+        dependency = self.working(self.service._get('tasks', self.deliver(dev, care, 'Check setup.')['task_id']))
+        self.service.emit(dev['id'], 'failed', {'summary': 'A tool stopped without a receipt.'})
+        self.finish(dependency, 'The setup check was queued.')
+        self.service._drain_returns()
+        callback = next(t for t in self.service._all('tasks') if t.get('_resolved_dependency_id') == dependency['id'])
+        with self.service.transaction():
+            callback = self.service._get('tasks', callback['id'])
+            callback.update(status='failed',
+                summary='The original assignment stopped. Reply to continue. Your follow-up is saved. Reply to continue.',
+                _blocked_followup={'message_ids': [], 'source_ids': [], 'attachment_ids': []},
+                steering_status='blocked')
+            self.service._put('tasks', callback)
+        self.restart()
+        self.service._drain_returns()
+        stored = self.service._get('tasks', dev['id'])
+        self.assertEqual(stored['status'], 'failed')
+        self.assertEqual(stored['_waiting_on'], [])
+        self.assertEqual(stored['_bot_messages'][-1]['text'], 'The setup check was queued.')
+        self.assertEqual(self.service._get('tasks', callback['id'])['status'], 'completed')
+        self.assertIn('_blocked_followup', self.service._get('tasks', callback['id']))
+        self.service._drain_returns()
+        self.assertEqual(len(self.service._get('tasks', dev['id'])['_bot_messages']), 2)
+        desk = self.working(desk)
+        receipt = self.service.emit(desk['id'], 'bot_message', {'target_bot_id': self.b['id'],
+            'continuation_task_id': dev['id'], 'text': 'Continue the unfinished test.'})
+        self.assertEqual(self.service._get('tasks', receipt['task_id'])['_bot_messages'][-2]['text'],
+                         'The setup check was queued.')
+
+    def test_stopped_callback_recovery_rejects_a_cancelled_owner_and_a_mismatched_receipt(self):
+        for invalid in ('cancelled', 'wrong-result'):
+            with self.subTest(invalid=invalid):
+                desk = self.working(self.send(self.a, 'Coordinate.'))
+                dev_receipt = self.deliver(desk, self.b, 'Fix.')
+                assert dev_receipt is not None
+                dev = self.working(self.service._get('tasks', dev_receipt['task_id']))
+                care = self.write('POST', '/v1/bots', {'name': 'Care' + invalid})
+                setup_receipt = self.deliver(dev, care, 'Check setup.')
+                assert setup_receipt is not None
+                dependency = self.working(self.service._get('tasks', setup_receipt['task_id']))
+                self.service.emit(dev['id'], 'failed', {'summary': 'Tool stopped.'})
+                self.finish(dependency, 'Saved setup result.')
+                self.service._drain_returns()
+                callback = next(t for t in self.service._all('tasks')
+                                if t.get('_resolved_dependency_id') == dependency['id'])
+                with self.service.transaction():
+                    callback = self.service._get('tasks', callback['id'])
+                    callback.update(status='failed', summary='The original assignment stopped. Reply to continue.')
+                    if invalid == 'wrong-result':
+                        callback['_bot_messages'][0]['text'] = 'Altered result.'
+                    else:
+                        owner = self.service._get('tasks', dev['id'])
+                        owner['status'] = 'cancelled'
+                        self.service._put('tasks', owner)
+                    self.service._put('tasks', callback)
+                self.service._drain_returns()
+                self.assertEqual(self.service._get('tasks', callback['id'])['status'], 'failed')
+                self.assertEqual(self.service._get('tasks', dev['id'])['_waiting_on'], [dependency['id']])
+
     def test_failed_continuation_preserves_an_independent_result(self):
         device = self.service.pair({'code': self.service.pairing_code()})['device_id']
         self.service.push.registration(device, dict(token='a' * 64, environment='development', enabled=True))
