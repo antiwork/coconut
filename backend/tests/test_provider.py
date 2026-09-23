@@ -919,6 +919,46 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(output, '')
         self.assertNotIn('PRIVATE_SERVICE_DETAIL', output)
 
+    def test_delivered_followup_rules_require_a_missing_human_choice(self):
+        # Exercise provider serialization and worker assembly, not model compliance.
+        provider = self.fake_hermes("kwargs['stream_callback'](self.system_prompt)\nreturn {'completed': True, 'final_response': ''}\n")
+        events = []
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+        self.assertEqual(events[-1][0], 'completed')
+        output = ''.join(data['text'] for kind, data in events if kind == 'text_delta')
+        self.assertIn('continue the next step without a card when existing permission covers it', output)
+        self.assertIn('Preserve explicit human holds and rejections', output)
+        self.assertIn('Only when a new human choice or permission is missing, offer the next step in a linked card with previous_decision_id', output)
+        self.assertIn('when only the design was approved', output)
+        self.assertNotIn('outcome is not complete, offer the next step', output)
+
+    def test_delivered_merge_rules_require_current_head_local_verification(self):
+        provider = self.fake_hermes("kwargs['stream_callback'](self.system_prompt + '\\n' + prompt)\nreturn {'completed': True, 'final_response': ''}\n")
+        for checks in ('running', 'passed'):
+            with self.subTest(checks=checks):
+                task = dict(self.task, _pr_review=dict(url='https://github.com/example/repo/pull/42',
+                                                      head_sha='current-head', checks_state=checks))
+                events = []
+                with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+                    provider.start_task(task, self.bot, [], lambda kind, data: events.append((kind, data)))
+                self.assertEqual(events[-1][0], 'completed')
+                output = ''.join(data['text'] for kind, data in events if kind == 'text_delta')
+                for rule in ('before waiting when possible',
+                             'Before a merge decision or authorized merge, complete the required local verification for the current head',
+                             'even if first resumed after CI passes',
+                             'Reuse finished verification whose inputs are unchanged',
+                             'perform any missing or invalidated checks within the approved scope',
+                             'without starting unrelated local work or repeating unchanged verified work',
+                             'merge without another card',
+                             'If merge permission is missing, ask once',
+                             'Preserve explicit human holds, rejected decisions',
+                             'Do not bypass its unanswered choice',
+                             'use a merge operation that rejects a changed head',
+                             'current-head', checks):
+                    self.assertIn(rule, output)
+                self.assertNotIn('offer the merge decision without starting new local work', output)
+
     def test_bot_contact_metadata_and_explicit_messages_exclude_private_fields(self):
         peer = self.configure_peer()
         peer.update(instructions='PRIVATE_PEER_INSTRUCTIONS', memory='PRIVATE_PEER_MEMORY', home='/private/peer/home')
