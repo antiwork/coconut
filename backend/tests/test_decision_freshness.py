@@ -480,8 +480,41 @@ class DecisionFreshnessTests(unittest.TestCase):
             'https://github.com/Example/Project/pull/42#issuecomment-7')
 
     def test_shared_email_in_an_independent_task_still_fences_a_check(self):
-        self.shared_source_fences_check('email', 'https://mail.google.com/mail/u/0/#inbox/abc',
-            'https://mail.google.com/mail/u/0/#inbox/abc')
+        self.shared_source_fences_check('email', 'https://mail.google.com/mail/u/0/#inbox/18f2c9a10b7d4321',
+            'https://mail.google.com/mail/u/1/#all/18f2c9a10b7d4321')
+
+    def test_shared_email_query_link_still_fences_a_check(self):
+        self.shared_source_fences_check('email', 'https://mail.google.com/mail/u/0/#inbox/18f2c9a10b7d4321',
+            'https://mail.google.com/mail/?view=pt&search=all&th=18f2c9a10b7d4321')
+
+    def distinct_email_sources(self, first, second):
+        decision = self.question(old=False)
+        decision.update(risk='The email discloses the report.',
+            sources=[dict(kind='email', title='First email', url=first)])
+        self.service._put('decisions', decision)
+        peer = self.peer_question(decision, sources=[dict(kind='email', title='Second email', url=second)])
+        peer['revision'] += 1
+        self.service._put('decisions', peer)
+        self.service._initialize_decision_freshness(peer)
+        self.service._queue_decision_refreshes()
+        self.assertFalse(self.service._get('decisions', decision['id']).get('assessment_stale'))
+        self.assertEqual(self.service._all('contexts'), [])
+
+    def test_distinct_email_threads_do_not_share_assessment_changes(self):
+        self.distinct_email_sources('https://mail.google.com/mail/u/0/#inbox/18f2c9a10b7d4321',
+            'https://mail.google.com/mail/u/1/#inbox/18f2c9a10b7d4322')
+
+    def test_distinct_email_searches_do_not_share_assessment_changes(self):
+        self.distinct_email_sources('https://mail.google.com/mail/u/0/#search/after%3A2026%2F09%2F01',
+            'https://mail.google.com/mail/u/1/#search/before%3A2026%2F08%2F01')
+
+    def test_distinct_gmail_pages_do_not_share_assessment_changes(self):
+        self.distinct_email_sources('https://mail.google.com/mail/u/0/#search/invoices/p2',
+            'https://mail.google.com/mail/u/1/#search/receipts/p2')
+
+    def test_shared_gmail_search_thread_still_fences_a_check(self):
+        self.shared_source_fences_check('email', 'https://mail.google.com/mail/u/0/#inbox/FMfcgzQZSxLmNBhYwTpjAKrDV',
+            'https://mail.google.com/mail/u/1/#search/after%3A2026%2F09%2F01/FMfcgzQZSxLmNBhYwTpjAKrDV')
 
     def test_refresh_revises_same_card_and_rejects_an_old_choice(self):
         decision = self.question()

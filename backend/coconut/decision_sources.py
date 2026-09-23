@@ -56,3 +56,29 @@ def github_source(url):
 def github_links(decision):
     values = [s.get('url') for s in decision.get('sources', [])] + [decision.get('merge_pr_url')]
     return sorted({source[2] for value in values if (source := github_source(value))})
+
+
+def decision_source_keys(decision):
+    """Match source identities without changing their displayed links."""
+    from urllib.parse import parse_qs, unquote
+    import re
+
+    keys = {url.lower() for url in github_links(decision)}
+    for source in decision.get('sources', []):
+        if source.get('kind') != 'email' or not source.get('url'):
+            continue
+        url = source['url']
+        parsed = urlsplit(url)
+        if parsed.hostname == 'mail.google.com' and re.fullmatch(r'/mail(?:/u/\d+)?/?', parsed.path):
+            # Gmail's account selector and folder do not identify the thread.
+            parts = [unquote(part) for part in parsed.fragment.strip('/').split('/')]
+            thread = parse_qs(parsed.query).get('th', [''])[0]
+            if not thread and len(parts) >= 2 and parts[0] in (
+                    'inbox', 'all', 'sent', 'drafts', 'spam', 'trash', 'starred', 'imp', 'snoozed', 'label', 'search'):
+                if parts[0] not in ('label', 'search') or len(parts) >= 3:
+                    thread = parts[-1]
+            # Short route tokens such as p2 are pages, not thread identities.
+            if re.fullmatch(r'(?:[A-Fa-f0-9]{16,}|[A-Za-z0-9_-]{20,})', thread):
+                url = 'gmail-thread:' + thread
+        keys.add(url)
+    return keys

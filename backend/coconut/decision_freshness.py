@@ -189,17 +189,13 @@ class DecisionFreshness:
             'SELECT data FROM native_receipts WHERE ' + ' OR '.join(clauses) + ' ORDER BY rowid', values)]
 
     def _decision_peers(self, decision, task, identities, decisions):
-        from .decision_sources import github_links
+        from .decision_sources import decision_source_keys
 
-        def sources(item):
-            return ({url.lower() for url in github_links(item)}
-                    | {s['url'] for s in item.get('sources', []) if s.get('kind') == 'email' and s.get('url')})
-
-        linked = sources(decision)
+        linked = decision_source_keys(decision)
         return [d for d in decisions if d['status'] == 'pending'
                 and not d.get('_hidden') and not d.get('_deleted')
                 and (d['id'] == decision['id'] or self._decision_visible_to_task(d, task))
-                and (d['task_id'] in identities or bool(linked & sources(d))
+                and (d['task_id'] in identities or bool(linked & decision_source_keys(d))
                      or d.get('previous_decision_id') == decision['id']
                      or decision.get('previous_decision_id') == d['id'])]
 
