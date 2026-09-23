@@ -55,6 +55,12 @@ class DecisionCallRecoveryTests(unittest.TestCase):
         self.assertEqual(draft['previous_decision_id'], ruling['id'])
         self.assertEqual(draft['status'], 'pending')
 
+    def test_draft_schema_requires_explicit_followup_link(self):
+        from coconut.native_bridge import SUGGEST_SCHEMA
+        description = SUGGEST_SCHEMA['parameters']['properties']['previous_decision_id']['description']
+        self.assertIn('For a draft, always supply previous_decision_id', description)
+        self.assertIn('unrelated drafts must omit it', description)
+
     def test_unrelated_draft_does_not_inherit_resumed_question(self):
         with self.assertRaises(YieldForDecision):
             self.event('native_question', dict(title='Check ownership?',

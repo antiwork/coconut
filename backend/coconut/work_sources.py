@@ -29,6 +29,12 @@ ANSWERED = ('approved', 'rejected', 'modified', 'replied', 'executed', 'failed')
 
 def answered_decisions(item, source, tasks, decisions, *, sole_source=False):
     """List the answers to earlier cards for one source item, newest first."""
+    # Parent links also represent unrelated human replies. Only a recorded proposal
+    # execution or an explicit assignment identifies a source-work continuation.
+    continuations = {d['_execution_task_id']: d['task_id'] for d in decisions.values()
+                     if d.get('_execution_task_id') and d.get('inbox_kind') == 'proposal'
+                     and d.get('bot_id') == source['bot_id'] and d.get('status') in ANSWERED}
+
     def matches(task_id):
         seen = set()
         while task_id and task_id not in seen:
@@ -41,7 +47,8 @@ def answered_decisions(item, source, tasks, decisions, *, sole_source=False):
                 # The nearest source assignment wins, even when an ancestor matches.
                 return (origin.get('id') == item['id'] and (origin.get('source_id') == source['id']
                         or (sole_source and not origin.get('source_id'))))
-            task_id = task.get('_assignment_task_id') or task.get('parent_task_id')
+            parent = continuations.get(task_id)
+            task_id = task.get('_assignment_task_id') or (parent if parent == task.get('parent_task_id') else None)
         return False
 
     rows = [d for d in decisions.values()

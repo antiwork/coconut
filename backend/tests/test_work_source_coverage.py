@@ -97,9 +97,19 @@ class WorkSourceTests(unittest.TestCase):
         with self.service.transaction():
             first['status'] = 'completed'
             self.service._put('tasks', first)
-            child = self.service._send(self.bot, {'text': 'Continue source work', 'mode': 'queue'},
-                                       parent_task_id=first['id'], record_message=False)
+            first['status'] = 'working'
+            self.service._put('tasks', first)
+        self.service.emit(first['id'], 'native_proposal', dict(key='next-step', title='Request proof?',
+            options=[dict(id='proof', label='Request proof')]))
+        proposal = self.service._all('decisions')[-1]
+        self.service.mutate('POST', f"/v1/decisions/{proposal['id']}/answer",
+                            dict(option_id='proof', revision=1), str(uuid4()))
+        with self.service.transaction():
+            proposal = self.service._get('decisions', proposal['id'])
+            child = self.service._get('tasks', proposal['_execution_task_id'])
             child.update(status='completed')
+            first['status'] = 'completed'
+            self.service._put('tasks', first)
             self.service._put('tasks', child)
             self.assertNotIn('_source_assignment', child)
             self.service._put('decisions', dict(id='continuation-answer', bot_id=self.bot['id'], task_id=child['id'],
@@ -107,6 +117,21 @@ class WorkSourceTests(unittest.TestCase):
         retry = self.service._get('tasks', self.audit()['task_id'])
         self.assertNotEqual(retry['id'], first['id'])
         self.assertIn('continuation-answer', retry['_source_audit_prompt'])
+
+    def test_retry_omits_answer_from_independent_human_reply(self):
+        first = self.service._get('tasks', self.audit()['task_id'])
+        first['status'] = 'completed'
+        self.service._put('tasks', first)
+        child = self.service.mutate('POST', f"/v1/tasks/{first['id']}/replies",
+            dict(text='Unrelated request: plan next week'), str(uuid4()))
+        self.assertEqual(child['parent_task_id'], first['id'])
+        child['status'] = 'completed'
+        self.service._put('tasks', child)
+        self.service._put('decisions', dict(id='unrelated-answer', task_id=child['id'], bot_id=self.bot['id'],
+            status='approved', decided_at='2026-09-14T12:30:00Z', selected_option_label='Plan next week'))
+        retry = self.service._get('tasks', self.audit()['task_id'])
+        self.assertNotEqual(retry['id'], first['id'])
+        self.assertNotIn('unrelated-answer', retry['_source_audit_prompt'])
 
     def test_retry_lists_legacy_answers_only_for_unambiguous_source(self):
         for multiple in (False, True):
@@ -131,7 +156,7 @@ class WorkSourceTests(unittest.TestCase):
         root = dict(id='root', bot_id=self.bot['id'], _source_assignment=dict(self.item, source_id=self.source['id']))
         tasks = {'root': root}
         cases = [
-            (dict(parent_task_id='root'), True),
+            (dict(parent_task_id='root'), False),
             (dict(_assignment_task_id='root'), True),
             (dict(parent_task_id='root', _source_assignment=dict(self.item, source_id='email')), False),
             (dict(parent_task_id='root', _source_assignment=dict(self.item, source_id=self.source['id'], id='other')), False),
