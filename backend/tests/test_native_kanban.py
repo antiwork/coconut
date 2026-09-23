@@ -2213,6 +2213,7 @@ process = subprocess.Popen(['sleep', '120'])
 try:
     started = []
     def spawn(task, path):
+        assert not board.conn.in_transaction
         started.append(task.id)
         return process.pid
     board.tick(rows, 2, spawn)

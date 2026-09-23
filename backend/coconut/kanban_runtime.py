@@ -323,9 +323,9 @@ class Board:
                 guard = self.dispatch.check_respawn_guard(self.conn, task['id'])
                 if not (continuing or (new_input or recovering) and guard == 'active_pr'):
                     def spawn_with_lease(claimed, workspace):
-                        with self.kb.write_txn(self.conn):
-                            pid = spawn(claimed, workspace)
-                            if pid:
+                        pid = spawn(claimed, workspace)
+                        if pid:
+                            with self.kb.write_txn(self.conn):
                                 self.record_worker_pid(claimed, pid, emit_event=False)
                         return pid
                     self.dispatch._dispatch_lane_task(self.conn, task, task['assignee'], result,
@@ -351,11 +351,10 @@ class Board:
                     else:
                         workspace = self.workspace.resolve_workspace(claimed)
                     self.workspace.set_workspace_path(self.conn, claimed.id, str(workspace))
-                    # Hold the native write lock across reuse and lease transfer.
-                    # The reaper must not see the old terminal lease in between.
-                    with self.kb.write_txn(self.conn):
-                        pid = spawn(claimed, str(workspace))
-                        if pid:
+                    # The dispatch lock excludes the native reaper during preparation.
+                    pid = spawn(claimed, str(workspace))
+                    if pid:
+                        with self.kb.write_txn(self.conn):
                             self.record_worker_pid(claimed, pid)
                     self.kb._fire_worker_spawned_hook(self.conn, claimed, str(workspace), pid)
                     result.spawned.append((claimed.id, claimed.assignee or '', str(workspace)))
