@@ -7,6 +7,8 @@ final class BotCharacterFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         let forge = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
         XCTAssertTrue(forge.waitForExistence(timeout: 10))
         forge.tap()
@@ -31,6 +33,8 @@ final class BotCharacterFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         let id = "00000000-0000-4000-8000-000000000002"
         let row = app.buttons["bot-conversation-\(id)"]
         XCTAssertTrue(row.waitForExistence(timeout: 10))

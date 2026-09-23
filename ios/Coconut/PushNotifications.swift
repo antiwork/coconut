@@ -35,6 +35,9 @@ struct NotificationSettingsView: View {
                         Task { await push.refresh(requestPermission: true); await store.syncPushRegistration() }
                     } else { push.openSystemSettings() }
                 }
+                if push.allowed && !push.badgesAllowed {
+                    Text("App badges are off in iOS Settings.").font(.caption).foregroundStyle(.secondary)
+                }
                 if let error = store.pushRegistrationError ?? push.error {
                     Text(error).font(.caption).foregroundStyle(.secondary)
                 }
@@ -93,6 +96,8 @@ final class PushNotifications {
     static let shared = PushNotifications()
     var target: NotificationTarget?
     var authorization: UNAuthorizationStatus = .notDetermined
+    var badgesAllowed = false
+    @ObservationIgnored private var badgeTask: Task<Void, Never>?
     var deviceToken: String?
     var error: String?
     var decisionNotifications = UserDefaults.standard.object(forKey: "decisionNotifications") as? Bool ?? true {
@@ -117,8 +122,17 @@ final class PushNotifications {
             settings = await center.notificationSettings()
         }
         authorization = settings.authorizationStatus
+        badgesAllowed = settings.badgeSetting == .enabled
         await PushRelayClient.shared.flushRevocations()
         if allowed { UIApplication.shared.registerForRemoteNotifications() }
+    }
+
+    func setBadgeCount(_ count: Int) {
+        let previous = badgeTask
+        badgeTask = Task {
+            await previous?.value
+            try? await UNUserNotificationCenter.current().setBadgeCount(max(0, count))
+        }
     }
 
     func registered(_ token: Data) {

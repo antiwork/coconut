@@ -14,6 +14,8 @@ final class TaskDetailsFlowTests: XCTestCase {
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": code]
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
         XCTAssertFalse(app.tabBars.buttons["Work"].exists)
         XCTAssertTrue(app.tabBars.buttons["Inbox"].exists)
         let chat = app.buttons["bot-conversation-" + botId]

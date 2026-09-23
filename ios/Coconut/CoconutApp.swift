@@ -12,6 +12,9 @@ struct CoconutApp: App {
                 .environment(store)
                 .tint(.primary)
                 .task { store.start() }
+                .onChange(of: store.inboxBadgeCount, initial: true) { _, count in
+                    if !store.isDemo { PushNotifications.shared.setBadgeCount(count) }
+                }
                 .onChange(of: PushNotifications.shared.deviceToken) { _, _ in
                     Task { await store.syncPushRegistration() }
                 }
@@ -19,7 +22,10 @@ struct CoconutApp: App {
                     Task { await store.syncPushRegistration() }
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { store.setForeground(true) }
+                    if phase == .active {
+                        store.setForeground(true)
+                        if !store.isDemo { PushNotifications.shared.setBadgeCount(store.inboxBadgeCount) }
+                    }
                     else if phase == .background { store.setForeground(false) }
                 }
         }
@@ -49,29 +55,25 @@ struct CoconutHome: View {
     @State private var createOpen = false
     @State private var searchOpen = false
     @State private var searchText = ""
-    @State private var selectedTab: HomeTab = .bots
+    @State private var selectedTab: HomeTab = .inbox
     @State private var notificationDecisionId: String?
     @State private var openingNotification = false
     @State private var previewedNotification: NotificationTarget?
     @State private var botsPath = NavigationPath()
     @State private var inboxPath = NavigationPath()
     @State private var keyboardVisible = false
+    @State private var conversationFooters: [HomeTab: Bool] = [:]
     @FocusState private var searchFocused: Bool
+
+    private var conversationCanMinimize: Bool? { conversationFooters[selectedTab] }
 
     private var tabBarVisibility: Visibility {
         let activePath = selectedTab == .inbox ? inboxPath : botsPath
-        return keyboardVisible || !activePath.isEmpty ? .hidden : .automatic
+        return keyboardVisible || (!activePath.isEmpty && conversationCanMinimize == nil) ? .hidden : .automatic
     }
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            Tab(value: HomeTab.bots) {
-                root(tab: .bots, path: $botsPath)
-            } label: {
-                Label { Text("Bots") } icon: {
-                    Image(systemName: "bubble.left.and.bubble.right").environment(\.symbolVariants, .none)
-                }
-            }.accessibilityIdentifier("home-bots")
             Tab(value: HomeTab.inbox) {
                 root(tab: .inbox, path: $inboxPath)
             } label: {
@@ -80,8 +82,15 @@ struct CoconutHome: View {
                 }
             }.badge(store.inboxBadgeCount)
                 .accessibilityIdentifier("home-inbox")
+            Tab(value: HomeTab.bots) {
+                root(tab: .bots, path: $botsPath)
+            } label: {
+                Label { Text("Bots") } icon: {
+                    Image(systemName: "bubble.left.and.bubble.right").environment(\.symbolVariants, .none)
+                }
+            }.accessibilityIdentifier("home-bots")
         }
-        .modifier(NativeTabCollapse())
+        .modifier(NativeTabCollapse(enabled: conversationCanMinimize == true && !keyboardVisible))
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
         .onChange(of: selectedTab) { _, tab in
@@ -148,6 +157,9 @@ struct CoconutHome: View {
                         ErrorBanner(message: error) { store.error = nil }.padding(.horizontal, 16)
                     }
                 }
+        }
+        .onPreferenceChange(ConversationFooterPreference.self) { allowed in
+            conversationFooters[tab] = allowed
         }
     }
 
@@ -287,9 +299,11 @@ struct CompactAgeLabel: View {
 }
 
 private struct NativeTabCollapse: ViewModifier {
+    let enabled: Bool
+
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content.tabBarMinimizeBehavior(.onScrollDown)
+            content.tabBarMinimizeBehavior(enabled ? .onScrollUp : .never)
         } else {
             content
         }

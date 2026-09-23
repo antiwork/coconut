@@ -34,6 +34,7 @@ def main():
     parser.add_argument('--inbox-stale', action='store_true')
     parser.add_argument('--inbox-revisit', action='store_true')
     parser.add_argument('--navigation', action='store_true')
+    parser.add_argument('--footer-scroll', action='store_true')
     parser.add_argument('--exchange', action='store_true')
     parser.add_argument('--bot-references', action='store_true')
     parser.add_argument('--instant-send', action='store_true')
@@ -98,6 +99,14 @@ def main():
         task['status'] = 'needs_you'
         state['decisions'] = [decision]
         state['messages'] = []
+    if args.footer_scroll:
+        state['bots'] += [dict(bot, id=str(uuid4()), name=f'Bot {index:02}', pinned=False) for index in range(30)]
+        state['messages'] = [message('assistant', f'History {index}. ' + paragraph * 3) for index in range(40)]
+        latest = state['messages'][-1]
+        latest['text'] = 'Latest response stays visible.'
+        fixture = json.loads((ROOT/'ios/Coconut/Fixtures/PreviewState.json').read_text())
+        state['decisions'] = [dict(fixture['decisions'][0], bot_id=bot['id'], task_id=task['id'],
+                                  context=paragraph * 20)]
     if args.navigation:
         state.update(bots=[dict(bot, id=str(uuid4()), name=f'Bot {index:02}', pinned=False) for index in range(30)],
                      messages=[], decisions=[], tasks=[])
@@ -406,7 +415,7 @@ def main():
             runfile.write_bytes(plistlib.dumps(document))
             command = ['xcodebuild', 'test-without-building', '-xctestrun', str(runfile),
                             '-destination', 'platform=iOS Simulator,id='+args.simulator,
-                            '-only-testing:CoconutUITests/' + ('SendFromHistoryTests/testSendingFromHistoryShowsMessageBeforeServerAcceptance' if args.send_from_history else 'BotMentionsFlowTests/testMentionKeepsOwnerOnWire' if args.bot_references else 'GoogleConnectionFlowTests/testSystemSignInReturnsToCoconut' if args.google_connection else 'MessageInteractionFlowTests/testRepliesReactionsAndCopy' if args.message_interactions else 'DecisionInboxTests/testChoicesAdvanceBeforeConfirmationAndRecoverFailure' if args.inbox_choice else 'DecisionInboxTests/testReopeningFromPendingListEndsUndoBeforeDelayedReceipt' if args.inbox_revisit else 'DecisionInboxTests/testOldSnapshotCannotRemoveConfirmedUndo' if args.inbox_stale else 'DecisionInboxTests/testUndoRecoversAnUncertainSwipeWithTheSameKey' if args.inbox_uncertain else 'DecisionInboxTests/testUndoSendsRestoreWhileSnapshotRefreshIsBlocked' if args.inbox_refresh else 'DecisionInboxTests/testUndoTargetsLatestSwipeWhenEarlierWriteFinishesLast' if args.inbox_undo_order else 'DecisionInboxTests/testUndoDuringPendingSwipeKeepsCardAndHeaderStable' if args.inbox_undo else 'DecisionInboxTests/testOpenChatShowsSelectedCard' if args.inbox_link else 'DecisionInboxTests/testSwipeStackKeepsDecisionsAndSupportsUndo' if args.inbox_stack else 'DecisionInboxTests/testNativeNavigation' if args.navigation else 'NativeDecisionFlowTests/testChoiceReceiptStaysStableDuringServerConfirmation' if args.decision_receipt else 'BotExchangeFlowTests' if args.exchange else 'InstantSendFlowTests' if args.instant_send else 'ConversationSendRecoveryTests' if args.keyboard_recovery else 'ConversationLayoutFlowTests/testKeyboardKeepsBottomPinnedAndPreservesHistory' if args.keyboard_anchor else 'ConversationLayoutFlowTests'), '-parallel-testing-enabled', 'NO',
+                            '-only-testing:CoconutUITests/' + ('FooterScrollTests' if args.footer_scroll else 'SendFromHistoryTests/testSendingFromHistoryShowsMessageBeforeServerAcceptance' if args.send_from_history else 'BotMentionsFlowTests/testMentionKeepsOwnerOnWire' if args.bot_references else 'GoogleConnectionFlowTests/testSystemSignInReturnsToCoconut' if args.google_connection else 'MessageInteractionFlowTests/testRepliesReactionsAndCopy' if args.message_interactions else 'DecisionInboxTests/testChoicesAdvanceBeforeConfirmationAndRecoverFailure' if args.inbox_choice else 'DecisionInboxTests/testReopeningFromPendingListEndsUndoBeforeDelayedReceipt' if args.inbox_revisit else 'DecisionInboxTests/testOldSnapshotCannotRemoveConfirmedUndo' if args.inbox_stale else 'DecisionInboxTests/testUndoRecoversAnUncertainSwipeWithTheSameKey' if args.inbox_uncertain else 'DecisionInboxTests/testUndoSendsRestoreWhileSnapshotRefreshIsBlocked' if args.inbox_refresh else 'DecisionInboxTests/testUndoTargetsLatestSwipeWhenEarlierWriteFinishesLast' if args.inbox_undo_order else 'DecisionInboxTests/testUndoDuringPendingSwipeKeepsCardAndHeaderStable' if args.inbox_undo else 'DecisionInboxTests/testOpenChatShowsSelectedCard' if args.inbox_link else 'DecisionInboxTests/testSwipeStackKeepsDecisionsAndSupportsUndo' if args.inbox_stack else 'DecisionInboxTests/testNativeNavigation' if args.navigation else 'NativeDecisionFlowTests/testChoiceReceiptStaysStableDuringServerConfirmation' if args.decision_receipt else 'BotExchangeFlowTests' if args.exchange else 'InstantSendFlowTests' if args.instant_send else 'ConversationSendRecoveryTests' if args.keyboard_recovery else 'ConversationLayoutFlowTests/testKeyboardKeepsBottomPinnedAndPreservesHistory' if args.keyboard_anchor else 'ConversationLayoutFlowTests'), '-parallel-testing-enabled', 'NO',
                             '-resultBundlePath', str(args.result)]
             with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as process:
                 for line in process.stdout:

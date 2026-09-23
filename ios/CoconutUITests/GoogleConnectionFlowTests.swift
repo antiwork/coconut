@@ -6,6 +6,8 @@ final class GoogleConnectionFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 10))
         app.buttons["app-settings"].tap()
         let connections = app.buttons["mcp-settings"]
@@ -27,6 +29,8 @@ final class GoogleConnectionFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 15))
         app.buttons["app-settings"].tap()
         app.buttons["mcp-settings"].tap()

@@ -69,6 +69,8 @@ class RelayPushTests(unittest.TestCase):
         self.run_task('Write report')
         self.flush()
         self.assertEqual(self.relay.sealed[0]['aps']['alert']['body'], 'Create report.md? Save the prepared report.')
+        self.assertEqual(self.relay.sealed[0]['aps']['badge'], 1)
+        self.assertNotIn('badge', json.dumps(self.relay.sent))
 
     def test_retry_reuses_persisted_ciphertext(self):
         self.run_task()

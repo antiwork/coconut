@@ -7,6 +7,8 @@ final class APIFallbackSettingsTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         app.buttons["app-settings"].tap()
         app.staticTexts["Model"].firstMatch.tap()
         let toggle = app.switches["openai-api-fallback"]

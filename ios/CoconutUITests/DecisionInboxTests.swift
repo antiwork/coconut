@@ -41,6 +41,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bot-conversation-")).firstMatch.waitForExistence(timeout: 15))
         app.tabBars.buttons["Inbox"].tap()
         let first = app.staticTexts["Publish the release notes?"]
@@ -359,6 +361,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bot-conversation-")).firstMatch.waitForExistence(timeout: 15))
         let bar = app.tabBars.firstMatch
         XCTAssertTrue(bar.exists)
@@ -455,6 +459,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         let forge = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Forge")).firstMatch
         XCTAssertTrue(forge.waitForExistence(timeout: 10))
         forge.tap()

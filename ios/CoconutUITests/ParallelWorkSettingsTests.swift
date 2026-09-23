@@ -7,6 +7,8 @@ final class ParallelWorkSettingsTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         app.buttons["app-settings"].tap()
         app.buttons["parallel-work-settings"].tap()
         let automatic = app.switches["automatic-workers"]
