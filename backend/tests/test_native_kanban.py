@@ -2165,6 +2165,18 @@ with tempfile.TemporaryDirectory() as root:
                                   (task_id,)).fetchall()
         assert first.current_run_id != second.current_run_id
         assert rows[0]['worker_pid'] is None and rows[1]['worker_pid'] == process.pid
+        board.kb.block_task(board.conn, task_id, reason='Yield to another task', kind='capability')
+        other_id = board.kb.create_task(board.conn, title='Next task', body='probe',
+            assignee='default', created_by='probe', tenant='probe', workspace_kind='dir',
+            workspace_path=root, priority=0, initial_status='blocked', idempotency_key='other')
+        board.kb.unblock_task(board.conn, other_id)
+        other = board.kb.claim_task(board.conn, other_id)
+        with board.kb.write_txn(board.conn):
+            board.record_worker_pid(other, process.pid)
+        assert board.conn.execute('SELECT worker_pid FROM task_runs WHERE id=?',
+                                  (second.current_run_id,)).fetchone()[0] is None
+        assert board.conn.execute('SELECT worker_pid FROM task_runs WHERE id=?',
+                                  (other.current_run_id,)).fetchone()[0] == process.pid
         with board.kb.write_txn(board.conn):
             board.conn.execute('UPDATE task_runs SET ended_at=? WHERE id=?',
                                (int(time.time()) - 600, rows[0]['id']))
