@@ -63,7 +63,11 @@ def decision_source_keys(decision):
     from urllib.parse import parse_qs, unquote
     import re
 
-    keys = {url.lower() for url in github_links(decision)}
+    keys = set()
+    for url in github_links(decision):
+        # GitHub uses one number space for issues and PRs; /issues/N can redirect to /pull/N.
+        owner, repo, _, number = urlsplit(url).path.strip('/').split('/')
+        keys.add(f'github:{owner.lower()}/{repo.lower()}/{number}')
     for source in decision.get('sources', []):
         if source.get('kind') != 'email' or not source.get('url'):
             continue
