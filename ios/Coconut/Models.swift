@@ -203,6 +203,7 @@ struct MessageReference: Codable, Equatable, Sendable {
     var text: String
     var author: String
     var role: String
+    var botId: String? = nil
 }
 
 struct MessageReactionEvent: Codable, Equatable, Sendable {

@@ -10,9 +10,7 @@ final class SendFromHistoryTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
-        XCTAssertTrue(bot.waitForExistence(timeout: 15))
-        bot.tap()
+        XCTAssertTrue(app.buttons["manage-bots"].waitForExistence(timeout: 15))
         let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         let transcript = app.scrollViews["conversation-transcript"]

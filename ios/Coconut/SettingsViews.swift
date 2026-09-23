@@ -53,15 +53,21 @@ struct AppSettingsView: View {
                 Section {
                     NotificationSettingsRow()
                 }
+                Section("Coconut chat") {
+                    ForEach(store.bots.filter { !$0.archived }) { bot in
+                        Button { Task { await store.selectConversationBot(bot) } } label: {
+                            HStack {
+                                Text(bot.name)
+                                Spacer()
+                                if bot.id == store.conversationBotId { Image(systemName: "checkmark") }
+                            }
+                        }
+                    }
+                }
                 Section("Bots") {
                     ForEach(store.bots.filter { !$0.archived }) { bot in
-                        NavigationLink(bot.name) {
-                            List {
-                                NavigationLink("Model") { ModelSettingsView(botId: bot.id) }
-                                NavigationLink("Access") { ApprovalSettingsView(botId: bot.id) }
-                                NavigationLink("Parallel work") { ParallelWorkSettingsView(botId: bot.id) }
-                            }.navigationTitle(bot.name)
-                        }
+                        NavigationLink(bot.name) { BotSettingsView(botId: bot.id) }
+                            .accessibilityIdentifier("settings-bot-\(bot.id)")
                     }
                 }
                 if store.hasPairing || store.isDemo {

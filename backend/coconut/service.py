@@ -1807,7 +1807,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
     def _reply_reference(self, message):
         author = 'You' if message['role'] == 'user' else self._get('bots', message.get('sender_bot_id') or message['bot_id'])['name']
-        return dict(message_id=message['id'], text=message['text'], author=author, role=message['role'],
+        return dict(message_id=message['id'], bot_id=message['bot_id'], text=message['text'], author=author, role=message['role'],
                     author_bot_id=message.get('sender_bot_id') if message['role'] == 'assistant' else None)
 
     def _send_message_interaction(self, bot, data, *, task=None):

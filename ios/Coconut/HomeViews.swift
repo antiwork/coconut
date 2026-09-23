@@ -94,7 +94,9 @@ struct HomeLaunchView: View {
         Button(bot.pinned ? "Unpin bot" : "Pin bot", systemImage: bot.pinned ? "pin.slash" : "pin") {
             Task { await store.pinBot(bot, pinned: !bot.pinned) }
         }
-        Button("Archive bot", systemImage: "archivebox") { Task { await store.archiveBot(bot) } }
+        if bot.id != store.conversationBotId {
+            Button("Archive bot", systemImage: "archivebox") { Task { await store.archiveBot(bot) } }
+        }
     }
 
     private func matches(_ bot: Bot) -> Bool {
@@ -225,5 +227,49 @@ struct ArchivedBotsView: View {
         }
         .listStyle(.plain).scrollContentBackground(.hidden).background(BoardStyle.paper)
         .navigationTitle("Archived").navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+struct BotDirectoryView: View {
+    @State private var searchText = ""
+    @State private var createOpen = false
+
+    var body: some View {
+        HomeLaunchView(searchText: searchText)
+            .navigationTitle("Bots")
+            .searchable(text: $searchText, prompt: "Search bots and activity")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Create bot", systemImage: "plus") { createOpen = true }
+                        .accessibilityIdentifier("create-bot")
+                }
+            }
+            .sheet(isPresented: $createOpen) { BotEditorView() }
+    }
+}
+
+struct ConversationSetupView: View {
+    @Environment(AppStore.self) private var store
+    @State private var settingsOpen = false
+    @State private var createOpen = false
+
+    var body: some View {
+        List {
+            Section {
+                Text("Choose the bot for your Coconut chat. You can read and manage your other bots from here.")
+                    .foregroundStyle(.secondary)
+                ForEach(store.bots.filter { !$0.archived }) { bot in
+                    Button { Task { await store.selectConversationBot(bot) } } label: {
+                        Label { Text(bot.name) } icon: { BotAvatar(bot: bot, size: 32) }
+                    }.accessibilityIdentifier("select-conversation-\(bot.id)")
+                }
+                Button("Create bot", systemImage: "plus") { createOpen = true }
+            }
+        }
+        .scrollContentBackground(.hidden).background(BoardStyle.paper)
+        .navigationTitle("Coconut")
+        .toolbar { Button("Settings", systemImage: "gearshape") { settingsOpen = true } }
+        .sheet(isPresented: $settingsOpen) { AppSettingsView() }
+        .sheet(isPresented: $createOpen) { BotEditorView() }
     }
 }

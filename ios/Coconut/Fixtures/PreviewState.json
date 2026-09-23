@@ -339,5 +339,6 @@
         "description": "Hermes asks before flagged actions."
       }
     ]
-  }
+  },
+  "conversation_bot_id": "00000000-0000-4000-8000-000000000001"
 }
