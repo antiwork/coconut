@@ -106,8 +106,8 @@ class PRReviewTests(unittest.TestCase):
             self.assertEqual(self.service._pr_review_source(self.dev['id'], retry['id'], tasks=tasks)['id'], owner['id'])
 
     def test_verified_owner_offers_card_without_coordinator_turn(self):
-        from coconut.pull_request_reviews import PR_REVIEW_INSTRUCTIONS
-        self.assertIn('Offer one coconut_ask merge decision yourself', PR_REVIEW_INSTRUCTIONS)
+        from coconut.pull_request_reviews import PR_MERGE_INSTRUCTIONS
+        self.assertIn('Offer one coconut_ask merge decision yourself', PR_MERGE_INSTRUCTIONS)
         original_start = self.provider.start_task
         def start(task, bot, history, emit):
             if not task.get('_pr_review'):
@@ -289,7 +289,8 @@ class PRReviewTests(unittest.TestCase):
         prompt,_=conversation_input({'operation':'start','task':{'title':'Check PR','_pr_review':{'url':URL,'head_sha':'a'*40}},'history':[]})
         self.assertIn('not permission to merge',prompt)
         self.assertIn('required checks',prompt)
-        self.assertIn('requesting bot',prompt)
+        from coconut.pull_request_reviews import PR_MERGE_INSTRUCTIONS
+        self.assertIn('requesting bot', PR_MERGE_INSTRUCTIONS)
         self.assertIn(URL,prompt)
 
 

@@ -20,7 +20,12 @@ When a status omits the required app identity, the owner verifies its source bef
 The displayed aggregate check state still includes optional checks.
 
 Assessment does not grant merge permission or waive a deployment requirement.
-The owner creates one merge decision when the current evidence supports it.
+The owner checks the original human request and scoped standing approval in its native profile.
+When approval covers the current changes and all checks pass, the owner can mark the draft ready and merge.
+Otherwise, the owner creates one merge decision when the current evidence supports it.
+Human holds, pending decisions, and native tool approval checks remain effective.
+Coordinator handoffs cannot grant or revoke human authorization.
+Read-only card checks cannot merge.
 Recorded choices for the same head remain effective after a check reruns.
 Bots use `coconut_track_pr` and finish their turn while checks run.
 They do not need a separate `gh pr checks --watch` process.

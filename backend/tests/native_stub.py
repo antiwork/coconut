@@ -91,6 +91,11 @@ def get_plugin_manager(): return None
     (source / 'agent').mkdir(exist_ok=True)
     (source / 'agent/__init__.py').write_text('')
     (source / 'agent/delegation_context.py').write_text('from contextlib import nullcontext\nnon_dispatcher_owned_context = nullcontext\n')
+    (source / 'agent/interrupt_scope.py').write_text("""from contextlib import nullcontext
+class InterruptScope:
+    def request(self, reason=None): pass
+def bind_interrupt_scope(scope): return nullcontext()
+""")
     (source / 'agent/skill_utils.py').write_text('def parse_config_string_list(value): return value or []\n')
     (source / 'cron').mkdir(exist_ok=True)
     (source / 'cron/__init__.py').write_text('')
@@ -112,6 +117,10 @@ def clear_session_cwd(task_id): pass
     (source / 'yaml.py').write_text('import json\nsafe_load = json.loads\n')
     (source / 'utils.py').write_text('import json\nfrom pathlib import Path\ndef atomic_yaml_write(path, data, **kwargs): Path(path).write_text(json.dumps(data))\ndef atomic_roundtrip_yaml_save(path, data): atomic_yaml_write(path, data)\n')
     (source / 'tools/bot_mode_probe.py').write_text("BOT_CHAT_TITLE='Bot Chat'\n")
+    (source / 'tools/bot_mode_dm.py').write_text("""def message_agent_tool_schema():
+    return {'function': {'name': 'message_agent', 'description': 'Message a bot.',
+        'parameters': {'type': 'object', 'properties': {'target': {'type': 'string'}, 'message': {'type': 'string'}}}}}
+""")
     (source / 'tools/bot_relay.py').write_text('''import json
 import os
 import uuid
