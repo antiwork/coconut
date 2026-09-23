@@ -20,6 +20,8 @@ final class NotificationFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = []
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         let bot = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ OR identifier BEGINSWITH %@", "bot-conversation-", "pinned-bot-")).firstMatch
         XCTAssertTrue(bot.waitForExistence(timeout: 15))
         bot.tap()

@@ -6,6 +6,8 @@ final class MCPSettingsFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 10))
         app.buttons["app-settings"].tap()
         let connections = app.buttons["mcp-settings"]

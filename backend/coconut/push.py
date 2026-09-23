@@ -179,6 +179,18 @@ class PushDelivery:
                 VALUES (?,?,?,?,?,?,?,?,?,'queued',?,?)''',
                 (notification_id, device_id, event_key, bot_id, task_id, decision_id, kind, turn, message_id, stamp + 2, stamp + 86400))
 
+    def inbox_badge_count(self):
+        visible = {b['id'] for b in self.service._all('bots') if not b.get('_deleted')}
+        count = 0
+        for (raw,) in self.service.db.execute("SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending'"):
+            decision = json.loads(raw)
+            if any(decision.get(key) for key in ('_hidden', '_deleted', '_source_recheck')) or decision['bot_id'] not in visible:
+                continue
+            task = self.service._get('tasks', decision['task_id'])
+            if task['bot_id'] in visible and task.get('conversation_bot_id', task['bot_id']) in visible:
+                count += 1
+        return count
+
     def start(self):
         if self.thread:
             return
@@ -230,7 +242,7 @@ class PushDelivery:
                 return True
             bodies = {'message': 'A bot sent you a message.', 'decision': 'A bot needs your decision.', 'completed': 'A bot finished its task.', 'failed': 'A bot could not finish its task.'}
             payload = {'aps': {'alert': {'title': 'Coconut', 'body': bodies[job['kind']]}, 'sound': 'default',
-                               'thread-id': task.get('thread_id', task['id'])},
+                               'thread-id': task.get('thread_id', task['id']), 'badge': self.inbox_badge_count()},
                        'coconut': {'version': 1, 'device_id': job['device_id'], 'bot_id': task['bot_id'] if task.get('source_bot_id') else conversation['id'],
                                    'task_id': task['id'], 'decision_id': job['decision_id'], 'message_id': job['message_id'], 'kind': job['kind']}}
             collapse = hashlib.sha256((job['decision_id'] or job['message_id'] or task['id']).encode()).hexdigest()

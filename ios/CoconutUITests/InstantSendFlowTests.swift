@@ -10,6 +10,8 @@ final class InstantSendFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         let botId = "00000000-0000-4000-8000-000000000002"
         let bot = app.buttons["bot-conversation-\(botId)"]
         XCTAssertTrue(bot.waitForExistence(timeout: 15))
@@ -38,6 +40,8 @@ final class InstantSendFlowTests: XCTestCase {
         app.terminate()
         app.launchEnvironment = [:]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         XCTAssertTrue(bot.waitForExistence(timeout: 10))
         bot.tap()
         XCTAssertTrue(retry.waitForExistence(timeout: 5))

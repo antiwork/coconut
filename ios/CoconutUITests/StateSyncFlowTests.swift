@@ -11,6 +11,8 @@ final class StateSyncFlowTests: XCTestCase {
         app.launchArguments = []
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": "sync-test"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
         let appeared = bot.waitForExistence(timeout: 15)
         if !appeared {

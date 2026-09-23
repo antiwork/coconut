@@ -11,6 +11,10 @@ The Mac encrypts the preview and routing IDs before sending them to the relay.
 The notification extension decrypts them locally before iOS displays the alert.
 Tapping an alert opens its task and, when present, its decision. The app verifies the pairing identity before routing.
 The app suppresses banners while open because conversations already receive live updates.
+The app-icon badge counts pending Inbox cards, excluding cards that need a source refresh.
+The Mac includes the count inside the encrypted notification. The extension applies it without contacting the Mac.
+The open app updates or clears the count when its Inbox changes. iOS Settings controls badge permission.
+A delayed alert can briefly show an older count. Opening Coconut reconciles it with the current Inbox.
 
 ## Pairing and privacy
 

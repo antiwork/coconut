@@ -53,6 +53,24 @@ class PushTests(unittest.TestCase):
     def states(self):
         return self.service.db.execute('SELECT status,reason FROM push_outbox ORDER BY rowid').fetchall()
 
+    def test_badge_matches_visible_pending_inbox_and_clears(self):
+        self.run_task('Write report')
+        decision = self.service.snapshot()['decisions'][0]
+        with self.service.transaction():
+            for change in ({'_hidden': True}, {'_deleted': True}, {'_source_recheck': True}, {'status': 'completed'}):
+                self.service._put('decisions', dict(decision, id=str(uuid4()), **change))
+        self.assertEqual(self.service.push.inbox_badge_count(), 1)
+        self.assertTrue(self.flush())
+        self.assertEqual(self.transport.calls[-1][2]['aps']['badge'], 1)
+        with self.service.transaction():
+            current = self.service._get('decisions', decision['id'])
+            current['status'] = 'approved'
+            self.service._put('decisions', current)
+        self.assertEqual(self.service.push.inbox_badge_count(), 0)
+        self.run_task('Another independent reply')
+        self.assertTrue(self.flush())
+        self.assertEqual(self.transport.calls[-1][2]['aps']['badge'], 0)
+
     def test_completed_payload_is_private_and_routes_to_task(self):
         task = self.run_task()
         self.assertTrue(self.flush())

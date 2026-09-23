@@ -61,6 +61,8 @@ final class ModelSettingsFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 10))
+        app.tabBars.buttons["Bots"].tap()
         XCTAssertTrue(app.buttons["home-inbox"].waitForExistence(timeout: 10))
         return app
     }

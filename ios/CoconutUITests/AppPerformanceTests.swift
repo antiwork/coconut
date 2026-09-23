@@ -27,6 +27,8 @@ final class AppPerformanceTests: XCTestCase {
     @MainActor func testLaunchWithSavedHistory() throws {
         let app = try app()
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         openChat(app)
         app.terminate()
         measure(metrics: [XCTApplicationLaunchMetric(waitUntilResponsive: true)], options: options()) {
@@ -39,6 +41,8 @@ final class AppPerformanceTests: XCTestCase {
     @MainActor func testConversationAndTabSwitching() throws {
         let app = try app()
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         measure(metrics: [XCTClockMetric(), XCTCPUMetric(application: app)], options: options()) {
             openChat(app)
             app.navigationBars.buttons.element(boundBy: 0).tap()
@@ -52,6 +56,8 @@ final class AppPerformanceTests: XCTestCase {
     @MainActor func testTypingInLongConversation() throws {
         let app = try app()
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         openChat(app)
         let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
         input.tap()
@@ -68,6 +74,8 @@ final class AppPerformanceTests: XCTestCase {
     @MainActor func testLongConversationScrolling() throws {
         let app = try app()
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         openChat(app)
         let transcript = app.scrollViews["conversation-transcript"]
         measure(metrics: [XCTCPUMetric(application: app), XCTOSSignpostMetric.scrollingAndDecelerationMetric], options: options()) {

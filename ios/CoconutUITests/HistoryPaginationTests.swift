@@ -12,6 +12,8 @@ final class HistoryPaginationTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         let conversation = app.buttons["bot-conversation-\(bot)"]
         XCTAssertTrue(conversation.waitForExistence(timeout: 15))
         conversation.tap()

@@ -25,6 +25,8 @@ struct ConversationView: View {
     @State private var didFocusDecision = false
     @State private var nearBottom = true
     @State private var userScrolling = false
+    @State private var footerScroll = ConversationFooterScroll()
+    @State private var isVisible = false
     @FocusState private var composerFocused: Bool
 
     init(botId: String, focusDecisionId: String? = nil, focusMessageId: String? = nil, attachedWork: WorkReference? = nil) {
@@ -132,7 +134,11 @@ struct ConversationView: View {
                         // Only a user scroll changes whether new messages follow the bottom.
                         if userScrolling { nearBottom = value }
                     }
+                    .onScrollGeometryChange(for: CGFloat.self) { ConversationFooterScroll.offset(in: $0) } action: { _, offset in
+                        footerScroll.scroll(to: offset)
+                    }
                     .onScrollPhaseChange { previous, phase, context in
+                        footerScroll.phaseChanged(phase, offset: ConversationFooterScroll.offset(in: context.geometry))
                         userScrolling = phase == .interacting || phase == .decelerating
                         if userScrolling || previous == .interacting || previous == .decelerating {
                             let geometry = context.geometry
@@ -149,10 +155,10 @@ struct ConversationView: View {
                         }
                     }
                     .onChange(of: showsActivity) { _, _ in
-                        if nearBottom { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                        if nearBottom { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onChange(of: messages.last?.id) { _, _ in
-                        if nearBottom { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                        if nearBottom { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onChange(of: messages.last(where: { $0.role == "user" })?.id) { _, messageId in
                         guard let messageId, messages.last?.id == messageId else { return }
@@ -160,7 +166,7 @@ struct ConversationView: View {
                         proxy.scrollTo("conversation-bottom", anchor: .bottom)
                     }
                     .onChange(of: messages.last?.text) { _, _ in
-                        if nearBottom { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                        if nearBottom { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .background(BoardStyle.paper)
                     .task { await store.markRead(bot) }
@@ -186,7 +192,9 @@ struct ConversationView: View {
                                          focused: $composerFocused, replyTo: $replyTo, workContext: $workContext)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                .onDisappear { composerFocused = false }
+                .onAppear { isVisible = true; footerScroll.reset() }
+                .onDisappear { isVisible = false; composerFocused = false; footerScroll.reset() }
+                .onChange(of: composerFocused) { _, _ in footerScroll.reset() }
                 .toolbar {
                     if #available(iOS 26.0, *) {
                         ToolbarSpacer(.fixed, placement: .topBarLeading)
@@ -240,6 +248,8 @@ struct ConversationView: View {
             NavigationStack { NativeTaskDetailsView(botId: botId) }
         }
         .navigationBarTitleDisplayMode(.inline)
+        .preference(key: ConversationFooterPreference.self,
+                    value: isVisible ? (!composerFocused && footerScroll.allowsMinimization) : nil)
     }
 
     @ViewBuilder

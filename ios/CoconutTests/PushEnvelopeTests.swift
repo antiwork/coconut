@@ -1,5 +1,6 @@
 import XCTest
 import CryptoKit
+import UserNotifications
 @testable import Coconut
 
 final class PushEnvelopeTests: XCTestCase {
@@ -28,6 +29,23 @@ final class PushEnvelopeTests: XCTestCase {
         XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("private-task"))
         let restored = try JSONDecoder().decode(PushEnvelope.self, from: encoded)
         XCTAssertEqual(try restored.open(recipient: phone, sender: mac.publicKey), text)
+    }
+
+    func testEncryptedInboxBadgeReachesNotificationContentAndClears() throws {
+        let phone = Curve25519.KeyAgreement.PrivateKey(), mac = Curve25519.KeyAgreement.PrivateKey()
+        let content = UNMutableNotificationContent()
+        for count in [3, 0] {
+            let payload: [String: Any] = ["aps": ["alert": ["title": "Desk", "body": "Update"], "badge": count]]
+            let envelope = try PushEnvelope.seal(JSONSerialization.data(withJSONObject: payload),
+                id: UUID().uuidString, expires: Int(Date.now.timeIntervalSince1970) + 600,
+                recipient: phone.publicKey, sender: mac)
+            let plain = try envelope.open(recipient: phone, sender: mac.publicKey)
+            let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: plain) as? [String: Any])
+            NotificationContent.apply(decoded, to: content)
+            XCTAssertEqual(content.badge, NSNumber(value: count))
+            XCTAssertEqual(content.body, "Update")
+            XCTAssertFalse(String(decoding: try JSONEncoder().encode(envelope), as: UTF8.self).contains("badge"))
+        }
     }
 
     func testAnotherPhoneCannotReadThePreview() throws {

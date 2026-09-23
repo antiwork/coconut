@@ -22,6 +22,8 @@ final class PhysicalPairingFlowTests: XCTestCase {
         app.launchArguments = []
         app.launchEnvironment = [:]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         stage("launched")
 
         let settings = app.buttons["app-settings"]

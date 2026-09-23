@@ -10,6 +10,8 @@ final class NotificationOpenPerformanceTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "notification-test"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 15))
         app.buttons["app-settings"].tap()
         app.buttons["notification-settings"].tap()

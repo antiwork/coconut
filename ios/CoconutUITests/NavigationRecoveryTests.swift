@@ -7,6 +7,8 @@ final class NavigationRecoveryTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
         XCTAssertTrue(bot.waitForExistence(timeout: 10))
         for attempt in 0..<3 {

@@ -7,6 +7,8 @@ final class NativeDecisionFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
 
         let forge = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
         XCTAssertTrue(forge.waitForExistence(timeout: 10))
@@ -54,6 +56,8 @@ final class NativeDecisionFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
 
         let forge = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
         let scout = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
@@ -260,6 +264,8 @@ final class NativeDecisionFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
         let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
         XCTAssertTrue(bot.waitForExistence(timeout: 15))
         bot.tap()
