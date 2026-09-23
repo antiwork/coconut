@@ -14,7 +14,7 @@ final class SettingsAccessTests: XCTestCase {
             XCTAssertTrue(settings.waitForExistence(timeout: 5), "Settings is missing in \(tab).")
             settings.tap()
             XCTAssertTrue(app.buttons["parallel-work-settings"].waitForExistence(timeout: 5))
-            app.swipeDown(velocity: .fast)
+            app.buttons["close-settings"].tap()
             XCTAssertTrue(app.tabBars.buttons[tab].waitForExistence(timeout: 5))
         }
     }
