@@ -55,6 +55,33 @@ class DecisionCallRecoveryTests(unittest.TestCase):
         self.assertEqual(draft['previous_decision_id'], ruling['id'])
         self.assertEqual(draft['status'], 'pending')
 
+    def test_draft_schema_requires_explicit_followup_link(self):
+        from coconut.native_bridge import SUGGEST_SCHEMA
+        description = SUGGEST_SCHEMA['parameters']['properties']['previous_decision_id']['description']
+        self.assertIn('For a draft, always supply previous_decision_id', description)
+        self.assertIn('unrelated drafts must omit it', description)
+
+    def test_unrelated_draft_does_not_inherit_resumed_question(self):
+        with self.assertRaises(YieldForDecision):
+            self.event('native_question', dict(title='Check ownership?',
+                options=[dict(id='check', label='Check ownership')]))
+        ruling = self.service.snapshot()['decisions'][-1]
+        self.write('POST', f"/v1/decisions/{ruling['id']}/answer", {'option_id': 'check', 'revision': 1})
+        self.assertEqual(self.service._get('tasks', self.task['id'])['_resume_decision'], ruling['id'])
+        with self.service.transaction():
+            task = self.service._get('tasks', self.task['id'])
+            task['status'] = 'working'
+            self.service._put('tasks', task)
+        draft = self.draft()
+        self.assertIsNone(draft.get('previous_decision_id'))
+        self.assertEqual(draft['status'], 'pending')
+        body = draft['draft']
+        self.event('native_proposal', dict(key='related', title='Send the proof request?',
+            draft=body, previous_decision_id=ruling['id']))
+        related = self.service.snapshot()['decisions'][-1]
+        self.assertEqual(related['previous_decision_id'], ruling['id'])
+        self.assertEqual(related['status'], 'pending')
+
     def test_pending_draft_still_cannot_be_used_as_an_answer(self):
         draft = self.draft()
         with self.assertRaises(ServiceError):
