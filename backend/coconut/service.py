@@ -1719,12 +1719,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         with self.lock:
             stopped = [row[0] for row in self.db.execute(
                 "SELECT id FROM tasks WHERE json_extract(data,'$.status')='failed' "
-                "AND json_extract(data,'$.summary')='The original assignment stopped. Reply to continue.' "
+                "AND json_extract(data,'$._is_return')=1 "
                 "AND json_type(data,'$._resolved_dependency_id')='text'")]
         for task_id in stopped:
             with self.transaction():
                 task = self._get('tasks', task_id)
-                if task['status'] == 'failed' and task.get('summary') == 'The original assignment stopped. Reply to continue.':
+                if task['status'] == 'failed' and task.get('_is_return'):
                     self._consume_stopped_dependency_result(task, self._assignment(task))
         with self.lock:
             native_replies = [(task['id'], task['_native_reply_pending']) for task in self._all('tasks') if task.get('_native_reply_pending')]

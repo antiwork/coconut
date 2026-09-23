@@ -313,7 +313,10 @@ class TeamServiceTests(unittest.TestCase):
         callback = next(t for t in self.service._all('tasks') if t.get('_resolved_dependency_id') == dependency['id'])
         with self.service.transaction():
             callback = self.service._get('tasks', callback['id'])
-            callback.update(status='failed', summary='The original assignment stopped. Reply to continue.')
+            callback.update(status='failed',
+                summary='The original assignment stopped. Reply to continue. Your follow-up is saved. Reply to continue.',
+                _blocked_followup={'message_ids': [], 'source_ids': [], 'attachment_ids': []},
+                steering_status='blocked')
             self.service._put('tasks', callback)
         self.restart()
         self.service._drain_returns()
@@ -322,6 +325,7 @@ class TeamServiceTests(unittest.TestCase):
         self.assertEqual(stored['_waiting_on'], [])
         self.assertEqual(stored['_bot_messages'][-1]['text'], 'The setup check was queued.')
         self.assertEqual(self.service._get('tasks', callback['id'])['status'], 'completed')
+        self.assertIn('_blocked_followup', self.service._get('tasks', callback['id']))
         self.service._drain_returns()
         self.assertEqual(len(self.service._get('tasks', dev['id'])['_bot_messages']), 2)
         desk = self.working(desk)
