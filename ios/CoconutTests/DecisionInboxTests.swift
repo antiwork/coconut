@@ -2,6 +2,27 @@ import XCTest
 @testable import Coconut
 
 final class DecisionInboxTests: XCTestCase {
+    @MainActor
+    func testBadgeWaitsForSnapshotAndClearsOnUnpair() {
+        let store = AppStore(demo: true)
+        var writes: [Int] = []
+        store.setBadge = { writes.append($0) }
+        store.lastSync = nil
+        store.reconcileBadge()
+        XCTAssertNil(store.reconciledBadgeCount)
+        XCTAssertTrue(writes.isEmpty, "Opening offline without a snapshot must retain the push badge.")
+
+        store.lastSync = Date()
+        store.reconcileBadge()
+        XCTAssertEqual(writes, [store.inboxBadgeCount])
+        store.decisions = []
+        store.reconcileBadge()
+        XCTAssertEqual(writes.last, 0)
+        store.disconnect()
+        XCTAssertEqual(writes.last, 0)
+        XCTAssertEqual(writes.count, 3, "Unpairing must explicitly clear the badge.")
+    }
+
     func testRefreshingWireFlagPreservesUpdatingPresentation() throws {
         var decision = try XCTUnwrap(PreviewStateFixture.load().decisions.first)
         decision.status = "pending"

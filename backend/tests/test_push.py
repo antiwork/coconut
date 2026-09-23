@@ -61,7 +61,7 @@ class PushTests(unittest.TestCase):
                 self.service._put('decisions', dict(decision, id=str(uuid4()), **change))
         self.assertEqual(self.service.push.inbox_badge_count(), 1)
         self.assertTrue(self.flush())
-        self.assertEqual(self.transport.calls[-1][2]['aps']['badge'], 1)
+        self.assertNotIn('badge', self.transport.calls[-1][2]['aps'])
         with self.service.transaction():
             current = self.service._get('decisions', decision['id'])
             current['status'] = 'approved'
@@ -69,7 +69,7 @@ class PushTests(unittest.TestCase):
         self.assertEqual(self.service.push.inbox_badge_count(), 0)
         self.run_task('Another independent reply')
         self.assertTrue(self.flush())
-        self.assertEqual(self.transport.calls[-1][2]['aps']['badge'], 0)
+        self.assertNotIn('badge', self.transport.calls[-1][2]['aps'])
 
     def test_completed_payload_is_private_and_routes_to_task(self):
         task = self.run_task()

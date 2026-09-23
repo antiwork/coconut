@@ -242,9 +242,11 @@ class PushDelivery:
                 return True
             bodies = {'message': 'A bot sent you a message.', 'decision': 'A bot needs your decision.', 'completed': 'A bot finished its task.', 'failed': 'A bot could not finish its task.'}
             payload = {'aps': {'alert': {'title': 'Coconut', 'body': bodies[job['kind']]}, 'sound': 'default',
-                               'thread-id': task.get('thread_id', task['id']), 'badge': self.inbox_badge_count()},
+                               'thread-id': task.get('thread_id', task['id'])},
                        'coconut': {'version': 1, 'device_id': job['device_id'], 'bot_id': task['bot_id'] if task.get('source_bot_id') else conversation['id'],
                                    'task_id': task['id'], 'decision_id': job['decision_id'], 'message_id': job['message_id'], 'kind': job['kind']}}
+            if route:
+                payload['aps']['badge'] = self.inbox_badge_count()
             collapse = hashlib.sha256((job['decision_id'] or job['message_id'] or task['id']).encode()).hexdigest()
             if route:
                 if job['envelope']:
