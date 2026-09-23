@@ -457,7 +457,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         if (not source.get('_human_device_id') or source.get('_human_source_kind') != 'chat'
                 or source.get('role') != 'user' or source.get('kind') != 'text' or source.get('reaction_event')
                 or source.get('sender_bot_id') is not None
-                or source.get('thread_id') != task['thread_id']
+                or source.get('thread_id') != (task.get('_routine_source_thread_id')
+                    if source_id in task.get('_routine_source_ids', []) and task.get('_native_job') else task['thread_id'])
                 or task['bot_id'] not in source.get('recipient_bot_ids', [])):
             raise ServiceError(403, f'To {purpose}, use a direct human message addressed to this bot.')
         return source
@@ -472,7 +473,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             sources.append({'id': source['id'], 'text': source['text']})
         source_ids = {source['id'] for source in sources}
         for record in self._all('bot_creation_receipts'):
-            if record['source_message_id'] in source_ids:
+            if record['source_message_id'] in source_ids and record.get('scope') == task.get('_bot_change_scope'):
                 bot = self._get('bots', record['receipt']['bot_id'])
                 if not bot.get('_deleted'):
                     # A committed bot may still need its profile after an interrupted sync.
@@ -490,7 +491,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         if not isinstance(instructions, str) or len(instructions) > 20000:
             raise ServiceError(400, 'instructions must contain at most 20000 characters.')
         normalized_name = ' '.join(unicodedata.normalize('NFKC', name).casefold().split())
-        receipt_id = digest(encoded([source_id, normalized_name]))
+        scope = self._get('tasks', task_id).get('_bot_change_scope')
+        receipt_id = digest(encoded([source_id, normalized_name] + ([scope] if scope else [])))
         fingerprint = digest(encoded([normalized_name, role, instructions]))
         with self.transaction():
             task = self._get('tasks', task_id)
@@ -509,12 +511,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     raise ServiceError(409, 'That bot was deleted. Send a new human request to create another bot.')
                 self._sync_profile(bot)
                 return record['receipt'] | {'status': 'duplicate'}
-            if sum(record['source_message_id'] == source_id for record in self._all('bot_creation_receipts')) >= self.BOT_CHANGE_LIMIT:
+            if sum(record['source_message_id'] == source_id and record.get('scope') == scope for record in self._all('bot_creation_receipts')) >= self.BOT_CHANGE_LIMIT:
                 raise ServiceError(409, 'This message created eight bots. Send a new human request to create more.')
             audit = {'source_message_id': source_id, 'source_task_id': task_id, 'created_by': source['_human_device_id']}
             bot = self._create_bot({'name': name, 'role': role, 'instructions': instructions}, audit=audit)
             receipt = dict(status='created', bot_id=bot['id'], profile_id=bot['profile_id'], session_id=bot['session_id'], name=bot['name'], role=bot['role'], source_message_id=source_id)
-            self._put('bot_creation_receipts', dict(id=receipt_id, fingerprint=fingerprint, source_message_id=source_id, source_task_id=task_id, source_bot_id=task['bot_id'], created_by=source['_human_device_id'], created_at=now(), receipt=receipt))
+            self._put('bot_creation_receipts', dict(id=receipt_id, scope=scope, fingerprint=fingerprint, source_message_id=source_id, source_task_id=task_id, source_bot_id=task['bot_id'], created_by=source['_human_device_id'], created_at=now(), receipt=receipt))
             return receipt
 
     def _bot_deletion_input(self, task: dict) -> dict:
@@ -528,7 +530,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         source_ids = {source['id'] for source in sources}
         return {'_bot_deletion_sources': sources,
                 '_bot_deletion_receipts': [record['receipt'] for record in self._all('bot_deletion_receipts')
-                                            if record['source_message_id'] in source_ids],
+                                            if record['source_message_id'] in source_ids and record.get('scope') == task.get('_bot_change_scope')],
                 '_deletable_bots': [{'id': bot['id'], 'name': bot['name'], 'role': bot['role'], 'archived': bot['archived']}
                                     for bot in self._all('bots') if not bot.get('_deleted')
                                     and bot['id'] not in (task['bot_id'], task['conversation_bot_id'])]}
@@ -539,7 +541,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         source_id = require_text(payload, 'source_message_id', 100)
         target_id = require_text(payload, 'target_bot_id', 100)
         name = require_text(payload, 'expected_name', 160)
-        receipt_id = digest(encoded([source_id, target_id]))
+        scope = self._get('tasks', task_id).get('_bot_change_scope')
+        receipt_id = digest(encoded([source_id, target_id] + ([scope] if scope else [])))
         callbacks = []
         with self.transaction():
             task = self._get('tasks', task_id)
@@ -561,7 +564,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 receipt = receipt | {'status': 'duplicate'}
                 callbacks.append(lambda: self._finish_bot_deletion(target_id))
             else:
-                if sum(record['source_message_id'] == source_id for record in self._all('bot_deletion_receipts')) >= self.BOT_CHANGE_LIMIT:
+                if sum(record['source_message_id'] == source_id and record.get('scope') == scope for record in self._all('bot_deletion_receipts')) >= self.BOT_CHANGE_LIMIT:
                     raise ServiceError(409, 'This message deleted eight bots. Send a new request to delete more.')
                 audit = {'source_message_id': source_id, 'source_task_id': task_id, 'deleted_by': source['_human_device_id']}
                 if task_id in self._bot_deletion_scope(target_id):
@@ -569,7 +572,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._delete_bot(bot, callbacks, audit=audit)
                 receipt = dict(status='deleted', bot_id=target_id, profile_id=bot['profile_id'], name=name,
                                source_message_id=source_id, cancelled_task_ids=bot.get('_delete_task_ids', []))
-                self._put('bot_deletion_receipts', dict(id=receipt_id, source_message_id=source_id,
+                self._put('bot_deletion_receipts', dict(id=receipt_id, scope=scope, source_message_id=source_id,
                           source_task_id=task_id, source_bot_id=task['bot_id'], deleted_by=source['_human_device_id'],
                           created_at=now(), receipt=receipt))
         for callback in callbacks:
