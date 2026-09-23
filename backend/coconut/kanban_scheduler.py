@@ -270,9 +270,13 @@ class NativeKanban(NativeOutcomes):
                 self._kanban_claiming -= 1
         if hasattr(self.provider, 'trim_kanban_workers'):
             with self.lock:
-                owners = {r['task_id'] for r in self._pending_completion_receipts()}
-                keep = {self.kanban.tasks[i]['id'] for i in owners if i in self.kanban.tasks
-                        and self._get('tasks', i)['status'] != 'cancelled'}
+                keep = set()
+                for record in self._pending_completion_receipts():
+                    if self._get('tasks', record['task_id'])['status'] == 'cancelled':
+                        continue
+                    identity = self._receipt_native_worker_id(record)
+                    if identity:
+                        keep.add(identity)
             self.provider.trim_kanban_workers(keep)
         self._publish_kanban_changes()
         with self.changed:

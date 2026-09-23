@@ -159,7 +159,7 @@ class BackgroundProcesses:
                     processes, cached = [], []
                     for record in records:
                         task = self._get('tasks', record['task_id'])
-                        native_worker_id = (task.get('_kanban_claim') or {}).get('native_id') or task.get('_native_outcome_id')
+                        native_worker_id = self._receipt_native_worker_id(record, task)
                         if record.get('_delegation_ack_pending'):
                             processes.append(dict(id=record['id'], task_id=task['id'],
                                                   delegation_ids=delegation_ids(record), epoch=task.get('_conversation_epoch'),
@@ -244,6 +244,12 @@ class BackgroundProcesses:
     def _completion_context(self, record):
         row = self.db.execute('SELECT data FROM contexts WHERE id=?', (record.get('turn_id'),)).fetchone()
         return json.loads(row[0]) if row else None
+
+    def _receipt_native_worker_id(self, record, task=None):
+        owner = self._completion_context(record) or task or self._get('tasks', record['task_id'])
+        claim = owner.get('_kanban_claim') or {}
+        native = self.kanban.tasks.get(owner['id'], {}) if self.kanban else {}
+        return claim.get('native_id') or owner.get('_native_outcome_id') or native.get('id')
 
     def _can_resume_completion(self, task, bot, record):
         context = self._completion_context(record)
