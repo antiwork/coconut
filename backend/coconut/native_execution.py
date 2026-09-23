@@ -211,7 +211,8 @@ class NativeExecution:
             if recovery_work_ids is not None:
                 decision['_recovery_work_ids'] = recovery_work_ids
             decision.update(self.decision_origin(task))
-            if not approval and draft is None:
+            if not approval:
+                # A draft is often the next step of an answered question.
                 decision.update(self.decision_followup(task, payload))
             if not approval and draft is None:
                 decision['merge_pr_url'] = self._merge_decision_url(payload, task)
