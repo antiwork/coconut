@@ -25,6 +25,7 @@ def main():
     parser.add_argument('--google-connection', action='store_true')
     parser.add_argument('--message-interactions', action='store_true')
     parser.add_argument('--inbox-choice', action='store_true')
+    parser.add_argument('--decision-assessment', action='store_true')
     parser.add_argument('--inbox-stack', action='store_true')
     parser.add_argument('--inbox-link', action='store_true')
     parser.add_argument('--inbox-undo', action='store_true')
@@ -47,7 +48,7 @@ def main():
     if args.send_from_history:
         args.instant_send = True
         args.keyboard_recovery = True
-    if args.inbox_choice or args.inbox_link or args.inbox_undo or args.inbox_undo_order or args.inbox_refresh or args.inbox_uncertain or args.inbox_stale or args.inbox_revisit: args.inbox_stack = True
+    if args.decision_assessment or args.inbox_choice or args.inbox_link or args.inbox_undo or args.inbox_undo_order or args.inbox_refresh or args.inbox_uncertain or args.inbox_stale or args.inbox_revisit: args.inbox_stack = True
     google_fixture = tempfile.TemporaryDirectory(prefix='coconut-google-ui-')
     google_status = dict(connected=False, email=None, needs_reconnect=False, services=['gmail', 'calendar'])
     google_authorization = None
@@ -139,6 +140,14 @@ def main():
         state['messages'] = [original]
         for decision in state['decisions']:
             decision.update(request_bot_id=bot['id'], request_message_id=original['id'])
+    if args.decision_assessment:
+        state['decisions'] = state['decisions'][:1]
+        decision = state['decisions'][0]
+        decision.update(title='Publish the release notes?', context='This publishes the checked notes on the release page.',
+            risk_level='medium', risk='Customers can read an incorrect date.',
+            evidence='Compared every date with the release record.', uncertainty='The release time remains undecided.')
+        decision['options'] = decision['options'][:2]
+        decision['options'][1].update(risk_level='low', risk='Only the private draft changes.')
     inbox_actions = []
     inbox_keys = []
     inbox_receipts = {}
@@ -244,6 +253,11 @@ def main():
                     row['streaming'] = False
                     publish('message.updated', row)
                     publish('task.updated', task)
+                self.respond(dict(ok=True))
+            elif args.decision_assessment and self.path == '/test/assessment-stale':
+                with changed:
+                    state['decisions'][0]['assessment_stale'] = True
+                    publish('decision.updated', state['decisions'][0])
                 self.respond(dict(ok=True))
             elif self.path == '/test/start-stale':
                 stale_requested.set()
@@ -415,7 +429,7 @@ def main():
             runfile.write_bytes(plistlib.dumps(document))
             command = ['xcodebuild', 'test-without-building', '-xctestrun', str(runfile),
                             '-destination', 'platform=iOS Simulator,id='+args.simulator,
-                            '-only-testing:CoconutUITests/' + ('FooterScrollTests' if args.footer_scroll else 'SendFromHistoryTests/testSendingFromHistoryShowsMessageBeforeServerAcceptance' if args.send_from_history else 'BotMentionsFlowTests/testMentionKeepsOwnerOnWire' if args.bot_references else 'GoogleConnectionFlowTests/testSystemSignInReturnsToCoconut' if args.google_connection else 'MessageInteractionFlowTests/testRepliesReactionsAndCopy' if args.message_interactions else 'DecisionInboxTests/testChoicesAdvanceBeforeConfirmationAndRecoverFailure' if args.inbox_choice else 'DecisionInboxTests/testReopeningFromPendingListEndsUndoBeforeDelayedReceipt' if args.inbox_revisit else 'DecisionInboxTests/testOldSnapshotCannotRemoveConfirmedUndo' if args.inbox_stale else 'DecisionInboxTests/testUndoRecoversAnUncertainSwipeWithTheSameKey' if args.inbox_uncertain else 'DecisionInboxTests/testUndoSendsRestoreWhileSnapshotRefreshIsBlocked' if args.inbox_refresh else 'DecisionInboxTests/testUndoTargetsLatestSwipeWhenEarlierWriteFinishesLast' if args.inbox_undo_order else 'DecisionInboxTests/testUndoDuringPendingSwipeKeepsCardAndHeaderStable' if args.inbox_undo else 'DecisionInboxTests/testOpenChatShowsSelectedCard' if args.inbox_link else 'DecisionInboxTests/testSwipeStackKeepsDecisionsAndSupportsUndo' if args.inbox_stack else 'DecisionInboxTests/testNativeNavigation' if args.navigation else 'NativeDecisionFlowTests/testChoiceReceiptStaysStableDuringServerConfirmation' if args.decision_receipt else 'BotExchangeFlowTests' if args.exchange else 'InstantSendFlowTests' if args.instant_send else 'ConversationSendRecoveryTests' if args.keyboard_recovery else 'ConversationLayoutFlowTests/testKeyboardKeepsBottomPinnedAndPreservesHistory' if args.keyboard_anchor else 'ConversationLayoutFlowTests'), '-parallel-testing-enabled', 'NO',
+                            '-only-testing:CoconutUITests/' + ('DecisionInboxTests/testAssessmentInInboxAndChatUpdatesWhenSourcesChange' if args.decision_assessment else 'FooterScrollTests' if args.footer_scroll else 'SendFromHistoryTests/testSendingFromHistoryShowsMessageBeforeServerAcceptance' if args.send_from_history else 'BotMentionsFlowTests/testMentionKeepsOwnerOnWire' if args.bot_references else 'GoogleConnectionFlowTests/testSystemSignInReturnsToCoconut' if args.google_connection else 'MessageInteractionFlowTests/testRepliesReactionsAndCopy' if args.message_interactions else 'DecisionInboxTests/testChoicesAdvanceBeforeConfirmationAndRecoverFailure' if args.inbox_choice else 'DecisionInboxTests/testReopeningFromPendingListEndsUndoBeforeDelayedReceipt' if args.inbox_revisit else 'DecisionInboxTests/testOldSnapshotCannotRemoveConfirmedUndo' if args.inbox_stale else 'DecisionInboxTests/testUndoRecoversAnUncertainSwipeWithTheSameKey' if args.inbox_uncertain else 'DecisionInboxTests/testUndoSendsRestoreWhileSnapshotRefreshIsBlocked' if args.inbox_refresh else 'DecisionInboxTests/testUndoTargetsLatestSwipeWhenEarlierWriteFinishesLast' if args.inbox_undo_order else 'DecisionInboxTests/testUndoDuringPendingSwipeKeepsCardAndHeaderStable' if args.inbox_undo else 'DecisionInboxTests/testOpenChatShowsSelectedCard' if args.inbox_link else 'DecisionInboxTests/testSwipeStackKeepsDecisionsAndSupportsUndo' if args.inbox_stack else 'DecisionInboxTests/testNativeNavigation' if args.navigation else 'NativeDecisionFlowTests/testChoiceReceiptStaysStableDuringServerConfirmation' if args.decision_receipt else 'BotExchangeFlowTests' if args.exchange else 'InstantSendFlowTests' if args.instant_send else 'ConversationSendRecoveryTests' if args.keyboard_recovery else 'ConversationLayoutFlowTests/testKeyboardKeepsBottomPinnedAndPreservesHistory' if args.keyboard_anchor else 'ConversationLayoutFlowTests'), '-parallel-testing-enabled', 'NO',
                             '-resultBundlePath', str(args.result)]
             with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1) as process:
                 for line in process.stdout:

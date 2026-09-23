@@ -4,6 +4,29 @@ from __future__ import annotations
 import json
 
 
+def decision_risk(payload):
+    from .service import ServiceError
+    level, reason = payload.get('risk_level'), payload.get('risk', '')
+    if (level not in (None, 'low', 'medium', 'high', 'not_assessed')
+            or not isinstance(reason, str) or len(reason) > 2000
+            or (level is not None and not reason.strip())):
+        raise ServiceError(400, 'Use low, medium, high, or not_assessed for risk_level, with a concrete reason in risk.')
+    return dict(risk_level=level, risk=reason.strip())
+
+
+def has_assessment(decision):
+    return bool(decision.get('risk') or decision.get('evidence') or decision.get('uncertainty')
+                or any(option.get('risk') for option in decision.get('options', [])))
+
+
+def invalidate_assessment(decision):
+    if has_assessment(decision):
+        changed = not decision.get('assessment_stale')
+        decision['assessment_stale'] = True
+        return changed
+    return False
+
+
 def decision_options(options):
     from .service import ServiceError
     if (not isinstance(options, list) or not 1 <= len(options) <= 8
@@ -15,7 +38,7 @@ def decision_options(options):
             or len({option['id'] for option in options}) != len(options)):
         raise ServiceError(400, 'Supply one to eight distinct choices with concise explanations.')
     return [dict(id=option['id'], label=option['label'], answer='approve',
-                 explanation=option.get('explanation', '')) for option in options]
+                 explanation=option.get('explanation', ''), **decision_risk(option)) for option in options]
 
 
 class DecisionInbox:
@@ -31,6 +54,7 @@ class DecisionInbox:
                                                           edited_by=device, edited_at=now()))
         decision.update(draft=draft, draft_hash=digest(encoded(draft)), revision=decision['revision'] + 1,
                         inbox_deferred_at=None, inbox_undo_until=None, inbox_swipe_id=None)
+        invalidate_assessment(decision)
         self._put('decisions', decision)
         self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
         return self._public(decision)
@@ -270,8 +294,13 @@ class DecisionInbox:
     def _revise_question(self, decision, task, revision, reason, actor=None):
         from .service import ServiceError
         options = decision_options(revision.get('options'))
-        if decision.get('_recovery_work_ids') and options != decision_options(decision['options']):
-            raise ServiceError(400, 'Recovery actions are fixed. Keep the existing options, or withdraw an obsolete recovery question.')
+        assessment = decision_risk(revision)
+        if decision.get('_recovery_work_ids'):
+            def actions(values):
+                return [{key: value for key, value in option.items() if key not in ('risk', 'risk_level')}
+                        for option in values]
+            if actions(options) != actions(decision_options(decision['options'])):
+                raise ServiceError(400, 'Recovery actions are fixed. Keep the existing options, or withdraw an obsolete recovery question.')
         title = revision.get('title')
         if not isinstance(title, str) or not title.strip() or len(title) > 160:
             raise ServiceError(400, 'Supply the revised question.')
@@ -283,11 +312,11 @@ class DecisionInbox:
         merge_url = self._merge_decision_url({'merge_pr_url': revision.get('merge_pr_url', decision.get('merge_pr_url'))}, task)
         merge_head = self._merge_decision_head(merge_url, task)
         requested_at = self._validate_merge_decision(dict(decision, merge_pr_url=merge_url, _merge_pr_head=merge_head), task)
-        decision.update(title=title, options=options,
+        decision.update(title=title, options=options, **assessment, assessment_stale=False,
                         merge_pr_url=merge_url, _merge_pr_head=merge_head, _merge_request_at=requested_at,
                         recommended_option_id=recommended, revision=decision['revision'] + 1,
                         inbox_deferred_at=None)
-        for field, limit in (('context', 2000), ('explanation', 2000), ('evidence', 8000), ('uncertainty', 2000), ('risk', 2000)):
+        for field, limit in (('context', 2000), ('explanation', 2000), ('evidence', 8000), ('uncertainty', 2000)):
             value = revision.get(field, '')
             if not isinstance(value, str) or len(value) > limit:
                 raise ServiceError(400, 'Use concise text for decision details.')
@@ -370,7 +399,13 @@ DECISION_INSTRUCTIONS = (
     'Use specific option labels such as "Update alert rules" or "Create a draft PR", rather than "Include both" or "Proceed". '
     'Use an option explanation only to add a consequence or tradeoff. Do not repeat the label or context. '
     'State material risk in one concrete sentence. Describe the failure and who or what it affects. '
-    'Do not use unsupported risk ratings, confidence percentages, or blanket claims that an action is safe. '
+    'Use risk_level only when it helps the decision. Assess the proposed action, not implementation difficulty or CI status. '
+    'Use low for a small, verified impact with a clear recovery path; medium for meaningful but bounded impact; '
+    'high for broad impact or difficult recovery. Use not_assessed when missing evidence prevents an assessment. '
+    'Always state the concrete reason in risk. Support the assessment with evidence and state material unknowns in uncertainty. '
+    'When choices have different risks, put risk_level and risk on those options instead of assigning one level to the whole card. '
+    'Green checks alone do not establish low risk. A risk label never grants approval or replaces merge checks. '
+    'Do not give confidence percentages, unsupported ratings, or blanket claims that an action is safe. '
     'Omit an empty risk field. Do not invent a warning merely to fill the structure. '
     'Keep risk and uncertainty distinct and avoid repeating either in context. '
     'Match them to the action being approved. A future release caveat belongs here only if it changes this choice. '

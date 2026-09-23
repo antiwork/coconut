@@ -35,6 +35,67 @@ class DecisionInboxTests(unittest.TestCase):
             self.service._put('contexts', context)
         return context
 
+    def test_risk_levels_require_reasons_and_reject_numeric_confidence(self):
+        for fields in (dict(risk_level='low'), dict(risk_level='medium', risk='  '),
+                       dict(risk_level='safe', risk='Looks fine'), dict(risk_level=99, risk='Tests pass'),
+                       dict(risk_level='high', risk=42)):
+            for on_option in (False, True):
+                with self.subTest(fields=fields, on_option=on_option), self.assertRaises(ServiceError):
+                    option = dict(id='one', label='Proceed', **(fields if on_option else {}))
+                    self.event('native_question', dict(title='Proceed?', options=[option],
+                                                      **({} if on_option else fields)))
+        self.assertEqual(self.service.snapshot()['decisions'], [])
+
+    def test_assessments_survive_creation_revision_and_restart_without_answering(self):
+        options = [dict(id='publish', label='Publish', risk_level='medium', risk='Customers can read an incorrect date.'),
+                   dict(id='wait', label='Wait', risk_level='low', risk='Only the release note is delayed.')]
+        with self.assertRaises(YieldForDecision):
+            self.event('native_question', dict(title='Publish?', options=options,
+                risk_level='not_assessed', risk='The release date needs confirmation.', evidence='Compared the draft with the release.'))
+        self.restart()
+        decision = self.service.snapshot()['decisions'][-1]
+        self.assertEqual(decision['risk_level'], 'not_assessed')
+        self.assertEqual(decision['evidence'], 'Compared the draft with the release.')
+        self.assertEqual([o['risk_level'] for o in decision['options']], ['medium', 'low'])
+        task = self.service._get('tasks', decision['task_id'])
+        self.service._revise_question(decision, task, dict(title='Publish the checked notes?', options=options,
+            risk_level='low', risk='Only the release note changes.', evidence='The release date matches.'), 'Checked the date.')
+        self.restart()
+        revised = self.service.snapshot()['decisions'][-1]
+        self.assertEqual(revised['status'], 'pending')
+        self.assertEqual(revised['risk_level'], 'low')
+        self.assertEqual(revised['evidence'], 'The release date matches.')
+        self.assertEqual(revised['revision'], 2)
+        self.service._revise_question(revised, task, dict(title='Which next step?',
+            options=[dict(id='wait', label='Wait')]), 'Remove the old assessment.')
+        saved = self.service.snapshot()['decisions'][-1]
+        self.assertIsNone(saved['risk_level'])
+        self.assertEqual(saved['risk'], '')
+        self.assertFalse(saved['options'][0].get('risk'))
+
+    def test_fixed_actions_allow_new_assessments_without_changing_the_actions(self):
+        decision = self.question()
+        decision['_recovery_work_ids'] = ['existing-work']
+        task = self.service._get('tasks', decision['task_id'])
+        options = [dict(option, risk_level='not_assessed', risk='The saved result needs verification.')
+                   for option in decision['options']]
+        self.service._revise_question(decision, task, dict(title=decision['title'], options=options), 'Checked the risks.')
+        saved = self.service._get('decisions', decision['id'])
+        self.assertEqual(saved['options'][0]['risk_level'], 'not_assessed')
+        self.assertEqual(saved['options'][0]['label'], decision['options'][0]['label'])
+        options[0]['label'] = 'Run a different action'
+        with self.assertRaises(ServiceError):
+            self.service._revise_question(saved, task, dict(title=saved['title'], options=options), 'Change the action.')
+
+    def test_all_card_tools_expose_the_same_optional_risk_contract(self):
+        from coconut.native_bridge import QUESTION_SCHEMA, SUGGEST_SCHEMA, REPLY_SCHEMA
+        common = QUESTION_SCHEMA['parameters']['properties']
+        for properties in (common, SUGGEST_SCHEMA['parameters']['properties'],
+                           REPLY_SCHEMA['parameters']['properties']['revision']['properties']):
+            self.assertEqual(properties['risk_level']['enum'], ['low', 'medium', 'high', 'not_assessed'])
+            self.assertEqual(properties['options']['items']['properties']['risk_level'], common['risk_level'])
+        self.assertNotIn('risk_level', QUESTION_SCHEMA['parameters']['required'])
+
     def test_recommendation_is_optional_and_survives_revision(self):
         decision = self.question()
         self.assertIsNone(decision.get('recommended_option_id'))

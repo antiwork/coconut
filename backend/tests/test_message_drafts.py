@@ -37,6 +37,17 @@ class MessageDraftTests(unittest.TestCase):
         self.assertEqual(self.service.snapshot()['decisions'][0]['draft'], draft['draft'])
         self.assertEqual(self.service.snapshot()['decisions'][0]['status'], 'pending')
 
+    def test_edit_invalidates_the_assessment_of_the_old_message(self):
+        old = self.draft()
+        decision = self.service._get('decisions', old['id'])
+        decision.update(risk_level='low', risk='Only the meeting time changes.', evidence='Checked the recipient and time.')
+        self.service._put('decisions', decision)
+        content = dict(old['draft'], body='Cancel the project.', recipient='team@example.com')
+        updated = self.write('POST', '/v1/decisions/' + old['id'] + '/draft', dict(revision=1, draft=content))
+        self.assertTrue(updated['assessment_stale'])
+        self.assertEqual(updated['status'], 'pending')
+        self.assertEqual(updated['revision'], 2)
+
     def test_edit_stays_pending_and_old_approval_is_rejected(self):
         old = self.draft()
         content = dict(old['draft'], body='Hi Sarah,\nCan we meet at 3 PM?', recipient='sarah.new@example.com')

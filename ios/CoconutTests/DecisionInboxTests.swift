@@ -2,6 +2,33 @@ import XCTest
 @testable import Coconut
 
 final class DecisionInboxTests: XCTestCase {
+    func testAssessmentDecodesOptionalLevelsAndStaleStateWithoutChangingPermissions() throws {
+        var decision = try XCTUnwrap(PreviewStateFixture.load().decisions.first)
+        decision.status = "pending"
+        decision.riskLevel = "medium"
+        decision.risk = "The release date can be wrong."
+        decision.evidence = "Compared release notes."
+        decision.context = "Publish the release notes."
+        decision.uncertainty = "The release time remains undecided."
+        decision.options[0].riskLevel = "low"
+        decision.options[0].risk = "Only the private draft changes."
+        decision.assessmentStale = true
+        let decoded = try APIJSON.decoder().decode(Decision.self, from: APIJSON.encoder().encode(decision))
+        XCTAssertEqual(decoded.riskLevel, "medium")
+        XCTAssertEqual(decoded.risk, decision.risk)
+        XCTAssertEqual(decoded.evidence, decision.evidence)
+        XCTAssertEqual(decoded.options[0].riskLevel, "low")
+        XCTAssertEqual(decoded.options[0].risk, decision.options[0].risk)
+        XCTAssertEqual(decoded.assessmentStale, true)
+        XCTAssertEqual(decoded.cardContext, "Publish the release notes.")
+        decision.assessmentStale = false
+        XCTAssertTrue(decision.cardContext?.contains("The release time remains undecided.") == true)
+        XCTAssertTrue(decoded.isPending, "An assessment must not become a permission gate.")
+        XCTAssertEqual(DecisionRisk.label("not_assessed"), "Risk not assessed")
+        XCTAssertEqual(DecisionRisk.label("unknown-future-value"), "Risk")
+        XCTAssertEqual(DecisionRisk.label(nil), "Risk")
+    }
+
     @MainActor
     func testBadgeWaitsForSnapshotAndClearsOnUnpair() {
         let store = AppStore(demo: true)

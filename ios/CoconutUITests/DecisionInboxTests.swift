@@ -2,6 +2,45 @@ import XCTest
 
 final class DecisionInboxTests: XCTestCase {
     @MainActor
+    func testAssessmentInInboxAndChatUpdatesWhenSourcesChange() throws {
+        guard let address = ProcessInfo.processInfo.environment["COCONUT_LAYOUT_TEST_URL"] else { throw XCTSkip("Run the assessment fixture.") }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Inbox"].tap()
+        XCTAssertTrue(app.staticTexts["Medium risk"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Customers can read an incorrect date."].exists)
+        XCTAssertTrue(app.staticTexts["The release time remains undecided."].exists)
+        let evidence = "Compared every date with the release record."
+        XCTAssertFalse(app.staticTexts[evidence].exists)
+        app.buttons["View evidence"].tap()
+        XCTAssertTrue(app.staticTexts[evidence].waitForExistence(timeout: 2))
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Risk and evidence in Inbox"; proof.lifetime = .keepAlways; add(proof)
+        app.scrollViews["inbox-card-scroll"].swipeUp()
+        let review = app.buttons["decision-option-option-0-1"]
+        XCTAssertTrue(review.exists)
+        XCTAssertTrue(app.staticTexts["Only the private draft changes."].exists)
+        app.scrollViews["inbox-card-scroll"].swipeDown()
+        app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "inbox-context-")).firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["Customers can read an incorrect date."].waitForExistence(timeout: 5))
+        let finished = expectation(description: "Receive changed source event")
+        var request = URLRequest(url: URL(string: address + "/test/assessment-stale")!)
+        request.httpMethod = "POST"
+        URLSession.shared.dataTask(with: request) { _, _, error in
+            XCTAssertNil(error); finished.fulfill()
+        }.resume()
+        wait(for: [finished], timeout: 5)
+        XCTAssertTrue(app.staticTexts["Assessment needs updating"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Customers can read an incorrect date."].exists)
+        XCTAssertFalse(app.staticTexts["The release time remains undecided."].exists)
+        XCTAssertFalse(app.buttons["View evidence"].exists)
+        XCTAssertFalse(app.staticTexts["Only the private draft changes."].exists)
+    }
+
+    @MainActor
     func testChoicesAdvanceBeforeConfirmationAndRecoverFailure() throws {
         guard let address = ProcessInfo.processInfo.environment["COCONUT_LAYOUT_TEST_URL"] else { throw XCTSkip("Run the choice fixture.") }
         continueAfterFailure = false

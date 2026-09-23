@@ -292,6 +292,8 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     var evidence: String? = nil
     var uncertainty: String? = nil
     var risk: String? = nil
+    var riskLevel: String? = nil
+    var assessmentStale: Bool? = nil
     var replyPending: Bool? = nil
     var sources: [DecisionSource]? = nil
     var mergePrUrl: String? = nil
@@ -323,7 +325,7 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
         let text = recap.isEmpty ? explanation.trimmingCharacters(in: .whitespacesAndNewlines) : recap
         var summary = text == title ? "" : text
         let unknown = uncertainty?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !unknown.isEmpty, !summary.localizedCaseInsensitiveContains(unknown) {
+        if assessmentStale != true, !unknown.isEmpty, !summary.localizedCaseInsensitiveContains(unknown) {
             summary = [summary, unknown].filter { !$0.isEmpty }.joined(separator: "\n\n")
         }
         if actionType == "native_approval", !resource.isEmpty, !summary.contains(resource) {
@@ -369,6 +371,18 @@ struct DecisionPreview: Codable, Identifiable, Equatable, Sendable {
     var id: String { artifactId }
 }
 
+enum DecisionRisk {
+    static func label(_ level: String?) -> String {
+        switch level {
+        case "low": "Low risk"
+        case "medium": "Medium risk"
+        case "high": "High risk"
+        case "not_assessed": "Risk not assessed"
+        default: "Risk"
+        }
+    }
+}
+
 struct DecisionOption: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var label: String
@@ -376,6 +390,8 @@ struct DecisionOption: Codable, Identifiable, Equatable, Sendable {
     var answer: String
     var action: ProposedFileAction?
     var modification: String?
+    var risk: String? = nil
+    var riskLevel: String? = nil
 }
 
 struct ProposedFileAction: Codable, Equatable, Sendable {

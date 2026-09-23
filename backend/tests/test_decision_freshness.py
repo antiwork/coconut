@@ -46,6 +46,111 @@ class DecisionFreshnessTests(unittest.TestCase):
         context['status'] = 'completed'
         self.service._put('contexts', context)
 
+    def test_changed_source_hides_assessment_until_fenced_check_confirms_it(self):
+        decision = self.question(old=False)
+        url = 'https://github.com/example/project/pull/42'
+        decision.update(sources=[dict(kind='pull_request', title='Release', url=url)],
+            risk_level='low', risk='Only the release note changes.', evidence='Checked the release date.',
+            uncertainty='The publication date remains undecided.')
+        decision['options'][0].update(risk_level='medium', risk='Customers will see this date.')
+        self.service._put('decisions', decision)
+        observation = SimpleNamespace(observed=True, pr_state='open', base_branch='main', head_sha='first-head',
+            title='Release', draft=False, checks_state='passed', required_checks_state='passed',
+            review_checks='approved', check_failures=None)
+        tracker = SimpleNamespace(observe=lambda _: observation, observe_discussion=lambda _: 'Checked date')
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            self.service._refresh_decision_sources({})
+            saved = self.service._get('decisions', decision['id'])
+            self.assertTrue(self.service._public(saved)['assessment_stale'])
+            self.assertEqual(saved['status'], 'pending')
+            context = self.refresh()
+            self.assertIn('Customers will see this date.', context['question'])
+            self.assertIn('publication date remains undecided', context['question'])
+            self.service.refresh_decision(context['id'], dict(status='current', evidence='Checked the first head and its date.'))
+            self.finish(context)
+            saved = self.service._get('decisions', decision['id'])
+            self.assertFalse(saved['assessment_stale'])
+            observation.head_sha = 'second-head'
+            self.service._refresh_decision_sources({})
+            saved = self.service._get('decisions', decision['id'])
+            self.assertTrue(saved['assessment_stale'])
+            saved['_freshness']['queued_at'] = '2000-01-01T00:00:00Z'
+            self.service._put('decisions', saved)
+            context = self.refresh()
+            observation.head_sha = 'third-head'
+            self.service._refresh_decision_sources({})
+            with self.assertRaises(ServiceError):
+                self.service.refresh_decision(context['id'], dict(status='current', evidence='Checked the second head.'))
+            self.assertTrue(self.service._get('decisions', decision['id'])['assessment_stale'])
+
+    def test_changed_work_hides_assessment_and_revision_replaces_it(self):
+        decision = self.question()
+        decision.update(risk_level='low', risk='Only the local test folder changes.', evidence='Inspected the setup.')
+        self.service._put('decisions', decision)
+        context = self.refresh()
+        self.assertTrue(self.service._get('decisions', decision['id'])['assessment_stale'])
+        self.service.refresh_decision(context['id'], dict(status='revise', evidence='The setup now affects shared data.',
+            revision=dict(title='Change the shared test setup?', options=decision['options'],
+                risk_level='high', risk='Other tests can lose their data.', evidence='Found a shared database.')))
+        saved = self.service._get('decisions', decision['id'])
+        self.assertFalse(saved['assessment_stale'])
+        self.assertEqual(saved['risk_level'], 'high')
+        self.assertEqual(saved['status'], 'pending')
+
+    def test_work_change_invalidates_assessment_even_when_refresh_cannot_start(self):
+        from coconut.service import now
+        decision = self.question(old=False)
+        decision.update(risk_level='low', risk='Only local files change.', evidence='Checked the local scope.')
+        self.service._put('decisions', decision)
+        task = self.service._get('tasks', self.task['id'])
+        task['summary'] = 'The scope now includes shared files.'
+        self.service._put('tasks', task)
+        for blocked in ('retry_interval', 'session_busy', 'another_refresh'):
+            with self.subTest(blocked=blocked):
+                saved = self.service._get('decisions', decision['id'])
+                saved['assessment_stale'] = False
+                saved['_freshness']['queued_at'] = now() if blocked == 'retry_interval' else '2000-01-01T00:00:00Z'
+                self.service._put('decisions', saved)
+                if blocked == 'another_refresh':
+                    self.service._put('contexts', dict(id='busy', task_id=task['id'], bot_id=task['bot_id'],
+                        decision_id=decision['id'], status='working', _decision_refresh=True))
+                with patch.object(self.service, '_refresh_session_busy', return_value=blocked == 'session_busy'), \
+                     patch.object(self.service, '_cancel_stale_decision_refreshes'):
+                    self.service._queue_decision_refreshes()
+                self.assertTrue(self.service._get('decisions', decision['id'])['assessment_stale'])
+                self.assertEqual(len(self.service._all('contexts')), 1 if blocked == 'another_refresh' else 0)
+
+    def test_temporary_change_still_gets_a_check_after_facts_return_to_original(self):
+        from coconut.service import now
+        decision = self.question(old=False)
+        decision.update(risk_level='low', risk='Only local files change.', evidence='Checked the scope.')
+        decision['_freshness']['queued_at'] = now()
+        self.service._put('decisions', decision)
+        task = self.service._get('tasks', self.task['id'])
+        self.service._put('tasks', dict(task, summary='A temporary change.'))
+        self.service._queue_decision_refreshes()
+        saved = self.service._get('decisions', decision['id'])
+        self.assertTrue(saved['assessment_stale'])
+        self.assertEqual(self.service._all('contexts'), [])
+        self.service._put('tasks', task)
+        saved['_freshness']['queued_at'] = '2000-01-01T00:00:00Z'
+        self.service._put('decisions', saved)
+        context = self.refresh()
+        self.service.refresh_decision(context['id'], dict(status='current', evidence='The original scope still applies.'))
+        self.assertFalse(self.service._get('decisions', decision['id'])['assessment_stale'])
+
+    def test_uncertainty_alone_is_invalidated_when_work_changes(self):
+        decision = self.question()
+        decision['uncertainty'] = 'The test dependency is unavailable.'
+        self.service._put('decisions', decision)
+        context = self.refresh()
+        self.assertTrue(self.service._get('decisions', decision['id'])['assessment_stale'])
+        self.service.refresh_decision(context['id'], dict(status='revise', evidence='The dependency is now available.',
+            revision=dict(title=decision['title'], options=decision['options'], uncertainty='')))
+        saved = self.service._get('decisions', decision['id'])
+        self.assertFalse(saved['assessment_stale'])
+        self.assertEqual(saved['uncertainty'], '')
+
     def test_no_pending_cards_or_refreshes_skip_historical_collections(self):
         with patch.object(self.service, '_all', side_effect=AssertionError('No card needs observation')):
             self.service._queue_decision_refreshes()

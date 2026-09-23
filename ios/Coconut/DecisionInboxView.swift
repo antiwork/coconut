@@ -260,7 +260,7 @@ struct DecisionInboxView: View {
                     } else {
                         VStack(spacing: 8) {
                             ForEach(decision.cardOptions, id: \.id) { option in
-                                DecisionChoiceContent(option: option, isRecommended: decision.recommendedOptionId == option.id, isCompact: true)
+                                DecisionChoiceContent(option: option, isRecommended: decision.recommendedOptionId == option.id, isCompact: true, showsAssessment: decision.assessmentStale != true)
                             }
                         }
                     }
