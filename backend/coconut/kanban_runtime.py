@@ -48,12 +48,11 @@ class Board:
                        or self.dispatch.UNVERIFIED_WORKER_FINGERPRINT)
         self.conn.execute(
             'UPDATE task_runs SET worker_pid=NULL,worker_started_at=NULL '
-            'WHERE id<>? '
-            'AND worker_pid=? AND worker_started_at=?',
-            (claimed.current_run_id, pid, fingerprint))
+            'WHERE id<>? AND worker_pid=?',
+            (claimed.current_run_id, pid))
         self.conn.execute('UPDATE tasks SET worker_pid=NULL,worker_started_at=NULL '
-                          'WHERE id<>? AND worker_pid=? AND worker_started_at=?',
-                          (claimed.id, pid, fingerprint))
+                          'WHERE id<>? AND worker_pid=?',
+                          (claimed.id, pid))
         return fingerprint
 
     def record_worker_pid(self, claimed, pid):

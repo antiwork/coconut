@@ -2159,8 +2159,13 @@ with tempfile.TemporaryDirectory() as root:
         board.kb.block_task(board.conn, task_id, reason='Wait for next run', kind='capability')
         board.kb.unblock_task(board.conn, task_id)
         second = board.kb.claim_task(board.conn, task_id)
-        with board.kb.write_txn(board.conn):
-            board.record_worker_pid(second, process.pid)
+        original_fingerprint = board.dispatch._process_fingerprint
+        try:
+            board.dispatch._process_fingerprint = lambda pid: None
+            with board.kb.write_txn(board.conn):
+                board.record_worker_pid(second, process.pid)
+        finally:
+            board.dispatch._process_fingerprint = original_fingerprint
         rows = board.conn.execute('SELECT id,worker_pid FROM task_runs WHERE task_id=? ORDER BY id',
                                   (task_id,)).fetchall()
         assert first.current_run_id != second.current_run_id
