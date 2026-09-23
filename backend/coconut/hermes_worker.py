@@ -20,7 +20,7 @@ if __package__:
     from .native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content
     from .native_bridge import TurnPaused
     from .native_turn_scope import TurnScope, current as current_turn, setup_lock, active_scopes, TurnUnconfirmed
-    from .pull_request_reviews import PR_REVIEW_INSTRUCTIONS
+    from .pull_request_reviews import PR_REVIEW_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS
     from .work_progress import NativeWork, WORK_INSTRUCTIONS
     from .tracked_work import TRACK_WORK_SCHEMA
     from .silent_responses import is_silent_response
@@ -29,7 +29,7 @@ else:
     from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content
     from native_bridge import TurnPaused
     from native_turn_scope import TurnScope, current as current_turn, setup_lock, active_scopes, TurnUnconfirmed
-    from pull_request_reviews import PR_REVIEW_INSTRUCTIONS
+    from pull_request_reviews import PR_REVIEW_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS
     from work_progress import NativeWork, WORK_INSTRUCTIONS
     from tracked_work import TRACK_WORK_SCHEMA
     from silent_responses import is_silent_response
@@ -1196,10 +1196,7 @@ def run_turn(request, emit, request_receipt):
         instructions = ('You work in Coconut, a concise messaging app. Give short, useful replies. '
                         'Use coconut_track_pr when you create a PR, start work on an existing PR, or the person asks to follow one. Track the URL even when this task continues an older conversation. '
                         + pr_progress +
-                        'When a delegated PR passes CI, its owner verifies current reviews, unresolved findings, conflicts, and required approvals. '
-                        'The owner offers one merge decision with coconut_ask when those checks support merging. Coconut preserves the recorded conversation route. '
-                        'Do not wait for the requesting bot to present the card. Return useful results through the existing assignment. Recommend Merge when justified. '
-                        'Reuse any pending merge decision for that PR. Green CI alone is not merge permission. Never merge without explicit authorization for the current changes; recheck the head before any authorized merge. '
+                        (PR_MERGE_INSTRUCTIONS if operation != 'context' else '') +
                         'Use coconut_wait to wait for an existing task. Call it without arguments to find tasks in this exchange. '
                         'After a confirmed wait, finish the turn; Coconut resumes it when the dependency ends. A note in memory does not register a wait. '
                         'Use native Hermes tools and profile memory. Save standing preferences with the native memory tool. '

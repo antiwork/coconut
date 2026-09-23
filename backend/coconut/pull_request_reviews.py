@@ -2,12 +2,27 @@
 import json
 import threading
 
+PR_MERGE_INSTRUCTIONS = (
+    'Verify the current PR head, required checks, independent reviews, unresolved findings, conflicts, and required approvals before merging. '
+    'Use the original human request and standing instructions in your native profile to determine merge permission. '
+    'Standing approval applies only to its stated repository, changes, and conditions. Green CI alone does not grant permission. '
+    'If that approval covers the current changes and all conditions pass, mark the draft ready and merge without another card. '
+    'Preserve explicit human holds, rejected decisions, visual approval requirements, and native tool approval checks. '
+    'If merge permission is missing, ask once. Offer one coconut_ask merge decision yourself when the evidence supports it. '
+    'Coconut preserves the recorded conversation route. Do not wait for the requesting bot to present the card. '
+    'Reuse an existing pending merge decision for this PR. Do not bypass its unanswered choice or duplicate its action. '
+    'Recommend Merge when justified and include a Leave open option. Identify the PR and merge scope in each choice. '
+    'Set merge_pr_url to the tracked PR URL so an external merge retires the card. '
+    'Before an authorized merge, recheck the exact head and use a merge operation that rejects a changed head. '
+    'Merge permission does not expand deployment or other external-action permission. '
+)
+
 PR_REVIEW_INSTRUCTIONS = (
     'Coconut observed new check or review results for a tracked pull request. This is a request to assess merge readiness, not permission to merge. '
     'Read the current PR head, required checks, reviews, unresolved findings, merge conflicts, and the original human instructions. '
     'Do not repeat finished implementation work. Respect any visual approval or other pending decision. '
     'A draft can be ready for a decision when its owner reports the current head ready. '
-    'If the PR remains a draft, include marking it ready in the proposed merge action. '
+    'If the PR remains a draft and needs a merge decision, include marking it ready in the proposed action. '
     'If the PR head changed, checks are incomplete, or a requirement remains unmet, do not claim it is ready. '
     'Distinguish required checks from optional checks. A pending optional deployment must not silently block assessment. '
     'If required_checks_state is unverified, a required status passed but its expected GitHub App is unconfirmed. Verify its source before recommending merge. '
@@ -15,16 +30,11 @@ PR_REVIEW_INSTRUCTIONS = (
     'If CI failed, inspect the failure and continue the authorized fix. Do not ask permission for a routine retry or review. '
     'If an external requirement remains, record its specific reason on the existing task. '
     'Coconut monitors this PR without model calls and resumes you when results change. Do not start gh pr checks --watch. '
-    'Offer one coconut_ask merge decision yourself when the evidence supports it. Coconut preserves the recorded conversation route. '
-    'Do not wait for the requesting bot to present the card. Return useful results through the existing assignment. '
-    'Recommend Merge when justified and include a Leave open option. '
-    'Reuse an existing pending merge decision for this PR. A choice must identify the PR and the scope of the merge. '
-    'Set merge_pr_url on that coconut_ask card to the tracked PR URL so an external merge retires it. '
+    + PR_MERGE_INSTRUCTIONS +
     'For a merged or closed PR, verify its current GitHub state and the original accepted scope. '
     'Verify whether the accepted outcome is complete and record evidence on the existing native task. '
     'A closed PR does not prove the accepted outcome is complete. Preserve unfinished work and human stops. '
     'Do not merge, reopen, publish, or deploy in response to a merged or closed observation. '
-    'Do not merge now. After explicit authorization, recheck the exact head and use a merge operation that rejects a changed head. '
 )
 
 
