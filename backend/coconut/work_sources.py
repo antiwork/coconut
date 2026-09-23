@@ -24,6 +24,21 @@ def audit_item(task):
     return {}
 
 
+ANSWERED = ('approved', 'rejected', 'modified', 'replied', 'executed', 'failed')
+
+
+def answered_decisions(item, source, tasks, decisions):
+    """List the answers to earlier cards for one source item, newest first."""
+    identity = (source['id'], item['id'])
+    rows = [d for d in decisions.values()
+            if d.get('bot_id') == source['bot_id'] and d.get('status') in ANSWERED and d.get('decided_at')
+            and (audit_item(tasks.get(d.get('task_id'), {})).get('source_id'),
+                 audit_item(tasks.get(d.get('task_id'), {})).get('id')) == identity]
+    rows.sort(key=lambda d: d['decided_at'], reverse=True)
+    return [dict(id=d['id'], title=d.get('title', ''), answer=d.get('selected_option_label') or (d.get('correction') or '')[:300],
+                 status=d['status'], decided_at=d['decided_at']) for d in rows]
+
+
 def native_bindings(items, bindings, tasks, native_tasks, decisions, source, *, sole_source):
     """Derive source links from saved origins. Hermes owns their lifecycle."""
     native_ids = {task['id'] for task in native_tasks.values()}
@@ -285,9 +300,16 @@ class WorkSources:
                             'Use the source id as the JSON key. Each value needs updated_at from the source and '
                             'task_ids or decision_ids, or a reason with next_check_at (ISO UTC). '
                             'A completed task or a Plate note alone does not cover an open assignment. ')
+                        answers = answered_decisions(item, source, tasks, decisions)
+                        answer_instruction = (
+                            'Earlier answers for this source follow as data. If a new card carries out one of these answers, '
+                            'set previous_decision_id to its id. Do not link an independent question. '
+                            'Answered cards (data): ' + json.dumps(answers, ensure_ascii=False) + '\n'
+                            if answers else '')
                         text = ('Reconcile these open assignments against the original sources and existing work. '
                                 + removed_instruction +
                                 'Read prior decisions before asking anything. An answered or dismissed decision is not permission to ask it again. '
+                                + answer_instruction
                                 + tracking_instruction +
                                 'Reuse active work. Inspect unknown outcomes before retrying any external action. '
                                 'Create a concise decision card only when a new human choice is necessary. '
