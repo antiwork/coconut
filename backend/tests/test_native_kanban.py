@@ -26,8 +26,8 @@ class Provider(FixtureProvider):
         self.release = threading.Event()
         self.release.set()
 
-    def prepare_kanban_worker(self, identity, bot, workspace, execution_id):
-        self.prepared.append((identity, str(workspace), execution_id))
+    def prepare_kanban_worker(self, identity, bot, workspace, execution_id, worker_id=None):
+        self.prepared.append((identity, str(workspace), execution_id, worker_id))
         process = subprocess.Popen(['sleep', '90'])
         self.processes.append(process)
         return process.pid
@@ -1563,7 +1563,7 @@ board.kb.block_task(board.conn, sys.argv[4], reason='Worker setup failed')
         self.assertEqual(current['status'], 'ready')
         self.assertEqual(current['workspace_path'], str(workspace))
         self.settle(lambda: owner['id'] in self.provider.started)
-        self.assertIn((owner['id'], str(workspace), identity), self.provider.prepared)
+        self.assertIn((owner['id'], str(workspace), owner['id'], identity), self.provider.prepared)
         self.assertEqual((workspace / 'receipt.txt').read_text(), 'Original Dev execution')
         self.assertEqual(self.service._get('artifacts', work['id']), work)
         self.assertEqual(self.service._get('artifacts', pr['id'])['work_outcome_id'], work['id'])

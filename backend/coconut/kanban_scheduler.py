@@ -252,7 +252,8 @@ class NativeKanban(NativeOutcomes):
                         or row['id'] in self.running or row['id'] in self.context_threads):
                     raise ValueError('This request stopped before dispatch.')
                 bot = self._get('bots', task['bot_id'])
-            pid = self.provider.prepare_kanban_worker(row['id'], bot, claim['workspace'], claim['native_id'])
+            pid = self.provider.prepare_kanban_worker(row['id'], bot, claim['workspace'],
+                                                      execution_key(task), claim['native_id'])
             with self.transaction():
                 table = 'contexts' if context else 'tasks'
                 item = self._get(table, row['id'])

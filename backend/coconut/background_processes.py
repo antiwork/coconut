@@ -159,10 +159,12 @@ class BackgroundProcesses:
                     processes, cached = [], []
                     for record in records:
                         task = self._get('tasks', record['task_id'])
+                        native_worker_id = (task.get('_kanban_claim') or {}).get('native_id') or task.get('_native_outcome_id')
                         if record.get('_delegation_ack_pending'):
                             processes.append(dict(id=record['id'], task_id=task['id'],
                                                   delegation_ids=delegation_ids(record), epoch=task.get('_conversation_epoch'),
-                                                  execution_session_id=task.get('_execution_session_id'), acknowledge=True))
+                                                  execution_session_id=task.get('_execution_session_id'),
+                                                  native_worker_id=native_worker_id, acknowledge=True))
                             continue
                         if not self._process_observation_current(task, bot):
                             continue
@@ -173,6 +175,7 @@ class BackgroundProcesses:
                             continue
                         processes.append(dict(id=record['id'], session_id=subscription(record), task_id=task['id'],
                                               epoch=task.get('_conversation_epoch'), execution_session_id=task.get('_execution_session_id'),
+                                              native_worker_id=native_worker_id,
                                               delegation_ids=delegation_ids(record)))
                 if not processes and not cached:
                     continue
