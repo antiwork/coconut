@@ -80,6 +80,7 @@ final class AppStore {
     var isBusy: Bool { writeCount > 0 }
     var pendingDecisions: [Decision] { decisions.filter(\.isPending) }
     var inboxBadgeCount: Int { pendingDecisions.filter { !answeringDecisionIds.contains($0.id) }.count }
+    var reconciledBadgeCount: Int? { lastSync.map { _ in inboxBadgeCount } }
     var activeTasks: [AgentTask] { tasks.filter(\.isActive) }
     func isBotActive(_ bot: Bot) -> Bool {
         guard !bot.archived else { return false }
@@ -294,6 +295,7 @@ final class AppStore {
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
         cursor = 0
         lastSync = nil
+        if !isDemo { PushNotifications.shared.setBadgeCount(0) }
         model = ""
         modelBaseURL = ""
         modelConfigured = false

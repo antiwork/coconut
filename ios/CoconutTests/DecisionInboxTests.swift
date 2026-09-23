@@ -2,6 +2,18 @@ import XCTest
 @testable import Coconut
 
 final class DecisionInboxTests: XCTestCase {
+    @MainActor
+    func testBadgeWaitsForSnapshotBeforeClearingPushCount() {
+        let store = AppStore(demo: true)
+        store.decisions = []
+        store.lastSync = nil
+        XCTAssertEqual(store.inboxBadgeCount, 0)
+        XCTAssertNil(store.reconciledBadgeCount)
+
+        store.lastSync = Date()
+        XCTAssertEqual(store.reconciledBadgeCount, 0)
+    }
+
     func testRefreshingWireFlagPreservesUpdatingPresentation() throws {
         var decision = try XCTUnwrap(PreviewStateFixture.load().decisions.first)
         decision.status = "pending"
