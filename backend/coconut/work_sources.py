@@ -36,7 +36,7 @@ def answered_decisions(item, source, tasks, decisions):
                  audit_item(tasks.get(d.get('task_id'), {})).get('id')) == identity]
     rows.sort(key=lambda d: d['decided_at'], reverse=True)
     return [dict(id=d['id'], title=d.get('title', ''), answer=d.get('selected_option_label') or (d.get('correction') or '')[:300],
-                 status=d['status'], decided_at=d['decided_at']) for d in rows[:5]]
+                 status=d['status'], decided_at=d['decided_at']) for d in rows]
 
 
 def native_bindings(items, bindings, tasks, native_tasks, decisions, source, *, sole_source):
