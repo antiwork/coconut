@@ -252,7 +252,7 @@ class NativeKanban(NativeOutcomes):
                         or row['id'] in self.running or row['id'] in self.context_threads):
                     raise ValueError('This request stopped before dispatch.')
                 bot = self._get('bots', task['bot_id'])
-            pid = self.provider.prepare_kanban_worker(row['id'], bot, claim['workspace'], execution_key(task))
+            pid = self.provider.prepare_kanban_worker(row['id'], bot, claim['workspace'], claim['native_id'])
             with self.transaction():
                 table = 'contexts' if context else 'tasks'
                 item = self._get(table, row['id'])
@@ -270,7 +270,8 @@ class NativeKanban(NativeOutcomes):
         if hasattr(self.provider, 'trim_kanban_workers'):
             with self.lock:
                 owners = {r['task_id'] for r in self._pending_completion_receipts()}
-                keep = {execution_key(t) for t in (self._get('tasks', i) for i in owners) if t['status'] != 'cancelled'}
+                keep = {self.kanban.tasks[i]['id'] for i in owners if i in self.kanban.tasks
+                        and self._get('tasks', i)['status'] != 'cancelled'}
             self.provider.trim_kanban_workers(keep)
         self._publish_kanban_changes()
         with self.changed:

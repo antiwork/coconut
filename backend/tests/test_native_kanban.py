@@ -1563,7 +1563,7 @@ board.kb.block_task(board.conn, sys.argv[4], reason='Worker setup failed')
         self.assertEqual(current['status'], 'ready')
         self.assertEqual(current['workspace_path'], str(workspace))
         self.settle(lambda: owner['id'] in self.provider.started)
-        self.assertIn((owner['id'], str(workspace), owner['id']), self.provider.prepared)
+        self.assertIn((owner['id'], str(workspace), identity), self.provider.prepared)
         self.assertEqual((workspace / 'receipt.txt').read_text(), 'Original Dev execution')
         self.assertEqual(self.service._get('artifacts', work['id']), work)
         self.assertEqual(self.service._get('artifacts', pr['id'])['work_outcome_id'], work['id'])
@@ -2170,18 +2170,6 @@ with tempfile.TemporaryDirectory() as root:
                                   (task_id,)).fetchall()
         assert first.current_run_id != second.current_run_id
         assert rows[0]['worker_pid'] is None and rows[1]['worker_pid'] == process.pid
-        board.kb.block_task(board.conn, task_id, reason='Yield to another task', kind='capability')
-        other_id = board.kb.create_task(board.conn, title='Next task', body='probe',
-            assignee='default', created_by='probe', tenant='probe', workspace_kind='dir',
-            workspace_path=root, priority=0, initial_status='blocked', idempotency_key='other')
-        board.kb.unblock_task(board.conn, other_id)
-        other = board.kb.claim_task(board.conn, other_id)
-        with board.kb.write_txn(board.conn):
-            board.record_worker_pid(other, process.pid)
-        assert board.conn.execute('SELECT worker_pid FROM task_runs WHERE id=?',
-                                  (second.current_run_id,)).fetchone()[0] is None
-        assert board.conn.execute('SELECT worker_pid FROM task_runs WHERE id=?',
-                                  (other.current_run_id,)).fetchone()[0] == process.pid
         with board.kb.write_txn(board.conn):
             board.conn.execute('UPDATE task_runs SET ended_at=? WHERE id=?',
                                (int(time.time()) - 600, rows[0]['id']))
@@ -2198,7 +2186,7 @@ with tempfile.TemporaryDirectory() as root:
             capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_normal_dispatch_transfers_worker_before_prior_run_ends(self):
+    def test_normal_dispatch_keeps_each_active_task_pid(self):
         self.native_program('''
 import os, subprocess, time
 workspace = board.kb.kanban_db_path().parent / 'reuse'
@@ -2209,13 +2197,13 @@ rows = [dict(id=name, bot_id='owner', title=name, state='ready', input='one',
 rows[1]['state'] = 'scheduled'
 board.sync(rows)
 ids = {item['external_id']: item['id'] for item in board.snapshot()}
-process = subprocess.Popen(['sleep', '120'])
+processes = [subprocess.Popen(['sleep', '120']) for _ in rows]
 try:
     started = []
     def spawn(task, path):
         assert not board.conn.in_transaction
         started.append(task.id)
-        return process.pid
+        return processes[len(started) - 1].pid
     board.tick(rows, 2, spawn)
     assert started == [ids['first']], started
     rows[0]['state'] = 'scheduled'
@@ -2226,18 +2214,12 @@ try:
                                    (ids['first'],)).fetchone()
     second_run = board.conn.execute('SELECT worker_pid FROM task_runs WHERE task_id=? ORDER BY id DESC',
                                     (ids['second'],)).fetchone()
-    assert first_run['worker_pid'] is None and second_run['worker_pid'] == process.pid, (dict(first_run), dict(second_run))
-    board.kb.block_task(board.conn, ids['first'], reason='First task ended', kind='capability')
-    with board.kb.write_txn(board.conn):
-        board.conn.execute('UPDATE task_runs SET ended_at=? WHERE id=?',
-                           (int(time.time()) - 600, first_run['id']))
-    signals = []
-    board.dispatch.reap_terminal_workers(board.conn,
-        signal_fn=lambda pid, sig: signals.append((pid, sig)))
-    assert not signals and process.poll() is None
+    assert first_run['worker_pid'] == processes[0].pid
+    assert second_run['worker_pid'] == processes[1].pid
 finally:
-    process.terminate()
-    process.wait()
+    for process in processes:
+        process.terminate()
+        process.wait()
 ''')
 
     def test_interrupted_preparation_after_coconut_claim_recovers(self):
