@@ -440,21 +440,20 @@ class GitHubPRTracker:
     def _newest_pages(self, path: str, deadline: float, older) -> tuple[list, bool]:
         """Read a list from its last page back, at most three pages.
 
-        GitHub lists these items by ID. A probe with one item for each page
-        gets the item count from the Link header. Stop at the first page with
-        an item for which `older` is true. Return the items and whether unread
-        pages remain. The ID order does not follow the time that `older`
-        checks, so unread pages can hold new items.
+        GitHub lists these items by ID. Read the first page and use its Link
+        header to locate the last page, then read backward up to three pages.
+        Stop at the first page with an item for which `older` is true. Return
+        the items and whether unread pages remain. The ID order does not
+        follow the time that `older` checks, so unread pages can hold new items.
         """
-        probe, link = self._request(path + 'per_page=1&page=1', deadline, cache=False)
+        probe, link = self._request(path + 'per_page=100&page=1', deadline, cache=False)
         if not isinstance(probe, list) or any(not isinstance(value, dict) for value in probe):
             raise PRTrackingError('GitHub returned an incomplete list.')
         match = re.search(r'<[^>]*[?&]page=([1-9][0-9]{0,6})[^>]*>;\s*rel="last"', link or '')
-        count = int(match[1]) if match else len(probe)
-        last = (count + 99) // 100
+        last = int(match[1]) if match else 1
         values = []
         for page in range(last, max(0, last - 3), -1):
-            batch = self._list(f'{path}per_page=100&page={page}', deadline)
+            batch = probe if page == 1 else self._list(f'{path}per_page=100&page={page}', deadline)
             values += batch
             if any(older(value) for value in batch):
                 return values, page > 1
@@ -501,23 +500,19 @@ class GitHubPRTracker:
             # Read the record first. Activity that arrives between the reads shows again on the next turn. It is not lost.
             first_read = None
             if issue['updated_at'] > since or (include_same_second and issue['updated_at'] == since):
-                # GitHub lists comments oldest first. Read from the last page back to get the newest comments.
-                last = (issue['comments'] + 99) // 100
-                for page in range(last, max(0, last - 3), -1):
-                    values = self._list(f'{prefix}/issues/{number}/comments?per_page=100&page={page}', deadline)
-                    items += [_activity('comment', v, v.get('updated_at'), operator) for v in values
-                              if isinstance(v.get('updated_at'), str) and v['updated_at'] >= since]
-                    if any(not isinstance(v.get('created_at'), str) or v['created_at'] < since for v in values):
-                        # The earlier pages were not read. An edited older comment there can be newer than `since`.
-                        incomplete = page > 1
-                        break
-                else:
-                    incomplete = last > 3
+                # Filter by update time before pagination. Older comment pages
+                # cannot create false incomplete warnings on an unchanged thread.
+                review_since = (datetime.fromisoformat(since.replace('Z', '+00:00'))
+                                - timedelta(seconds=1)).astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                values, more = self._newest_pages(
+                    f'{prefix}/issues/{number}/comments?since={quote(review_since)}&', deadline,
+                    lambda v: False)
+                items += [_activity('comment', v, v.get('updated_at'), operator) for v in values
+                          if isinstance(v.get('updated_at'), str) and v['updated_at'] >= since]
+                incomplete = more
                 # Later reads can find newer items while a comment arrives behind them. Record only this first read.
                 first_read = max((item['_at'] for item in items), default=None)
                 if kind == 'pulls':
-                    review_since = (datetime.fromisoformat(since.replace('Z', '+00:00'))
-                                    - timedelta(seconds=1)).astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
                     for route, name, stamp in ((f'pulls/{number}/reviews?', 'review', 'submitted_at'),
                                                (f'pulls/{number}/comments?since={quote(review_since)}&', 'review_comment', 'updated_at')):
                         values, more = self._newest_pages(f'{prefix}/{route}', deadline,

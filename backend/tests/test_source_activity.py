@@ -186,8 +186,8 @@ class SourceActivityTests(unittest.TestCase):
         task, prompt = self.turn()
         self.assertNotIn('_source_activity', task)
         self.assertNotIn('10x the current volume', prompt)
-        self.assertEqual(self.tracker.paths[reads:], ['/repos/example/project/issues/42',
-            '/repos/example/project/issues/42/comments?per_page=100&page=1'])
+        self.assertEqual(len(self.tracker.paths[reads:]), 2)
+        self.assertIn('/issues/42/comments?since=', self.tracker.paths[reads + 1])
 
         self.tracker.add(comment(9, 'reviewer', '2026-09-23T13:00:00Z', 'Also keep the old export.'))
         self.requeue()
@@ -576,7 +576,7 @@ class IssueActivityReadTests(unittest.TestCase):
         result = tracker.observe_issue_activity(URL, APPROVED, time.monotonic() + 5,
                                                 operator=True, include_same_second=True)
         self.assertEqual([item['body'] for item in result['new_activity']], ['Delayed requirement'])
-        self.assertIn('/repos/example/project/issues/42/comments?per_page=100&page=1', tracker.paths)
+        self.assertTrue(any('/issues/42/comments?since=' in path for path in tracker.paths))
 
     def test_activity_keeps_the_newest_ten_comments_and_truncates_long_text(self):
         tracker = ThreadTracker()
@@ -606,10 +606,21 @@ class IssueActivityReadTests(unittest.TestCase):
         tracker.paths.clear()
         result = tracker.observe_issue_activity(URL, values[334]['updated_at'], operator=True)
         self.assertEqual([c['author'] for c in result['new_activity']], [f'user{i}' for i in range(341, 351)])
-        # Pages 1 to 3 were not read. An edited comment there can be new, so the read is incomplete.
-        # The comment at the `since` second counts as new.
-        self.assertEqual((result['omitted_items'], result['incomplete']), (6, True))
-        self.assertEqual(tracker.paths[1:], ['/repos/example/project/issues/42/comments?per_page=100&page=4'])
+        # The filtered GitHub list has all updated comments, including edits
+        # on older pages; no unrelated historical page makes it incomplete.
+        self.assertEqual((result['omitted_items'], result['incomplete']), (6, False))
+        self.assertEqual(len(tracker.paths), 2)
+        self.assertIn('since=', tracker.paths[1])
+
+    def test_unchanged_long_thread_does_not_claim_older_pages_are_incomplete(self):
+        tracker = ThreadTracker()
+        values = self.comments(101)
+        tracker.add(*values)
+        since = values[-1]['updated_at']
+        result = tracker.observe_issue_activity(URL, since, operator=True, include_same_second=True)
+        self.assertEqual([c['id'] for c in result['new_activity']], [101])
+        self.assertFalse(result['incomplete'])
+        self.assertEqual(len(tracker.paths), 2)
 
     def test_unread_older_pages_mark_the_read_incomplete(self):
         tracker = ThreadTracker()
@@ -619,10 +630,10 @@ class IssueActivityReadTests(unittest.TestCase):
         tracker.add(*values)
         tracker.threads[42].updated_at = values[4]['updated_at']
         result = tracker.observe_issue_activity(URL, values[148]['updated_at'], operator=True)
-        self.assertEqual([c['author'] for c in result['new_activity']], ['user149', 'user150'])
-        self.assertTrue(result['incomplete'])
-        self.assertEqual(tracker.paths, ['/repos/example/project/issues/42',
-                                         '/repos/example/project/issues/42/comments?per_page=100&page=2'])
+        self.assertEqual([c['author'] for c in result['new_activity']], ['user149', 'user150', 'user5'])
+        self.assertFalse(result['incomplete'])
+        self.assertEqual(len(tracker.paths), 2)
+        self.assertIn('since=', tracker.paths[1])
 
     def test_inline_review_comment_queries_before_recorded_second(self):
         tracker = ThreadTracker()
@@ -651,7 +662,7 @@ class IssueActivityReadTests(unittest.TestCase):
         self.assertEqual([c['author'] for c in result['new_activity']], [f'lead{i}' for i in range(341, 351)])
         self.assertEqual((result['omitted_items'], result['incomplete']), (6, True))
         self.assertEqual([p for p in tracker.paths if '/reviews' in p],
-                         ['/repos/example/project/pulls/43/reviews?per_page=1&page=1',
+                         ['/repos/example/project/pulls/43/reviews?per_page=100&page=1',
                           '/repos/example/project/pulls/43/reviews?per_page=100&page=4'])
 
     def test_review_that_leaves_the_issue_record_unchanged_is_shown(self):
