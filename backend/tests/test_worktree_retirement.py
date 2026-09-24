@@ -128,7 +128,8 @@ class WorktreeRetirementTests(unittest.TestCase):
         for rebuildable in ('node_modules', 'tmp', 'build/node_modules'):
             self.assertFalse((path / rebuildable).exists())
         self.assertEqual(git(path, 'diff', '--cached', '--name-only'), 'tracked.txt')
-        self.assertTrue(archive.exists())
+        # The worktree holds every archived change again, so Coconut deletes the archive.
+        self.assertFalse(archive.exists())
         self.assertEqual(preferred(self.workspaces, outcome), path)
 
     def test_preferred_restores_into_an_empty_directory_from_a_native_claim(self):
@@ -328,10 +329,10 @@ class WorktreeRetirementTests(unittest.TestCase):
         outcome, identity, path, _ = self.outcome()
         (path / '.env').write_text('SECRET=local\n')
         original = work_workspace.git
-        def refuse(*arguments):
+        def refuse(*arguments, **options):
             if 'remove' in arguments:
                 raise ValueError('working trees containing submodules cannot be removed')
-            return original(*arguments)
+            return original(*arguments, **options)
         with patch('coconut.work_workspace.git', side_effect=refuse):
             self.assertEqual(self.retire(), [])
         binding = self.registry()[identity]
@@ -349,6 +350,99 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(self.retire(), [identity])
         self.assertNotIn('retire_failed', self.registry()[identity])
         self.assertEqual(len(list((self.workspaces / 'archive').iterdir())), 1)
+
+    def interrupted_removal(self, before_timeout):
+        original, timeouts = work_workspace.git, []
+        def remove(*arguments, **options):
+            if 'remove' in arguments and not timeouts:
+                timeouts.append(options.get('timeout'))
+                before_timeout()
+                raise subprocess.TimeoutExpired(['git', 'worktree', 'remove'], options.get('timeout'))
+            return original(*arguments, **options)
+        return patch('coconut.work_workspace.git', side_effect=remove), timeouts
+
+    def test_a_removal_that_times_out_after_git_deleted_the_checkout_completes(self):
+        outcome, identity, path, _ = self.outcome()
+        (path / 'draft.txt').write_text('keep\n')
+        slow, timeouts = self.interrupted_removal(lambda: git(self.repo, 'worktree', 'remove', '--force', str(path)))
+        with slow:
+            self.assertEqual(self.retire(), [identity])
+        self.assertEqual(timeouts, [work_workspace.CHECKOUT_SECONDS])
+        self.assertFalse(path.exists())
+        self.assertNotIn('restore_failed', self.registry()[identity]['retired'])
+        acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual((path / 'draft.txt').read_text(), 'keep\n')
+
+    def test_a_removal_that_times_out_before_git_deleted_files_rolls_back(self):
+        _, identity, path, _ = self.outcome()
+        (path / 'draft.txt').write_text('keep\n')
+        slow, _ = self.interrupted_removal(lambda: None)
+        with slow:
+            self.assertEqual(self.retire(), [])
+        binding = self.registry()[identity]
+        self.assertNotIn('retired', binding)
+        self.assertIn('retire_failed', binding)
+        self.assertEqual(list((self.workspaces / 'archive').iterdir()), [])
+        self.assertEqual((path / 'draft.txt').read_text(), 'keep\n')
+
+    def test_a_removal_that_times_out_part_way_keeps_the_archive_for_the_operator(self):
+        outcome, identity, path, _ = self.outcome()
+        (path / 'draft.txt').write_text('keep\n')
+        slow, _ = self.interrupted_removal(lambda: (path / 'tracked.txt').unlink())
+        with slow, self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        self.assertIn('part of the checkout remains', '\n'.join(logs.output))
+        retired = self.registry()[identity]['retired']
+        self.assertIn('part of the checkout remains', retired['restore_failed']['error'])
+        self.assertTrue(Path(retired['archive']).is_file())
+        self.assertEqual(preferred(self.workspaces, outcome), self.workspaces / outcome)
+        self.assertEqual((path / 'draft.txt').read_text(), 'keep\n')
+
+    def test_an_interrupted_restore_leaves_no_registered_partial_checkout(self):
+        for broken in (False, True):
+            with self.subTest(broken=broken):
+                self.interrupted_restore(broken)
+
+    def interrupted_restore(self, broken):
+        outcome, identity, path, _ = self.outcome()
+        (path / 'tracked.txt').write_text('changed\n')
+        self.service._next_worktree_retirement = 0
+        self.assertIn(identity, self.service.retire_finished_worktrees())
+        original, timeouts = work_workspace.git, []
+        def add(*arguments, **options):
+            if 'add' in arguments and not timeouts:
+                timeouts.append(options.get('timeout'))
+                original(*arguments, **options)
+                if broken:
+                    # Git stopped before it wrote the link to the repository. The record stays in Git.
+                    (path / '.git').unlink()
+                raise subprocess.TimeoutExpired(['git', 'worktree', 'add'], options.get('timeout'))
+            return original(*arguments, **options)
+        with patch('coconut.work_workspace.git', side_effect=add):
+            with self.assertRaisesRegex(ValueError, 'could not restore it'):
+                acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(timeouts, [work_workspace.CHECKOUT_SECONDS])
+        self.assertFalse(path.exists())
+        self.assertNotIn(str(path), git(self.repo, 'worktree', 'list', '--porcelain'))
+        saved = self.registry()
+        saved[identity]['retired'].pop('restore_failed')
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual((path / 'tracked.txt').read_text(), 'changed\n')
+
+    def test_a_new_retirement_keeps_one_archive_and_sweeps_unfinished_files(self):
+        _, first, _, _ = self.outcome()
+        self.assertEqual(self.retire(), [first])
+        kept = Path(self.registry()[first]['retired']['archive'])
+        _, second, _, _ = self.outcome()
+        directory = self.workspaces / 'archive'
+        for name in (second + '.tar.gz', second + '-20260101T000000000000Z.tar.gz', '.' + second + '.tar.gz.tmp'):
+            (directory / name).write_bytes(b'old')
+        self.assertEqual(self.retire(), [second])
+        current = Path(self.registry()[second]['retired']['archive'])
+        self.assertEqual(sorted(directory.iterdir()), sorted([kept, current]))
+        with tarfile.open(current) as tar:
+            self.assertIn('retirement.json', tar.getnames())
 
     def test_hard_linked_untracked_files_retire_and_return(self):
         outcome, identity, path, _ = self.outcome()

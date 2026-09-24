@@ -77,27 +77,37 @@ Retirement does these steps:
 7. It checks the outcome state again. It waits at most 5 seconds for the service lock. It checks `lsof` again.
 8. It takes `workspaces/.workspace.lock`. It checks the binding, the Git worktree record, the HEAD commit, and the changes again.
    It checks the outcome state again only if the service lock is free. It does not wait for the service lock here.
-9. It runs `git worktree remove --force`. It keeps the branch and its commits.
-   It marks the binding `retired` with the time, the archive, and the HEAD commit.
+9. It marks the binding `retired` with the time, the archive, and the HEAD commit.
+   It runs `git worktree remove --force` with a 600-second limit. It keeps the branch and its commits.
+10. It deletes the other archives of the same worktree that no binding names.
 
-The log names the cause when Coconut keeps a worktree, for example a busy service or a changed worktree.
+The log names the cause when Coconut does not retire a worktree, for example a busy service or a changed worktree.
 Steps 1 to 7 do not hold the registry lock. Step 8 runs Git commands that do not wait for other processes.
 A path hint for native dispatch reads `worktrees.json` without the registry lock, because dispatch holds the service lock.
 The provider's verified lookup runs before a turn without the service lock. It can wait for the registry lock.
-If Git refuses the removal and the checkout stays unchanged, Coconut deletes the new archive and clears `retired`.
-It marks the binding `retire_failed` with the time and the error, and it does not try again for one day.
+Each hourly run first deletes the unfinished `.*.tar.gz.tmp` files in `workspaces/archive`.
+
+When `git worktree remove` fails or stops at its time limit, Coconut examines the path:
+
+- If the path is gone, the retirement is complete. Coconut runs `git worktree prune`.
+- If the checkout is unchanged, Coconut deletes the new archive and clears `retired`.
+  It marks the binding `retire_failed` with the time and the error, and it does not try again for one day.
+- If part of the checkout remains, Coconut keeps `retired` and the archive.
+  It marks the binding `retired.restore_failed` with a message for the operator.
 
 `coconut_workspace` and the provider's verified workspace lookup restore a retired worktree on demand.
 The restore runs `git worktree add` at the same path on the saved branch.
 It applies `staged.patch` with `git apply --index` and then `unstaged.patch` with `git apply`.
 It extracts the untracked and ignored files. It recreates archived links with `os.symlink`, after all files, and does not follow them.
 It checks the HEAD commit and the changes against the archive before it clears `retired`.
-If the restore fails, Coconut removes the partial checkout and keeps the archive.
+Then the worktree holds every archived change, so Coconut deletes the archive.
+If the restore fails or stops at its time limit, Coconut removes the partial checkout.
+It runs `git worktree remove --force`, deletes the remaining path, and runs `git worktree prune`. It keeps the archive.
 It marks the binding `retired.restore_failed` with the time and the error, and does not try the restore again.
 New work for the outcome continues without the worktree. `coconut_workspace` returns an error with the archive path and the branch.
 To try the restore again, an operator removes `restore_failed` from the binding in `workspaces/worktrees.json`.
 A path hint for native dispatch returns the saved path. It does not restore the worktree.
-Coconut does not delete the archive of a retired worktree. A later retirement of the same worktree writes an archive with a new name.
+Coconut does not delete an archive that a `retired` binding names, also when the binding has `restore_failed`.
 Native delegated workers also default to `delegation.worktree_isolation: true`.
 An explicit profile setting takes precedence.
 
@@ -146,11 +156,12 @@ repair possible. Unmanaged editors still require operator exclusion.
 
 Startup applies the request under `service.lock`, before native recovery or
 dispatch, and repeats the writer and ownership checks. Under the workspace lock
-it compares the complete saved manifest, verifies the current Git branch, and
+it compares the authorized binding with its saved value, verifies the current Git branch, and
 atomically replaces only the authorized binding's branch and recovery marker.
+A change to another binding, for example a worktree retirement, does not hold the request.
 It fsyncs both file and directory. A crash before replacement retains the old
 binding. A crash after replacement recognizes the exact recorded result including
-its request marker. A different task input, binding or newer manifest is held;
+its request marker. A different task input or a newer value of the binding is held;
 it is never overwritten. Git contents, approvals and execution ownership stay
 unchanged.
 

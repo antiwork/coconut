@@ -321,7 +321,9 @@ class WorkspaceRecoveryTests(unittest.TestCase):
                 self.assertEqual(self.request()[0], 200)
                 original = self.service._get('tasks', self.task['id'])
                 if kind == 'manifest':
-                    self.manifest.write_text(self.manifest.read_text() + '\n')
+                    newer = json.loads(self.manifest.read_text())
+                    next(iter(newer.values()))['branch'] = 'a-newer-owner-branch'
+                    self.manifest.write_text(json.dumps(newer))
                 else:
                     self.service._put('tasks', dict(original, _native_turn_id='newer-input'))
                 expected = self.manifest.read_bytes()
@@ -330,6 +332,20 @@ class WorkspaceRecoveryTests(unittest.TestCase):
                 self.assertEqual(self.manifest.read_bytes(), expected)
                 self.manifest.write_bytes(self.before)
                 self.service._put('tasks', original)
+
+    def test_an_unrelated_binding_change_does_not_hold_an_authorized_repair(self):
+        self.assertEqual(self.request()[0], 200)
+        # Worktree retirement can write another binding between authorization and startup.
+        saved = json.loads(self.manifest.read_text())
+        unrelated = dict(next(iter(saved.values())), outcome='another-outcome', path=str(self.root / 'other'),
+                         retired=dict(at='2026-09-01T00:00:00Z', archive=str(self.root / 'other.tar.gz'), head='0', changes=''))
+        saved['another-outcome-0000000000000000'] = unrelated
+        self.manifest.write_text(json.dumps(saved))
+        self.restart()
+        self.assertEqual(self.receipt()['state'], 'applied')
+        after = json.loads(self.manifest.read_text())
+        self.assertEqual(after['another-outcome-0000000000000000'], unrelated)
+        self.assertEqual(preferred(self.data / 'workspaces', self.owner), self.workspace)
 
     def test_crash_before_and_after_atomic_write_recovers_exact_transition(self):
         for applied in (False, True):

@@ -63,6 +63,8 @@ class WorktreeRetirement:
         manifest = root / 'worktrees.json'
         if not manifest.exists():
             return []
+        # Only this poller writes archives, and no retirement runs now.
+        work_workspace.sweep_temporary(root)
         # The registry changes by atomic rename, so this read needs no lock. Retirement checks again under the lock.
         bindings = {k: v['outcome'] for k, v in json.loads(manifest.read_text()).items() if not v.get('retired')}
         finished = self._finished_outcomes(current)
@@ -83,5 +85,5 @@ class WorktreeRetirement:
                 if work_workspace.retire(root, identity, still_finished):
                     retired.append(identity)
             except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.TimeoutExpired) as error:
-                logging.getLogger(__name__).warning('Coconut kept worktree %s: %s', identity, error)
+                logging.getLogger(__name__).warning('Coconut did not retire worktree %s: %s', identity, error)
         return retired

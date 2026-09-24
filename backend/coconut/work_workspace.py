@@ -7,14 +7,15 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import tarfile
 from types import SimpleNamespace
 
 
-def git(path, *arguments):
-    result = subprocess.run(['git', '-C', str(path), *arguments], capture_output=True, text=True, timeout=60)
+def git(path, *arguments, timeout=60):
+    result = subprocess.run(['git', '-C', str(path), *arguments], capture_output=True, text=True, timeout=timeout)
     if result.returncode:
         raise ValueError((result.stderr or 'Git could not inspect the workspace.').strip())
     return result.stdout.strip()
@@ -104,13 +105,16 @@ REBUILDABLE_PATHS = ('tmp', 'log', 'public/packs', 'public/packs-test', 'coverag
 IGNORED_LIMIT_BYTES = 200 * 1024 * 1024
 # After Git refuses to remove a worktree, Coconut waits this long before the next attempt.
 RETRY_AFTER = timedelta(days=1)
+# Git commands that write or delete a whole checkout can take minutes for a large repository.
+CHECKOUT_SECONDS = 600
+GIT_ERRORS = (ValueError, OSError, subprocess.TimeoutExpired)
 DIFF = ('--binary', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-relative',
         '--src-prefix=a/', '--dst-prefix=b/')
 
 
 def git_output(path, *arguments, data=None):
     # A patch must keep its exact bytes, so this helper does not decode or strip the output.
-    result = subprocess.run(['git', '-C', str(path), *arguments], input=data, capture_output=True, timeout=600)
+    result = subprocess.run(['git', '-C', str(path), *arguments], input=data, capture_output=True, timeout=CHECKOUT_SECONDS)
     if result.returncode:
         raise ValueError(result.stderr.decode(errors='replace').strip() or 'Git could not inspect the workspace.')
     return result.stdout
@@ -296,7 +300,7 @@ def retire(root, identity, finished):
     moment = datetime.now(timezone.utc)
     archive = directory / (identity + '.tar.gz')
     if archive.exists():
-        # Keep every earlier archive. A later retirement of the same worktree gets a new name.
+        # Do not write over an earlier archive. After the removal, drop_other_archives deletes it if no binding names it.
         archive = directory / (identity + '-' + moment.strftime('%Y%m%dT%H%M%S%fZ') + '.tar.gz')
     temporary = directory / ('.' + archive.name + '.tmp')
     at = stamp(moment)
@@ -327,20 +331,68 @@ def retire(root, identity, finished):
             binding['retired'] = dict(at=at, archive=str(archive), head=head, changes=changes_digest(*current))
             save_bindings(manifest, saved)
             try:
-                git(repository, 'worktree', 'remove', '--force', str(path))
-            except ValueError as error:
-                # Git refuses some removals before it deletes files, for example with a submodule.
-                # Keep the checkout, remove its unused archive, and wait a day before the next attempt.
-                with contextlib.suppress(ValueError, OSError):
-                    if (path / '.git').is_file() and changes(path) == current:
-                        binding.pop('retired')
-                        binding['retire_failed'] = dict(at=stamp(datetime.now(timezone.utc)), error=str(error)[:1000])
-                        save_bindings(manifest, saved)
-                        archive.unlink()
-                raise
+                git(repository, 'worktree', 'remove', '--force', str(path), timeout=CHECKOUT_SECONDS)
+            except GIT_ERRORS as error:
+                removal_stopped(manifest, saved, binding, path, repository, current, archive, error)
+            drop_other_archives(directory, identity, archive, saved)
             return archive
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def removal_stopped(manifest, saved, binding, path, repository, current, archive, error):
+    """Decide from the path what a failed or interrupted `git worktree remove` did. Hold the registry lock."""
+    if not os.path.lexists(path):
+        # Git deleted the checkout before it stopped. Remove its stale record. The retirement is complete.
+        with contextlib.suppress(*GIT_ERRORS):
+            git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
+        return
+    try:
+        intact = (path / '.git').is_file() and changes(path) == current
+    except GIT_ERRORS:
+        intact = False
+    now = stamp(datetime.now(timezone.utc))
+    if intact:
+        # Git refuses some removals before it deletes files, for example with a submodule.
+        # Keep the checkout, remove its unused archive, and wait a day before the next attempt.
+        binding.pop('retired')
+        binding['retire_failed'] = dict(at=now, error=str(error)[:1000])
+        save_bindings(manifest, saved)
+        archive.unlink(missing_ok=True)
+        raise ValueError('Git did not remove the worktree: ' + str(error)) from error
+    # Git deleted part of the checkout. The archive holds the changes. Do not restore over the remains.
+    message = (f'Git stopped while it removed {path}, and part of the checkout remains. '
+               f'The archive {archive} holds its changes. Inspect the path.')
+    binding['retired'] = dict(binding['retired'], restore_failed=dict(at=now, error=message))
+    save_bindings(manifest, saved)
+    raise ValueError(message) from error
+
+
+def drop_other_archives(directory, identity, keep, saved):
+    """Keep one archive for each worktree. Never delete an archive that a binding names."""
+    named = {(b.get('retired') or {}).get('archive') for b in saved.values()}
+    for old in [directory / (identity + '.tar.gz'), *directory.glob(identity + '-*.tar.gz')]:
+        if old != keep and str(old) not in named:
+            old.unlink(missing_ok=True)
+
+
+def sweep_temporary(root):
+    """Delete archive files that an interrupted retirement did not finish. Run before any retirement starts."""
+    for temporary in (Path(root) / 'archive').glob('.*.tar.gz.tmp'):
+        temporary.unlink(missing_ok=True)
+
+
+def discard_checkout(repository, path):
+    """Remove a partial restore. The path was missing or empty before the restore."""
+    with contextlib.suppress(*GIT_ERRORS):
+        git(repository, 'worktree', 'remove', '--force', str(path), timeout=CHECKOUT_SECONDS)
+    with contextlib.suppress(OSError):
+        if path.is_symlink() or not path.is_dir():
+            path.unlink(missing_ok=True)
+        else:
+            shutil.rmtree(path)
+    with contextlib.suppress(*GIT_ERRORS):
+        git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
 
 
 def place_link(path, name, target):
@@ -363,7 +415,7 @@ def unpack(binding):
             validate_binding(dict(binding))
             intact = (git(path, 'rev-parse', 'HEAD') == retired['head']
                       and changes_digest(*changes(path)) == retired['changes'])
-        except ValueError:
+        except GIT_ERRORS:
             intact = False
         if not intact:
             raise ValueError(f'The path {path} is not empty and does not match the archive.')
@@ -377,8 +429,9 @@ def unpack(binding):
                 raise ValueError('The archive belongs to another branch or commit.')
             if git(repository, 'rev-parse', '--verify', 'refs/heads/' + binding['branch']) != retired['head']:
                 raise ValueError('The saved branch moved after retirement.')
-            git(repository, 'worktree', 'add', str(path), binding['branch'])
+            # Mark the checkout before Git starts. An interrupted add can leave a registered partial checkout.
             created = True
+            git(repository, 'worktree', 'add', str(path), binding['branch'], timeout=CHECKOUT_SECONDS)
             if staged:
                 git_output(path, 'apply', '--index', '--binary', '--whitespace=nowarn', '-', data=staged)
             if unstaged:
@@ -406,15 +459,15 @@ def unpack(binding):
     except BaseException:
         if created:
             # Remove only the partial checkout. The archive stays.
-            with contextlib.suppress(ValueError, OSError, subprocess.TimeoutExpired):
-                git(repository, 'worktree', 'remove', '--force', str(path))
+            discard_checkout(repository, path)
         raise
 
 
 def restore(binding):
-    """Recreate a retired worktree at its saved path. Keep the archive.
+    """Recreate a retired worktree at its saved path.
 
-    A failed restore marks the binding `restore_failed`. Coconut does not try again
+    After a successful restore, the worktree holds every archived change, so Coconut deletes the archive.
+    A failed restore keeps the archive and marks the binding `restore_failed`. Coconut does not try again
     until an operator removes that mark. The caller saves the registry.
     """
     retired = binding['retired']
@@ -430,6 +483,7 @@ def restore(binding):
         else:
             binding.pop('retired')
             validate_binding(binding)
+            Path(archive).unlink(missing_ok=True)
             return
     raise ValueError(f'Coconut retired this worktree and could not restore it: {failure["error"]} '
                      f'The archive {archive} holds its uncommitted changes. The branch {binding["branch"]} '
