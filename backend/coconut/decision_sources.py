@@ -1,4 +1,6 @@
 """Keep the sources for a decision visible in chat and Inbox."""
+import hashlib
+import json
 from urllib.parse import urlsplit
 
 
@@ -198,6 +200,11 @@ def operator_repository(url, trusted):
     return owner.lower() in trusted or f'{owner}/{repo}'.lower() in trusted
 
 
+def activity_signature(item):
+    """Fingerprint delivered metadata and bounded text, not untrusted raw input."""
+    return hashlib.sha256(json.dumps(item, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
 def read_source_activity(service, task_id, limit=3):
     """Read new activity on the task's GitHub sources before a turn starts.
 
@@ -261,10 +268,14 @@ def read_source_activity(service, task_id, limit=3):
     if not links:
         return ([dict(selection_limited=True)] if selection_limited else []), {}
     operators = operator_owners(service)
+    delivered = {}
     for record in (assignment, task):
         for key, revision in record.get('_source_activity_seen', {}).items():
             if key in known:
                 known[key].add(_github_time(revision))
+        for key, state in record.get('_source_activity_items_seen', {}).items():
+            if key in known and isinstance(state, dict):
+                delivered.setdefault(key, []).append(state)
     import time
     # One wall-clock budget covers the gh login and all reads. The turn waits no longer than this.
     deadline = time.monotonic() + SOURCE_READ_SECONDS
@@ -293,6 +304,9 @@ def read_source_activity(service, task_id, limit=3):
             continue
         observed = current.get('observed_at')
         seen[key] = observed if isinstance(observed, str) and observed > current['updated_at'] else current['updated_at']
+        previous = {sig for state in delivered.get(key, []) for sig in state.get('signatures', []) if isinstance(sig, str)}
+        current['new_activity'] = [item for item in current.get('new_activity', [])
+                                   if activity_signature(item) not in previous]
         # Items at the recorded second can be new although the thread time did not move.
         if (since is None or current['updated_at'] > since or current.get('new_activity')
                 or current.get('incomplete') or current.get('changed_without_new_activity')):

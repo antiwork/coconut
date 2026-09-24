@@ -174,8 +174,10 @@ def _activity(kind: str, value: dict, at: str | None, operator: bool) -> dict:
     other authors, keep the metadata and withhold the text.
     """
     body = value.get('body') if isinstance(value.get('body'), str) else ''
-    user = value.get('user') if isinstance(value.get('user'), dict) else {}
-    item = dict(kind=kind, author=user.get('login'), author_type=user.get('type'),
+    user = value.get('user')
+    if not isinstance(user, dict):
+        user = {}
+    item = dict(id=value.get('id'), kind=kind, author=user.get('login'), author_type=user.get('type'),
                 author_association=value.get('author_association'), url=value.get('html_url'), _at=at)
     if operator and _trusted(value):
         item.update(body=body[:1500], truncated=len(body) > 1500)
@@ -194,12 +196,6 @@ def _trusted(value: dict) -> bool:
     """Return true for an owner, member, or collaborator that is not a bot account."""
     user = value.get('user') if isinstance(value.get('user'), dict) else {}
     return value.get('author_association') in _TRUSTED_AUTHORS and user.get('type') != 'Bot'
-
-
-def _same_second_recent(since):
-    """Only recheck GitHub's whole-second timestamp while new items can share it."""
-    age = time.time() - datetime.fromisoformat(since.replace('Z', '+00:00')).timestamp()
-    return 0 <= age <= 30
 
 
 class GitHubPRTracker:
@@ -504,8 +500,7 @@ class GitHubPRTracker:
             # An item can repeat, but an item that arrived in the same second is not lost.
             # Read the record first. Activity that arrives between the reads shows again on the next turn. It is not lost.
             first_read = None
-            if issue['updated_at'] > since or (include_same_second and issue['updated_at'] == since
-                                                and _same_second_recent(since)):
+            if issue['updated_at'] > since or (include_same_second and issue['updated_at'] == since):
                 # GitHub lists comments oldest first. Read from the last page back to get the newest comments.
                 last = (issue['comments'] + 99) // 100
                 for page in range(last, max(0, last - 3), -1):

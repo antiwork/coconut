@@ -1,4 +1,3 @@
-from datetime import datetime
 from pathlib import Path
 import re
 import threading
@@ -11,7 +10,7 @@ from urllib.parse import parse_qs
 from coconut import decision_sources
 from coconut.work_sources import source_fingerprint
 from coconut.hermes_worker import conversation_input
-from coconut.pr_tracking import GitHubPRTracker, PRTrackingError, _same_second_recent
+from coconut.pr_tracking import GitHubPRTracker, PRTrackingError
 from coconut.service import YieldForDecision
 import test_decision_sources as source_tests
 
@@ -187,13 +186,14 @@ class SourceActivityTests(unittest.TestCase):
         task, prompt = self.turn()
         self.assertNotIn('_source_activity', task)
         self.assertNotIn('10x the current volume', prompt)
-        self.assertEqual(self.tracker.paths[reads:], ['/repos/example/project/issues/42'])
+        self.assertEqual(self.tracker.paths[reads:], ['/repos/example/project/issues/42',
+            '/repos/example/project/issues/42/comments?per_page=100&page=1'])
 
         self.tracker.add(comment(9, 'reviewer', '2026-09-23T13:00:00Z', 'Also keep the old export.'))
         self.requeue()
         task, prompt = self.turn()
         # The item at the recorded second can repeat. Its author is not trusted, so Coconut withholds its text.
-        self.assertEqual([c.get('body') for c in task['_source_activity'][0]['new_activity']], [None, 'Also keep the old export.'])
+        self.assertEqual([c.get('body') for c in task['_source_activity'][0]['new_activity']], ['Also keep the old export.'])
         self.assertNotIn('10x the current volume', prompt)
 
     def test_comment_while_the_card_waits_reaches_the_resumed_turn(self):
@@ -384,16 +384,14 @@ class SourceActivityTests(unittest.TestCase):
         self.assertFalse(decision_sources.operator_repository('https://github.com/acme/other/issues/1', trusted))
         self.assertTrue(decision_sources.operator_repository('https://github.com/acme/other/pull/2', trusted | {'acme'}))
 
-    @patch('coconut.pr_tracking._same_second_recent', return_value=True)
-    def test_same_second_comment_is_read_from_actual_tracker(self, _recent):
+    def test_same_second_comment_is_read_from_actual_tracker(self):
         tracker = ThreadTracker()
         tracker.add(comment(1, 'owner', APPROVED, 'Same-second requirement'))
         observed = tracker.observe_issue_activity(URL, APPROVED, time.monotonic() + 5, operator=True,
                                                   include_same_second=True)
         self.assertEqual([item['body'] for item in observed['new_activity']], ['Same-second requirement'])
 
-    @patch('coconut.pr_tracking._same_second_recent', return_value=True)
-    def test_same_second_comment_after_delivery_is_rechecked_for_edits(self, _recent):
+    def test_same_second_comment_after_delivery_is_rechecked_for_edits(self):
         self.approve_card()
         self.tracker.add(comment(1, 'owner', APPROVED, 'First requirement'))
         task, _ = self.turn()
@@ -406,6 +404,9 @@ class SourceActivityTests(unittest.TestCase):
         self.requeue()
         task, _ = self.turn()
         self.assertIn('Later requirement', [c['body'] for c in task['_source_activity'][0]['new_activity']])
+        self.requeue()
+        task, _ = self.turn()
+        self.assertNotIn('_source_activity', task)
 
     def test_same_second_items_keep_their_record(self):
         class SameSecond:
@@ -452,7 +453,7 @@ class SourceActivityTests(unittest.TestCase):
         self.tracker.add(comment(9, 'reviewer', '2026-09-23T12:30:00Z', 'Later.'))
         self.requeue()
         task, _ = self.turn(render=False)
-        self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['First.', 'Same second.', 'Later.'])
+        self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['Later.'])
 
     def test_continuations_share_the_recorded_revision(self):
         with self.service.transaction():
@@ -569,18 +570,13 @@ class IssueActivityReadTests(unittest.TestCase):
         return [comment(i, f'user{i}', f'2026-09-2{2 + i // 200}T{i // 60 % 24:02d}:{i % 60:02d}:00Z', 'x' * 10)
                 for i in range(1, count + 1)]
 
-    def test_same_second_reread_expires(self):
-        epoch = datetime.fromisoformat(APPROVED.replace('Z', '+00:00')).timestamp()
-        with patch('coconut.pr_tracking.time.time', return_value=epoch + 2):
-            self.assertTrue(_same_second_recent(APPROVED))
-        with patch('coconut.pr_tracking.time.time', return_value=epoch + 31):
-            self.assertFalse(_same_second_recent(APPROVED))
-            tracker = ThreadTracker()
-            tracker.add(comment(1, 'owner', APPROVED, 'Already seen'))
-            result = tracker.observe_issue_activity(URL, APPROVED, time.monotonic() + 5,
-                                                    operator=True, include_same_second=True)
-            self.assertEqual(result['new_activity'], [])
-            self.assertEqual(tracker.paths, ['/repos/example/project/issues/42'])
+    def test_same_second_reread_has_no_wall_clock_cutoff(self):
+        tracker = ThreadTracker()
+        tracker.add(comment(1, 'owner', APPROVED, 'Delayed requirement'))
+        result = tracker.observe_issue_activity(URL, APPROVED, time.monotonic() + 5,
+                                                operator=True, include_same_second=True)
+        self.assertEqual([item['body'] for item in result['new_activity']], ['Delayed requirement'])
+        self.assertIn('/repos/example/project/issues/42/comments?per_page=100&page=1', tracker.paths)
 
     def test_activity_keeps_the_newest_ten_comments_and_truncates_long_text(self):
         tracker = ThreadTracker()
