@@ -79,7 +79,7 @@ Retirement does these steps:
 6. It reads the archive again and compares it with the worktree.
 7. It checks the outcome state again. It waits at most 5 seconds for the service lock. It checks `lsof` again.
 8. It takes `workspaces/.workspace.lock`. It checks the binding, the Git worktree record, the HEAD commit, and the changes again.
-   It checks the outcome state again only if the service lock is free. It does not wait for the service lock here.
+   It checks the outcome state again. It waits at most a quarter second for the service lock here.
 9. It marks the binding `retired` with the time, the archive, and the HEAD commit.
    It runs `git worktree remove --force` with a 600-second limit. It keeps the branch and its commits.
 10. It deletes the other archives of the same worktree that no binding names.

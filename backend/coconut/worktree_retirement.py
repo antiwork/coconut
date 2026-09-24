@@ -12,8 +12,10 @@ from . import work_workspace
 
 WORKTREE_RETIRE_SECONDS = 2 * 24 * 60 * 60
 RETIREMENT_INTERVAL_SECONDS = 60 * 60
-# Before the registry lock, retirement waits this long for the service lock. Under the registry lock, it does not wait.
+# Before the registry lock, retirement waits this long for the service lock. Under the registry lock, it waits only LOCKED_WAIT_SECONDS.
 SERVICE_WAIT_SECONDS = 5
+# The service holds its lock for milliseconds. A short wait under the registry lock lets retirement finish on a busy service.
+LOCKED_WAIT_SECONDS = 0.25
 
 
 class WorktreeRetirement:
@@ -79,8 +81,9 @@ class WorktreeRetirement:
                 break
 
             def still_finished(wait, outcome=outcome):
-                # Under the registry lock, wait is False. The service must not wait for the service lock there.
-                result = self._finished_outcomes(time.time(), timeout=SERVICE_WAIT_SECONDS if wait else 0, only=outcome)
+                # Under the registry lock, wait is False. No thread waits for the registry lock while it holds the service lock,
+                # so a short, bounded wait there cannot deadlock.
+                result = self._finished_outcomes(time.time(), timeout=SERVICE_WAIT_SECONDS if wait else LOCKED_WAIT_SECONDS, only=outcome)
                 if result is None:
                     raise ValueError('The service was busy. Coconut tries again in an hour.')
                 return outcome in result
