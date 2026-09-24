@@ -89,14 +89,17 @@ def decision_source_keys(decision):
 
 
 def check_new_decision_sources(service, task_id, payload):
-    """Check the source version before storing a card or asking for attention."""
+    """Check the source version before storing a card or asking for attention.
+
+    Return the issue facts and the verified revision of each GitHub link.
+    """
     from .service import ServiceError
 
     decision = {'merge_pr_url': payload.get('merge_pr_url')}
     attach_sources(decision, payload)
     links = github_links(decision)
     if not links:
-        return
+        return {}, {}
     revisions = payload.get('source_revisions', {})
     if not isinstance(revisions, dict) or any(not isinstance(revisions.get(url), str) for url in links):
         raise ServiceError(400, 'No card was created. Read each linked GitHub issue or PR and its latest comments. '
@@ -121,4 +124,146 @@ def check_new_decision_sources(service, task_id, payload):
                 'Continue within existing permission if the choice is already settled. Otherwise retry with the updated source_revisions.')
         if github_source(url)[0] == 'issues':
             facts[url] = current
-    return facts
+    return facts, {url: revisions[url] for url in links}
+
+
+def _github_time(value):
+    """Return a GitHub `since` value, or None if the value is not a time."""
+    from datetime import datetime, timezone
+    try:
+        instant = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    return instant.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _issue_url(url):
+    # GitHub uses one number space for issues and PRs. One key covers both links.
+    owner, repo, _, number = github_source(url)[1].split('/')
+    return f'https://github.com/{owner}/{repo}/issues/{number}'
+
+
+SOURCE_READ_SECONDS = 6
+# The decisions_task index uses the same expression. Keep the two the same.
+# The reader stops once it has enough links, so the newest decisions come first.
+TASK_DECISIONS = ("SELECT data FROM decisions WHERE json_extract(data,'$.task_id') IN ({}) "
+                  "AND COALESCE(json_extract(data,'$._hidden'), 0) = 0 AND COALESCE(json_extract(data,'$._deleted'), 0) = 0 "
+                  "ORDER BY rowid DESC LIMIT 200")
+# 200 cards bound the read under the service lock. A task rarely has more.
+
+
+def operator_owners(service):
+    """Return the trusted GitHub owners and repositories, in lowercase.
+
+    A repository role is trusted only in these repositories. They come from
+    configured work-source assignments (the exact owner/repo) and the optional
+    COCONUT_GITHUB_TRUSTED_OWNERS list, which accepts owner or owner/repo
+    entries (comma-separated). A bot can track any PR, so tracked PRs do not
+    make a repository trusted.
+    """
+    import os
+    owners = {owner.strip().lower() for owner in os.environ.get('COCONUT_GITHUB_TRUSTED_OWNERS', '').split(',') if owner.strip()}
+    with service.lock:
+        rows = service.db.execute(
+            "SELECT DISTINCT json_extract(data,'$._source_assignment.id') FROM tasks "
+            "WHERE json_extract(data,'$._source_assignment.id') IS NOT NULL").fetchall()
+    for (url,) in rows:
+        source = github_source(url)
+        if source:
+            owners.add('/'.join(source[1].split('/')[:2]).lower())
+    return owners
+
+
+def operator_repository(url, trusted):
+    """Return True when the configured owners or repositories include the repository of `url`."""
+    owner, repo = github_source(url)[1].split('/')[:2]
+    return owner.lower() in trusted or f'{owner}/{repo}'.lower() in trusted
+
+
+def read_source_activity(service, task_id, limit=3):
+    """Read new activity on the task's GitHub sources before a turn starts.
+
+    Return the activity for the prompt and the revisions to record. The GitHub
+    reads run outside the service lock. A failed read never blocks the turn.
+    """
+    import json
+
+    with service.lock:
+        task = service._get('tasks', task_id)
+        assignment = service._assignment(task)
+        identities = list(dict.fromkeys((task['id'], assignment['id'])))
+        rows = service.db.execute(TASK_DECISIONS.format(','.join('?' for _ in identities)), identities)
+        decisions, distinct = [], set()
+        for (data,) in rows:
+            decision = json.loads(data)
+            if decision.get('_hidden') or decision.get('_deleted'):
+                continue
+            decisions.append(decision)
+            distinct |= {_issue_url(url).lower() for url in github_links(decision)}
+            # Read only as many cards as the link limit needs.
+            if len(distinct) >= limit:
+                break
+        if task.get('_resume_decision'):
+            resumed = service._get('decisions', task['_resume_decision'])
+            decisions = [resumed] + [d for d in decisions if d['id'] != resumed['id']]
+    # Each candidate is a link and a known revision. The prompt shows only activity after the latest revision.
+    candidates = []
+    for record in (task, assignment):
+        source = record.get('_source_assignment')
+        if isinstance(source, dict) and github_source(source.get('id')):
+            candidates.append((source['id'], source.get('updated_at')))
+    for decision in decisions:
+        # Use the revision that the bot proved when Coconut stored the card.
+        # Do not use _source_facts. The background refresh changes it while the card waits.
+        seen = decision.get('_source_seen', {})
+        for url in github_links(decision):
+            candidates.append((url, seen.get(url) or decision.get('created_at')))
+    known, links = {}, {}
+    for url, revision in candidates:
+        key = _issue_url(url).lower()
+        if key not in links and len(links) >= limit:
+            continue
+        links.setdefault(key, github_source(url)[2])
+        known.setdefault(key, set()).add(_github_time(revision))
+    if not links:
+        return [], {}
+    operators = operator_owners(service)
+    for record in (assignment, task):
+        for key, revision in record.get('_source_activity_seen', {}).items():
+            if key in known:
+                known[key].add(_github_time(revision))
+    import time
+    # One wall-clock budget covers the gh login and all reads. The turn waits no longer than this.
+    deadline = time.monotonic() + SOURCE_READ_SECONDS
+    from .pr_tracking import GitHubPRTracker
+    try:
+        tracker = service._pr_tracker_for(task['bot_id'])
+    except Exception:
+        tracker = None
+    if isinstance(tracker, GitHubPRTracker) and not tracker._token:
+        # Without a gh login, GitHub allows 60 requests an hour for all readers. Keep them for card checks and PR refresh.
+        tracker = None
+    activity, seen = [], {}
+    for key, url in links.items():
+        since = max((value for value in known[key] if value), default=None)
+        current = None
+        if tracker is not None and time.monotonic() < deadline:
+            try:
+                current = tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline,
+                                                         operator=operator_repository(url, operators))
+            except Exception:
+                current = None
+        if not isinstance(current, dict) or not isinstance(current.get('updated_at'), str):
+            activity.append(dict(url=url, read_failed=True))
+            continue
+        observed = current.get('observed_at')
+        seen[key] = observed if isinstance(observed, str) and observed > current['updated_at'] else current['updated_at']
+        # Items at the recorded second can be new although the thread time did not move.
+        if (since is None or current['updated_at'] > since or current.get('new_activity')
+                or current.get('incomplete') or current.get('changed_without_new_activity')):
+            activity.append(dict(url=url, since=since, **{k: current.get(k) for k in (
+                'state', 'state_reason', 'title', 'title_withheld', 'updated_at', 'new_activity', 'omitted_items', 'incomplete',
+                'changed_without_new_activity') if k in current}))
+    return activity, seen

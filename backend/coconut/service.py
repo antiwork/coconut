@@ -124,6 +124,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self._init_kanban()
         self.profiles = HermesProfiles(self.root)
         self.pr_tracker = pr_tracker
+        self._profile_trackers = {}
         self.pr_refresh_requested = threading.Event()
         self.pr_refresh_lock = threading.Lock()
         self._pending_decision_sources = set()
@@ -159,6 +160,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             (json_extract(data, '$.task_id'), json_extract(data, '$.turn_id'))
             WHERE json_extract(data, '$.state')='executing';
         CREATE INDEX IF NOT EXISTS native_receipts_task ON native_receipts (json_extract(data, '$.task_id'));
+        CREATE INDEX IF NOT EXISTS decisions_task ON decisions (json_extract(data,'$.task_id'));
+        CREATE INDEX IF NOT EXISTS tasks_source_assignment ON tasks (json_extract(data,'$._source_assignment.id'));
         CREATE INDEX IF NOT EXISTS native_receipts_creation_key ON native_receipts
             (json_extract(data, '$.action.arguments.idempotency_key'))
             WHERE json_extract(data, '$.action.name')='kanban_create';
@@ -2496,7 +2499,18 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             return self.pr_tracker
         with self.lock:
             home = self.profiles.home(self._get('bots', bot_id))
-        return GitHubPRTracker.for_profile(home)
+            # Remove expired trackers, so their tokens do not stay in memory.
+            for key in [key for key, value in self._profile_trackers.items() if value[0] <= time.monotonic()]:
+                del self._profile_trackers[key]
+            cached = self._profile_trackers.get(home)
+        # Each gh login read starts a process. Keep the tracker for a short time, so each turn does not wait for gh.
+        # A tracker without a login expires sooner, so a new gh login takes effect soon.
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
+        tracker = GitHubPRTracker.for_profile(home)
+        with self.lock:
+            self._profile_trackers[home] = (time.monotonic() + (120 if tracker._token else 30), tracker)
+        return tracker
 
     def _poll_pull_requests(self):
         while not self.stopping.is_set():
@@ -2971,6 +2985,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             bot_lock = self.bot_locks.setdefault(execution_key(task), threading.Lock())
         with bot_lock:
             reaction_feedback = []
+            source_seen = {}
             try:
                 with self.transaction():
                     task = self._get('tasks', task_id)
@@ -3119,6 +3134,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         for row in deliveries for d in [json.loads(row[0])]]
 
                 timing.mark('context')
+                # Every turn passes here. Read the linked GitHub threads outside the lock, so the bot sees new comments before it acts.
+                from .decision_sources import read_source_activity
+                source_activity, source_seen = read_source_activity(self, task_id)
+                if source_activity:
+                    provider_task['_source_activity'] = source_activity
+                timing.mark('sources')
                 with self.transaction():
                     current = self._get('tasks', task_id)
                     if (current['status'] != 'working' or self.stopping.is_set()
@@ -3136,6 +3157,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     self.provider.resume_task(provider_task, self._public(bot), history, self._public(decision) | {'action': decision.get('_action')}, emit)
                 else:
                     self.provider.start_task(provider_task, self._public(bot), history, emit)
+                self._record_source_seen(task_id, source_seen)
                 with self.lock:
                     current = self._get('tasks', task_id)
                 if current['status'] not in ('failed', 'cancelled'):
@@ -3143,6 +3165,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 if current['status'] == 'working':
                     self.emit(task_id, 'completed', {'summary': 'Ready to review.'})
             except YieldForDecision as pause:
+                # The provider received the turn and paused it. The bot saw the source activity.
+                self._record_source_seen(task_id, source_seen)
                 if pause.decision_id:
                     self._ack_reaction_feedback(task['bot_id'], task_id, reaction_feedback)
             except Exception as error:
@@ -3168,6 +3192,25 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                                 self._event('message.updated', message, message['bot_id'], task_id)
                                 self.push.record('message.completed', message, message['bot_id'], task_id)
                         self._refresh_bot(task['bot_id'])
+
+    def _record_source_seen(self, task_id, seen):
+        """Record the source revisions after the provider received the turn.
+
+        A failed delivery records nothing. The next turn then shows the same
+        activity again. A duplicate is better than a lost comment.
+        """
+        if not seen:
+            return
+        with self.transaction():
+            task = self._get('tasks', task_id)
+            # Continuations of the same assignment read the assignment record too.
+            for record in {id(r): r for r in (task, self._assignment(task))}.values():
+                merged = dict(record.get('_source_activity_seen', {}))
+                # Another turn can record a later revision first. Keep the later value.
+                for key, revision in seen.items():
+                    merged[key] = max(merged.get(key, ''), revision)
+                record['_source_activity_seen'] = merged
+                self._put('tasks', record)
 
     def emit(self, task_id: str, kind: str, payload: dict):
         if kind == 'steering_ready':

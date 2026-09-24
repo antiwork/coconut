@@ -48,6 +48,37 @@ Coconut adds these tools:
   Coconut verifies those revisions before it stores a card, pauses work, or sends a notification.
   A changed or unavailable source returns to the same worker for reassessment. It creates no card.
   A current source does not grant permission. The bot still checks whether human input is necessary.
+  Before each task turn, Coconut reads the task's linked GitHub issues and PRs, at most three.
+  Links come from the source assignment, the resumed decision, and the other decisions of the task.
+  Coconut uses the bot's own `gh` login and reads outside the service lock.
+  All reads for one turn share a 6-second budget. After the budget, Coconut skips the remaining sources.
+  Coconut keeps a logged-in tracker for two minutes and a tracker without a login for 30 seconds.
+  Thus each turn does not start `gh auth token`. Coconut removes expired trackers.
+  The turn gets the newest activity since the last known revision as data: at most ten items, each at most 1,500 characters.
+  Activity includes issue comments. For a PR, it also includes reviews and inline review comments.
+  The issue record decides the kind: an `/issues/N` link can name a PR, and a `/pull/N` link can name an issue. The PR record `updated_at` also counts, because a review can leave the issue record unchanged.
+  If Coconut does not show all new activity, the prompt tells the bot to read the rest itself.
+  Without a `gh` login, Coconut does not read. The prompt tells the bot to read the source itself.
+  Thus the per-turn reads do not use the shared limit for requests without a login.
+  Each item includes its `author_association`. Only OWNER, MEMBER, and COLLABORATOR activity can change the scope.
+  Coconut gives text only from these authors, and not from bot accounts. For other items, it gives the metadata and a link.
+  The same rule applies to the thread title, which is at most 200 characters, and to review comment file paths.
+  A repository role counts only in a repository of an operator owner. Other repositories give metadata only.
+  Operator owners are the owners of work-source assignments and of the optional `COCONUT_GITHUB_TRUSTED_OWNERS` list. Tracking a PR does not make its owner trusted.
+  To add owners, set `COCONUT_GITHUB_TRUSTED_OWNERS` to a comma-separated list.
+  If the thread changed and no new item explains the change, the prompt tells the bot to read the thread itself.
+  For example, someone edited the body, the title, the labels, or an older comment.
+  The last known revision is the latest of these values:
+  the revision that the bot proved when Coconut stored the card (`_source_seen`), the assignment `updated_at`, and the revision that Coconut recorded for the task.
+  An older card without `_source_seen` uses its creation time.
+  Coconut does not use `_source_facts`, because the background refresh changes it while the card waits.
+  After the provider receives the turn, Coconut records the observed revision. The next turn shows only newer activity.
+  The observed revision is the later of the thread `updated_at` and the newest item that Coconut read.
+  Coconut records it on the task and on its assignment, so continuations use the same revision.
+  GitHub times have whole seconds. Items at the recorded second count as new, so an item can repeat once.
+  The per-turn list reads do not use the shared response cache.
+  If the provider does not receive the turn, Coconut records nothing. The next turn shows the same activity again.
+  If a read fails, the turn still starts. The prompt tells the bot to read the source itself before it acts.
 - `coconut_propose_file` supplies exact file proposals and persistent artifact cards.
 - `coconut_create_bot` creates a bot from a verified direct human request.
 - `coconut_delete_bot` deletes another bot from a verified direct human request.

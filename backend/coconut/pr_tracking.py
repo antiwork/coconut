@@ -61,11 +61,11 @@ _CACHE_LOCK = threading.Lock()
 _CACHE_BYTES = 8 * 1024 * 1024
 
 
-def _remember_response(key, etag, body):
+def _remember_response(key, etag, body, link=None):
     with _CACHE_LOCK:
         _RESPONSE_CACHE.pop(key, None)
         if etag:
-            _RESPONSE_CACHE[key] = (etag, bytes(body))
+            _RESPONSE_CACHE[key] = (etag, bytes(body), link)
         while (len(_RESPONSE_CACHE) > 256
                or sum(len(value[1]) for value in _RESPONSE_CACHE.values()) > _CACHE_BYTES):
             _RESPONSE_CACHE.popitem(last=False)
@@ -163,6 +163,39 @@ def _classify(
     return "ready_for_review", "Reported checks passed."
 
 
+_TRUSTED_AUTHORS = {'OWNER', 'MEMBER', 'COLLABORATOR'}
+
+
+def _activity(kind: str, value: dict, at: str | None, operator: bool) -> dict:
+    """Keep the fields a bot needs to judge one comment or review.
+
+    Only an owner, member, or collaborator who is not a bot account supplies
+    text, and only in a repository of an operator owner (`operator`). For
+    other authors, keep the metadata and withhold the text.
+    """
+    body = value.get('body') if isinstance(value.get('body'), str) else ''
+    user = value.get('user') if isinstance(value.get('user'), dict) else {}
+    item = dict(kind=kind, author=user.get('login'), author_type=user.get('type'),
+                author_association=value.get('author_association'), url=value.get('html_url'), _at=at)
+    if operator and _trusted(value):
+        item.update(body=body[:1500], truncated=len(body) > 1500)
+        # A file path is author text too.
+        if isinstance(value.get('path'), str):
+            item['path'] = value['path'][:500]
+    else:
+        item['body_withheld'] = True
+    for key in ('created_at', 'updated_at', 'submitted_at', 'state'):
+        if isinstance(value.get(key), str):
+            item[key] = value[key]
+    return item
+
+
+def _trusted(value: dict) -> bool:
+    """Return true for an owner, member, or collaborator that is not a bot account."""
+    user = value.get('user') if isinstance(value.get('user'), dict) else {}
+    return value.get('author_association') in _TRUSTED_AUTHORS and user.get('type') != 'Bot'
+
+
 class GitHubPRTracker:
     """Poll GitHub with GET requests and return facts for durable storage."""
 
@@ -173,7 +206,14 @@ class GitHubPRTracker:
         self._timeout = timeout
         self._opener = build_opener(_NoRedirect())
 
-    def _get(self, path: str, deadline: float) -> dict[str, Any] | list:
+    def _get(self, path: str, deadline: float, *, cache: bool = True) -> dict[str, Any] | list:
+        return self._request(path, deadline, cache=cache)[0]
+
+    def _request(self, path: str, deadline: float, *, cache: bool = True) -> tuple[dict[str, Any] | list, str | None]:
+        """Return the payload and the Link header, which names the last page of a list.
+
+        With `cache` false, the read does not use or fill the shared response cache.
+        """
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise PRTrackingError("GitHub refresh exceeded its time limit.")
@@ -189,7 +229,7 @@ class GitHubPRTracker:
         with _CACHE_LOCK:
             if _RETRY_AFTER.get(scope, 0) > time.time():
                 raise PRTrackingError("GitHub rate limit reached. Refresh resumes after its reset time.")
-            cached = _RESPONSE_CACHE.get(key) if self._token else None
+            cached = _RESPONSE_CACHE.get(key) if self._token and cache else None
             if cached:
                 _RESPONSE_CACHE.move_to_end(key)
         if cached:
@@ -205,7 +245,7 @@ class GitHubPRTracker:
                     secondary = b'secondary rate limit' in message or b'abuse detection' in message
                 _rate_limit(scope, error.headers, error.code, secondary=secondary)
                 if error.code == 304 and cached:
-                    return json.loads(cached[1])
+                    return json.loads(cached[1]), cached[2]
             finally:
                 error.close()
             raise
@@ -227,9 +267,10 @@ class GitHubPRTracker:
         payload = json.loads(body)
         if not isinstance(payload, (dict, list)):
             raise PRTrackingError("GitHub returned an unexpected response.")
-        if self._token:
-            _remember_response(key, response_headers.get('ETag'), body)
-        return payload
+        link = response_headers.get('Link')
+        if self._token and cache:
+            _remember_response(key, response_headers.get('ETag'), body, link)
+        return payload, link
 
     def _checks(self, prefix: str, sha: str, deadline: float) -> list[dict[str, Any]]:
         checks: list[dict[str, Any]] = []
@@ -363,6 +404,16 @@ class GitHubPRTracker:
                 pass
         return cls(token=token)
 
+    def _issue_record(self, route: str, deadline: float, *, with_kind: bool = False):
+        """Return the issue facts. With `with_kind`, also return the complete issue record."""
+        issue = self._get('/repos/' + route, deadline)
+        if (not isinstance(issue, dict) or issue.get('state') not in ('open', 'closed')
+                or not isinstance(issue.get('updated_at'), str) or not issue['updated_at']
+                or not isinstance(issue.get('title'), str) or type(issue.get('comments')) is not int):
+            return (None, False) if with_kind else None
+        facts = {key: issue.get(key) for key in ('state', 'title', 'updated_at', 'comments', 'state_reason')}
+        return (facts, issue) if with_kind else facts
+
     def observe_issue(self, url: str) -> dict | None:
         """Read issue facts without a model call. Failure keeps the last observation."""
         from .decision_sources import github_source
@@ -370,17 +421,120 @@ class GitHubPRTracker:
         if not source or source[0] != 'issues':
             return None
         try:
-            issue = self._get('/repos/' + source[1], time.monotonic() + 10)
-            if (not isinstance(issue, dict) or issue.get('state') not in ('open', 'closed')
-                    or not isinstance(issue.get('updated_at'), str) or not issue['updated_at']
-                    or not isinstance(issue.get('title'), str) or type(issue.get('comments')) is not int):
-                return None
-            return {key: issue.get(key) for key in ('state', 'title', 'updated_at', 'comments', 'state_reason')}
+            return self._issue_record(source[1], time.monotonic() + 10)
         except HTTPError as error:
             error.close()
         except (URLError, TimeoutError, OSError, HTTPException, PRTrackingError, ValueError, TypeError):
             pass
         return None
+
+    def _list(self, path: str, deadline: float) -> list:
+        # Per-turn list pages change often. Keep them out of the shared cache.
+        values = self._get(path, deadline, cache=False)
+        if not isinstance(values, list) or any(not isinstance(value, dict) for value in values):
+            raise PRTrackingError('GitHub returned an incomplete list.')
+        return values
+
+    def _newest_pages(self, path: str, deadline: float, older) -> tuple[list, bool]:
+        """Read a list from its last page back, at most three pages.
+
+        GitHub lists these items by ID. A probe with one item for each page
+        gets the item count from the Link header. Stop at the first page with
+        an item for which `older` is true. Return the items and whether unread
+        pages remain. The ID order does not follow the time that `older`
+        checks, so unread pages can hold new items.
+        """
+        probe, link = self._request(path + 'per_page=1&page=1', deadline, cache=False)
+        if not isinstance(probe, list) or any(not isinstance(value, dict) for value in probe):
+            raise PRTrackingError('GitHub returned an incomplete list.')
+        match = re.search(r'<[^>]*[?&]page=([1-9][0-9]{0,6})[^>]*>;\s*rel="last"', link or '')
+        count = int(match[1]) if match else len(probe)
+        last = (count + 99) // 100
+        values = []
+        for page in range(last, max(0, last - 3), -1):
+            batch = self._list(f'{path}per_page=100&page={page}', deadline)
+            values += batch
+            if any(older(value) for value in batch):
+                return values, page > 1
+        return values, last > 3
+
+    def observe_issue_activity(self, url: str, since: str, deadline: float | None = None, *,
+                               operator: bool = False) -> dict | None:
+        """Read the thread record and its activity after `since`. Failure returns None.
+
+        `operator` is true when an operator owns the repository. Only then do
+        repository roles make an author trusted.
+        `since` uses the GitHub format YYYY-MM-DDTHH:MM:SSZ. For a PR, the
+        activity also includes reviews and inline review comments. The result
+        keeps the newest ten items. `incomplete` is true when Coconut did not
+        read all pages. Then `omitted_items` is a lower bound.
+        """
+        from .decision_sources import github_source
+        source = github_source(url)
+        if not source:
+            return None
+        owner, repo, kind, number = source[1].split('/')
+        prefix = f'/repos/{owner}/{repo}'
+        deadline = time.monotonic() + 10 if deadline is None else deadline
+        items, incomplete = [], False
+        try:
+            issue, record = self._issue_record(f'{owner}/{repo}/issues/{number}', deadline, with_kind=True)
+            if issue is None:
+                return None
+            # The link path does not prove the kind. GitHub uses one number space for issues and PRs.
+            kind = 'pulls' if 'pull_request' in record else 'issues'
+            # The thread title is text from the thread author. Apply the same trust rule as for comments.
+            if operator and _trusted(record):
+                issue['title'] = issue['title'][:200]
+            else:
+                issue.update(title=None, title_withheld=True)
+            if kind == 'pulls':
+                record = self._get(f'{prefix}/pulls/{number}', deadline)
+                if not isinstance(record, dict) or not isinstance(record.get('updated_at'), str):
+                    return None
+                # A review can change the PR record and leave the issue record unchanged.
+                issue['updated_at'] = max(issue['updated_at'], record['updated_at'])
+            # GitHub times have whole seconds. Items at the `since` second count as new.
+            # An item can repeat, but an item that arrived in the same second is not lost.
+            # Read the record first. Activity that arrives between the reads shows again on the next turn. It is not lost.
+            first_read = None
+            if issue['updated_at'] > since:
+                # GitHub lists comments oldest first. Read from the last page back to get the newest comments.
+                last = (issue['comments'] + 99) // 100
+                for page in range(last, max(0, last - 3), -1):
+                    values = self._list(f'{prefix}/issues/{number}/comments?per_page=100&page={page}', deadline)
+                    items += [_activity('comment', v, v.get('updated_at'), operator) for v in values
+                              if isinstance(v.get('updated_at'), str) and v['updated_at'] >= since]
+                    if any(not isinstance(v.get('created_at'), str) or v['created_at'] < since for v in values):
+                        # The earlier pages were not read. An edited older comment there can be newer than `since`.
+                        incomplete = page > 1
+                        break
+                else:
+                    incomplete = last > 3
+                # Later reads can find newer items while a comment arrives behind them. Record only this first read.
+                first_read = max((item['_at'] for item in items), default=None)
+                if kind == 'pulls':
+                    for route, name, stamp in ((f'pulls/{number}/reviews?', 'review', 'submitted_at'),
+                                               (f'pulls/{number}/comments?since={quote(since)}&', 'review_comment', 'updated_at')):
+                        values, more = self._newest_pages(f'{prefix}/{route}', deadline,
+                            lambda v: isinstance(v.get(stamp), str) and v[stamp] < since)
+                        items += [_activity(name, v, v.get(stamp), operator) for v in values
+                                  if isinstance(v.get(stamp), str) and v[stamp] >= since]
+                        incomplete = incomplete or more
+        except HTTPError as error:
+            error.close()
+            return None
+        except (URLError, TimeoutError, OSError, HTTPException, PRTrackingError, ValueError, TypeError):
+            return None
+        latest = max((item['_at'] for item in items), default=None)
+        items.sort(key=lambda item: item.pop('_at'))
+        result = dict(issue, new_activity=items[-10:], omitted_items=max(0, len(items) - 10), incomplete=incomplete,
+                      # An item can arrive after the thread read. Record it as seen, so the next turn does not show it again.
+                      observed_at=max(issue['updated_at'], first_read or ''))
+        # An edit to the body, the title, the labels, or an older comment changes updated_at and adds no new item.
+        if issue['updated_at'] > since and (latest is None or latest < issue['updated_at']):
+            result['changed_without_new_activity'] = True
+        return result
 
     def observe_discussion(self, url: str) -> str | None:
         """Fingerprint complete PR discussions and reviews. Never return their private text."""
