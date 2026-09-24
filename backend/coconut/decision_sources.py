@@ -149,7 +149,9 @@ SOURCE_READ_SECONDS = 6
 # The decisions_task index uses the same expression. Keep the two the same.
 # The reader stops once it has enough links, so the newest decisions come first.
 TASK_DECISIONS = ("SELECT data FROM decisions WHERE json_extract(data,'$.task_id') IN ({}) "
-                  "AND json_extract(data,'$._hidden') IS NULL AND json_extract(data,'$._deleted') IS NULL ORDER BY rowid DESC")
+                  "AND COALESCE(json_extract(data,'$._hidden'), 0) = 0 AND COALESCE(json_extract(data,'$._deleted'), 0) = 0 "
+                  "ORDER BY rowid DESC LIMIT 200")
+# 200 cards bound the read under the service lock. A task rarely has more.
 
 
 def operator_owners(service):

@@ -314,13 +314,17 @@ class SourceActivityTests(unittest.TestCase):
             self.service._put('decisions', dict(id='older', task_id=self.task['id'], created_at='2026-09-23T10:00:00Z',
                 sources=[dict(kind='issue', title='Older', url='https://github.com/example/project/issues/77')]))
             for number in range(25):
+                # A card can store _hidden false. It stays visible.
                 self.service._put('decisions', dict(id=f'newer-{number}', task_id=self.task['id'], _hidden=number % 2 == 0))
+            self.service._put('decisions', dict(id='visible', task_id=self.task['id'], _hidden=False, _deleted=False,
+                sources=[dict(kind='issue', title='Visible', url='https://github.com/example/project/issues/78')]))
         rows = self.service.db.execute(decision_sources.TASK_DECISIONS.format('?'), (self.task['id'],)).fetchall()
         self.assertNotIn('"_hidden": true', ' '.join(row[0] for row in rows))
         tracker = ThreadTracker(self.service)
         with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
             activity, _ = decision_sources.read_source_activity(self.service, self.task['id'])
         self.assertIn('https://github.com/example/project/issues/77', [a['url'] for a in activity])
+        self.assertIn('https://github.com/example/project/issues/78', [a['url'] for a in activity])
 
     def test_trust_covers_configured_repositories_not_whole_owners(self):
         trusted = {'acme/app'}
