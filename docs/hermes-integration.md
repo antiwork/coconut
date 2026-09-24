@@ -52,10 +52,14 @@ Coconut adds these tools:
   Links come from the source assignment, the resumed decision, and the other decisions of the task.
   Coconut uses the bot's own `gh` login and reads outside the service lock.
   All reads for one turn share a 6-second budget. After the budget, Coconut skips the remaining sources.
-  Coconut keeps a logged-in tracker for two minutes, so each turn does not start `gh auth token`.
+  Coconut keeps a logged-in tracker for two minutes and a tracker without a login for 30 seconds.
+  Thus each turn does not start `gh auth token`.
   The turn gets the newest activity since the last known revision as data: at most ten items, each at most 1,500 characters.
   Activity includes issue comments. For a PR, it also includes reviews and inline review comments.
   Each item includes its `author_association`. Only OWNER, MEMBER, and COLLABORATOR activity can change the scope.
+  Coconut gives text only from these authors, and not from bot accounts. For other items, it gives the metadata and a link.
+  If the thread changed and no new item explains the change, the prompt tells the bot to read the thread itself.
+  For example, someone edited the body, the title, the labels, or an older comment.
   The last known revision is the latest of the card's source facts, the card time, the assignment `updated_at`, and the revision that Coconut recorded for the task.
   After the provider receives the turn, Coconut records the observed `updated_at`. The next turn shows only newer activity.
   If the provider does not receive the turn, Coconut records nothing. The next turn shows the same activity again.

@@ -160,6 +160,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             (json_extract(data, '$.task_id'), json_extract(data, '$.turn_id'))
             WHERE json_extract(data, '$.state')='executing';
         CREATE INDEX IF NOT EXISTS native_receipts_task ON native_receipts (json_extract(data, '$.task_id'));
+        CREATE INDEX IF NOT EXISTS decisions_task ON decisions (json_extract(data,'$.task_id'));
         CREATE INDEX IF NOT EXISTS native_receipts_creation_key ON native_receipts
             (json_extract(data, '$.action.arguments.idempotency_key'))
             WHERE json_extract(data, '$.action.name')='kanban_create';
@@ -2493,13 +2494,13 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         with self.lock:
             home = self.profiles.home(self._get('bots', bot_id))
             cached = self._profile_trackers.get(home)
-        # Each gh login read starts a process. Keep a logged-in tracker for a short time, so each turn does not wait for gh.
+        # Each gh login read starts a process. Keep the tracker for a short time, so each turn does not wait for gh.
+        # A tracker without a login expires sooner, so a new gh login takes effect soon.
         if cached and cached[0] > time.monotonic():
             return cached[1]
         tracker = GitHubPRTracker.for_profile(home)
-        if tracker._token:
-            with self.lock:
-                self._profile_trackers[home] = (time.monotonic() + 120, tracker)
+        with self.lock:
+            self._profile_trackers[home] = (time.monotonic() + (120 if tracker._token else 30), tracker)
         return tracker
 
     def _poll_pull_requests(self):

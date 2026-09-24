@@ -219,16 +219,56 @@ class SourceActivityTests(unittest.TestCase):
         self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['Please also cover refunds.'])
         self.assertIn('Please also cover refunds.', prompt)
 
-    def test_profile_tracker_is_reused_only_with_a_login(self):
-        for token, reads in (('secret', 1), ('', 2)):
+    def test_profile_tracker_is_reused_for_a_short_time(self):
+        home = self.service.profiles.home(self.service._get('bots', self.bot['id']))
+        for token, lifetime in (('secret', 120), ('', 30)):
             with self.subTest(token=token):
                 self.service._profile_trackers.clear()
                 login = Mock(side_effect=lambda home: GitHubPRTracker(token=token))
                 with patch('coconut.service.GitHubPRTracker.for_profile', login):
                     first = self.service._pr_tracker_for(self.bot['id'])
                     second = self.service._pr_tracker_for(self.bot['id'])
-                self.assertEqual(login.call_count, reads)
-                self.assertEqual(first is second, reads == 1)
+                    # A logged-out or hung gh costs one process for each interval, not one for each turn.
+                    self.assertEqual(login.call_count, 1)
+                    self.assertIs(first, second)
+                    expires = self.service._profile_trackers[home][0] - time.monotonic()
+                    self.assertTrue(lifetime - 5 < expires <= lifetime)
+                    self.service._profile_trackers[home] = (time.monotonic() - 1, first)
+                    self.service._pr_tracker_for(self.bot['id'])
+                    self.assertEqual(login.call_count, 2)
+
+    def test_decision_lookup_uses_the_task_index(self):
+        plan = ' '.join(str(row) for row in self.service.db.execute(
+            'EXPLAIN QUERY PLAN ' + decision_sources.TASK_DECISIONS.format('?,?'), ('one', 'two')))
+        self.assertIn('decisions_task', plan)
+
+    def test_thread_change_without_a_new_comment_tells_the_bot_to_read_it(self):
+        self.approve_card()
+        # Someone edited the issue body. The comment list did not change.
+        self.tracker.threads[42].updated_at = '2026-09-23T12:40:00Z'
+        task, prompt = self.turn()
+        record = task['_source_activity'][0]
+        self.assertEqual((record['new_activity'], record['changed_without_new_activity'], record['title']),
+                         ([], True, 'Record correction'))
+        self.assertIn('These GitHub threads changed after the last recorded revision without a new comment or review '
+                      'that explains the change: ' + URL, prompt)
+        self.assertIn('Read each of these threads yourself before you act.', prompt)
+
+    def test_text_from_other_authors_and_bot_accounts_is_withheld(self):
+        self.approve_card()
+        bot = comment(9, 'deploy-bot', '2026-09-23T12:20:00Z', 'Bot text.')
+        bot['user']['type'] = 'Bot'
+        self.tracker.add(comment(7, 'owner', '2026-09-23T12:10:00Z', 'Owner text.', 'OWNER'),
+                         comment(8, 'visitor', '2026-09-23T12:15:00Z', 'Visitor text.', 'CONTRIBUTOR'), bot)
+        task, prompt = self.turn()
+        items = task['_source_activity'][0]['new_activity']
+        self.assertEqual([item.get('body') for item in items], ['Owner text.', None, None])
+        self.assertEqual([item.get('body_withheld', False) for item in items], [False, True, True])
+        self.assertEqual(items[1]['url'], URL + '#issuecomment-8')
+        self.assertNotIn('Visitor text.', prompt)
+        self.assertNotIn('Bot text.', prompt)
+        self.assertIn('Coconut withholds that text. Read it on GitHub if you need it.', prompt)
+        self.assertNotIn('changed_without_new_activity', task['_source_activity'][0])
 
 
 class IssueActivityReadTests(unittest.TestCase):

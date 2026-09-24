@@ -163,13 +163,23 @@ def _classify(
     return "ready_for_review", "Reported checks passed."
 
 
+_TRUSTED_AUTHORS = {'OWNER', 'MEMBER', 'COLLABORATOR'}
+
+
 def _activity(kind: str, value: dict, at: str | None) -> dict:
-    """Keep the fields a bot needs to judge one comment or review."""
+    """Keep the fields a bot needs to judge one comment or review.
+
+    Only an owner, member, or collaborator who is not a bot account supplies
+    text. For other authors, keep the metadata and withhold the text.
+    """
     body = value.get('body') if isinstance(value.get('body'), str) else ''
     user = value.get('user') if isinstance(value.get('user'), dict) else {}
     item = dict(kind=kind, author=user.get('login'), author_type=user.get('type'),
-                author_association=value.get('author_association'), url=value.get('html_url'),
-                body=body[:1500], truncated=len(body) > 1500, _at=at)
+                author_association=value.get('author_association'), url=value.get('html_url'), _at=at)
+    if item['author_association'] in _TRUSTED_AUTHORS and item['author_type'] != 'Bot':
+        item.update(body=body[:1500], truncated=len(body) > 1500)
+    else:
+        item['body_withheld'] = True
     for key in ('created_at', 'updated_at', 'submitted_at', 'state', 'path'):
         if isinstance(value.get(key), str):
             item[key] = value[key]
@@ -452,8 +462,13 @@ class GitHubPRTracker:
             return None
         except (URLError, TimeoutError, OSError, HTTPException, PRTrackingError, ValueError, TypeError):
             return None
+        latest = max((item['_at'] for item in items), default=None)
         items.sort(key=lambda item: item.pop('_at'))
-        return dict(issue, new_activity=items[-10:], omitted_items=max(0, len(items) - 10), incomplete=incomplete)
+        result = dict(issue, new_activity=items[-10:], omitted_items=max(0, len(items) - 10), incomplete=incomplete)
+        # An edit to the body, the title, the labels, or an older comment changes updated_at and adds no new item.
+        if issue['updated_at'] > since and (latest is None or latest < issue['updated_at']):
+            result['changed_without_new_activity'] = True
+        return result
 
     def observe_discussion(self, url: str) -> str | None:
         """Fingerprint complete PR discussions and reviews. Never return their private text."""

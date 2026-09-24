@@ -143,6 +143,8 @@ def _issue_url(url):
 
 
 SOURCE_READ_SECONDS = 6
+# The decisions_task index uses the same expression. Keep the two the same.
+TASK_DECISIONS = "SELECT data FROM decisions WHERE json_extract(data,'$.task_id') IN ({}) ORDER BY rowid DESC"
 
 
 def read_source_activity(service, task_id, limit=3):
@@ -157,8 +159,7 @@ def read_source_activity(service, task_id, limit=3):
         task = service._get('tasks', task_id)
         assignment = service._assignment(task)
         identities = list(dict.fromkeys((task['id'], assignment['id'])))
-        rows = service.db.execute("SELECT data FROM decisions WHERE json_extract(data,'$.task_id') IN ("
-                                  + ','.join('?' for _ in identities) + ') ORDER BY rowid DESC', identities)
+        rows = service.db.execute(TASK_DECISIONS.format(','.join('?' for _ in identities)), identities)
         decisions = [d for d in (json.loads(row[0]) for row in rows) if not d.get('_hidden') and not d.get('_deleted')]
         if task.get('_resume_decision'):
             resumed = service._get('decisions', task['_resume_decision'])
@@ -209,5 +210,6 @@ def read_source_activity(service, task_id, limit=3):
         seen[key] = current['updated_at']
         if since is None or current['updated_at'] > since:
             activity.append(dict(url=url, since=since, **{k: current.get(k) for k in (
-                'state', 'state_reason', 'title', 'updated_at', 'new_activity', 'omitted_items', 'incomplete')}))
+                'state', 'state_reason', 'title', 'updated_at', 'new_activity', 'omitted_items', 'incomplete',
+                'changed_without_new_activity') if k in current}))
     return activity, seen
