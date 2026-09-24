@@ -104,7 +104,13 @@ class ThreadTracker(GitHubPRTracker):
 
 
 class SourceActivityTests(unittest.TestCase):
-    setUp = source_tests.DecisionSourceTests.setUp
+    def setUp(self):
+        source_tests.DecisionSourceTests.setUp(self)
+        # The example repository belongs to the operator unless a test says otherwise.
+        environment = patch.dict('os.environ', COCONUT_GITHUB_TRUSTED_OWNERS='Example')
+        environment.start()
+        self.addCleanup(environment.stop)
+
     tearDown = source_tests.DecisionSourceTests.tearDown
     event = source_tests.DecisionSourceTests.event
     write = source_tests.DecisionSourceTests.write
@@ -242,7 +248,29 @@ class SourceActivityTests(unittest.TestCase):
         self.assertIn('Coconut could not read these GitHub sources: ' + PR_URL, prompt)
         self.assertFalse([path for path in self.tracker.paths if '/43' in path])
 
+    def test_member_text_needs_an_operator_repository(self):
+        self.approve_card()
+        with patch.dict('os.environ', COCONUT_GITHUB_TRUSTED_OWNERS=''):
+            self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'Third-party member text.'))
+            task, prompt = self.turn()
+            item = task['_source_activity'][0]['new_activity'][0]
+            self.assertEqual((item['author_association'], item.get('body'), item['body_withheld']), ('MEMBER', None, True))
+            self.assertIsNone(task['_source_activity'][0]['title'])
+            self.assertNotIn('Third-party member text.', prompt)
+            # A tracked PR in the same owner's repository makes the owner an operator owner.
+            with self.service.transaction():
+                self.service._put('artifacts', dict(id='tracked-pr', kind='pr', url='https://github.com/example/tools/pull/9'))
+            self.tracker.add(comment(8, 'reviewer', '2026-09-23T12:20:00Z', 'Operator member text.'))
+            self.requeue()
+            task, prompt = self.turn()
+        self.assertEqual(task['_source_activity'][0]['new_activity'][-1]['body'], 'Operator member text.')
+        self.assertIn('Operator member text.', prompt)
+
     def test_source_audit_uses_the_assignment_revision(self):
+        # The work-source assignment alone makes the repository owner an operator owner.
+        environment = patch.dict('os.environ', COCONUT_GITHUB_TRUSTED_OWNERS='')
+        environment.start()
+        self.addCleanup(environment.stop)
         self.tracker = ThreadTracker(self.service)
         self.tracker.add(comment(3, 'owner', '2026-09-20T09:00:00Z', 'Original request.'),
                          comment(4, 'reviewer', '2026-09-23T12:10:00Z', 'Please also cover refunds.'))
@@ -387,7 +415,7 @@ class IssueActivityReadTests(unittest.TestCase):
         values = self.comments(12)
         values[-1]['body'] = 'y' * 2000
         tracker.add(*values)
-        result = tracker.observe_issue_activity(URL, '2026-09-21T00:00:00Z')
+        result = tracker.observe_issue_activity(URL, '2026-09-21T00:00:00Z', operator=True)
         self.assertEqual([c['author'] for c in result['new_activity']], [f'user{i}' for i in range(3, 13)])
         self.assertEqual((result['omitted_items'], result['incomplete']), (2, False))
         self.assertEqual(len(result['new_activity'][-1]['body']), 1500)
@@ -395,20 +423,20 @@ class IssueActivityReadTests(unittest.TestCase):
         self.assertEqual(result['new_activity'][0]['url'], URL + '#issuecomment-3')
         # An unchanged thread needs no comment read.
         tracker.paths.clear()
-        self.assertEqual(tracker.observe_issue_activity(URL, tracker.threads[42].updated_at)['new_activity'], [])
+        self.assertEqual(tracker.observe_issue_activity(URL, tracker.threads[42].updated_at, operator=True)['new_activity'], [])
         self.assertEqual(tracker.paths, ['/repos/example/project/issues/42'])
 
     def test_long_threads_show_the_newest_comments(self):
         tracker = ThreadTracker()
         values = self.comments(350)
         tracker.add(*values)
-        result = tracker.observe_issue_activity(URL, '2026-09-21T00:00:00Z')
+        result = tracker.observe_issue_activity(URL, '2026-09-21T00:00:00Z', operator=True)
         self.assertEqual([c['author'] for c in result['new_activity']], [f'user{i}' for i in range(341, 351)])
         self.assertTrue(result['incomplete'])
         self.assertGreaterEqual(result['omitted_items'], 240)
 
         tracker.paths.clear()
-        result = tracker.observe_issue_activity(URL, values[334]['updated_at'])
+        result = tracker.observe_issue_activity(URL, values[334]['updated_at'], operator=True)
         self.assertEqual([c['author'] for c in result['new_activity']], [f'user{i}' for i in range(341, 351)])
         # Pages 1 to 3 were not read. An edited comment there can be new, so the read is incomplete.
         # The comment at the `since` second counts as new.
@@ -422,7 +450,7 @@ class IssueActivityReadTests(unittest.TestCase):
         values[4]['updated_at'] = '2026-09-24T00:00:00Z'
         tracker.add(*values)
         tracker.threads[42].updated_at = values[4]['updated_at']
-        result = tracker.observe_issue_activity(URL, values[148]['updated_at'])
+        result = tracker.observe_issue_activity(URL, values[148]['updated_at'], operator=True)
         self.assertEqual([c['author'] for c in result['new_activity']], ['user149', 'user150'])
         self.assertTrue(result['incomplete'])
         self.assertEqual(tracker.paths, ['/repos/example/project/issues/42',
@@ -435,13 +463,13 @@ class IssueActivityReadTests(unittest.TestCase):
                                author_association='MEMBER', submitted_at=f'2026-09-23T{12 + i // 60:02d}:{i % 60:02d}:00Z')
                           for i in range(1, 351)]
         thread.updated_at = thread.reviews[-1]['submitted_at']
-        result = tracker.observe_issue_activity(PR_URL, APPROVED)
+        result = tracker.observe_issue_activity(PR_URL, APPROVED, operator=True)
         self.assertEqual([c['author'] for c in result['new_activity']], [f'lead{i}' for i in range(341, 351)])
         self.assertTrue(result['incomplete'])
 
         tracker.paths.clear()
         # GitHub orders reviews by ID, not by submission time. Unread earlier pages can hold new reviews.
-        result = tracker.observe_issue_activity(PR_URL, thread.reviews[334]['submitted_at'])
+        result = tracker.observe_issue_activity(PR_URL, thread.reviews[334]['submitted_at'], operator=True)
         self.assertEqual([c['author'] for c in result['new_activity']], [f'lead{i}' for i in range(341, 351)])
         self.assertEqual((result['omitted_items'], result['incomplete']), (6, True))
         self.assertEqual([p for p in tracker.paths if '/reviews' in p],
@@ -456,7 +484,7 @@ class IssueActivityReadTests(unittest.TestCase):
                 thread.pr_updated_at = '2026-09-23T12:30:00Z'
                 thread.reviews = [dict(id=6, user=dict(login='lead'), state='CHANGES_REQUESTED', body='Handle retries.',
                                        submitted_at='2026-09-23T12:30:00Z', author_association='COLLABORATOR')]
-                result = tracker.observe_issue_activity(url, APPROVED)
+                result = tracker.observe_issue_activity(url, APPROVED, operator=True)
                 self.assertEqual([(c['kind'], c.get('body')) for c in result['new_activity']],
                                  [('review', 'Handle retries.')])
                 self.assertEqual(result['updated_at'], '2026-09-23T12:30:00Z')
@@ -464,7 +492,7 @@ class IssueActivityReadTests(unittest.TestCase):
     def test_pull_link_to_a_plain_issue_reads_the_issue(self):
         tracker = ThreadTracker()
         tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'Scale requirement.'))
-        result = tracker.observe_issue_activity('https://github.com/example/project/pull/42', APPROVED)
+        result = tracker.observe_issue_activity('https://github.com/example/project/pull/42', APPROVED, operator=True)
         self.assertEqual([c['body'] for c in result['new_activity']], ['Scale requirement.'])
         self.assertFalse([path for path in tracker.paths if '/pulls/' in path])
 
@@ -478,7 +506,7 @@ class IssueActivityReadTests(unittest.TestCase):
                                            (dict(login='helper', type='Bot'), 'MEMBER', 'Bot title')):
             with self.subTest(association=association, author=author['type']):
                 thread.author, thread.author_association, thread.title = author, association, title
-                result = tracker.observe_issue_activity(PR_URL, APPROVED)
+                result = tracker.observe_issue_activity(PR_URL, APPROVED, operator=True)
                 trusted = association == 'OWNER'
                 self.assertEqual(result['title'], 'x' * 200 if trusted else None)
                 self.assertEqual(result.get('title_withheld', False), not trusted)
@@ -496,7 +524,7 @@ class IssueActivityReadTests(unittest.TestCase):
         thread.review_comments = [comment(9, 'lead', '2026-09-23T12:31:00Z', 'This loop never exits.',
                                           'COLLABORATOR', path='app/worker.py')]
         thread.updated_at = '2026-09-23T12:31:00Z'
-        result = tracker.observe_issue_activity(PR_URL, APPROVED)
+        result = tracker.observe_issue_activity(PR_URL, APPROVED, operator=True)
         self.assertEqual([(c['kind'], c['author']) for c in result['new_activity']],
                          [('comment', 'owner'), ('review', 'lead'), ('review_comment', 'lead')])
         review = result['new_activity'][1]

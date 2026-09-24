@@ -166,17 +166,18 @@ def _classify(
 _TRUSTED_AUTHORS = {'OWNER', 'MEMBER', 'COLLABORATOR'}
 
 
-def _activity(kind: str, value: dict, at: str | None) -> dict:
+def _activity(kind: str, value: dict, at: str | None, operator: bool) -> dict:
     """Keep the fields a bot needs to judge one comment or review.
 
     Only an owner, member, or collaborator who is not a bot account supplies
-    text. For other authors, keep the metadata and withhold the text.
+    text, and only in a repository of an operator owner (`operator`). For
+    other authors, keep the metadata and withhold the text.
     """
     body = value.get('body') if isinstance(value.get('body'), str) else ''
     user = value.get('user') if isinstance(value.get('user'), dict) else {}
     item = dict(kind=kind, author=user.get('login'), author_type=user.get('type'),
                 author_association=value.get('author_association'), url=value.get('html_url'), _at=at)
-    if _trusted(value):
+    if operator and _trusted(value):
         item.update(body=body[:1500], truncated=len(body) > 1500)
         # A file path is author text too.
         if isinstance(value.get('path'), str):
@@ -457,9 +458,12 @@ class GitHubPRTracker:
                 return values, page > 1
         return values, last > 3
 
-    def observe_issue_activity(self, url: str, since: str, deadline: float | None = None) -> dict | None:
+    def observe_issue_activity(self, url: str, since: str, deadline: float | None = None, *,
+                               operator: bool = False) -> dict | None:
         """Read the thread record and its activity after `since`. Failure returns None.
 
+        `operator` is true when an operator owns the repository. Only then do
+        repository roles make an author trusted.
         `since` uses the GitHub format YYYY-MM-DDTHH:MM:SSZ. For a PR, the
         activity also includes reviews and inline review comments. The result
         keeps the newest ten items. `incomplete` is true when Coconut did not
@@ -480,7 +484,7 @@ class GitHubPRTracker:
             # The link path does not prove the kind. GitHub uses one number space for issues and PRs.
             kind = 'pulls' if 'pull_request' in record else 'issues'
             # The thread title is text from the thread author. Apply the same trust rule as for comments.
-            if _trusted(record):
+            if operator and _trusted(record):
                 issue['title'] = issue['title'][:200]
             else:
                 issue.update(title=None, title_withheld=True)
@@ -498,7 +502,7 @@ class GitHubPRTracker:
                 last = (issue['comments'] + 99) // 100
                 for page in range(last, max(0, last - 3), -1):
                     values = self._list(f'{prefix}/issues/{number}/comments?per_page=100&page={page}', deadline)
-                    items += [_activity('comment', v, v.get('updated_at')) for v in values
+                    items += [_activity('comment', v, v.get('updated_at'), operator) for v in values
                               if isinstance(v.get('updated_at'), str) and v['updated_at'] >= since]
                     if any(not isinstance(v.get('created_at'), str) or v['created_at'] < since for v in values):
                         # The earlier pages were not read. An edited older comment there can be newer than `since`.
@@ -511,7 +515,7 @@ class GitHubPRTracker:
                                                (f'pulls/{number}/comments?since={quote(since)}&', 'review_comment', 'updated_at')):
                         values, more = self._newest_pages(f'{prefix}/{route}', deadline,
                             lambda v: isinstance(v.get(stamp), str) and v[stamp] < since)
-                        items += [_activity(name, v, v.get(stamp)) for v in values
+                        items += [_activity(name, v, v.get(stamp), operator) for v in values
                                   if isinstance(v.get(stamp), str) and v[stamp] >= since]
                         incomplete = incomplete or more
         except HTTPError as error:

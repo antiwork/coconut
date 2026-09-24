@@ -151,6 +151,27 @@ SOURCE_READ_SECONDS = 6
 TASK_DECISIONS = "SELECT data FROM decisions WHERE json_extract(data,'$.task_id') IN ({}) ORDER BY rowid DESC LIMIT 20"
 
 
+def operator_owners(service):
+    """Return the GitHub owners whose repositories the operator uses.
+
+    A repository role is trusted only in these repositories. The owners come
+    from tracked PRs, configured work-source assignments, and the optional
+    COCONUT_GITHUB_TRUSTED_OWNERS list (comma-separated).
+    """
+    import os
+    owners = {owner.strip().lower() for owner in os.environ.get('COCONUT_GITHUB_TRUSTED_OWNERS', '').split(',') if owner.strip()}
+    with service.lock:
+        rows = service.db.execute(
+            "SELECT DISTINCT json_extract(data,'$.url') FROM artifacts WHERE json_extract(data,'$.kind')='pr' "
+            "UNION SELECT DISTINCT json_extract(data,'$._source_assignment.id') FROM tasks "
+            "WHERE json_extract(data,'$._source_assignment.id') IS NOT NULL").fetchall()
+    for (url,) in rows:
+        source = github_source(url)
+        if source:
+            owners.add(source[1].split('/')[0].lower())
+    return owners
+
+
 def read_source_activity(service, task_id, limit=3):
     """Read new activity on the task's GitHub sources before a turn starts.
 
@@ -189,6 +210,7 @@ def read_source_activity(service, task_id, limit=3):
         known.setdefault(key, set()).add(_github_time(revision))
     if not links:
         return [], {}
+    operators = operator_owners(service)
     for record in (assignment, task):
         for key, revision in record.get('_source_activity_seen', {}).items():
             if key in known:
@@ -210,7 +232,8 @@ def read_source_activity(service, task_id, limit=3):
         current = None
         if tracker is not None and time.monotonic() < deadline:
             try:
-                current = tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline)
+                current = tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline,
+                                                         operator=github_source(url)[1].split('/')[0].lower() in operators)
             except Exception:
                 current = None
         if not isinstance(current, dict) or not isinstance(current.get('updated_at'), str):

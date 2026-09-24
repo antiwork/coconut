@@ -63,6 +63,9 @@ Coconut adds these tools:
   Each item includes its `author_association`. Only OWNER, MEMBER, and COLLABORATOR activity can change the scope.
   Coconut gives text only from these authors, and not from bot accounts. For other items, it gives the metadata and a link.
   The same rule applies to the thread title, which is at most 200 characters, and to review comment file paths.
+  A repository role counts only in a repository of an operator owner. Other repositories give metadata only.
+  Operator owners are the owners of tracked PRs and of work-source assignments.
+  To add owners, set `COCONUT_GITHUB_TRUSTED_OWNERS` to a comma-separated list.
   If the thread changed and no new item explains the change, the prompt tells the bot to read the thread itself.
   For example, someone edited the body, the title, the labels, or an older comment.
   The last known revision is the latest of these values:
