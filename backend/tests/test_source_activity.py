@@ -46,6 +46,7 @@ class ThreadTracker(GitHubPRTracker):
         self.paths, self.deadlines, self.lock_free = [], [], []
         self.offline = False
         self.delay = 0
+        self.before_list = None
 
     def add(self, *comments):
         self.threads[42].add(*comments)
@@ -73,15 +74,18 @@ class ThreadTracker(GitHubPRTracker):
         if kind == 'issues' and not suffix:
             return dict(state='open', title='Record correction', updated_at=thread.updated_at,
                         comments=len(thread.comments), state_reason=None), None
+        if self.before_list:
+            self.before_list()
         values = {('issues', '/comments'): thread.comments, ('pulls', '/reviews'): thread.reviews,
                   ('pulls', '/comments'): thread.review_comments}[kind, suffix]
         options = parse_qs(query)
         if 'since' in options:
             # GitHub includes items updated at the exact `since` time.
             values = [v for v in values if v['updated_at'] >= options['since'][0]]
-        page, last = int(options['page'][0]), (len(values) + 99) // 100
-        link = f'<https://api.github.com{route}?per_page=100&page={last}>; rel="last"' if last > 1 else None
-        return values[(page - 1) * 100:page * 100], link
+        page, size = int(options['page'][0]), int(options['per_page'][0])
+        last = (len(values) + size - 1) // size
+        link = f'<https://api.github.com{route}?per_page={size}&page={last}>; rel="last"' if last > 1 else None
+        return values[(page - 1) * size:page * size], link
 
 
 class SourceActivityTests(unittest.TestCase):
@@ -253,6 +257,28 @@ class SourceActivityTests(unittest.TestCase):
                     self.service._pr_tracker_for(self.bot['id'])
                     self.assertEqual(login.call_count, 2)
 
+    def test_decision_lookup_reads_only_the_newest_decisions(self):
+        with self.service.transaction():
+            for number in range(25):
+                self.service._put('decisions', dict(id=f'decision-{number}', task_id=self.task['id']))
+        rows = self.service.db.execute(decision_sources.TASK_DECISIONS.format('?'), (self.task['id'],)).fetchall()
+        self.assertEqual(len(rows), 20)
+        self.assertIn('decision-24', rows[0][0])
+
+    def test_activity_after_the_thread_read_is_recorded_as_seen(self):
+        self.approve_card()
+        self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'Scale requirement.'))
+        def late_comment():
+            self.tracker.before_list = None
+            self.tracker.add(comment(8, 'reviewer', '2026-09-23T12:11:00Z', 'Also refunds.'))
+        self.tracker.before_list = late_comment
+        task, _ = self.turn()
+        self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['Scale requirement.', 'Also refunds.'])
+        self.assertEqual(self.service._get('tasks', self.task['id'])['_source_activity_seen'], {URL: '2026-09-23T12:11:00Z'})
+        self.requeue()
+        task, _ = self.turn()
+        self.assertNotIn('_source_activity', task)
+
     def test_decision_lookup_uses_the_task_index(self):
         plan = ' '.join(str(row) for row in self.service.db.execute(
             'EXPLAIN QUERY PLAN ' + decision_sources.TASK_DECISIONS.format('?,?'), ('one', 'two')))
@@ -320,8 +346,22 @@ class IssueActivityReadTests(unittest.TestCase):
         tracker.paths.clear()
         result = tracker.observe_issue_activity(URL, values[334]['updated_at'])
         self.assertEqual([c['author'] for c in result['new_activity']], [f'user{i}' for i in range(341, 351)])
-        self.assertEqual((result['omitted_items'], result['incomplete']), (5, False))
+        # Pages 1 to 3 were not read. An edited comment there can be new, so the read is incomplete.
+        self.assertEqual((result['omitted_items'], result['incomplete']), (5, True))
         self.assertEqual(tracker.paths[1:], ['/repos/example/project/issues/42/comments?per_page=100&page=4'])
+
+    def test_unread_older_pages_mark_the_read_incomplete(self):
+        tracker = ThreadTracker()
+        values = self.comments(150)
+        # Someone edited an old comment on page 1. The newest comment is on page 2.
+        values[4]['updated_at'] = '2026-09-24T00:00:00Z'
+        tracker.add(*values)
+        tracker.threads[42].updated_at = values[4]['updated_at']
+        result = tracker.observe_issue_activity(URL, values[148]['updated_at'])
+        self.assertEqual([c['author'] for c in result['new_activity']], ['user150'])
+        self.assertTrue(result['incomplete'])
+        self.assertEqual(tracker.paths, ['/repos/example/project/issues/42',
+                                         '/repos/example/project/issues/42/comments?per_page=100&page=2'])
 
     def test_long_pull_requests_show_the_newest_reviews(self):
         tracker = ThreadTracker()
@@ -339,7 +379,7 @@ class IssueActivityReadTests(unittest.TestCase):
         self.assertEqual([c['author'] for c in result['new_activity']], [f'lead{i}' for i in range(341, 351)])
         self.assertEqual((result['omitted_items'], result['incomplete']), (5, False))
         self.assertEqual([p for p in tracker.paths if '/reviews' in p],
-                         ['/repos/example/project/pulls/43/reviews?per_page=100&page=1',
+                         ['/repos/example/project/pulls/43/reviews?per_page=1&page=1',
                           '/repos/example/project/pulls/43/reviews?per_page=100&page=4'])
 
     def test_pull_request_activity_includes_reviews_and_inline_comments(self):

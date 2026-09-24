@@ -147,7 +147,8 @@ def _issue_url(url):
 
 SOURCE_READ_SECONDS = 6
 # The decisions_task index uses the same expression. Keep the two the same.
-TASK_DECISIONS = "SELECT data FROM decisions WHERE json_extract(data,'$.task_id') IN ({}) ORDER BY rowid DESC"
+# Only the first three links matter, so the newest twenty decisions are sufficient.
+TASK_DECISIONS = "SELECT data FROM decisions WHERE json_extract(data,'$.task_id') IN ({}) ORDER BY rowid DESC LIMIT 20"
 
 
 def read_source_activity(service, task_id, limit=3):
@@ -211,7 +212,8 @@ def read_source_activity(service, task_id, limit=3):
         if not isinstance(current, dict) or not isinstance(current.get('updated_at'), str):
             activity.append(dict(url=url, read_failed=True))
             continue
-        seen[key] = current['updated_at']
+        observed = current.get('observed_at')
+        seen[key] = observed if isinstance(observed, str) and observed > current['updated_at'] else current['updated_at']
         if since is None or current['updated_at'] > since:
             activity.append(dict(url=url, since=since, **{k: current.get(k) for k in (
                 'state', 'state_reason', 'title', 'updated_at', 'new_activity', 'omitted_items', 'incomplete',

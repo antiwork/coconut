@@ -419,24 +419,28 @@ class GitHubPRTracker:
             raise PRTrackingError('GitHub returned an incomplete list.')
         return values
 
-    def _newest_pages(self, path: str, deadline: float, older) -> tuple[list, bool]:
+    def _newest_pages(self, path: str, deadline: float, older, *, ordered: bool) -> tuple[list, bool]:
         """Read a list from its last page back, at most three pages.
 
-        GitHub lists these items oldest first. The Link header names the last
-        page. Stop at the first page with an item for which `older` is true.
-        Return the items and whether pages remain unread.
+        GitHub lists these items oldest first. A probe with one item for each
+        page gets the item count from the Link header. Stop at the first page
+        with an item for which `older` is true. Return the items and whether
+        unread pages can hold new items. If `ordered` is true, the list order
+        follows the time that `older` checks. Then the stop proves that the
+        unread pages hold only older items.
         """
-        first, link = self._request(path + 'per_page=100&page=1', deadline)
-        if not isinstance(first, list) or any(not isinstance(value, dict) for value in first):
+        probe, link = self._request(path + 'per_page=1&page=1', deadline)
+        if not isinstance(probe, list) or any(not isinstance(value, dict) for value in probe):
             raise PRTrackingError('GitHub returned an incomplete list.')
-        match = re.search(r'<[^>]*[?&]page=([1-9][0-9]{0,5})[^>]*>;\s*rel="last"', link or '')
-        last = int(match[1]) if match else 1
+        match = re.search(r'<[^>]*[?&]page=([1-9][0-9]{0,6})[^>]*>;\s*rel="last"', link or '')
+        count = int(match[1]) if match else len(probe)
+        last = (count + 99) // 100
         values = []
         for page in range(last, max(0, last - 3), -1):
-            batch = first if page == 1 else self._list(f'{path}per_page=100&page={page}', deadline)
+            batch = self._list(f'{path}per_page=100&page={page}', deadline)
             values += batch
             if any(older(value) for value in batch):
-                return values, False
+                return values, page > 1 and not ordered
         return values, last > 3
 
     def observe_issue_activity(self, url: str, since: str, deadline: float | None = None) -> dict | None:
@@ -468,14 +472,18 @@ class GitHubPRTracker:
                     items += [_activity('comment', v, v.get('updated_at')) for v in values
                               if isinstance(v.get('updated_at'), str) and v['updated_at'] > since]
                     if any(not isinstance(v.get('created_at'), str) or v['created_at'] <= since for v in values):
+                        # The earlier pages were not read. An edited older comment there can be newer than `since`.
+                        incomplete = page > 1
                         break
                 else:
                     incomplete = last > 3
                 if kind == 'pulls':
-                    for route, name, stamp in ((f'pulls/{number}/reviews?', 'review', 'submitted_at'),
-                                               (f'pulls/{number}/comments?since={quote(since)}&', 'review_comment', 'updated_at')):
+                    # Reviews follow the submission order. Inline comments follow the creation order, not the edit time.
+                    for route, name, stamp, ordered in (
+                            (f'pulls/{number}/reviews?', 'review', 'submitted_at', True),
+                            (f'pulls/{number}/comments?since={quote(since)}&', 'review_comment', 'updated_at', False)):
                         values, more = self._newest_pages(f'{prefix}/{route}', deadline,
-                            lambda v: isinstance(v.get(stamp), str) and v[stamp] <= since)
+                            lambda v: isinstance(v.get(stamp), str) and v[stamp] <= since, ordered=ordered)
                         items += [_activity(name, v, v.get(stamp)) for v in values
                                   if isinstance(v.get(stamp), str) and v[stamp] > since]
                         incomplete = incomplete or more
@@ -486,7 +494,9 @@ class GitHubPRTracker:
             return None
         latest = max((item['_at'] for item in items), default=None)
         items.sort(key=lambda item: item.pop('_at'))
-        result = dict(issue, new_activity=items[-10:], omitted_items=max(0, len(items) - 10), incomplete=incomplete)
+        result = dict(issue, new_activity=items[-10:], omitted_items=max(0, len(items) - 10), incomplete=incomplete,
+                      # An item can arrive after the thread read. Record it as seen, so the next turn does not show it again.
+                      observed_at=max(issue['updated_at'], latest or ''))
         # An edit to the body, the title, the labels, or an older comment changes updated_at and adds no new item.
         if issue['updated_at'] > since and (latest is None or latest < issue['updated_at']):
             result['changed_without_new_activity'] = True

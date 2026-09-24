@@ -64,7 +64,8 @@ Coconut adds these tools:
   the revision that the bot proved when Coconut stored the card (`_source_seen`), the assignment `updated_at`, and the revision that Coconut recorded for the task.
   An older card without `_source_seen` uses its creation time.
   Coconut does not use `_source_facts`, because the background refresh changes it while the card waits.
-  After the provider receives the turn, Coconut records the observed `updated_at`. The next turn shows only newer activity.
+  After the provider receives the turn, Coconut records the observed revision. The next turn shows only newer activity.
+  The observed revision is the later of the thread `updated_at` and the newest item that Coconut read.
   If the provider does not receive the turn, Coconut records nothing. The next turn shows the same activity again.
   If a read fails, the turn still starts. The prompt tells the bot to read the source itself before it acts.
 - `coconut_propose_file` supplies exact file proposals and persistent artifact cards.
