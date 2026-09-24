@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.client import HTTPException
 import json
 import hashlib
@@ -194,6 +194,12 @@ def _trusted(value: dict) -> bool:
     """Return true for an owner, member, or collaborator that is not a bot account."""
     user = value.get('user') if isinstance(value.get('user'), dict) else {}
     return value.get('author_association') in _TRUSTED_AUTHORS and user.get('type') != 'Bot'
+
+
+def _same_second_recent(since):
+    """Only recheck GitHub's whole-second timestamp while new items can share it."""
+    age = time.time() - datetime.fromisoformat(since.replace('Z', '+00:00')).timestamp()
+    return 0 <= age <= 30
 
 
 class GitHubPRTracker:
@@ -498,7 +504,8 @@ class GitHubPRTracker:
             # An item can repeat, but an item that arrived in the same second is not lost.
             # Read the record first. Activity that arrives between the reads shows again on the next turn. It is not lost.
             first_read = None
-            if issue['updated_at'] > since or (include_same_second and issue['updated_at'] == since):
+            if issue['updated_at'] > since or (include_same_second and issue['updated_at'] == since
+                                                and _same_second_recent(since)):
                 # GitHub lists comments oldest first. Read from the last page back to get the newest comments.
                 last = (issue['comments'] + 99) // 100
                 for page in range(last, max(0, last - 3), -1):
@@ -514,7 +521,6 @@ class GitHubPRTracker:
                 # Later reads can find newer items while a comment arrives behind them. Record only this first read.
                 first_read = max((item['_at'] for item in items), default=None)
                 if kind == 'pulls':
-                    from datetime import datetime, timedelta, timezone
                     review_since = (datetime.fromisoformat(since.replace('Z', '+00:00'))
                                     - timedelta(seconds=1)).astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
                     for route, name, stamp in ((f'pulls/{number}/reviews?', 'review', 'submitted_at'),
