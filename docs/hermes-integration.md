@@ -70,6 +70,9 @@ Coconut adds these tools:
   Coconut does not use `_source_facts`, because the background refresh changes it while the card waits.
   After the provider receives the turn, Coconut records the observed revision. The next turn shows only newer activity.
   The observed revision is the later of the thread `updated_at` and the newest item that Coconut read.
+  Coconut records it on the task and on its assignment, so continuations use the same revision.
+  GitHub times have whole seconds. Items at the recorded second count as new, so an item can repeat once.
+  The per-turn list reads do not use the shared response cache.
   If the provider does not receive the turn, Coconut records nothing. The next turn shows the same activity again.
   If a read fails, the turn still starts. The prompt tells the bot to read the source itself before it acts.
 - `coconut_propose_file` supplies exact file proposals and persistent artifact cards.

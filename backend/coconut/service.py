@@ -3197,8 +3197,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             return
         with self.transaction():
             task = self._get('tasks', task_id)
-            task['_source_activity_seen'] = dict(task.get('_source_activity_seen', {}), **seen)
-            self._put('tasks', task)
+            # Continuations of the same assignment read the assignment record too.
+            for record in {id(r): r for r in (task, self._assignment(task))}.values():
+                record['_source_activity_seen'] = dict(record.get('_source_activity_seen', {}), **seen)
+                self._put('tasks', record)
 
     def emit(self, task_id: str, kind: str, payload: dict):
         if kind == 'steering_ready':

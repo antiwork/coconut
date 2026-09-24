@@ -196,11 +196,14 @@ class GitHubPRTracker:
         self._timeout = timeout
         self._opener = build_opener(_NoRedirect())
 
-    def _get(self, path: str, deadline: float) -> dict[str, Any] | list:
-        return self._request(path, deadline)[0]
+    def _get(self, path: str, deadline: float, *, cache: bool = True) -> dict[str, Any] | list:
+        return self._request(path, deadline, cache=cache)[0]
 
-    def _request(self, path: str, deadline: float) -> tuple[dict[str, Any] | list, str | None]:
-        """Return the payload and the Link header, which names the last page of a list."""
+    def _request(self, path: str, deadline: float, *, cache: bool = True) -> tuple[dict[str, Any] | list, str | None]:
+        """Return the payload and the Link header, which names the last page of a list.
+
+        With `cache` false, the read does not use or fill the shared response cache.
+        """
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise PRTrackingError("GitHub refresh exceeded its time limit.")
@@ -216,7 +219,7 @@ class GitHubPRTracker:
         with _CACHE_LOCK:
             if _RETRY_AFTER.get(scope, 0) > time.time():
                 raise PRTrackingError("GitHub rate limit reached. Refresh resumes after its reset time.")
-            cached = _RESPONSE_CACHE.get(key) if self._token else None
+            cached = _RESPONSE_CACHE.get(key) if self._token and cache else None
             if cached:
                 _RESPONSE_CACHE.move_to_end(key)
         if cached:
@@ -255,7 +258,7 @@ class GitHubPRTracker:
         if not isinstance(payload, (dict, list)):
             raise PRTrackingError("GitHub returned an unexpected response.")
         link = response_headers.get('Link')
-        if self._token:
+        if self._token and cache:
             _remember_response(key, response_headers.get('ETag'), body, link)
         return payload, link
 
@@ -416,22 +419,22 @@ class GitHubPRTracker:
         return None
 
     def _list(self, path: str, deadline: float) -> list:
-        values = self._get(path, deadline)
+        # Per-turn list pages change often. Keep them out of the shared cache.
+        values = self._get(path, deadline, cache=False)
         if not isinstance(values, list) or any(not isinstance(value, dict) for value in values):
             raise PRTrackingError('GitHub returned an incomplete list.')
         return values
 
-    def _newest_pages(self, path: str, deadline: float, older, *, ordered: bool) -> tuple[list, bool]:
+    def _newest_pages(self, path: str, deadline: float, older) -> tuple[list, bool]:
         """Read a list from its last page back, at most three pages.
 
-        GitHub lists these items oldest first. A probe with one item for each
-        page gets the item count from the Link header. Stop at the first page
-        with an item for which `older` is true. Return the items and whether
-        unread pages can hold new items. If `ordered` is true, the list order
-        follows the time that `older` checks. Then the stop proves that the
-        unread pages hold only older items.
+        GitHub lists these items by ID. A probe with one item for each page
+        gets the item count from the Link header. Stop at the first page with
+        an item for which `older` is true. Return the items and whether unread
+        pages remain. The ID order does not follow the time that `older`
+        checks, so unread pages can hold new items.
         """
-        probe, link = self._request(path + 'per_page=1&page=1', deadline)
+        probe, link = self._request(path + 'per_page=1&page=1', deadline, cache=False)
         if not isinstance(probe, list) or any(not isinstance(value, dict) for value in probe):
             raise PRTrackingError('GitHub returned an incomplete list.')
         match = re.search(r'<[^>]*[?&]page=([1-9][0-9]{0,6})[^>]*>;\s*rel="last"', link or '')
@@ -442,7 +445,7 @@ class GitHubPRTracker:
             batch = self._list(f'{path}per_page=100&page={page}', deadline)
             values += batch
             if any(older(value) for value in batch):
-                return values, page > 1 and not ordered
+                return values, page > 1
         return values, last > 3
 
     def observe_issue_activity(self, url: str, since: str, deadline: float | None = None) -> dict | None:
@@ -473,6 +476,8 @@ class GitHubPRTracker:
                     return None
                 # A review can change the PR record and leave the issue record unchanged.
                 issue['updated_at'] = max(issue['updated_at'], record['updated_at'])
+            # GitHub times have whole seconds. Items at the `since` second count as new.
+            # An item can repeat, but an item that arrived in the same second is not lost.
             # Read the record first. Activity that arrives between the reads shows again on the next turn. It is not lost.
             if issue['updated_at'] > since:
                 # GitHub lists comments oldest first. Read from the last page back to get the newest comments.
@@ -480,22 +485,20 @@ class GitHubPRTracker:
                 for page in range(last, max(0, last - 3), -1):
                     values = self._list(f'{prefix}/issues/{number}/comments?per_page=100&page={page}', deadline)
                     items += [_activity('comment', v, v.get('updated_at')) for v in values
-                              if isinstance(v.get('updated_at'), str) and v['updated_at'] > since]
-                    if any(not isinstance(v.get('created_at'), str) or v['created_at'] <= since for v in values):
+                              if isinstance(v.get('updated_at'), str) and v['updated_at'] >= since]
+                    if any(not isinstance(v.get('created_at'), str) or v['created_at'] < since for v in values):
                         # The earlier pages were not read. An edited older comment there can be newer than `since`.
                         incomplete = page > 1
                         break
                 else:
                     incomplete = last > 3
                 if kind == 'pulls':
-                    # Reviews follow the submission order. Inline comments follow the creation order, not the edit time.
-                    for route, name, stamp, ordered in (
-                            (f'pulls/{number}/reviews?', 'review', 'submitted_at', True),
-                            (f'pulls/{number}/comments?since={quote(since)}&', 'review_comment', 'updated_at', False)):
+                    for route, name, stamp in ((f'pulls/{number}/reviews?', 'review', 'submitted_at'),
+                                               (f'pulls/{number}/comments?since={quote(since)}&', 'review_comment', 'updated_at')):
                         values, more = self._newest_pages(f'{prefix}/{route}', deadline,
-                            lambda v: isinstance(v.get(stamp), str) and v[stamp] <= since, ordered=ordered)
+                            lambda v: isinstance(v.get(stamp), str) and v[stamp] < since)
                         items += [_activity(name, v, v.get(stamp)) for v in values
-                                  if isinstance(v.get(stamp), str) and v[stamp] > since]
+                                  if isinstance(v.get(stamp), str) and v[stamp] >= since]
                         incomplete = incomplete or more
         except HTTPError as error:
             error.close()

@@ -51,11 +51,13 @@ class ThreadTracker(GitHubPRTracker):
         self.offline = False
         self.delay = 0
         self.before_list = None
+        self.cached = {}
 
     def add(self, *comments):
         self.threads[42].add(*comments)
 
-    def _request(self, path, deadline):
+    def _request(self, path, deadline, cache=True):
+        self.cached[path] = cache
         if self.service is not None:
             acquired = threading.Event()
             def check():
@@ -171,7 +173,8 @@ class SourceActivityTests(unittest.TestCase):
         self.tracker.add(comment(9, 'reviewer', '2026-09-23T13:00:00Z', 'Also keep the old export.'))
         self.requeue()
         task, prompt = self.turn()
-        self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['Also keep the old export.'])
+        # The item at the recorded second can repeat. Its author is not trusted, so Coconut withholds its text.
+        self.assertEqual([c.get('body') for c in task['_source_activity'][0]['new_activity']], [None, 'Also keep the old export.'])
         self.assertNotIn('10x the current volume', prompt)
 
     def test_comment_while_the_card_waits_reaches_the_resumed_turn(self):
@@ -245,7 +248,8 @@ class SourceActivityTests(unittest.TestCase):
             self.service._put('tasks', task)
         with patch.object(self.service, '_pr_tracker_for', return_value=self.tracker):
             task, prompt = self.turn()
-        self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['Please also cover refunds.'])
+        # The comment at the assignment second counts as new. It can repeat the assignment text.
+        self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['Original request.', 'Please also cover refunds.'])
         self.assertIn('Please also cover refunds.', prompt)
 
     def test_profile_tracker_is_reused_for_a_short_time(self):
@@ -287,6 +291,27 @@ class SourceActivityTests(unittest.TestCase):
         self.requeue()
         task, _ = self.turn()
         self.assertNotIn('_source_activity', task)
+
+    def test_item_in_the_recorded_second_is_not_lost(self):
+        self.approve_card()
+        self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'First.'))
+        self.turn(render=False)
+        # A second comment arrives in the same second, after the read.
+        self.tracker.add(comment(8, 'reviewer', '2026-09-23T12:10:00Z', 'Same second.'))
+        self.requeue()
+        self.turn(render=False)
+        self.tracker.add(comment(9, 'reviewer', '2026-09-23T12:30:00Z', 'Later.'))
+        self.requeue()
+        task, _ = self.turn(render=False)
+        self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['First.', 'Same second.', 'Later.'])
+
+    def test_continuations_share_the_recorded_revision(self):
+        with self.service.transaction():
+            child = dict(self.service._get('tasks', self.task['id']), id='continuation', _assignment_task_id=self.task['id'])
+            self.service._put('tasks', child)
+        self.service._record_source_seen('continuation', {URL: '2026-09-23T12:10:00Z'})
+        for identity in ('continuation', self.task['id']):
+            self.assertEqual(self.service._get('tasks', identity)['_source_activity_seen'], {URL: '2026-09-23T12:10:00Z'})
 
     def test_tracker_without_a_login_does_not_read_github(self):
         self.approve_card()
@@ -373,7 +398,8 @@ class IssueActivityReadTests(unittest.TestCase):
         result = tracker.observe_issue_activity(URL, values[334]['updated_at'])
         self.assertEqual([c['author'] for c in result['new_activity']], [f'user{i}' for i in range(341, 351)])
         # Pages 1 to 3 were not read. An edited comment there can be new, so the read is incomplete.
-        self.assertEqual((result['omitted_items'], result['incomplete']), (5, True))
+        # The comment at the `since` second counts as new.
+        self.assertEqual((result['omitted_items'], result['incomplete']), (6, True))
         self.assertEqual(tracker.paths[1:], ['/repos/example/project/issues/42/comments?per_page=100&page=4'])
 
     def test_unread_older_pages_mark_the_read_incomplete(self):
@@ -384,7 +410,7 @@ class IssueActivityReadTests(unittest.TestCase):
         tracker.add(*values)
         tracker.threads[42].updated_at = values[4]['updated_at']
         result = tracker.observe_issue_activity(URL, values[148]['updated_at'])
-        self.assertEqual([c['author'] for c in result['new_activity']], ['user150'])
+        self.assertEqual([c['author'] for c in result['new_activity']], ['user149', 'user150'])
         self.assertTrue(result['incomplete'])
         self.assertEqual(tracker.paths, ['/repos/example/project/issues/42',
                                          '/repos/example/project/issues/42/comments?per_page=100&page=2'])
@@ -401,9 +427,10 @@ class IssueActivityReadTests(unittest.TestCase):
         self.assertTrue(result['incomplete'])
 
         tracker.paths.clear()
+        # GitHub orders reviews by ID, not by submission time. Unread earlier pages can hold new reviews.
         result = tracker.observe_issue_activity(PR_URL, thread.reviews[334]['submitted_at'])
         self.assertEqual([c['author'] for c in result['new_activity']], [f'lead{i}' for i in range(341, 351)])
-        self.assertEqual((result['omitted_items'], result['incomplete']), (5, False))
+        self.assertEqual((result['omitted_items'], result['incomplete']), (6, True))
         self.assertEqual([p for p in tracker.paths if '/reviews' in p],
                          ['/repos/example/project/pulls/43/reviews?per_page=1&page=1',
                           '/repos/example/project/pulls/43/reviews?per_page=100&page=4'])
@@ -441,6 +468,9 @@ class IssueActivityReadTests(unittest.TestCase):
         self.assertEqual(result['new_activity'][2]['path'], 'app/worker.py')
         self.assertIn('/repos/example/project/pulls/43/comments?since=2026-09-23T11%3A46%3A31Z&per_page=100&page=1',
                       tracker.paths)
+        # Only the thread and PR records use the shared response cache.
+        self.assertEqual({path for path, cache in tracker.cached.items() if cache},
+                         {'/repos/example/project/issues/43', '/repos/example/project/pulls/43'})
 
 
 class ActivityPromptTests(unittest.TestCase):
