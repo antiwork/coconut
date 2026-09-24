@@ -59,7 +59,7 @@ class WorkWorkspaceTests(unittest.TestCase):
         note.write_text('Uncommitted work')
         identity = next(iter(json.loads((self.saved / 'worktrees.json').read_text())))
         with patch('coconut.work_workspace.in_use', return_value=False):
-            archive = retire(self.saved, identity, lambda: True)
+            archive = retire(self.saved, identity, lambda wait: True)
         self.assertTrue(archive.is_file())
         self.assertFalse(Path(original['path']).exists())
         resumed = acquire(self.saved, outcome, str(self.repo))

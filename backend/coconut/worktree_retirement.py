@@ -11,17 +11,23 @@ from . import work_workspace
 
 WORKTREE_RETIRE_SECONDS = 2 * 24 * 60 * 60
 RETIREMENT_INTERVAL_SECONDS = 60 * 60
+# Before the registry lock, retirement waits this long for the service lock. Under the registry lock, it does not wait.
+SERVICE_WAIT_SECONDS = 5
 
 
 class WorktreeRetirement:
-    def _finished_outcomes(self, current, *, timeout=-1):
-        """Return the execution IDs whose work is finished and idle. Hold the service lock only to read."""
+    def _finished_outcomes(self, current, *, timeout=-1, only=None):
+        """Return the execution IDs whose work is finished and idle, or None when the service lock is busy.
+
+        Hold the service lock only to read.
+        """
         if not self.lock.acquire(timeout=timeout):
-            return set()
+            return None
         try:
             groups = {}
             for task in self._all('tasks'):
-                groups.setdefault(execution_key(task), []).append(task)
+                if only is None or execution_key(task) == only:
+                    groups.setdefault(execution_key(task), []).append(task)
             pending = {d.get('task_id') for d in self._all('decisions') if d['status'] == 'pending'}
             native = dict(self.kanban.tasks) if self.kanban else {}
             by_native_id = {n['id']: n for n in native.values()}
@@ -66,8 +72,13 @@ class WorktreeRetirement:
                 continue
             if self.stopping.is_set() or self.restart_pending:
                 break
-            # The registry lock comes first here. Wait briefly for the service lock so a dispatch cannot deadlock.
-            still_finished = lambda: outcome in self._finished_outcomes(time.time(), timeout=5)
+
+            def still_finished(wait, outcome=outcome):
+                # Under the registry lock, wait is False. The service must not wait for the service lock there.
+                result = self._finished_outcomes(time.time(), timeout=SERVICE_WAIT_SECONDS if wait else 0, only=outcome)
+                if result is None:
+                    raise ValueError('The service was busy. Coconut tries again in an hour.')
+                return outcome in result
             try:
                 if work_workspace.retire(root, identity, still_finished):
                     retired.append(identity)

@@ -70,13 +70,22 @@ Retirement does these steps:
    - The ignored files, under `ignored/`. Rebuildable folders are not in the archive:
      `node_modules` and `.cache` at any depth, and `tmp`, `log`, `public/packs`, `public/packs-test`, and `coverage` at the top.
    - `retirement.json` with the branch, the HEAD commit, the outcome, the repository, and the time.
+
+   The archive stores a hard link as a separate regular file.
 5. It skips the worktree when the archived ignored files are larger than 200 MB.
 6. It reads the archive again and compares it with the worktree.
-7. It takes `workspaces/.workspace.lock`. It checks the binding, the HEAD commit, the changes, `lsof`, and the outcome state again.
-   Then it runs `git worktree remove --force`.
-8. It keeps the branch and its commits. It marks the binding `retired` with the time, the archive, and the HEAD commit.
+7. It checks the outcome state again. It waits at most 5 seconds for the service lock. It checks `lsof` again.
+8. It takes `workspaces/.workspace.lock`. It checks the binding, the Git worktree record, the HEAD commit, and the changes again.
+   It checks the outcome state again only if the service lock is free. It does not wait for the service lock here.
+9. It runs `git worktree remove --force`. It keeps the branch and its commits.
+   It marks the binding `retired` with the time, the archive, and the HEAD commit.
 
-Steps 1 to 6 do not hold the registry lock. A path hint for native dispatch does not wait for them.
+The log names the cause when Coconut keeps a worktree, for example a busy service or a changed worktree.
+Steps 1 to 7 do not hold the registry lock. Step 8 runs Git commands that do not wait for other processes.
+A path hint for native dispatch reads `worktrees.json` without the registry lock, because dispatch holds the service lock.
+The provider's verified lookup runs before a turn without the service lock. It can wait for the registry lock.
+If Git refuses the removal and the checkout stays unchanged, Coconut deletes the new archive and clears `retired`.
+It marks the binding `retire_failed` with the time and the error, and it does not try again for one day.
 
 `coconut_workspace` and the provider's verified workspace lookup restore a retired worktree on demand.
 The restore runs `git worktree add` at the same path on the saved branch.
@@ -88,7 +97,7 @@ It marks the binding `retired.restore_failed` with the time and the error, and d
 New work for the outcome continues without the worktree. `coconut_workspace` returns an error with the archive path and the branch.
 To try the restore again, an operator removes `restore_failed` from the binding in `workspaces/worktrees.json`.
 A path hint for native dispatch returns the saved path. It does not restore the worktree.
-Coconut does not delete an archive. A later retirement of the same worktree writes an archive with a new name.
+Coconut does not delete the archive of a retired worktree. A later retirement of the same worktree writes an archive with a new name.
 Native delegated workers also default to `delegation.worktree_isolation: true`.
 An explicit profile setting takes precedence.
 

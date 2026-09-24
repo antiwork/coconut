@@ -1,6 +1,6 @@
 """Keep one native Hermes worktree per outcome and repository."""
 import contextlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import io
@@ -102,6 +102,8 @@ REBUILDABLE_NAMES = ('node_modules', '.cache')
 REBUILDABLE_PATHS = ('tmp', 'log', 'public/packs', 'public/packs-test', 'coverage')
 # Coconut keeps a worktree when its other ignored files are larger than this limit.
 IGNORED_LIMIT_BYTES = 200 * 1024 * 1024
+# After Git refuses to remove a worktree, Coconut waits this long before the next attempt.
+RETRY_AFTER = timedelta(days=1)
 DIFF = ('--binary', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-relative',
         '--src-prefix=a/', '--dst-prefix=b/')
 
@@ -189,7 +191,7 @@ def in_use(path):
                for line in result.stdout.splitlines())
 
 
-def check_worktree(path, binding, repository):
+def check_worktree(path, binding, repository, *, processes=True):
     """Refuse a worktree that Git or a process still uses."""
     records = registered(repository)
     record = next((r for r in records if r['path'] == path), None)
@@ -202,7 +204,7 @@ def check_worktree(path, binding, repository):
     git_paths = git(path, 'rev-parse', '--path-format=absolute', *(a for n in IN_PROGRESS for a in ('--git-path', n)))
     if any(Path(p).exists() for p in git_paths.splitlines()):
         raise ValueError('A Git operation is in progress in the worktree.')
-    if in_use(path):
+    if processes and in_use(path):
         raise ValueError('A process uses the worktree.')
 
 
@@ -240,6 +242,8 @@ def write_archive(temporary, metadata, path, patches, entries):
                 info.size, info.mode, info.mtime = len(data), 0o600, int(datetime.now().timestamp())
                 tar.addfile(info, io.BytesIO(data))
             for arcname, name in entries:
+                # Store each hard link as a regular file. A link member would point to another archive name.
+                tar.inodes.clear()
                 tar.add(path / name, arcname=arcname, recursive=False)
         output.flush()
         os.fsync(output.fileno())
@@ -254,18 +258,27 @@ def sync_directory(directory):
         os.close(fd)
 
 
+def stamp(moment):
+    return moment.isoformat().replace('+00:00', 'Z')
+
+
 def retire(root, identity, finished):
     """Archive and remove the worktree of one finished outcome. Return the archive path.
 
-    The slow Git, lsof, and archive work runs without the registry lock, so a path hint
-    does not wait for it. Under the lock, Coconut checks the worktree and the outcome again.
-    The caller supplies `finished` for that check.
+    The caller supplies `finished(wait)`. It returns True when the outcome is still finished.
+    With wait=False it must not wait for the service lock, and it raises ValueError when that lock is busy.
+    Coconut calls it with wait=True before it takes the registry lock, and with wait=False under that lock.
+    The Git, lsof, and archive work runs before the registry lock. Under the lock, Coconut only
+    repeats the Git checks that do not wait for other processes.
     """
     root = Path(root)
     manifest = root / 'worktrees.json'
     # save_bindings replaces the registry by an atomic rename, so this read needs no lock.
     before = json.loads(manifest.read_text()).get(identity)
     if not before or before.get('retired'):
+        return None
+    failed = (before.get('retire_failed') or {}).get('at')
+    if failed and datetime.now(timezone.utc) - datetime.fromisoformat(failed.replace('Z', '+00:00')) < RETRY_AFTER:
         return None
     path = validate_binding(dict(before)).resolve()
     repository = Path(before['repository'])
@@ -286,11 +299,15 @@ def retire(root, identity, finished):
         # Keep every earlier archive. A later retirement of the same worktree gets a new name.
         archive = directory / (identity + '-' + moment.strftime('%Y%m%dT%H%M%S%fZ') + '.tar.gz')
     temporary = directory / ('.' + archive.name + '.tmp')
-    at = moment.isoformat().replace('+00:00', 'Z')
+    at = stamp(moment)
     try:
         write_archive(temporary, dict(branch=before['branch'], head=head, outcome=before['outcome'],
             repository=before['repository'], path=before['path'], at=at), path,
             dict(zip(PATCHES, (staged, unstaged))), entries)
+        if not finished(True):
+            raise ValueError('The outcome resumed during retirement.')
+        if in_use(path):
+            raise ValueError('A process uses the worktree.')
         with (root / '.workspace.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             saved = json.loads(manifest.read_text())
@@ -298,21 +315,28 @@ def retire(root, identity, finished):
             if binding != before or archive.exists():
                 raise ValueError('The workspace binding changed during retirement.')
             validate_binding(dict(binding))
-            check_worktree(path, binding, repository)
-            if git(path, 'rev-parse', 'HEAD') != head or changes(path) != current or not finished():
-                raise ValueError('The worktree or its outcome changed during retirement.')
+            check_worktree(path, binding, repository, processes=False)
+            if git(path, 'rev-parse', 'HEAD') != head or changes(path) != current:
+                raise ValueError('The worktree changed during retirement.')
+            # A dispatch marks its task active before its worker takes this lock. Check the tasks without waiting.
+            if not finished(False):
+                raise ValueError('The outcome resumed during retirement.')
             temporary.replace(archive)
             sync_directory(directory)
+            binding.pop('retire_failed', None)
             binding['retired'] = dict(at=at, archive=str(archive), head=head, changes=changes_digest(*current))
             save_bindings(manifest, saved)
             try:
                 git(repository, 'worktree', 'remove', '--force', str(path))
-            except ValueError:
+            except ValueError as error:
                 # Git refuses some removals before it deletes files, for example with a submodule.
+                # Keep the checkout, remove its unused archive, and wait a day before the next attempt.
                 with contextlib.suppress(ValueError, OSError):
                     if (path / '.git').is_file() and changes(path) == current:
                         binding.pop('retired')
+                        binding['retire_failed'] = dict(at=stamp(datetime.now(timezone.utc)), error=str(error)[:1000])
                         save_bindings(manifest, saved)
+                        archive.unlink()
                 raise
             return archive
     finally:
@@ -480,28 +504,39 @@ SCHEMA = {'name': 'coconut_workspace', 'description':
         'repository': {'type': 'string'}, 'existing_worktree': {'type': 'string'}}, 'required': ['repository']}}
 
 
+def chosen(root, outcome, bindings):
+    # A path hint does not restore a retired worktree. It names the path that a restore uses.
+    retired = len(bindings) == 1 and bindings[0].get('retired') or {}
+    if len(bindings) == 1 and not retired.get('restore_failed') and (Path(bindings[0]['path']).is_dir() or retired):
+        return Path(bindings[0]['path'])
+    return root / outcome
+
+
 def preferred(root, outcome, *, verify=True):
     root = Path(root)
     manifest = root / 'worktrees.json'
+    if not verify:
+        # Native dispatch reads this path hint while it holds the service lock, so the hint does not take
+        # the registry lock. save_bindings replaces the file by an atomic rename. A read sees one complete version.
+        try:
+            return chosen(root, outcome, [v for v in json.loads(manifest.read_text()).values() if v['outcome'] == outcome])
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return root / outcome
+    # The provider calls this before a turn without the service lock, so a restore can hold the registry lock.
     if manifest.exists():
         with (root / '.workspace.lock').open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX if verify else fcntl.LOCK_SH)
+            fcntl.flock(lock, fcntl.LOCK_EX)
             saved = json.loads(manifest.read_text())
             bindings = [v for v in saved.values() if v['outcome'] == outcome]
             before = json.dumps(saved, sort_keys=True)
-            if verify:
-                for binding in bindings:
-                    if binding.get('retired'):
-                        # A failed restore does not stop new work. coconut_workspace reports the archive to the bot.
-                        with contextlib.suppress(ValueError):
-                            restore(binding)
-                    else:
-                        validate_binding(binding, allow_rename=True)
-                if json.dumps(saved, sort_keys=True) != before:
-                    save_bindings(manifest, saved)
-            # A path hint does not restore a retired worktree. It names the path that a restore uses.
-            retired = len(bindings) == 1 and bindings[0].get('retired') or {}
-            if (len(bindings) == 1 and not retired.get('restore_failed')
-                    and (Path(bindings[0]['path']).is_dir() or retired)):
-                return Path(bindings[0]['path'])
+            for binding in bindings:
+                if binding.get('retired'):
+                    # A failed restore does not stop new work. coconut_workspace reports the archive to the bot.
+                    with contextlib.suppress(ValueError):
+                        restore(binding)
+                else:
+                    validate_binding(binding, allow_rename=True)
+            if json.dumps(saved, sort_keys=True) != before:
+                save_bindings(manifest, saved)
+            return chosen(root, outcome, bindings)
     return root / outcome

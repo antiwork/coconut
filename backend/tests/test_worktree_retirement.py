@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -272,6 +273,91 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.assertEqual(self.retire(), [])
         self.assertEqual((path / 'build' / 'fixture.db').stat().st_size, 4097)
         self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_path_hint_does_not_wait_for_the_registry_lock(self):
+        outcome, _, path, _ = self.outcome()
+        results = []
+        with (self.workspaces / '.workspace.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            reader = threading.Thread(target=lambda: results.append(preferred(self.workspaces, outcome, verify=False)),
+                                      daemon=True)
+            reader.start()
+            reader.join(2)
+            self.assertEqual(results, [path])
+        reader.join(5)
+        (self.workspaces / 'worktrees.json').write_text('{"partial')
+        self.assertEqual(preferred(self.workspaces, outcome, verify=False), self.workspaces / outcome)
+        (self.workspaces / 'worktrees.json').unlink()
+        self.assertEqual(preferred(self.workspaces, outcome, verify=False), self.workspaces / outcome)
+
+    def test_a_busy_service_is_not_awaited_under_the_registry_lock(self):
+        _, identity, path, _ = self.outcome()
+        original = work_workspace.write_archive
+        acquired, release, blocked = threading.Event(), threading.Event(), []
+        def hold_service_lock():
+            with self.service.lock:
+                acquired.set()
+                release.wait(10)
+        def watch_registry_lock():
+            while not release.is_set():
+                with (self.workspaces / '.workspace.lock').open('a') as lock:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        blocked.append(True)
+                release.wait(.02)
+        def archive(*arguments):
+            original(*arguments)
+            # A dispatch holds the service lock from now until retirement ends.
+            threading.Thread(target=hold_service_lock, daemon=True).start()
+            acquired.wait(5)
+            threading.Thread(target=watch_registry_lock, daemon=True).start()
+        with patch('coconut.work_workspace.write_archive', side_effect=archive), \
+                patch('coconut.worktree_retirement.SERVICE_WAIT_SECONDS', .5), \
+                self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            try:
+                self.assertEqual(self.retire(), [])
+            finally:
+                release.set()
+        self.assertIn('service was busy', '\n'.join(logs.output))
+        self.assertEqual(blocked, [])
+        self.assertTrue(path.is_dir())
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_refused_removal_leaves_no_archive_and_waits_a_day(self):
+        outcome, identity, path, _ = self.outcome()
+        (path / '.env').write_text('SECRET=local\n')
+        original = work_workspace.git
+        def refuse(*arguments):
+            if 'remove' in arguments:
+                raise ValueError('working trees containing submodules cannot be removed')
+            return original(*arguments)
+        with patch('coconut.work_workspace.git', side_effect=refuse):
+            self.assertEqual(self.retire(), [])
+        binding = self.registry()[identity]
+        self.assertNotIn('retired', binding)
+        self.assertIn('submodules', binding['retire_failed']['error'])
+        self.assertEqual(list((self.workspaces / 'archive').iterdir()), [])
+        self.assertEqual((path / '.env').read_text(), 'SECRET=local\n')
+
+        with patch('coconut.work_workspace.write_archive') as archive:
+            self.assertEqual(self.retire(), [])
+            archive.assert_not_called()
+        saved = self.registry()
+        saved[identity]['retire_failed']['at'] = OLD
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        self.assertEqual(self.retire(), [identity])
+        self.assertNotIn('retire_failed', self.registry()[identity])
+        self.assertEqual(len(list((self.workspaces / 'archive').iterdir())), 1)
+
+    def test_hard_linked_untracked_files_retire_and_return(self):
+        outcome, identity, path, _ = self.outcome()
+        (path / 'first.txt').write_text('shared content\n')
+        os.link(path / 'first.txt', path / 'second.txt')
+        self.assertEqual(self.retire(), [identity])
+        acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual((path / 'first.txt').read_text(), 'shared content\n')
+        self.assertEqual((path / 'second.txt').read_text(), 'shared content\n')
 
     def test_archive_work_does_not_hold_the_registry_lock(self):
         _, identity, _, _ = self.outcome()
