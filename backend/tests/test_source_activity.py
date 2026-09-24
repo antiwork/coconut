@@ -178,7 +178,8 @@ class SourceActivityTests(unittest.TestCase):
         task, prompt = self.turn()
         self.assertNotIn('_source_activity', task)
         self.assertNotIn('10x the current volume', prompt)
-        self.assertEqual(self.tracker.paths[reads:], ['/repos/example/project/issues/42'])
+        self.assertEqual(self.tracker.paths[reads:], ['/repos/example/project/issues/42',
+            '/repos/example/project/issues/42/comments?per_page=100&page=1'])
 
         self.tracker.add(comment(9, 'reviewer', '2026-09-23T13:00:00Z', 'Also keep the old export.'))
         self.requeue()
@@ -326,11 +327,54 @@ class SourceActivityTests(unittest.TestCase):
         self.assertIn('https://github.com/example/project/issues/77', [a['url'] for a in activity])
         self.assertIn('https://github.com/example/project/issues/78', [a['url'] for a in activity])
 
+    def test_decision_lookup_pages_past_repeated_links(self):
+        with self.service.transaction():
+            self.service._put('decisions', dict(id='old-link', task_id=self.task['id'],
+                created_at=APPROVED, sources=[dict(kind='issue', title='Older', url=URL)]))
+            for number in range(225):
+                self.service._put('decisions', dict(id=f'new-{number}', task_id=self.task['id'],
+                    sources=[dict(kind='issue', title='Repeated', url=PR_URL)]))
+        tracker = ThreadTracker(self.service)
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            activity, _ = decision_sources.read_source_activity(self.service, self.task['id'])
+        self.assertIn('/repos/example/project/issues/42', tracker.paths)
+        self.assertIn('/repos/example/project/issues/43', tracker.paths)
+
+    def test_explicitly_visible_card_is_read(self):
+        with self.service.transaction():
+            self.service._put('decisions', dict(id='visible', task_id=self.task['id'],
+                created_at='2026-09-23T10:00:00Z', _hidden=False, _deleted=False,
+                sources=[dict(kind='issue', title='Visible', url=URL)]))
+        tracker = ThreadTracker(self.service)
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            activity, _ = decision_sources.read_source_activity(self.service, self.task['id'])
+        self.assertIn(URL, [a['url'] for a in activity])
+
     def test_trust_covers_configured_repositories_not_whole_owners(self):
         trusted = {'acme/app'}
         self.assertTrue(decision_sources.operator_repository('https://github.com/Acme/App/issues/1', trusted))
         self.assertFalse(decision_sources.operator_repository('https://github.com/acme/other/issues/1', trusted))
         self.assertTrue(decision_sources.operator_repository('https://github.com/acme/other/pull/2', trusted | {'acme'}))
+
+    def test_same_second_comment_is_read_from_actual_tracker(self):
+        tracker = ThreadTracker()
+        tracker.add(comment(1, 'owner', APPROVED, 'Same-second requirement'))
+        observed = tracker.observe_issue_activity(URL, APPROVED, time.monotonic() + 5, operator=True,
+                                                  include_same_second=True)
+        self.assertEqual([item['body'] for item in observed['new_activity']], ['Same-second requirement'])
+
+    def test_same_second_comment_after_delivery_reaches_next_turn_once(self):
+        self.approve_card()
+        self.tracker.add(comment(1, 'owner', APPROVED, 'First requirement'))
+        task, _ = self.turn()
+        self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['First requirement'])
+        self.tracker.add(comment(2, 'owner', APPROVED, 'Later requirement'))
+        self.requeue()
+        task, _ = self.turn()
+        self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['Later requirement'])
+        self.requeue()
+        task, _ = self.turn()
+        self.assertNotIn('_source_activity', task)
 
     def test_same_second_items_keep_their_record(self):
         class SameSecond:

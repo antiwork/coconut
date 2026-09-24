@@ -175,7 +175,7 @@ def _activity(kind: str, value: dict, at: str | None, operator: bool) -> dict:
     """
     body = value.get('body') if isinstance(value.get('body'), str) else ''
     user = value.get('user') if isinstance(value.get('user'), dict) else {}
-    item = dict(kind=kind, author=user.get('login'), author_type=user.get('type'),
+    item = dict(kind=kind, id=value.get('id'), author=user.get('login'), author_type=user.get('type'),
                 author_association=value.get('author_association'), url=value.get('html_url'), _at=at)
     if operator and _trusted(value):
         item.update(body=body[:1500], truncated=len(body) > 1500)
@@ -459,7 +459,7 @@ class GitHubPRTracker:
         return values, last > 3
 
     def observe_issue_activity(self, url: str, since: str, deadline: float | None = None, *,
-                               operator: bool = False) -> dict | None:
+                               operator: bool = False, include_same_second: bool = False) -> dict | None:
         """Read the thread record and its activity after `since`. Failure returns None.
 
         `operator` is true when an operator owns the repository. Only then do
@@ -498,7 +498,7 @@ class GitHubPRTracker:
             # An item can repeat, but an item that arrived in the same second is not lost.
             # Read the record first. Activity that arrives between the reads shows again on the next turn. It is not lost.
             first_read = None
-            if issue['updated_at'] > since:
+            if issue['updated_at'] > since or (include_same_second and issue['updated_at'] == since):
                 # GitHub lists comments oldest first. Read from the last page back to get the newest comments.
                 last = (issue['comments'] + 99) // 100
                 for page in range(last, max(0, last - 3), -1):

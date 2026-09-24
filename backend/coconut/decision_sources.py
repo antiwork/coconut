@@ -149,9 +149,10 @@ SOURCE_READ_SECONDS = 6
 # The decisions_task index uses the same expression. Keep the two the same.
 # The reader stops once it has enough links, so the newest decisions come first.
 TASK_DECISIONS = ("SELECT data FROM decisions WHERE json_extract(data,'$.task_id') IN ({}) "
-                  "AND COALESCE(json_extract(data,'$._hidden'), 0) = 0 AND COALESCE(json_extract(data,'$._deleted'), 0) = 0 "
-                  "ORDER BY rowid DESC LIMIT 200")
-# 200 cards bound the read under the service lock. A task rarely has more.
+                  "AND COALESCE(json_extract(data,'$._hidden'), 0) = 0 "
+                  "AND COALESCE(json_extract(data,'$._deleted'), 0) = 0 ORDER BY rowid DESC")
+TASK_DECISIONS_PAGE = TASK_DECISIONS.replace('SELECT data', 'SELECT rowid, data', 1).replace(
+    ' ORDER BY rowid DESC', ' AND rowid < ? ORDER BY rowid DESC LIMIT 100')
 
 
 def operator_owners(service):
@@ -194,20 +195,27 @@ def read_source_activity(service, task_id, limit=3):
         task = service._get('tasks', task_id)
         assignment = service._assignment(task)
         identities = list(dict.fromkeys((task['id'], assignment['id'])))
-        rows = service.db.execute(TASK_DECISIONS.format(','.join('?' for _ in identities)), identities)
-        decisions, distinct = [], set()
-        for (data,) in rows:
+        resumed = service._get('decisions', task['_resume_decision']) if task.get('_resume_decision') else None
+    # Decode outside the lock and release it between bounded database pages.
+    decisions, distinct = [], set()
+    before = 9223372036854775807
+    while len(distinct) < limit:
+        with service.lock:
+            rows = service.db.execute(TASK_DECISIONS_PAGE.format(','.join('?' for _ in identities)),
+                                      (*identities, before)).fetchall()
+        for rowid, data in rows:
             decision = json.loads(data)
             if decision.get('_hidden') or decision.get('_deleted'):
                 continue
             decisions.append(decision)
             distinct |= {_issue_url(url).lower() for url in github_links(decision)}
-            # Read only as many cards as the link limit needs.
             if len(distinct) >= limit:
                 break
-        if task.get('_resume_decision'):
-            resumed = service._get('decisions', task['_resume_decision'])
-            decisions = [resumed] + [d for d in decisions if d['id'] != resumed['id']]
+        if len(rows) < 100:
+            break
+        before = rows[-1][0]
+    if resumed:
+        decisions = [resumed] + [d for d in decisions if d['id'] != resumed['id']]
     # Each candidate is a link and a known revision. The prompt shows only activity after the latest revision.
     candidates = []
     for record in (task, assignment):
@@ -230,6 +238,14 @@ def read_source_activity(service, task_id, limit=3):
     if not links:
         return [], {}
     operators = operator_owners(service)
+    prior_items = {}
+    for record in (assignment, task):
+        for key, value in record.get('_source_activity_items_seen', {}).items():
+            if key in known and isinstance(value, dict):
+                if key not in prior_items or value.get('at', '') > prior_items[key].get('at', ''):
+                    prior_items[key] = value
+                elif value.get('at') == prior_items[key].get('at'):
+                    prior_items[key] = dict(at=value['at'], ids=list(set(prior_items[key].get('ids', [])) | set(value.get('ids', []))))
     for record in (assignment, task):
         for key, revision in record.get('_source_activity_seen', {}).items():
             if key in known:
@@ -251,8 +267,10 @@ def read_source_activity(service, task_id, limit=3):
         current = None
         if tracker is not None and time.monotonic() < deadline:
             try:
-                current = tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline,
-                                                         operator=operator_repository(url, operators))
+                options = dict(operator=operator_repository(url, operators))
+                if isinstance(tracker, GitHubPRTracker):
+                    options['include_same_second'] = True
+                current = tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline, **options)
             except Exception:
                 current = None
         if not isinstance(current, dict) or not isinstance(current.get('updated_at'), str):
@@ -260,6 +278,18 @@ def read_source_activity(service, task_id, limit=3):
             continue
         observed = current.get('observed_at')
         seen[key] = observed if isinstance(observed, str) and observed > current['updated_at'] else current['updated_at']
+        entries = current.get('new_activity') or []
+        previous = prior_items.get(key, {})
+        if previous.get('at') == since and current['updated_at'] == since:
+            ids = set(previous.get('ids', []))
+            entries = [entry for entry in entries if entry.get('updated_at', entry.get('submitted_at')) != since
+                       or f"{entry.get('kind')}:{entry.get('id')}" not in ids]
+        current['new_activity'] = entries
+        at = seen[key]
+        item_ids = [f"{entry.get('kind')}:{entry.get('id')}" for entry in entries
+                    if entry.get('updated_at', entry.get('submitted_at')) == at and entry.get('id') is not None]
+        if item_ids:
+            seen[key + '#items'] = dict(at=at, ids=item_ids)
         # Items at the recorded second can be new although the thread time did not move.
         if (since is None or current['updated_at'] > since or current.get('new_activity')
                 or current.get('incomplete') or current.get('changed_without_new_activity')):
