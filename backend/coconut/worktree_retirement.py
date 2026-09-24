@@ -2,6 +2,7 @@
 from datetime import datetime
 import json
 import logging
+import sqlite3
 import subprocess
 import tarfile
 import time
@@ -67,7 +68,9 @@ class WorktreeRetirement:
         work_workspace.sweep_temporary(root)
         # The registry changes by atomic rename, so this read needs no lock. Retirement checks again under the lock.
         bindings = {k: v['outcome'] for k, v in json.loads(manifest.read_text()).items() if not v.get('retired')}
-        finished = self._finished_outcomes(current)
+        finished = self._finished_outcomes(current, timeout=SERVICE_WAIT_SECONDS)
+        if finished is None:
+            return []
         retired = []
         for identity, outcome in bindings.items():
             if outcome not in finished:
@@ -84,6 +87,7 @@ class WorktreeRetirement:
             try:
                 if work_workspace.retire(root, identity, still_finished):
                     retired.append(identity)
-            except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.TimeoutExpired) as error:
+            except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.TimeoutExpired, sqlite3.Error) as error:
+                # sqlite3.Error covers a database that shutdown closed while this thread ran.
                 logging.getLogger(__name__).warning('Coconut did not retire worktree %s: %s', identity, error)
         return retired

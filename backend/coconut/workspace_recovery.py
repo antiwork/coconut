@@ -308,7 +308,8 @@ class WorkspaceRecovery:
                 if not isinstance(current, dict) or current.get(identity) not in (old, new):
                     raise ValueError('The workspace binding changed after authorization.')
                 # Other bindings can change after authorization. None of them may name this worktree.
-                if any(k != identity and Path(v['path']).resolve() == Path(data['path']) for k, v in current.items()):
+                if any(k != identity and (not isinstance(v, dict) or not isinstance(v.get('path'), str)
+                                          or Path(v['path']).resolve() == Path(data['path'])) for k, v in current.items()):
                     raise ValueError('Another binding also names this worktree.')
                 validate_binding(dict(path=data['path'], repository=data['repository'], branch=data['new_branch']))
                 if current[identity] == old:

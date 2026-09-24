@@ -365,11 +365,11 @@ def removal_stopped(manifest, saved, binding, path, repository, current, archive
     now = stamp(datetime.now(timezone.utc))
     if intact:
         # Git refuses some removals before it deletes files, for example with a submodule.
-        # Keep the checkout, remove its unused archive, and wait a day before the next attempt.
+        # Git can also delete ignored files before it stops, and changes() does not see them.
+        # Keep the checkout and the archive, and wait a day before the next attempt.
         binding.pop('retired')
-        binding['retire_failed'] = dict(at=now, error=str(error)[:1000])
+        binding['retire_failed'] = dict(at=now, error=str(error)[:1000], archive=str(archive))
         save_bindings(manifest, saved)
-        archive.unlink(missing_ok=True)
         raise ValueError('Git did not remove the worktree: ' + str(error)) from error
     # Git deleted part of the checkout. The archive holds the changes. Do not restore over the remains.
     message = (f'Git stopped while it removed {path}, and part of the checkout remains. '
@@ -606,3 +606,13 @@ def preferred(root, outcome, *, verify=True):
                 save_bindings(manifest, saved)
             return chosen(root, outcome, bindings)
     return root / outcome
+
+
+def retired_path(root, outcome, path):
+    """Return True when `path` is the saved path of a retired binding of `outcome`. Read without the lock."""
+    try:
+        saved = json.loads((Path(root) / 'worktrees.json').read_text())
+    except (OSError, ValueError):
+        return False
+    return any(isinstance(b, dict) and b.get('outcome') == outcome and b.get('retired')
+               and b.get('path') == str(path) for b in saved.values())

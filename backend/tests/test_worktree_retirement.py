@@ -357,7 +357,7 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertTrue(path.is_dir())
         self.assertNotIn('retired', self.registry()[identity])
 
-    def test_a_refused_removal_leaves_no_archive_and_waits_a_day(self):
+    def test_a_refused_removal_keeps_its_archive_and_waits_a_day(self):
         outcome, identity, path, _ = self.outcome()
         (path / '.env').write_text('SECRET=local\n')
         original = work_workspace.git
@@ -370,7 +370,8 @@ class WorktreeRetirementTests(unittest.TestCase):
         binding = self.registry()[identity]
         self.assertNotIn('retired', binding)
         self.assertIn('submodules', binding['retire_failed']['error'])
-        self.assertEqual(list((self.workspaces / 'archive').iterdir()), [])
+        # Git can delete ignored files before it refuses, so the archive stays.
+        self.assertEqual([str(p) for p in (self.workspaces / 'archive').iterdir()], [binding['retire_failed']['archive']])
         self.assertEqual((path / '.env').read_text(), 'SECRET=local\n')
 
         with patch('coconut.work_workspace.write_archive') as archive:
@@ -414,7 +415,7 @@ class WorktreeRetirementTests(unittest.TestCase):
         binding = self.registry()[identity]
         self.assertNotIn('retired', binding)
         self.assertIn('retire_failed', binding)
-        self.assertEqual(list((self.workspaces / 'archive').iterdir()), [])
+        self.assertEqual(len(list((self.workspaces / 'archive').iterdir())), 1)
         self.assertEqual((path / 'draft.txt').read_text(), 'keep\n')
 
     def test_a_removal_that_times_out_part_way_keeps_the_archive_for_the_operator(self):
