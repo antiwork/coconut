@@ -12,6 +12,7 @@ import stat
 import subprocess
 import tarfile
 from types import SimpleNamespace
+import zlib
 
 
 def git(path, *arguments, timeout=60):
@@ -103,6 +104,8 @@ REBUILDABLE_NAMES = ('node_modules', '.cache')
 REBUILDABLE_PATHS = ('tmp', 'log', 'public/packs', 'public/packs-test', 'coverage')
 # Coconut keeps a worktree when its other ignored files are larger than this limit.
 IGNORED_LIMIT_BYTES = 200 * 1024 * 1024
+# Coconut keeps a worktree when its staged and unstaged patches together are larger than this limit.
+PATCH_LIMIT_BYTES = 200 * 1024 * 1024
 # After Git refuses to remove a worktree, Coconut waits this long before the next attempt.
 RETRY_AFTER = timedelta(days=1)
 # Git commands that write or delete a whole checkout can take minutes for a large repository.
@@ -112,10 +115,11 @@ DIFF = ('--binary', '--no-color', '--no-ext-diff', '--no-textconv', '--no-rename
         '--src-prefix=a/', '--dst-prefix=b/')
 
 
-def git_output(path, *arguments, data=None):
+def git_output(path, *arguments, data=None, strict=False):
     # A patch must keep its exact bytes, so this helper does not decode or strip the output.
     result = subprocess.run(['git', '-C', str(path), *arguments], input=data, capture_output=True, timeout=CHECKOUT_SECONDS)
-    if result.returncode:
+    # With strict=True, a warning also fails. Git warns and continues when it cannot read a directory.
+    if result.returncode or strict and result.stderr.strip():
         raise ValueError(result.stderr.decode(errors='replace').strip() or 'Git could not inspect the workspace.')
     return result.stdout
 
@@ -124,7 +128,7 @@ def changes(path):
     """Return the staged patch, the unstaged patch, and the untracked files that Git does not ignore."""
     staged = git_output(path, 'diff', '--cached', *DIFF, 'HEAD')
     unstaged = git_output(path, 'diff', *DIFF)
-    listing = git_output(path, 'ls-files', '--others', '--exclude-standard', '-z')
+    listing = git_output(path, 'ls-files', '--others', '--exclude-standard', '-z', strict=True)
     return staged, unstaged, [os.fsdecode(name) for name in listing.split(b'\0') if name]
 
 
@@ -143,15 +147,19 @@ def rebuildable(name):
 
 def ignored_files(path):
     """Return the ignored files and links to archive. Skip rebuildable folders, sockets, and pipes."""
-    listing = git_output(path, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z')
+    listing = git_output(path, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z', strict=True)
     names, size = [], 0
+
+    def unreadable(error):
+        # Removal would delete the files that Coconut cannot read. Keep the checkout.
+        raise ValueError('Coconut cannot read all ignored files in the worktree: ' + str(error)) from error
     for entry in (os.fsdecode(name) for name in listing.split(b'\0') if name):
         if rebuildable(entry):
             continue
         candidates = [entry]
         if entry.endswith('/'):
             candidates = []
-            for directory, folders, files in os.walk(path / entry):
+            for directory, folders, files in os.walk(path / entry, onerror=unreadable):
                 relative = Path(directory).relative_to(path).as_posix()
                 # os.walk lists a link to a folder with the folders. Keep the link and do not follow it.
                 links = [folder for folder in folders if (Path(directory) / folder).is_symlink()]
@@ -224,7 +232,8 @@ def check_archive(archive, patches, path, entries):
         members = {member.name: member for member in tar.getmembers()}
         if set(members) != {'retirement.json', *patches, *(arcname for arcname, _ in entries)}:
             raise ValueError('The archive does not list the expected files.')
-        if any(tar.extractfile(members[name]).read() != data for name, data in patches.items()):
+        if any(file_digest(tar.extractfile(members[name])) != hashlib.sha256(data).hexdigest()
+               for name, data in patches.items()):
             raise ValueError('The archive does not contain the expected changes.')
         for arcname, name in entries:
             member, source = members[arcname], path / name
@@ -290,6 +299,8 @@ def retire(root, identity, finished):
     head = git(path, 'rev-parse', 'HEAD')
     current = changes(path)
     staged, unstaged, names = current
+    if len(staged) + len(unstaged) > PATCH_LIMIT_BYTES:
+        raise ValueError('The changes in the worktree are larger than the archive limit.')
     for name in names:
         # Git lists a nested repository as a directory. Removal would delete it without an archive.
         if name.endswith('/') or not ((path / name).is_symlink() or stat.S_ISREG(os.lstat(path / name).st_mode)):
@@ -477,7 +488,8 @@ def restore(binding):
         try:
             unpack(binding)
         except (ValueError, OSError, KeyError, TypeError, AttributeError, tarfile.TarError,
-                subprocess.TimeoutExpired) as error:
+                subprocess.TimeoutExpired, EOFError, zlib.error) as error:
+            # EOFError and zlib.error come from a damaged or truncated archive.
             failure = dict(at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'), error=str(error)[:1000])
             binding['retired'] = dict(retired, restore_failed=failure)
         else:

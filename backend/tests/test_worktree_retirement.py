@@ -275,6 +275,38 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual((path / 'build' / 'fixture.db').stat().st_size, 4097)
         self.assertNotIn('retired', self.registry()[identity])
 
+    def test_an_unreadable_ignored_folder_keeps_the_worktree(self):
+        _, identity, path, _ = self.outcome()
+        secret = path / 'build' / 'secret'
+        secret.mkdir(parents=True)
+        (secret / 'key.pem').write_text('private')
+        secret.chmod(0)
+        self.addCleanup(secret.chmod, 0o700)
+        self.assertEqual(self.retire(), [])
+        secret.chmod(0o700)
+        self.assertEqual((secret / 'key.pem').read_text(), 'private')
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_large_changes_keep_the_worktree(self):
+        _, identity, path, _ = self.outcome()
+        (path / 'tracked.txt').write_text('changed\n' * 100)
+        with patch('coconut.work_workspace.PATCH_LIMIT_BYTES', 64):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_truncated_archive_marks_the_restore_failed(self):
+        outcome, identity, path, _ = self.outcome()
+        (path / 'tracked.txt').write_text('changed\n')
+        self.assertEqual(self.retire(), [identity])
+        archive = Path(self.registry()[identity]['retired']['archive'])
+        data = archive.read_bytes()
+        archive.write_bytes(data[:len(data) // 2])
+        with self.assertRaisesRegex(ValueError, 'could not restore it'):
+            acquire(self.workspaces, outcome, str(self.repo))
+        self.assertIn('restore_failed', self.registry()[identity]['retired'])
+        self.assertEqual(preferred(self.workspaces, outcome), self.workspaces / outcome)
+
     def test_a_path_hint_does_not_wait_for_the_registry_lock(self):
         outcome, _, path, _ = self.outcome()
         results = []

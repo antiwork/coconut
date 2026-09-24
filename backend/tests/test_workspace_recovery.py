@@ -347,6 +347,17 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         self.assertEqual(after['another-outcome-0000000000000000'], unrelated)
         self.assertEqual(preferred(self.data / 'workspaces', self.owner), self.workspace)
 
+    def test_a_later_binding_for_the_same_worktree_holds_the_repair(self):
+        self.assertEqual(self.request()[0], 200)
+        saved = json.loads(self.manifest.read_text())
+        saved['another-outcome-0000000000000000'] = dict(next(iter(saved.values())), outcome='another-outcome')
+        self.manifest.write_text(json.dumps(saved))
+        expected = self.manifest.read_bytes()
+        self.restart()
+        self.assertEqual(self.receipt()['state'], 'held')
+        self.assertIn('Another binding', self.receipt()['error'])
+        self.assertEqual(self.manifest.read_bytes(), expected)
+
     def test_crash_before_and_after_atomic_write_recovers_exact_transition(self):
         for applied in (False, True):
             with self.subTest(applied=applied):

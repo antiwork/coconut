@@ -307,6 +307,9 @@ class WorkspaceRecovery:
                 old, new = (json.loads(receipt[k]).get(identity) for k in ('before', 'after'))
                 if not isinstance(current, dict) or current.get(identity) not in (old, new):
                     raise ValueError('The workspace binding changed after authorization.')
+                # Other bindings can change after authorization. None of them may name this worktree.
+                if any(k != identity and Path(v['path']).resolve() == Path(data['path']) for k, v in current.items()):
+                    raise ValueError('Another binding also names this worktree.')
                 validate_binding(dict(path=data['path'], repository=data['repository'], branch=data['new_branch']))
                 if current[identity] == old:
                     atomic_manifest(manifest, encoded(dict(current, **{identity: new})))
