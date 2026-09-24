@@ -719,8 +719,11 @@ class NativeOutcomes:
     def _end_block_context(task):
         recovery = task.get('_self_recovery') or {}
         recovery.pop('blocked', None)
-        if recovery.get('from_block_check'):
-            task.pop('_self_recovery', None)
+        if recovery.pop('from_block_check', None):
+            recovery.pop('failure', None)
+            # Keep tool calls without a result, so a later turn does not repeat an unknown write.
+            if not recovery.get('unknown_tools'):
+                task.pop('_self_recovery', None)
 
     def _native_block_check(self, task, native):
         # An explicit native block keeps its reason, but nothing else resumes it.

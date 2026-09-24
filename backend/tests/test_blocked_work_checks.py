@@ -217,6 +217,20 @@ class BlockedWorkCheckTests(unittest.TestCase):
         self.assertNotIn('from_block_check', recovery)
         self.assertEqual(recovery['failure'], 'boom')
 
+    def test_human_reply_keeps_tool_calls_without_a_result(self):
+        self.check(self.blocked(), 0)
+        with self.service.transaction():
+            receipt = dict(id=str(uuid4()), task_id=self.task_id, state='executing', action={'name': 'terminal'})
+            self.service._put('native_receipts', receipt)
+        queued = self.check(self.blocked(), 10 ** 9)
+        self.assertEqual(queued['_self_recovery']['unknown_tools'], [receipt])
+        with self.service.transaction():
+            self.service._reply(self.service._get('tasks', self.task_id), {'text': 'Free space is back. Continue.'})
+        recovery = self.service._get('tasks', self.task_id)['_self_recovery']
+        self.assertEqual(recovery['unknown_tools'], [receipt])
+        self.assertNotIn('blocked', recovery)
+        self.assertNotIn('from_block_check', recovery)
+
     def test_recorded_pause_stops_the_check(self):
         self.check(self.blocked(), 0)
         with patch.object(self.service, '_task_work_is_paused', return_value=True):
