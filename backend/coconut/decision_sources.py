@@ -220,6 +220,6 @@ def read_source_activity(service, task_id, limit=3):
         seen[key] = observed if isinstance(observed, str) and observed > current['updated_at'] else current['updated_at']
         if since is None or current['updated_at'] > since:
             activity.append(dict(url=url, since=since, **{k: current.get(k) for k in (
-                'state', 'state_reason', 'title', 'updated_at', 'new_activity', 'omitted_items', 'incomplete',
+                'state', 'state_reason', 'title', 'title_withheld', 'updated_at', 'new_activity', 'omitted_items', 'incomplete',
                 'changed_without_new_activity') if k in current}))
     return activity, seen

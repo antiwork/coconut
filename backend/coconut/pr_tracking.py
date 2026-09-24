@@ -176,14 +176,23 @@ def _activity(kind: str, value: dict, at: str | None) -> dict:
     user = value.get('user') if isinstance(value.get('user'), dict) else {}
     item = dict(kind=kind, author=user.get('login'), author_type=user.get('type'),
                 author_association=value.get('author_association'), url=value.get('html_url'), _at=at)
-    if item['author_association'] in _TRUSTED_AUTHORS and item['author_type'] != 'Bot':
+    if _trusted(value):
         item.update(body=body[:1500], truncated=len(body) > 1500)
+        # A file path is author text too.
+        if isinstance(value.get('path'), str):
+            item['path'] = value['path'][:500]
     else:
         item['body_withheld'] = True
-    for key in ('created_at', 'updated_at', 'submitted_at', 'state', 'path'):
+    for key in ('created_at', 'updated_at', 'submitted_at', 'state'):
         if isinstance(value.get(key), str):
             item[key] = value[key]
     return item
+
+
+def _trusted(value: dict) -> bool:
+    """Return true for an owner, member, or collaborator that is not a bot account."""
+    user = value.get('user') if isinstance(value.get('user'), dict) else {}
+    return value.get('author_association') in _TRUSTED_AUTHORS and user.get('type') != 'Bot'
 
 
 class GitHubPRTracker:
@@ -395,14 +404,14 @@ class GitHubPRTracker:
         return cls(token=token)
 
     def _issue_record(self, route: str, deadline: float, *, with_kind: bool = False):
-        """Return the issue facts. With `with_kind`, also return whether the issue is a PR."""
+        """Return the issue facts. With `with_kind`, also return the complete issue record."""
         issue = self._get('/repos/' + route, deadline)
         if (not isinstance(issue, dict) or issue.get('state') not in ('open', 'closed')
                 or not isinstance(issue.get('updated_at'), str) or not issue['updated_at']
                 or not isinstance(issue.get('title'), str) or type(issue.get('comments')) is not int):
             return (None, False) if with_kind else None
         facts = {key: issue.get(key) for key in ('state', 'title', 'updated_at', 'comments', 'state_reason')}
-        return (facts, 'pull_request' in issue) if with_kind else facts
+        return (facts, issue) if with_kind else facts
 
     def observe_issue(self, url: str) -> dict | None:
         """Read issue facts without a model call. Failure keeps the last observation."""
@@ -465,11 +474,16 @@ class GitHubPRTracker:
         deadline = time.monotonic() + 10 if deadline is None else deadline
         items, incomplete = [], False
         try:
-            issue, pull = self._issue_record(f'{owner}/{repo}/issues/{number}', deadline, with_kind=True)
+            issue, record = self._issue_record(f'{owner}/{repo}/issues/{number}', deadline, with_kind=True)
             if issue is None:
                 return None
-            # An /issues/N link can name a PR. GitHub uses one number space for both.
-            kind = 'pulls' if pull else kind
+            # The link path does not prove the kind. GitHub uses one number space for issues and PRs.
+            kind = 'pulls' if 'pull_request' in record else 'issues'
+            # The thread title is text from the thread author. Apply the same trust rule as for comments.
+            if _trusted(record):
+                issue['title'] = issue['title'][:200]
+            else:
+                issue.update(title=None, title_withheld=True)
             if kind == 'pulls':
                 record = self._get(f'{prefix}/pulls/{number}', deadline)
                 if not isinstance(record, dict) or not isinstance(record.get('updated_at'), str):

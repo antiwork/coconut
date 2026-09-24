@@ -3199,7 +3199,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             task = self._get('tasks', task_id)
             # Continuations of the same assignment read the assignment record too.
             for record in {id(r): r for r in (task, self._assignment(task))}.values():
-                record['_source_activity_seen'] = dict(record.get('_source_activity_seen', {}), **seen)
+                merged = dict(record.get('_source_activity_seen', {}))
+                # Another turn can record a later revision first. Keep the later value.
+                for key, revision in seen.items():
+                    merged[key] = max(merged.get(key, ''), revision)
+                record['_source_activity_seen'] = merged
                 self._put('tasks', record)
 
     def emit(self, task_id: str, kind: str, payload: dict):
