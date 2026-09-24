@@ -238,6 +238,15 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._put('bots', bot)
             self.db.execute('DROP TABLE IF EXISTS policies')
             self.db.execute('DROP TABLE IF EXISTS preference_receipts')
+        try:
+            self._admit_checkout_recovery()
+        except BaseException:
+            if self.kanban:
+                self.kanban.close()
+            self.db.close()
+            fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_UN)
+            self.process_lock.close()
+            raise
         if start_workers:
             self.start()
         if hasattr(self.provider, 'subscribe_model_catalog'):
