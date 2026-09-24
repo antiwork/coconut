@@ -163,6 +163,19 @@ def _classify(
     return "ready_for_review", "Reported checks passed."
 
 
+def _activity(kind: str, value: dict, at: str | None) -> dict:
+    """Keep the fields a bot needs to judge one comment or review."""
+    body = value.get('body') if isinstance(value.get('body'), str) else ''
+    user = value.get('user') if isinstance(value.get('user'), dict) else {}
+    item = dict(kind=kind, author=user.get('login'), author_type=user.get('type'),
+                author_association=value.get('author_association'), url=value.get('html_url'),
+                body=body[:1500], truncated=len(body) > 1500, _at=at)
+    for key in ('created_at', 'updated_at', 'submitted_at', 'state', 'path'):
+        if isinstance(value.get(key), str):
+            item[key] = value[key]
+    return item
+
+
 class GitHubPRTracker:
     """Poll GitHub with GET requests and return facts for durable storage."""
 
@@ -363,6 +376,14 @@ class GitHubPRTracker:
                 pass
         return cls(token=token)
 
+    def _issue_record(self, route: str, deadline: float) -> dict | None:
+        issue = self._get('/repos/' + route, deadline)
+        if (not isinstance(issue, dict) or issue.get('state') not in ('open', 'closed')
+                or not isinstance(issue.get('updated_at'), str) or not issue['updated_at']
+                or not isinstance(issue.get('title'), str) or type(issue.get('comments')) is not int):
+            return None
+        return {key: issue.get(key) for key in ('state', 'title', 'updated_at', 'comments', 'state_reason')}
+
     def observe_issue(self, url: str) -> dict | None:
         """Read issue facts without a model call. Failure keeps the last observation."""
         from .decision_sources import github_source
@@ -370,56 +391,69 @@ class GitHubPRTracker:
         if not source or source[0] != 'issues':
             return None
         try:
-            issue = self._get('/repos/' + source[1], time.monotonic() + 10)
-            if (not isinstance(issue, dict) or issue.get('state') not in ('open', 'closed')
-                    or not isinstance(issue.get('updated_at'), str) or not issue['updated_at']
-                    or not isinstance(issue.get('title'), str) or type(issue.get('comments')) is not int):
-                return None
-            return {key: issue.get(key) for key in ('state', 'title', 'updated_at', 'comments', 'state_reason')}
+            return self._issue_record(source[1], time.monotonic() + 10)
         except HTTPError as error:
             error.close()
         except (URLError, TimeoutError, OSError, HTTPException, PRTrackingError, ValueError, TypeError):
             pass
         return None
 
-    def observe_issue_activity(self, url: str, since: str) -> dict | None:
-        """Read the issue record and the comments that changed after `since`.
+    def _list(self, path: str, deadline: float) -> list:
+        values = self._get(path, deadline)
+        if not isinstance(values, list) or any(not isinstance(value, dict) for value in values):
+            raise PRTrackingError('GitHub returned an incomplete list.')
+        return values
 
-        `since` uses the GitHub format YYYY-MM-DDTHH:MM:SSZ. The result keeps
-        only the last ten new comments of the first three pages. Failure returns None.
+    def observe_issue_activity(self, url: str, since: str, deadline: float | None = None) -> dict | None:
+        """Read the thread record and its activity after `since`. Failure returns None.
+
+        `since` uses the GitHub format YYYY-MM-DDTHH:MM:SSZ. For a PR, the
+        activity also includes reviews and inline review comments. The result
+        keeps the newest ten items. `incomplete` is true when Coconut did not
+        read all pages. Then `omitted_items` is a lower bound.
         """
         from .decision_sources import github_source
-        issue = self.observe_issue(url)
-        if issue is None:
+        source = github_source(url)
+        if not source:
             return None
-        result = dict(issue, new_comments=[], omitted_comments=0)
-        # Read the issue first. A comment that arrives between the two reads shows again later. It is not lost.
-        if issue['updated_at'] <= since:
-            return result
+        owner, repo, kind, number = source[1].split('/')
+        prefix = f'/repos/{owner}/{repo}'
+        deadline = time.monotonic() + 10 if deadline is None else deadline
+        items, incomplete = [], False
         try:
-            deadline = time.monotonic() + 10
-            comments = []
-            for page in range(1, 4):
-                values = self._get(f'/repos/{github_source(url)[1]}/comments?since={quote(since)}&per_page=100&page={page}', deadline)
-                if not isinstance(values, list) or any(not isinstance(v, dict) for v in values):
-                    return None
-                comments.extend(v for v in values if isinstance(v.get('updated_at'), str) and v['updated_at'] > since)
-                if len(values) < 100:
-                    break
+            issue = self._issue_record(f'{owner}/{repo}/issues/{number}', deadline)
+            if issue is None:
+                return None
+            # Read the record first. Activity that arrives between the reads shows again on the next turn. It is not lost.
+            if issue['updated_at'] > since:
+                # GitHub lists comments oldest first. Read from the last page back to get the newest comments.
+                last = (issue['comments'] + 99) // 100
+                for page in range(last, max(0, last - 3), -1):
+                    values = self._list(f'{prefix}/issues/{number}/comments?per_page=100&page={page}', deadline)
+                    items += [_activity('comment', v, v.get('updated_at')) for v in values
+                              if isinstance(v.get('updated_at'), str) and v['updated_at'] > since]
+                    if any(not isinstance(v.get('created_at'), str) or v['created_at'] <= since for v in values):
+                        break
+                else:
+                    incomplete = last > 3
+                if kind == 'pulls':
+                    for route, name, stamp in ((f'pulls/{number}/reviews?', 'review', 'submitted_at'),
+                                               (f'pulls/{number}/comments?since={quote(since)}&', 'review_comment', 'updated_at')):
+                        for page in range(1, 4):
+                            values = self._list(f'{prefix}/{route}per_page=100&page={page}', deadline)
+                            items += [_activity(name, v, v.get(stamp)) for v in values
+                                      if isinstance(v.get(stamp), str) and v[stamp] > since]
+                            if len(values) < 100:
+                                break
+                        else:
+                            incomplete = True
         except HTTPError as error:
             error.close()
             return None
         except (URLError, TimeoutError, OSError, HTTPException, PRTrackingError, ValueError, TypeError):
             return None
-        result['omitted_comments'] = max(0, len(comments) - 10)
-        for comment in comments[-10:]:
-            body = comment.get('body') if isinstance(comment.get('body'), str) else ''
-            user = comment.get('user') if isinstance(comment.get('user'), dict) else {}
-            result['new_comments'].append(dict(
-                author=user.get('login'), author_type=user.get('type'), created_at=comment.get('created_at'),
-                updated_at=comment['updated_at'], url=comment.get('html_url'),
-                body=body[:1500], truncated=len(body) > 1500))
-        return result
+        items.sort(key=lambda item: item.pop('_at'))
+        return dict(issue, new_activity=items[-10:], omitted_items=max(0, len(items) - 10), incomplete=incomplete)
 
     def observe_discussion(self, url: str) -> str | None:
         """Fingerprint complete PR discussions and reviews. Never return their private text."""

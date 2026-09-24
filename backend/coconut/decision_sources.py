@@ -137,9 +137,12 @@ def _github_time(value):
 
 
 def _issue_url(url):
-    # The issues API also reads PR threads. GitHub uses one number space for both.
+    # GitHub uses one number space for issues and PRs. One key covers both links.
     owner, repo, _, number = github_source(url)[1].split('/')
     return f'https://github.com/{owner}/{repo}/issues/{number}'
+
+
+SOURCE_READ_SECONDS = 6
 
 
 def read_source_activity(service, task_id, limit=3):
@@ -184,6 +187,9 @@ def read_source_activity(service, task_id, limit=3):
         for key, revision in record.get('_source_activity_seen', {}).items():
             if key in known:
                 known[key].add(_github_time(revision))
+    import time
+    # One wall-clock budget covers the gh login and all reads. The turn waits no longer than this.
+    deadline = time.monotonic() + SOURCE_READ_SECONDS
     try:
         tracker = service._pr_tracker_for(task['bot_id'])
     except Exception:
@@ -191,15 +197,17 @@ def read_source_activity(service, task_id, limit=3):
     activity, seen = [], {}
     for key, url in links.items():
         since = max((value for value in known[key] if value), default=None)
-        try:
-            current = tracker.observe_issue_activity(_issue_url(url), since or '1970-01-01T00:00:00Z')
-        except Exception:
-            current = None
+        current = None
+        if time.monotonic() < deadline:
+            try:
+                current = tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline)
+            except Exception:
+                current = None
         if not isinstance(current, dict) or not isinstance(current.get('updated_at'), str):
             activity.append(dict(url=url, read_failed=True))
             continue
         seen[key] = current['updated_at']
         if since is None or current['updated_at'] > since:
             activity.append(dict(url=url, since=since, **{k: current.get(k) for k in (
-                'state', 'state_reason', 'title', 'updated_at', 'new_comments', 'omitted_comments')}))
+                'state', 'state_reason', 'title', 'updated_at', 'new_activity', 'omitted_items', 'incomplete')}))
     return activity, seen

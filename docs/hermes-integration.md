@@ -51,9 +51,14 @@ Coconut adds these tools:
   Before each task turn, Coconut reads the task's linked GitHub issues and PRs, at most three.
   Links come from the source assignment, the resumed decision, and the other decisions of the task.
   Coconut uses the bot's own `gh` login and reads outside the service lock.
-  The turn gets the new comments since the last known revision as data: at most ten, each at most 1,500 characters.
+  All reads for one turn share a 6-second budget. After the budget, Coconut skips the remaining sources.
+  Coconut keeps a logged-in tracker for two minutes, so each turn does not start `gh auth token`.
+  The turn gets the newest activity since the last known revision as data: at most ten items, each at most 1,500 characters.
+  Activity includes issue comments. For a PR, it also includes reviews and inline review comments.
+  Each item includes its `author_association`. Only OWNER, MEMBER, and COLLABORATOR activity can change the scope.
   The last known revision is the latest of the card's source facts, the card time, the assignment `updated_at`, and the revision that Coconut recorded for the task.
-  Coconut records the observed `updated_at`, so the next turn shows only newer activity.
+  After the provider receives the turn, Coconut records the observed `updated_at`. The next turn shows only newer activity.
+  If the provider does not receive the turn, Coconut records nothing. The next turn shows the same activity again.
   If a read fails, the turn still starts. The prompt tells the bot to read the source itself before it acts.
 - `coconut_propose_file` supplies exact file proposals and persistent artifact cards.
 - `coconut_create_bot` creates a bot from a verified direct human request.

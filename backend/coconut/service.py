@@ -124,6 +124,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self._init_kanban()
         self.profiles = HermesProfiles(self.root)
         self.pr_tracker = pr_tracker
+        self._profile_trackers = {}
         self.pr_refresh_requested = threading.Event()
         self.pr_refresh_lock = threading.Lock()
         self._pending_decision_sources = set()
@@ -2491,7 +2492,15 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             return self.pr_tracker
         with self.lock:
             home = self.profiles.home(self._get('bots', bot_id))
-        return GitHubPRTracker.for_profile(home)
+            cached = self._profile_trackers.get(home)
+        # Each gh login read starts a process. Keep a logged-in tracker for a short time, so each turn does not wait for gh.
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
+        tracker = GitHubPRTracker.for_profile(home)
+        if tracker._token:
+            with self.lock:
+                self._profile_trackers[home] = (time.monotonic() + 120, tracker)
+        return tracker
 
     def _poll_pull_requests(self):
         while not self.stopping.is_set():
@@ -2966,6 +2975,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             bot_lock = self.bot_locks.setdefault(execution_key(task), threading.Lock())
         with bot_lock:
             reaction_feedback = []
+            source_seen = {}
             try:
                 with self.transaction():
                     task = self._get('tasks', task_id)
@@ -3130,10 +3140,6 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         self._put('tasks', current)
                         self._event('task.updated', self._public(current), current['bot_id'], task_id)
                         return
-                    if source_seen:
-                        # The next turn shows only activity after these revisions.
-                        current['_source_activity_seen'] = dict(current.get('_source_activity_seen', {}), **source_seen)
-                        self._put('tasks', current)
                 timing.mark('ready')
                 timing.report()
                 emit = lambda kind, payload: self.emit(task_id, kind, payload)
@@ -3141,6 +3147,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     self.provider.resume_task(provider_task, self._public(bot), history, self._public(decision) | {'action': decision.get('_action')}, emit)
                 else:
                     self.provider.start_task(provider_task, self._public(bot), history, emit)
+                self._record_source_seen(task_id, source_seen)
                 with self.lock:
                     current = self._get('tasks', task_id)
                 if current['status'] not in ('failed', 'cancelled'):
@@ -3148,6 +3155,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 if current['status'] == 'working':
                     self.emit(task_id, 'completed', {'summary': 'Ready to review.'})
             except YieldForDecision as pause:
+                # The provider received the turn and paused it. The bot saw the source activity.
+                self._record_source_seen(task_id, source_seen)
                 if pause.decision_id:
                     self._ack_reaction_feedback(task['bot_id'], task_id, reaction_feedback)
             except Exception as error:
@@ -3173,6 +3182,19 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                                 self._event('message.updated', message, message['bot_id'], task_id)
                                 self.push.record('message.completed', message, message['bot_id'], task_id)
                         self._refresh_bot(task['bot_id'])
+
+    def _record_source_seen(self, task_id, seen):
+        """Record the source revisions after the provider received the turn.
+
+        A failed delivery records nothing. The next turn then shows the same
+        activity again. A duplicate is better than a lost comment.
+        """
+        if not seen:
+            return
+        with self.transaction():
+            task = self._get('tasks', task_id)
+            task['_source_activity_seen'] = dict(task.get('_source_activity_seen', {}), **seen)
+            self._put('tasks', task)
 
     def emit(self, task_id: str, kind: str, payload: dict):
         if kind == 'steering_ready':
