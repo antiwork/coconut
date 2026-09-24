@@ -430,11 +430,13 @@ class WorktreeRetirementTests(unittest.TestCase):
                         entered.wait(5)
                         time.sleep(.05)
                 threading.Thread(target=hold, daemon=True).start()
-                held.wait(5)
+                # The test covers the wait only when the holder owns the lock.
+                self.assertTrue(held.wait(5))
             return result
         with patch.object(self.service, '_finished_outcomes', side_effect=watched), \
                 patch('coconut.work_workspace.check_worktree', side_effect=check):
             self.assertEqual(self.retire(), [identity])
+        self.assertTrue(entered.is_set())
         self.assertFalse(path.exists())
 
     def test_a_busy_service_is_not_awaited_under_the_registry_lock(self):
