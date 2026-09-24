@@ -61,11 +61,11 @@ _CACHE_LOCK = threading.Lock()
 _CACHE_BYTES = 8 * 1024 * 1024
 
 
-def _remember_response(key, etag, body):
+def _remember_response(key, etag, body, link=None):
     with _CACHE_LOCK:
         _RESPONSE_CACHE.pop(key, None)
         if etag:
-            _RESPONSE_CACHE[key] = (etag, bytes(body))
+            _RESPONSE_CACHE[key] = (etag, bytes(body), link)
         while (len(_RESPONSE_CACHE) > 256
                or sum(len(value[1]) for value in _RESPONSE_CACHE.values()) > _CACHE_BYTES):
             _RESPONSE_CACHE.popitem(last=False)
@@ -197,6 +197,10 @@ class GitHubPRTracker:
         self._opener = build_opener(_NoRedirect())
 
     def _get(self, path: str, deadline: float) -> dict[str, Any] | list:
+        return self._request(path, deadline)[0]
+
+    def _request(self, path: str, deadline: float) -> tuple[dict[str, Any] | list, str | None]:
+        """Return the payload and the Link header, which names the last page of a list."""
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise PRTrackingError("GitHub refresh exceeded its time limit.")
@@ -228,7 +232,7 @@ class GitHubPRTracker:
                     secondary = b'secondary rate limit' in message or b'abuse detection' in message
                 _rate_limit(scope, error.headers, error.code, secondary=secondary)
                 if error.code == 304 and cached:
-                    return json.loads(cached[1])
+                    return json.loads(cached[1]), cached[2]
             finally:
                 error.close()
             raise
@@ -250,9 +254,10 @@ class GitHubPRTracker:
         payload = json.loads(body)
         if not isinstance(payload, (dict, list)):
             raise PRTrackingError("GitHub returned an unexpected response.")
+        link = response_headers.get('Link')
         if self._token:
-            _remember_response(key, response_headers.get('ETag'), body)
-        return payload
+            _remember_response(key, response_headers.get('ETag'), body, link)
+        return payload, link
 
     def _checks(self, prefix: str, sha: str, deadline: float) -> list[dict[str, Any]]:
         checks: list[dict[str, Any]] = []
@@ -414,6 +419,26 @@ class GitHubPRTracker:
             raise PRTrackingError('GitHub returned an incomplete list.')
         return values
 
+    def _newest_pages(self, path: str, deadline: float, older) -> tuple[list, bool]:
+        """Read a list from its last page back, at most three pages.
+
+        GitHub lists these items oldest first. The Link header names the last
+        page. Stop at the first page with an item for which `older` is true.
+        Return the items and whether pages remain unread.
+        """
+        first, link = self._request(path + 'per_page=100&page=1', deadline)
+        if not isinstance(first, list) or any(not isinstance(value, dict) for value in first):
+            raise PRTrackingError('GitHub returned an incomplete list.')
+        match = re.search(r'<[^>]*[?&]page=([1-9][0-9]{0,5})[^>]*>;\s*rel="last"', link or '')
+        last = int(match[1]) if match else 1
+        values = []
+        for page in range(last, max(0, last - 3), -1):
+            batch = first if page == 1 else self._list(f'{path}per_page=100&page={page}', deadline)
+            values += batch
+            if any(older(value) for value in batch):
+                return values, False
+        return values, last > 3
+
     def observe_issue_activity(self, url: str, since: str, deadline: float | None = None) -> dict | None:
         """Read the thread record and its activity after `since`. Failure returns None.
 
@@ -449,14 +474,11 @@ class GitHubPRTracker:
                 if kind == 'pulls':
                     for route, name, stamp in ((f'pulls/{number}/reviews?', 'review', 'submitted_at'),
                                                (f'pulls/{number}/comments?since={quote(since)}&', 'review_comment', 'updated_at')):
-                        for page in range(1, 4):
-                            values = self._list(f'{prefix}/{route}per_page=100&page={page}', deadline)
-                            items += [_activity(name, v, v.get(stamp)) for v in values
-                                      if isinstance(v.get(stamp), str) and v[stamp] > since]
-                            if len(values) < 100:
-                                break
-                        else:
-                            incomplete = True
+                        values, more = self._newest_pages(f'{prefix}/{route}', deadline,
+                            lambda v: isinstance(v.get(stamp), str) and v[stamp] <= since)
+                        items += [_activity(name, v, v.get(stamp)) for v in values
+                                  if isinstance(v.get(stamp), str) and v[stamp] > since]
+                        incomplete = incomplete or more
         except HTTPError as error:
             error.close()
             return None

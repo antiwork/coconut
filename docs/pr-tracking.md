@@ -78,6 +78,7 @@ The implementation uses these GitHub contracts:
 - [List check runs for a Git reference](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference).
 - [List issue comments](https://docs.github.com/en/rest/issues/comments#list-issue-comments), read from the last page back, for new source activity before a task turn.
 - [List reviews for a pull request](https://docs.github.com/en/rest/pulls/reviews#list-reviews-for-a-pull-request) and [List review comments on a pull request](https://docs.github.com/en/rest/pulls/comments#list-review-comments-on-a-pull-request), for new PR activity before a task turn.
+  Coconut reads the `Link` header to find the last page, and reads from that page back.
 - [Get the combined status for a reference](https://docs.github.com/en/rest/commits/statuses#get-the-combined-status-for-a-specific-reference).
 - [Status checks](https://docs.github.com/en/pull-requests/reference/status-checks).
 - [Troubleshoot required checks](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).

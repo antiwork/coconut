@@ -50,7 +50,7 @@ class ThreadTracker(GitHubPRTracker):
     def add(self, *comments):
         self.threads[42].add(*comments)
 
-    def _get(self, path, deadline):
+    def _request(self, path, deadline):
         if self.service is not None:
             acquired = threading.Event()
             def check():
@@ -72,15 +72,16 @@ class ThreadTracker(GitHubPRTracker):
         thread = self.threads[int(number)]
         if kind == 'issues' and not suffix:
             return dict(state='open', title='Record correction', updated_at=thread.updated_at,
-                        comments=len(thread.comments), state_reason=None)
+                        comments=len(thread.comments), state_reason=None), None
         values = {('issues', '/comments'): thread.comments, ('pulls', '/reviews'): thread.reviews,
                   ('pulls', '/comments'): thread.review_comments}[kind, suffix]
         options = parse_qs(query)
         if 'since' in options:
             # GitHub includes items updated at the exact `since` time.
             values = [v for v in values if v['updated_at'] >= options['since'][0]]
-        page = int(options['page'][0])
-        return values[(page - 1) * 100:page * 100]
+        page, last = int(options['page'][0]), (len(values) + 99) // 100
+        link = f'<https://api.github.com{route}?per_page=100&page={last}>; rel="last"' if last > 1 else None
+        return values[(page - 1) * 100:page * 100], link
 
 
 class SourceActivityTests(unittest.TestCase):
@@ -92,7 +93,7 @@ class SourceActivityTests(unittest.TestCase):
     url = URL
     revision = APPROVED
 
-    def approve_card(self, urls=(URL,)):
+    def approve_card(self, urls=(URL,), while_pending=None):
         self.tracker = ThreadTracker(self.service)
         self.patcher = patch.object(self.service, '_pr_tracker_for', return_value=self.tracker)
         self.patcher.start()
@@ -102,6 +103,8 @@ class SourceActivityTests(unittest.TestCase):
                        source_revisions={url: APPROVED for url in urls})
         with self.assertRaises(YieldForDecision):
             self.event('native_question', payload)
+        if while_pending:
+            while_pending()
         decision = self.service.snapshot()['decisions'][0]
         self.write('POST', f"/v1/decisions/{decision['id']}/answer", {'option_id': 'fix', 'revision': decision['revision']})
         self.assertEqual(self.service._get('tasks', self.task['id'])['_resume_decision'], decision['id'])
@@ -157,6 +160,19 @@ class SourceActivityTests(unittest.TestCase):
         task, prompt = self.turn()
         self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['Also keep the old export.'])
         self.assertNotIn('10x the current volume', prompt)
+
+    def test_comment_while_the_card_waits_reaches_the_resumed_turn(self):
+        def comment_and_refresh():
+            self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'This must handle 10x the current volume.'))
+            # The background refresh copies the live revision into the pending card.
+            self.service._refresh_decision_sources({})
+            stored = self.service._get('decisions', self.service.snapshot()['decisions'][0]['id'])
+            self.assertEqual(stored['_source_facts'][URL]['updated_at'], '2026-09-23T12:10:00Z')
+            self.assertEqual(stored['_source_seen'], {URL: APPROVED})
+        self.approve_card(while_pending=comment_and_refresh)
+        task, prompt = self.turn()
+        self.assertEqual(task['_source_activity'][0]['since'], APPROVED)
+        self.assertIn('This must handle 10x the current volume.', prompt)
 
     def test_failed_delivery_shows_the_same_activity_again(self):
         self.approve_card()
@@ -306,6 +322,25 @@ class IssueActivityReadTests(unittest.TestCase):
         self.assertEqual([c['author'] for c in result['new_activity']], [f'user{i}' for i in range(341, 351)])
         self.assertEqual((result['omitted_items'], result['incomplete']), (5, False))
         self.assertEqual(tracker.paths[1:], ['/repos/example/project/issues/42/comments?per_page=100&page=4'])
+
+    def test_long_pull_requests_show_the_newest_reviews(self):
+        tracker = ThreadTracker()
+        thread = tracker.threads[43]
+        thread.reviews = [dict(id=i, user=dict(login=f'lead{i}'), state='COMMENTED', body=f'Review {i}.',
+                               author_association='MEMBER', submitted_at=f'2026-09-23T{12 + i // 60:02d}:{i % 60:02d}:00Z')
+                          for i in range(1, 351)]
+        thread.updated_at = thread.reviews[-1]['submitted_at']
+        result = tracker.observe_issue_activity(PR_URL, APPROVED)
+        self.assertEqual([c['author'] for c in result['new_activity']], [f'lead{i}' for i in range(341, 351)])
+        self.assertTrue(result['incomplete'])
+
+        tracker.paths.clear()
+        result = tracker.observe_issue_activity(PR_URL, thread.reviews[334]['submitted_at'])
+        self.assertEqual([c['author'] for c in result['new_activity']], [f'lead{i}' for i in range(341, 351)])
+        self.assertEqual((result['omitted_items'], result['incomplete']), (5, False))
+        self.assertEqual([p for p in tracker.paths if '/reviews' in p],
+                         ['/repos/example/project/pulls/43/reviews?per_page=100&page=1',
+                          '/repos/example/project/pulls/43/reviews?per_page=100&page=4'])
 
     def test_pull_request_activity_includes_reviews_and_inline_comments(self):
         tracker = ThreadTracker()

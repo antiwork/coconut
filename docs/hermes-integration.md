@@ -60,7 +60,10 @@ Coconut adds these tools:
   Coconut gives text only from these authors, and not from bot accounts. For other items, it gives the metadata and a link.
   If the thread changed and no new item explains the change, the prompt tells the bot to read the thread itself.
   For example, someone edited the body, the title, the labels, or an older comment.
-  The last known revision is the latest of the card's source facts, the card time, the assignment `updated_at`, and the revision that Coconut recorded for the task.
+  The last known revision is the latest of these values:
+  the revision that the bot proved when Coconut stored the card (`_source_seen`), the assignment `updated_at`, and the revision that Coconut recorded for the task.
+  An older card without `_source_seen` uses its creation time.
+  Coconut does not use `_source_facts`, because the background refresh changes it while the card waits.
   After the provider receives the turn, Coconut records the observed `updated_at`. The next turn shows only newer activity.
   If the provider does not receive the turn, Coconut records nothing. The next turn shows the same activity again.
   If a read fails, the turn still starts. The prompt tells the bot to read the source itself before it acts.

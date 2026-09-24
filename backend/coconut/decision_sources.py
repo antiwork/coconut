@@ -89,14 +89,17 @@ def decision_source_keys(decision):
 
 
 def check_new_decision_sources(service, task_id, payload):
-    """Check the source version before storing a card or asking for attention."""
+    """Check the source version before storing a card or asking for attention.
+
+    Return the issue facts and the verified revision of each GitHub link.
+    """
     from .service import ServiceError
 
     decision = {'merge_pr_url': payload.get('merge_pr_url')}
     attach_sources(decision, payload)
     links = github_links(decision)
     if not links:
-        return
+        return {}, {}
     revisions = payload.get('source_revisions', {})
     if not isinstance(revisions, dict) or any(not isinstance(revisions.get(url), str) for url in links):
         raise ServiceError(400, 'No card was created. Read each linked GitHub issue or PR and its latest comments. '
@@ -121,7 +124,7 @@ def check_new_decision_sources(service, task_id, payload):
                 'Continue within existing permission if the choice is already settled. Otherwise retry with the updated source_revisions.')
         if github_source(url)[0] == 'issues':
             facts[url] = current
-    return facts
+    return facts, {url: revisions[url] for url in links}
 
 
 def _github_time(value):
@@ -171,10 +174,11 @@ def read_source_activity(service, task_id, limit=3):
         if isinstance(source, dict) and github_source(source.get('id')):
             candidates.append((source['id'], source.get('updated_at')))
     for decision in decisions:
-        facts = decision.get('_source_facts', {})
+        # Use the revision that the bot proved when Coconut stored the card.
+        # Do not use _source_facts. The background refresh changes it while the card waits.
+        seen = decision.get('_source_seen', {})
         for url in github_links(decision):
-            # Coconut checks the source revision when it stores a GitHub card.
-            candidates.append((url, facts.get(url, {}).get('updated_at') or decision.get('created_at')))
+            candidates.append((url, seen.get(url) or decision.get('created_at')))
     known, links = {}, {}
     for url, revision in candidates:
         key = _issue_url(url).lower()
