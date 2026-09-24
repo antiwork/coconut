@@ -93,8 +93,9 @@ Each hourly run first deletes the unfinished `.*.tar.gz.tmp` files in `workspace
 When `git worktree remove` fails or stops at its time limit, Coconut examines the path:
 
 - If the path is gone, the retirement is complete. Coconut runs `git worktree prune`.
-- If the checkout is unchanged, Coconut deletes the new archive and clears `retired`.
-  It marks the binding `retire_failed` with the time and the error, and it does not try again for one day.
+- If the checkout is unchanged, Coconut keeps the new archive and clears `retired`.
+  Git can delete ignored files before it stops, so the archive stays. Coconut marks the binding `retire_failed`
+  with the time, the error, and the archive path, and it does not try again for one day.
 - If part of the checkout remains, Coconut keeps `retired` and the archive.
   It marks the binding `retired.restore_failed` with a message for the operator.
 

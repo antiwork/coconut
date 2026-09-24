@@ -174,11 +174,21 @@ def ignored_files(path):
             if stat.S_ISREG(status.st_mode):
                 size += status.st_size
             elif not stat.S_ISLNK(status.st_mode):
-                continue
+                # Removal would delete a socket or a pipe that the archive cannot hold.
+                raise ValueError('The worktree contains an ignored special file: ' + name)
             names.append(name)
     if size > IGNORED_LIMIT_BYTES:
         raise ValueError('The ignored files in the worktree are larger than the archive limit.')
     return names
+
+
+def fingerprint(path, names):
+    """Return the size, time, and type of each archived file. A later change shows a difference."""
+    result = []
+    for name in sorted(names):
+        status = os.lstat(path / name)
+        result.append((name, status.st_size, status.st_mtime_ns, stat.S_IFMT(status.st_mode)))
+    return result
 
 
 def registered(repository):
@@ -321,6 +331,9 @@ def retire(root, identity, finished):
         archive = directory / (identity + '-' + moment.strftime('%Y%m%dT%H%M%S%fZ') + '.tar.gz')
     temporary = directory / ('.' + archive.name + '.tmp')
     at = stamp(moment)
+    # changes() lists untracked names only. Compare file contents and ignored files again before removal.
+    archived = [name for _, name in entries]
+    marks = fingerprint(path, archived)
     try:
         write_archive(temporary, dict(branch=before['branch'], head=head, outcome=before['outcome'],
             repository=before['repository'], path=before['path'], at=at), path,
@@ -337,7 +350,9 @@ def retire(root, identity, finished):
                 raise ValueError('The workspace binding changed during retirement.')
             validate_binding(dict(binding))
             check_worktree(path, binding, repository, processes=False)
-            if git(path, 'rev-parse', 'HEAD') != head or changes(path) != current:
+            if (git(path, 'rev-parse', 'HEAD') != head or changes(path) != current
+                    or sorted(ignored_files(path)) != sorted(name for arcname, name in entries if arcname.startswith(IGNORED))
+                    or fingerprint(path, archived) != marks):
                 raise ValueError('The worktree changed during retirement.')
             # A dispatch marks its task active before its worker takes this lock. Check the tasks without waiting.
             if not finished(False):
@@ -426,6 +441,22 @@ def place_link(path, name, target):
     os.symlink(target, link)
 
 
+def archived_files_present(path, archive):
+    """Return True when every archived untracked and ignored file exists with the same size or link."""
+    with tarfile.open(archive) as tar:
+        for member in tar.getmembers():
+            prefix = next((p for p in (UNTRACKED, IGNORED) if member.name.startswith(p)), None)
+            if not prefix:
+                continue
+            target = path / member.name[len(prefix):]
+            if member.issym():
+                if not target.is_symlink() or os.readlink(target) != member.linkname:
+                    return False
+            elif not target.is_file() or target.is_symlink() or target.stat().st_size != member.size:
+                return False
+    return True
+
+
 def unpack(binding):
     retired = binding['retired']
     path, archive, repository = Path(binding['path']), Path(retired['archive']), Path(binding['repository'])
@@ -435,8 +466,9 @@ def unpack(binding):
         try:
             validate_binding(dict(binding))
             intact = (git(path, 'rev-parse', 'HEAD') == retired['head']
-                      and changes_digest(*changes(path)) == retired['changes'])
-        except GIT_ERRORS:
+                      and changes_digest(*changes(path)) == retired['changes']
+                      and archived_files_present(path, Path(retired['archive'])))
+        except (*GIT_ERRORS, tarfile.TarError, EOFError, zlib.error):
             intact = False
         if not intact:
             raise ValueError(f'The path {path} is not empty and does not match the archive.')

@@ -332,6 +332,41 @@ class WorktreeRetirementTests(unittest.TestCase):
         archives = list((self.workspaces / 'archive').iterdir())
         self.assertEqual([str(p) for p in archives], [self.registry()[identity]['retire_failed']['archive']])
 
+    def test_a_file_change_during_archiving_keeps_the_worktree(self):
+        _, identity, path, _ = self.outcome()
+        (path / '.env').write_text('SECRET=old\n')
+        original = work_workspace.write_archive
+        def edit_during(*arguments, **options):
+            result = original(*arguments, **options)
+            (path / '.env').write_text('SECRET=newer value\n')
+            return result
+        with patch('coconut.work_workspace.write_archive', side_effect=edit_during):
+            self.assertEqual(self.retire(), [])
+        self.assertEqual((path / '.env').read_text(), 'SECRET=newer value\n')
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_an_ignored_special_file_keeps_the_worktree(self):
+        _, identity, path, _ = self.outcome()
+        (path / 'build').mkdir()
+        os.mkfifo(path / 'build' / 'events.fifo')
+        self.assertEqual(self.retire(), [])
+        self.assertTrue((path / 'build' / 'events.fifo').exists())
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_checkout_missing_ignored_files_is_not_accepted(self):
+        outcome, identity, path, _ = self.outcome()
+        (path / 'notes.md').write_text('untracked\n')
+        (path / '.env').write_text('SECRET=local\n')
+        self.assertEqual(self.retire(), [identity])
+        archive = Path(self.registry()[identity]['retired']['archive'])
+        # A restore stopped after the checkout and the untracked file, before the ignored files.
+        git(self.repo, 'worktree', 'add', '-q', str(path), 'wt/' + identity)
+        (path / 'notes.md').write_text('untracked\n')
+        with self.assertRaisesRegex(ValueError, 'could not restore it'):
+            acquire(self.workspaces, outcome, str(self.repo))
+        self.assertTrue(archive.exists())
+        self.assertIn('restore_failed', self.registry()[identity]['retired'])
+
     def test_a_path_hint_does_not_wait_for_the_registry_lock(self):
         outcome, _, path, _ = self.outcome()
         results = []
