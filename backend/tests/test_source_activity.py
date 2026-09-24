@@ -157,6 +157,13 @@ class SourceActivityTests(unittest.TestCase):
             task['status'] = 'queued'
             self.service._put('tasks', task)
 
+    def test_failed_worker_does_not_ack_unseen_activity(self):
+        self.approve_card()
+        self.tracker.add(comment(7, 'owner', '2026-09-23T12:10:00Z', 'Unseen requirement'))
+        self.service.provider.resume_task = Mock(side_effect=lambda *args: args[-1]('failed', {'summary': 'Before prompt'}))
+        self.service._run_task(self.task['id'])
+        self.assertNotIn('_source_activity_seen', self.service._get('tasks', self.task['id']))
+
     def test_comments_after_approval_reach_the_next_turn_once(self):
         self.approve_card()
         self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'This must handle 10x the current volume.'),
@@ -274,7 +281,12 @@ class SourceActivityTests(unittest.TestCase):
         self.assertIn('Operator member text.', prompt)
 
     def test_source_audit_uses_the_assignment_revision(self):
-        # The work-source assignment alone makes the repository owner an operator owner.
+        # The current work-source snapshot makes this exact repository trusted.
+        import json
+        (self.service.root / 'work-sources.json').write_text(json.dumps([dict(id='github', bot_id=self.bot['id'])]))
+        with self.service.transaction():
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                ('work-source:github', json.dumps(dict(trusted_repositories=['example/project']))))
         environment = patch.dict('os.environ', COCONUT_GITHUB_TRUSTED_OWNERS='')
         environment.start()
         self.addCleanup(environment.stop)
@@ -457,11 +469,20 @@ class SourceActivityTests(unittest.TestCase):
         self.assertNotIn(other, self.service._profile_trackers)
         self.assertEqual(len(self.service._profile_trackers), 1)
 
-    def test_operator_owner_lookup_uses_an_index(self):
-        plan = ' '.join(str(row) for row in self.service.db.execute(
-            "EXPLAIN QUERY PLAN SELECT DISTINCT json_extract(data,'$._source_assignment.id') FROM tasks "
-            "WHERE json_extract(data,'$._source_assignment.id') IS NOT NULL").fetchall())
-        self.assertIn('tasks_source_assignment', plan)
+    def test_removed_work_source_does_not_keep_historical_repository_trusted(self):
+        import json
+        source = dict(id='source-one', bot_id=self.bot['id'])
+        (self.service.root / 'work-sources.json').write_text(json.dumps([source]))
+        with self.service.transaction():
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                ('work-source:source-one', json.dumps(dict(trusted_repositories=['example/project']))))
+            task = self.service._get('tasks', self.task['id'])
+            task['_source_assignment'] = dict(source_id='source-one', id=URL, updated_at=APPROVED)
+            self.service._put('tasks', task)
+        with patch.dict('os.environ', COCONUT_GITHUB_TRUSTED_OWNERS=''):
+            self.assertIn('example/project', decision_sources.operator_owners(self.service))
+            (self.service.root / 'work-sources.json').write_text('[]')
+            self.assertNotIn('example/project', decision_sources.operator_owners(self.service))
 
     def test_decision_lookup_uses_the_task_index(self):
         plan = ' '.join(str(row) for row in self.service.db.execute(
@@ -548,6 +569,16 @@ class IssueActivityReadTests(unittest.TestCase):
         self.assertEqual(tracker.paths, ['/repos/example/project/issues/42',
                                          '/repos/example/project/issues/42/comments?per_page=100&page=2'])
 
+    def test_inline_review_comment_queries_before_recorded_second(self):
+        tracker = ThreadTracker()
+        thread = tracker.threads[43]
+        thread.pr_updated_at = '2026-09-23T11:46:32Z'
+        thread.review_comments = [dict(id=55, user=dict(login='owner', type='User'),
+            author_association='OWNER', updated_at=APPROVED, body='Same-second inline requirement')]
+        result = tracker.observe_issue_activity(PR_URL, APPROVED, operator=True)
+        self.assertEqual([item['body'] for item in result['new_activity']], ['Same-second inline requirement'])
+        self.assertIn('since=2026-09-23T11%3A46%3A30Z', ' '.join(tracker.paths))
+
     def test_long_pull_requests_show_the_newest_reviews(self):
         tracker = ThreadTracker()
         thread = tracker.threads[43]
@@ -633,7 +664,7 @@ class IssueActivityReadTests(unittest.TestCase):
         self.assertEqual((review['state'], review['body'], review['author_association']),
                          ('CHANGES_REQUESTED', 'Handle retries.', 'COLLABORATOR'))
         self.assertEqual(result['new_activity'][2]['path'], 'app/worker.py')
-        self.assertIn('/repos/example/project/pulls/43/comments?since=2026-09-23T11%3A46%3A31Z&per_page=100&page=1',
+        self.assertIn('/repos/example/project/pulls/43/comments?since=2026-09-23T11%3A46%3A30Z&per_page=100&page=1',
                       tracker.paths)
         # Only the thread and PR records use the shared response cache.
         self.assertEqual({path for path, cache in tracker.cached.items() if cache},

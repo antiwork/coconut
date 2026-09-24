@@ -514,8 +514,11 @@ class GitHubPRTracker:
                 # Later reads can find newer items while a comment arrives behind them. Record only this first read.
                 first_read = max((item['_at'] for item in items), default=None)
                 if kind == 'pulls':
+                    from datetime import datetime, timedelta, timezone
+                    review_since = (datetime.fromisoformat(since.replace('Z', '+00:00'))
+                                    - timedelta(seconds=1)).astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
                     for route, name, stamp in ((f'pulls/{number}/reviews?', 'review', 'submitted_at'),
-                                               (f'pulls/{number}/comments?since={quote(since)}&', 'review_comment', 'updated_at')):
+                                               (f'pulls/{number}/comments?since={quote(review_since)}&', 'review_comment', 'updated_at')):
                         values, more = self._newest_pages(f'{prefix}/{route}', deadline,
                             lambda v: isinstance(v.get(stamp), str) and v[stamp] < since)
                         items += [_activity(name, v, v.get(stamp), operator) for v in values

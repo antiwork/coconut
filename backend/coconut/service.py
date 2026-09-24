@@ -3158,9 +3158,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     self.provider.resume_task(provider_task, self._public(bot), history, self._public(decision) | {'action': decision.get('_action')}, emit)
                 else:
                     self.provider.start_task(provider_task, self._public(bot), history, emit)
-                self._record_source_seen(task_id, source_seen)
                 with self.lock:
                     current = self._get('tasks', task_id)
+                # A worker can fail before it constructs or receives the prompt.
+                # Retain the activity for a retry instead of acknowledging that failed turn.
+                if current['status'] not in ('failed', 'cancelled'):
+                    self._record_source_seen(task_id, source_seen)
                 if current['status'] not in ('failed', 'cancelled'):
                     self._ack_reaction_feedback(bot['id'], task_id, reaction_feedback)
                 if current['status'] == 'working':

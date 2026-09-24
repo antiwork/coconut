@@ -366,6 +366,11 @@ class WorkSources:
                                                      retry_at=time.time() + min(3600, max(600, source.get('interval_seconds', 600))
                                                                                * 2 ** min(attempts - 1, 3)))
                     state['recoveries'] = recoveries
+                    # Only repositories in the current complete source snapshot confer role-based text trust.
+                    from .decision_sources import github_source
+                    state['trusted_repositories'] = sorted({
+                        '/'.join(github_source(item.get('id'))[1].split('/')[:2]).lower()
+                        for item in items if github_source(item.get('id'))})
                     state.update(checked_at=current.isoformat(), missing=[item['id'] for item in gaps], error=None,
                                  next_check=time.time() + max(60, source.get('interval_seconds', 600)))
                     self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(state)))

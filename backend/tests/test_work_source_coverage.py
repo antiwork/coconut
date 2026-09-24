@@ -36,6 +36,18 @@ class WorkSourceTests(unittest.TestCase):
             self.service.audit_work_sources()
         return self.service._setting('work-source:assigned')
 
+    def test_complete_source_snapshot_replaces_trusted_repositories(self):
+        from coconut.decision_sources import operator_owners
+        self.assertEqual(self.audit()['trusted_repositories'], ['example/repo'])
+        self.assertIn('example/repo', operator_owners(self.service))
+        self.items = [dict(id='https://github.com/example/other/issues/2',
+                           updated_at='2026-09-14T12:00:00Z', title='New assignment')]
+        self.assertEqual(self.audit()['trusted_repositories'], ['example/other'])
+        self.assertNotIn('example/repo', operator_owners(self.service))
+        self.assertIn('example/other', operator_owners(self.service))
+        self.items = []
+        self.assertEqual(self.audit(complete=False)['trusted_repositories'], ['example/other'])
+
     def test_source_audit_does_not_read_completed_tool_history(self):
         original = self.service._all
         def scoped(table):

@@ -164,16 +164,29 @@ def operator_owners(service):
     entries (comma-separated). A bot can track any PR, so tracked PRs do not
     make a repository trusted.
     """
+    import json
     import os
     owners = {owner.strip().lower() for owner in os.environ.get('COCONUT_GITHUB_TRUSTED_OWNERS', '').split(',') if owner.strip()}
+    path = service.root / 'work-sources.json'
+    try:
+        sources = json.loads(path.read_text()) if path.exists() else []
+        if not isinstance(sources, list):
+            sources = []
+    except (OSError, ValueError):
+        sources = []  # A broken configuration cannot add trust.
     with service.lock:
-        rows = service.db.execute(
-            "SELECT DISTINCT json_extract(data,'$._source_assignment.id') FROM tasks "
-            "WHERE json_extract(data,'$._source_assignment.id') IS NOT NULL").fetchall()
-    for (url,) in rows:
-        source = github_source(url)
-        if source:
-            owners.add('/'.join(source[1].split('/')[:2]).lower())
+        for source in sources:
+            if not isinstance(source, dict) or not isinstance(source.get('id'), str):
+                continue
+            try:
+                bot = service._get('bots', source.get('bot_id'))
+            except KeyError:
+                continue
+            if bot.get('_deleted') or bot.get('archived'):
+                continue
+            state = service._setting('work-source:' + source['id'], {})
+            if isinstance(state, dict):
+                owners.update(repo for repo in state.get('trusted_repositories', []) if isinstance(repo, str))
     return owners
 
 
