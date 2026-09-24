@@ -300,13 +300,20 @@ class WorkspaceRecovery:
                 manifest = self.root / 'workspaces' / 'worktrees.json'
                 if manifest.is_symlink():
                     raise ValueError('The workspace manifest is unsafe.')
-                current = manifest.read_text()
-                if current not in (receipt['before'], receipt['after']):
-                    raise ValueError('The workspace binding changed after authorization.')
                 data = receipt['request']
+                # Compare only the authorized binding. Worktree retirement can change other bindings at any time.
+                identity = data['expected_owner'] + '-' + hashlib.sha256(data['repository'].encode()).hexdigest()[:16]
+                current = json.loads(manifest.read_text())
+                old, new = (json.loads(receipt[k]).get(identity) for k in ('before', 'after'))
+                if not isinstance(current, dict) or current.get(identity) not in (old, new):
+                    raise ValueError('The workspace binding changed after authorization.')
+                # Other bindings can change after authorization. None of them may name this worktree.
+                if any(k != identity and (not isinstance(v, dict) or not isinstance(v.get('path'), str)
+                                          or Path(v['path']).resolve() == Path(data['path'])) for k, v in current.items()):
+                    raise ValueError('Another binding also names this worktree.')
                 validate_binding(dict(path=data['path'], repository=data['repository'], branch=data['new_branch']))
-                if current == receipt['before']:
-                    atomic_manifest(manifest, receipt['after'])
+                if current[identity] == old:
+                    atomic_manifest(manifest, encoded(dict(current, **{identity: new})))
                 else:
                     # The previous process may have stopped before fsync of the
                     # rename. Establish durability before committing its receipt.

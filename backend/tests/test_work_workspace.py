@@ -8,7 +8,9 @@ import unittest
 from uuid import uuid4
 import test_work_self_recovery as recovery_fixtures
 
-from coconut.work_workspace import acquire, git, preferred
+from unittest.mock import patch
+
+from coconut.work_workspace import acquire, git, preferred, retire
 
 SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
 
@@ -49,6 +51,20 @@ class WorkWorkspaceTests(unittest.TestCase):
         git(self.repo, 'worktree', 'move', one['path'], str(self.root / 'moved-worktree'))
         with self.assertRaisesRegex(ValueError, 'missing'):
             preferred(self.saved, first)
+
+    def test_a_retired_native_worktree_returns_with_its_changes(self):
+        outcome = str(uuid4())
+        original = acquire(self.saved, outcome, str(self.repo))
+        note = Path(original['path']) / 'changes.txt'
+        note.write_text('Uncommitted work')
+        identity = next(iter(json.loads((self.saved / 'worktrees.json').read_text())))
+        with patch('coconut.work_workspace.in_use', return_value=False):
+            archive = retire(self.saved, identity, lambda wait: True)
+        self.assertTrue(archive.is_file())
+        self.assertFalse(Path(original['path']).exists())
+        resumed = acquire(self.saved, outcome, str(self.repo))
+        self.assertEqual((resumed['path'], resumed['branch']), (original['path'], original['branch']))
+        self.assertEqual(note.read_text(), 'Uncommitted work')
 
     def test_verified_branch_rename_keeps_the_same_owner_and_dirty_files(self):
         outcome = str(uuid4())

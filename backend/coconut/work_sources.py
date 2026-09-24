@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import threading
 from pathlib import Path
 import subprocess
 import time
@@ -193,7 +194,20 @@ class WorkSources:
                 self.audit_work_sources()
             except Exception:
                 logging.getLogger(__name__).exception('Could not audit configured work sources.')
+            # Retirement can take minutes. Its own thread keeps the audit on time and shutdown short.
+            worker = getattr(self, '_retirement_thread', None)
+            if worker is None or not worker.is_alive():
+                self._retirement_thread = threading.Thread(target=self._retire_worktrees_safely, daemon=True,
+                                                           name='worktree-retirement')
+                self._retirement_thread.start()
             self.stopping.wait(15)
+
+    def _retire_worktrees_safely(self):
+        try:
+            # This call returns at once until an hour has passed since the previous run.
+            self.retire_finished_worktrees()
+        except Exception:
+            logging.getLogger(__name__).exception('Could not retire finished worktrees.')
 
     def audit_work_sources(self):
         path = self.root / 'work-sources.json'

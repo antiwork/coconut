@@ -54,6 +54,64 @@ The registry rejects another outcome's worktree and an unverified branch switch.
 A Git-confirmed branch rename keeps the same owner and files. Coconut updates its saved branch without a service restart.
 The service keeps the registry under `workspaces/worktrees.json`.
 Coconut retains these worktrees after a turn ends. It does not delete uncommitted work.
+
+Once an hour, the work source poller retires the worktrees of finished outcomes.
+An outcome is finished when every Coconut task of its execution is completed or cancelled.
+It also has no pending decision, no running worker, and no pending background process.
+Its native task, if one exists, is done or archived.
+Its tasks have had no update for `WORKTREE_RETIRE_SECONDS` (two days).
+The poller holds the service lock only to read this state. It runs Git outside the service lock.
+Retirement does these steps:
+
+1. It validates the binding and the Git worktree record.
+2. It skips a locked worktree, a worktree that contains another worktree, and a Git operation in progress.
+3. It skips a worktree when `lsof` shows a process cwd or an open file in it, or when `lsof` is not available.
+4. It writes `workspaces/archive/<registry key>.tar.gz` with mode 0600. The archive contains these items:
+   - `staged.patch` from `git diff --binary --cached HEAD`.
+   - `unstaged.patch` from `git diff --binary`.
+   - The untracked files that Git does not ignore, under `untracked/`.
+   - The ignored files, under `ignored/`. Rebuildable folders are not in the archive:
+     `node_modules` and `.cache` at any depth, and `tmp`, `log`, `public/packs`, `public/packs-test`, and `coverage` at the top.
+   - `retirement.json` with the branch, the HEAD commit, the outcome, the repository, and the time.
+
+   The archive stores a hard link as a separate regular file.
+5. It skips the worktree when the archived ignored files are larger than 200 MB.
+6. It reads the archive again and compares it with the worktree.
+7. It checks the outcome state again. It waits at most 5 seconds for the service lock. It checks `lsof` again.
+8. It takes `workspaces/.workspace.lock`. It checks the binding, the Git worktree record, the HEAD commit, and the changes again.
+   It checks the outcome state again only if the service lock is free. It does not wait for the service lock here.
+9. It marks the binding `retired` with the time, the archive, and the HEAD commit.
+   It runs `git worktree remove --force` with a 600-second limit. It keeps the branch and its commits.
+10. It deletes the other archives of the same worktree that no binding names.
+
+The log names the cause when Coconut does not retire a worktree, for example a busy service or a changed worktree.
+Steps 1 to 7 do not hold the registry lock. Step 8 runs Git commands that do not wait for other processes.
+A path hint for native dispatch reads `worktrees.json` without the registry lock, because dispatch holds the service lock.
+The provider's verified lookup runs before a turn without the service lock. It can wait for the registry lock.
+Each hourly run first deletes the unfinished `.*.tar.gz.tmp` files in `workspaces/archive`.
+
+When `git worktree remove` fails or stops at its time limit, Coconut examines the path:
+
+- If the path is gone, the retirement is complete. Coconut runs `git worktree prune`.
+- If the checkout is unchanged, Coconut keeps the new archive and clears `retired`.
+  Git can delete ignored files before it stops, so the archive stays. Coconut marks the binding `retire_failed`
+  with the time, the error, and the archive path, and it does not try again for one day.
+- If part of the checkout remains, Coconut keeps `retired` and the archive.
+  It marks the binding `retired.restore_failed` with a message for the operator.
+
+`coconut_workspace` and the provider's verified workspace lookup restore a retired worktree on demand.
+The restore runs `git worktree add` at the same path on the saved branch.
+It applies `staged.patch` with `git apply --index` and then `unstaged.patch` with `git apply`.
+It extracts the untracked and ignored files. It recreates archived links with `os.symlink`, after all files, and does not follow them.
+It checks the HEAD commit and the changes against the archive before it clears `retired`.
+Then the worktree holds every archived change, so Coconut deletes the archive.
+If the restore fails or stops at its time limit, Coconut removes the partial checkout.
+It runs `git worktree remove --force`, deletes the remaining path, and runs `git worktree prune`. It keeps the archive.
+It marks the binding `retired.restore_failed` with the time and the error, and does not try the restore again.
+New work for the outcome continues without the worktree. `coconut_workspace` returns an error with the archive path and the branch.
+To try the restore again, an operator removes `restore_failed` from the binding in `workspaces/worktrees.json`.
+A path hint for native dispatch returns the saved path. It does not restore the worktree.
+Coconut does not delete an archive that a `retired` binding names, also when the binding has `restore_failed`.
 Native delegated workers also default to `delegation.worktree_isolation: true`.
 An explicit profile setting takes precedence.
 
@@ -102,11 +160,12 @@ repair possible. Unmanaged editors still require operator exclusion.
 
 Startup applies the request under `service.lock`, before native recovery or
 dispatch, and repeats the writer and ownership checks. Under the workspace lock
-it compares the complete saved manifest, verifies the current Git branch, and
+it compares the authorized binding with its saved value, verifies the current Git branch, and
 atomically replaces only the authorized binding's branch and recovery marker.
+A change to another binding, for example a worktree retirement, does not hold the request.
 It fsyncs both file and directory. A crash before replacement retains the old
 binding. A crash after replacement recognizes the exact recorded result including
-its request marker. A different task input, binding or newer manifest is held;
+its request marker. A different task input or a newer value of the binding is held;
 it is never overwritten. Git contents, approvals and execution ownership stay
 unchanged.
 
@@ -126,6 +185,7 @@ native successor route, including legacy PR owners without `_work_context_id`.
 
 `test_native_kanban.py` checks capacity, review, duplicate answers, restart, and lost acknowledgements against the real kernel.
 `test_work_workspace.py` checks separate branches, worktree adoption, and preservation of uncommitted changes.
+`test_worktree_retirement.py` checks which outcomes retire, the archive contents, and restore after retirement.
 `test_workspace_recovery.py` exercises the authenticated API, managed drain,
 startup lock and crash replay, writer refusals, native continuation, and the real
 provider's preferred workspace using a disposable local model server.

@@ -454,10 +454,15 @@ class HermesProvider(FixtureProvider):
         if task.get('_kanban_external_id'):
             from .work_workspace import preferred
             from .work_capacity import execution_key
-            workspace = preferred(self.data_dir / 'workspaces', execution_key(task))
-            explicit = workspace != self.data_dir / 'workspaces' / execution_key(task)
-            request['workspace'] = str(workspace if explicit else
-                task.get('_kanban_workspace') or task.get('_native_outcome', {}).get('workspace') or workspace)
+            from .work_workspace import retired_path
+            root = self.data_dir / 'workspaces'
+            workspace = preferred(root, execution_key(task))
+            explicit = workspace != root / execution_key(task)
+            hint = task.get('_kanban_workspace') or task.get('_native_outcome', {}).get('workspace')
+            # A claim can carry the path of a worktree whose restore failed. Do not start work there.
+            if hint and retired_path(root, execution_key(task), hint):
+                hint = None
+            request['workspace'] = str(workspace if explicit else hint or workspace)
         with self._lock:
             prepared = self._prepared.pop(task.get('_kanban_external_id'), None)
             if self._closed or task_id in self._cancelled or task.get('_context_id') in self._cancelled_contexts:
