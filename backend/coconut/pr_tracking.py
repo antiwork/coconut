@@ -175,7 +175,7 @@ def _activity(kind: str, value: dict, at: str | None, operator: bool) -> dict:
     """
     body = value.get('body') if isinstance(value.get('body'), str) else ''
     user = value.get('user') if isinstance(value.get('user'), dict) else {}
-    item = dict(kind=kind, id=value.get('id'), author=user.get('login'), author_type=user.get('type'),
+    item = dict(kind=kind, author=user.get('login'), author_type=user.get('type'),
                 author_association=value.get('author_association'), url=value.get('html_url'), _at=at)
     if operator and _trusted(value):
         item.update(body=body[:1500], truncated=len(body) > 1500)

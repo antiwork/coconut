@@ -183,7 +183,7 @@ class SourceActivityTests(unittest.TestCase):
         self.requeue()
         reads = len(self.tracker.paths)
         task, prompt = self.turn()
-        self.assertNotIn('_source_activity', task)
+        self.assertEqual([c.get('body') for c in task['_source_activity'][0]['new_activity']], [None])
         self.assertNotIn('10x the current volume', prompt)
         self.assertEqual(self.tracker.paths[reads:], ['/repos/example/project/issues/42',
             '/repos/example/project/issues/42/comments?per_page=100&page=1'])
@@ -352,6 +352,19 @@ class SourceActivityTests(unittest.TestCase):
         self.assertIn('/repos/example/project/issues/42', tracker.paths)
         self.assertIn('/repos/example/project/issues/43', tracker.paths)
 
+    def test_decision_lookup_warns_when_bounded_before_older_links(self):
+        with self.service.transaction():
+            self.service._put('decisions', dict(id='very-old', task_id=self.task['id'],
+                sources=[dict(kind='issue', title='Older', url=URL)]))
+            for number in range(1000):
+                self.service._put('decisions', dict(id=f'empty-{number}', task_id=self.task['id']))
+        with patch.object(self.service, '_pr_tracker_for', return_value=ThreadTracker(self.service)):
+            activity, _ = decision_sources.read_source_activity(self.service, self.task['id'])
+        self.assertTrue(any(item.get('selection_limited') for item in activity))
+        task = dict(self.service._get('tasks', self.task['id']), _source_activity=activity)
+        self.assertIn('could not select all linked GitHub threads',
+                      conversation_input(dict(operation='start', task=task, history=[]))[0])
+
     def test_explicitly_visible_card_is_read(self):
         with self.service.transaction():
             self.service._put('decisions', dict(id='visible', task_id=self.task['id'],
@@ -375,18 +388,19 @@ class SourceActivityTests(unittest.TestCase):
                                                   include_same_second=True)
         self.assertEqual([item['body'] for item in observed['new_activity']], ['Same-second requirement'])
 
-    def test_same_second_comment_after_delivery_reaches_next_turn_once(self):
+    def test_same_second_comment_after_delivery_is_rechecked_for_edits(self):
         self.approve_card()
         self.tracker.add(comment(1, 'owner', APPROVED, 'First requirement'))
         task, _ = self.turn()
         self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['First requirement'])
+        self.tracker.threads[42].comments[0]['body'] = 'Edited requirement'
+        self.requeue()
+        task, _ = self.turn()
+        self.assertIn('Edited requirement', [c['body'] for c in task['_source_activity'][0]['new_activity']])
         self.tracker.add(comment(2, 'owner', APPROVED, 'Later requirement'))
         self.requeue()
         task, _ = self.turn()
-        self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['Later requirement'])
-        self.requeue()
-        task, _ = self.turn()
-        self.assertNotIn('_source_activity', task)
+        self.assertIn('Later requirement', [c['body'] for c in task['_source_activity'][0]['new_activity']])
 
     def test_same_second_items_keep_their_record(self):
         class SameSecond:
@@ -420,7 +434,7 @@ class SourceActivityTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', self.task['id'])['_source_activity_seen'], {URL: '2026-09-23T12:11:00Z'})
         self.requeue()
         task, _ = self.turn()
-        self.assertNotIn('_source_activity', task)
+        self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['Also refunds.'])
 
     def test_item_in_the_recorded_second_is_not_lost(self):
         self.approve_card()
@@ -468,6 +482,15 @@ class SourceActivityTests(unittest.TestCase):
             self.service._pr_tracker_for(self.bot['id'])
         self.assertNotIn(other, self.service._profile_trackers)
         self.assertEqual(len(self.service._profile_trackers), 1)
+
+    def test_missing_work_source_bot_does_not_block_other_turns(self):
+        import json
+        (self.service.root / 'work-sources.json').write_text(json.dumps([
+            dict(id='missing', bot_id='absent'), dict(id='valid', bot_id=self.bot['id'])]))
+        with self.service.transaction():
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                ('work-source:valid', json.dumps(dict(trusted_repositories=['example/project']))))
+        self.assertIn('example/project', decision_sources.operator_owners(self.service))
 
     def test_removed_work_source_does_not_keep_historical_repository_trusted(self):
         import json

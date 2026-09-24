@@ -166,6 +166,7 @@ def operator_owners(service):
     """
     import json
     import os
+    from .service import ServiceError
     owners = {owner.strip().lower() for owner in os.environ.get('COCONUT_GITHUB_TRUSTED_OWNERS', '').split(',') if owner.strip()}
     path = service.root / 'work-sources.json'
     try:
@@ -180,7 +181,7 @@ def operator_owners(service):
                 continue
             try:
                 bot = service._get('bots', source.get('bot_id'))
-            except KeyError:
+            except (KeyError, ServiceError):
                 continue
             if bot.get('_deleted') or bot.get('archived'):
                 continue
@@ -203,7 +204,9 @@ def read_source_activity(service, task_id, limit=3):
     reads run outside the service lock. A failed read never blocks the turn.
     """
     import json
+    import time
 
+    started = time.monotonic()
     with service.lock:
         task = service._get('tasks', task_id)
         assignment = service._assignment(task)
@@ -212,10 +215,16 @@ def read_source_activity(service, task_id, limit=3):
     # Decode outside the lock and release it between bounded database pages.
     decisions, distinct = [], set()
     before = 9223372036854775807
+    scanned = 0
+    selection_limited = False
     while len(distinct) < limit:
+        if scanned >= 1000 or time.monotonic() - started >= 1:
+            selection_limited = True
+            break
         with service.lock:
             rows = service.db.execute(TASK_DECISIONS_PAGE.format(','.join('?' for _ in identities)),
                                       (*identities, before)).fetchall()
+        scanned += len(rows)
         for rowid, data in rows:
             decision = json.loads(data)
             if decision.get('_hidden') or decision.get('_deleted'):
@@ -249,16 +258,8 @@ def read_source_activity(service, task_id, limit=3):
         links.setdefault(key, github_source(url)[2])
         known.setdefault(key, set()).add(_github_time(revision))
     if not links:
-        return [], {}
+        return ([dict(selection_limited=True)] if selection_limited else []), {}
     operators = operator_owners(service)
-    prior_items = {}
-    for record in (assignment, task):
-        for key, value in record.get('_source_activity_items_seen', {}).items():
-            if key in known and isinstance(value, dict):
-                if key not in prior_items or value.get('at', '') > prior_items[key].get('at', ''):
-                    prior_items[key] = value
-                elif value.get('at') == prior_items[key].get('at'):
-                    prior_items[key] = dict(at=value['at'], ids=list(set(prior_items[key].get('ids', [])) | set(value.get('ids', []))))
     for record in (assignment, task):
         for key, revision in record.get('_source_activity_seen', {}).items():
             if key in known:
@@ -291,22 +292,12 @@ def read_source_activity(service, task_id, limit=3):
             continue
         observed = current.get('observed_at')
         seen[key] = observed if isinstance(observed, str) and observed > current['updated_at'] else current['updated_at']
-        entries = current.get('new_activity') or []
-        previous = prior_items.get(key, {})
-        if previous.get('at') == since and current['updated_at'] == since:
-            ids = set(previous.get('ids', []))
-            entries = [entry for entry in entries if entry.get('updated_at', entry.get('submitted_at')) != since
-                       or f"{entry.get('kind')}:{entry.get('id')}" not in ids]
-        current['new_activity'] = entries
-        at = seen[key]
-        item_ids = [f"{entry.get('kind')}:{entry.get('id')}" for entry in entries
-                    if entry.get('updated_at', entry.get('submitted_at')) == at and entry.get('id') is not None]
-        if item_ids:
-            seen[key + '#items'] = dict(at=at, ids=item_ids)
         # Items at the recorded second can be new although the thread time did not move.
         if (since is None or current['updated_at'] > since or current.get('new_activity')
                 or current.get('incomplete') or current.get('changed_without_new_activity')):
             activity.append(dict(url=url, since=since, **{k: current.get(k) for k in (
                 'state', 'state_reason', 'title', 'title_withheld', 'updated_at', 'new_activity', 'omitted_items', 'incomplete',
                 'changed_without_new_activity') if k in current}))
+    if selection_limited:
+        activity.append(dict(selection_limited=True))
     return activity, seen
