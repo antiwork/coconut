@@ -257,10 +257,16 @@ class SourceActivityTests(unittest.TestCase):
             self.assertEqual((item['author_association'], item.get('body'), item['body_withheld']), ('MEMBER', None, True))
             self.assertIsNone(task['_source_activity'][0]['title'])
             self.assertNotIn('Third-party member text.', prompt)
-            # A tracked PR in the same owner's repository makes the owner an operator owner.
+            # A bot can track any PR. A tracked PR alone does not make its owner trusted.
             with self.service.transaction():
                 self.service._put('artifacts', dict(id='tracked-pr', kind='pr', url='https://github.com/example/tools/pull/9'))
-            self.tracker.add(comment(8, 'reviewer', '2026-09-23T12:20:00Z', 'Operator member text.'))
+            self.tracker.add(comment(8, 'reviewer', '2026-09-23T12:15:00Z', 'Still third-party text.'))
+            self.requeue()
+            task, prompt = self.turn()
+            self.assertNotIn('Still third-party text.', prompt)
+        # The operator list makes the owner trusted.
+        with patch.dict('os.environ', COCONUT_GITHUB_TRUSTED_OWNERS='Example'):
+            self.tracker.add(comment(9, 'reviewer', '2026-09-23T12:20:00Z', 'Operator member text.'))
             self.requeue()
             task, prompt = self.turn()
         self.assertEqual(task['_source_activity'][0]['new_activity'][-1]['body'], 'Operator member text.')
@@ -371,12 +377,10 @@ class SourceActivityTests(unittest.TestCase):
         self.assertNotIn(other, self.service._profile_trackers)
         self.assertEqual(len(self.service._profile_trackers), 1)
 
-    def test_operator_owner_lookup_uses_indexes(self):
+    def test_operator_owner_lookup_uses_an_index(self):
         plan = ' '.join(str(row) for row in self.service.db.execute(
-            "EXPLAIN QUERY PLAN SELECT DISTINCT json_extract(data,'$.url') FROM artifacts WHERE json_extract(data,'$.kind')='pr' "
-            "UNION SELECT DISTINCT json_extract(data,'$._source_assignment.id') FROM tasks "
+            "EXPLAIN QUERY PLAN SELECT DISTINCT json_extract(data,'$._source_assignment.id') FROM tasks "
             "WHERE json_extract(data,'$._source_assignment.id') IS NOT NULL").fetchall())
-        self.assertIn('artifacts_kind', plan)
         self.assertIn('tasks_source_assignment', plan)
 
     def test_decision_lookup_uses_the_task_index(self):
@@ -496,6 +500,16 @@ class IssueActivityReadTests(unittest.TestCase):
                 self.assertEqual([(c['kind'], c.get('body')) for c in result['new_activity']],
                                  [('review', 'Handle retries.')])
                 self.assertEqual(result['updated_at'], '2026-09-23T12:30:00Z')
+
+    def test_only_the_first_list_read_advances_the_seen_revision(self):
+        tracker = ThreadTracker()
+        thread = tracker.threads[43]
+        thread.updated_at = thread.pr_updated_at = '2026-09-23T12:10:00Z'
+        # The review is read after the comments. A comment that arrived between the reads is not in this result.
+        thread.review_comments = [comment(9, 'lead', '2026-09-23T12:40:00Z', 'Retry this.', 'COLLABORATOR', path='app.rb')]
+        result = tracker.observe_issue_activity(PR_URL, APPROVED, operator=True)
+        self.assertEqual([c['kind'] for c in result['new_activity']], ['review_comment'])
+        self.assertEqual(result['observed_at'], '2026-09-23T12:10:00Z')
 
     def test_pull_link_to_a_plain_issue_reads_the_issue(self):
         tracker = ThreadTracker()

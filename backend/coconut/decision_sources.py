@@ -155,15 +155,15 @@ def operator_owners(service):
     """Return the GitHub owners whose repositories the operator uses.
 
     A repository role is trusted only in these repositories. The owners come
-    from tracked PRs, configured work-source assignments, and the optional
-    COCONUT_GITHUB_TRUSTED_OWNERS list (comma-separated).
+    from configured work-source assignments and the optional
+    COCONUT_GITHUB_TRUSTED_OWNERS list (comma-separated). A bot can track any
+    PR, so tracked PRs do not make an owner trusted.
     """
     import os
     owners = {owner.strip().lower() for owner in os.environ.get('COCONUT_GITHUB_TRUSTED_OWNERS', '').split(',') if owner.strip()}
     with service.lock:
         rows = service.db.execute(
-            "SELECT DISTINCT json_extract(data,'$.url') FROM artifacts WHERE json_extract(data,'$.kind')='pr' "
-            "UNION SELECT DISTINCT json_extract(data,'$._source_assignment.id') FROM tasks "
+            "SELECT DISTINCT json_extract(data,'$._source_assignment.id') FROM tasks "
             "WHERE json_extract(data,'$._source_assignment.id') IS NOT NULL").fetchall()
     for (url,) in rows:
         source = github_source(url)

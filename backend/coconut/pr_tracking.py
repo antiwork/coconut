@@ -497,6 +497,7 @@ class GitHubPRTracker:
             # GitHub times have whole seconds. Items at the `since` second count as new.
             # An item can repeat, but an item that arrived in the same second is not lost.
             # Read the record first. Activity that arrives between the reads shows again on the next turn. It is not lost.
+            first_read = None
             if issue['updated_at'] > since:
                 # GitHub lists comments oldest first. Read from the last page back to get the newest comments.
                 last = (issue['comments'] + 99) // 100
@@ -510,6 +511,8 @@ class GitHubPRTracker:
                         break
                 else:
                     incomplete = last > 3
+                # Later reads can find newer items while a comment arrives behind them. Record only this first read.
+                first_read = max((item['_at'] for item in items), default=None)
                 if kind == 'pulls':
                     for route, name, stamp in ((f'pulls/{number}/reviews?', 'review', 'submitted_at'),
                                                (f'pulls/{number}/comments?since={quote(since)}&', 'review_comment', 'updated_at')):
@@ -527,7 +530,7 @@ class GitHubPRTracker:
         items.sort(key=lambda item: item.pop('_at'))
         result = dict(issue, new_activity=items[-10:], omitted_items=max(0, len(items) - 10), incomplete=incomplete,
                       # An item can arrive after the thread read. Record it as seen, so the next turn does not show it again.
-                      observed_at=max(issue['updated_at'], latest or ''))
+                      observed_at=max(issue['updated_at'], first_read or ''))
         # An edit to the body, the title, the labels, or an older comment changes updated_at and adds no new item.
         if issue['updated_at'] > since and (latest is None or latest < issue['updated_at']):
             result['changed_without_new_activity'] = True
