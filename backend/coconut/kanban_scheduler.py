@@ -345,6 +345,8 @@ class NativeKanban(NativeOutcomes):
                             self._prepare_return(item, native.get('outcome_summary') or item['summary'], 'completed')
                             self._put(table, item)
                         self._native_retry(item, native)
+                        if table == 'tasks':
+                            self._native_block_check(item, native)
                     refused = native.get('dispatch_blocker') == 'blocker_auth'
                     failed = native['status'] in ('blocked', 'triage') and native.get('consecutive_failures', 0)
                     if not item.get('_native_outcome_id') and (refused or failed) and item['status'] in ('queued', 'scheduled'):

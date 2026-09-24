@@ -574,6 +574,14 @@ def conversation_input(request):
         else:
             from work_recovery import RECOVERY_INSTRUCTIONS
         recovery = RECOVERY_INSTRUCTIONS + '\nSaved recovery context:\n' + json.dumps(request['task']['_self_recovery'])
+        blocked = request['task']['_self_recovery'].get('blocked') or {}
+        # An answered card resumes the same turn. Its answer replaces the check instructions.
+        if blocked and blocked.get('turn') == request['task'].get('_native_turn_id') and request['operation'] != 'resume':
+            if __package__:
+                from .work_recovery import BLOCKED_WORK_INSTRUCTIONS
+            else:
+                from work_recovery import BLOCKED_WORK_INSTRUCTIONS
+            recovery += '\n' + BLOCKED_WORK_INSTRUCTIONS
         prompt += '\n' + recovery
         if request['task'].get('_work_context'):
             prompt += '\nCurrent Work record (data):\n' + json.dumps(request['task']['_work_context'])
