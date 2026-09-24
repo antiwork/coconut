@@ -51,6 +51,33 @@ The registry rejects another outcome's worktree and an unverified branch switch.
 A Git-confirmed branch rename keeps the same owner and files. Coconut updates its saved branch without a service restart.
 The service keeps the registry under `workspaces/worktrees.json`.
 Coconut retains these worktrees after a turn ends. It does not delete uncommitted work.
+
+Once an hour, the work source poller retires the worktrees of finished outcomes.
+An outcome is finished when every Coconut task of its execution is completed or cancelled.
+It also has no pending decision, no running worker, and no pending background process.
+Its native task, if one exists, is done or archived.
+Its tasks have had no update for `WORKTREE_RETIRE_SECONDS` (two days).
+The poller holds the service lock only to read this state. It runs Git outside the service lock.
+Retirement holds `workspaces/.workspace.lock` and does these steps:
+
+1. It validates the binding and the Git worktree record.
+2. It skips a locked worktree, a worktree that contains another worktree, and a Git operation in progress.
+3. It skips a worktree when `lsof` shows a process cwd or an open file in it, or when `lsof` is not available.
+4. It writes `workspaces/archive/<registry key>.tar.gz` with mode 0600.
+   The archive contains `changes.patch` from `git diff --binary HEAD`, the untracked files that Git does not ignore, and `retirement.json`.
+   It does not contain ignored files such as build output.
+5. It reads the archive again and compares it with the worktree.
+6. It checks the outcome state again. Then it runs `git worktree remove --force`.
+7. It keeps the branch and its commits. It marks the binding `retired` with the time, the archive, and the HEAD commit.
+
+`coconut_workspace` and the provider's verified workspace lookup restore a retired worktree on demand.
+The restore runs `git worktree add` at the same path on the saved branch.
+It applies `changes.patch` with `git apply --binary` and extracts the untracked files.
+Staged changes return as unstaged changes.
+It checks the HEAD commit and the changes against the archive before it clears `retired`.
+If the restore fails, Coconut removes the partial checkout, keeps the archive, and reports the error.
+A path hint for native dispatch returns the saved path. It does not restore the worktree.
+Coconut does not delete an archive. A later retirement of the same worktree writes an archive with a new name.
 Native delegated workers also default to `delegation.worktree_isolation: true`.
 An explicit profile setting takes precedence.
 
@@ -123,6 +150,7 @@ native successor route, including legacy PR owners without `_work_context_id`.
 
 `test_native_kanban.py` checks capacity, review, duplicate answers, restart, and lost acknowledgements against the real kernel.
 `test_work_workspace.py` checks separate branches, worktree adoption, and preservation of uncommitted changes.
+`test_worktree_retirement.py` checks which outcomes retire, the archive contents, and restore after retirement.
 `test_workspace_recovery.py` exercises the authenticated API, managed drain,
 startup lock and crash replay, writer refusals, native continuation, and the real
 provider's preferred workspace using a disposable local model server.

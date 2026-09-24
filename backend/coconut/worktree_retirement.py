@@ -1,0 +1,76 @@
+"""Retire the worktrees of finished outcomes. An archive keeps their uncommitted changes."""
+from datetime import datetime
+import json
+import logging
+import subprocess
+import tarfile
+import time
+
+from .work_capacity import execution_key
+from . import work_workspace
+
+WORKTREE_RETIRE_SECONDS = 2 * 24 * 60 * 60
+RETIREMENT_INTERVAL_SECONDS = 60 * 60
+
+
+class WorktreeRetirement:
+    def _finished_outcomes(self, current, *, timeout=-1):
+        """Return the execution IDs whose work is finished and idle. Hold the service lock only to read."""
+        if not self.lock.acquire(timeout=timeout):
+            return set()
+        try:
+            groups = {}
+            for task in self._all('tasks'):
+                groups.setdefault(execution_key(task), []).append(task)
+            pending = {d.get('task_id') for d in self._all('decisions') if d['status'] == 'pending'}
+            native = dict(self.kanban.tasks) if self.kanban else {}
+            by_native_id = {n['id']: n for n in native.values()}
+            finished = set()
+            for outcome, tasks in groups.items():
+                try:
+                    latest = max(datetime.fromisoformat((t.get('updated_at') or t['created_at']).replace('Z', '+00:00'))
+                                 .timestamp() for t in tasks)
+                except (KeyError, TypeError, ValueError, AttributeError):
+                    continue
+                if current - latest < WORKTREE_RETIRE_SECONDS:
+                    continue
+                if any(t['status'] not in ('completed', 'cancelled') or t['id'] in pending or t['id'] in self.running
+                       for t in tasks):
+                    continue
+                if any((native.get(t['id']) or by_native_id.get(t.get('_native_outcome_id')) or {}).get('status',
+                       'done') not in ('done', 'archived') for t in tasks):
+                    continue
+                if any(self._background_pending(t['id']) for t in tasks):
+                    continue
+                finished.add(outcome)
+            return finished
+        finally:
+            self.lock.release()
+
+    def retire_finished_worktrees(self, current=None):
+        """Run at most once an hour. Git and file work run outside the service lock."""
+        current = time.time() if current is None else current
+        if current < getattr(self, '_next_worktree_retirement', 0):
+            return []
+        self._next_worktree_retirement = current + RETIREMENT_INTERVAL_SECONDS
+        root = self.root / 'workspaces'
+        manifest = root / 'worktrees.json'
+        if not manifest.exists():
+            return []
+        # The registry changes by atomic rename, so this read needs no lock. Retirement checks again under the lock.
+        bindings = {k: v['outcome'] for k, v in json.loads(manifest.read_text()).items() if not v.get('retired')}
+        finished = self._finished_outcomes(current)
+        retired = []
+        for identity, outcome in bindings.items():
+            if outcome not in finished:
+                continue
+            if self.stopping.is_set() or self.restart_pending:
+                break
+            # The registry lock comes first here. Wait briefly for the service lock so a dispatch cannot deadlock.
+            still_finished = lambda: outcome in self._finished_outcomes(time.time(), timeout=5)
+            try:
+                if work_workspace.retire(root, identity, still_finished):
+                    retired.append(identity)
+            except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.TimeoutExpired) as error:
+                logging.getLogger(__name__).warning('Coconut kept worktree %s: %s', identity, error)
+        return retired

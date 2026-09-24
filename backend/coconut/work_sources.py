@@ -193,6 +193,11 @@ class WorkSources:
                 self.audit_work_sources()
             except Exception:
                 logging.getLogger(__name__).exception('Could not audit configured work sources.')
+            try:
+                # This call returns at once until an hour has passed since the previous run.
+                self.retire_finished_worktrees()
+            except Exception:
+                logging.getLogger(__name__).exception('Could not retire finished worktrees.')
             self.stopping.wait(15)
 
     def audit_work_sources(self):
