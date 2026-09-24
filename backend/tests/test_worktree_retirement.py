@@ -345,6 +345,31 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual((path / '.env').read_text(), 'SECRET=newer value\n')
         self.assertNotIn('retired', self.registry()[identity])
 
+    def test_a_same_size_edit_with_a_reset_time_keeps_the_worktree(self):
+        _, identity, path, _ = self.outcome()
+        (path / '.env').write_text('SECRET=aaa\n')
+        original = work_workspace.write_archive
+        def edit_during(*arguments, **options):
+            result = original(*arguments, **options)
+            before = os.stat(path / '.env')
+            (path / '.env').write_text('SECRET=bbb\n')
+            os.utime(path / '.env', ns=(before.st_atime_ns, before.st_mtime_ns))
+            return result
+        with patch('coconut.work_workspace.write_archive', side_effect=edit_during):
+            self.assertEqual(self.retire(), [])
+        self.assertEqual((path / '.env').read_text(), 'SECRET=bbb\n')
+
+    def test_a_same_size_file_with_other_contents_is_not_accepted(self):
+        outcome, identity, path, _ = self.outcome()
+        (path / '.env').write_text('SECRET=aaa\n')
+        self.assertEqual(self.retire(), [identity])
+        archive = Path(self.registry()[identity]['retired']['archive'])
+        git(self.repo, 'worktree', 'add', '-q', str(path), 'wt/' + identity)
+        (path / '.env').write_text('SECRET=bbb\n')
+        with self.assertRaisesRegex(ValueError, 'could not restore it'):
+            acquire(self.workspaces, outcome, str(self.repo))
+        self.assertTrue(archive.exists())
+
     def test_an_ignored_special_file_keeps_the_worktree(self):
         _, identity, path, _ = self.outcome()
         (path / 'build').mkdir()

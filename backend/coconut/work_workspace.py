@@ -183,11 +183,16 @@ def ignored_files(path):
 
 
 def fingerprint(path, names):
-    """Return the size, time, and type of each archived file. A later change shows a difference."""
+    """Return the inode, size, times, and type of each archived file.
+
+    The change time moves on every write and a program cannot set it back, so
+    a write shows a difference even when the size and modification time match.
+    """
     result = []
     for name in sorted(names):
         status = os.lstat(path / name)
-        result.append((name, status.st_size, status.st_mtime_ns, stat.S_IFMT(status.st_mode)))
+        result.append((name, status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns,
+                       stat.S_IFMT(status.st_mode)))
     return result
 
 
@@ -237,6 +242,11 @@ def file_digest(stream):
     for block in iter(lambda: stream.read(1 << 20), b''):
         value.update(block)
     return value.hexdigest()
+
+
+def path_digest(path):
+    with open(path, 'rb') as stream:
+        return file_digest(stream)
 
 
 def check_archive(archive, patches, path, entries):
@@ -452,7 +462,9 @@ def archived_files_present(path, archive):
             if member.issym():
                 if not target.is_symlink() or os.readlink(target) != member.linkname:
                     return False
-            elif not target.is_file() or target.is_symlink() or target.stat().st_size != member.size:
+            elif (not target.is_file() or target.is_symlink() or target.stat().st_size != member.size
+                    or path_digest(target) != file_digest(tar.extractfile(member))):
+                # Same size is not enough. Compare the contents with the archived copy.
                 return False
     return True
 
