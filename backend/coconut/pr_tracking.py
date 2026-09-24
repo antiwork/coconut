@@ -391,13 +391,15 @@ class GitHubPRTracker:
                 pass
         return cls(token=token)
 
-    def _issue_record(self, route: str, deadline: float) -> dict | None:
+    def _issue_record(self, route: str, deadline: float, *, with_kind: bool = False):
+        """Return the issue facts. With `with_kind`, also return whether the issue is a PR."""
         issue = self._get('/repos/' + route, deadline)
         if (not isinstance(issue, dict) or issue.get('state') not in ('open', 'closed')
                 or not isinstance(issue.get('updated_at'), str) or not issue['updated_at']
                 or not isinstance(issue.get('title'), str) or type(issue.get('comments')) is not int):
-            return None
-        return {key: issue.get(key) for key in ('state', 'title', 'updated_at', 'comments', 'state_reason')}
+            return (None, False) if with_kind else None
+        facts = {key: issue.get(key) for key in ('state', 'title', 'updated_at', 'comments', 'state_reason')}
+        return (facts, 'pull_request' in issue) if with_kind else facts
 
     def observe_issue(self, url: str) -> dict | None:
         """Read issue facts without a model call. Failure keeps the last observation."""
@@ -460,9 +462,17 @@ class GitHubPRTracker:
         deadline = time.monotonic() + 10 if deadline is None else deadline
         items, incomplete = [], False
         try:
-            issue = self._issue_record(f'{owner}/{repo}/issues/{number}', deadline)
+            issue, pull = self._issue_record(f'{owner}/{repo}/issues/{number}', deadline, with_kind=True)
             if issue is None:
                 return None
+            # An /issues/N link can name a PR. GitHub uses one number space for both.
+            kind = 'pulls' if pull else kind
+            if kind == 'pulls':
+                record = self._get(f'{prefix}/pulls/{number}', deadline)
+                if not isinstance(record, dict) or not isinstance(record.get('updated_at'), str):
+                    return None
+                # A review can change the PR record and leave the issue record unchanged.
+                issue['updated_at'] = max(issue['updated_at'], record['updated_at'])
             # Read the record first. Activity that arrives between the reads shows again on the next turn. It is not lost.
             if issue['updated_at'] > since:
                 # GitHub lists comments oldest first. Read from the last page back to get the newest comments.

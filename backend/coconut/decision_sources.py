@@ -196,15 +196,19 @@ def read_source_activity(service, task_id, limit=3):
     import time
     # One wall-clock budget covers the gh login and all reads. The turn waits no longer than this.
     deadline = time.monotonic() + SOURCE_READ_SECONDS
+    from .pr_tracking import GitHubPRTracker
     try:
         tracker = service._pr_tracker_for(task['bot_id'])
     except Exception:
+        tracker = None
+    if isinstance(tracker, GitHubPRTracker) and not tracker._token:
+        # Without a gh login, GitHub allows 60 requests an hour for all readers. Keep them for card checks and PR refresh.
         tracker = None
     activity, seen = [], {}
     for key, url in links.items():
         since = max((value for value in known[key] if value), default=None)
         current = None
-        if time.monotonic() < deadline:
+        if tracker is not None and time.monotonic() < deadline:
             try:
                 current = tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline)
             except Exception:

@@ -2493,6 +2493,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             return self.pr_tracker
         with self.lock:
             home = self.profiles.home(self._get('bots', bot_id))
+            # Remove expired trackers, so their tokens do not stay in memory.
+            for key in [key for key, value in self._profile_trackers.items() if value[0] <= time.monotonic()]:
+                del self._profile_trackers[key]
             cached = self._profile_trackers.get(home)
         # Each gh login read starts a process. Keep the tracker for a short time, so each turn does not wait for gh.
         # A tracker without a login expires sooner, so a new gh login takes effect soon.

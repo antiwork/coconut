@@ -53,9 +53,13 @@ Coconut adds these tools:
   Coconut uses the bot's own `gh` login and reads outside the service lock.
   All reads for one turn share a 6-second budget. After the budget, Coconut skips the remaining sources.
   Coconut keeps a logged-in tracker for two minutes and a tracker without a login for 30 seconds.
-  Thus each turn does not start `gh auth token`.
+  Thus each turn does not start `gh auth token`. Coconut removes expired trackers.
   The turn gets the newest activity since the last known revision as data: at most ten items, each at most 1,500 characters.
   Activity includes issue comments. For a PR, it also includes reviews and inline review comments.
+  An `/issues/N` link that names a PR counts as a PR. The PR record `updated_at` also counts, because a review can leave the issue record unchanged.
+  If Coconut does not show all new activity, the prompt tells the bot to read the rest itself.
+  Without a `gh` login, Coconut does not read. The prompt tells the bot to read the source itself.
+  Thus the per-turn reads do not use the shared limit for requests without a login.
   Each item includes its `author_association`. Only OWNER, MEMBER, and COLLABORATOR activity can change the scope.
   Coconut gives text only from these authors, and not from bot accounts. For other items, it gives the metadata and a link.
   If the thread changed and no new item explains the change, the prompt tells the bot to read the thread itself.

@@ -1,3 +1,4 @@
+from pathlib import Path
 import re
 import threading
 import time
@@ -24,8 +25,11 @@ def comment(identity, login, created_at, body, association='MEMBER', **extra):
 
 
 class Thread:
-    def __init__(self):
+    def __init__(self, pull=False):
         self.updated_at = APPROVED
+        self.pull = pull
+        # The PR record can change when the issue record does not.
+        self.pr_updated_at = None
         self.comments, self.reviews, self.review_comments = [], [], []
 
     def add(self, *comments):
@@ -40,9 +44,9 @@ class ThreadTracker(GitHubPRTracker):
     """
 
     def __init__(self, service=None):
-        super().__init__(token='')
+        super().__init__(token='test-token')
         self.service = service
-        self.threads = {42: Thread(), 43: Thread()}
+        self.threads = {42: Thread(), 43: Thread(pull=True)}
         self.paths, self.deadlines, self.lock_free = [], [], []
         self.offline = False
         self.delay = 0
@@ -72,8 +76,13 @@ class ThreadTracker(GitHubPRTracker):
         kind, number, suffix = re.fullmatch(r'/repos/example/project/(issues|pulls)/(\d+)(/comments|/reviews)?', route).groups()
         thread = self.threads[int(number)]
         if kind == 'issues' and not suffix:
-            return dict(state='open', title='Record correction', updated_at=thread.updated_at,
-                        comments=len(thread.comments), state_reason=None), None
+            record = dict(state='open', title='Record correction', updated_at=thread.updated_at,
+                          comments=len(thread.comments), state_reason=None)
+            if thread.pull:
+                record['pull_request'] = dict(url=f'https://api.github.com/repos/example/project/pulls/{number}')
+            return record, None
+        if kind == 'pulls' and not suffix:
+            return dict(updated_at=thread.pr_updated_at or thread.updated_at), None
         if self.before_list:
             self.before_list()
         values = {('issues', '/comments'): thread.comments, ('pulls', '/reviews'): thread.reviews,
@@ -279,6 +288,23 @@ class SourceActivityTests(unittest.TestCase):
         task, _ = self.turn()
         self.assertNotIn('_source_activity', task)
 
+    def test_tracker_without_a_login_does_not_read_github(self):
+        self.approve_card()
+        self.tracker._token = ''
+        self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'Scale requirement.'))
+        task, prompt = self.turn()
+        self.assertEqual(self.tracker.paths, [])
+        self.assertEqual(task['_source_activity'], [dict(url=URL, read_failed=True)])
+        self.assertIn('Coconut could not read these GitHub sources: ' + URL, prompt)
+
+    def test_expired_trackers_are_removed(self):
+        other = Path('/nonexistent/other-bot/home')
+        self.service._profile_trackers[other] = (time.monotonic() - 1, GitHubPRTracker(token='old-secret'))
+        with patch('coconut.service.GitHubPRTracker.for_profile', Mock(return_value=GitHubPRTracker(token='new'))):
+            self.service._pr_tracker_for(self.bot['id'])
+        self.assertNotIn(other, self.service._profile_trackers)
+        self.assertEqual(len(self.service._profile_trackers), 1)
+
     def test_decision_lookup_uses_the_task_index(self):
         plan = ' '.join(str(row) for row in self.service.db.execute(
             'EXPLAIN QUERY PLAN ' + decision_sources.TASK_DECISIONS.format('?,?'), ('one', 'two')))
@@ -382,6 +408,19 @@ class IssueActivityReadTests(unittest.TestCase):
                          ['/repos/example/project/pulls/43/reviews?per_page=1&page=1',
                           '/repos/example/project/pulls/43/reviews?per_page=100&page=4'])
 
+    def test_review_that_leaves_the_issue_record_unchanged_is_shown(self):
+        for url in (PR_URL, 'https://github.com/example/project/issues/43'):
+            with self.subTest(url=url):
+                tracker = ThreadTracker()
+                thread = tracker.threads[43]
+                thread.pr_updated_at = '2026-09-23T12:30:00Z'
+                thread.reviews = [dict(id=6, user=dict(login='lead'), state='CHANGES_REQUESTED', body='Handle retries.',
+                                       submitted_at='2026-09-23T12:30:00Z', author_association='COLLABORATOR')]
+                result = tracker.observe_issue_activity(url, APPROVED)
+                self.assertEqual([(c['kind'], c.get('body')) for c in result['new_activity']],
+                                 [('review', 'Handle retries.')])
+                self.assertEqual(result['updated_at'], '2026-09-23T12:30:00Z')
+
     def test_pull_request_activity_includes_reviews_and_inline_comments(self):
         tracker = ThreadTracker()
         thread = tracker.threads[43]
@@ -402,6 +441,17 @@ class IssueActivityReadTests(unittest.TestCase):
         self.assertEqual(result['new_activity'][2]['path'], 'app/worker.py')
         self.assertIn('/repos/example/project/pulls/43/comments?since=2026-09-23T11%3A46%3A31Z&per_page=100&page=1',
                       tracker.paths)
+
+
+class ActivityPromptTests(unittest.TestCase):
+    def test_omitted_or_incomplete_activity_tells_the_bot_to_read_the_rest(self):
+        records = [dict(url=URL, new_activity=[], omitted_items=2, incomplete=False),
+                   dict(url=PR_URL, new_activity=[], omitted_items=0, incomplete=True),
+                   dict(url=URL + '0', new_activity=[], omitted_items=0, incomplete=False)]
+        prompt = conversation_input(dict(operation='start', task=dict(id='task', title='Check', _source_activity=records),
+                                         history=[]))[0]
+        self.assertIn(f'Coconut did not show all new activity for these GitHub threads: {URL}, {PR_URL}. '
+                      'Read the rest of each thread yourself before you act.', prompt)
 
 
 if __name__ == '__main__':
