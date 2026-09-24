@@ -1515,6 +1515,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         '_attachment_ids', '_shared_message_ids', '_preference_source_ids', '_self_recovery', '_background_completion', '_pr_review'):
                 if key in continuation_owner:
                     task[key] = copy.deepcopy(continuation_owner[key])
+            # The continuation owns its copy. A later reply must not drop it as a block-check context.
+            for key in ('from_block_check', 'blocked'):
+                (task.get('_self_recovery') or {}).pop(key, None)
             task['_shared_message_ids'] = list(dict.fromkeys(task.get('_shared_message_ids', [])
                 + continuation_owner.get('_turn_message_ids', [])))
             pending = continuation_owner.pop('_blocked_followup', None)
@@ -2150,6 +2153,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._advance_input(task)
                 task['status'] = 'queued'
             message = self._message(bot['id'], text, task_id=task['id'], role='user', human_authored=True)
+            # A human message replaces a queued blocked-work check. It is not a service check.
+            self._end_block_context(task)
             if was_waiting or task.get('_steering') or '_turn_message_ids' in task:
                 task.setdefault('_steering', []).append(text)
             task.setdefault('_preference_source_ids', [])

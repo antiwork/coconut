@@ -2,6 +2,7 @@
 import json
 import threading
 import time
+from datetime import datetime, timezone
 from uuid import UUID, uuid5
 
 
@@ -404,6 +405,7 @@ class NativeOutcomes:
             self._restore_native_work_owner(owner)
             related_ids = {t['id'] for t in related}
             recovery = owner.setdefault('_self_recovery', {})
+            recovery.pop('from_block_check', None)
             recovery['previous_task_id'] = owner['id']
             unknown = [r for identity in related_ids for r in self._native_task_receipts(identity, state='executing')]
             recovery['unknown_tools'] = list({r['id']: r for r in recovery.get('unknown_tools', []) + unknown}.values())
@@ -700,7 +702,9 @@ class NativeOutcomes:
         records = [json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM native_receipts WHERE json_extract(data,'$.task_id')=? "
             "AND json_extract(data,'$.state')='executing'", (task['id'],))]
-        previous = task.get('_self_recovery') or {}
+        # A retry follows a cleared block. Drop the old block record from its context.
+        # The retry takes over the context, so the block check no longer owns it.
+        previous = {k: v for k, v in (task.get('_self_recovery') or {}).items() if k not in ('blocked', 'from_block_check')}
         records = list({r['id']: r for r in previous.get('unknown_tools', []) + records}.values())
         self._advance_input(task)
         task.update(status='queued', summary='Checking the previous result', updated_at=now(),
@@ -708,6 +712,105 @@ class NativeOutcomes:
             _self_recovery=dict(previous, attempt=native.get('consecutive_failures', 0), previous_task_id=task['id'],
                 failure=native.get('last_failure_error'), unknown_tools=records,
                 work=previous.get('work', []), decisions=previous.get('decisions', [])))
+        self._put('tasks', task)
+        self._event('task.updated', self._public(task), task['bot_id'], task['id'])
+
+    @staticmethod
+    def _end_block_context(task):
+        recovery = task.get('_self_recovery') or {}
+        recovery.pop('blocked', None)
+        if recovery.pop('from_block_check', None):
+            recovery.pop('failure', None)
+            # Keep tool calls without a result, so a later turn does not repeat an unknown write.
+            if not recovery.get('unknown_tools'):
+                task.pop('_self_recovery', None)
+
+    def _native_block_check(self, task, native):
+        # An explicit native block keeps its reason, but nothing else resumes it.
+        # Queue one owner check, then back off, until a card or recheck takes over.
+        from .service import now, uid
+        from .work_recovery import block_check_delay
+        check = task.get('_block_check')
+        idle = (task['status'] in ('completed', 'failed', 'waiting', 'cancelled') and not native.get('current_run_id')
+                and not native.get('worker_pid'))
+        # A check unblocks the task. A repeated block of the same kind can land in native triage.
+        stuck = native['status'] in ('blocked', 'triage') and native.get('block_kind') in ('capability', 'needs_input')
+        if not stuck:
+            if native['status'] in ('blocked', 'triage'):
+                # A short dependency or retry block keeps the pending due time.
+                return
+            if check and idle and native['status'] in ('done', 'archived'):
+                task.pop('_block_check')
+                self._end_block_context(task)
+                self._put('tasks', task)
+            elif check and not check.get('cleared'):
+                # Keep the backoff level. A later block starts its own settle delay.
+                # A running check turn still needs its block record, so drop it only when idle.
+                task['_block_check'] = dict(check, cleared=True)
+                if idle:
+                    self._end_block_context(task)
+                self._put('tasks', task)
+            elif check and idle and (task.get('_self_recovery') or {}).get('blocked'):
+                self._end_block_context(task)
+                self._put('tasks', task)
+            return
+        if task['status'] == 'cancelled' or not idle or task.get('_waiting_on'):
+            return
+        clock = time.time()
+        if not check or check.get('cleared'):
+            attempt = check['attempt'] if check else 0
+            task['_block_check'] = dict(since=clock, attempt=attempt, next_at=clock + block_check_delay(attempt))
+            self._put('tasks', task)
+            return
+        # Read the tables only when a check is due. Reconcile runs every second.
+        if clock < check['next_at']:
+            return
+        def defer():
+            # Defer without a turn. Keep the backoff level, so a lasting pause is read rarely.
+            task['_block_check'] = dict(check, next_at=clock + block_check_delay(max(check['attempt'], 1)))
+            self._put('tasks', task)
+        if (not self._process_observation_current(task, self._get('bots', task['bot_id']))
+                or self._task_paused(task) or self._background_pending(task['id'])):
+            return defer()
+        # Without an execution session, execution_key falls back to the bot. Keep the check to this outcome.
+        session = task.get('_execution_session_id')
+        related = {t['id'] for t in self._all('tasks') if session and t.get('_execution_session_id') == session} | {task['id']}
+        decisions = [d for d in self._all('decisions') if d['task_id'] in related]
+        if (self._task_work_is_paused(task) or self._automatic_work_is_paused(task)
+                or any(d['status'] == 'pending' for d in decisions)):
+            return defer()
+        records = [json.loads(row[0]) for row in self.db.execute(
+            "SELECT data FROM native_receipts WHERE json_extract(data,'$.task_id')=? "
+            "AND json_extract(data,'$.state')='executing'", (task['id'],))]
+        previous = task.get('_self_recovery') or {}
+        records = list({r['id']: r for r in previous.get('unknown_tools', []) + records}.values())
+        attempt = check['attempt'] + 1
+        # A reply held from a failed turn joins this check, as it does for other continuations.
+        held = task.pop('_blocked_followup', None)
+        if held:
+            for field, source_key in (('_preference_source_ids', 'source_ids'), ('_attachment_ids', 'attachment_ids')):
+                task[field] = list(dict.fromkeys(task.get(field, []) + held[source_key]))
+            task.update(_steering=[], steering_status='continued')
+        # A failed provider may not have read its input, so keep that boundary as other continuations do.
+        # Otherwise the new boundary follows the last turn, and the turn receives only the held reply.
+        failed_input = task.get('_input_after_message_id') if task['status'] == 'failed' else None
+        self._advance_input(task)
+        if failed_input is not None:
+            task['_input_after_message_id'] = failed_input
+        # The check instructions apply only to this turn. New input rotates the turn ID.
+        task.update(status='queued', summary='Checking why this work is blocked', updated_at=now(),
+            _background_return_after=now(), _background_return_id=uid(),
+            _block_check=dict(check, attempt=attempt, next_at=clock + block_check_delay(attempt)),
+            # Keep the recovery attempt count. The block check keeps its own count in _block_check.
+            _self_recovery=dict(previous, previous_task_id=task['id'],
+                # Mark a context this check created, so it ends with the block.
+                from_block_check=previous.get('from_block_check', not previous),
+                failure='The native task is blocked: ' + native['block_kind'] + '.',
+                blocked=dict(kind=native['block_kind'], turn=task.get('_native_turn_id'),
+                             since=datetime.fromtimestamp(check['since'], timezone.utc).isoformat()),
+                unknown_tools=records, work=previous.get('work', []),
+                # The check reads earlier answers, so a declined card becomes a pause instead of a new question.
+                decisions=list({d['id']: d for d in previous.get('decisions', []) + [self._public(d) for d in decisions]}.values())))
         self._put('tasks', task)
         self._event('task.updated', self._public(task), task['bot_id'], task['id'])
 

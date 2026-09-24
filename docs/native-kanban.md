@@ -34,6 +34,9 @@ Independent bot chats can run together. Calls within the same session remain ser
 Queue positions use native priority and creation order.
 Work uses the native title and progress note. Changes to either field trigger a phone update.
 Native failures enter Coconut's existing recovery path, which checks tool receipts before another action.
+A native outcome blocked for a missing resource or input gets an owner check after ten minutes, then on a backoff of up to six hours.
+The check continues the work if the block cleared. Otherwise it asks the person with a card or schedules a recheck.
+A pending card or a recorded pause on the outcome stops further checks. A declined card becomes a recorded pause.
 The adapter does not treat an unknown tool result as permission to repeat it.
 
 Coconut parks native retries that have no ready application input after native
