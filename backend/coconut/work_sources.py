@@ -11,6 +11,11 @@ import subprocess
 import time
 
 
+def source_fingerprint(source):
+    """Identify the current source configuration that supplied an audit."""
+    return hashlib.sha256(json.dumps(source, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
 def audit_item(task):
     if isinstance(task.get('_source_assignment'), dict):
         return task['_source_assignment']
@@ -368,6 +373,7 @@ class WorkSources:
                     state['recoveries'] = recoveries
                     # Only repositories in the current complete source snapshot confer role-based text trust.
                     from .decision_sources import github_source
+                    state['trusted_repositories_source'] = source_fingerprint(source)
                     state['trusted_repositories'] = sorted({
                         '/'.join(github_source(item.get('id'))[1].split('/')[:2]).lower()
                         for item in items if github_source(item.get('id'))})

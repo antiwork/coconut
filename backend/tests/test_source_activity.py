@@ -8,6 +8,7 @@ from urllib.error import URLError
 from urllib.parse import parse_qs
 
 from coconut import decision_sources
+from coconut.work_sources import source_fingerprint
 from coconut.hermes_worker import conversation_input
 from coconut.pr_tracking import GitHubPRTracker, PRTrackingError
 from coconut.service import YieldForDecision
@@ -283,10 +284,12 @@ class SourceActivityTests(unittest.TestCase):
     def test_source_audit_uses_the_assignment_revision(self):
         # The current work-source snapshot makes this exact repository trusted.
         import json
-        (self.service.root / 'work-sources.json').write_text(json.dumps([dict(id='github', bot_id=self.bot['id'])]))
+        source = dict(id='github', bot_id=self.bot['id'])
+        (self.service.root / 'work-sources.json').write_text(json.dumps([source]))
         with self.service.transaction():
             self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
-                ('work-source:github', json.dumps(dict(trusted_repositories=['example/project']))))
+                ('work-source:github', json.dumps(dict(trusted_repositories=['example/project'],
+                                                     trusted_repositories_source=source_fingerprint(source)))))
         environment = patch.dict('os.environ', COCONUT_GITHUB_TRUSTED_OWNERS='')
         environment.start()
         self.addCleanup(environment.stop)
@@ -485,12 +488,29 @@ class SourceActivityTests(unittest.TestCase):
 
     def test_missing_work_source_bot_does_not_block_other_turns(self):
         import json
+        valid = dict(id='valid', bot_id=self.bot['id'])
         (self.service.root / 'work-sources.json').write_text(json.dumps([
-            dict(id='missing', bot_id='absent'), dict(id='valid', bot_id=self.bot['id'])]))
+            dict(id='missing', bot_id='absent'), valid]))
         with self.service.transaction():
             self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
-                ('work-source:valid', json.dumps(dict(trusted_repositories=['example/project']))))
+                ('work-source:valid', json.dumps(dict(trusted_repositories=['example/project'],
+                                                  trusted_repositories_source=source_fingerprint(valid)))))
         self.assertIn('example/project', decision_sources.operator_owners(self.service))
+
+    def test_reconfigured_work_source_revokes_old_repository_before_next_audit(self):
+        import json
+        source = dict(id='source-one', bot_id=self.bot['id'], command=['old-source'])
+        (self.service.root / 'work-sources.json').write_text(json.dumps([source]))
+        with self.service.transaction():
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                ('work-source:source-one', json.dumps(dict(trusted_repositories=['example/project'],
+                                                       trusted_repositories_source=source_fingerprint(source),
+                                                       next_check=99999999999))))
+        with patch.dict('os.environ', COCONUT_GITHUB_TRUSTED_OWNERS=''):
+            self.assertIn('example/project', decision_sources.operator_owners(self.service))
+            source['command'] = ['replacement-source']
+            (self.service.root / 'work-sources.json').write_text(json.dumps([source]))
+            self.assertNotIn('example/project', decision_sources.operator_owners(self.service))
 
     def test_removed_work_source_does_not_keep_historical_repository_trusted(self):
         import json
@@ -498,7 +518,8 @@ class SourceActivityTests(unittest.TestCase):
         (self.service.root / 'work-sources.json').write_text(json.dumps([source]))
         with self.service.transaction():
             self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
-                ('work-source:source-one', json.dumps(dict(trusted_repositories=['example/project']))))
+                ('work-source:source-one', json.dumps(dict(trusted_repositories=['example/project'],
+                                                       trusted_repositories_source=source_fingerprint(source)))))
             task = self.service._get('tasks', self.task['id'])
             task['_source_assignment'] = dict(source_id='source-one', id=URL, updated_at=APPROVED)
             self.service._put('tasks', task)

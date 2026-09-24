@@ -39,6 +39,8 @@ class WorkSourceTests(unittest.TestCase):
     def test_complete_source_snapshot_replaces_trusted_repositories(self):
         from coconut.decision_sources import operator_owners
         self.assertEqual(self.audit()['trusted_repositories'], ['example/repo'])
+        from coconut.work_sources import source_fingerprint
+        self.assertEqual(self.audit()['trusted_repositories_source'], source_fingerprint(self.source))
         self.assertIn('example/repo', operator_owners(self.service))
         self.items = [dict(id='https://github.com/example/other/issues/2',
                            updated_at='2026-09-14T12:00:00Z', title='New assignment')]

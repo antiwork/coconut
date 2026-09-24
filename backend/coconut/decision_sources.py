@@ -167,6 +167,7 @@ def operator_owners(service):
     import json
     import os
     from .service import ServiceError
+    from .work_sources import source_fingerprint
     owners = {owner.strip().lower() for owner in os.environ.get('COCONUT_GITHUB_TRUSTED_OWNERS', '').split(',') if owner.strip()}
     path = service.root / 'work-sources.json'
     try:
@@ -186,7 +187,7 @@ def operator_owners(service):
             if bot.get('_deleted') or bot.get('archived'):
                 continue
             state = service._setting('work-source:' + source['id'], {})
-            if isinstance(state, dict):
+            if isinstance(state, dict) and state.get('trusted_repositories_source') == source_fingerprint(source):
                 owners.update(repo for repo in state.get('trusted_repositories', []) if isinstance(repo, str))
     return owners
 
