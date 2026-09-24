@@ -123,7 +123,7 @@ class DecisionInboxTests(unittest.TestCase):
     def test_card_rules_match_titles_to_scope_and_offer_the_next_step(self):
         from coconut.decision_inbox import DECISION_INSTRUCTIONS
         self.assertIn('The title names exactly what approval authorizes', DECISION_INSTRUCTIONS)
-        self.assertIn('offer the next step in a linked card', DECISION_INSTRUCTIONS)
+        self.assertIn('offer the next step in a card', DECISION_INSTRUCTIONS)
 
     def test_all_card_tools_expose_the_same_optional_risk_contract(self):
         from coconut.native_bridge import QUESTION_SCHEMA, SUGGEST_SCHEMA, REPLY_SCHEMA

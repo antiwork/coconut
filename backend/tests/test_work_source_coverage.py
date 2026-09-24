@@ -62,7 +62,8 @@ class WorkSourceTests(unittest.TestCase):
         self.assertIn('If an approved step is complete but the assignment is not', str(result))
         self.assertIn('continue the next step without a card when existing permission covers it', str(result))
         self.assertIn('Preserve explicit human holds and rejections', str(result))
-        self.assertIn('Only when a new human choice or permission is missing, offer the next step in a linked card with previous_decision_id', str(result))
+        self.assertIn('Only when a new human choice or permission is missing, offer the next step in a card', str(result))
+        self.assertIn('Link it to the approval card with previous_decision_id when that approval was a card', str(result))
         self.assertNotIn('that next step is a new choice', str(result))
         with self.service.transaction():
             task['status'] = 'completed'

@@ -929,7 +929,8 @@ class ProviderTests(unittest.TestCase):
         output = ''.join(data['text'] for kind, data in events if kind == 'text_delta')
         self.assertIn('continue the next step without a card when existing permission covers it', output)
         self.assertIn('Preserve explicit human holds and rejections', output)
-        self.assertIn('Only when a new human choice or permission is missing, offer the next step in a linked card with previous_decision_id', output)
+        self.assertIn('Only when a new human choice or permission is missing, offer the next step in a card', output)
+        self.assertIn('Link it to the approval card with previous_decision_id when that approval was a card', output)
         self.assertIn('when only the design was approved', output)
         self.assertNotIn('outcome is not complete, offer the next step', output)
 
