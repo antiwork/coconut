@@ -28,6 +28,24 @@ RECOVERY_INSTRUCTIONS = (
 )
 
 
+def block_check_delay(attempt):
+    # The first check waits for the blocked turn to settle. Later checks back off to six hours.
+    return 600 if attempt == 0 else min(21600, 1800 * 2 ** (attempt - 1))
+
+
+BLOCKED_WORK_INSTRUCTIONS = (
+    'Coconut queued this check because the native task stayed blocked. The check itself is not a human instruction or approval. '
+    'A message from the person in this turn is real input and takes priority over this check. '
+    'Read the latest block reason with kanban_show. Check whether the block still holds, for example free disk space, provider credits, access, or a service. '
+    'If the block cleared, continue the approved work. '
+    'If a person can clear it, call coconut_ask once. Name the exact action the person must take, the verified facts, and choices such as "Retry after I free space" and "Stop this work". '
+    'If it will clear without a person, schedule a bounded recheck with native Hermes scheduling and finish. '
+    'If a recorded human decision pauses this outcome, report blocked with paused_by_decision_id and stop. '
+    'If the person already declined the action this block needs, record that answer as a pause with paused_by_decision_id; do not ask again. '
+    'Otherwise, do not end this turn blocked without a card or a scheduled recheck.'
+)
+
+
 class WorkRecovery:
     def _retire_obsolete_recovery_questions(self):
         from .service import encoded, now
