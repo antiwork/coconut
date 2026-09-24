@@ -58,24 +58,35 @@ It also has no pending decision, no running worker, and no pending background pr
 Its native task, if one exists, is done or archived.
 Its tasks have had no update for `WORKTREE_RETIRE_SECONDS` (two days).
 The poller holds the service lock only to read this state. It runs Git outside the service lock.
-Retirement holds `workspaces/.workspace.lock` and does these steps:
+Retirement does these steps:
 
 1. It validates the binding and the Git worktree record.
 2. It skips a locked worktree, a worktree that contains another worktree, and a Git operation in progress.
 3. It skips a worktree when `lsof` shows a process cwd or an open file in it, or when `lsof` is not available.
-4. It writes `workspaces/archive/<registry key>.tar.gz` with mode 0600.
-   The archive contains `changes.patch` from `git diff --binary HEAD`, the untracked files that Git does not ignore, and `retirement.json`.
-   It does not contain ignored files such as build output.
-5. It reads the archive again and compares it with the worktree.
-6. It checks the outcome state again. Then it runs `git worktree remove --force`.
-7. It keeps the branch and its commits. It marks the binding `retired` with the time, the archive, and the HEAD commit.
+4. It writes `workspaces/archive/<registry key>.tar.gz` with mode 0600. The archive contains these items:
+   - `staged.patch` from `git diff --binary --cached HEAD`.
+   - `unstaged.patch` from `git diff --binary`.
+   - The untracked files that Git does not ignore, under `untracked/`.
+   - The ignored files, under `ignored/`. Rebuildable folders are not in the archive:
+     `node_modules` and `.cache` at any depth, and `tmp`, `log`, `public/packs`, `public/packs-test`, and `coverage` at the top.
+   - `retirement.json` with the branch, the HEAD commit, the outcome, the repository, and the time.
+5. It skips the worktree when the archived ignored files are larger than 200 MB.
+6. It reads the archive again and compares it with the worktree.
+7. It takes `workspaces/.workspace.lock`. It checks the binding, the HEAD commit, the changes, `lsof`, and the outcome state again.
+   Then it runs `git worktree remove --force`.
+8. It keeps the branch and its commits. It marks the binding `retired` with the time, the archive, and the HEAD commit.
+
+Steps 1 to 6 do not hold the registry lock. A path hint for native dispatch does not wait for them.
 
 `coconut_workspace` and the provider's verified workspace lookup restore a retired worktree on demand.
 The restore runs `git worktree add` at the same path on the saved branch.
-It applies `changes.patch` with `git apply --binary` and extracts the untracked files.
-Staged changes return as unstaged changes.
+It applies `staged.patch` with `git apply --index` and then `unstaged.patch` with `git apply`.
+It extracts the untracked and ignored files. It recreates archived links with `os.symlink`, after all files, and does not follow them.
 It checks the HEAD commit and the changes against the archive before it clears `retired`.
-If the restore fails, Coconut removes the partial checkout, keeps the archive, and reports the error.
+If the restore fails, Coconut removes the partial checkout and keeps the archive.
+It marks the binding `retired.restore_failed` with the time and the error, and does not try the restore again.
+New work for the outcome continues without the worktree. `coconut_workspace` returns an error with the archive path and the branch.
+To try the restore again, an operator removes `restore_failed` from the binding in `workspaces/worktrees.json`.
 A path hint for native dispatch returns the saved path. It does not restore the worktree.
 Coconut does not delete an archive. A later retirement of the same worktree writes an archive with a new name.
 Native delegated workers also default to `delegation.worktree_isolation: true`.

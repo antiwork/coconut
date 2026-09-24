@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import fcntl
 import hashlib
 import io
 import json
@@ -30,7 +31,7 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.repo = self.root / 'repo'
         self.repo.mkdir()
         git(self.repo, 'init')
-        (self.repo / '.gitignore').write_text('build/\n')
+        (self.repo / '.gitignore').write_text('build/\n.env\nnode_modules/\n/tmp\n')
         (self.repo / 'tracked.txt').write_text('one\ntwo\n')
         (self.repo / 'logo.bin').write_bytes(bytes(range(256)))
         (self.repo / 'obsolete.txt').write_text('remove me\n')
@@ -88,6 +89,10 @@ class WorktreeRetirementTests(unittest.TestCase):
         (path / 'notes' / 'draft.md').write_text('untracked draft\n')
         (path / 'build').mkdir()
         (path / 'build' / 'output.bin').write_bytes(b'x' * 4096)
+        (path / '.env').write_text('SECRET=local\n')
+        for rebuildable in ('node_modules/pkg/index.js', 'tmp/cache/file.bin', 'build/node_modules/x.js'):
+            (path / rebuildable).parent.mkdir(parents=True, exist_ok=True)
+            (path / rebuildable).write_text('rebuildable\n')
 
         self.assertEqual(self.retire(), [identity])
 
@@ -99,7 +104,8 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(binding['retired']['head'], head)
         self.assertEqual(archive.stat().st_mode & 0o777, 0o600)
         with tarfile.open(archive) as tar:
-            self.assertEqual(sorted(tar.getnames()), ['changes.patch', 'retirement.json', 'untracked/notes/draft.md'])
+            self.assertEqual(sorted(tar.getnames()), ['ignored/.env', 'ignored/build/output.bin', 'retirement.json',
+                                                      'staged.patch', 'unstaged.patch', 'untracked/notes/draft.md'])
             metadata = json.loads(tar.extractfile('retirement.json').read())
         self.assertEqual((metadata['branch'], metadata['head'], metadata['outcome']), ('wt/' + identity, head, outcome))
 
@@ -116,7 +122,11 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual((path / 'logo.bin').read_bytes(), bytes(reversed(range(256))))
         self.assertFalse((path / 'obsolete.txt').exists())
         self.assertEqual((path / 'notes' / 'draft.md').read_text(), 'untracked draft\n')
-        self.assertFalse((path / 'build').exists())
+        self.assertEqual((path / 'build' / 'output.bin').read_bytes(), b'x' * 4096)
+        self.assertEqual((path / '.env').read_text(), 'SECRET=local\n')
+        for rebuildable in ('node_modules', 'tmp', 'build/node_modules'):
+            self.assertFalse((path / rebuildable).exists())
+        self.assertEqual(git(path, 'diff', '--cached', '--name-only'), 'tracked.txt')
         self.assertTrue(archive.exists())
         self.assertEqual(preferred(self.workspaces, outcome), path)
 
@@ -180,31 +190,102 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertNotIn('retired', self.registry()[identity])
         self.assertEqual([p for p in (self.workspaces / 'archive').iterdir()], [])
 
-    def test_failed_restore_keeps_the_archive_and_raises(self):
+    def test_failed_restore_keeps_the_archive_reports_it_and_does_not_retry(self):
         outcome, identity, path, _ = self.outcome()
         (path / 'tracked.txt').write_text('changed\n')
         self.assertEqual(self.retire(), [identity])
         archive = Path(self.registry()[identity]['retired']['archive'])
+        original = archive.read_bytes()
         with tarfile.open(archive) as tar:
             metadata = tar.extractfile('retirement.json').read()
         with tarfile.open(archive, 'w:gz') as tar:
-            for name, data in (('retirement.json', metadata), ('changes.patch', b'not a patch\n')):
+            for name, data in (('retirement.json', metadata), ('staged.patch', b''), ('unstaged.patch', b'not a patch\n')):
                 info = tarfile.TarInfo(name)
                 info.size = len(data)
                 tar.addfile(info, io.BytesIO(data))
-        with self.assertRaisesRegex(ValueError, 'could not restore the retired worktree'):
+        with self.assertRaisesRegex(ValueError, 'could not restore it') as raised:
             acquire(self.workspaces, outcome, str(self.repo))
+        self.assertIn(str(archive), str(raised.exception))
         self.assertTrue(archive.exists())
         self.assertFalse(path.exists())
-        self.assertIn('retired', self.registry()[identity])
+        self.assertIn('restore_failed', self.registry()[identity]['retired'])
         self.assertNotIn(str(path), git(self.repo, 'worktree', 'list', '--porcelain'))
 
-        # A moved branch also stops the restore before Git creates a checkout.
+        # Later work continues without the worktree. Coconut does not try the restore again.
+        archive.write_bytes(original)
+        self.assertEqual(preferred(self.workspaces, outcome), self.workspaces / outcome)
+        self.assertEqual(preferred(self.workspaces, outcome, verify=False), self.workspaces / outcome)
+        with self.assertRaisesRegex(ValueError, 'Ask the operator'):
+            acquire(self.workspaces, outcome, str(self.repo))
+        self.assertFalse(path.exists())
+
+        # An operator removes the mark to try again.
+        saved = self.registry()
+        saved[identity]['retired'].pop('restore_failed')
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        self.assertEqual(acquire(self.workspaces, outcome, str(self.repo))['path'], str(path))
+        self.assertEqual((path / 'tracked.txt').read_text(), 'changed\n')
+
+    def test_a_moved_branch_marks_the_restore_failed_without_stopping_work(self):
+        outcome, identity, path, _ = self.outcome()
+        self.assertEqual(self.retire(), [identity])
         self.commit_on_branch('wt/' + identity)
-        with self.assertRaisesRegex(ValueError, 'branch moved'):
-            preferred(self.workspaces, outcome)
-        self.assertTrue(archive.exists())
-        self.assertIn('retired', self.registry()[identity])
+        self.assertEqual(preferred(self.workspaces, outcome), self.workspaces / outcome)
+        self.assertIn('branch moved', self.registry()[identity]['retired']['restore_failed']['error'])
+        self.assertFalse(path.exists())
+
+    def test_staged_new_file_survives_retire_and_restore(self):
+        outcome, identity, path, _ = self.outcome()
+        (path / 'added.txt').write_text('staged new file\n')
+        git(path, 'add', 'added.txt')
+        (path / 'added.txt').write_text('staged new file\nand an unstaged line\n')
+        self.assertEqual(self.retire(), [identity])
+        acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(git(path, 'diff', '--cached', '--name-status'), 'A\tadded.txt')
+        self.assertEqual(git(path, 'show', ':added.txt'), 'staged new file')
+        self.assertEqual((path / 'added.txt').read_text(), 'staged new file\nand an unstaged line\n')
+
+    def test_untracked_links_that_point_outside_return_as_links(self):
+        outcome, identity, path, _ = self.outcome()
+        (path / 'absolute').symlink_to('/etc/hosts')
+        (path / 'links').mkdir()
+        (path / 'links' / 'escaping').symlink_to('../../../outside')
+        (path / 'links' / 'inside').symlink_to('../tracked.txt')
+        self.assertEqual(self.retire(), [identity])
+        acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(os.readlink(path / 'absolute'), '/etc/hosts')
+        self.assertEqual(os.readlink(path / 'links' / 'escaping'), '../../../outside')
+        self.assertEqual(os.readlink(path / 'links' / 'inside'), '../tracked.txt')
+
+    def test_large_ignored_files_keep_the_worktree(self):
+        _, identity, path, _ = self.outcome()
+        (path / 'build').mkdir()
+        (path / 'build' / 'fixture.db').write_bytes(b'x' * 4096)
+        (path / 'node_modules').mkdir()
+        (path / 'node_modules' / 'big.js').write_bytes(b'x' * 8192)
+        with patch('coconut.work_workspace.IGNORED_LIMIT_BYTES', 4096):
+            self.assertEqual(self.retire(), [identity])
+        _, identity, path, _ = self.outcome()
+        (path / 'build').mkdir()
+        (path / 'build' / 'fixture.db').write_bytes(b'x' * 4097)
+        with patch('coconut.work_workspace.IGNORED_LIMIT_BYTES', 4096):
+            self.assertEqual(self.retire(), [])
+        self.assertEqual((path / 'build' / 'fixture.db').stat().st_size, 4097)
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_archive_work_does_not_hold_the_registry_lock(self):
+        _, identity, _, _ = self.outcome()
+        original = work_workspace.write_archive
+        shared = []
+        def archive(*arguments):
+            # A path hint takes a shared lock. It must not wait while Coconut writes the archive.
+            with (self.workspaces / '.workspace.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                shared.append(True)
+            original(*arguments)
+        with patch('coconut.work_workspace.write_archive', side_effect=archive):
+            self.assertEqual(self.retire(), [identity])
+        self.assertEqual(shared, [True])
 
     def commit_on_branch(self, branch):
         tree = git(self.repo, 'rev-parse', branch + '^{tree}')
