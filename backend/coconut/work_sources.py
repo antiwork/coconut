@@ -223,7 +223,10 @@ class WorkSources:
             key = 'work-source:' + source['id']
             with self.lock:
                 state = self._setting(key, {})
-                if time.time() < state.get('next_check', 0) or self.stopping.is_set() or self.restart_pending:
+                if ((time.time() < state.get('next_check', 0)
+                     and (state.get('trusted_repositories_source') == source_fingerprint(source)
+                          or state.get('trusted_repositories_source_attempt') == source_fingerprint(source)))
+                        or self.stopping.is_set() or self.restart_pending):
                     continue
                 bot = self._get('bots', source['bot_id'])
                 if bot.get('_deleted') or bot['archived']:
@@ -374,6 +377,7 @@ class WorkSources:
                     # Only repositories in the current complete source snapshot confer role-based text trust.
                     from .decision_sources import github_source
                     state['trusted_repositories_source'] = source_fingerprint(source)
+                    state['trusted_repositories_source_attempt'] = source_fingerprint(source)
                     state['trusted_repositories'] = sorted({
                         '/'.join(github_source(item.get('id'))[1].split('/')[:2]).lower()
                         for item in items if github_source(item.get('id'))})
@@ -383,5 +387,6 @@ class WorkSources:
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 # Retain prior coverage on failed reads. Never turn a partial fetch into an empty Plate.
                 with self.transaction():
-                    state.update(error=type(error).__name__, next_check=time.time() + 60)
+                    state.update(error=type(error).__name__, next_check=time.time() + 60,
+                                 trusted_repositories_source_attempt=source_fingerprint(source))
                     self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(state)))

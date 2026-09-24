@@ -50,6 +50,45 @@ class WorkSourceTests(unittest.TestCase):
         self.items = []
         self.assertEqual(self.audit(complete=False)['trusted_repositories'], ['example/other'])
 
+    def test_legacy_or_reconfigured_source_audits_before_next_check(self):
+        from coconut.decision_sources import operator_owners
+        from coconut.work_sources import source_fingerprint
+        with self.service.transaction():
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                ('work-source:assigned', json.dumps(dict(next_check=99999999999,
+                                                       trusted_repositories=['example/old']))))
+        with patch('coconut.work_sources.subprocess.run') as run:
+            run.return_value.stdout = json.dumps(dict(complete=True, items=[self.item]))
+            self.service.audit_work_sources()
+            self.assertEqual(run.call_count, 1)
+            self.assertIn('example/repo', operator_owners(self.service))
+            self.assertNotIn('example/old', operator_owners(self.service))
+            self.service.audit_work_sources()
+            self.assertEqual(run.call_count, 1)
+            self.source['command'] = ['new-assignments']
+            (self.root / 'work-sources.json').write_text(json.dumps([self.source]))
+            self.assertNotIn('example/repo', operator_owners(self.service))
+            self.service.audit_work_sources()
+            self.assertEqual(run.call_count, 2)
+        self.assertEqual(self.service._setting('work-source:assigned')['trusted_repositories_source'],
+                         source_fingerprint(self.source))
+        self.assertIn('example/repo', operator_owners(self.service))
+
+    def test_failed_migration_audit_keeps_trust_closed_and_retries_after_backoff(self):
+        from coconut.decision_sources import operator_owners
+        from coconut.work_sources import source_fingerprint
+        with self.service.transaction():
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                ('work-source:assigned', json.dumps(dict(next_check=99999999999,
+                                                       trusted_repositories=['example/old']))))
+        with patch('coconut.work_sources.subprocess.run', side_effect=OSError('unavailable')) as run:
+            self.service.audit_work_sources()
+            self.service.audit_work_sources()
+            self.assertEqual(run.call_count, 1)
+        state = self.service._setting('work-source:assigned')
+        self.assertEqual(state['trusted_repositories_source_attempt'], source_fingerprint(self.source))
+        self.assertNotIn('example/old', operator_owners(self.service))
+
     def test_source_audit_does_not_read_completed_tool_history(self):
         original = self.service._all
         def scoped(table):
