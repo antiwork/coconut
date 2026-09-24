@@ -382,6 +382,45 @@ class GitHubPRTracker:
             pass
         return None
 
+    def observe_issue_activity(self, url: str, since: str) -> dict | None:
+        """Read the issue record and the comments that changed after `since`.
+
+        `since` uses the GitHub format YYYY-MM-DDTHH:MM:SSZ. The result keeps
+        only the last ten new comments of the first three pages. Failure returns None.
+        """
+        from .decision_sources import github_source
+        issue = self.observe_issue(url)
+        if issue is None:
+            return None
+        result = dict(issue, new_comments=[], omitted_comments=0)
+        # Read the issue first. A comment that arrives between the two reads shows again later. It is not lost.
+        if issue['updated_at'] <= since:
+            return result
+        try:
+            deadline = time.monotonic() + 10
+            comments = []
+            for page in range(1, 4):
+                values = self._get(f'/repos/{github_source(url)[1]}/comments?since={quote(since)}&per_page=100&page={page}', deadline)
+                if not isinstance(values, list) or any(not isinstance(v, dict) for v in values):
+                    return None
+                comments.extend(v for v in values if isinstance(v.get('updated_at'), str) and v['updated_at'] > since)
+                if len(values) < 100:
+                    break
+        except HTTPError as error:
+            error.close()
+            return None
+        except (URLError, TimeoutError, OSError, HTTPException, PRTrackingError, ValueError, TypeError):
+            return None
+        result['omitted_comments'] = max(0, len(comments) - 10)
+        for comment in comments[-10:]:
+            body = comment.get('body') if isinstance(comment.get('body'), str) else ''
+            user = comment.get('user') if isinstance(comment.get('user'), dict) else {}
+            result['new_comments'].append(dict(
+                author=user.get('login'), author_type=user.get('type'), created_at=comment.get('created_at'),
+                updated_at=comment['updated_at'], url=comment.get('html_url'),
+                body=body[:1500], truncated=len(body) > 1500))
+        return result
+
     def observe_discussion(self, url: str) -> str | None:
         """Fingerprint complete PR discussions and reviews. Never return their private text."""
         try:

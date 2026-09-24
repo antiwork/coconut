@@ -76,6 +76,7 @@ The implementation uses these GitHub contracts:
 
 - [Get a pull request](https://docs.github.com/en/rest/pulls/pulls#get-a-pull-request).
 - [List check runs for a Git reference](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference).
+- [List issue comments](https://docs.github.com/en/rest/issues/comments#list-issue-comments), with `since`, for new source activity before a task turn.
 - [Get the combined status for a reference](https://docs.github.com/en/rest/commits/statuses#get-the-combined-status-for-a-specific-reference).
 - [Status checks](https://docs.github.com/en/pull-requests/reference/status-checks).
 - [Troubleshoot required checks](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).

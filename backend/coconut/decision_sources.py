@@ -122,3 +122,84 @@ def check_new_decision_sources(service, task_id, payload):
         if github_source(url)[0] == 'issues':
             facts[url] = current
     return facts
+
+
+def _github_time(value):
+    """Return a GitHub `since` value, or None if the value is not a time."""
+    from datetime import datetime, timezone
+    try:
+        instant = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    return instant.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def _issue_url(url):
+    # The issues API also reads PR threads. GitHub uses one number space for both.
+    owner, repo, _, number = github_source(url)[1].split('/')
+    return f'https://github.com/{owner}/{repo}/issues/{number}'
+
+
+def read_source_activity(service, task_id, limit=3):
+    """Read new activity on the task's GitHub sources before a turn starts.
+
+    Return the activity for the prompt and the revisions to record. The GitHub
+    reads run outside the service lock. A failed read never blocks the turn.
+    """
+    import json
+
+    with service.lock:
+        task = service._get('tasks', task_id)
+        assignment = service._assignment(task)
+        identities = list(dict.fromkeys((task['id'], assignment['id'])))
+        rows = service.db.execute("SELECT data FROM decisions WHERE json_extract(data,'$.task_id') IN ("
+                                  + ','.join('?' for _ in identities) + ') ORDER BY rowid DESC', identities)
+        decisions = [d for d in (json.loads(row[0]) for row in rows) if not d.get('_hidden') and not d.get('_deleted')]
+        if task.get('_resume_decision'):
+            resumed = service._get('decisions', task['_resume_decision'])
+            decisions = [resumed] + [d for d in decisions if d['id'] != resumed['id']]
+    # Each candidate is a link and a known revision. The prompt shows only activity after the latest revision.
+    candidates = []
+    for record in (task, assignment):
+        source = record.get('_source_assignment')
+        if isinstance(source, dict) and github_source(source.get('id')):
+            candidates.append((source['id'], source.get('updated_at')))
+    for decision in decisions:
+        facts = decision.get('_source_facts', {})
+        for url in github_links(decision):
+            # Coconut checks the source revision when it stores a GitHub card.
+            candidates.append((url, facts.get(url, {}).get('updated_at') or decision.get('created_at')))
+    known, links = {}, {}
+    for url, revision in candidates:
+        key = _issue_url(url).lower()
+        if key not in links and len(links) >= limit:
+            continue
+        links.setdefault(key, github_source(url)[2])
+        known.setdefault(key, set()).add(_github_time(revision))
+    if not links:
+        return [], {}
+    for record in (assignment, task):
+        for key, revision in record.get('_source_activity_seen', {}).items():
+            if key in known:
+                known[key].add(_github_time(revision))
+    try:
+        tracker = service._pr_tracker_for(task['bot_id'])
+    except Exception:
+        tracker = None
+    activity, seen = [], {}
+    for key, url in links.items():
+        since = max((value for value in known[key] if value), default=None)
+        try:
+            current = tracker.observe_issue_activity(_issue_url(url), since or '1970-01-01T00:00:00Z')
+        except Exception:
+            current = None
+        if not isinstance(current, dict) or not isinstance(current.get('updated_at'), str):
+            activity.append(dict(url=url, read_failed=True))
+            continue
+        seen[key] = current['updated_at']
+        if since is None or current['updated_at'] > since:
+            activity.append(dict(url=url, since=since, **{k: current.get(k) for k in (
+                'state', 'state_reason', 'title', 'updated_at', 'new_comments', 'omitted_comments')}))
+    return activity, seen

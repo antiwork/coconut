@@ -48,6 +48,13 @@ Coconut adds these tools:
   Coconut verifies those revisions before it stores a card, pauses work, or sends a notification.
   A changed or unavailable source returns to the same worker for reassessment. It creates no card.
   A current source does not grant permission. The bot still checks whether human input is necessary.
+  Before each task turn, Coconut reads the task's linked GitHub issues and PRs, at most three.
+  Links come from the source assignment, the resumed decision, and the other decisions of the task.
+  Coconut uses the bot's own `gh` login and reads outside the service lock.
+  The turn gets the new comments since the last known revision as data: at most ten, each at most 1,500 characters.
+  The last known revision is the latest of the card's source facts, the card time, the assignment `updated_at`, and the revision that Coconut recorded for the task.
+  Coconut records the observed `updated_at`, so the next turn shows only newer activity.
+  If a read fails, the turn still starts. The prompt tells the bot to read the source itself before it acts.
 - `coconut_propose_file` supplies exact file proposals and persistent artifact cards.
 - `coconut_create_bot` creates a bot from a verified direct human request.
 - `coconut_delete_bot` deletes another bot from a verified direct human request.

@@ -3114,6 +3114,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         for row in deliveries for d in [json.loads(row[0])]]
 
                 timing.mark('context')
+                # Every turn passes here. Read the linked GitHub threads outside the lock, so the bot sees new comments before it acts.
+                from .decision_sources import read_source_activity
+                source_activity, source_seen = read_source_activity(self, task_id)
+                if source_activity:
+                    provider_task['_source_activity'] = source_activity
+                timing.mark('sources')
                 with self.transaction():
                     current = self._get('tasks', task_id)
                     if (current['status'] != 'working' or self.stopping.is_set()
@@ -3124,6 +3130,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         self._put('tasks', current)
                         self._event('task.updated', self._public(current), current['bot_id'], task_id)
                         return
+                    if source_seen:
+                        # The next turn shows only activity after these revisions.
+                        current['_source_activity_seen'] = dict(current.get('_source_activity_seen', {}), **source_seen)
+                        self._put('tasks', current)
                 timing.mark('ready')
                 timing.report()
                 emit = lambda kind, payload: self.emit(task_id, kind, payload)
