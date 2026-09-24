@@ -104,6 +104,8 @@ REBUILDABLE_NAMES = ('node_modules', '.cache')
 REBUILDABLE_PATHS = ('tmp', 'log', 'public/packs', 'public/packs-test', 'coverage')
 # Coconut keeps a worktree when its other ignored files are larger than this limit.
 IGNORED_LIMIT_BYTES = 200 * 1024 * 1024
+# Coconut keeps a worktree when its untracked files are larger than this limit.
+UNTRACKED_LIMIT_BYTES = 200 * 1024 * 1024
 # Coconut keeps a worktree when its staged and unstaged patches together are larger than this limit.
 PATCH_LIMIT_BYTES = 200 * 1024 * 1024
 # After Git refuses to remove a worktree, Coconut waits this long before the next attempt.
@@ -301,10 +303,14 @@ def retire(root, identity, finished):
     staged, unstaged, names = current
     if len(staged) + len(unstaged) > PATCH_LIMIT_BYTES:
         raise ValueError('The changes in the worktree are larger than the archive limit.')
+    untracked = 0
     for name in names:
         # Git lists a nested repository as a directory. Removal would delete it without an archive.
         if name.endswith('/') or not ((path / name).is_symlink() or stat.S_ISREG(os.lstat(path / name).st_mode)):
             raise ValueError('The worktree contains a nested repository or a special file.')
+        untracked += os.lstat(path / name).st_size
+    if untracked > UNTRACKED_LIMIT_BYTES:
+        raise ValueError('The untracked files in the worktree are larger than the archive limit.')
     entries = [(UNTRACKED + name, name) for name in names] + [(IGNORED + name, name) for name in ignored_files(path)]
     directory = root / 'archive'
     directory.mkdir(mode=0o700, exist_ok=True)
@@ -344,7 +350,11 @@ def retire(root, identity, finished):
             try:
                 git(repository, 'worktree', 'remove', '--force', str(path), timeout=CHECKOUT_SECONDS)
             except GIT_ERRORS as error:
-                removal_stopped(manifest, saved, binding, path, repository, current, archive, error)
+                try:
+                    removal_stopped(manifest, saved, binding, path, repository, current, archive, error)
+                finally:
+                    # A worktree that Git keeps refusing to remove keeps only its latest archive.
+                    drop_other_archives(directory, identity, archive, saved)
             drop_other_archives(directory, identity, archive, saved)
             return archive
     finally:
@@ -381,7 +391,7 @@ def removal_stopped(manifest, saved, binding, path, repository, current, archive
 
 def drop_other_archives(directory, identity, keep, saved):
     """Keep one archive for each worktree. Never delete an archive that a binding names."""
-    named = {(b.get('retired') or {}).get('archive') for b in saved.values()}
+    named = {(b.get(key) or {}).get('archive') for b in saved.values() for key in ('retired', 'retire_failed')}
     for old in [directory / (identity + '.tar.gz'), *directory.glob(identity + '-*.tar.gz')]:
         if old != keep and str(old) not in named:
             old.unlink(missing_ok=True)

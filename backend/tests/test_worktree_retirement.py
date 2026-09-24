@@ -307,6 +307,31 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertIn('restore_failed', self.registry()[identity]['retired'])
         self.assertEqual(preferred(self.workspaces, outcome), self.workspaces / outcome)
 
+    def test_large_untracked_files_keep_the_worktree(self):
+        _, identity, path, _ = self.outcome()
+        (path / 'fixture.dump').write_bytes(b'x' * 1024)
+        with patch('coconut.work_workspace.UNTRACKED_LIMIT_BYTES', 512):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue((path / 'fixture.dump').exists())
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_repeated_refused_removals_keep_one_archive(self):
+        _, identity, path, _ = self.outcome()
+        (path / '.env').write_text('SECRET=local\n')
+        original = work_workspace.git
+        def refuse(*arguments, **options):
+            if 'remove' in arguments:
+                raise ValueError('working trees containing submodules cannot be removed')
+            return original(*arguments, **options)
+        with patch('coconut.work_workspace.git', side_effect=refuse):
+            for _ in range(3):
+                self.assertEqual(self.retire(), [])
+                saved = self.registry()
+                saved[identity]['retire_failed']['at'] = OLD
+                save_bindings(self.workspaces / 'worktrees.json', saved)
+        archives = list((self.workspaces / 'archive').iterdir())
+        self.assertEqual([str(p) for p in archives], [self.registry()[identity]['retire_failed']['archive']])
+
     def test_a_path_hint_does_not_wait_for_the_registry_lock(self):
         outcome, _, path, _ = self.outcome()
         results = []
