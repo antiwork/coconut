@@ -1109,6 +1109,46 @@ for title in ('First defect', 'Second defect'):
         self.assertEqual(projected['work_state'], 'needs_decision')
         self.assertEqual(projected['work_decision_id'], decision['id'])
 
+    def test_blocked_native_outcome_queues_one_owner_check(self):
+        origin = self.task('Build the customer record')
+        identity = self.native_program("""
+print(board.kb.create_task(board.conn, title='Build the customer record', body='Retain the approved scope', assignee='default',
+    tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked'))
+""", self.bot['id'], origin['id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._adopt_native_outcomes()
+        owner = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
+        import json
+        # A live board has already synchronized this binding before the block.
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])',
+                            json.dumps(self.service._kanban_row(owner, owner, 'ready', priority=10)))
+        self.native_program("board.kb.unblock_task(board.conn, sys.argv[2]); "
+                            "board.kb.block_task(board.conn, sys.argv[2], reason='Build space is below the limit', kind='capability')", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['block_kind'], 'capability')
+        with self.service.transaction():
+            owner = self.service._get('tasks', owner['id'])
+            owner.update(status='completed', _conversation_epoch=self.service._setting('conversation_epoch'))
+            self.service._put('tasks', owner)
+        self.service._reconcile_kanban()
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'completed')
+        with patch('coconut.native_outcomes.time.time', return_value=time.time() + 3600):
+            self.service._reconcile_kanban()
+        owner = self.service._get('tasks', owner['id'])
+        self.assertEqual(owner['status'], 'queued')
+        self.assertEqual(owner['_self_recovery']['blocked']['kind'], 'capability')
+        captured = []
+        original = self.provider.start_task
+        # The origin task can also dispatch. Capture only the owner's check turn.
+        self.provider.start_task = lambda task, bot, history, emit: (
+            task['id'] == owner['id'] and captured.append(task), original(task, bot, history, emit))
+        self.settle(lambda: captured and not (self.service.running.get(owner['id']) and self.service.running[owner['id']].is_alive()))
+        from coconut.hermes_worker import conversation_input
+        from coconut.work_recovery import BLOCKED_WORK_INSTRUCTIONS
+        self.assertIn(BLOCKED_WORK_INSTRUCTIONS, conversation_input(dict(operation='start', task=captured[0], history=[]))[0])
+        # Starting the check turn unblocks the task. The backoff survives until the turn ends.
+        self.assertEqual(self.service._get('tasks', owner['id'])['_block_check']['attempt'], 1)
+
     def test_native_work_status_does_not_follow_conversation_activity(self):
         origin = self.task('Discuss a pending outcome')
         identity = self.native_program("""
