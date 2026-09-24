@@ -301,7 +301,7 @@ def retire(root, identity, finished):
     """Archive and remove the worktree of one finished outcome. Return the archive path.
 
     The caller supplies `finished(wait)`. It returns True when the outcome is still finished.
-    With wait=False it must not wait for the service lock, and it raises ValueError when that lock is busy.
+    With wait=False it waits only briefly for the service lock, and it raises ValueError when that lock stays busy.
     Coconut calls it with wait=True before it takes the registry lock, and with wait=False under that lock.
     The Git, lsof, and archive work runs before the registry lock. Under the lock, Coconut only
     repeats the Git checks that do not wait for other processes.
@@ -364,7 +364,7 @@ def retire(root, identity, finished):
                     or sorted(ignored_files(path)) != sorted(name for arcname, name in entries if arcname.startswith(IGNORED))
                     or fingerprint(path, archived) != marks):
                 raise ValueError('The worktree changed during retirement.')
-            # A dispatch marks its task active before its worker takes this lock. Check the tasks without waiting.
+            # A dispatch marks its task active before its worker takes this lock. Check the tasks with a short wait.
             if not finished(False):
                 raise ValueError('The outcome resumed during retirement.')
             temporary.replace(archive)

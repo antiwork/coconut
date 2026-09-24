@@ -10,12 +10,14 @@ import subprocess
 import tarfile
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
 from coconut import work_workspace
+from coconut import worktree_retirement as retirement
 from coconut.providers import FixtureProvider
 from coconut.service import Service
 from coconut.work_workspace import acquire, git, preferred, save_bindings, validate_binding
@@ -407,6 +409,33 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(preferred(self.workspaces, outcome, verify=False), self.workspaces / outcome)
         (self.workspaces / 'worktrees.json').unlink()
         self.assertEqual(preferred(self.workspaces, outcome, verify=False), self.workspaces / outcome)
+
+    def test_a_briefly_busy_service_does_not_stop_retirement(self):
+        _, identity, path, _ = self.outcome()
+        entered, held = threading.Event(), threading.Event()
+        finished = self.service._finished_outcomes
+        def watched(current, *, timeout=-1, only=None):
+            # The final check under the registry lock runs with a short timeout.
+            if only is not None and timeout != retirement.SERVICE_WAIT_SECONDS:
+                entered.set()
+            return finished(current, timeout=timeout, only=only)
+        original = work_workspace.check_worktree
+        def check(*arguments, **options):
+            result = original(*arguments, **options)
+            if options.get('processes') is False:
+                def hold():
+                    with self.service.lock:
+                        held.set()
+                        # Release the lock only after the final check starts to wait for it.
+                        entered.wait(5)
+                        time.sleep(.05)
+                threading.Thread(target=hold, daemon=True).start()
+                held.wait(5)
+            return result
+        with patch.object(self.service, '_finished_outcomes', side_effect=watched), \
+                patch('coconut.work_workspace.check_worktree', side_effect=check):
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
 
     def test_a_busy_service_is_not_awaited_under_the_registry_lock(self):
         _, identity, path, _ = self.outcome()
