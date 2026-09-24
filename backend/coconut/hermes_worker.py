@@ -599,7 +599,8 @@ def conversation_input(request):
                      'If body_withheld or title_withheld is true, the author is not an owner, member, or collaborator, or is a bot account, '
                      'or no operator owns the repository. '
                      'Coconut withholds that text. Read it on GitHub if you need it.')
-    partial = [item['url'] for item in observed if item.get('incomplete') or item.get('omitted_items')]
+    partial = [item['url'] for item in observed if item.get('incomplete') or item.get('omitted_items')
+               or any(entry.get('truncated') for entry in item.get('new_activity') or [])]
     if partial:
         prompt += ('\nCoconut did not show all new activity for these GitHub threads: ' + ', '.join(partial)
                    + '. Read the rest of each thread yourself before you act.')

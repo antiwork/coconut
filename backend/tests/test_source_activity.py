@@ -308,13 +308,45 @@ class SourceActivityTests(unittest.TestCase):
                     self.service._pr_tracker_for(self.bot['id'])
                     self.assertEqual(login.call_count, 2)
 
-    def test_decision_lookup_reads_only_the_newest_decisions(self):
+    def test_decision_lookup_skips_hidden_cards_and_keeps_older_links(self):
         with self.service.transaction():
+            # An older visible card links a thread. Newer cards are hidden or link nothing.
+            self.service._put('decisions', dict(id='older', task_id=self.task['id'], created_at='2026-09-23T10:00:00Z',
+                sources=[dict(kind='issue', title='Older', url='https://github.com/example/project/issues/77')]))
             for number in range(25):
-                self.service._put('decisions', dict(id=f'decision-{number}', task_id=self.task['id']))
+                self.service._put('decisions', dict(id=f'newer-{number}', task_id=self.task['id'], _hidden=number % 2 == 0))
         rows = self.service.db.execute(decision_sources.TASK_DECISIONS.format('?'), (self.task['id'],)).fetchall()
-        self.assertEqual(len(rows), 20)
-        self.assertIn('decision-24', rows[0][0])
+        self.assertNotIn('"_hidden": true', ' '.join(row[0] for row in rows))
+        tracker = ThreadTracker(self.service)
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            activity, _ = decision_sources.read_source_activity(self.service, self.task['id'])
+        self.assertIn('https://github.com/example/project/issues/77', [a['url'] for a in activity])
+
+    def test_trust_covers_configured_repositories_not_whole_owners(self):
+        trusted = {'acme/app'}
+        self.assertTrue(decision_sources.operator_repository('https://github.com/Acme/App/issues/1', trusted))
+        self.assertFalse(decision_sources.operator_repository('https://github.com/acme/other/issues/1', trusted))
+        self.assertTrue(decision_sources.operator_repository('https://github.com/acme/other/pull/2', trusted | {'acme'}))
+
+    def test_same_second_items_keep_their_record(self):
+        class SameSecond:
+            _token = 'token'
+            def observe_issue_activity(self, url, since, deadline, operator):
+                return dict(updated_at=since, observed_at=since, title='T', new_activity=[dict(kind='comment', body='New.')],
+                            omitted_items=0, incomplete=False)
+        with self.service.transaction():
+            task = self.service._get('tasks', self.task['id'])
+            task['_source_assignment'] = dict(source_id='github', id=URL, updated_at='2026-09-23T12:10:00Z')
+            self.service._put('tasks', task)
+        with patch.object(self.service, '_pr_tracker_for', return_value=SameSecond()):
+            activity, _ = decision_sources.read_source_activity(self.service, self.task['id'])
+        self.assertEqual(activity[0]['new_activity'], [dict(kind='comment', body='New.')])
+
+    def test_truncated_text_tells_the_bot_to_read_the_rest(self):
+        task = dict(self.service._get('tasks', self.task['id']), _source_activity=[dict(
+            url=URL, updated_at='2026-09-23T12:10:00Z', new_activity=[dict(kind='comment', body='x' * 1500, truncated=True)])])
+        prompt = conversation_input(dict(operation='start', task=task, history=[]))[0]
+        self.assertIn('Coconut did not show all new activity for these GitHub threads: ' + URL, prompt)
 
     def test_activity_after_the_thread_read_is_recorded_as_seen(self):
         self.approve_card()

@@ -147,17 +147,19 @@ def _issue_url(url):
 
 SOURCE_READ_SECONDS = 6
 # The decisions_task index uses the same expression. Keep the two the same.
-# Only the first three links matter, so the newest twenty decisions are sufficient.
-TASK_DECISIONS = "SELECT data FROM decisions WHERE json_extract(data,'$.task_id') IN ({}) ORDER BY rowid DESC LIMIT 20"
+# The reader stops once it has enough links, so the newest decisions come first.
+TASK_DECISIONS = ("SELECT data FROM decisions WHERE json_extract(data,'$.task_id') IN ({}) "
+                  "AND json_extract(data,'$._hidden') IS NULL AND json_extract(data,'$._deleted') IS NULL ORDER BY rowid DESC")
 
 
 def operator_owners(service):
-    """Return the GitHub owners whose repositories the operator uses.
+    """Return the trusted GitHub owners and repositories, in lowercase.
 
-    A repository role is trusted only in these repositories. The owners come
-    from configured work-source assignments and the optional
-    COCONUT_GITHUB_TRUSTED_OWNERS list (comma-separated). A bot can track any
-    PR, so tracked PRs do not make an owner trusted.
+    A repository role is trusted only in these repositories. They come from
+    configured work-source assignments (the exact owner/repo) and the optional
+    COCONUT_GITHUB_TRUSTED_OWNERS list, which accepts owner or owner/repo
+    entries (comma-separated). A bot can track any PR, so tracked PRs do not
+    make a repository trusted.
     """
     import os
     owners = {owner.strip().lower() for owner in os.environ.get('COCONUT_GITHUB_TRUSTED_OWNERS', '').split(',') if owner.strip()}
@@ -168,8 +170,14 @@ def operator_owners(service):
     for (url,) in rows:
         source = github_source(url)
         if source:
-            owners.add(source[1].split('/')[0].lower())
+            owners.add('/'.join(source[1].split('/')[:2]).lower())
     return owners
+
+
+def operator_repository(url, trusted):
+    """Return True when the configured owners or repositories include the repository of `url`."""
+    owner, repo = github_source(url)[1].split('/')[:2]
+    return owner.lower() in trusted or f'{owner}/{repo}'.lower() in trusted
 
 
 def read_source_activity(service, task_id, limit=3):
@@ -185,7 +193,16 @@ def read_source_activity(service, task_id, limit=3):
         assignment = service._assignment(task)
         identities = list(dict.fromkeys((task['id'], assignment['id'])))
         rows = service.db.execute(TASK_DECISIONS.format(','.join('?' for _ in identities)), identities)
-        decisions = [d for d in (json.loads(row[0]) for row in rows) if not d.get('_hidden') and not d.get('_deleted')]
+        decisions, distinct = [], set()
+        for (data,) in rows:
+            decision = json.loads(data)
+            if decision.get('_hidden') or decision.get('_deleted'):
+                continue
+            decisions.append(decision)
+            distinct |= {_issue_url(url).lower() for url in github_links(decision)}
+            # Read only as many cards as the link limit needs.
+            if len(distinct) >= limit:
+                break
         if task.get('_resume_decision'):
             resumed = service._get('decisions', task['_resume_decision'])
             decisions = [resumed] + [d for d in decisions if d['id'] != resumed['id']]
@@ -233,7 +250,7 @@ def read_source_activity(service, task_id, limit=3):
         if tracker is not None and time.monotonic() < deadline:
             try:
                 current = tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline,
-                                                         operator=github_source(url)[1].split('/')[0].lower() in operators)
+                                                         operator=operator_repository(url, operators))
             except Exception:
                 current = None
         if not isinstance(current, dict) or not isinstance(current.get('updated_at'), str):
@@ -241,7 +258,9 @@ def read_source_activity(service, task_id, limit=3):
             continue
         observed = current.get('observed_at')
         seen[key] = observed if isinstance(observed, str) and observed > current['updated_at'] else current['updated_at']
-        if since is None or current['updated_at'] > since:
+        # Items at the recorded second can be new although the thread time did not move.
+        if (since is None or current['updated_at'] > since or current.get('new_activity')
+                or current.get('incomplete') or current.get('changed_without_new_activity')):
             activity.append(dict(url=url, since=since, **{k: current.get(k) for k in (
                 'state', 'state_reason', 'title', 'title_withheld', 'updated_at', 'new_activity', 'omitted_items', 'incomplete',
                 'changed_without_new_activity') if k in current}))
