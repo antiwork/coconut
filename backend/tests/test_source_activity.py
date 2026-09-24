@@ -371,6 +371,14 @@ class SourceActivityTests(unittest.TestCase):
         self.assertNotIn(other, self.service._profile_trackers)
         self.assertEqual(len(self.service._profile_trackers), 1)
 
+    def test_operator_owner_lookup_uses_indexes(self):
+        plan = ' '.join(str(row) for row in self.service.db.execute(
+            "EXPLAIN QUERY PLAN SELECT DISTINCT json_extract(data,'$.url') FROM artifacts WHERE json_extract(data,'$.kind')='pr' "
+            "UNION SELECT DISTINCT json_extract(data,'$._source_assignment.id') FROM tasks "
+            "WHERE json_extract(data,'$._source_assignment.id') IS NOT NULL").fetchall())
+        self.assertIn('artifacts_kind', plan)
+        self.assertIn('tasks_source_assignment', plan)
+
     def test_decision_lookup_uses_the_task_index(self):
         plan = ' '.join(str(row) for row in self.service.db.execute(
             'EXPLAIN QUERY PLAN ' + decision_sources.TASK_DECISIONS.format('?,?'), ('one', 'two')))
