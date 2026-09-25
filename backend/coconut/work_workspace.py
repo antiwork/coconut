@@ -425,11 +425,17 @@ def remove_nested(root, path, repository, *, check_only=False):
         status = [entry for entry in git_output(inner, 'status', '--porcelain', '-z', '-uall', strict=True).split(b'\0')
                   if entry and not (entry.startswith(b'?? ') and entry.endswith(b'/')
                                     and (inner / os.fsdecode(entry[3:-1])).resolve() in others)]
-        if (status or ignored_files(inner)
+        try:
+            ignored = ignored_files(inner)
+        except ValueError as error:
+            # Name the nested checkout, so an operator can find the file.
+            raise ValueError(f'The nested worktree {inner} cannot be removed: {error}') from None
+        if (status or ignored
                 or any(Path(p).exists() for p in git_paths.splitlines())):
             raise ValueError('The worktree contains another worktree with changes.')
         head = git(inner, 'rev-parse', 'HEAD')
-        if not record['branch'] and not git(repository, 'for-each-ref', '--contains', head, '--count=1', '--format=%(refname)'):
+        if not record['branch'] and not git(repository, 'for-each-ref', '--contains', head, '--count=1', '--format=%(refname)',
+                                            timeout=CHECKOUT_SECONDS):
             raise ValueError('The worktree contains another worktree with a commit that no ref holds.')
 
     def tracked():
