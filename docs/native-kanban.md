@@ -275,3 +275,25 @@ recovery branch; the held receipt is marked `superseded` only after the new
 request validates. A partially applied checkout instead replays its recorded request
 or stays held for manual inspection. Staged edits, merge conflicts and Git
 versions without `merge-tree --write-tree` require separate manual resolution.
+
+## Native sessions
+
+Each bot keeps one open chat session. Hermes compression continues it in a new session, and resume follows that
+chain. After each turn, Coconut records the newest session in Hermes `state_meta` (`coconut.session-tip.<root>`).
+The next turn starts from it, so a prune of older ended sessions in the chain does not break the chat.
+
+Each outcome has its own work session. Once an hour, with worktree retirement, Coconut runs one Hermes script per bot:
+
+1. It records the newest session of each chat and of each work conversation updated in the last 30 days. A prune can remove the ended
+   compression ancestors of an open chain, so this runs before any prune, also on the first run of an existing install.
+2. It ends the newest session of each idle outcome with Hermes `end_session` and the reason `coconut_idle`.
+   It checks again that the outcome is idle just before each bot. It never ends a chat session.
+3. With Hermes `prune_sessions`, it deletes idle work sessions (`coconut_idle`) inactive for `SESSION_RETENTION_DAYS` (7),
+   and other ended `coconut` sessions, such as compressed parts of a chat, inactive for `SESSION_HISTORY_DAYS` (30).
+   So native `session_search` finds a month of chat history. Sessions of other sources, such as cron or CLI, keep the profile's own Hermes settings.
+4. At most once a week, it runs Hermes `vacuum`. The free-page test decides, so a VACUUM that a holder deferred runs later. It needs more than a quarter of the file free, as Hermes
+   requires, no running worker and no active or queued task for the bot, and no other process holding the store.
+
+When an idle outcome resumes, Coconut reopens its session with `reopen_session`. If Hermes has already deleted it,
+Coconut seeds a new session from its own saved messages of every task in that work. The native card keeps the work record.
+Coconut does not change Hermes. It uses only these `SessionDB` methods and the `hermes_state_holders` checks, which the Hermes contract check requires.

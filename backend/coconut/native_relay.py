@@ -31,9 +31,9 @@ class NativeRelay:
         from utils import atomic_yaml_write
         from tools.bot_mode_probe import BOT_CHAT_TITLE
         if __package__:
-            from .native_conversation import session_root
+            from .native_conversation import resume_session, session_root
         else:
-            from native_conversation import session_root
+            from native_conversation import resume_session, session_root
         path = self.home / 'profile.yaml'
         meta = (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
         ui = dict(meta.get('ui_meta') or {})
@@ -42,8 +42,10 @@ class NativeRelay:
         atomic_yaml_write(self.home / 'profile.yaml', meta, sort_keys=False)
         conversation.db.create_session(conversation.session_id, source='coconut', model=self.request['model'])
         # Hermes reserves one Bot Chat per profile. Restarts preserve that conversation.
-        canonical = conversation.db.resolve_session_by_title(BOT_CHAT_TITLE) or self.request['bot']['session_id']
-        canonical = conversation.db.resolve_resume_session_id(canonical)
+        # A prune of older ended sessions can remove the titled one. The recorded chat tip keeps the anchor.
+        titled = conversation.db.resolve_session_by_title(BOT_CHAT_TITLE)
+        canonical = (conversation.db.resolve_resume_session_id(titled) if titled
+                     else resume_session(conversation.db, self.request['bot']['session_id']))
         conversation.db.create_session(canonical, source='coconut', model=self.request['model'])
         conversation.db.set_session_title(canonical, BOT_CHAT_TITLE)
         if conversation.session_id != canonical:
