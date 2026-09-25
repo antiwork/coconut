@@ -246,7 +246,7 @@ def elapsed_seconds(value):
     return (int(days) if days else 0) * 86400 + seconds
 
 
-def processes():
+def process_table():
     """Return each process ID with its parent ID and its age in seconds."""
     try:
         result = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,etime='], capture_output=True, text=True, timeout=60)
@@ -301,12 +301,12 @@ def stop_orphans(found, outcome, age):
     An orphan is a process that launchd (PID 1) adopted after its parent ended. launchd also starts apps and agents.
     So Coconut stops only a process whose environment names the outcome in COCONUT_WORKSPACE_OUTCOME.
     The worker of each turn sets this variable, and the processes of the turn inherit it.
-    When the system does not show the environment of a process, as macOS 27 does not, Coconut does not stop it.
+    When the system does not show the environment of a process, for example a macOS platform binary, Coconut does not stop it.
     A process that does not end after SIGTERM gets SIGKILL.
     """
     if not found:
         return set()
-    table = processes()
+    table = process_table()
     mark = 'COCONUT_WORKSPACE_OUTCOME=' + outcome
     owned = lambda pid: pid != os.getpid() and environment_names(pid, mark)
     stopped = {pid for pid in found if pid in table and table[pid][0] == 1 and table[pid][1] >= age and owned(pid)}
@@ -315,9 +315,10 @@ def stop_orphans(found, outcome, age):
         if not children:
             break
         stopped |= children
-    if stopped:
-        stop(stop(stopped, signal.SIGTERM, STOP_SECONDS), signal.SIGKILL, 1)
-    return stopped
+    if not stopped:
+        return set()
+    # A process that survives SIGKILL, or that Coconut cannot signal, still uses the worktree.
+    return stopped - stop(stop(stopped, signal.SIGTERM, STOP_SECONDS), signal.SIGKILL, 1)
 
 
 def check_worktree(path, binding, repository, *, processes=True, orphan_age=None):

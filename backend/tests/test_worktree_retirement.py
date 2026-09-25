@@ -6,7 +6,9 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -27,10 +29,13 @@ RECENT = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
 def environments_visible():
-    """Return True when this system shows another process's environment. macOS 27 does not."""
+    """Return True when this system shows another process's environment.
+
+    macOS hides the environment of its platform binaries, such as /bin/sleep, so the probe runs this Python.
+    """
     if not shutil.which('lsof') or os.uname().sysname != 'Darwin':
         return False
-    process = subprocess.Popen(['sleep', '5'], env=dict(os.environ, COCONUT_PROBE='1'))
+    process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(5)'], env=dict(os.environ, COCONUT_PROBE='1'))
     try:
         return work_workspace.environment_names(process.pid, 'COCONUT_PROBE=1')
     finally:
@@ -159,7 +164,7 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertNotIn('retired', self.registry()[identity])
 
     def test_active_recent_running_locked_and_claimed_native_outcomes_keep_their_worktrees(self):
-        kept = [self.outcome(status=status) for status in ('queued', 'working', 'waiting')]
+        kept = [self.outcome(status=status) for status in retirement.ACTIVE_STATUSES]
         kept.append(self.outcome(updated_at=RECENT))
         running = self.outcome()
         self.service.running[running[3]['id']] = SimpleNamespace()
@@ -179,6 +184,10 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.assertEqual((path / 'draft.txt').read_text(), 'in progress\n')
             self.assertNotIn('retired', self.registry()[identity])
         self.assertFalse((self.workspaces / 'archive' / (locked[1] + '.tar.gz')).exists())
+
+    def test_active_statuses_are_the_service_statuses_that_do_not_wait_for_a_person(self):
+        # A new active status must keep its worktree. This test fails until retirement lists it.
+        self.assertEqual(set(retirement.ACTIVE_STATUSES), Service.ACTIVE - {'needs_you', 'paused'})
 
     def test_idle_outcomes_that_wait_or_failed_retire_and_return_with_their_changes(self):
         idle = [self.outcome(status=status) for status in ('failed', 'paused', 'needs_you')]
@@ -665,8 +674,8 @@ class WorktreeRetirementTests(unittest.TestCase):
     def orphan(self, path, outcome=None):
         """Start a process in the path whose parent ends at once, so that launchd adopts it."""
         env = dict(os.environ, COCONUT_WORKSPACE_OUTCOME=outcome) if outcome else None
-        started = subprocess.run(['sh', '-c', 'sleep 60 >/dev/null 2>&1 & echo $!'], cwd=path, env=env,
-                                 capture_output=True, text=True, check=True)
+        command = f'{shlex.quote(sys.executable)} -c "import time; time.sleep(60)" >/dev/null 2>&1 & echo $!'
+        started = subprocess.run(['sh', '-c', command], cwd=path, env=env, capture_output=True, text=True, check=True)
         pid = int(started.stdout)
         self.addCleanup(lambda: subprocess.run(['kill', str(pid)], capture_output=True))
         return pid

@@ -56,7 +56,7 @@ The service keeps the registry under `workspaces/worktrees.json`.
 Coconut retains these worktrees after a turn ends. It does not delete uncommitted work.
 
 Once an hour, the work source poller retires the worktrees of idle outcomes.
-An outcome is idle when no Coconut task of its execution is queued, working, or waiting.
+An outcome is idle when no Coconut task of its execution is queued, working, scheduled, or waiting.
 It also has no running worker and no pending background process.
 Its native task, if one exists, is not running or ready.
 Its tasks have had no update for `WORKTREE_RETIRE_SECONDS` (six hours).
@@ -72,7 +72,8 @@ Retirement does these steps:
    An orphan is a process that launchd (PID 1) adopted, and that is older than `ORPHAN_AGE_SECONDS` (six hours).
    A service restart leaves such processes from earlier turns. launchd also starts apps and agents,
    so Coconut stops only a process whose environment has `COCONUT_WORKSPACE_OUTCOME` set to the outcome.
-   The worker of each turn sets this variable. If the system hides process environments, as macOS 27 does, Coconut stops nothing.
+   The worker of each turn sets this variable. If the system hides the environment of a process, Coconut does not stop it.
+   macOS hides it for its platform binaries, such as `/bin/sleep`.
    It sends `SIGTERM`, waits at most 5 seconds, and then sends `SIGKILL`.
 4. It writes `workspaces/archive/<registry key>.tar.gz` with mode 0600. The archive contains these items:
    - `staged.patch` from `git diff --binary --cached HEAD`.
