@@ -466,25 +466,39 @@ def occupied(path):
     return path.exists() and (not path.is_dir() or any(path.iterdir()))
 
 
-def archived_marks(path, archive):
-    """Return the fingerprint of the archived files when the checkout holds each one. Otherwise return None.
+def checkout_marks(path, names):
+    """Fingerprint archived paths, retaining missing entries so a finishing restore is visible."""
+    result = []
+    for name in sorted(names):
+        try:
+            status = os.lstat(path / name)
+        except (FileNotFoundError, NotADirectoryError):
+            result.append((name, None))
+        else:
+            result.append((name, status.st_ino, status.st_size, status.st_mtime_ns,
+                           status.st_ctime_ns, stat.S_IFMT(status.st_mode)))
+    return result
 
-    Coconut takes the fingerprint before it reads the files. A write during the comparison then changes it.
-    """
+
+def archived_marks(path, archive):
+    """Return (matching fingerprint or None, starting fingerprint) for archived files."""
     with tarfile.open(archive) as tar:
         members = list(archived_members(tar))
-        # A missing file raises OSError. compare_checkouts then records no fingerprint for the binding.
-        marks = fingerprint(path, [name for _, name in members])
+        names = [name for _, name in members]
+        marks = checkout_marks(path, names)
+        if any(len(mark) == 2 for mark in marks):
+            # A file appearing during comparison must not make a missing starting file look intact.
+            return None, marks
         for member, name in members:
             target = path / name
             if member.issym():
                 if not target.is_symlink() or os.readlink(target) != member.linkname:
-                    return None
+                    return None, marks
             elif (not target.is_file() or target.is_symlink() or target.stat().st_size != member.size
                     or path_digest(target) != file_digest(tar.extractfile(member))):
                 # Same size is not enough. Compare the contents with the archived copy.
-                return None
-    return marks
+                return None, marks
+    return marks, marks
 
 
 def compare_checkouts(bindings):
@@ -527,16 +541,21 @@ def unpack(binding, checked):
         # compare_checkouts read the files without the lock. Here Coconut compares only their fingerprint.
         key = json.dumps(binding, sort_keys=True)
         if key not in checked:
-            # The checkout appeared or the binding changed after compare_checkouts. Compare the files
-            # under the lock, so that a valid checkout from an interrupted restore is not refused.
+            # A checkout appeared or the binding changed since the unlocked read.
             checked = compare_checkouts([binding])
-        marks = checked.get(key)
+        elif checked[key] is not None:
+            match, starting = checked[key]
+            if match is None and checkout_marks(path, [name for name, *_ in starting]) != starting:
+                # A partial checkout finished after comparison; retry only when its files changed.
+                checked = compare_checkouts([binding])
+        record = checked.get(key)
+        marks = record[0] if record is not None else None
         try:
             validate_binding(dict(binding))
             intact = (marks is not None
                       and git(path, 'rev-parse', 'HEAD') == retired['head']
                       and changes_digest(*changes(path)) == retired['changes']
-                      and fingerprint(path, [name for name, *_ in marks]) == marks)
+                      and checkout_marks(path, [name for name, *_ in marks]) == marks)
         except GIT_ERRORS:
             intact = False
         if not intact:

@@ -690,6 +690,68 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertFalse(archive.exists())
         self.assertEqual((path / '.env').read_text(), 'SECRET=local\n')
 
+    def test_an_incomplete_checkout_that_finishes_after_comparison_is_rechecked(self):
+        outcome, identity, path, archive = self.remaining_checkout()
+        (path / '.env').unlink()
+        original, calls = work_workspace.compare_checkouts, []
+        def finish(bindings):
+            result = original(bindings)
+            if not calls:
+                record = result[json.dumps(self.registry()[identity], sort_keys=True)]
+                self.assertIsNone(record[0] if isinstance(record, tuple) else record)
+                (path / '.env').write_text('SECRET=local\n')
+            calls.append(result)
+            return result
+        with patch('coconut.work_workspace.compare_checkouts', side_effect=finish):
+            self.assertEqual(acquire(self.workspaces, outcome, str(self.repo))['path'], str(path))
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn('retired', self.registry()[identity])
+        self.assertFalse(archive.exists())
+
+    def test_a_stable_mismatch_does_not_recompare_under_the_lock(self):
+        outcome, identity, path, archive = self.remaining_checkout()
+        (path / '.env').write_text('SECRET=other\n')
+        original, held = work_workspace.path_digest, []
+        def digest(target):
+            with (self.workspaces / '.workspace.lock').open('a') as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    held.append(False)
+                except BlockingIOError:
+                    held.append(True)
+            return original(target)
+        with patch('coconut.work_workspace.path_digest', side_effect=digest):
+            with self.assertRaisesRegex(ValueError, 'could not restore'):
+                acquire(self.workspaces, outcome, str(self.repo))
+        self.assertTrue(held)
+        self.assertNotIn(True, held)
+        self.assertTrue(archive.exists())
+        self.assertIn('restore_failed', self.registry()[identity]['retired'])
+
+    def test_missing_archived_file_during_comparison_never_deletes_archive(self):
+        outcome, identity, path, archive = self.remaining_checkout()
+        (path / '.env').unlink()
+        original, appeared = work_workspace.checkout_marks, []
+        compare = work_workspace.compare_checkouts
+        def appear_after_snapshot(root, names):
+            marks = original(root, names)
+            if not appeared:
+                self.assertIn(('.env', None), marks)
+                (path / '.env').write_text('SECRET=local\n')
+                appeared.append(True)
+            return marks
+        def disappear_after_comparison(bindings):
+            result = compare(bindings)
+            (path / '.env').unlink(missing_ok=True)
+            return result
+        with patch('coconut.work_workspace.checkout_marks', side_effect=appear_after_snapshot), \
+             patch('coconut.work_workspace.compare_checkouts', side_effect=disappear_after_comparison):
+            with self.assertRaisesRegex(ValueError, 'could not restore'):
+                acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(appeared, [True])
+        self.assertTrue(archive.exists())
+        self.assertIn('restore_failed', self.registry()[identity]['retired'])
+
     def commit_on_branch(self, branch):
         tree = git(self.repo, 'rev-parse', branch + '^{tree}')
         commit = git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
