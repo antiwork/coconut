@@ -665,7 +665,7 @@ final class AppStore {
         let _: Acknowledgement? = await write("work/items/\(item.artifact.id)/resume", payload: EmptyRequest(), as: Acknowledgement.self)
     }
 
-    func checkoutRecoveryPreview(_ item: TrackedWorkItem) async throws -> CheckoutRecoveryPreview {
+    func checkoutRecoveryPreview(_ item: TrackedWorkItem) async throws -> CheckoutRecoveryCheck {
         guard !isDemo, let work = item.checkoutRecoveryWork, let taskId = work.taskId,
               let pairing, let token = PairingToken.read() else {
             throw ServiceError.configuration("Pair with your Mac to check this task.")
@@ -677,16 +677,42 @@ final class AppStore {
               artifacts.first(where: { $0.id == work.id })?.workState == "cancelled" else {
             throw ServiceError.configuration("This task changed. Check it again.")
         }
-        return preview
+        return CheckoutRecoveryCheck(preview: preview, pairing: CheckoutRecoveryPairing(
+            deviceId: pairing.deviceId, serverURL: pairing.serverURL, fingerprint: pairing.fingerprint))
     }
 
-    func confirmCheckoutRecovery(_ confirmation: CheckoutRecoveryConfirmation) async -> String? {
-        var failure: String?
+    func confirmCheckoutRecovery(_ confirmation: CheckoutRecoveryConfirmation) async -> CheckoutRecoveryConfirmationResult {
+        guard let pairing, confirmation.matches(pairing: CheckoutRecoveryPairing(
+            deviceId: pairing.deviceId, serverURL: pairing.serverURL, fingerprint: pairing.fingerprint)),
+              PairingToken.read() != nil else {
+            return .rejected("The pairing changed. Check the task again.")
+        }
+        var failure: CheckoutRecoveryConfirmationResult?
         let receipt: CheckoutRecoveryReceipt? = await write("maintenance/checkout-recovery", payload: confirmation.request,
             as: CheckoutRecoveryReceipt.self, idempotencyKey: confirmation.key,
-            onFailure: { failure = $0.localizedDescription })
-        guard receipt != nil else { return failure ?? "Recovery was not confirmed. Check the task and try again." }
-        return nil
+            expectedPairing: confirmation.pairing,
+            onFailure: { failure = CheckoutRecoveryConfirmationResult.classify(error: $0) })
+        guard let current = self.pairing, confirmation.matches(pairing: CheckoutRecoveryPairing(
+            deviceId: current.deviceId, serverURL: current.serverURL, fingerprint: current.fingerprint)) else {
+            return .rejected("The pairing changed. Check the task again.")
+        }
+        if let receipt { return .classify(receipt: receipt) }
+        return failure ?? .uncertain("Recovery was not confirmed. Retry the same confirmation to check it.")
+    }
+
+    func recordCheckoutRecoveryResult(_ result: CheckoutRecoveryConfirmationResult,
+                                      for confirmation: CheckoutRecoveryConfirmation) {
+        guard checkoutConfirmation?.key == confirmation.key,
+              checkoutConfirmation?.pairing == confirmation.pairing else { return }
+        switch result {
+        case .accepted:
+            requestedCheckoutRecoveryTaskIds.insert(confirmation.request.taskId)
+            checkoutConfirmation = nil
+        case .rejected:
+            checkoutConfirmation = nil
+        case .uncertain:
+            checkoutConfirmation?.markUncertain()
+        }
     }
 
     @discardableResult
@@ -1198,8 +1224,18 @@ final class AppStore {
         return result?.ok == true
     }
 
-    private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, refreshInBackground: Bool = false, idempotencyKey: String? = nil, onFailure: ((Error) -> Void)? = nil, onSuccess: ((Response) -> Void)? = nil) async -> Response? {
+    private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, refreshInBackground: Bool = false, idempotencyKey: String? = nil, expectedPairing: CheckoutRecoveryPairing? = nil, onFailure: ((Error) -> Void)? = nil, onSuccess: ((Response) -> Void)? = nil) async -> Response? {
+        if let expectedPairing,
+           pairing.map({ CheckoutRecoveryPairing(deviceId: $0.deviceId, serverURL: $0.serverURL,
+                                                 fingerprint: $0.fingerprint) }) != expectedPairing {
+            onFailure?(ServiceError.configuration("The pairing changed. Check the task again."))
+            return nil
+        }
         guard let pairing, let token = PairingToken.read() else {
+            if expectedPairing != nil {
+                onFailure?(ServiceError.configuration("Pair with your Mac and check the task again."))
+                return nil
+            }
             if !quiet { error = "Pair with your Mac in Settings to continue." }
             return nil
         }

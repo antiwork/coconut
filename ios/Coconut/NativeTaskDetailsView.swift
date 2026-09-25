@@ -23,13 +23,26 @@ struct CheckoutRecoveryPreview: Decodable, Sendable {
     let dirtyCount: Int
 }
 
+struct CheckoutRecoveryPairing: Equatable, Sendable {
+    let deviceId: String
+    let serverURL: String
+    let fingerprint: String
+}
+
+struct CheckoutRecoveryCheck: Sendable {
+    let preview: CheckoutRecoveryPreview
+    let pairing: CheckoutRecoveryPairing
+}
+
 struct CheckoutRecoveryConfirmation: Sendable {
     let key: String
     let request: CheckoutRecoveryRequest
+    let pairing: CheckoutRecoveryPairing
     private(set) var isUncertain = false
 
-    init(preview: CheckoutRecoveryPreview) {
+    init(preview: CheckoutRecoveryPreview, pairing: CheckoutRecoveryPairing) {
         key = preview.key
+        self.pairing = pairing
         var request = preview.request
         request.resumeConsent = preview.resumeConsent
         request.resumeConfirmed = true
@@ -37,10 +50,52 @@ struct CheckoutRecoveryConfirmation: Sendable {
     }
 
     mutating func markUncertain() { isUncertain = true }
+
+    func matches(pairing: CheckoutRecoveryPairing) -> Bool { self.pairing == pairing }
 }
 
 struct CheckoutRecoveryReceipt: Decodable, Sendable {
     let state: String
+    let error: String?
+}
+
+enum CheckoutRecoveryAcceptedState: String, Equatable, Sendable {
+    case accepted, draining, applied
+}
+
+enum CheckoutRecoveryConfirmationResult: Equatable, Sendable {
+    case accepted(CheckoutRecoveryAcceptedState)
+    case rejected(String)
+    case uncertain(String)
+
+    var failureReason: String? {
+        switch self {
+        case .accepted: return nil
+        case .rejected(let reason), .uncertain(let reason): return reason
+        }
+    }
+
+    static func classify(receipt: CheckoutRecoveryReceipt) -> Self {
+        if let state = CheckoutRecoveryAcceptedState(rawValue: receipt.state) { return .accepted(state) }
+        switch receipt.state {
+        case "held": return .rejected(receipt.error.flatMap { $0.isEmpty ? nil : $0 }
+                                      ?? "The Mac held this recovery request. Check the task again.")
+        case "superseded": return .rejected(receipt.error ?? "This recovery request was superseded. Check the task again.")
+        default: return .uncertain("The Mac returned an unrecognized recovery state. Retry the same confirmation to check it.")
+        }
+    }
+
+    static func classify(error: Error) -> Self {
+        if let serviceError = error as? ServiceError {
+            switch serviceError {
+            case .response(let status, let message) where (300..<500).contains(status): return .rejected(message)
+            case .configuration(let message): return .rejected(message)
+            case .keychain: return .rejected(error.localizedDescription)
+            default: break
+            }
+        }
+        return .uncertain(error.localizedDescription)
+    }
 }
 
 struct TrackedPullRequest: Identifiable {
@@ -130,7 +185,7 @@ struct NativeTaskDetailsView: View {
     @State private var cancelling: Set<String> = []
     @State private var error: String?
     @State private var taskToStop: TrackedWorkItem?
-    @State private var recovery: CheckoutRecoveryPreview?
+    @State private var recovery: CheckoutRecoveryCheck?
     @State private var confirming = false
     @State private var recovering: Set<String> = []
 
@@ -144,14 +199,9 @@ struct NativeTaskDetailsView: View {
         guard let confirmation, !confirming else { return }
         confirming = true
         Task {
-            let failure = await store.confirmCheckoutRecovery(confirmation)
-            if failure == nil {
-                store.requestedCheckoutRecoveryTaskIds.insert(confirmation.request.taskId)
-                store.checkoutConfirmation = nil
-            } else {
-                store.checkoutConfirmation?.markUncertain()
-            }
-            error = failure
+            let result = await store.confirmCheckoutRecovery(confirmation)
+            store.recordCheckoutRecoveryResult(result, for: confirmation)
+            error = result.failureReason
             confirming = false
         }
     }
@@ -231,23 +281,23 @@ struct NativeTaskDetailsView: View {
         } message: { _ in
             Text("The Mac records the stop request. An action already executing can finish before it stops.")
         }
-        .alert(confirmation == nil ? "Request not confirmed" : "Recovery confirmation uncertain",
+        .alert(confirmation?.isUncertain == true ? "Recovery confirmation uncertain" : "Request not confirmed",
                isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
-            if confirmation != nil {
+            if confirmation?.isUncertain == true {
                 Button("Retry same confirmation") { error = nil; retryConfirmation() }
                 Button("Later", role: .cancel) { error = nil }
             } else {
                 Button("OK") { error = nil }
             }
-        } message: { Text(confirmation == nil ? (error ?? "") :
+        } message: { Text(confirmation?.isUncertain != true ? (error ?? "") :
             "The Mac may have accepted this request. Retry uses the same confirmation and key. \(error ?? "")") }
         .alert("Recover this checkout?", isPresented: Binding(
             get: { recovery != nil }, set: { if !$0 { recovery = nil } })) {
             Button("Not now", role: .cancel) { recovery = nil }
             Button("Recover checkout") {
-                guard let preview = recovery, confirmation == nil else { return }
+                guard let check = recovery, confirmation == nil else { return }
                 recovery = nil
-                store.checkoutConfirmation = CheckoutRecoveryConfirmation(preview: preview)
+                store.checkoutConfirmation = CheckoutRecoveryConfirmation(preview: check.preview, pairing: check.pairing)
                 retryConfirmation()
             }.disabled(confirmation != nil).accessibilityIdentifier("confirm-checkout-recovery")
         } message: {
