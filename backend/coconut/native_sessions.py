@@ -32,8 +32,9 @@ def maintain(request):
        chain from the root, so this must happen before any prune.
     2. End the newest session of each idle outcome. Coconut never ends a chat.
     3. Prune ended Coconut sessions inactive for `retention_days`. Other sources keep the profile's own settings.
-    4. VACUUM after a prune, at most once a week, when more than a quarter of the file is free, the service
-       reports the bot quiet, and no other process holds the store.
+    4. VACUUM at most once a week when more than a quarter of the file is free, the service reports the bot quiet,
+       and no other process holds the store. The free-page test, not this run's prune count, decides, so a VACUUM
+       that a holder deferred runs on a later hour.
     """
     from hermes_state import SessionDB
     from hermes_state_holders import foreign_state_db_holders, in_process_state_db_holders
@@ -65,7 +66,7 @@ def maintain(request):
         due = not last or time.time() - float(last) >= VACUUM_INTERVAL_SECONDS
         # VACUUM rewrites the whole file under an exclusive lock. Hermes skips it while another process
         # holds the store or a WAL sidecar, and so does Coconut. The next hour tries again.
-        if (request.get('allow_vacuum') and result['pruned'] and due
+        if (request.get('allow_vacuum') and due
                 and freelist_ratio(db.db_path) > VACUUM_MIN_FREELIST_RATIO
                 and not (foreign_state_db_holders(db.db_path) + in_process_state_db_holders(db.db_path, exclude=db))):
             db.vacuum()

@@ -2934,6 +2934,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             "AND COALESCE(json_extract(m.data, '$._deleted'),0)=0 " + selection + "ORDER BY m.rowid)", values).fetchone()
         return [self._public(message) for message in json.loads(row[0])]
 
+    def _execution_task_ids(self, task):
+        """Return the IDs of every task in the task's execution. A reseed of its work session keeps their messages."""
+        with self.lock:
+            return [row[0] for row in self.db.execute("SELECT id FROM tasks WHERE json_extract(data, '$._execution_session_id')=?",
+                                                      (task['_execution_session_id'],))]
+
     def _task_messages(self, task_id):
         row = self.db.execute("SELECT json_group_array(json(data)) FROM (SELECT data FROM messages "
                               "WHERE json_extract(data, '$.task_id')=? ORDER BY rowid)", (task_id,)).fetchone()
@@ -3088,6 +3094,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         provider_task[field] = task[field]
                 if task.get('_native_outcome_id'):
                     provider_task['_native_outcome'] = task['_kanban_claim']
+                if task.get('_execution_session_id'):
+                    provider_task['_execution_task_ids'] = self._execution_task_ids(task)
                 reaction_feedback = task.get('_reaction_feedback', [])
                 provider_task['_reaction_feedback'] = reaction_feedback
                 provider_task['_turn_message_ids'] = task['_turn_message_ids']
@@ -3711,6 +3719,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                                                            '_kanban_external_id': context.get('_kanban_claim', {}).get('external_id'),
                                                            '_kanban_workspace': context.get('_kanban_claim', {}).get('workspace')}
                     provider_task['_conversation_epoch'] = context.get('_conversation_epoch', task.get('_conversation_epoch', self._setting('conversation_epoch')))
+                    if task.get('_execution_session_id'):
+                        provider_task['_execution_task_ids'] = self._execution_task_ids(task)
                     # Replies and maintenance use their own contexts, outside the source routine's execution claim.
                     provider_task['_native_receipts'] = self._native_task_receipts(task['id'], turn_id=context_id, state='completed')
                     if context.get('_background_completion'):

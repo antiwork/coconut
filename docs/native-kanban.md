@@ -290,9 +290,9 @@ Each outcome has its own work session. Once an hour, with worktree retirement, C
    It checks again that the outcome is idle just before each bot. It never ends a chat session.
 3. It deletes ended sessions of source `coconut` that were inactive for `SESSION_RETENTION_DAYS` (7), with Hermes
    `prune_sessions`. Sessions of other sources, such as cron or CLI, keep the profile's own Hermes settings.
-4. After a prune, at most once a week, it runs Hermes `vacuum`. It needs more than a quarter of the file free, as Hermes
+4. At most once a week, it runs Hermes `vacuum`. The free-page test decides, so a VACUUM that a holder deferred runs later. It needs more than a quarter of the file free, as Hermes
    requires, no running worker and no active or queued task for the bot, and no other process holding the store.
 
 When an idle outcome resumes, Coconut reopens its session with `reopen_session`. If Hermes has already deleted it,
-Coconut seeds a new session from its own saved messages of that work. The native card keeps the work record.
+Coconut seeds a new session from its own saved messages of every task in that work. The native card keeps the work record.
 Coconut does not change Hermes. It uses only these `SessionDB` methods and the `hermes_state_holders` checks, which the Hermes contract check requires.

@@ -115,7 +115,9 @@ def seed_messages(request):
         # must not become part of a background assignment when its session starts.
         task_ids = {task['id'], task['_execution_session_id'],
                     (task.get('_handoff_assignment') or {}).get('task_id'),
-                    (request.get('decision') or task.get('pending_decision') or {}).get('task_id')}
+                    (request.get('decision') or task.get('pending_decision') or {}).get('task_id'),
+                    # Earlier tasks of the same work, so a reseed after a prune keeps the whole exchange.
+                    *task.get('_execution_task_ids', ())}
         rows = [message for message in rows if message.get('task_id') in task_ids - {None}]
     result = []
     for message in rows:

@@ -188,6 +188,31 @@ class NativeSessionTests(unittest.TestCase):
             chat.close()
         ''')
 
+    def test_a_deferred_vacuum_runs_on_a_later_hour_without_a_new_prune(self):
+        self.run_native('''
+            from uuid import uuid4
+            from unittest.mock import patch
+            from hermes_state import SessionDB
+            from coconut import native_sessions
+            bot = dict(id=str(uuid4()), session_id=str(uuid4()))
+            db = SessionDB()
+            for index in range(40):
+                db.create_session(f'old-{index}', source='coconut')
+                for _ in range(20):
+                    db.append_message(f'old-{index}', 'user', 'x' * 2000)
+                db.end_session(f'old-{index}', 'coconut_idle')
+            import time
+            time.sleep(1.1)
+            request = dict(bot=bot, conversations=[], outcomes=[], retention_days=0, allow_vacuum=True)
+            # Another process holds the store, so the first run prunes and defers its VACUUM.
+            with patch('hermes_state_holders.foreign_state_db_holders', return_value=[(1, 'state.db')]):
+                first = native_sessions.maintain(request)
+            assert first['pruned'] >= 40 and not first['vacuumed'], first
+            with patch('hermes_state_holders.foreign_state_db_holders', return_value=[]):
+                second = native_sessions.maintain(request)
+            assert second['pruned'] == 0 and second['vacuumed'], second
+        ''')
+
     def test_a_failed_tip_write_does_not_fail_the_turn(self):
         self.run_native('''
             from uuid import uuid4
@@ -209,8 +234,11 @@ class NativeSessionTests(unittest.TestCase):
             from coconut.native_conversation import NativeConversation, IDLE_END_REASON, session_root
             bot = dict(id=str(uuid4()), session_id=str(uuid4()))
             history = [dict(id='m1', task_id='work', role='user', kind='text', text='Fix the upload row.'),
-                       dict(id='m2', task_id='work', role='assistant', kind='text', text='I will fix it.')]
-            request = dict(operation='resume', bot=bot, task=dict(id='work', _execution_session_id='work'), history=history)
+                       dict(id='m2', task_id='work', role='assistant', kind='text', text='I will fix it.'),
+                       dict(id='m3', task_id='follow-up', role='user', kind='text', text='Also keep the retry button.'),
+                       dict(id='m4', task_id='other-work', role='user', kind='text', text='Unrelated request.')]
+            request = dict(operation='resume', bot=bot, history=history,
+                           task=dict(id='work', _execution_session_id='work', _execution_task_ids=['work', 'follow-up']))
             conversation = NativeConversation(request, SessionDB())
             conversation.close()
             db = SessionDB()
@@ -231,7 +259,8 @@ class NativeSessionTests(unittest.TestCase):
             assert db.get_session(session_root(bot, execution='work')) is None
             returned = NativeConversation(request, SessionDB())
             texts = [row['content'] for row in returned.history]
-            assert texts == ['Fix the upload row.', 'I will fix it.'], texts
+            # An earlier task of the same work keeps its messages. Another work's message stays out.
+            assert texts == ['Fix the upload row.', 'I will fix it.', 'Also keep the retry button.'], texts
             returned.close()
         ''')
 
