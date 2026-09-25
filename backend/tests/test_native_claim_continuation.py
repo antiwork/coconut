@@ -348,7 +348,6 @@ else:
                 report_native, caller_native, str(os.getpid()))
             self.service.kanban.call({'op': 'snapshot'})
             card = self.service.kanban.tasks[caller['id']]
-            report['_kanban_claim'] = dict(native_id=report_native, input=rows[0]['input'])
             caller.update(status='working', _kanban_claim=dict(native_id=caller_native,
                 external_id=caller['id'], input=rows[1]['input'], run_id=card['current_run_id'],
                 pid=os.getpid(), context=''))
