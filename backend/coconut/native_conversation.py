@@ -161,9 +161,12 @@ class NativeConversation:
         if execution:
             root = session_root(bot, execution=execution, epoch=request['task'].get('_conversation_epoch'))
         marker = 'coconut.history-context.' + root
+        epoch = request['task'].get('_conversation_epoch')
         # Repair the earlier searchable-only import inside the existing native conversation. Seed it again
-        # when Hermes pruned the whole conversation of an idle outcome.
-        if db.get_meta(marker) != 'complete' or not db.get_session(resume_session(db, root)):
+        # when Hermes pruned the whole conversation. A chat under an epoch starts a new conversation by design,
+        # and this root is not the one its turn uses, so only work and a chat without an epoch reseed.
+        pruned = (execution or not epoch) and not db.get_session(resume_session(db, root))
+        if db.get_meta(marker) != 'complete' or pruned:
             target = resume_session(db, root)
             db.create_session(target, source='coconut', model=request.get('model'))
             active, transcript = db.get_resume_conversations(target)
@@ -172,7 +175,6 @@ class NativeConversation:
                 # Hermes keeps old rows and tool details. Its lease check rejects concurrent execution.
                 db.replace_messages(target, prefix + active, archive_dropped=True, reject_active_turn_lease=True)
             db.set_meta(marker, 'complete')
-        epoch = request['task'].get('_conversation_epoch')
         if epoch and not execution:
             root = session_root(bot, epoch=epoch)
         self.root = root

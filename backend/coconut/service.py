@@ -164,6 +164,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         CREATE INDEX IF NOT EXISTS native_receipts_task ON native_receipts (json_extract(data, '$.task_id'));
         CREATE INDEX IF NOT EXISTS decisions_task ON decisions (json_extract(data,'$.task_id'));
         CREATE INDEX IF NOT EXISTS tasks_source_assignment ON tasks (json_extract(data,'$._source_assignment.id'));
+        CREATE INDEX IF NOT EXISTS tasks_execution ON tasks (json_extract(data,'$._execution_session_id'));
         CREATE INDEX IF NOT EXISTS native_receipts_creation_key ON native_receipts
             (json_extract(data, '$.action.arguments.idempotency_key'))
             WHERE json_extract(data, '$.action.name')='kanban_create';

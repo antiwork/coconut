@@ -18,8 +18,10 @@ VACUUM_MIN_FREELIST_RATIO = 0.25
 
 
 def freelist_ratio(path):
+    from contextlib import closing
     import sqlite3
-    with sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=5) as connection:
+    # Close this reader before the holder checks and the VACUUM. as_uri() escapes the path.
+    with closing(sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True, timeout=5)) as connection:
         pages = connection.execute('PRAGMA page_count').fetchone()[0]
         free = connection.execute('PRAGMA freelist_count').fetchone()[0]
     return free / pages if pages else 0.0
