@@ -778,11 +778,37 @@ class NativeWorkContinuationTests(unittest.TestCase):
     def test_a_failed_branch_of_the_coordinator_does_not_block_the_audited_pr(self):
         owner, coordinator, work, pr = self.audited_requester_pr()
         branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
-                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None)
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
+                      _waiting_on=[])
         self.service._put('tasks', branch)
         chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
         with patch.object(self.service, '_work_chain', side_effect=chains):
             self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+    def executing_receipt(self, task):
+        self.service._put('native_receipts', dict(id='executing-' + task['id'], task_id=task['id'], state='executing',
+            turn_id=task.get('_native_turn_id'), action={'name': 'terminal', 'arguments': {}}))
+
+    def test_a_failed_branch_with_a_running_tool_still_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # Recovery marks a task failed when a tool stopped without a receipt. The tool can still run.
+        branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None)
+        self.service._put('tasks', branch)
+        self.executing_receipt(branch)
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_a_completed_audit_with_a_running_tool_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        self.executing_receipt(self.service._get('tasks', owner['source_task_id']))
+        with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+            self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
     def test_an_unfinished_audit_still_blocks_the_audited_pr(self):
         owner, coordinator, work, pr = self.audited_requester_pr()

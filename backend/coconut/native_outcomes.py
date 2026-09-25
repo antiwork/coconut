@@ -63,12 +63,19 @@ class NativeOutcomes:
         linked_parent = None
         retained = []
         source = self._get('tasks', owner['source_task_id']) if owner.get('source_task_id') else None
+        pending_decisions = {d['task_id'] for d in self._all('decisions') if d['status'] == 'pending'}
+        open_contexts = {c['task_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
+
+        def quiet(task):
+            # Every live signal that the writer guard reads. A failed task can still hold a running tool.
+            worker = self.running.get(task['id'])
+            card = snapshots.get(task['id'], {})
+            return not (task.get('_waiting_on') or task.get('_return_pending') or (worker and worker.is_alive())
+                        or self._background_pending(task['id']) or self._native_task_receipts(task['id'], state='executing')
+                        or card.get('current_run_id') or card.get('worker_pid')
+                        or task['id'] in pending_decisions or task['id'] in open_contexts)
         # The audit path skips the audit's own writer checks, so the audit must have finished.
-        worker = self.running.get(source['id']) if source else None
-        audit_finished = bool(source and source['status'] == 'completed' and not source.get('_waiting_on')
-                              and not source.get('_return_pending') and not (worker and worker.is_alive())
-                              and not self._background_pending(source['id'])
-                              and not any(d['status'] == 'pending' and d['task_id'] == source['id'] for d in self._all('decisions')))
+        audit_finished = bool(source and source['status'] == 'completed' and quiet(source) and not self._unfinished_work(source))
         for candidate in items:
             root = self._work_outcome_artifact(candidate)
             # A requester's source audit can delegate for an existing Work outcome of that requester.
@@ -150,14 +157,13 @@ class NativeOutcomes:
                     root = tasks[owner['source_task_id']] if passive_report else self._work_execution_owner(reporter, tasks)
                     linked = self._work_chain(root, tasks, records, include_continuations=True)
                     if passive_report:
-                        # The coordinating requester task has its own branches. Keep its active ones in the guard too.
-                        # A failed, cancelled, or completed branch cannot write, so it does not block the delegated PR.
+                        # The coordinating requester task has its own branches. Keep its live ones in the guard too.
+                        # A failed, cancelled, or completed branch with no live signal cannot write.
                         for identity in requesters - {root['id']}:
                             if identity in tasks:
                                 linked.update({key: value for key, value in self._work_chain(
                                     tasks[identity], tasks, records, include_continuations=True).items()
-                                    if value[0]['status'] in self.ACTIVE or value[0].get('_return_pending')
-                                    or self._background_pending(value[0]['id'])})
+                                    if value[0]['status'] in self.ACTIVE or not quiet(value[0])})
                     linked[root['id']] = (root, 0)
                     linked[reporter['id']] = (reporter, 0)
                     if owner_report and reporter_source and reporter_source['id'] not in (owner['id'], *requesters):
