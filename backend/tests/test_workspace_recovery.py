@@ -125,14 +125,14 @@ class CheckoutPreviewHTTPTests(unittest.TestCase):
         owner.update(status='cancelled', _native_outcome_id='native', _work_context_id='work')
         self.service._put('tasks', owner)
         self.service._put('artifacts', dict(id='work', kind='work', task_id=self.task_id, bot_id=bot['id'],
-            _native_outcome_id='native', status='cancelled', title='Original checkout'))
+            _native_outcome_id='native', status='cancelled', title='Original checkout', created_at=owner['created_at']))
         self.service.db.execute('INSERT INTO settings(key,value) VALUES (?, ?)', ('work.cancelled.work:work', json.dumps('first stop')))
 
-    def http(self, method, path, data=None, *, auth=True):
+    def http(self, method, path, data=None, *, auth=True, key=None):
         thread = threading.Thread(target=self.server.handle_request)
         thread.start()
         connection = http.client.HTTPConnection(*self.server.server_address, timeout=20)
-        headers = {'Content-Type': 'application/json', 'Idempotency-Key': str(uuid4())}
+        headers = {'Content-Type': 'application/json', 'Idempotency-Key': key or str(uuid4())}
         if auth and getattr(self, 'token', None):
             headers['Authorization'] = 'Bearer ' + self.token
         try:
@@ -142,6 +142,30 @@ class CheckoutPreviewHTTPTests(unittest.TestCase):
         finally:
             connection.close()
             thread.join(20)
+
+    def test_repeated_stop_route_invalidates_draining_consent_but_not_idempotent_retry(self):
+        endpoint = '/v1/work/items/work/cancel'
+        original = self.service._setting('work.cancelled.work:work')
+        stop_key = str(uuid4())
+        status, response = self.http('POST', endpoint, {}, key=stop_key)
+        self.assertEqual(status, 200, response)
+        first = self.service._setting('work.cancelled.work:work')
+        self.assertNotEqual(first, original)
+        _, preview = self.http('GET', '/v1/tasks/' + self.task_id + '/checkout-recovery')
+        request = dict(preview['request'], resume_consent=preview['resume_consent'], resume_confirmed=True)
+        scope = self.service._checkout_scope(request)
+        receipt = dict(request=request, device_id=self.service.authenticate(self.token),
+                       dirty=recovery.dirty_state(self.workspace, read_only=True), cancellation=first)
+        self.service._check_checkout_consent(receipt, scope)
+        self.assertEqual(self.http('POST', endpoint, {}, key=stop_key), (200, response))
+        self.assertEqual(self.service._setting('work.cancelled.work:work'), first)
+        self.service._check_checkout_consent(receipt, scope)
+        self.assertEqual(self.http('POST', endpoint, {}, key=str(uuid4()))[0], 200)
+        self.assertNotEqual(self.service._setting('work.cancelled.work:work'), first)
+        with self.assertRaisesRegex(ServiceError, 'stop changed'):
+            self.service._check_checkout_consent(receipt, scope)
+        self.assertEqual(self.http('POST', '/v1/maintenance/checkout-recovery', request,
+                                   key=preview['key'])[0], 409)
 
     def test_preview_is_paired_read_only_and_stale_consent_fails(self):
         path = '/v1/tasks/' + self.task_id + '/checkout-recovery'
@@ -467,14 +491,19 @@ class WorkspaceRecoveryTests(unittest.TestCase):
 
     def test_phone_checkout_new_stop_during_drain_holds_before_git_write(self):
         payload, dirty, artifact = self.checkout_incident(stopped=True)
-        self.assertEqual(self.http('/v1/work/items/' + artifact['id'] + '/cancel', {})[0], 200)
+        stop_path = '/v1/work/items/' + artifact['id'] + '/cancel'
+        first_key = str(uuid4())
+        self.assertEqual(self.http(stop_path, {}, key=first_key)[0], 200)
         self.program('board.kb.archive_task(board.conn, sys.argv[2])', self.native_id)
         self.service.kanban.call({'op': 'snapshot'})
         _, preview = self.http_get('/v1/tasks/' + self.task['id'] + '/checkout-recovery')
         request = dict(preview['request'], resume_consent=preview['resume_consent'], resume_confirmed=True)
         self.assertEqual(self.http('/v1/maintenance/checkout-recovery', request, key=preview['key'])[0], 200)
-        self.service.db.execute('UPDATE settings SET value=? WHERE key=?',
-            (json.dumps('new cancellation generation'), 'work.cancelled.work:' + artifact['id']))
+        first = self.service._setting('work.cancelled.work:' + artifact['id'])
+        self.assertEqual(self.http(stop_path, {}, key=first_key)[0], 200)
+        self.assertEqual(self.service._setting('work.cancelled.work:' + artifact['id']), first)
+        self.assertEqual(self.http(stop_path, {}, key=str(uuid4()))[0], 200)
+        self.assertNotEqual(self.service._setting('work.cancelled.work:' + artifact['id']), first)
         self.restart()
         receipt = self.service._get('workspace_recoveries', preview['key'])
         self.assertEqual(receipt['state'], 'held', receipt)

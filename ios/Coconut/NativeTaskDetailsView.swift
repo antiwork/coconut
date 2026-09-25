@@ -23,6 +23,22 @@ struct CheckoutRecoveryPreview: Decodable, Sendable {
     let dirtyCount: Int
 }
 
+struct CheckoutRecoveryConfirmation: Sendable {
+    let key: String
+    let request: CheckoutRecoveryRequest
+    private(set) var isUncertain = false
+
+    init(preview: CheckoutRecoveryPreview) {
+        key = preview.key
+        var request = preview.request
+        request.resumeConsent = preview.resumeConsent
+        request.resumeConfirmed = true
+        self.request = request
+    }
+
+    mutating func markUncertain() { isUncertain = true }
+}
+
 struct CheckoutRecoveryReceipt: Decodable, Sendable {
     let state: String
 }
@@ -115,15 +131,39 @@ struct NativeTaskDetailsView: View {
     @State private var error: String?
     @State private var taskToStop: TrackedWorkItem?
     @State private var recovery: CheckoutRecoveryPreview?
+    @State private var confirming = false
     @State private var recovering: Set<String> = []
-    @State private var recoveryRequested: Set<String> = []
 
     private var items: [TrackedWorkItem] {
         TrackedWorkItem.nativeTasks(in: store.artifacts, botId: botId, tasks: store.tasks)
     }
 
+    private var confirmation: CheckoutRecoveryConfirmation? { store.checkoutConfirmation }
+
+    private func retryConfirmation() {
+        guard let confirmation, !confirming else { return }
+        confirming = true
+        Task {
+            let failure = await store.confirmCheckoutRecovery(confirmation)
+            if failure == nil {
+                store.requestedCheckoutRecoveryTaskIds.insert(confirmation.request.taskId)
+                store.checkoutConfirmation = nil
+            } else {
+                store.checkoutConfirmation?.markUncertain()
+            }
+            error = failure
+            confirming = false
+        }
+    }
+
     var body: some View {
         List {
+            if let confirmation, confirmation.isUncertain,
+               !items.contains(where: { $0.checkoutRecoveryWork?.taskId == confirmation.request.taskId }) {
+                Button("Retry recovery confirmation") { retryConfirmation() }
+                    .disabled(confirming)
+                    .accessibilityIdentifier("retry-checkout-recovery")
+            }
             if items.isEmpty {
                 Text("No tasks").foregroundStyle(.secondary)
             }
@@ -147,16 +187,25 @@ struct NativeTaskDetailsView: View {
                         .accessibilityIdentifier("task-stop-" + item.artifact.id)
                     }
                     if item.canOfferCheckoutRecovery {
-                        Button(recoveryRequested.contains(item.artifact.taskId ?? "") ? "Recovery requested" :
+                        Button(store.requestedCheckoutRecoveryTaskIds.contains(item.checkoutRecoveryWork?.taskId ?? "") ? "Recovery requested" :
+                               confirmation?.request.taskId == item.checkoutRecoveryWork?.taskId ?
+                               (confirming ? "Confirming…" :
+                                confirmation?.isUncertain == true ? "Retry confirmation" : "Confirming…") :
                                recovering.contains(item.id) ? "Checking…" : "Recover checkout") {
-                            recovering.insert(item.id)
-                            Task {
-                                do { recovery = try await store.checkoutRecoveryPreview(item) }
-                                catch { error = error.localizedDescription }
-                                recovering.remove(item.id)
+                            if confirmation != nil {
+                                retryConfirmation()
+                            } else {
+                                recovering.insert(item.id)
+                                Task {
+                                    do { recovery = try await store.checkoutRecoveryPreview(item) }
+                                    catch { error = error.localizedDescription }
+                                    recovering.remove(item.id)
+                                }
                             }
                         }
-                        .disabled(recovering.contains(item.id) || recoveryRequested.contains(item.artifact.taskId ?? ""))
+                        .disabled(recovering.contains(item.id) || confirming ||
+                                  store.requestedCheckoutRecoveryTaskIds.contains(item.checkoutRecoveryWork?.taskId ?? "") ||
+                                  (confirmation != nil && confirmation?.request.taskId != item.checkoutRecoveryWork?.taskId))
                         .accessibilityIdentifier("task-recover-" + item.artifact.id)
                     }
                 }
@@ -182,20 +231,25 @@ struct NativeTaskDetailsView: View {
         } message: { _ in
             Text("The Mac records the stop request. An action already executing can finish before it stops.")
         }
-        .alert("Stop not confirmed", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
-            Button("OK") { error = nil }
-        } message: { Text(error ?? "") }
+        .alert(confirmation == nil ? "Request not confirmed" : "Recovery confirmation uncertain",
+               isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+            if confirmation != nil {
+                Button("Retry same confirmation") { error = nil; retryConfirmation() }
+                Button("Later", role: .cancel) { error = nil }
+            } else {
+                Button("OK") { error = nil }
+            }
+        } message: { Text(confirmation == nil ? (error ?? "") :
+            "The Mac may have accepted this request. Retry uses the same confirmation and key. \(error ?? "")") }
         .alert("Recover this checkout?", isPresented: Binding(
             get: { recovery != nil }, set: { if !$0 { recovery = nil } })) {
             Button("Not now", role: .cancel) { recovery = nil }
             Button("Recover checkout") {
-                guard let preview = recovery else { return }
+                guard let preview = recovery, confirmation == nil else { return }
                 recovery = nil
-                Task {
-                    error = await store.confirmCheckoutRecovery(preview)
-                    if error == nil { recoveryRequested.insert(preview.request.taskId) }
-                }
-            }.accessibilityIdentifier("confirm-checkout-recovery")
+                store.checkoutConfirmation = CheckoutRecoveryConfirmation(preview: preview)
+                retryConfirmation()
+            }.disabled(confirmation != nil).accessibilityIdentifier("confirm-checkout-recovery")
         } message: {
             Text("This resumes the stopped Work in its original workspace. The Mac will check the saved branches and local edits before continuing. Nothing changes until you confirm.")
         }

@@ -1,6 +1,7 @@
 """Present PR activity from bot reports and current execution evidence."""
 from datetime import datetime, timezone
 from collections import deque
+from uuid import uuid4
 
 PAUSE_DECISION_STATES = ('approved', 'rejected', 'modified', 'replied', 'executed', 'failed')
 
@@ -520,6 +521,8 @@ class WorkStatus:
             raise ServiceError(400, 'This item does not appear in Work.')
         identity = self._work_identity(item)
         if self._setting('work.cancelled.' + identity):
+            self.db.execute('UPDATE settings SET value=? WHERE key=?',
+                            (encoded(str(uuid4())), 'work.cancelled.' + identity))
             peers = [a for a in self._all('artifacts') if a['kind'] in ('pr', 'work')
                      and self._work_identity(a) == identity]
             return dict(ok=True, artifacts=[self._public(a) for a in self._work_projection(peers) if not a.get('_hidden')], cursor=self._cursor())

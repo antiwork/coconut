@@ -51,6 +51,41 @@ final class TrackedWorkItemTests: XCTestCase {
         XCTAssertTrue(String(decoding: body, as: UTF8.self).contains("\"resume_consent\":\"fresh\""))
     }
 
+    func testLinkedPullRequestRecoversCanonicalStoppedWorkNotPRTask() {
+        var stopped = item(status: "cancelled")
+        stopped.nativeTaskId = "native-export"; stopped.taskId = "original-owner"; stopped.workState = "cancelled"
+        var pr = stopped
+        pr.id = "pr"; pr.kind = "pr"; pr.botId = "reviewer"; pr.taskId = "review-task"
+        pr.nativeTaskId = nil; pr.workOutcomeId = stopped.id
+        pr.url = "https://github.com/example/project/pull/42"
+        let row = TrackedWorkItem.nativeTasks(in: [stopped, pr], botId: "bot").first
+        XCTAssertEqual(row?.artifact.id, "pr")
+        XCTAssertTrue(row?.canOfferCheckoutRecovery == true)
+        XCTAssertEqual(row?.checkoutRecoveryWork?.id, stopped.id)
+        XCTAssertEqual(row?.checkoutRecoveryWork?.taskId, "original-owner")
+        XCTAssertFalse(TrackedWorkItem.tracked(in: [pr]).first?.canOfferCheckoutRecovery == true)
+    }
+
+    @MainActor
+    func testUncertainConfirmationRetainsExactBodyAndKeyForRetry() throws {
+        let fixture = """
+        {"key":"same-key","dirty_count":3,"resume_consent":"fresh","request":{"task_id":"owner","native_task_id":"native","expected_owner":"execution","repository":"/repo","path":"/worktree","saved_branch":"saved","attached_branch":"attached","saved_head":"a","attached_head":"b","recovery_branch":"recovery","message":"Continue"}}
+        """
+        let preview = try APIJSON.decoder().decode(CheckoutRecoveryPreview.self, from: Data(fixture.utf8))
+        let store = AppStore(demo: true)
+        store.checkoutConfirmation = CheckoutRecoveryConfirmation(preview: preview)
+        let initialBody = try APIJSON.encode(XCTUnwrap(store.checkoutConfirmation).request)
+        store.checkoutConfirmation?.markUncertain()
+        XCTAssertTrue(store.checkoutConfirmation?.isUncertain == true)
+        XCTAssertEqual(store.checkoutConfirmation?.key, "same-key")
+        XCTAssertEqual(try APIJSON.encode(XCTUnwrap(store.checkoutConfirmation).request), initialBody)
+        store.checkoutConfirmation?.markUncertain()
+        XCTAssertEqual(store.checkoutConfirmation?.key, preview.key)
+        XCTAssertEqual(try APIJSON.encode(XCTUnwrap(store.checkoutConfirmation).request), initialBody)
+        XCTAssertTrue(String(decoding: initialBody, as: UTF8.self).contains("\"resume_confirmed\":true"))
+        XCTAssertTrue(String(decoding: initialBody, as: UTF8.self).contains("\"resume_consent\":\"fresh\""))
+    }
+
     func testWorkIncludesExplicitItemsButNotFiles() {
         let file = Artifact(id: "file", botId: "bot", title: "Notes", kind: "file", status: "ready", preview: "", createdAt: "")
         XCTAssertEqual(TrackedWorkItem.tracked(in: [file, item()]).map(\.id), ["work:export"])

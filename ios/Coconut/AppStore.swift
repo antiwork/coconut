@@ -20,6 +20,8 @@ final class AppStore {
     var answeringDecisionIds: Set<String> = []
     var decisionReplyDrafts: [String: String] = [:]
     var artifacts: [Artifact] = []
+    var checkoutConfirmation: CheckoutRecoveryConfirmation?
+    var requestedCheckoutRecoveryTaskIds: Set<String> = []
     var workVisibility: [String: Bool] = [:]
     var workUndo: [WorkDismissal] = []
     @ObservationIgnored private var workMutationTail: Task<Void, Never>?
@@ -664,7 +666,7 @@ final class AppStore {
     }
 
     func checkoutRecoveryPreview(_ item: TrackedWorkItem) async throws -> CheckoutRecoveryPreview {
-        guard !isDemo, item.canOfferCheckoutRecovery, let taskId = item.artifact.taskId,
+        guard !isDemo, let work = item.checkoutRecoveryWork, let taskId = work.taskId,
               let pairing, let token = PairingToken.read() else {
             throw ServiceError.configuration("Pair with your Mac to check this task.")
         }
@@ -672,19 +674,16 @@ final class AppStore {
         let preview: CheckoutRecoveryPreview = try await client.request("tasks/\(taskId)/checkout-recovery")
         guard self.pairing?.deviceId == pairing.deviceId, self.pairing?.serverURL == pairing.serverURL,
               self.pairing?.fingerprint == pairing.fingerprint,
-              artifacts.first(where: { $0.id == item.artifact.id })?.workState == "cancelled" else {
+              artifacts.first(where: { $0.id == work.id })?.workState == "cancelled" else {
             throw ServiceError.configuration("This task changed. Check it again.")
         }
         return preview
     }
 
-    func confirmCheckoutRecovery(_ preview: CheckoutRecoveryPreview) async -> String? {
-        var request = preview.request
-        request.resumeConsent = preview.resumeConsent
-        request.resumeConfirmed = true
+    func confirmCheckoutRecovery(_ confirmation: CheckoutRecoveryConfirmation) async -> String? {
         var failure: String?
-        let receipt: CheckoutRecoveryReceipt? = await write("maintenance/checkout-recovery", payload: request,
-            as: CheckoutRecoveryReceipt.self, idempotencyKey: preview.key,
+        let receipt: CheckoutRecoveryReceipt? = await write("maintenance/checkout-recovery", payload: confirmation.request,
+            as: CheckoutRecoveryReceipt.self, idempotencyKey: confirmation.key,
             onFailure: { failure = $0.localizedDescription })
         guard receipt != nil else { return failure ?? "Recovery was not confirmed. Check the task and try again." }
         return nil
