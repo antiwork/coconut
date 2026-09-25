@@ -180,13 +180,11 @@ class BackgroundProcesses:
         if not candidates:
             return []
         root = self.root / 'workspaces'
-        try:
-            saved = json.loads((root / 'worktrees.json').read_text())
-        except (OSError, ValueError):
-            saved = {}
+        saved = work_workspace.unlocked_registry(root)
         paths = {}
         for identity, task_id, key, workspace in candidates:
-            places = {str(root / key)} | {b['path'] for b in saved.values() if isinstance(b, dict) and b.get('outcome') == key}
+            places = {str(root / key)} | {b['path'] for b in saved.values() if isinstance(b, dict) and b.get('outcome') == key
+                                          and isinstance(b.get('path'), str)}
             if workspace:
                 places.add(workspace)
             paths[identity] = {p for p in places if Path(p).exists()}

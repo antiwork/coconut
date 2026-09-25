@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 import threading
 import unittest
@@ -862,6 +863,27 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'),
                                                       action={'name': 'coconut_wait', 'arguments': {}}))
             self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
+
+    def test_the_poller_checks_the_bound_worktree_and_the_claim_workspace(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = self.ended_branch(coordinator)
+        root = self.service.root / 'workspaces'
+        worktree, claimed = self.service.root / 'elsewhere' / 'worktree', self.service.root / 'claimed'
+        for path in (root / 'coordinator-branch', worktree, claimed):
+            path.mkdir(parents=True, exist_ok=True)
+        self.service._put('tasks', dict(branch, _kanban_claim=dict(branch['_kanban_claim'], workspace=str(claimed))))
+        (root / 'worktrees.json').write_text(json.dumps({
+            'bound': dict(outcome='coordinator-branch', path=str(worktree), branch='wt/x', repository='/repo'),
+            'broken': dict(outcome='coordinator-branch'), 'other': dict(outcome='other', path='/other')}))
+        with patch('coconut.work_workspace.process_outcomes', return_value=set()), \
+                patch('coconut.work_workspace.busy_paths', return_value={str(worktree)}) as busy:
+            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
+        self.assertEqual(busy.call_args.args[0], {str(root / 'coordinator-branch'), str(worktree), str(claimed)})
+        # A registry that is not an object reads as empty.
+        (root / 'worktrees.json').write_text('[]')
+        with patch('coconut.work_workspace.process_outcomes', return_value=set()), \
+                patch('coconut.work_workspace.busy_paths', return_value=set()):
+            self.assertEqual(self.service._mark_ended_tool_calls(current=61), ['cut-off'])
 
     def test_the_poller_waits_an_hour_before_it_trusts_the_checks(self):
         from datetime import datetime, timezone
