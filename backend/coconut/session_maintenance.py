@@ -4,6 +4,7 @@ import logging
 import time
 
 from .work_capacity import execution_key
+from .worktree_retirement import ACTIVE_STATUSES
 
 # Hermes deletes an ended session after it has been inactive this long. Coconut's own messages and the native
 # card keep the record, and a resumed outcome gets its visible conversation again (see NativeConversation).
@@ -43,7 +44,8 @@ class SessionMaintenance:
             conversations.setdefault(bot['id'], {})[(None, None)] = dict(execution_session_id=None, epoch=None)
         for task in tasks:
             key = (task.get('_execution_session_id'), task.get('_conversation_epoch'))
-            if key != (None, None) and recent(task, current):
+            # An unfinished conversation can resume at any age, so its tip is always recorded.
+            if key != (None, None) and (recent(task, current) or task['status'] not in ('completed', 'cancelled', 'failed')):
                 conversations.setdefault(task['bot_id'], {})[key] = dict(execution_session_id=key[0], epoch=key[1])
             # Only work has its own session. A chat task uses the bot's conversation, which stays open.
             # A status-only task has its own execution key but shares its owner's session, so it never decides.
@@ -74,12 +76,13 @@ class SessionMaintenance:
     def _bot_quiet(self, bot_id):
         """Return True when the bot has no running worker and no active or queued task.
 
-        A VACUUM rewrites the whole store, and a turn that opens it meanwhile waits and can fail.
+        A VACUUM rewrites the whole store, and a turn that opens it meanwhile waits and can fail. A task that waits
+        for a person or a resume runs no turn, so it does not block the VACUUM, as it does not block retirement.
         """
         if not self.lock.acquire(timeout=SESSION_LOCK_WAIT_SECONDS):
             return False
         try:
-            return not any(t['bot_id'] == bot_id and (t['status'] in self.ACTIVE
+            return not any(t['bot_id'] == bot_id and (t['status'] in ACTIVE_STATUSES
                            or (self.running.get(t['id']) and self.running[t['id']].is_alive()))
                            for t in self._all('tasks'))
         finally:

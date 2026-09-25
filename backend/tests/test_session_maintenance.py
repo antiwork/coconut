@@ -64,15 +64,23 @@ class SessionSelectionTests(unittest.TestCase):
     def test_status_only_and_old_tasks_do_not_select_sessions_and_vacuum_waits_for_a_quiet_bot(self):
         self.task(_execution_session_id='owner-work', _work_status_only=True)
         self.task(_execution_session_id='old-work', updated_at='2026-07-01T10:00:00Z', created_at='2026-07-01T10:00:00Z')
-        self.task(_execution_session_id='running-work', status='working')
+        self.task(_execution_session_id='running-work', status='working', updated_at='2026-07-01T10:00:00Z')
         # The owner group is active, but the status-only task sits in its own group under its own id.
         with patch.object(self.service, '_finished_outcomes', return_value={'owner-work', 'old-work', 'running-work'}):
             self.service.maintain_native_sessions(current=datetime(2026, 9, 25, tzinfo=timezone.utc).timestamp())
         [(bot, conversations, outcomes, days)] = self.calls
         self.assertNotIn('owner-work', [o['execution_session_id'] for o in outcomes])
         self.assertNotIn('old-work', [c['execution_session_id'] for c in conversations])
+        # An unfinished conversation keeps its tip at any age.
+        self.assertIn('running-work', [c['execution_session_id'] for c in conversations])
         # A working task keeps its bot from a VACUUM.
         self.assertEqual(self.vacuums, [False])
+
+    def test_a_pending_decision_does_not_block_the_vacuum(self):
+        self.task(_execution_session_id='asking', status='needs_you')
+        with patch.object(self.service, '_finished_outcomes', return_value=set()):
+            self.service.maintain_native_sessions(current=0)
+        self.assertEqual(self.vacuums, [True])
 
     def test_a_pending_restart_stops_the_bot_loop(self):
         self.service.restart_pending = True

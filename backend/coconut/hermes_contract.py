@@ -15,6 +15,26 @@ def require_keywords(function, names):
         raise ValueError(f'Hermes API changed in {function.__qualname__}: ' + ', '.join(missing))
 
 
+def verify_session_lifecycle_contract():
+    """Session maintenance reads the store path and the end fields of a session row. Check them on a scratch store."""
+    from hermes_state import SessionDB
+    with tempfile.TemporaryDirectory(prefix='coconut-session-contract-') as temporary:
+        db = SessionDB(db_path=Path(temporary) / 'state.db')
+        try:
+            if Path(db.db_path) != Path(temporary) / 'state.db':
+                raise ValueError('Hermes no longer exposes the session store path.')
+            db.create_session('coconut-contract', source='coconut')
+            db.end_session('coconut-contract', 'coconut_idle')
+            ended = db.get_session('coconut-contract')
+            if not ended.get('ended_at') or ended.get('end_reason') != 'coconut_idle':
+                raise ValueError('Hermes changed the end fields of a session.')
+            db.reopen_session('coconut-contract')
+            if db.get_session('coconut-contract').get('ended_at'):
+                raise ValueError('Hermes no longer reopens an ended session.')
+        finally:
+            db.close()
+
+
 def verify_contract():
     import mcp
     from hermes_cli import kanban_db, kanban_db_connect, kanban_db_dispatch, kanban_db_workspace
@@ -243,6 +263,7 @@ def verify_contract():
         if config.require_readable_config_before_write(path)['display']['theme'] != 'coconut-contract':
             raise ValueError('The profile update changed unrelated Hermes settings.')
 
+    verify_session_lifecycle_contract()
     verify_parallel_work_contract()
     verify_delegation_contract()
     verify_terminal_contract()

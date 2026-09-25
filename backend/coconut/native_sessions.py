@@ -51,6 +51,10 @@ def maintain(request):
             root = session_root(request['bot'], execution=item['execution_session_id'], epoch=item.get('epoch'))
             session_id = resume_session(db, root)
             session = db.get_session(session_id)
+            if session and db.get_meta(TIP_KEY + root) != session_id:
+                # An idle outcome can be older than the tip window. Record its tip before the prune too.
+                db.set_meta(TIP_KEY + root, session_id)
+                result['recorded'] += 1
             if session and not session.get('ended_at'):
                 db.end_session(session_id, IDLE_END_REASON)
                 result['ended'] += 1
