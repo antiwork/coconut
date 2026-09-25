@@ -94,6 +94,24 @@ class SessionSelectionTests(unittest.TestCase):
             self.service.maintain_native_sessions(current=0)
         self.assertEqual(self.vacuums, [False])
 
+    def test_a_live_status_only_turn_keeps_its_owner_session_open(self):
+        self.task(_execution_session_id='owner-work')
+        self.task(_execution_session_id='owner-work', _work_status_only=True, status='working')
+        with patch.object(self.service, '_finished_outcomes', return_value={'owner-work'}):
+            self.service.maintain_native_sessions(current=0)
+        [(bot, conversations, outcomes, days)] = self.calls
+        self.assertEqual(outcomes, [])
+
+    def test_a_reseed_list_holds_tasks_that_had_a_turn_and_the_current_task(self):
+        owner = self.task(_execution_session_id='work-x')
+        done = self.task(_execution_session_id='work-x')
+        queued = self.task(_execution_session_id='work-x', _work_status_only=True, status='queued')
+        current = self.task(_execution_session_id='work-x', status='queued')
+        with self.service.lock:
+            ids = set(self.service._execution_task_ids(current))
+        self.assertEqual(ids, {owner['id'], done['id'], current['id']})
+        self.assertNotIn(queued['id'], ids)
+
     def test_a_pending_restart_stops_the_bot_loop(self):
         self.service.restart_pending = True
         with patch.object(self.service, '_finished_outcomes', return_value=set()):
@@ -211,6 +229,28 @@ class NativeSessionTests(unittest.TestCase):
             with patch('hermes_state_holders.foreign_state_db_holders', return_value=[]):
                 second = native_sessions.maintain(request)
             assert second['pruned'] == 0 and second['vacuumed'], second
+        ''')
+
+    def test_a_failed_vacuum_keeps_the_rest_of_the_run(self):
+        self.run_native('''
+            import time
+            from uuid import uuid4
+            from unittest.mock import patch
+            from hermes_state import SessionDB
+            from coconut import native_sessions
+            bot = dict(id=str(uuid4()), session_id=str(uuid4()))
+            db = SessionDB()
+            for index in range(40):
+                db.create_session(f'old-{index}', source='coconut')
+                for _ in range(20):
+                    db.append_message(f'old-{index}', 'user', 'x' * 2000)
+                db.end_session(f'old-{index}', 'coconut_idle')
+            time.sleep(1.1)
+            request = dict(bot=bot, conversations=[], outcomes=[], retention_days=0, allow_vacuum=True)
+            with patch('hermes_state_holders.foreign_state_db_holders', return_value=[]), \
+                    patch.object(SessionDB, 'vacuum', side_effect=RuntimeError('database is locked')):
+                result = native_sessions.maintain(request)
+            assert result['pruned'] >= 40 and not result['vacuumed'] and 'locked' in result['vacuum_error'], result
         ''')
 
     def test_a_failed_tip_write_does_not_fail_the_turn(self):

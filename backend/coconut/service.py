@@ -2936,10 +2936,15 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         return [self._public(message) for message in json.loads(row[0])]
 
     def _execution_task_ids(self, task):
-        """Return the IDs of every task in the task's execution. A reseed of its work session keeps their messages."""
+        """Return the IDs of the tasks of the task's execution that already had a turn, and the task itself.
+
+        A reseed of the work session keeps their messages. A queued request waits for its own turn boundary.
+        """
         with self.lock:
-            return [row[0] for row in self.db.execute("SELECT id FROM tasks WHERE json_extract(data, '$._execution_session_id')=?",
-                                                      (task['_execution_session_id'],))]
+            return [row[0] for row in self.db.execute(
+                "SELECT id FROM tasks WHERE json_extract(data, '$._execution_session_id')=? "
+                "AND (id=? OR json_extract(data, '$.status') NOT IN ('queued', 'scheduled'))",
+                (task['_execution_session_id'], task['id']))]
 
     def _task_messages(self, task_id):
         row = self.db.execute("SELECT json_group_array(json(data)) FROM (SELECT data FROM messages "

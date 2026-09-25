@@ -31,7 +31,8 @@ def maintain(request):
     """Run the session maintenance of one bot with Hermes SessionDB methods only.
 
     1. Record the newest session of every conversation root. A prune of ended compression ancestors cuts the
-       chain from the root, so this must happen before any prune.
+       chain from the root, so this must happen before any prune. A tip row is about 100 bytes, and Hermes has no
+       public call to delete one, so a row stays after Hermes prunes its conversation. resume_session() ignores it.
     2. End the newest session of each idle outcome. Coconut never ends a chat.
     3. Prune ended Coconut sessions inactive for `retention_days`. Other sources keep the profile's own settings.
     4. VACUUM at most once a week when more than a quarter of the file is free, the service reports the bot quiet,
@@ -71,9 +72,14 @@ def maintain(request):
         if (request.get('allow_vacuum') and due
                 and freelist_ratio(db.db_path) > VACUUM_MIN_FREELIST_RATIO
                 and not (foreign_state_db_holders(db.db_path) + in_process_state_db_holders(db.db_path, exclude=db))):
-            db.vacuum()
-            db.set_meta(VACUUM_KEY, str(time.time()))
-            result['vacuumed'] = True
+            try:
+                db.vacuum()
+            except Exception as error:
+                # The VACUUM is optional. Keep the tips, ends, and prune of this run, and retry next hour.
+                result['vacuum_error'] = str(error)[:500]
+            else:
+                db.set_meta(VACUUM_KEY, str(time.time()))
+                result['vacuumed'] = True
     finally:
         db.close()
     return result

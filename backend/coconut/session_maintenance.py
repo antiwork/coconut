@@ -58,6 +58,10 @@ class SessionMaintenance:
                     and execution_key(task) in idle):
                 item = dict(execution_session_id=task['_execution_session_id'], epoch=task.get('_conversation_epoch'))
                 outcomes.setdefault(task['bot_id'], {})[(item['execution_session_id'], item['epoch'])] = item
+        # A status-only turn uses its owner's session under its own execution key. While it is live, keep the owner.
+        busy = self._status_only_owners()
+        for bot_id in outcomes:
+            outcomes[bot_id] = {k: v for k, v in outcomes[bot_id].items() if v['execution_session_id'] not in busy}
         results = {}
         for bot in bots:
             if self.stopping.is_set() or self.restart_pending:
@@ -68,7 +72,9 @@ class SessionMaintenance:
             if pending:
                 # Earlier bots can take minutes. Check again that each outcome is still idle just before this bot.
                 still = self._finished_outcomes(time.time(), timeout=SESSION_LOCK_WAIT_SECONDS)
-                pending = [item for item in pending if still is not None and item['execution_session_id'] in still]
+                busy = self._status_only_owners()
+                pending = [item for item in pending if still is not None and item['execution_session_id'] in still
+                           and item['execution_session_id'] not in busy]
             try:
                 results[bot['id']] = self.provider.maintain_sessions(
                     dict(id=bot['id'], session_id=bot['session_id']),
@@ -81,6 +87,13 @@ class SessionMaintenance:
             except Exception:
                 logging.getLogger(__name__).exception('Could not maintain the native sessions of bot %s.', bot['id'])
         return results
+
+    def _status_only_owners(self):
+        """Return the execution sessions that a queued or running status-only task uses."""
+        with self.lock:
+            return {t['_execution_session_id'] for t in self._all('tasks')
+                    if t.get('_work_status_only') and t.get('_execution_session_id')
+                    and (t['status'] in ACTIVE_STATUSES or (self.running.get(t['id']) and self.running[t['id']].is_alive()))}
 
     def _bot_quiet(self, bot_id):
         """Return True when the bot has no running worker and no active or queued task.
