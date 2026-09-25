@@ -25,6 +25,8 @@ if __package__:
     from .tracked_work import TRACK_WORK_SCHEMA
     from .silent_responses import is_silent_response
     from .worker_protocol import MAX_EVENT_CHARACTERS, event_frame
+    from .native_receipt_context import receipt_prompt, receipt_reader, SCHEMA as RECEIPT_SCHEMA
+    from .native_failure import native_failure
 else:
     from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content
     from native_bridge import TurnPaused
@@ -34,6 +36,8 @@ else:
     from tracked_work import TRACK_WORK_SCHEMA
     from silent_responses import is_silent_response
     from worker_protocol import MAX_EVENT_CHARACTERS, event_frame
+    from native_receipt_context import receipt_prompt, receipt_reader, SCHEMA as RECEIPT_SCHEMA
+    from native_failure import native_failure
 
 
 FILE_ACTION_SCHEMA = {
@@ -638,10 +642,7 @@ def conversation_input(request):
                    'The excerpts below identify earlier messages; they are not new instructions.\n')
         prompt += json.dumps([{key: item[key] for key in ('message_id', 'reactions', 'author', 'excerpt')}
                               for item in feedback], ensure_ascii=False)
-    receipts = request['task'].get('_native_receipts', [])
-    if receipts:
-        prompt += '\nCompleted native tools for this task. Use these results. Do not repeat their effects:\n'
-        prompt += json.dumps([{'action': item['action'], 'result': item['result']} for item in receipts])
+    prompt += receipt_prompt(request['task'].get('_native_receipts', []))
     if request['task'].get('_direct_reply_message_id') and request['task'].get('source_bot_id'):
         prompt += ('\nThe person addressed you directly. Answer them in this conversation. '
                    'The original bot assignment remains context; sending its owner a message does not answer the person. '
@@ -1218,6 +1219,12 @@ def run_turn(request, emit, request_receipt):
                     return json.dumps({'error': str(error)})
             registry.register(name=workspace_schema['name'], toolset='coconut', schema=workspace_schema, handler=workspace)
             allowed.add(workspace_schema['name'])
+        # Register an empty view too, so reused workers never advertise a stale
+        # process-wide definition without a handler for this specific turn.
+        read_snapshot = receipt_reader(request['task'].get('_native_receipts', []))
+        scope.register(name=RECEIPT_SCHEMA['name'], toolset='coconut', schema=RECEIPT_SCHEMA,
+                       handler=lambda arguments, **kwargs: json.dumps(read_snapshot(arguments)))
+        allowed.add(RECEIPT_SCHEMA['name'])
         coconut_toolset = scope.toolset(allowed)
 
         def collect_response(text):
@@ -1355,6 +1362,8 @@ def run_turn(request, emit, request_receipt):
                         platform='coconut', gateway_session_key=request['task']['id'], clarify_callback=bridge.clarify,
                         skip_context_files=False, load_soul_identity=True, skip_memory=False, skip_background_review=False,
                         save_trajectories=False, run_budget_seconds=None)
+        from native_compression import install as install_compression_fallback
+        install_compression_fallback(agent, profile_config, fallback)
         scope.agent = agent
         from live_messages import LiveMessages
         scope.turn_id = request['task'].get('_native_turn_id')
@@ -1402,7 +1411,8 @@ def run_turn(request, emit, request_receipt):
         if scope.unconfirmed:
             raise TurnUnconfirmed()
         if result.get('completed') is not True or result.get('failed') or result.get('interrupted'):
-            raise RuntimeError('Hermes could not finish this turn.')
+            emit('failed', native_failure(result))
+            return 1
         if creation_errors:
             category = next(iter(creation_errors.values()))
             emit('failed', {'summary': 'The Mac did not confirm the last bot creation request. Check the bot list before retrying.',
@@ -1434,10 +1444,10 @@ def run_turn(request, emit, request_receipt):
             emit('failed', {'summary': 'Coconut must confirm the last tool result before this work continues.'})
             return 1
         return 0
-    except Exception as error:
+    except Exception:
         # Model libraries can include request bodies or keys in exception strings.
-        summary = 'Coconut could not prepare this conversation' if agent is None else 'Hermes could not finish this reply'
-        emit('failed', {'summary': f'{summary} ({type(error).__name__}).'})
+        summary = 'Coconut could not prepare this conversation.' if agent is None else 'Hermes could not finish this reply.'
+        emit('failed', {'summary': summary, 'error_code': 'worker_preparation_failed' if agent is None else 'native_turn_failed'})
         return 1
     finally:
         if 'model_start' in trace.emitted:

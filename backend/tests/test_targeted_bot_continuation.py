@@ -303,7 +303,10 @@ class TargetedBotContinuationTests(unittest.TestCase):
         task, history = captured[0]
         self.assertEqual([r['id'] for r in task['_native_receipts']], saved)
         request = dict(operation='start', bot=self.dev, task=task, history=history)
-        self.assertIn('Push accepted', conversation_input(request)[0])
+        self.assertIn('coconut_read_receipts', conversation_input(request)[0])
+        from coconut.native_receipt_context import read_receipts
+        recovered = read_receipts(task['_native_receipts'], {'receipt_id': saved[0]})
+        self.assertEqual(json.loads(recovered['json_chunk'])['result'], 'Push accepted')
         calls = []
         token = current.set(TurnScope(task['id']))
         home = Path(self.temp.name) / 'bridge-home'

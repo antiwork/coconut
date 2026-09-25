@@ -3398,9 +3398,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 if is_silent_response(payload.get('summary')):
                     payload = dict(payload, summary='Complete.')
                 error_code = payload.get('error_code')
-                known_errors = set()
+                from .native_failure import NATIVE_ERROR_CODES
+                known_errors = set(NATIVE_ERROR_CODES)
                 known_errors.update({'bot_creation_invalid_request', 'bot_creation_rejected', 'bot_creation_receipt_unconfirmed'})
-                if kind == 'failed' and error_code in known_errors:
+                if kind == 'failed' and isinstance(error_code, str) and error_code in known_errors:
                     task['error_code'] = error_code
                 has_followup = kind == 'completed' and bool(task.get('_steering'))
                 task.update(status='queued' if has_followup else kind, summary='Applying your follow-up at the next safe turn.' if has_followup else str(payload.get('summary', payload.get('text', 'Ready to review.' if kind == 'completed' else 'Work failed.')))[:500], updated_at=now())

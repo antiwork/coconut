@@ -837,7 +837,7 @@ class ProviderTests(unittest.TestCase):
 
     def test_context_requests_expose_no_bot_message_tool(self):
         self.configure_peer()
-        provider = self.fake_hermes("assert set(registry.handlers) == {'coconut_ask', 'message_agent'}\nkwargs['stream_callback']('The proposal remains pending.')\nreturn {'completed': True, 'final_response': 'The proposal remains pending.'}\n")
+        provider = self.fake_hermes("assert set(registry.handlers) == {'coconut_ask', 'coconut_read_receipts', 'message_agent'}\nkwargs['stream_callback']('The proposal remains pending.')\nreturn {'completed': True, 'final_response': 'The proposal remains pending.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.answer_context(self.task, self.bot, [], 'Explain the proposal.', lambda kind, data: events.append((kind, data)))
@@ -897,7 +897,7 @@ class ProviderTests(unittest.TestCase):
 
     def test_zero_budget_keeps_native_tool_but_blocks_new_deliveries(self):
         self.configure_peer(budget=0)
-        provider = self.fake_hermes("assert set(registry.handlers) == {'coconut_propose_file', 'coconut_ask', 'coconut_suggest', 'coconut_restart_service', 'coconut_track_pr', 'coconut_track_work', 'coconut_wait', 'coconut_continue_work', 'coconut_unlink_dependency', 'message_agent'}\nreturn {'completed': True, 'final_response': 'No new bot deliveries.'}\n")
+        provider = self.fake_hermes("assert set(registry.handlers) == {'coconut_propose_file', 'coconut_ask', 'coconut_suggest', 'coconut_restart_service', 'coconut_track_pr', 'coconut_track_work', 'coconut_wait', 'coconut_continue_work', 'coconut_unlink_dependency', 'coconut_read_receipts', 'message_agent'}\nreturn {'completed': True, 'final_response': 'No new bot deliveries.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
