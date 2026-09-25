@@ -98,7 +98,8 @@ def verify_contract():
     for name in ('close', 'release_clients', 'hard_interrupt'):
         if not callable(getattr(AIAgent, name, None)):
             raise ValueError('Hermes removed native conversation cleanup.')
-    for name in ('resolve_session_by_title', 'get_meta', 'set_meta', 'set_session_title', 'create_session', 'replace_messages', 'resolve_resume_session_id', 'get_resume_conversations', 'get_session', 'end_session', 'close'):
+    for name in ('resolve_session_by_title', 'get_meta', 'set_meta', 'set_session_title', 'create_session', 'replace_messages', 'resolve_resume_session_id', 'get_resume_conversations', 'get_session', 'end_session', 'reopen_session',
+                 'maybe_auto_prune_and_vacuum', 'close'):
         if not callable(getattr(SessionDB, name, None)):
             raise ValueError('Hermes removed a required conversation storage interface: ' + name)
     require_keywords(SessionDB.replace_messages, {'archive_dropped', 'reject_active_turn_lease'})

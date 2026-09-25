@@ -258,6 +258,16 @@ class HermesProvider(FixtureProvider):
                                 cwd=cwd, env=env, timeout=15, check=True)
         return json.loads(result.stdout)
 
+    def maintain_sessions(self, bot, outcomes, retention_days):
+        """End the native sessions of idle outcomes and run Hermes session maintenance for one bot."""
+        env, cwd = self.environment(bot['id'])
+        request = dict(bot=bot, outcomes=outcomes, retention_days=retention_days)
+        # A first VACUUM of a large session store can take minutes. Hermes throttles later runs.
+        result = subprocess.run([self.python, str(Path(__file__).with_name('native_sessions.py'))],
+                                input=json.dumps(request), text=True, capture_output=True,
+                                cwd=cwd, env=env, timeout=1800, check=True)
+        return json.loads(result.stdout)
+
     def set_bot_settings(self, bot, changes):
         return self.native_settings('update_profile', [bot], bot_id=bot['id'], changes=changes)
 

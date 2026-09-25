@@ -275,3 +275,18 @@ recovery branch; the held receipt is marked `superseded` only after the new
 request validates. A partially applied checkout instead replays its recorded request
 or stays held for manual inspection. Staged edits, merge conflicts and Git
 versions without `merge-tree --write-tree` require separate manual resolution.
+
+## Native sessions
+
+Each bot keeps one open chat session. Hermes compression continues it in a new session, and resume follows that
+chain. After each turn, Coconut records the newest session in Hermes `state_meta` (`coconut.session-tip.<root>`).
+The next turn starts from it, so a prune of older ended sessions in the chain does not break the chat.
+
+Each outcome has its own work session. Once an hour, with worktree retirement, Coconut ends the newest session of
+each idle outcome with Hermes `end_session` and the reason `coconut_idle`. It never ends a chat session. Then it runs
+Hermes `maybe_auto_prune_and_vacuum` for each bot with `SESSION_RETENTION_DAYS` (7). Hermes deletes only ended
+sessions that were inactive that long, runs at most once a day, and vacuums only when enough space is free.
+
+When an idle outcome resumes, Coconut reopens its session with `reopen_session`. If Hermes has already deleted it,
+Coconut seeds a new session from its own saved messages of that work. The native card keeps the work record.
+Coconut does not change Hermes. It uses only these `SessionDB` methods, which the Hermes contract check requires.

@@ -127,6 +127,22 @@ def seed_messages(request):
     return result
 
 
+# Hermes stores these in its own state_meta table. The tip key names the newest session of a conversation.
+TIP_KEY = 'coconut.session-tip.'
+# Coconut ends the native session of an idle outcome with this reason, so Hermes can prune it later.
+IDLE_END_REASON = 'coconut_idle'
+
+
+def resume_session(db, root):
+    """Return the session that holds the current messages of the conversation that starts at root.
+
+    Coconut remembers the newest session after each turn. Hermes prunes old ended sessions, which can break the
+    compression chain from the root, so resolution starts from the remembered session when it still exists.
+    """
+    tip = db.get_meta(TIP_KEY + root)
+    return db.resolve_resume_session_id(tip if tip and db.get_session(tip) else root)
+
+
 def session_root(bot, *, execution=None, epoch=None):
     root = bot['session_id']
     if execution:
@@ -143,9 +159,10 @@ class NativeConversation:
         if execution:
             root = session_root(bot, execution=execution, epoch=request['task'].get('_conversation_epoch'))
         marker = 'coconut.history-context.' + root
-        # Repair the earlier searchable-only import inside the existing native conversation.
-        if db.get_meta(marker) != 'complete':
-            target = db.resolve_resume_session_id(root)
+        # Repair the earlier searchable-only import inside the existing native conversation. Seed it again
+        # when Hermes pruned the whole conversation of an idle outcome.
+        if db.get_meta(marker) != 'complete' or not db.get_session(resume_session(db, root)):
+            target = resume_session(db, root)
             db.create_session(target, source='coconut', model=request.get('model'))
             active, transcript = db.get_resume_conversations(target)
             prefix = missing_prefix(seed_messages(request), transcript)
@@ -156,11 +173,21 @@ class NativeConversation:
         epoch = request['task'].get('_conversation_epoch')
         if epoch and not execution:
             root = session_root(bot, epoch=epoch)
-        self.session_id = db.resolve_resume_session_id(root)
-        self.history = db.get_resume_conversations(self.session_id)[0] if db.get_session(self.session_id) else []
+        self.root = root
+        self.session_id = resume_session(db, root)
+        session = db.get_session(self.session_id)
+        if session and session.get('ended_at') and session.get('end_reason') == IDLE_END_REASON:
+            # The outcome resumed after Coconut ended its idle session.
+            db.reopen_session(self.session_id)
+        self.history = db.get_resume_conversations(self.session_id)[0] if session else []
 
     def close(self):
-        self.db.close()
+        try:
+            # Compression during the turn can move the conversation to a new session.
+            if self.db.get_session(self.session_id):
+                self.db.set_meta(TIP_KEY + self.root, self.db.resolve_resume_session_id(self.session_id))
+        finally:
+            self.db.close()
 
 
 def missing_prefix(saved, transcript):

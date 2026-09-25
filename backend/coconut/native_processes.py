@@ -4,9 +4,9 @@ from __future__ import annotations
 import json
 import sys
 if __package__:
-    from .native_conversation import session_root
+    from .native_conversation import resume_session, session_root
 else:
-    from native_conversation import session_root
+    from native_conversation import resume_session, session_root
 
 
 def delegation_completion(item, *, session_id=None, resolve_session=None):
@@ -51,7 +51,7 @@ def completions(request):
     try:
         for item in request['processes']:
             root = session_root(request['bot'], execution=item.get('execution_session_id'), epoch=item.get('epoch'))
-            session_id = db.resolve_resume_session_id(root)
+            session_id = resume_session(db, root)
             if item.get('delegation_ids'):
                 results.extend(delegation_completion(item, session_id=session_id,
                     resolve_session=db.resolve_resume_session_id))
