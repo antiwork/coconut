@@ -66,7 +66,12 @@ The poller holds the service lock only to read this state. It runs Git outside t
 Retirement does these steps:
 
 1. It validates the binding and the Git worktree record.
-2. It skips a locked worktree, a worktree that contains another worktree, and a Git operation in progress.
+2. It skips a locked worktree and a Git operation in progress.
+   A bot can create worktrees inside its own worktree, for example to test a base commit.
+   After the outcome and process checks, Coconut removes each such worktree with `git worktree remove`.
+   It removes one only when Coconut does not track it, it is not locked, it has no change, no ignored file
+   outside the rebuildable folders, and no Git operation in progress, and a branch or another ref holds its commit.
+   Otherwise it skips the parent. A nested record whose folder is gone does not count.
 3. It skips a worktree when `lsof` shows a process cwd or an open file in it, or when `lsof` is not available.
    Before this check, it stops the orphaned processes of the outcome that hold the worktree, and their child processes.
    An orphan is a process that launchd (PID 1) adopted, and that is older than `ORPHAN_AGE_SECONDS` (six hours).

@@ -971,6 +971,109 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
             self.assertEqual(work_workspace.busy_paths({str(held), str(link)}), {str(held), str(link)})
 
+    def nested_worktree(self, parent, name='base', folder='tmp'):
+        """Add a detached worktree inside the parent, as a bot does to test a base commit."""
+        inner = parent / folder / name
+        git(self.repo, 'worktree', 'add', '-q', '--detach', str(inner), 'HEAD')
+        return inner
+
+    def listed(self, path):
+        return any(Path(r['path']).resolve() == path.resolve() for r in work_workspace.registered(self.repo))
+
+    def test_a_clean_nested_worktree_is_removed_and_the_parent_retires(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path)
+        (inner / 'node_modules').mkdir()
+        (inner / 'node_modules' / 'cache.js').write_text('rebuildable\n')
+        self.assertEqual(self.retire(), [identity])
+        self.assertFalse(inner.exists())
+        self.assertFalse(self.listed(inner))
+        self.assertIn('retired', self.registry()[identity])
+
+    def test_a_nested_worktree_that_holds_work_keeps_the_parent(self):
+        cases = {
+            'untracked': lambda inner: (inner / 'draft.txt').write_text('keep\n'),
+            'modified': lambda inner: (inner / 'tracked.txt').write_text('changed\n'),
+            'ignored': lambda inner: (inner / '.env').write_text('SECRET=1\n'),
+            'locked': lambda inner: git(self.repo, 'worktree', 'lock', str(inner)),
+            'unsaved commit': lambda inner: (
+                (inner / 'new.txt').write_text('commit\n'), git(inner, 'add', 'new.txt'), self.commit(inner, 'Only here')),
+        }
+        for name, change in cases.items():
+            with self.subTest(name=name):
+                _, identity, path, _ = self.outcome()
+                inner = self.nested_worktree(path, name.replace(' ', '-'))
+                change(inner)
+                self.assertEqual(self.retire(), [])
+                self.assertTrue(inner.is_dir())
+                self.assertTrue(self.listed(inner))
+                self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_nested_worktree_at_a_path_that_git_does_not_ignore_is_removed(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path, folder='checks')
+        self.assertEqual(self.retire(), [identity])
+        self.assertFalse(inner.exists())
+
+    def test_one_nested_worktree_with_work_keeps_every_nested_worktree(self):
+        _, identity, path, _ = self.outcome()
+        first = self.nested_worktree(path, 'first')
+        second = self.nested_worktree(path, 'second')
+        (second / 'draft.txt').write_text('keep\n')
+        self.assertEqual(self.retire(), [])
+        # Coconut checks all nested worktrees before it removes any.
+        self.assertTrue(first.is_dir())
+        self.assertTrue(self.listed(first))
+        self.assertTrue(second.is_dir())
+
+    def test_an_unreadable_registry_keeps_the_nested_worktree(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path)
+        with patch('coconut.work_workspace.json.loads', side_effect=[self.registry(), ValueError('broken')]):
+            with self.assertRaisesRegex(ValueError, 'cannot read the worktree registry'):
+                work_workspace.remove_nested(self.workspaces, path.resolve(), self.repo)
+        self.assertTrue(inner.is_dir())
+
+    def test_an_ignored_file_written_before_removal_keeps_the_nested_worktree(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path)
+        original = work_workspace.ignored_files
+        calls = []
+        def late(where):
+            calls.append(where)
+            # The file appears after the first check and before the removal.
+            if where == inner.resolve() and len([c for c in calls if c == inner.resolve()]) == 2:
+                (inner / '.env').write_text('SECRET=1\n')
+            return original(where)
+        with patch('coconut.work_workspace.ignored_files', side_effect=late):
+            with self.assertRaisesRegex(ValueError, 'with changes'):
+                work_workspace.remove_nested(self.workspaces, path.resolve(), self.repo)
+        self.assertEqual((inner / '.env').read_text(), 'SECRET=1\n')
+
+    def test_a_doubly_nested_worktree_is_removed_deepest_first(self):
+        _, identity, path, _ = self.outcome()
+        outer = self.nested_worktree(path, 'outer', folder='checks')
+        inner = self.nested_worktree(outer, 'inner', folder='checks')
+        self.assertEqual(self.retire(), [identity])
+        self.assertFalse(outer.exists())
+        self.assertFalse(self.listed(inner))
+        self.assertFalse(self.listed(outer))
+
+    def test_a_nested_record_without_its_folder_does_not_keep_the_parent(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path)
+        shutil.rmtree(inner)
+        self.assertEqual(self.retire(), [identity])
+
+    def test_a_nested_worktree_of_another_outcome_keeps_the_parent(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path)
+        saved = self.registry()
+        saved['inner-binding'] = dict(path=str(inner), branch='none', repository=str(self.repo), outcome='other')
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        self.assertEqual(self.retire(), [])
+        self.assertTrue(inner.is_dir())
+
     def test_elapsed_times_from_ps_become_seconds(self):
         self.assertEqual(work_workspace.elapsed_seconds('05'), 5)
         self.assertEqual(work_workspace.elapsed_seconds('02:03'), 123)
