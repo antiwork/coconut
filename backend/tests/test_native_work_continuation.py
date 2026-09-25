@@ -93,12 +93,7 @@ class NativeReviewerRuntimeTests(unittest.TestCase):
 
 
 class NativeWorkContinuationTests(unittest.TestCase):
-    def setUp(self):
-        fixtures.TargetedBotContinuationTests.setUp(self)
-        # Tests do not read this machine's processes. By default the environments are hidden, so a call can still run.
-        self.outcomes = patch('coconut.work_workspace.process_outcomes', return_value=None)
-        self.outcomes.start()
-        self.addCleanup(self.outcomes.stop)
+    setUp = fixtures.TargetedBotContinuationTests.setUp
     tearDown = fixtures.TargetedBotContinuationTests.tearDown
     write = fixtures.TargetedBotContinuationTests.write
     prepare = fixtures.TargetedBotContinuationTests.prepare
@@ -808,41 +803,71 @@ class NativeWorkContinuationTests(unittest.TestCase):
                 self.resume(coordinator)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
-    def test_a_tool_call_whose_processes_ended_does_not_block_the_audited_pr(self):
-        owner, coordinator, work, pr = self.audited_requester_pr()
-        # Two Care reviews stopped without results. No worker, native run, or process of their execution remains.
+    def ended_branch(self, coordinator, action='terminal'):
         branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
                       _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
                       _waiting_on=[])
         self.service._put('tasks', branch)
-        self.executing_receipt(branch)
+        self.service._put('native_receipts', dict(id='cut-off', task_id=branch['id'], state='executing',
+            turn_id=branch.get('_native_turn_id'), action={'name': action, 'arguments': {}}))
+        return branch
+
+    def test_a_tool_call_whose_processes_ended_does_not_block_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # Two Care reviews stopped without results. The poller found no process of their execution.
+        branch = self.ended_branch(coordinator)
         chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
         with patch.object(self.service, '_work_chain', side_effect=chains):
-            for outcomes, worker in (({'coordinator-branch'}, False), (None, False), ({'another-execution'}, True)):
-                with self.subTest(outcomes=outcomes, worker=worker), \
-                        patch('coconut.work_workspace.process_outcomes', return_value=outcomes):
-                    if worker:
-                        self.service.running[branch['id']] = Mock(is_alive=Mock(return_value=True))
-                    with self.assertRaisesRegex(ServiceError, 'another execution'):
-                        self.resume(coordinator)
-                    self.service.running.pop(branch['id'], None)
-            with patch('coconut.work_workspace.process_outcomes', return_value={'another-execution'}):
-                self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+            receipt = self.service._get('native_receipts', 'cut-off')
+            self.service._put('native_receipts', dict(receipt, _process_ended_at='2026-09-25T17:00:00Z'))
+            self.service.running[branch['id']] = Mock(is_alive=Mock(return_value=True))
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+            self.service.running.pop(branch['id'])
+            self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
         # The receipt stays for the owner's next turn. Only the writer guard reads it as ended.
-        self.assertEqual(self.service._get('native_receipts', 'executing-' + branch['id'])['state'], 'executing')
+        self.assertEqual(self.service._get('native_receipts', 'cut-off')['state'], 'executing')
+
+    def test_the_poller_marks_a_call_ended_only_when_no_process_remains(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = self.ended_branch(coordinator)
+        workspace = self.service.root / 'workspaces' / 'coordinator-branch'
+        workspace.mkdir(parents=True, exist_ok=True)
+        cases = (({'coordinator-branch'}, set(), False), (None, set(), False),
+                 (set(), {str(workspace)}, False), (set(), ValueError('no lsof'), False), (set(), set(), True))
+        for outcomes, busy, ended in cases:
+            with self.subTest(outcomes=outcomes, busy=busy), \
+                    patch('coconut.work_workspace.process_outcomes', return_value=outcomes), \
+                    patch('coconut.work_workspace.busy_paths', side_effect=[busy]):
+                self.assertEqual(self.service._mark_ended_tool_calls(current=0), ['cut-off'] if ended else [])
+                self.assertEqual(bool(self.service._get('native_receipts', 'cut-off').get('_process_ended_at')), ended)
+                self.service._ended_tool_check_at = 0
+        self.assertEqual(self.service._get('native_receipts', 'cut-off')['state'], 'executing')
+
+    def test_the_poller_skips_a_live_worker_a_wait_and_runs_once_a_minute(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = self.ended_branch(coordinator)
+        with patch('coconut.work_workspace.process_outcomes', return_value=set()) as outcomes, \
+                patch('coconut.work_workspace.busy_paths', return_value=set()):
+            self.service.running[branch['id']] = Mock(is_alive=Mock(return_value=True))
+            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
+            self.service.running.pop(branch['id'])
+            self.assertEqual(self.service._mark_ended_tool_calls(current=30), [])
+            outcomes.assert_not_called()
+            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'),
+                                                      action={'name': 'coconut_wait', 'arguments': {}}))
+            self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
 
     def test_an_ended_wait_or_relay_call_still_blocks_the_audited_pr(self):
         owner, coordinator, work, pr = self.audited_requester_pr()
-        branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
-                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
-                      _waiting_on=[])
-        self.service._put('tasks', branch)
-        # A wait ends with a delivery, not with a process, so no process check can end it.
-        self.service._put('native_receipts', dict(id='wait-call', task_id=branch['id'], state='executing',
-            turn_id=branch.get('_native_turn_id'), action={'name': 'coconut_wait', 'arguments': {}}))
+        # A wait ends with a delivery, not with a process, so an ended mark cannot end it.
+        branch = self.ended_branch(coordinator, action='coconut_wait')
+        self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'),
+                                                  _process_ended_at='2026-09-25T17:00:00Z'))
         chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
-        with patch.object(self.service, '_work_chain', side_effect=chains), \
-                patch('coconut.work_workspace.process_outcomes', return_value=set()):
+        with patch.object(self.service, '_work_chain', side_effect=chains):
             with self.assertRaisesRegex(ServiceError, 'another execution'):
                 self.resume(coordinator)
 

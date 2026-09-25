@@ -70,26 +70,19 @@ class NativeOutcomes:
         source = self._get('tasks', owner['source_task_id']) if owner.get('source_task_id') else None
         pending_decisions = {d['task_id'] for d in self._all('decisions') if d['status'] == 'pending'}
         open_contexts = {c['task_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
-        outcomes = []
 
         def running_tool(task):
-            # A tool call without a result blocks while its task can still run it. After the worker, the native run,
-            # and every process of the execution have ended, the call cannot change the worktree. Its unknown effect
-            # stays in the receipt for the owner's next turn. If the system hides process environments, it still blocks.
+            # A tool call without a result blocks while its task can still run it. The process poller marks a local
+            # command ended after every process of its execution is gone (see _mark_ended_tool_calls). Its unknown
+            # effect stays in the receipt for the owner's next turn. A wait or a relay ends with a delivery instead.
             receipts = self._native_task_receipts(task['id'], state='executing')
             if not receipts:
                 return False
-            # Only a local command runs as a process of the execution. A wait or a relay ends with a delivery instead.
-            if any((r.get('action') or {}).get('name') not in LOCAL_COMMAND_TOOLS for r in receipts):
-                return True
             worker = self.running.get(task['id'])
             card = snapshots.get(task['id']) or {}
-            if (worker and worker.is_alive()) or card.get('current_run_id') or card.get('worker_pid'):
-                return True
-            if not outcomes:
-                from . import work_workspace
-                outcomes.append(work_workspace.process_outcomes())
-            return outcomes[0] is None or execution_key(task) in outcomes[0]
+            return bool((worker and worker.is_alive()) or card.get('current_run_id') or card.get('worker_pid')
+                        or any((r.get('action') or {}).get('name') not in LOCAL_COMMAND_TOOLS
+                               or not r.get('_process_ended_at') for r in receipts))
 
         def quiet(task):
             # Every live signal that the writer guard reads. A failed task can still hold a running tool.

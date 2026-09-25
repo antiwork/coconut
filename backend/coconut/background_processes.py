@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 import threading
+import time
 
 
+# The poller checks interrupted tool calls at most this often, because lsof scans every process.
+ENDED_TOOL_CHECK_SECONDS = 60
 PENDING_COMPLETIONS = """
     (COALESCE(json_extract(data, '$._process_delivery'), '') IN ('', 0)
      OR json_extract(data, '$._delegation_ack_pending')=1)
@@ -107,7 +111,82 @@ class BackgroundProcesses:
                         self._expire_work_descriptions()
             except Exception:
                 logging.getLogger(__name__).exception('Could not deliver a Hermes process result.')
+            try:
+                self._mark_ended_tool_calls()
+            except Exception:
+                logging.getLogger(__name__).exception('Could not check interrupted tool calls.')
             self.stopping.wait(1)
+
+    def _mark_ended_tool_calls(self, current=None):
+        """Mark a local command without a result as ended when no process of its execution remains.
+
+        A worker can stop before a terminal call returns. Its receipt then stays executing, and the writer guard
+        keeps other work out. This check runs at most once a minute and holds the service lock only to read and write.
+        A call has ended when its task has no live worker or native run, no process carries its execution's
+        COCONUT_WORKSPACE_OUTCOME, and lsof shows no process in its workspaces. The receipt keeps its state, so
+        the owner's next turn still sees the unknown effect.
+        """
+        from .native_outcomes import LOCAL_COMMAND_TOOLS
+        from .service import now
+        from .work_capacity import execution_key
+        from . import work_workspace
+        current = time.monotonic() if current is None else current
+        if current < getattr(self, '_ended_tool_check_at', 0):
+            return []
+        self._ended_tool_check_at = current + ENDED_TOOL_CHECK_SECONDS
+        native = dict(self.kanban.tasks) if self.kanban else {}
+        with self.lock:
+            records = [json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM native_receipts WHERE json_extract(data,'$.state')='executing'")]
+            candidates = []
+            for record in records:
+                if (record.get('action') or {}).get('name') not in LOCAL_COMMAND_TOOLS or record.get('_process_ended_at'):
+                    continue
+                row = self.db.execute('SELECT data FROM tasks WHERE id=?', (record['task_id'],)).fetchone()
+                if not row:
+                    continue
+                task = json.loads(row[0])
+                worker = self.running.get(task['id'])
+                card = native.get(task['id']) or {}
+                if (worker and worker.is_alive()) or card.get('current_run_id') or card.get('worker_pid'):
+                    continue
+                candidates.append((record['id'], task['id'], execution_key(task),
+                                   (task.get('_kanban_claim') or {}).get('workspace')))
+        if not candidates:
+            return []
+        outcomes = work_workspace.process_outcomes()
+        if outcomes is None:
+            return []
+        root = self.root / 'workspaces'
+        try:
+            saved = json.loads((root / 'worktrees.json').read_text())
+        except (OSError, ValueError):
+            saved = {}
+        paths = {}
+        for identity, task_id, key, workspace in candidates:
+            places = {str(root / key)} | {b['path'] for b in saved.values() if isinstance(b, dict) and b.get('outcome') == key}
+            if workspace:
+                places.add(workspace)
+            paths[identity] = {p for p in places if Path(p).exists()}
+        try:
+            busy = work_workspace.busy_paths(set().union(*paths.values())) if any(paths.values()) else set()
+        except ValueError:
+            return []
+        ended = []
+        with self.transaction():
+            for identity, task_id, key, _ in candidates:
+                if key in outcomes or paths[identity] & busy:
+                    continue
+                record = self._get('native_receipts', identity)
+                worker = self.running.get(task_id)
+                if record['state'] != 'executing' or (worker and worker.is_alive()):
+                    continue
+                record['_process_ended_at'] = now()
+                self._put('native_receipts', record)
+                ended.append(identity)
+        if ended:
+            logging.getLogger(__name__).warning('Coconut found no process for interrupted tool calls %s.', ended)
+        return ended
 
     def _expire_work_descriptions(self):
         from datetime import datetime, timezone

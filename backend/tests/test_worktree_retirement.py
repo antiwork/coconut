@@ -933,8 +933,19 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.addCleanup(process.kill)
         time.sleep(0.2)
         found = work_workspace.process_outcomes()
-        if found is not None:
-            self.assertIn('probe-outcome', found)
+        if found is None:
+            self.skipTest('This system hides process environments.')
+        self.assertIn('probe-outcome', found)
+
+    def test_busy_paths_reports_each_held_path_from_one_scan(self):
+        held, free = self.root / 'held', self.root / 'free'
+        held.mkdir()
+        free.mkdir()
+        listing = b'p10\nfcwd\nn' + os.fsencode(str(held)) + b'/log.txt\np11\nfcwd\nn' + os.fsencode(str(free)) + b'-other\n'
+        self.holders.stop()
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing)) as run:
+            self.assertEqual(work_workspace.busy_paths({str(held), str(free)}), {str(held)})
+        self.assertEqual(run.call_count, 1)
 
     def test_elapsed_times_from_ps_become_seconds(self):
         self.assertEqual(work_workspace.elapsed_seconds('05'), 5)

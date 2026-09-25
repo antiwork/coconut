@@ -234,6 +234,26 @@ def holders(path):
 STOP_SECONDS = 5
 
 
+def busy_paths(paths):
+    """Return the paths in which a process has its cwd or an open file. Use one lsof scan for all paths."""
+    try:
+        result = subprocess.run(['lsof', '-n', '-P', '-w', '-F', 'n'], capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        raise ValueError('Coconut cannot check open files without lsof.') from None
+    if not result.stdout:
+        raise ValueError('lsof did not list open files.')
+    prefixes = {}
+    for path in paths:
+        for form in {str(path), str(Path(path).resolve())}:
+            prefixes[os.fsencode(form)] = path
+    busy = set()
+    for line in result.stdout.splitlines():
+        if line.startswith(b'n'):
+            name = line[1:]
+            busy.update(path for prefix, path in prefixes.items() if name == prefix or name.startswith(prefix + b'/'))
+    return busy
+
+
 def in_use(path):
     """Return True when a process has its cwd or an open file in the path."""
     return bool(holders(path))
@@ -284,9 +304,15 @@ def process_outcomes():
     if (proc / 'self' / 'environ').exists():
         found = set()
         for environ in proc.glob('[0-9]*/environ'):
-            with contextlib.suppress(OSError):
-                found.update(item[len(mark):].decode(errors='replace') for item in environ.read_bytes().split(b'\0')
-                             if item.startswith(mark.encode()))
+            try:
+                data = environ.read_bytes()
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            except OSError:
+                # An unreadable environment can hide a live outcome.
+                return None
+            found.update(item[len(mark):].decode(errors='replace') for item in data.split(b'\0')
+                         if item.startswith(mark.encode()))
         return found
     try:
         # On macOS, `ps -E` prints each environment after its command, for processes of the same user.
