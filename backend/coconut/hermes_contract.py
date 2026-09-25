@@ -102,6 +102,13 @@ def verify_contract():
         if not callable(getattr(SessionDB, name, None)):
             raise ValueError('Hermes removed a required conversation storage interface: ' + name)
     require_keywords(SessionDB.replace_messages, {'archive_dropped', 'reject_active_turn_lease'})
+    from agent.context_compressor import ContextCompressor, pin_summary_route, take_pinned_summary_route
+    from agent.auxiliary_client import AuxiliaryClientUnavailable
+    assert callable(pin_summary_route) and callable(take_pinned_summary_route)
+    assert issubclass(AuxiliaryClientUnavailable, Exception)
+    require_keywords(pin_summary_route, {'route'})
+    require_keywords(ContextCompressor._call_summary_llm, {'prompt', 'prompt_started_at'})
+    require_keywords(ContextCompressor._generate_summary, {'turns_to_summarize'})
     require_keywords(registry.register, {'name', 'toolset', 'schema', 'handler'})
     require_keywords(registry.dispatch, {'name', 'args'})
     require_keywords(registry.deregister, {'name'})

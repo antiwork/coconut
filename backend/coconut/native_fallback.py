@@ -103,7 +103,8 @@ def entry_key(entry):
 
 def for_turn():
     """Read native routes for each turn; an explicit profile chain takes precedence."""
-    home = worker_home = Path(os.environ['HERMES_HOME'])
+    from hermes_constants import get_hermes_home
+    home = worker_home = get_hermes_home()
     config = raw_config(home)
     if not any(key in config for key in ('fallback_providers', 'fallback_model')):
         home = native_home(os.environ.get('COCONUT_DEFAULT_HOME', home))

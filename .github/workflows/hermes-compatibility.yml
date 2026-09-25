@@ -80,6 +80,10 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_live_messages.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_initial_input.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_api_fallback.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_compression.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_compression_fallback.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_receipt_context.py
+          "$COCONUT_HERMES_PYTHON" scripts/test_native_receipt_context.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON" --evidence .runtime/receipt-test-evidence
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_kanban.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_dependency_unlink.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_claim_continuation.py
