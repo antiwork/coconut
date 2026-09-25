@@ -213,6 +213,11 @@ class WorkSources:
             self.retire_finished_worktrees()
         except Exception:
             logging.getLogger(__name__).exception('Could not retire finished worktrees.')
+        try:
+            # Session maintenance uses the same idle rules and the same hourly cadence.
+            self.maintain_native_sessions()
+        except Exception:
+            logging.getLogger(__name__).exception('Could not maintain native sessions.')
 
     def audit_work_sources(self):
         path = self.root / 'work-sources.json'

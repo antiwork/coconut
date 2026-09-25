@@ -15,6 +15,26 @@ def require_keywords(function, names):
         raise ValueError(f'Hermes API changed in {function.__qualname__}: ' + ', '.join(missing))
 
 
+def verify_session_lifecycle_contract():
+    """Session maintenance reads the store path and the end fields of a session row. Check them on a scratch store."""
+    from hermes_state import SessionDB
+    with tempfile.TemporaryDirectory(prefix='coconut-session-contract-') as temporary:
+        db = SessionDB(db_path=Path(temporary) / 'state.db')
+        try:
+            if Path(db.db_path) != Path(temporary) / 'state.db':
+                raise ValueError('Hermes no longer exposes the session store path.')
+            db.create_session('coconut-contract', source='coconut')
+            db.end_session('coconut-contract', 'coconut_idle')
+            ended = db.get_session('coconut-contract')
+            if not ended.get('ended_at') or ended.get('end_reason') != 'coconut_idle':
+                raise ValueError('Hermes changed the end fields of a session.')
+            db.reopen_session('coconut-contract')
+            if db.get_session('coconut-contract').get('ended_at'):
+                raise ValueError('Hermes no longer reopens an ended session.')
+        finally:
+            db.close()
+
+
 def verify_contract():
     import mcp
     from hermes_cli import kanban_db, kanban_db_connect, kanban_db_dispatch, kanban_db_workspace
@@ -98,7 +118,8 @@ def verify_contract():
     for name in ('close', 'release_clients', 'hard_interrupt'):
         if not callable(getattr(AIAgent, name, None)):
             raise ValueError('Hermes removed native conversation cleanup.')
-    for name in ('resolve_session_by_title', 'get_meta', 'set_meta', 'set_session_title', 'create_session', 'replace_messages', 'resolve_resume_session_id', 'get_resume_conversations', 'get_session', 'end_session', 'close'):
+    for name in ('resolve_session_by_title', 'get_meta', 'set_meta', 'set_session_title', 'create_session', 'replace_messages', 'resolve_resume_session_id', 'get_resume_conversations', 'get_session', 'end_session', 'reopen_session',
+                 'prune_sessions', 'vacuum', 'close'):
         if not callable(getattr(SessionDB, name, None)):
             raise ValueError('Hermes removed a required conversation storage interface: ' + name)
     require_keywords(SessionDB.replace_messages, {'archive_dropped', 'reject_active_turn_lease'})
@@ -109,6 +130,13 @@ def verify_contract():
     require_keywords(pin_summary_route, {'route'})
     require_keywords(ContextCompressor._call_summary_llm, {'prompt', 'prompt_started_at'})
     require_keywords(ContextCompressor._generate_summary, {'turns_to_summarize'})
+    # Coconut session maintenance calls these by keyword and reads the returned counts.
+    require_keywords(SessionDB.prune_sessions, {'older_than_days', 'source', 'sessions_dir', 'exclude_active_write_guards'})
+    from hermes_state_maintenance import _PRUNE_FILTER_NAMES
+    if 'end_reason' not in _PRUNE_FILTER_NAMES:
+        raise ValueError('Hermes no longer prunes sessions by end reason.')
+    from hermes_state_holders import foreign_state_db_holders, in_process_state_db_holders
+    require_keywords(in_process_state_db_holders, {'exclude'})
     require_keywords(registry.register, {'name', 'toolset', 'schema', 'handler'})
     require_keywords(registry.dispatch, {'name', 'args'})
     require_keywords(registry.deregister, {'name'})
@@ -238,6 +266,7 @@ def verify_contract():
         if config.require_readable_config_before_write(path)['display']['theme'] != 'coconut-contract':
             raise ValueError('The profile update changed unrelated Hermes settings.')
 
+    verify_session_lifecycle_contract()
     verify_parallel_work_contract()
     verify_delegation_contract()
     verify_terminal_contract()
