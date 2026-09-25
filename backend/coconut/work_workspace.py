@@ -12,6 +12,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tarfile
 import time
 from types import SimpleNamespace
@@ -234,6 +235,30 @@ def holders(path):
 STOP_SECONDS = 5
 
 
+def busy_paths(paths):
+    """Return the paths in which a process has its cwd or an open file. Use one lsof scan for all paths."""
+    try:
+        result = subprocess.run(['lsof', '-n', '-P', '-w', '-F', 'n'], capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        raise ValueError('Coconut cannot check open files without lsof.') from None
+    # A failed lsof can print part of the list. A missing holder would release the writer guard, so require success.
+    if result.returncode or not result.stdout:
+        raise ValueError('lsof did not list all open files.')
+    # Two paths can share one resolved form, such as /tmp and /private/tmp on macOS. Keep every path for each form.
+    prefixes = {}
+    for path in paths:
+        for form in {str(path), str(Path(path).resolve())}:
+            prefixes.setdefault(os.fsencode(form), set()).add(path)
+    busy = set()
+    for line in result.stdout.splitlines():
+        if line.startswith(b'n'):
+            name = line[1:]
+            for prefix, owners in prefixes.items():
+                if name == prefix or name.startswith(prefix + b'/'):
+                    busy |= owners
+    return busy
+
+
 def in_use(path):
     """Return True when a process has its cwd or an open file in the path."""
     return bool(holders(path))
@@ -272,6 +297,55 @@ def environment_names(pid, mark):
     except (OSError, subprocess.TimeoutExpired):
         return False
     return mark in result.stdout.split()
+
+
+def process_outcomes(probe=None):
+    """Return the COCONUT_WORKSPACE_OUTCOME values of the running processes.
+
+    Return None when this system hides process environments. Then no caller can prove that a process ended.
+    `probe` is the interpreter that runs workers. macOS shows the environment of some programs only, so on macOS
+    Coconut starts that interpreter with a marker and trusts the scan only when the marker shows.
+    """
+    mark = 'COCONUT_WORKSPACE_OUTCOME='
+    proc = Path('/proc')
+    if (proc / 'self' / 'environ').exists():
+        found = set()
+        for environ in proc.glob('[0-9]*/environ'):
+            try:
+                data = environ.read_bytes()
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                # Workers run as the service user, so another user's process cannot hide a Coconut outcome.
+                continue
+            except OSError:
+                # Another unreadable environment can hide a live outcome.
+                return None
+            found.update(item[len(mark):].decode(errors='replace') for item in data.split(b'\0')
+                         if item.startswith(mark.encode()))
+        return found
+    marker = mark + 'coconut-probe-' + os.urandom(8).hex()
+    try:
+        witness = subprocess.Popen([probe or sys.executable, '-c', 'import time; time.sleep(30)'],
+                                   env=dict(os.environ, COCONUT_WORKSPACE_OUTCOME=marker[len(mark):]),
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    try:
+        # On macOS, `ps -E` prints each environment after its command, for processes of the same user.
+        # One process with a non-UTF-8 argument must not stop the whole scan.
+        result = subprocess.run(['ps', '-E', '-A', '-ww', '-o', 'pid=,command='], capture_output=True, text=True,
+                                errors='replace', timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    finally:
+        witness.kill()
+        witness.wait()
+    found = set()
+    for line in result.stdout.splitlines():
+        found.update(token[len(mark):] for token in line.split() if token.startswith(mark))
+    if marker[len(mark):] not in found:
+        return None
+    found.discard(marker[len(mark):])
+    return found
 
 
 def running(pid):

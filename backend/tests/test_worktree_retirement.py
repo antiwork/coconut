@@ -912,6 +912,65 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertFalse(work_workspace.environment_names(process.pid, 'COCONUT_WORKSPACE_OUTCOME=on'))
         self.assertFalse(work_workspace.environment_names(process.pid, 'COCONUT_WORKSPACE_OUTCOME=two'))
 
+    def test_process_outcomes_trusts_the_scan_only_when_the_worker_probe_shows(self):
+        started = []
+
+        class Probe:
+            def __init__(self, arguments, env, **options):
+                started.append((arguments[0], env['COCONUT_WORKSPACE_OUTCOME']))
+
+            def kill(self):
+                pass
+
+            def wait(self):
+                pass
+
+        def listing(shown):
+            marker = started[-1][1]
+            probe = f' COCONUT_WORKSPACE_OUTCOME={marker}' if shown else ''
+            return SimpleNamespace(stdout='\n'.join([f'20 python -c sleep{probe}',
+                '10 sleep 60 COCONUT_WORKSPACE_OUTCOME=one PATH=/usr/bin', '11 /bin/sh', '12 codex COCONUT_WORKSPACE_OUTCOME=two']))
+        # Without /proc, Coconut reads macOS `ps -E`. It trusts the list only when the worker interpreter's marker shows.
+        with patch('coconut.work_workspace.Path.exists', return_value=False), \
+                patch('coconut.work_workspace.subprocess.Popen', Probe), \
+                patch('coconut.work_workspace.subprocess.run', side_effect=lambda *a, **k: listing(True)):
+            self.assertEqual(work_workspace.process_outcomes('/opt/hermes/python'), {'one', 'two'})
+        self.assertEqual(started[-1][0], '/opt/hermes/python')
+        with patch('coconut.work_workspace.Path.exists', return_value=False), \
+                patch('coconut.work_workspace.subprocess.Popen', Probe), \
+                patch('coconut.work_workspace.subprocess.run', side_effect=lambda *a, **k: listing(False)):
+            self.assertIsNone(work_workspace.process_outcomes('/opt/hermes/python'))
+
+    def test_process_outcomes_finds_a_real_child_process(self):
+        process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
+                                   env=dict(os.environ, COCONUT_WORKSPACE_OUTCOME='probe-outcome'))
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        time.sleep(0.2)
+        found = work_workspace.process_outcomes()
+        if found is None:
+            self.skipTest('This system hides process environments.')
+        self.assertIn('probe-outcome', found)
+
+    def test_busy_paths_reports_each_held_path_from_one_scan(self):
+        held, free = self.root / 'held', self.root / 'free'
+        held.mkdir()
+        free.mkdir()
+        listing = b'p10\nfcwd\nn' + os.fsencode(str(held)) + b'/log.txt\np11\nfcwd\nn' + os.fsencode(str(free)) + b'-other\n'
+        self.holders.stop()
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)) as run:
+            self.assertEqual(work_workspace.busy_paths({str(held), str(free)}), {str(held)})
+        self.assertEqual(run.call_count, 1)
+        # A failed lsof can print part of the list, so it does not count.
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=1)):
+            with self.assertRaises(ValueError):
+                work_workspace.busy_paths({str(held), str(free)})
+        # Two paths with one resolved form are both busy.
+        link = self.root / 'held-link'
+        link.symlink_to(held)
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
+            self.assertEqual(work_workspace.busy_paths({str(held), str(link)}), {str(held), str(link)})
+
     def test_elapsed_times_from_ps_become_seconds(self):
         self.assertEqual(work_workspace.elapsed_seconds('05'), 5)
         self.assertEqual(work_workspace.elapsed_seconds('02:03'), 123)
