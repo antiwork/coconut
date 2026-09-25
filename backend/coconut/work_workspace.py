@@ -405,6 +405,30 @@ def check_worktree(path, binding, repository, *, processes=True):
         raise ValueError('A process uses the worktree.')
 
 
+def remove_nested(root, path, repository):
+    """Remove the clean worktrees that a bot created inside the path. Refuse one that holds work.
+
+    A nested worktree is clean when it has no staged, unstaged, or untracked change, no ignored file outside the
+    rebuildable folders, and no Git operation in progress, and a branch or another ref holds its commit. Then the
+    shared repository keeps everything, and `git worktree remove` without --force refuses it if it changes first.
+    Call this only after the process check of the parent path, which covers the nested folders.
+    """
+    tracked = {Path(b['path']).resolve() for b in unlocked_registry(root).values()
+               if isinstance(b, dict) and isinstance(b.get('path'), str)}
+    for record in nested(path, registered(repository)):
+        inner = record['path']
+        if inner in tracked or record['locked']:
+            raise ValueError('The worktree contains another worktree.')
+        git_paths = git(inner, 'rev-parse', '--path-format=absolute', *(a for n in IN_PROGRESS for a in ('--git-path', n)))
+        if (git_output(inner, 'status', '--porcelain', '-z', strict=True) or ignored_files(inner)
+                or any(Path(p).exists() for p in git_paths.splitlines())):
+            raise ValueError('The worktree contains another worktree with changes.')
+        head = git(inner, 'rev-parse', 'HEAD')
+        if not record['branch'] and not git(repository, 'for-each-ref', '--contains', head, '--count=1', '--format=%(refname)'):
+            raise ValueError('The worktree contains another worktree with a commit that no ref holds.')
+        git(repository, 'worktree', 'remove', str(inner), timeout=CHECKOUT_SECONDS)
+
+
 def release(path, outcome, orphan_age):
     """Stop the old orphaned processes of the outcome in the path. Refuse the path if another process uses it."""
     found = holders(path)
@@ -417,7 +441,13 @@ def release(path, outcome, orphan_age):
         raise ValueError('A process uses the worktree.')
 
 
-def check_git(path, binding, repository):
+def nested(path, records):
+    """Return the Git records of the worktrees inside the path whose folders still exist."""
+    # A record without its folder holds no files, so removal of the parent cannot lose any.
+    return [r for r in records if path in r['path'].parents and r['path'].exists()]
+
+
+def check_git(path, binding, repository, *, allow_nested=False):
     """Refuse a worktree that Git still uses."""
     records = registered(repository)
     record = next((r for r in records if r['path'] == path), None)
@@ -425,7 +455,7 @@ def check_git(path, binding, repository):
         raise ValueError('Git does not register this worktree on its saved branch.')
     if record['locked']:
         raise ValueError('The worktree is locked.')
-    if any(path in r['path'].parents for r in records):
+    if nested(path, records) and not allow_nested:
         raise ValueError('The worktree contains another worktree.')
     git_paths = git(path, 'rev-parse', '--path-format=absolute', *(a for n in IN_PROGRESS for a in ('--git-path', n)))
     if any(Path(p).exists() for p in git_paths.splitlines()):
@@ -513,7 +543,15 @@ def retire(root, identity, finished, *, orphan_age=None):
         return None
     path = validate_binding(dict(before)).resolve()
     repository = Path(before['repository'])
-    check_git(path, before, repository)
+    check_git(path, before, repository, allow_nested=True)
+    if nested(path, registered(repository)):
+        # A bot can create worktrees inside its own worktree, for example to test a base commit.
+        # Their files would count as ignored files of this worktree, so remove the clean ones first.
+        if not finished(True):
+            raise ValueError('The outcome resumed during retirement.')
+        release(path, before['outcome'], orphan_age)
+        remove_nested(root, path, repository)
+        check_git(path, before, repository)
     head = git(path, 'rev-parse', 'HEAD')
     current = changes(path)
     staged, unstaged, names = current

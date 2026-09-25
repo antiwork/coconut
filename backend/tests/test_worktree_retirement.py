@@ -971,6 +971,59 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
             self.assertEqual(work_workspace.busy_paths({str(held), str(link)}), {str(held), str(link)})
 
+    def nested_worktree(self, parent, name='base'):
+        """Add a detached worktree inside the parent, as a bot does to test a base commit."""
+        inner = parent / 'tmp' / name
+        git(self.repo, 'worktree', 'add', '-q', '--detach', str(inner), 'HEAD')
+        return inner
+
+    def listed(self, path):
+        return any(Path(r['path']).resolve() == path.resolve() for r in work_workspace.registered(self.repo))
+
+    def test_a_clean_nested_worktree_is_removed_and_the_parent_retires(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path)
+        (inner / 'node_modules').mkdir()
+        (inner / 'node_modules' / 'cache.js').write_text('rebuildable\n')
+        self.assertEqual(self.retire(), [identity])
+        self.assertFalse(inner.exists())
+        self.assertFalse(self.listed(inner))
+        self.assertIn('retired', self.registry()[identity])
+
+    def test_a_nested_worktree_that_holds_work_keeps_the_parent(self):
+        cases = {
+            'untracked': lambda inner: (inner / 'draft.txt').write_text('keep\n'),
+            'modified': lambda inner: (inner / 'tracked.txt').write_text('changed\n'),
+            'ignored': lambda inner: (inner / '.env').write_text('SECRET=1\n'),
+            'locked': lambda inner: git(self.repo, 'worktree', 'lock', str(inner)),
+            'unsaved commit': lambda inner: (
+                (inner / 'new.txt').write_text('commit\n'), git(inner, 'add', 'new.txt'), self.commit(inner, 'Only here')),
+        }
+        for name, change in cases.items():
+            with self.subTest(name=name):
+                _, identity, path, _ = self.outcome()
+                inner = self.nested_worktree(path, name.replace(' ', '-'))
+                change(inner)
+                self.assertEqual(self.retire(), [])
+                self.assertTrue(inner.is_dir())
+                self.assertTrue(self.listed(inner))
+                self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_nested_record_without_its_folder_does_not_keep_the_parent(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path)
+        shutil.rmtree(inner)
+        self.assertEqual(self.retire(), [identity])
+
+    def test_a_nested_worktree_of_another_outcome_keeps_the_parent(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path)
+        saved = self.registry()
+        saved['inner-binding'] = dict(path=str(inner), branch='none', repository=str(self.repo), outcome='other')
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        self.assertEqual(self.retire(), [])
+        self.assertTrue(inner.is_dir())
+
     def test_elapsed_times_from_ps_become_seconds(self):
         self.assertEqual(work_workspace.elapsed_seconds('05'), 5)
         self.assertEqual(work_workspace.elapsed_seconds('02:03'), 123)
