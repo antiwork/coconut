@@ -1,4 +1,6 @@
-"""Retire the worktrees of finished outcomes. An archive keeps their uncommitted changes."""
+"""Retire the worktrees of idle outcomes. An archive keeps their uncommitted changes.
+
+A turn restores a retired worktree before it starts, so an idle outcome that resumes gets its files back."""
 from datetime import datetime
 import json
 import logging
@@ -10,7 +12,14 @@ import time
 from .work_capacity import execution_key
 from . import work_workspace
 
-WORKTREE_RETIRE_SECONDS = 2 * 24 * 60 * 60
+WORKTREE_RETIRE_SECONDS = 6 * 60 * 60
+# A process that launchd adopted and that is older than this does not belong to a turn.
+ORPHAN_AGE_SECONDS = WORKTREE_RETIRE_SECONDS
+# These Coconut task states mean that a turn runs or starts soon. They are Service.ACTIVE without the states
+# that wait for a person. A test keeps the two lists in step.
+ACTIVE_STATUSES = ('queued', 'working', 'scheduled', 'waiting')
+# These native states mean that no worker runs or claims the outcome soon. Another state keeps the worktree.
+NATIVE_IDLE_STATUSES = ('done', 'archived', 'blocked', 'triage', 'review', 'todo', 'scheduled')
 RETIREMENT_INTERVAL_SECONDS = 60 * 60
 # Before the registry lock, retirement waits this long for the service lock. Under the registry lock, it waits only LOCKED_WAIT_SECONDS.
 SERVICE_WAIT_SECONDS = 5
@@ -20,8 +29,9 @@ LOCKED_WAIT_SECONDS = 0.25
 
 class WorktreeRetirement:
     def _finished_outcomes(self, current, *, timeout=-1, only=None):
-        """Return the execution IDs whose work is finished and idle, or None when the service lock is busy.
+        """Return the execution IDs whose work is idle, or None when the service lock is busy.
 
+        Work that waits for a person, a failed task, and a blocked native outcome are idle.
         Hold the service lock only to read.
         """
         if not self.lock.acquire(timeout=timeout):
@@ -31,7 +41,6 @@ class WorktreeRetirement:
             for task in self._all('tasks'):
                 if only is None or execution_key(task) == only:
                     groups.setdefault(execution_key(task), []).append(task)
-            pending = {d.get('task_id') for d in self._all('decisions') if d['status'] == 'pending'}
             native = dict(self.kanban.tasks) if self.kanban else {}
             by_native_id = {n['id']: n for n in native.values()}
             finished = set()
@@ -43,11 +52,10 @@ class WorktreeRetirement:
                     continue
                 if current - latest < WORKTREE_RETIRE_SECONDS:
                     continue
-                if any(t['status'] not in ('completed', 'cancelled') or t['id'] in pending or t['id'] in self.running
-                       for t in tasks):
+                if any(t['status'] in ACTIVE_STATUSES or t['id'] in self.running for t in tasks):
                     continue
-                if any((native.get(t['id']) or by_native_id.get(t.get('_native_outcome_id')) or {}).get('status',
-                       'done') not in ('done', 'archived') for t in tasks):
+                if any((native.get(t['id']) or by_native_id.get(t.get('_native_outcome_id')) or {}).get('status', 'done')
+                       not in NATIVE_IDLE_STATUSES for t in tasks):
                     continue
                 if any(self._background_pending(t['id']) for t in tasks):
                     continue
@@ -88,7 +96,8 @@ class WorktreeRetirement:
                     raise ValueError('The service was busy. Coconut tries again in an hour.')
                 return outcome in result
             try:
-                if work_workspace.retire(root, identity, still_finished):
+                # A service restart leaves the processes of earlier turns to launchd. They keep the worktree in use.
+                if work_workspace.retire(root, identity, still_finished, orphan_age=ORPHAN_AGE_SECONDS):
                     retired.append(identity)
             except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.TimeoutExpired, sqlite3.Error) as error:
                 # sqlite3.Error covers a database that shutdown closed while this thread ran.

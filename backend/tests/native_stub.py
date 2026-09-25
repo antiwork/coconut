@@ -69,6 +69,10 @@ class PluginContext:
             def dispose(self): hooks[name].remove(callback)
         return Registration()
     def register_middleware(self, kind, callback):
+        if kind != 'tool_execution':
+            class Registration:
+                def dispose(self): pass
+            return Registration()
         from tools.registry import registry
         original=registry.dispatch
         def dispatch(name, args, **kwargs):

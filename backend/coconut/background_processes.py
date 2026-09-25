@@ -3,9 +3,23 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from pathlib import Path
 import threading
+import time
 
 
+# The poller checks interrupted tool calls at most this often, because lsof scans every process.
+ENDED_TOOL_CHECK_SECONDS = 60
+# macOS hides the environment of system programs, such as /bin/sh and git. Such an orphan that left its workspace
+# escapes both checks, so a call counts as ended only after it started this long ago.
+ENDED_TOOL_MIN_AGE_SECONDS = 60 * 60
+# A call that names a privileged program anywhere never ends here. `bash -c 'sudo ...'` or `xargs sudo` hide the
+# program from a command-position match, so a call that only mentions one also stays blocked. A script can still
+# run sudo without naming it, but the Mac mini user has no passwordless sudo, so no root child starts unattended.
+PRIVILEGED = re.compile(r'\b(?:sudo|doas|su|pkexec|runas)\b')
+# A call whose workspace stays busy is checked again after this delay, which doubles up to an hour.
+BUSY_TOOL_BACKOFF_SECONDS = 10 * 60
 PENDING_COMPLETIONS = """
     (COALESCE(json_extract(data, '$._process_delivery'), '') IN ('', 0)
      OR json_extract(data, '$._delegation_ack_pending')=1)
@@ -108,6 +122,120 @@ class BackgroundProcesses:
             except Exception:
                 logging.getLogger(__name__).exception('Could not deliver a Hermes process result.')
             self.stopping.wait(1)
+
+    def _check_ended_tool_calls(self):
+        while not self.stopping.is_set():
+            try:
+                if not self.restart_pending:
+                    self._mark_ended_tool_calls()
+            except Exception:
+                logging.getLogger(__name__).exception('Could not check interrupted tool calls.')
+            self.stopping.wait(ENDED_TOOL_CHECK_SECONDS)
+
+    def _mark_ended_tool_calls(self, current=None):
+        """Mark a local command without a result as ended when no process of its execution remains.
+
+        A worker can stop before a terminal call returns. Its receipt then stays executing, and the writer guard
+        keeps other work out. This check runs at most once a minute and holds the service lock only to read and write.
+        A call has ended when its task has no live worker or native run, no process carries its execution's
+        COCONUT_WORKSPACE_OUTCOME, and lsof shows no process in its workspaces. Only a kanban worker sets that
+        variable, so Coconut checks only native tasks, and not the calls of a context job. The receipt keeps its
+        state, so the owner's next turn still sees the unknown effect.
+        """
+        from datetime import datetime, timezone
+        from .native_outcomes import LOCAL_COMMAND_TOOLS
+        from .service import now
+        from .work_capacity import execution_key
+        from . import work_workspace
+        current = time.monotonic() if current is None else current
+        if current < getattr(self, '_ended_tool_check_at', 0):
+            return []
+        self._ended_tool_check_at = current + ENDED_TOOL_CHECK_SECONDS
+        if not hasattr(self, '_busy_tool_calls'):
+            self._busy_tool_calls = {}
+        native = dict(self.kanban.tasks) if self.kanban else {}
+        with self.lock:
+            records = [json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM native_receipts WHERE json_extract(data,'$.state')='executing'")]
+            # Forget the back-off of a call that no longer runs.
+            executing = {record['id'] for record in records}
+            self._busy_tool_calls = {k: v for k, v in self._busy_tool_calls.items() if k in executing}
+            candidates = []
+            for record in records:
+                if (record.get('action') or {}).get('name') not in LOCAL_COMMAND_TOOLS or record.get('_process_ended_at'):
+                    continue
+                # A privileged child runs as another user. Neither ps nor lsof can see it, so its call never ends here.
+                if PRIVILEGED.search(json.dumps((record.get('action') or {}).get('arguments'))):
+                    continue
+                if current < self._busy_tool_calls.get(record['id'], (0, 0))[0]:
+                    continue
+                try:
+                    started = datetime.fromisoformat(record['created_at'].replace('Z', '+00:00'))
+                except (KeyError, TypeError, ValueError, AttributeError):
+                    continue
+                if (datetime.now(timezone.utc) - started).total_seconds() < ENDED_TOOL_MIN_AGE_SECONDS:
+                    continue
+                row = self.db.execute('SELECT data FROM tasks WHERE id=?', (record['task_id'],)).fetchone()
+                if not row or self.db.execute('SELECT 1 FROM contexts WHERE id=?', (record.get('turn_id'),)).fetchone():
+                    continue
+                task = json.loads(row[0])
+                if not (task.get('_kanban_claim') or {}).get('native_id'):
+                    continue
+                worker = self.running.get(task['id'])
+                card = native.get(task['id']) or {}
+                if (worker and worker.is_alive()) or card.get('current_run_id') or card.get('worker_pid'):
+                    continue
+                candidates.append((record['id'], task['id'], execution_key(task),
+                                   (task.get('_kanban_claim') or {}).get('workspace')))
+        if not candidates:
+            return []
+        outcomes = work_workspace.process_outcomes(getattr(self.provider, 'python', None))
+        if outcomes is None:
+            return []
+        # A live outcome proves the call can still run. Scan open files only for the other calls.
+        candidates = [c for c in candidates if c[2] not in outcomes]
+        if not candidates:
+            return []
+        root = self.root / 'workspaces'
+        saved = work_workspace.unlocked_registry(root)
+        paths = {}
+        for identity, task_id, key, workspace in candidates:
+            places = {str(root / key)} | {b['path'] for b in saved.values() if isinstance(b, dict) and b.get('outcome') == key
+                                          and isinstance(b.get('path'), str)}
+            if workspace:
+                places.add(workspace)
+            paths[identity] = {p for p in places if Path(p).exists()}
+        try:
+            busy = work_workspace.busy_paths(set().union(*paths.values())) if any(paths.values()) else set()
+        except ValueError as error:
+            # Without a complete listing, no call can end. Log it so a lasting failure is visible.
+            logging.getLogger(__name__).warning('Coconut could not check interrupted tool calls: %s', error)
+            return []
+        ended = []
+        for identity, _, _, _ in candidates:
+            if paths[identity] & busy:
+                # An operator shell can hold a workspace for days. Back off instead of scanning every minute.
+                delay = min(self._busy_tool_calls.get(identity, (0, BUSY_TOOL_BACKOFF_SECONDS / 2))[1] * 2, 60 * 60)
+                self._busy_tool_calls[identity] = (current + delay, delay)
+        with self.lock:
+            if self.stopping.is_set():
+                # close() closes the database under this lock, so check again after taking it.
+                return []
+            with self.transaction():
+                for identity, task_id, key, _ in candidates:
+                    if key in outcomes or paths[identity] & busy:
+                        continue
+                    record = self._get('native_receipts', identity)
+                    worker = self.running.get(task_id)
+                    if record['state'] != 'executing' or (worker and worker.is_alive()):
+                        continue
+                    record['_process_ended_at'] = now()
+                    self._put('native_receipts', record)
+                    self._busy_tool_calls.pop(identity, None)
+                    ended.append(identity)
+        if ended:
+            logging.getLogger(__name__).warning('Coconut found no process for interrupted tool calls %s.', ended)
+        return ended
 
     def _expire_work_descriptions(self):
         from datetime import datetime, timezone

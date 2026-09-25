@@ -5,12 +5,16 @@ import fcntl
 import hashlib
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
+import signal
 import stat
 import subprocess
+import sys
 import tarfile
+import time
 from types import SimpleNamespace
 import zlib
 
@@ -113,6 +117,8 @@ RETRY_AFTER = timedelta(days=1)
 # Git commands that write or delete a whole checkout can take minutes for a large repository.
 CHECKOUT_SECONDS = 600
 GIT_ERRORS = (ValueError, OSError, subprocess.TimeoutExpired)
+# EOFError and zlib.error come from a damaged or truncated archive.
+RESTORE_ERRORS = (*GIT_ERRORS, KeyError, TypeError, AttributeError, tarfile.TarError, EOFError, zlib.error)
 DIFF = ('--binary', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-relative',
         '--src-prefix=a/', '--dst-prefix=b/')
 
@@ -207,34 +213,294 @@ def registered(repository):
     return records
 
 
-def in_use(path):
-    """Return True when a process has its cwd or an open file in the path."""
+def holders(path):
+    """Return the IDs of the processes that have their cwd or an open file in the path."""
     try:
-        result = subprocess.run(['lsof', '-n', '-P', '-w', '-F', 'n'], capture_output=True, timeout=120)
+        result = subprocess.run(['lsof', '-n', '-P', '-w', '-F', 'pn'], capture_output=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired):
         raise ValueError('Coconut cannot check open files without lsof.') from None
     if not result.stdout:
         raise ValueError('lsof did not list open files.')
     prefixes = {os.fsencode(str(path)), os.fsencode(str(Path(path).resolve()))}
-    return any(line.startswith(b'n') and any(line[1:] == prefix or line[1:].startswith(prefix + b'/') for prefix in prefixes)
-               for line in result.stdout.splitlines())
+    found, pid = set(), None
+    for line in result.stdout.splitlines():
+        if line.startswith(b'p'):
+            pid = int(line[1:])
+        elif line.startswith(b'n') and any(line[1:] == prefix or line[1:].startswith(prefix + b'/') for prefix in prefixes):
+            found.add(pid)
+    return found
+
+
+# Coconut waits this long for orphaned processes to end after SIGTERM.
+STOP_SECONDS = 5
+
+
+def busy_paths(paths):
+    """Return the paths in which a process has its cwd or an open file. Use one lsof scan for all paths."""
+    try:
+        result = subprocess.run(['lsof', '-n', '-P', '-w', '-F', 'n'], capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        raise ValueError('Coconut cannot check open files without lsof.') from None
+    # A failed lsof can print part of the list. A missing holder would release the writer guard, so require success.
+    if result.returncode or not result.stdout:
+        raise ValueError('lsof did not list all open files.')
+    # Two paths can share one resolved form, such as /tmp and /private/tmp on macOS. Keep every path for each form.
+    prefixes = {}
+    for path in paths:
+        for form in {str(path), str(Path(path).resolve())}:
+            prefixes.setdefault(os.fsencode(form), set()).add(path)
+    busy = set()
+    for line in result.stdout.splitlines():
+        if line.startswith(b'n'):
+            name = line[1:]
+            for prefix, owners in prefixes.items():
+                if name == prefix or name.startswith(prefix + b'/'):
+                    busy |= owners
+    return busy
+
+
+def in_use(path):
+    """Return True when a process has its cwd or an open file in the path."""
+    return bool(holders(path))
+
+
+def elapsed_seconds(value):
+    """Convert a `ps` etime value, [[dd-]hh:]mm:ss, to seconds."""
+    days, _, clock = value.rpartition('-')
+    seconds = 0
+    for part in clock.split(':'):
+        seconds = seconds * 60 + int(part)
+    return (int(days) if days else 0) * 86400 + seconds
+
+
+def process_table():
+    """Return each process ID with its parent ID and its age in seconds."""
+    try:
+        result = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,etime='], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        raise ValueError('Coconut cannot list processes without ps.') from None
+    table = {}
+    for line in result.stdout.splitlines():
+        with contextlib.suppress(ValueError):
+            pid, parent, elapsed = line.split()
+            table[int(pid)] = (int(parent), elapsed_seconds(elapsed))
+    return table
+
+
+def environment_names(pid, mark):
+    """Return True when the environment of the process contains the `NAME=value` item `mark`."""
+    with contextlib.suppress(OSError):
+        return mark.encode() in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
+    try:
+        # On macOS, `ps -E -ww` prints the whole environment after the command for a process of the same user.
+        result = subprocess.run(['ps', '-E', '-ww', '-p', str(pid), '-o', 'command='], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return mark in result.stdout.split()
+
+
+def process_outcomes(probe=None):
+    """Return the COCONUT_WORKSPACE_OUTCOME values of the running processes.
+
+    Return None when this system hides process environments. Then no caller can prove that a process ended.
+    `probe` is the interpreter that runs workers. macOS shows the environment of some programs only, so on macOS
+    Coconut starts that interpreter with a marker and trusts the scan only when the marker shows.
+    """
+    mark = 'COCONUT_WORKSPACE_OUTCOME='
+    proc = Path('/proc')
+    if (proc / 'self' / 'environ').exists():
+        found = set()
+        for environ in proc.glob('[0-9]*/environ'):
+            try:
+                data = environ.read_bytes()
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                # Workers run as the service user, so another user's process cannot hide a Coconut outcome.
+                continue
+            except OSError:
+                # Another unreadable environment can hide a live outcome.
+                return None
+            found.update(item[len(mark):].decode(errors='replace') for item in data.split(b'\0')
+                         if item.startswith(mark.encode()))
+        return found
+    marker = mark + 'coconut-probe-' + os.urandom(8).hex()
+    try:
+        witness = subprocess.Popen([probe or sys.executable, '-c', 'import time; time.sleep(30)'],
+                                   env=dict(os.environ, COCONUT_WORKSPACE_OUTCOME=marker[len(mark):]),
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    try:
+        # On macOS, `ps -E` prints each environment after its command, for processes of the same user.
+        # One process with a non-UTF-8 argument must not stop the whole scan.
+        result = subprocess.run(['ps', '-E', '-A', '-ww', '-o', 'pid=,command='], capture_output=True, text=True,
+                                errors='replace', timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    finally:
+        witness.kill()
+        witness.wait()
+    found = set()
+    for line in result.stdout.splitlines():
+        found.update(token[len(mark):] for token in line.split() if token.startswith(mark))
+    if marker[len(mark):] not in found:
+        return None
+    found.discard(marker[len(mark):])
+    return found
+
+
+def running(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def stop(pids, sig, seconds):
+    """Send the signal and wait at most `seconds` for the processes to end. Return the processes that remain."""
+    for pid in pids:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, sig)
+    deadline = time.monotonic() + seconds
+    remaining = set(pids)
+    while remaining and time.monotonic() < deadline:
+        time.sleep(0.1)
+        remaining = {pid for pid in remaining if running(pid)}
+    return remaining
+
+
+def stop_orphans(found, outcome, age):
+    """Stop the old orphaned processes of the outcome in `found`, and their child processes. Return their IDs.
+
+    An orphan is a process that launchd (PID 1) adopted after its parent ended. launchd also starts apps and agents.
+    So Coconut stops only an orphan whose environment names the outcome in COCONUT_WORKSPACE_OUTCOME, with its child processes.
+    The worker of each turn sets this variable, and the processes of the turn inherit it.
+    When the system does not show the environment of a process, for example a macOS platform binary, Coconut does not stop it.
+    A process that does not end after SIGTERM gets SIGKILL.
+    """
+    if not found:
+        return set()
+    table = process_table()
+    mark = 'COCONUT_WORKSPACE_OUTCOME=' + outcome
+    stopped = {pid for pid in found if pid in table and pid != os.getpid() and table[pid][0] == 1
+               and table[pid][1] >= age and environment_names(pid, mark)}
+    while stopped:
+        # The parent proves who owns a child process. macOS also hides the environment of a child shell.
+        children = {pid for pid, (parent, _) in table.items() if parent in stopped and pid not in stopped}
+        if not children:
+            break
+        stopped |= children
+    if not stopped:
+        return set()
+    # A process that survives SIGKILL, or that Coconut cannot signal, still uses the worktree.
+    return stopped - stop(stop(stopped, signal.SIGTERM, STOP_SECONDS), signal.SIGKILL, 1)
 
 
 def check_worktree(path, binding, repository, *, processes=True):
     """Refuse a worktree that Git or a process still uses."""
+    check_git(path, binding, repository)
+    if processes and in_use(path):
+        raise ValueError('A process uses the worktree.')
+
+
+def remove_nested(root, path, repository, *, check_only=False):
+    """Remove the clean worktrees that a bot created inside the path. Refuse all of them if one holds work.
+
+    A nested worktree is clean when Coconut does not track it, it is not locked, it has no staged, unstaged,
+    untracked, or ignored file outside the rebuildable folders, no Git operation is in progress, and a branch or
+    another ref holds its commit. Then the shared repository keeps everything it had. Coconut checks every nested
+    worktree before it removes any, and checks again under the registry lock just before removal, because Git's own
+    clean check does not look at ignored files. With check_only, Coconut only checks.
+    Call this with check_only=False only after the process check of the parent path, which covers the nested folders.
+    """
+    def clean(record, group):
+        inner = record['path']
+        if record['locked']:
+            raise ValueError('The worktree contains another worktree.')
+        git_paths = git(inner, 'rev-parse', '--path-format=absolute', *(a for n in IN_PROGRESS for a in ('--git-path', n)))
+        # A worktree inside this one shows as an untracked folder. Coconut checks and removes it on its own.
+        others = {r['path'] for r in group if r is not record}
+        status = [entry for entry in git_output(inner, 'status', '--porcelain', '-z', '-uall', strict=True).split(b'\0')
+                  if entry and not (entry.startswith(b'?? ') and entry.endswith(b'/')
+                                    and (inner / os.fsdecode(entry[3:-1])).resolve() in others)]
+        try:
+            ignored = ignored_files(inner)
+        except ValueError as error:
+            # Name the nested checkout, so an operator can find the file.
+            raise ValueError(f'The nested worktree {inner} cannot be removed: {error}') from None
+        if (status or ignored
+                or any(Path(p).exists() for p in git_paths.splitlines())):
+            raise ValueError('The worktree contains another worktree with changes.')
+        head = git(inner, 'rev-parse', 'HEAD')
+        if not record['branch'] and not git(repository, 'for-each-ref', '--contains', head, '--count=1', '--format=%(refname)',
+                                            timeout=CHECKOUT_SECONDS):
+            raise ValueError('The worktree contains another worktree with a commit that no ref holds.')
+
+    def tracked():
+        # A failed read must not hide another outcome's worktree, so this read is strict.
+        try:
+            saved = json.loads((Path(root) / 'worktrees.json').read_text())
+        except (OSError, ValueError) as error:
+            raise ValueError('Coconut cannot read the worktree registry: ' + str(error)) from None
+        if not isinstance(saved, dict):
+            raise ValueError('The worktree registry is not valid.')
+        return {Path(b['path']).resolve() for b in saved.values() if isinstance(b, dict) and isinstance(b.get('path'), str)}
+
+    records = nested(path, registered(repository))
+    owned = tracked()
+    for record in records:
+        if record['path'] in owned:
+            raise ValueError('The worktree contains another worktree.')
+        clean(record, records)
+    if check_only or not records:
+        return
+    # acquire() registers a new binding under this lock, so no outcome can claim a nested worktree meanwhile.
+    with (Path(root) / '.workspace.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        records = nested(path, registered(repository))
+        owned = tracked()
+        for record in records:
+            if record['path'] in owned:
+                raise ValueError('The worktree contains another worktree.')
+            clean(record, records)
+        # Remove the deepest first. Removing a parent first would delete a worktree inside it without Git.
+        for record in sorted(records, key=lambda r: len(r['path'].parts), reverse=True):
+            git(repository, 'worktree', 'remove', str(record['path']), timeout=CHECKOUT_SECONDS)
+
+
+def release(path, outcome, orphan_age):
+    """Stop the old orphaned processes of the outcome in the path. Refuse the path if another process uses it."""
+    found = holders(path)
+    if found and orphan_age is not None:
+        stopped = stop_orphans(found, outcome, orphan_age)
+        if stopped:
+            logging.getLogger(__name__).warning('Coconut stopped orphaned processes %s in worktree %s.', sorted(stopped), path)
+        found -= stopped
+    if found:
+        raise ValueError('A process uses the worktree.')
+
+
+def nested(path, records):
+    """Return the Git records of the worktrees inside the path whose folders still exist."""
+    # A record without its folder holds no files, so removal of the parent cannot lose any.
+    return [r for r in records if path in r['path'].parents and r['path'].exists()]
+
+
+def check_git(path, binding, repository, *, allow_nested=False):
+    """Refuse a worktree that Git still uses."""
     records = registered(repository)
     record = next((r for r in records if r['path'] == path), None)
     if not record or record['branch'] != 'refs/heads/' + binding['branch']:
         raise ValueError('Git does not register this worktree on its saved branch.')
     if record['locked']:
         raise ValueError('The worktree is locked.')
-    if any(path in r['path'].parents for r in records):
+    if nested(path, records) and not allow_nested:
         raise ValueError('The worktree contains another worktree.')
     git_paths = git(path, 'rev-parse', '--path-format=absolute', *(a for n in IN_PROGRESS for a in ('--git-path', n)))
     if any(Path(p).exists() for p in git_paths.splitlines()):
         raise ValueError('A Git operation is in progress in the worktree.')
-    if processes and in_use(path):
-        raise ValueError('A process uses the worktree.')
 
 
 def file_digest(stream):
@@ -297,12 +563,13 @@ def stamp(moment):
     return moment.isoformat().replace('+00:00', 'Z')
 
 
-def retire(root, identity, finished):
+def retire(root, identity, finished, *, orphan_age=None):
     """Archive and remove the worktree of one finished outcome. Return the archive path.
 
     The caller supplies `finished(wait)`. It returns True when the outcome is still finished.
     With wait=False it waits only briefly for the service lock, and it raises ValueError when that lock stays busy.
     Coconut calls it with wait=True before it takes the registry lock, and with wait=False under that lock.
+    With `orphan_age`, Coconut first stops the orphaned processes of the outcome that are older than that many seconds.
     The Git, lsof, and archive work runs before the registry lock. Under the lock, Coconut only
     repeats the Git checks that do not wait for other processes.
     """
@@ -317,7 +584,19 @@ def retire(root, identity, finished):
         return None
     path = validate_binding(dict(before)).resolve()
     repository = Path(before['repository'])
-    check_worktree(path, before, repository)
+    check_git(path, before, repository, allow_nested=True)
+    if nested(path, registered(repository)):
+        # A bot can create worktrees inside its own worktree, for example to test a base commit.
+        # Their files would count as ignored files of this worktree, so remove the clean ones first.
+        # Check first, so a refusal does not follow an orphan stop for nothing. The parent's own size and content
+        # checks must run after the removal, because the nested files would count toward them. If one of those
+        # refuses, only clean nested checkouts are gone, and the next hourly pass retries without them.
+        remove_nested(root, path, repository, check_only=True)
+        if not finished(True):
+            raise ValueError('The outcome resumed during retirement.')
+        release(path, before['outcome'], orphan_age)
+        remove_nested(root, path, repository)
+        check_git(path, before, repository)
     head = git(path, 'rev-parse', 'HEAD')
     current = changes(path)
     staged, unstaged, names = current
@@ -332,6 +611,10 @@ def retire(root, identity, finished):
     if untracked > UNTRACKED_LIMIT_BYTES:
         raise ValueError('The untracked files in the worktree are larger than the archive limit.')
     entries = [(UNTRACKED + name, name) for name in names] + [(IGNORED + name, name) for name in ignored_files(path)]
+    # Stop orphans only after every check that does not need them stopped. Then no refusal follows a stop for nothing.
+    if not finished(True):
+        raise ValueError('The outcome resumed during retirement.')
+    release(path, before['outcome'], orphan_age)
     directory = root / 'archive'
     directory.mkdir(mode=0o700, exist_ok=True)
     moment = datetime.now(timezone.utc)
@@ -451,36 +734,110 @@ def place_link(path, name, target):
     os.symlink(target, link)
 
 
-def archived_files_present(path, archive):
-    """Return True when every archived untracked and ignored file exists with the same size or link."""
+def archived_members(tar):
+    """Yield each archived untracked and ignored file with its name in the worktree."""
+    for member in tar.getmembers():
+        prefix = next((p for p in (UNTRACKED, IGNORED) if member.name.startswith(p)), None)
+        if prefix:
+            yield member, member.name[len(prefix):]
+
+
+def occupied(path):
+    # Hermes can create an empty directory at the path for a native claim. Git checks out into it.
+    return path.exists() and (not path.is_dir() or any(path.iterdir()))
+
+
+def checkout_marks(path, names):
+    """Fingerprint archived paths, retaining missing entries so a finishing restore is visible."""
+    result = []
+    for name in sorted(names):
+        try:
+            status = os.lstat(path / name)
+        except (FileNotFoundError, NotADirectoryError):
+            result.append((name, None))
+        else:
+            result.append((name, status.st_ino, status.st_size, status.st_mtime_ns,
+                           status.st_ctime_ns, stat.S_IFMT(status.st_mode)))
+    return result
+
+
+def archived_marks(path, archive):
+    """Return (matching fingerprint or None, starting fingerprint) for archived files."""
     with tarfile.open(archive) as tar:
-        for member in tar.getmembers():
-            prefix = next((p for p in (UNTRACKED, IGNORED) if member.name.startswith(p)), None)
-            if not prefix:
-                continue
-            target = path / member.name[len(prefix):]
+        members = list(archived_members(tar))
+        names = [name for _, name in members]
+        marks = checkout_marks(path, names)
+        if any(len(mark) == 2 for mark in marks):
+            # A file appearing during comparison must not make a missing starting file look intact.
+            return None, marks
+        for member, name in members:
+            target = path / name
             if member.issym():
                 if not target.is_symlink() or os.readlink(target) != member.linkname:
-                    return False
+                    return None, marks
             elif (not target.is_file() or target.is_symlink() or target.stat().st_size != member.size
                     or path_digest(target) != file_digest(tar.extractfile(member))):
                 # Same size is not enough. Compare the contents with the archived copy.
-                return False
-    return True
+                return None, marks
+    return marks, marks
 
 
-def unpack(binding):
+def compare_checkouts(bindings):
+    """Compare each checkout at the path of a retired binding with its archive. Run without the registry lock.
+
+    The archived files can total hundreds of megabytes, so Coconut reads them before it takes the lock.
+    Return a map from each binding, as JSON, to the fingerprint of its archived files, or to None when
+    the checkout does not match. Under the lock, unpack accepts a checkout only when its binding and its
+    fingerprint did not change.
+    """
+    checked = {}
+    for binding in bindings:
+        with contextlib.suppress(*RESTORE_ERRORS):
+            retired = binding['retired']
+            path = Path(binding['path'])
+            if retired.get('restore_failed') or not occupied(path):
+                continue
+            key = json.dumps(binding, sort_keys=True)
+            # An error in the comparison refuses the checkout.
+            checked[key] = None
+            validate_binding(dict(binding))
+            checked[key] = archived_marks(path, Path(retired['archive']))
+    return checked
+
+
+def unlocked_registry(root):
+    # save_bindings replaces the registry by an atomic rename, so this read needs no lock.
+    try:
+        saved = json.loads((Path(root) / 'worktrees.json').read_text())
+    except (OSError, ValueError):
+        return {}
+    return saved if isinstance(saved, dict) else {}
+
+
+def unpack(binding, checked):
     retired = binding['retired']
     path, archive, repository = Path(binding['path']), Path(retired['archive']), Path(binding['repository'])
-    # Hermes can create an empty directory at the path for a native claim. Git checks out into it.
-    if path.exists() and (not path.is_dir() or any(path.iterdir())):
+    if occupied(path):
         # Retirement stopped before Git removed the checkout, or a restore stopped before the registry changed.
+        # compare_checkouts read the files without the lock. Here Coconut compares only their fingerprint.
+        key = json.dumps(binding, sort_keys=True)
+        if key not in checked:
+            # A checkout appeared or the binding changed since the unlocked read.
+            checked = compare_checkouts([binding])
+        elif checked[key] is not None:
+            match, starting = checked[key]
+            if match is None and checkout_marks(path, [name for name, *_ in starting]) != starting:
+                # A partial checkout finished after comparison; retry only when its files changed.
+                checked = compare_checkouts([binding])
+        record = checked.get(key)
+        marks = record[0] if record is not None else None
         try:
             validate_binding(dict(binding))
-            intact = (git(path, 'rev-parse', 'HEAD') == retired['head']
+            intact = (marks is not None
+                      and git(path, 'rev-parse', 'HEAD') == retired['head']
                       and changes_digest(*changes(path)) == retired['changes']
-                      and archived_files_present(path, Path(retired['archive'])))
-        except (*GIT_ERRORS, tarfile.TarError, EOFError, zlib.error):
+                      and checkout_marks(path, [name for name, *_ in marks]) == marks)
+        except GIT_ERRORS:
             intact = False
         if not intact:
             raise ValueError(f'The path {path} is not empty and does not match the archive.')
@@ -502,11 +859,7 @@ def unpack(binding):
             if unstaged:
                 git_output(path, 'apply', '--binary', '--whitespace=nowarn', '-', data=unstaged)
             links = []
-            for member in tar.getmembers():
-                prefix = next((p for p in (UNTRACKED, IGNORED) if member.name.startswith(p)), None)
-                if not prefix:
-                    continue
-                name = member.name[len(prefix):]
+            for member, name in archived_members(tar):
                 if os.path.lexists(path / name):
                     raise ValueError('The checkout already contains ' + name + '.')
                 if member.issym():
@@ -528,8 +881,11 @@ def unpack(binding):
         raise
 
 
-def restore(binding):
-    """Recreate a retired worktree at its saved path.
+def restore(binding, checked):
+    """Recreate a retired worktree at its saved path. Hold the registry lock.
+
+    `checked` comes from compare_checkouts before the lock. Without an entry for the binding,
+    unpack compares a checkout that already exists at the path while it holds the lock.
 
     After a successful restore, the worktree holds every archived change, so Coconut deletes the archive.
     A failed restore keeps the archive and marks the binding `restore_failed`. Coconut does not try again
@@ -540,10 +896,8 @@ def restore(binding):
     failure = retired.get('restore_failed')
     if not failure:
         try:
-            unpack(binding)
-        except (ValueError, OSError, KeyError, TypeError, AttributeError, tarfile.TarError,
-                subprocess.TimeoutExpired, EOFError, zlib.error) as error:
-            # EOFError and zlib.error come from a damaged or truncated archive.
+            unpack(binding, checked)
+        except RESTORE_ERRORS as error:
             failure = dict(at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'), error=str(error)[:1000])
             binding['retired'] = dict(retired, restore_failed=failure)
         else:
@@ -570,6 +924,7 @@ def acquire(root, outcome, repository, existing_worktree=None):
     if '/' in outcome or outcome in ('', '.', '..'):
         raise ValueError('Invalid work identity.')
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    checked = compare_checkouts([unlocked_registry(root).get(identity)])
     with (root / '.workspace.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         manifest = root / 'worktrees.json'
@@ -579,7 +934,7 @@ def acquire(root, outcome, repository, existing_worktree=None):
             previous = dict(binding)
             try:
                 if binding.get('retired'):
-                    restore(binding)
+                    restore(binding, checked)
                 else:
                     validate_binding(binding, allow_rename=True)
             finally:
@@ -644,6 +999,8 @@ def preferred(root, outcome, *, verify=True):
             return root / outcome
     # The provider calls this before a turn without the service lock, so a restore can hold the registry lock.
     if manifest.exists():
+        checked = compare_checkouts(v for v in unlocked_registry(root).values()
+                                    if isinstance(v, dict) and v.get('outcome') == outcome)
         with (root / '.workspace.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             saved = json.loads(manifest.read_text())
@@ -653,7 +1010,7 @@ def preferred(root, outcome, *, verify=True):
                 if binding.get('retired'):
                     # A failed restore does not stop new work. coconut_workspace reports the archive to the bot.
                     with contextlib.suppress(ValueError):
-                        restore(binding)
+                        restore(binding, checked)
                 else:
                     validate_binding(binding, allow_rename=True)
             if json.dumps(saved, sort_keys=True) != before:

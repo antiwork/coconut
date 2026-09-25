@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 import threading
 import unittest
@@ -706,6 +707,472 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.service._put('artifacts', work)
         self.service._put('artifacts', pr)
         return owner, source, work, pr
+
+    def audited_requester_pr(self, audited=True, report_to='coordinator'):
+        """A requester's source audit delegates for its existing Work. A later coordinator task owns that Work."""
+        owner, source = self.scheduled_native()
+        self.service.kanban.tasks[owner['id']]['status'] = 'done'
+        # The coordinator's turn runs and calls coconut_continue_work. The audit that delegated has finished.
+        coordinator = dict(source, id='coordinator', status='working', _execution_session_id='coordinator',
+                           _native_outcome_id='t_requester', _work_context_id='requester-work')
+        self.service._put('tasks', coordinator)
+        # The audit finished and no longer waits for the delegated work, as in the live records.
+        audit = dict(self.service._get('tasks', source['id']), status='completed', _waiting_on=[])
+        if audited:
+            audit['_source_native_ids'] = ['t_requester']
+        self.service._put('tasks', audit)
+        report = dict(owner, id='owner-report', status='completed', _execution_session_id='owner-report',
+                      source_task_id=report_to, _reply_to_task_id=report_to,
+                      _kanban_claim={'native_id': 't_report', 'input': 'report'})
+        report.pop('_work_todos', None)
+        report.pop('_waiting_on', None)
+        self.service._put('tasks', report)
+        self.service.kanban.tasks[report['id']] = dict(id='t_report', status='done')
+        work = dict(id='requester-work', task_id=coordinator['id'], bot_id=source['bot_id'],
+            kind='work', title='The request', status='waiting', _native_outcome_id='t_requester')
+        pr = dict(id='delegated-pr', task_id=owner['id'], bot_id=owner['bot_id'],
+            kind='pr', title='Draft correction', status='open', pr_state='open',
+            url='https://github.com/example/project/pull/1', work_outcome_id=work['id'],
+            _review_task_id=owner['id'], _activity_task_id=report['id'])
+        self.service._put('artifacts', work)
+        self.service._put('artifacts', pr)
+        return owner, coordinator, work, pr
+
+    def test_coordinator_continues_a_pr_delegated_by_its_source_audit(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        receipt = self.resume(coordinator)
+        self.assertEqual(receipt['task_id'], owner['id'])
+        continued = self.service._get('tasks', owner['id'])
+        self.assertEqual(continued['_execution_session_id'], owner['_execution_session_id'])
+        self.assertEqual(continued['_work_context_id'], pr['id'])
+        self.assertEqual(self.service._get('artifacts', work['id']), work)
+        self.assertEqual(self.service._get('tasks', coordinator['id'])['status'], 'working')
+
+    def test_an_unaudited_requester_work_does_not_own_the_delegated_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr(audited=False)
+        with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+            self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_another_requester_task_cannot_continue_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # Only the Work's own coordinator skips the competing-writer guard. Another requester task does not.
+        other = dict(coordinator, id='other-requester', _execution_session_id='other-requester',
+                     _native_outcome_id=None, _work_context_id=None)
+        self.service._put('tasks', other)
+        with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+            self.resume(other)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_an_active_branch_of_the_coordinator_still_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = dict(coordinator, id='coordinator-branch', status='working', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None)
+        self.service._put('tasks', branch)
+        # The coordinator's chain holds the active branch. The audit's chain does not.
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_a_failed_branch_of_the_coordinator_does_not_block_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
+                      _waiting_on=[])
+        self.service._put('tasks', branch)
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+    def executing_receipt(self, task):
+        self.service._put('native_receipts', dict(id='executing-' + task['id'], task_id=task['id'], state='executing',
+            turn_id=task.get('_native_turn_id'), action={'name': 'terminal', 'arguments': {}}))
+
+    def test_a_failed_branch_with_a_running_tool_still_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # Recovery marks a task failed when a tool stopped without a receipt. The tool can still run.
+        branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
+                      _waiting_on=[])
+        self.service._put('tasks', branch)
+        self.executing_receipt(branch)
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def ended_branch(self, coordinator, action='terminal'):
+        # A failed kanban worker task. Coconut maps its card to a plain block.
+        branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
+                      _waiting_on=[], _kanban_claim={'native_id': 't_branch', 'input': 'branch'})
+        self.service._put('tasks', branch)
+        self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='blocked', block_kind=None)
+        self.service._put('native_receipts', dict(id='cut-off', task_id=branch['id'], state='executing',
+            turn_id=branch.get('_native_turn_id'), action={'name': action, 'arguments': {}},
+            created_at='2026-09-25T14:19:42Z'))
+        return branch
+
+    def test_a_tool_call_whose_processes_ended_does_not_block_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # Two Care reviews stopped without results. The poller found no process of their execution.
+        branch = self.ended_branch(coordinator)
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+            receipt = self.service._get('native_receipts', 'cut-off')
+            self.service._put('native_receipts', dict(receipt, _process_ended_at='2026-09-25T17:00:00Z'))
+            self.service.running[branch['id']] = Mock(is_alive=Mock(return_value=True))
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+            self.service.running.pop(branch['id'])
+            self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+        # The receipt stays for the owner's next turn. Only the writer guard reads it as ended.
+        self.assertEqual(self.service._get('native_receipts', 'cut-off')['state'], 'executing')
+
+    def test_the_poller_marks_a_call_ended_only_when_no_process_remains(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = self.ended_branch(coordinator)
+        workspace = self.service.root / 'workspaces' / 'coordinator-branch'
+        workspace.mkdir(parents=True, exist_ok=True)
+        cases = (({'coordinator-branch'}, set(), False), (None, set(), False),
+                 (set(), {str(workspace)}, False), (set(), ValueError('no lsof'), False), (set(), set(), True))
+        for outcomes, busy, ended in cases:
+            with self.subTest(outcomes=outcomes, busy=busy), \
+                    patch('coconut.work_workspace.process_outcomes', return_value=outcomes), \
+                    patch('coconut.work_workspace.busy_paths', side_effect=[busy]):
+                self.assertEqual(self.service._mark_ended_tool_calls(current=0), ['cut-off'] if ended else [])
+                self.assertEqual(bool(self.service._get('native_receipts', 'cut-off').get('_process_ended_at')), ended)
+                self.service._ended_tool_check_at = 0
+                self.service._busy_tool_calls = {}
+        self.assertEqual(self.service._get('native_receipts', 'cut-off')['state'], 'executing')
+
+    def test_the_poller_skips_a_live_worker_a_wait_and_runs_once_a_minute(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = self.ended_branch(coordinator)
+        with patch('coconut.work_workspace.process_outcomes', return_value=set()) as outcomes, \
+                patch('coconut.work_workspace.busy_paths', return_value=set()):
+            self.service.running[branch['id']] = Mock(is_alive=Mock(return_value=True))
+            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
+            self.service.running.pop(branch['id'])
+            self.assertEqual(self.service._mark_ended_tool_calls(current=30), [])
+            outcomes.assert_not_called()
+            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'),
+                                                      action={'name': 'coconut_wait', 'arguments': {}}))
+            self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
+
+    def test_the_poller_checks_the_bound_worktree_and_the_claim_workspace(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = self.ended_branch(coordinator)
+        root = self.service.root / 'workspaces'
+        worktree, claimed = self.service.root / 'elsewhere' / 'worktree', self.service.root / 'claimed'
+        for path in (root / 'coordinator-branch', worktree, claimed):
+            path.mkdir(parents=True, exist_ok=True)
+        self.service._put('tasks', dict(branch, _kanban_claim=dict(branch['_kanban_claim'], workspace=str(claimed))))
+        (root / 'worktrees.json').write_text(json.dumps({
+            'bound': dict(outcome='coordinator-branch', path=str(worktree), branch='wt/x', repository='/repo'),
+            'broken': dict(outcome='coordinator-branch'), 'other': dict(outcome='other', path='/other')}))
+        with patch('coconut.work_workspace.process_outcomes', return_value=set()), \
+                patch('coconut.work_workspace.busy_paths', return_value={str(worktree)}) as busy:
+            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
+        self.assertEqual(busy.call_args.args[0], {str(root / 'coordinator-branch'), str(worktree), str(claimed)})
+        # A registry that is not an object reads as empty.
+        (root / 'worktrees.json').write_text('[]')
+        self.service._busy_tool_calls = {}
+        with patch('coconut.work_workspace.process_outcomes', return_value=set()), \
+                patch('coconut.work_workspace.busy_paths', return_value=set()):
+            self.assertEqual(self.service._mark_ended_tool_calls(current=61), ['cut-off'])
+
+    def test_the_poller_backs_off_a_call_whose_workspace_stays_busy(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = self.ended_branch(coordinator)
+        workspace = self.service.root / 'workspaces' / 'coordinator-branch'
+        workspace.mkdir(parents=True, exist_ok=True)
+        with patch('coconut.work_workspace.process_outcomes', return_value=set()) as outcomes, \
+                patch('coconut.work_workspace.busy_paths', return_value={str(workspace)}) as busy:
+            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
+            # The next minute skips the busy call, so no scan runs.
+            self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
+            self.assertEqual(busy.call_count, 1)
+            self.assertEqual(self.service._mark_ended_tool_calls(current=601), [])
+            self.assertEqual(busy.call_count, 2)
+            # The delay doubles.
+            self.assertEqual(self.service._mark_ended_tool_calls(current=1202), [])
+            self.assertEqual(busy.call_count, 2)
+            busy.return_value = set()
+            self.assertEqual(self.service._mark_ended_tool_calls(current=1802), ['cut-off'])
+        # A call that no longer runs loses its back-off.
+        self.service._busy_tool_calls['finished-call'] = (9999, 600)
+        self.service._ended_tool_check_at = 0
+        self.service._mark_ended_tool_calls(current=1900)
+        self.assertNotIn('finished-call', self.service._busy_tool_calls)
+
+    def test_the_poller_never_ends_a_privileged_command(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.ended_branch(coordinator)
+        receipt = self.service._get('native_receipts', 'cut-off')
+        for command in ('sudo make install', 'cd /repo && doas cp a b', 'su - root -c true', 'FOO=1 /usr/bin/sudo ls',
+                        '(pkexec true)', 'echo $(sudo id)', "bash -c 'sudo id'", 'xargs sudo rm', 'grep sudo README.md'):
+            with self.subTest(command=command), patch('coconut.work_workspace.process_outcomes', return_value=set()), \
+                    patch('coconut.work_workspace.busy_paths', return_value=set()):
+                self.service._put('native_receipts', dict(receipt, action={'name': 'terminal', 'arguments': {'command': command}}))
+                self.service._ended_tool_check_at = 0
+                self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
+        # A word that only contains a privileged name is not one.
+        for command in ('git log --grep=pseudo', 'make summary'):
+            with self.subTest(command=command), patch('coconut.work_workspace.process_outcomes', return_value=set()), \
+                    patch('coconut.work_workspace.busy_paths', return_value=set()):
+                self.service._put('native_receipts', dict(receipt, action={'name': 'terminal', 'arguments': {'command': command}}))
+                self.service._ended_tool_check_at = 0
+                self.assertEqual(self.service._mark_ended_tool_calls(current=0), ['cut-off'])
+
+    def test_the_poller_waits_an_hour_before_it_trusts_the_checks(self):
+        from datetime import datetime, timezone
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.ended_branch(coordinator)
+        recent = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'), created_at=recent))
+        with patch('coconut.work_workspace.process_outcomes', return_value=set()) as outcomes, \
+                patch('coconut.work_workspace.busy_paths', return_value=set()):
+            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
+            outcomes.assert_not_called()
+            self.service.stopping.set()
+            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'),
+                                                      created_at='2026-09-25T14:19:42Z'))
+            # A stopping service does not write after its scans.
+            self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
+            self.service.stopping.clear()
+            self.assertEqual(self.service._mark_ended_tool_calls(current=122), ['cut-off'])
+
+    def test_the_poller_checks_only_kanban_worker_calls_and_scans_files_only_when_needed(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = self.ended_branch(coordinator)
+        # Only a kanban worker sets COCONUT_WORKSPACE_OUTCOME. A chat task or a context job has no such proof.
+        self.service._put('tasks', dict(branch, _kanban_claim=None))
+        with patch('coconut.work_workspace.process_outcomes', return_value=set()) as outcomes, \
+                patch('coconut.work_workspace.busy_paths', return_value=set()) as busy:
+            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
+            outcomes.assert_not_called()
+            self.service._put('tasks', branch)
+            self.service._put('contexts', dict(id='context-turn', task_id=branch['id'], bot_id=branch['bot_id'], status='failed'))
+            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'), turn_id='context-turn'))
+            self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
+            outcomes.assert_not_called()
+            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'), turn_id='old-turn'))
+            outcomes.return_value = {'coordinator-branch'}
+            self.assertEqual(self.service._mark_ended_tool_calls(current=122), [])
+            busy.assert_not_called()
+
+    def test_an_ended_wait_or_relay_call_still_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # A wait ends with a delivery, not with a process, so an ended mark cannot end it.
+        branch = self.ended_branch(coordinator, action='coconut_wait')
+        self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'),
+                                                  _process_ended_at='2026-09-25T17:00:00Z'))
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+
+    def test_a_blocked_card_with_a_block_kind_still_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
+                      _waiting_on=[], _kanban_claim={'native_id': 't_branch', 'input': 'branch'})
+        self.service._put('tasks', branch)
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        # A block check restarts a capability or input block. Hermes resumes a dependency or transient block.
+        for kind in ('capability', 'needs_input', 'dependency', 'transient'):
+            with self.subTest(kind=kind), patch.object(self.service, '_work_chain', side_effect=chains):
+                self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='blocked', block_kind=kind)
+                with self.assertRaisesRegex(ServiceError, 'another execution'):
+                    self.resume(coordinator)
+        self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='blocked', block_kind=None)
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+    def test_a_failed_branch_with_a_dispatchable_card_still_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # Coconut can record a failed branch while the native board still holds its card as ready.
+        branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
+                      _waiting_on=[], _kanban_claim={'native_id': 't_branch', 'input': 'branch'})
+        self.service._put('tasks', branch)
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        for card in (dict(id='t_branch', status='ready'), dict(id='t_branch', status='review'),
+                     dict(id='t_branch', status='scheduled'), dict(id='t_other', status='blocked'), None):
+            with self.subTest(card=card):
+                self.service.kanban.tasks.pop(branch['id'], None)
+                if card:
+                    self.service.kanban.tasks[branch['id']] = card
+                with patch.object(self.service, '_work_chain', side_effect=chains):
+                    with self.assertRaisesRegex(ServiceError, 'another execution'):
+                        self.resume(coordinator)
+        self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='blocked')
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+    def test_a_completed_audit_with_a_running_tool_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        self.executing_receipt(self.service._get('tasks', owner['source_task_id']))
+        with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+            self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def assert_terminal_coordinator_branch_is_guarded(self, passive_report):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        if not passive_report:
+            self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        branch = dict(coordinator, id='terminal-branch', status='completed',
+                      _assignment_task_id=coordinator['id'], _execution_session_id='terminal-branch',
+                      _native_outcome_id='t_branch', _work_context_id=None)
+        branch.pop('_waiting_on', None)
+        self.service._put('tasks', branch)
+        for status in ('completed', 'failed'):
+            self.service._put('tasks', dict(branch, status=status))
+            self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='running', current_run_id=123)
+            with self.subTest(status=status), self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+            self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='done')
+            self.service._put('decisions', dict(id='branch-question', task_id=branch['id'], status='pending'))
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+            self.service._put('decisions', dict(id='branch-question', task_id=branch['id'], status='rejected'))
+            self.service._put('contexts', dict(id='branch-context', task_id=branch['id'], bot_id=branch['bot_id'], status='working'))
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+            self.service._put('contexts', dict(id='branch-context', task_id=branch['id'], bot_id=branch['bot_id'], status='completed'))
+            with patch.object(self.service, '_native_task_receipts', side_effect=lambda identity, **kw:
+                              [{'id': 'pending-tool'}] if identity == branch['id'] and kw.get('state') == 'executing' else []):
+                with self.assertRaisesRegex(ServiceError, 'another execution'):
+                    self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+
+    def test_terminal_coordinator_branch_keeps_native_and_decision_guards(self):
+        self.assert_terminal_coordinator_branch_is_guarded(True)
+
+
+    def test_unreported_pr_keeps_coordinator_branch_guards(self):
+        self.assert_terminal_coordinator_branch_is_guarded(False)
+
+
+    def test_unreported_pr_keeps_audit_native_guard(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        audit = self.service._get('tasks', owner['source_task_id'])
+        audit['_native_outcome_id'] = 't_audit'
+        self.service._put('tasks', audit)
+        self.service.kanban.tasks[audit['id']] = dict(id='t_audit', status='running', current_run_id=124)
+        with self.assertRaisesRegex(ServiceError, 'another execution|belongs to another native outcome'):
+            self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+
+
+    def test_an_unfinished_audit_still_blocks_the_audited_pr(self):
+        # The audit gate refuses first. test_an_active_branch_of_the_coordinator_still_blocks_the_audited_pr covers the writer guard.
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        audit = self.service._get('tasks', owner['source_task_id'])
+        self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status='pending'))
+        with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+            self.resume(coordinator)
+        self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status='rejected'))
+        self.service._put('tasks', dict(audit, status='working'))
+        with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+            self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_an_unfinished_audit_blocks_an_audited_pr_without_a_report(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # Without a passive report, no peer check reads the audit. The audit path itself requires a finished audit.
+        self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        audit = self.service._get('tasks', owner['source_task_id'])
+        for changes, decision in ((dict(status='working'), None), (dict(_waiting_on=['child']), None),
+                                  (dict(_return_pending={'text': 'Undelivered'}), None), ({}, 'pending')):
+            with self.subTest(changes=changes, decision=decision):
+                self.service._put('tasks', dict(audit, **changes))
+                self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status=decision or 'rejected'))
+                with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+                    self.resume(coordinator)
+                self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.service._put('tasks', audit)
+        self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status='rejected'))
+        self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+    def test_unreported_pr_keeps_audit_worker_and_background_guards(self):
+        from unittest.mock import Mock
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        audit = self.service._get('tasks', owner['source_task_id'])
+        with patch.dict(self.service.running, {audit['id']: Mock(is_alive=lambda: True)}):
+            with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+                self.resume(coordinator)
+        with patch.object(self.service, '_background_pending', side_effect=lambda identity: identity == audit['id']):
+            with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+                self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+    def test_unreported_pr_keeps_audit_descendant_guards(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        branch = dict(coordinator, id='audit-branch', status='failed',
+                      _assignment_task_id=owner['source_task_id'], _execution_session_id='audit-branch',
+                      _native_outcome_id=None, _work_context_id=None, _waiting_on=[])
+        self.service._put('tasks', branch)
+        self.service._put('decisions', dict(id='branch-question', task_id=branch['id'], status='pending'))
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(coordinator)
+        self.service._put('decisions', dict(id='branch-question', task_id=branch['id'], status='rejected'))
+        self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+    def test_the_audit_card_must_be_terminal_and_a_quiet_failed_audit_is_accepted(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        audit = dict(self.service._get('tasks', owner['source_task_id']), _kanban_claim={'native_id': 't_audit', 'input': 'audit'})
+        self.service._put('tasks', audit)
+        for card in (dict(id='t_audit', status='ready'), dict(id='t_audit', status='review'),
+                     dict(id='t_audit', status='done', current_run_id=7), dict(id='t_other', status='done'), None):
+            with self.subTest(card=card):
+                self.service.kanban.tasks.pop(audit['id'], None)
+                if card:
+                    self.service.kanban.tasks[audit['id']] = card
+                with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+                    self.resume(coordinator)
+                self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        # The audit's card is missing from the cached snapshot, so Coconut fetches it before the check.
+        self.service.kanban.tasks[audit['id']] = dict(id='t_audit', status='blocked')
+        self.service._put('tasks', dict(audit, status='failed'))
+        self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+    def test_passive_report_accepts_quiet_failed_audit_and_descendant(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        audit = self.service._get('tasks', owner['source_task_id'])
+        self.service._put('tasks', dict(audit, status='failed'))
+        branch = dict(coordinator, id='audit-child', status='failed',
+                      _assignment_task_id=audit['id'], _execution_session_id='audit-child',
+                      _native_outcome_id=None, _work_context_id=None, _waiting_on=[])
+        self.service._put('tasks', branch)
+        self.service._put('decisions', dict(id='audit-child-question', task_id=branch['id'], status='pending'))
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(coordinator)
+        self.service._put('decisions', dict(id='audit-child-question', task_id=branch['id'], status='rejected'))
+        self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+    def test_an_owner_report_to_an_unrelated_task_still_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr(report_to='unrelated')
+        self.service._put('tasks', dict(coordinator, id='unrelated', status='completed', _execution_session_id='unrelated',
+                                        _native_outcome_id=None, _work_context_id=None))
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
     def test_requester_continues_linked_delegated_pr_without_taking_its_work(self):
         owner, source, work, pr = self.linked_requester_pr()

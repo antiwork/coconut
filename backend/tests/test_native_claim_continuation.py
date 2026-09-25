@@ -316,6 +316,53 @@ else:
             self.assertIn(identity, self.native_program(
                 'print(board.kb.task_graph_contexts(board.conn, [sys.argv[2]]))', successor))
 
+    def test_requester_callback_keeps_native_owner_and_dispatches_once(self):
+        import os
+        prepare = self.prepare
+        def prepare_callback(*args):
+            owner, unused, identity, workspace = prepare(*args)
+            self.service._put('tasks', dict(unused, status='completed'))
+            requester = self.service._get('tasks', owner['source_task_id'])
+            requester.update(_execution_session_id=requester['id'], _waiting_on=[],
+                             _conversation_epoch=self.service._setting('conversation_epoch'))
+            self.service._put('tasks', requester)
+            report = dict(owner, id=str(uuid4()), _execution_session_id=str(uuid4()),
+                          _reply_to_task_id=requester['id'])
+            report.pop('_kanban_claim', None)
+            self.service._put('tasks', report)
+            delivered = self.service._store_bot_message(report['id'], dict(
+                target_bot_id=requester['bot_id'], text='The delegated result is saved.'), returning=True)
+            caller = self.service._get('tasks', delivered['task_id'])
+            self.service._ensure_execution_session(caller)
+            caller.update(_native_turn_id='callback-input',
+                          _conversation_epoch=requester['_conversation_epoch'])
+            self.service._put('tasks', caller)
+            rows = [self.service._kanban_row(t, t, 'ready', 10) for t in (report, caller)]
+            self.native_program('import json; board.sync(json.loads(sys.argv[2]))', json.dumps(rows))
+            self.service.kanban.call({'op': 'snapshot'})
+            report_native = self.service.kanban.tasks[report['id']]['id']
+            caller_native = self.service.kanban.tasks[caller['id']]['id']
+            self.native_program("assert board.kb.complete_task(board.conn, sys.argv[2], summary='Report saved')\n"
+                "assert board.kb.claim_task(board.conn, sys.argv[3])\n"
+                "board.dispatch._set_worker_pid(board.conn, sys.argv[3], int(sys.argv[4]))",
+                report_native, caller_native, str(os.getpid()))
+            self.service.kanban.call({'op': 'snapshot'})
+            card = self.service.kanban.tasks[caller['id']]
+            caller.update(status='working', _kanban_claim=dict(native_id=caller_native,
+                external_id=caller['id'], input=rows[1]['input'], run_id=card['current_run_id'],
+                pid=os.getpid(), context=''))
+            self.service._put('tasks', report)
+            self.service._put('tasks', caller)
+            url = 'https://github.com/example/app/pull/6'
+            from coconut.service import now
+            for task, activity in ((owner, report), (requester, caller)):
+                self.service._put('artifacts', dict(id=str(uuid4()), task_id=task['id'], bot_id=task['bot_id'],
+                    created_at=now(), kind='pr', title='Retained PR', status='merged', pr_state='merged', url=url,
+                    _review_task_id=task['id'], _activity_task_id=activity['id']))
+            return owner, caller, identity, workspace
+        self.prepare = prepare_callback
+        self.check_dispatch('done')
+
     def test_aged_completed_claim_dispatches_after_adapter_restart(self):
         self.check_dispatch('done', aged=True)
 
