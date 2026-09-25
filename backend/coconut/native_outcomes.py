@@ -79,18 +79,25 @@ class NativeOutcomes:
             return not (task.get('_waiting_on') or task.get('_return_pending') or (worker and worker.is_alive())
                         or self._background_pending(task['id']) or self._native_task_receipts(task['id'], state='executing')
                         or native_live or task['id'] in pending_decisions or task['id'] in open_contexts)
-        # The audit path skips the audit's own writer checks, so the audit must have finished.
-        if (source and snapshot_missing and source['id'] not in snapshots
-                and (source.get('_native_outcome_id') or (source.get('_kanban_claim') or {}).get('native_id'))):
-            snapshot_missing([source['id']])
-        audit_finished = bool(source and source['status'] == 'completed' and quiet(source) and not self._unfinished_work(source))
+
+        def audit_finished():
+            # The audit path skips the audit's own writer checks, so the audit must have finished.
+            # Coconut reads the audit's card only for an audited delegation.
+            if (snapshot_missing and source['id'] not in snapshots
+                    and (source.get('_native_outcome_id') or (source.get('_kanban_claim') or {}).get('native_id'))):
+                snapshot_missing([source['id']])
+            # A failed or cancelled audit is terminal. Its unfinished work items are expected, as for a branch.
+            return quiet(source) and (source['status'] in ('failed', 'cancelled') or (
+                source['status'] == 'completed' and not self._unfinished_work(source)))
+
         for candidate in items:
             root = self._work_outcome_artifact(candidate)
             # A requester's source audit can delegate for an existing Work outcome of that requester.
             # _source_native_ids lists the native outcomes that the audit commented on. That alone does not
             # prove a delegation, so the Work's own task must also make this call.
-            audited = bool(audit_finished and caller and caller['id'] == root['task_id'] and root.get('_native_outcome_id')
-                           and root['_native_outcome_id'] in (source.get('_source_native_ids') or ()))
+            audited = bool(source and caller and caller['id'] == root['task_id'] and root.get('_native_outcome_id')
+                           and root['_native_outcome_id'] in (source.get('_source_native_ids') or ())
+                           and root['task_id'] != source['id'] and audit_finished())
             if (root['bot_id'] != owner['bot_id'] and candidate['kind'] == 'pr'
                     and candidate['bot_id'] == owner['bot_id'] and candidate['task_id'] == owner['id']
                     and candidate.get('work_outcome_id') == root['id'] and root['kind'] == 'work'
