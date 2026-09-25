@@ -15,7 +15,8 @@ ENDED_TOOL_CHECK_SECONDS = 60
 # escapes both checks, so a call counts as ended only after it started this long ago.
 ENDED_TOOL_MIN_AGE_SECONDS = 60 * 60
 # A call that names a privileged program anywhere never ends here. `bash -c 'sudo ...'` or `xargs sudo` hide the
-# program from a command-position match, so a call that only mentions one also stays blocked.
+# program from a command-position match, so a call that only mentions one also stays blocked. A script can still
+# run sudo without naming it, but the Mac mini user has no passwordless sudo, so no root child starts unattended.
 PRIVILEGED = re.compile(r'\b(?:sudo|doas|su|pkexec|runas)\b')
 # A call whose workspace stays busy is checked again after this delay, which doubles up to an hour.
 BUSY_TOOL_BACKOFF_SECONDS = 10 * 60
@@ -206,7 +207,9 @@ class BackgroundProcesses:
             paths[identity] = {p for p in places if Path(p).exists()}
         try:
             busy = work_workspace.busy_paths(set().union(*paths.values())) if any(paths.values()) else set()
-        except ValueError:
+        except ValueError as error:
+            # Without a complete listing, no call can end. Log it so a lasting failure is visible.
+            logging.getLogger(__name__).warning('Coconut could not check interrupted tool calls: %s', error)
             return []
         ended = []
         for identity, _, _, _ in candidates:
