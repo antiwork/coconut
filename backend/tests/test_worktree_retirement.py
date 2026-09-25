@@ -143,14 +143,9 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual((path / 'draft.txt').read_text(), 'keep\n')
         self.assertNotIn('retired', self.registry()[identity])
 
-    def test_unfinished_pending_recent_running_locked_and_native_outcomes_keep_their_worktrees(self):
-        kept = []
-        kept.append(self.outcome(status='working'))
-        kept.append(self.outcome(status='failed'))
+    def test_active_recent_running_locked_and_claimed_native_outcomes_keep_their_worktrees(self):
+        kept = [self.outcome(status=status) for status in ('queued', 'working', 'waiting')]
         kept.append(self.outcome(updated_at=RECENT))
-        pending = self.outcome()
-        self.service._put('decisions', dict(id=str(uuid4()), task_id=pending[3]['id'], status='pending'))
-        kept.append(pending)
         running = self.outcome()
         self.service.running[running[3]['id']] = SimpleNamespace()
         self.addCleanup(self.service.running.pop, running[3]['id'])
@@ -158,16 +153,33 @@ class WorktreeRetirementTests(unittest.TestCase):
         locked = self.outcome()
         git(self.repo, 'worktree', 'lock', str(locked[2]))
         kept.append(locked)
-        native = self.outcome()
-        kept.append(native)
+        claimed = [self.outcome(), self.outcome()]
+        kept.extend(claimed)
         for _, _, path, _ in kept:
             (path / 'draft.txt').write_text('in progress\n')
-        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={native[3]['id']: dict(id='n1', status='blocked')})):
+        native = {claimed[0][3]['id']: dict(id='n1', status='running'), claimed[1][3]['id']: dict(id='n2', status='ready')}
+        with patch.object(self.service, 'kanban', SimpleNamespace(tasks=native)):
             self.assertEqual(self.retire(), [])
         for _, identity, path, _ in kept:
             self.assertEqual((path / 'draft.txt').read_text(), 'in progress\n')
             self.assertNotIn('retired', self.registry()[identity])
         self.assertFalse((self.workspaces / 'archive' / (locked[1] + '.tar.gz')).exists())
+
+    def test_idle_outcomes_that_wait_or_failed_retire_and_return_with_their_changes(self):
+        idle = [self.outcome(status=status) for status in ('failed', 'paused', 'needs_you')]
+        self.service._put('decisions', dict(id=str(uuid4()), task_id=idle[2][3]['id'], status='pending'))
+        blocked = [self.outcome(), self.outcome()]
+        idle.extend(blocked)
+        for _, _, path, _ in idle:
+            (path / 'draft.txt').write_text('in progress\n')
+        native = {blocked[0][3]['id']: dict(id='n1', status='blocked'), blocked[1][3]['id']: dict(id='n2', status='triage')}
+        with patch.object(self.service, 'kanban', SimpleNamespace(tasks=native)):
+            self.assertEqual(sorted(self.retire()), sorted(identity for _, identity, _, _ in idle))
+        for outcome, identity, path, _ in idle:
+            self.assertFalse(path.exists())
+            self.assertEqual(preferred(self.workspaces, outcome), path)
+            self.assertEqual((path / 'draft.txt').read_text(), 'in progress\n')
+            self.assertNotIn('retired', self.registry()[identity])
 
     def test_the_job_runs_at_most_once_an_hour(self):
         _, identity, path, _ = self.outcome()
@@ -633,6 +645,50 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(self.retire(), [])
         self.assertTrue(path.is_dir())
         self.assertNotIn('retired', self.registry()[identity])
+
+
+    def orphan(self, path):
+        """Start a process in the path whose parent ends at once, so that launchd adopts it."""
+        started = subprocess.run(['sh', '-c', 'sleep 60 >/dev/null 2>&1 & echo $!'], cwd=path,
+                                 capture_output=True, text=True, check=True)
+        pid = int(started.stdout)
+        self.addCleanup(lambda: subprocess.run(['kill', str(pid)], capture_output=True))
+        return pid
+
+    def alive(self, pid):
+        return subprocess.run(['ps', '-p', str(pid)], capture_output=True).returncode == 0
+
+    @unittest.skipUnless(shutil.which('lsof') and os.uname().sysname == 'Darwin', 'The test needs lsof and launchd.')
+    def test_an_old_orphaned_process_is_stopped_and_the_worktree_retires(self):
+        _, identity, path, _ = self.outcome()
+        pid = self.orphan(path)
+        self.in_use.stop()
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.retire()
+            for _ in range(50):
+                if not self.alive(pid):
+                    break
+                time.sleep(0.1)
+            self.assertFalse(self.alive(pid))
+            if path.exists():
+                self.assertEqual(self.retire(), [identity])
+        self.assertIn('retired', self.registry()[identity])
+
+    @unittest.skipUnless(shutil.which('lsof') and os.uname().sysname == 'Darwin', 'The test needs lsof and launchd.')
+    def test_a_young_orphaned_process_keeps_the_worktree(self):
+        _, identity, path, _ = self.outcome()
+        pid = self.orphan(path)
+        self.in_use.stop()
+        self.assertEqual(self.retire(), [])
+        self.assertTrue(self.alive(pid))
+        self.assertTrue(path.is_dir())
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_elapsed_times_from_ps_become_seconds(self):
+        self.assertEqual(work_workspace.elapsed_seconds('05'), 5)
+        self.assertEqual(work_workspace.elapsed_seconds('02:03'), 123)
+        self.assertEqual(work_workspace.elapsed_seconds('1:02:03'), 3723)
+        self.assertEqual(work_workspace.elapsed_seconds('06-16:25:58'), 6 * 86400 + 16 * 3600 + 25 * 60 + 58)
 
 
 if __name__ == '__main__':

@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import stat
 import subprocess
 import tarfile
@@ -207,17 +208,67 @@ def registered(repository):
     return records
 
 
-def in_use(path):
-    """Return True when a process has its cwd or an open file in the path."""
+def holders(path):
+    """Return the IDs of the processes that have their cwd or an open file in the path."""
     try:
-        result = subprocess.run(['lsof', '-n', '-P', '-w', '-F', 'n'], capture_output=True, timeout=120)
+        result = subprocess.run(['lsof', '-n', '-P', '-w', '-F', 'pn'], capture_output=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired):
         raise ValueError('Coconut cannot check open files without lsof.') from None
     if not result.stdout:
         raise ValueError('lsof did not list open files.')
     prefixes = {os.fsencode(str(path)), os.fsencode(str(Path(path).resolve()))}
-    return any(line.startswith(b'n') and any(line[1:] == prefix or line[1:].startswith(prefix + b'/') for prefix in prefixes)
-               for line in result.stdout.splitlines())
+    found, pid = set(), None
+    for line in result.stdout.splitlines():
+        if line.startswith(b'p'):
+            pid = int(line[1:])
+        elif line.startswith(b'n') and any(line[1:] == prefix or line[1:].startswith(prefix + b'/') for prefix in prefixes):
+            found.add(pid)
+    return found
+
+
+def in_use(path):
+    """Return True when a process has its cwd or an open file in the path."""
+    return bool(holders(path))
+
+
+def elapsed_seconds(value):
+    """Convert a `ps` etime value, [[dd-]hh:]mm:ss, to seconds."""
+    days, _, clock = value.rpartition('-')
+    seconds = 0
+    for part in clock.split(':'):
+        seconds = seconds * 60 + int(part)
+    return (int(days) if days else 0) * 86400 + seconds
+
+
+def stop_orphans(path, age):
+    """Stop the old orphaned processes that hold the path, and their child processes. Return their IDs.
+
+    An orphan is a process that launchd (PID 1) adopted after its parent ended. Coconut stops only an orphan
+    that holds the path itself and that is older than `age` seconds. A process under a shell or the service is not an orphan.
+    """
+    found = holders(path)
+    if not found:
+        return set()
+    try:
+        result = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,etime='], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        raise ValueError('Coconut cannot list processes without ps.') from None
+    table = {}
+    for line in result.stdout.splitlines():
+        with contextlib.suppress(ValueError):
+            pid, parent, elapsed = line.split()
+            table[int(pid)] = (int(parent), elapsed_seconds(elapsed))
+    orphans = {pid for pid in found if pid != os.getpid() and table.get(pid, (None, 0))[0] == 1 and table[pid][1] >= age}
+    stopped = set(orphans)
+    while True:
+        children = {pid for pid, (parent, _) in table.items() if parent in stopped} - stopped
+        if not children:
+            break
+        stopped |= children
+    for pid in stopped:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, signal.SIGTERM)
+    return stopped
 
 
 def check_worktree(path, binding, repository, *, processes=True):
