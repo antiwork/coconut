@@ -96,6 +96,7 @@ from .kanban_scheduler import NativeKanban
 from .service_restart import ServiceRestart
 from .workspace_recovery import WorkspaceRecovery
 from .worktree_retirement import WorktreeRetirement
+from .session_maintenance import SessionMaintenance
 from .tracked_work import TrackedWork
 from .work_model import WorkModel
 from .work_recovery import WorkRecovery
@@ -103,7 +104,7 @@ from .decision_freshness import DecisionFreshness
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
-class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement):
+class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -163,6 +164,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         CREATE INDEX IF NOT EXISTS native_receipts_task ON native_receipts (json_extract(data, '$.task_id'));
         CREATE INDEX IF NOT EXISTS decisions_task ON decisions (json_extract(data,'$.task_id'));
         CREATE INDEX IF NOT EXISTS tasks_source_assignment ON tasks (json_extract(data,'$._source_assignment.id'));
+        CREATE INDEX IF NOT EXISTS tasks_execution ON tasks (json_extract(data,'$._execution_session_id'));
         CREATE INDEX IF NOT EXISTS native_receipts_creation_key ON native_receipts
             (json_extract(data, '$.action.arguments.idempotency_key'))
             WHERE json_extract(data, '$.action.name')='kanban_create';
@@ -2933,6 +2935,17 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             "AND COALESCE(json_extract(m.data, '$._deleted'),0)=0 " + selection + "ORDER BY m.rowid)", values).fetchone()
         return [self._public(message) for message in json.loads(row[0])]
 
+    def _execution_task_ids(self, task):
+        """Return the IDs of the tasks of the task's execution that already had a turn, and the task itself.
+
+        A reseed of the work session keeps their messages. A queued request waits for its own turn boundary.
+        """
+        with self.lock:
+            return [row[0] for row in self.db.execute(
+                "SELECT id FROM tasks WHERE json_extract(data, '$._execution_session_id')=? "
+                "AND (id=? OR json_extract(data, '$.status') NOT IN ('queued', 'scheduled'))",
+                (task['_execution_session_id'], task['id']))]
+
     def _task_messages(self, task_id):
         row = self.db.execute("SELECT json_group_array(json(data)) FROM (SELECT data FROM messages "
                               "WHERE json_extract(data, '$.task_id')=? ORDER BY rowid)", (task_id,)).fetchone()
@@ -3087,6 +3100,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         provider_task[field] = task[field]
                 if task.get('_native_outcome_id'):
                     provider_task['_native_outcome'] = task['_kanban_claim']
+                if task.get('_execution_session_id'):
+                    provider_task['_execution_task_ids'] = self._execution_task_ids(task)
                 reaction_feedback = task.get('_reaction_feedback', [])
                 provider_task['_reaction_feedback'] = reaction_feedback
                 provider_task['_turn_message_ids'] = task['_turn_message_ids']
@@ -3710,6 +3725,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                                                            '_kanban_external_id': context.get('_kanban_claim', {}).get('external_id'),
                                                            '_kanban_workspace': context.get('_kanban_claim', {}).get('workspace')}
                     provider_task['_conversation_epoch'] = context.get('_conversation_epoch', task.get('_conversation_epoch', self._setting('conversation_epoch')))
+                    if task.get('_execution_session_id'):
+                        provider_task['_execution_task_ids'] = self._execution_task_ids(task)
                     # Replies and maintenance use their own contexts, outside the source routine's execution claim.
                     provider_task['_native_receipts'] = self._native_task_receipts(task['id'], turn_id=context_id, state='completed')
                     if context.get('_background_completion'):
