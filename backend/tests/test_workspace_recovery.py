@@ -242,6 +242,32 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         self.assertTrue(calls[1][2])
         self.assertFalse(self.service._workspace_recovery_hold)
 
+    def test_checkout_recovery_disables_post_checkout_hook(self):
+        payload, dirty, artifact = self.checkout_incident()
+        hook = self.repo / '.git' / 'hooks' / 'post-checkout'
+        marker = self.root / 'hook-ran'
+        hook.write_text('#!/bin/sh\nprintf unexpected > ' + str(marker) + '\n')
+        hook.chmod(0o755)
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        self.assertTrue(self.service.take_service_restart())
+        self.restart()
+        self.assertEqual(self.receipt()['state'], 'applied', self.receipt())
+        self.assertFalse(marker.exists())
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+
+    def test_checkout_recovery_refuses_target_checkout_filter(self):
+        payload, dirty, artifact = self.checkout_incident()
+        (self.repo / '.gitattributes').write_text('saved-0.txt filter=unsafe\n')
+        git(self.repo, 'add', '.gitattributes')
+        git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            'commit', '-m', 'mark saved checkout filter')
+        payload['saved_head'] = git(self.repo, 'rev-parse', 'HEAD')
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+
     def test_checkout_recovery_retains_unstaged_tracked_deletion(self):
         payload, dirty, artifact = self.checkout_incident()
         (self.workspace / 'checkout-a.txt').unlink()
@@ -412,7 +438,7 @@ print(identity)
         self.service.close()
         def crash(path, *arguments, **kwargs):
             result = checkout_git(path, *arguments, **kwargs)
-            if arguments[:1] == ('switch',):
+            if 'switch' in arguments:
                 raise SystemExit('simulated crash after branch switch')
             return result
         with patch('coconut.workspace_recovery.checkout_git', side_effect=crash), self.assertRaises(SystemExit):
@@ -513,7 +539,7 @@ print(identity)
         self.service.close()
         def crash(path, *arguments, **kwargs):
             result = checkout_git(path, *arguments, **kwargs)
-            if arguments[:1] == ('switch',):
+            if 'switch' in arguments:
                 raise SystemExit('simulated crash after branch switch')
             return result
         with patch('coconut.workspace_recovery.checkout_git', side_effect=crash), self.assertRaises(SystemExit):

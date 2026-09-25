@@ -228,6 +228,12 @@ def checkout_obstructions(request, tree, dirty):
                                             request['attached_head'], tree).split('\0')))
     if changed.intersection(dirty):
         raise ValueError('The merge changes a dirty tracked file; manual reconciliation is required.')
+    for commit in (request['attached_head'], tree):
+        if changed:
+            attributes = checkout_git(path, 'check-attr', '--source', commit, '-z', '--stdin', 'filter',
+                                      input='\0'.join(changed) + '\0').split('\0')
+            if any(value not in ('unspecified', 'unset') for value in attributes[2::3]):
+                raise ValueError('A checkout filter needs separate inspection before recovery.')
     trees = {}
     for commit in (request['attached_head'], tree):
         trees[commit] = {name: details.split()[0] for entry in
@@ -544,7 +550,8 @@ class WorkspaceRecovery:
                     if result.returncode:
                         checkout_git(request['repository'], 'update-ref', ref, receipt['merge_commit'],
                                      '0' * len(receipt['merge_commit']))
-                    checkout_git(request['path'], 'switch', '--no-overwrite-ignore', request['recovery_branch'])
+                    checkout_git(request['path'], '-c', 'core.hooksPath=/dev/null', 'switch',
+                                 '--no-overwrite-ignore', request['recovery_branch'])
                 checkout_state(dict(request, merge_commit=receipt['merge_commit']), initial=False)
                 if dirty_state(Path(request['path'])) != receipt['dirty']:
                     raise ValueError('Dirty tracked edits changed during recovery.')
