@@ -325,6 +325,21 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         self.assertEqual(self.manifest.read_bytes(), before)
         self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
 
+    def test_checkout_recovery_rejects_retired_binding_before_git_write(self):
+        payload, dirty, artifact = self.checkout_incident()
+        registry = json.loads(self.manifest.read_text())
+        next(iter(registry.values()))['retired'] = dict(head=payload['saved_head'], archive='retained')
+        self.manifest.write_text(json.dumps(registry))
+        before = self.manifest.read_bytes()
+        status, response = self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)
+        self.assertEqual(status, 409, response)
+        self.assertIn('retired', response['error'])
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+        self.assertEqual(git(self.repo, 'branch', '--list', payload['recovery_branch']), '')
+        self.assertEqual(self.service._all('workspace_recoveries'), [])
+
     def test_checkout_recovery_ignores_unapplied_global_filter(self):
         payload, dirty, artifact = self.checkout_incident()
         git(self.repo, 'config', 'filter.unused.clean', 'false')

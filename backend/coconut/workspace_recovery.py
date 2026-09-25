@@ -416,6 +416,8 @@ class WorkspaceRecovery:
                         ('outcome', data['expected_owner']), ('repository', data['repository']),
                         ('path', data['path']), ('branch', data['saved_branch']))):
                         raise ValueError('The saved workspace binding changed.')
+                    if binding.get('retired'):
+                        raise ValueError('Restore the retired workspace before checkout recovery.')
                     if any(name != identity and (not isinstance(other, dict) or not isinstance(other.get('path'), str)
                         or Path(other['path']).resolve() == Path(data['path'])) for name, other in current.items()):
                         raise ValueError('Another binding names the original checkout.')
