@@ -150,10 +150,14 @@ class NativeOutcomes:
                     root = tasks[owner['source_task_id']] if passive_report else self._work_execution_owner(reporter, tasks)
                     linked = self._work_chain(root, tasks, records, include_continuations=True)
                     if passive_report:
-                        # The coordinating requester task has its own branches. Keep them in the guard too.
+                        # The coordinating requester task has its own branches. Keep its active ones in the guard too.
+                        # A failed, cancelled, or completed branch cannot write, so it does not block the delegated PR.
                         for identity in requesters - {root['id']}:
                             if identity in tasks:
-                                linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
+                                linked.update({key: value for key, value in self._work_chain(
+                                    tasks[identity], tasks, records, include_continuations=True).items()
+                                    if value[0]['status'] in self.ACTIVE or value[0].get('_return_pending')
+                                    or self._background_pending(value[0]['id'])})
                     linked[root['id']] = (root, 0)
                     linked[reporter['id']] = (reporter, 0)
                     if owner_report and reporter_source and reporter_source['id'] not in (owner['id'], *requesters):

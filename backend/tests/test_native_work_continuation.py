@@ -775,6 +775,15 @@ class NativeWorkContinuationTests(unittest.TestCase):
                 self.resume(coordinator)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
+    def test_a_failed_branch_of_the_coordinator_does_not_block_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None)
+        self.service._put('tasks', branch)
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
     def test_an_unfinished_audit_still_blocks_the_audited_pr(self):
         owner, coordinator, work, pr = self.audited_requester_pr()
         audit = self.service._get('tasks', owner['source_task_id'])
