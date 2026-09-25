@@ -49,6 +49,14 @@ class SessionSelectionTests(unittest.TestCase):
         self.assertEqual(outcomes, [dict(execution_session_id=idle['_execution_session_id'], epoch='epoch-1')])
         self.assertEqual(days, session_maintenance.SESSION_RETENTION_DAYS)
 
+    def test_an_outcome_that_resumes_before_its_bot_keeps_its_session(self):
+        self.task(_execution_session_id='idle-work')
+        # The second check, just before the bot, finds the outcome active again.
+        with patch.object(self.service, '_finished_outcomes', side_effect=[{'idle-work'}, set()]):
+            self.service.maintain_native_sessions(current=0)
+        [(bot, outcomes, days)] = self.calls
+        self.assertEqual(outcomes, [])
+
     def test_maintenance_runs_at_most_once_an_hour_and_skips_a_busy_service(self):
         with patch.object(self.service, '_finished_outcomes', return_value=set()):
             self.service.maintain_native_sessions(current=0)

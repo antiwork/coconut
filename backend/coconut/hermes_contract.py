@@ -110,6 +110,8 @@ def verify_contract():
     require_keywords(pin_summary_route, {'route'})
     require_keywords(ContextCompressor._call_summary_llm, {'prompt', 'prompt_started_at'})
     require_keywords(ContextCompressor._generate_summary, {'turns_to_summarize'})
+    # Coconut session maintenance calls these by keyword and reads the returned counts.
+    require_keywords(SessionDB.maybe_auto_prune_and_vacuum, {'retention_days', 'sessions_dir'})
     require_keywords(registry.register, {'name', 'toolset', 'schema', 'handler'})
     require_keywords(registry.dispatch, {'name', 'args'})
     require_keywords(registry.deregister, {'name'})

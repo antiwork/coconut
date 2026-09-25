@@ -46,10 +46,14 @@ class SessionMaintenance:
                 break
             if not (self.root / 'bots' / bot['id'] / 'home' / 'state.db').exists():
                 continue
+            pending = list(outcomes.get(bot['id'], {}).values())
+            if pending:
+                # Earlier bots can take minutes. Check again that each outcome is still idle just before this bot.
+                still = self._finished_outcomes(time.time(), timeout=SESSION_LOCK_WAIT_SECONDS)
+                pending = [item for item in pending if still is not None and item['execution_session_id'] in still]
             try:
                 results[bot['id']] = self.provider.maintain_sessions(
-                    dict(id=bot['id'], session_id=bot['session_id']),
-                    list(outcomes.get(bot['id'], {}).values()), SESSION_RETENTION_DAYS)
+                    dict(id=bot['id'], session_id=bot['session_id']), pending, SESSION_RETENTION_DAYS)
             except Exception:
                 logging.getLogger(__name__).exception('Could not maintain the native sessions of bot %s.', bot['id'])
         return results
