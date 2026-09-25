@@ -97,6 +97,9 @@ class NativeOutcomes:
             # The requester's coordinating task can differ from the task that delegated this work.
             requesters = {owner.get('source_task_id')} | ({linked_parent['task_id']} if linked_parent else set())
             requesters.discard(None)
+            # Only the caller is not a competing writer. When the coordinator calls for its audit, the audit stays guarded.
+            callers = ({linked_parent['task_id']} if linked_parent and linked_parent['task_id'] != owner.get('source_task_id')
+                       else {owner.get('source_task_id')})
             for peer in peers:
                 if linked_parent and peer['id'] == linked_parent['id']:
                     # The coordinating Work may remain active while its delegated PR resumes.
@@ -153,7 +156,7 @@ class NativeOutcomes:
                         # The coordinator and the owner under continuation
                         # are not competing writers. Their other descendants
                         # still need terminal claims, returns, and decisions.
-                        for identity in (*requesters, owner['id']):
+                        for identity in (*callers, owner['id']):
                             linked.pop(identity, None)
                     native_tasks = [t for t, _ in linked.values()
                                     if t.get('_native_outcome_id') or t.get('_kanban_claim')]

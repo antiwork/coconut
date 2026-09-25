@@ -715,7 +715,8 @@ class NativeWorkContinuationTests(unittest.TestCase):
         coordinator = dict(source, id='coordinator', status='working', _execution_session_id='coordinator',
                            _native_outcome_id='t_requester', _work_context_id='requester-work')
         self.service._put('tasks', coordinator)
-        audit = dict(self.service._get('tasks', source['id']), status='completed')
+        # The audit finished and no longer waits for the delegated work, as in the live records.
+        audit = dict(self.service._get('tasks', source['id']), status='completed', _waiting_on=[])
         if audited:
             audit['_source_native_ids'] = ['t_requester']
         self.service._put('tasks', audit)
@@ -772,6 +773,18 @@ class NativeWorkContinuationTests(unittest.TestCase):
         with patch.object(self.service, '_work_chain', side_effect=chains):
             with self.assertRaisesRegex(ServiceError, 'another execution'):
                 self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_an_unfinished_audit_still_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        audit = self.service._get('tasks', owner['source_task_id'])
+        self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status='pending'))
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(coordinator)
+        self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status='rejected'))
+        self.service._put('tasks', dict(audit, status='working'))
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(coordinator)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
     def test_an_owner_report_to_an_unrelated_task_still_blocks_the_audited_pr(self):
