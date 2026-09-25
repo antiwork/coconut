@@ -306,10 +306,11 @@ def process_outcomes():
         for environ in proc.glob('[0-9]*/environ'):
             try:
                 data = environ.read_bytes()
-            except (FileNotFoundError, ProcessLookupError):
+            except (FileNotFoundError, ProcessLookupError, PermissionError):
+                # Workers run as the service user, so another user's process cannot hide a Coconut outcome.
                 continue
             except OSError:
-                # An unreadable environment can hide a live outcome.
+                # Another unreadable environment can hide a live outcome.
                 return None
             found.update(item[len(mark):].decode(errors='replace') for item in data.split(b'\0')
                          if item.startswith(mark.encode()))

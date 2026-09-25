@@ -804,10 +804,12 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
     def ended_branch(self, coordinator, action='terminal'):
+        # A failed kanban worker task. Coconut maps its card to a plain block.
         branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
                       _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
-                      _waiting_on=[])
+                      _waiting_on=[], _kanban_claim={'native_id': 't_branch', 'input': 'branch'})
         self.service._put('tasks', branch)
+        self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='blocked', block_kind=None)
         self.service._put('native_receipts', dict(id='cut-off', task_id=branch['id'], state='executing',
             turn_id=branch.get('_native_turn_id'), action={'name': action, 'arguments': {}}))
         return branch
@@ -859,6 +861,25 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'),
                                                       action={'name': 'coconut_wait', 'arguments': {}}))
             self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
+
+    def test_the_poller_checks_only_kanban_worker_calls_and_scans_files_only_when_needed(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = self.ended_branch(coordinator)
+        # Only a kanban worker sets COCONUT_WORKSPACE_OUTCOME. A chat task or a context job has no such proof.
+        self.service._put('tasks', dict(branch, _kanban_claim=None))
+        with patch('coconut.work_workspace.process_outcomes', return_value=set()) as outcomes, \
+                patch('coconut.work_workspace.busy_paths', return_value=set()) as busy:
+            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
+            outcomes.assert_not_called()
+            self.service._put('tasks', branch)
+            self.service._put('contexts', dict(id='context-turn', task_id=branch['id'], bot_id=branch['bot_id'], status='failed'))
+            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'), turn_id='context-turn'))
+            self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
+            outcomes.assert_not_called()
+            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'), turn_id='old-turn'))
+            outcomes.return_value = {'coordinator-branch'}
+            self.assertEqual(self.service._mark_ended_tool_calls(current=122), [])
+            busy.assert_not_called()
 
     def test_an_ended_wait_or_relay_call_still_blocks_the_audited_pr(self):
         owner, coordinator, work, pr = self.audited_requester_pr()

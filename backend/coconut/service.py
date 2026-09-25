@@ -197,6 +197,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self._kanban_dispatch_uncertain = False
         self.pr_poller: threading.Thread | None = None
         self.process_poller: threading.Thread | None = None
+        self.tool_checker: threading.Thread | None = None
         self.source_poller: threading.Thread | None = None
         from .push import PushDelivery
         self.push = PushDelivery(self)
@@ -2433,6 +2434,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.pr_poller.start()
         self.process_poller = threading.Thread(target=self._poll_processes, name='coconut-process-poll', daemon=True)
         self.process_poller.start()
+        # Tool checks scan every process with ps and lsof, so they run apart from result delivery.
+        self.tool_checker = threading.Thread(target=self._check_ended_tool_calls, name='coconut-tool-check', daemon=True)
+        self.tool_checker.start()
         self.source_poller = threading.Thread(target=self._poll_work_sources, name='coconut-source-poll', daemon=True)
         self.source_poller.start()
         self.push.start()
@@ -3764,6 +3768,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             self.pr_poller.join(timeout=2)
         if self.process_poller:
             self.process_poller.join(timeout=20)
+        if self.tool_checker:
+            self.tool_checker.join(timeout=20)
         if self.source_poller:
             self.source_poller.join(timeout=65)
         self.push.close()

@@ -111,11 +111,16 @@ class BackgroundProcesses:
                         self._expire_work_descriptions()
             except Exception:
                 logging.getLogger(__name__).exception('Could not deliver a Hermes process result.')
+            self.stopping.wait(1)
+
+    def _check_ended_tool_calls(self):
+        while not self.stopping.is_set():
             try:
-                self._mark_ended_tool_calls()
+                if not self.restart_pending:
+                    self._mark_ended_tool_calls()
             except Exception:
                 logging.getLogger(__name__).exception('Could not check interrupted tool calls.')
-            self.stopping.wait(1)
+            self.stopping.wait(ENDED_TOOL_CHECK_SECONDS)
 
     def _mark_ended_tool_calls(self, current=None):
         """Mark a local command without a result as ended when no process of its execution remains.
@@ -123,8 +128,9 @@ class BackgroundProcesses:
         A worker can stop before a terminal call returns. Its receipt then stays executing, and the writer guard
         keeps other work out. This check runs at most once a minute and holds the service lock only to read and write.
         A call has ended when its task has no live worker or native run, no process carries its execution's
-        COCONUT_WORKSPACE_OUTCOME, and lsof shows no process in its workspaces. The receipt keeps its state, so
-        the owner's next turn still sees the unknown effect.
+        COCONUT_WORKSPACE_OUTCOME, and lsof shows no process in its workspaces. Only a kanban worker sets that
+        variable, so Coconut checks only native tasks, and not the calls of a context job. The receipt keeps its
+        state, so the owner's next turn still sees the unknown effect.
         """
         from .native_outcomes import LOCAL_COMMAND_TOOLS
         from .service import now
@@ -143,9 +149,11 @@ class BackgroundProcesses:
                 if (record.get('action') or {}).get('name') not in LOCAL_COMMAND_TOOLS or record.get('_process_ended_at'):
                     continue
                 row = self.db.execute('SELECT data FROM tasks WHERE id=?', (record['task_id'],)).fetchone()
-                if not row:
+                if not row or self.db.execute('SELECT 1 FROM contexts WHERE id=?', (record.get('turn_id'),)).fetchone():
                     continue
                 task = json.loads(row[0])
+                if not (task.get('_kanban_claim') or {}).get('native_id'):
+                    continue
                 worker = self.running.get(task['id'])
                 card = native.get(task['id']) or {}
                 if (worker and worker.is_alive()) or card.get('current_run_id') or card.get('worker_pid'):
@@ -156,6 +164,10 @@ class BackgroundProcesses:
             return []
         outcomes = work_workspace.process_outcomes()
         if outcomes is None:
+            return []
+        # A live outcome proves the call can still run. Scan open files only for the other calls.
+        candidates = [c for c in candidates if c[2] not in outcomes]
+        if not candidates:
             return []
         root = self.root / 'workspaces'
         try:
