@@ -14,7 +14,11 @@ ENDED_TOOL_CHECK_SECONDS = 60
 # macOS hides the environment of system programs, such as /bin/sh and git. Such an orphan that left its workspace
 # escapes both checks, so a call counts as ended only after it started this long ago.
 ENDED_TOOL_MIN_AGE_SECONDS = 60 * 60
-PRIVILEGED = re.compile(r'\b(sudo|doas|su|pkexec|runas)\b')
+# A privileged program at a command position of a shell command, or named anywhere in a code call.
+PRIVILEGED_COMMAND = re.compile(r'(?:^|[;&|(`\n]|\$\()\s*(?:\w+=\S*\s+)*(?:exec\s+|command\s+|env\s+)*(?:/\S*/)?(?:sudo|doas|su|pkexec|runas)\b')
+PRIVILEGED_NAME = re.compile(r'\b(?:sudo|doas|su|pkexec|runas)\b')
+# A call whose workspace stays busy is checked again after this delay, which doubles up to an hour.
+BUSY_TOOL_BACKOFF_SECONDS = 10 * 60
 PENDING_COMPLETIONS = """
     (COALESCE(json_extract(data, '$._process_delivery'), '') IN ('', 0)
      OR json_extract(data, '$._delegation_ack_pending')=1)
@@ -146,6 +150,8 @@ class BackgroundProcesses:
         if current < getattr(self, '_ended_tool_check_at', 0):
             return []
         self._ended_tool_check_at = current + ENDED_TOOL_CHECK_SECONDS
+        if not hasattr(self, '_busy_tool_calls'):
+            self._busy_tool_calls = {}
         native = dict(self.kanban.tasks) if self.kanban else {}
         with self.lock:
             records = [json.loads(row[0]) for row in self.db.execute(
@@ -155,8 +161,12 @@ class BackgroundProcesses:
                 if (record.get('action') or {}).get('name') not in LOCAL_COMMAND_TOOLS or record.get('_process_ended_at'):
                     continue
                 # A privileged child runs as another user. Neither ps nor lsof can see it, so its call never ends here.
-                command = json.dumps((record.get('action') or {}).get('arguments'))
-                if PRIVILEGED.search(command):
+                action = record.get('action') or {}
+                arguments = action.get('arguments') if isinstance(action.get('arguments'), dict) else {}
+                if (PRIVILEGED_COMMAND.search(str(arguments.get('command', ''))) if action.get('name') == 'terminal'
+                        else PRIVILEGED_NAME.search(json.dumps(arguments))):
+                    continue
+                if current < self._busy_tool_calls.get(record['id'], (0, 0))[0]:
                     continue
                 try:
                     started = datetime.fromisoformat(record['created_at'].replace('Z', '+00:00'))
@@ -178,7 +188,7 @@ class BackgroundProcesses:
                                    (task.get('_kanban_claim') or {}).get('workspace')))
         if not candidates:
             return []
-        outcomes = work_workspace.process_outcomes()
+        outcomes = work_workspace.process_outcomes(getattr(self.provider, 'python', None))
         if outcomes is None:
             return []
         # A live outcome proves the call can still run. Scan open files only for the other calls.
@@ -199,20 +209,27 @@ class BackgroundProcesses:
         except ValueError:
             return []
         ended = []
-        if self.stopping.is_set():
-            # close() may have closed the database while the scans ran.
-            return []
-        with self.transaction():
-            for identity, task_id, key, _ in candidates:
-                if key in outcomes or paths[identity] & busy:
-                    continue
-                record = self._get('native_receipts', identity)
-                worker = self.running.get(task_id)
-                if record['state'] != 'executing' or (worker and worker.is_alive()):
-                    continue
-                record['_process_ended_at'] = now()
-                self._put('native_receipts', record)
-                ended.append(identity)
+        for identity, _, _, _ in candidates:
+            if paths[identity] & busy:
+                # An operator shell can hold a workspace for days. Back off instead of scanning every minute.
+                delay = min(self._busy_tool_calls.get(identity, (0, BUSY_TOOL_BACKOFF_SECONDS / 2))[1] * 2, 60 * 60)
+                self._busy_tool_calls[identity] = (current + delay, delay)
+        with self.lock:
+            if self.stopping.is_set():
+                # close() closes the database under this lock, so check again after taking it.
+                return []
+            with self.transaction():
+                for identity, task_id, key, _ in candidates:
+                    if key in outcomes or paths[identity] & busy:
+                        continue
+                    record = self._get('native_receipts', identity)
+                    worker = self.running.get(task_id)
+                    if record['state'] != 'executing' or (worker and worker.is_alive()):
+                        continue
+                    record['_process_ended_at'] = now()
+                    self._put('native_receipts', record)
+                    self._busy_tool_calls.pop(identity, None)
+                    ended.append(identity)
         if ended:
             logging.getLogger(__name__).warning('Coconut found no process for interrupted tool calls %s.', ended)
         return ended

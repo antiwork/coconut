@@ -12,6 +12,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tarfile
 import time
 from types import SimpleNamespace
@@ -294,10 +295,12 @@ def environment_names(pid, mark):
     return mark in result.stdout.split()
 
 
-def process_outcomes():
+def process_outcomes(probe=None):
     """Return the COCONUT_WORKSPACE_OUTCOME values of the running processes.
 
     Return None when this system hides process environments. Then no caller can prove that a process ended.
+    `probe` is the interpreter that runs workers. macOS shows the environment of some programs only, so on macOS
+    Coconut starts that interpreter with a marker and trusts the scan only when the marker shows.
     """
     mark = 'COCONUT_WORKSPACE_OUTCOME='
     proc = Path('/proc')
@@ -315,6 +318,13 @@ def process_outcomes():
             found.update(item[len(mark):].decode(errors='replace') for item in data.split(b'\0')
                          if item.startswith(mark.encode()))
         return found
+    marker = mark + 'coconut-probe-' + os.urandom(8).hex()
+    try:
+        witness = subprocess.Popen([probe or sys.executable, '-c', 'import time; time.sleep(30)'],
+                                   env=dict(os.environ, COCONUT_WORKSPACE_OUTCOME=marker[len(mark):]),
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
     try:
         # On macOS, `ps -E` prints each environment after its command, for processes of the same user.
         # One process with a non-UTF-8 argument must not stop the whole scan.
@@ -322,14 +332,16 @@ def process_outcomes():
                                 errors='replace', timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    found, visible = set(), False
+    finally:
+        witness.kill()
+        witness.wait()
+    found = set()
     for line in result.stdout.splitlines():
-        pid, _, rest = line.strip().partition(' ')
-        tokens = rest.split()
-        if pid == str(os.getpid()):
-            visible = any(token.startswith('PATH=') for token in tokens)
-        found.update(token[len(mark):] for token in tokens if token.startswith(mark))
-    return found if visible else None
+        found.update(token[len(mark):] for token in line.split() if token.startswith(mark))
+    if marker[len(mark):] not in found:
+        return None
+    found.discard(marker[len(mark):])
+    return found
 
 
 def running(pid):

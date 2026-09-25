@@ -848,6 +848,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
                 self.assertEqual(self.service._mark_ended_tool_calls(current=0), ['cut-off'] if ended else [])
                 self.assertEqual(bool(self.service._get('native_receipts', 'cut-off').get('_process_ended_at')), ended)
                 self.service._ended_tool_check_at = 0
+                self.service._busy_tool_calls = {}
         self.assertEqual(self.service._get('native_receipts', 'cut-off')['state'], 'executing')
 
     def test_the_poller_skips_a_live_worker_a_wait_and_runs_once_a_minute(self):
@@ -881,25 +882,48 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(busy.call_args.args[0], {str(root / 'coordinator-branch'), str(worktree), str(claimed)})
         # A registry that is not an object reads as empty.
         (root / 'worktrees.json').write_text('[]')
+        self.service._busy_tool_calls = {}
         with patch('coconut.work_workspace.process_outcomes', return_value=set()), \
                 patch('coconut.work_workspace.busy_paths', return_value=set()):
             self.assertEqual(self.service._mark_ended_tool_calls(current=61), ['cut-off'])
+
+    def test_the_poller_backs_off_a_call_whose_workspace_stays_busy(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = self.ended_branch(coordinator)
+        workspace = self.service.root / 'workspaces' / 'coordinator-branch'
+        workspace.mkdir(parents=True, exist_ok=True)
+        with patch('coconut.work_workspace.process_outcomes', return_value=set()) as outcomes, \
+                patch('coconut.work_workspace.busy_paths', return_value={str(workspace)}) as busy:
+            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
+            # The next minute skips the busy call, so no scan runs.
+            self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
+            self.assertEqual(busy.call_count, 1)
+            self.assertEqual(self.service._mark_ended_tool_calls(current=601), [])
+            self.assertEqual(busy.call_count, 2)
+            # The delay doubles.
+            self.assertEqual(self.service._mark_ended_tool_calls(current=1202), [])
+            self.assertEqual(busy.call_count, 2)
+            busy.return_value = set()
+            self.assertEqual(self.service._mark_ended_tool_calls(current=1802), ['cut-off'])
 
     def test_the_poller_never_ends_a_privileged_command(self):
         owner, coordinator, work, pr = self.audited_requester_pr()
         self.ended_branch(coordinator)
         receipt = self.service._get('native_receipts', 'cut-off')
-        for command in ('sudo make install', 'cd /repo && doas cp a b', 'su - root -c true'):
+        for command in ('sudo make install', 'cd /repo && doas cp a b', 'su - root -c true', 'FOO=1 /usr/bin/sudo ls',
+                        '(pkexec true)', 'echo $(sudo id)'):
             with self.subTest(command=command), patch('coconut.work_workspace.process_outcomes', return_value=set()), \
                     patch('coconut.work_workspace.busy_paths', return_value=set()):
                 self.service._put('native_receipts', dict(receipt, action={'name': 'terminal', 'arguments': {'command': command}}))
                 self.service._ended_tool_check_at = 0
                 self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
-        self.service._put('native_receipts', dict(receipt, action={'name': 'terminal', 'arguments': {'command': 'make summary'}}))
-        self.service._ended_tool_check_at = 0
-        with patch('coconut.work_workspace.process_outcomes', return_value=set()), \
-                patch('coconut.work_workspace.busy_paths', return_value=set()):
-            self.assertEqual(self.service._mark_ended_tool_calls(current=0), ['cut-off'])
+        # A command that only mentions sudo does not run it.
+        for command in ('grep sudo README.md', 'git log --grep=pseudo'):
+            with self.subTest(command=command), patch('coconut.work_workspace.process_outcomes', return_value=set()), \
+                    patch('coconut.work_workspace.busy_paths', return_value=set()):
+                self.service._put('native_receipts', dict(receipt, action={'name': 'terminal', 'arguments': {'command': command}}))
+                self.service._ended_tool_check_at = 0
+                self.assertEqual(self.service._mark_ended_tool_calls(current=0), ['cut-off'])
 
     def test_the_poller_waits_an_hour_before_it_trusts_the_checks(self):
         from datetime import datetime, timezone

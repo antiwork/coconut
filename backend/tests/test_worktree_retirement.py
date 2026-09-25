@@ -912,19 +912,34 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertFalse(work_workspace.environment_names(process.pid, 'COCONUT_WORKSPACE_OUTCOME=on'))
         self.assertFalse(work_workspace.environment_names(process.pid, 'COCONUT_WORKSPACE_OUTCOME=two'))
 
-    def test_process_outcomes_reads_each_outcome_and_needs_a_visible_own_environment(self):
-        me = str(os.getpid())
-        listing = '\n'.join([f'{me} python service.py PATH=/usr/bin HOME=/x',
-                              '10 sleep 60 COCONUT_WORKSPACE_OUTCOME=one PATH=/usr/bin',
-                              '11 /bin/sh', '12 codex COCONUT_WORKSPACE_OUTCOME=two'])
-        # Without /proc, Coconut reads macOS `ps -E`. It trusts the list only when its own environment shows.
+    def test_process_outcomes_trusts_the_scan_only_when_the_worker_probe_shows(self):
+        started = []
+
+        class Probe:
+            def __init__(self, arguments, env, **options):
+                started.append((arguments[0], env['COCONUT_WORKSPACE_OUTCOME']))
+
+            def kill(self):
+                pass
+
+            def wait(self):
+                pass
+
+        def listing(shown):
+            marker = started[-1][1]
+            probe = f' COCONUT_WORKSPACE_OUTCOME={marker}' if shown else ''
+            return SimpleNamespace(stdout='\n'.join([f'20 python -c sleep{probe}',
+                '10 sleep 60 COCONUT_WORKSPACE_OUTCOME=one PATH=/usr/bin', '11 /bin/sh', '12 codex COCONUT_WORKSPACE_OUTCOME=two']))
+        # Without /proc, Coconut reads macOS `ps -E`. It trusts the list only when the worker interpreter's marker shows.
         with patch('coconut.work_workspace.Path.exists', return_value=False), \
-                patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing)):
-            self.assertEqual(work_workspace.process_outcomes(), {'one', 'two'})
-        hidden = listing.replace(' PATH=/usr/bin HOME=/x', '')
+                patch('coconut.work_workspace.subprocess.Popen', Probe), \
+                patch('coconut.work_workspace.subprocess.run', side_effect=lambda *a, **k: listing(True)):
+            self.assertEqual(work_workspace.process_outcomes('/opt/hermes/python'), {'one', 'two'})
+        self.assertEqual(started[-1][0], '/opt/hermes/python')
         with patch('coconut.work_workspace.Path.exists', return_value=False), \
-                patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=hidden)):
-            self.assertIsNone(work_workspace.process_outcomes())
+                patch('coconut.work_workspace.subprocess.Popen', Probe), \
+                patch('coconut.work_workspace.subprocess.run', side_effect=lambda *a, **k: listing(False)):
+            self.assertIsNone(work_workspace.process_outcomes('/opt/hermes/python'))
 
     def test_process_outcomes_finds_a_real_child_process(self):
         process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
