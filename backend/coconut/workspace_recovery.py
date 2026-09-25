@@ -313,7 +313,9 @@ class WorkspaceRecovery:
                for decision in self._all('decisions')):
             raise ServiceError(409, 'A pending approval must be handled separately.')
         bot = self._get('bots', task['bot_id'])
-        if (bot['archived'] or bot.get('_deleted') or bot['session_id'] != task['session_id']
+        origin = self._get('bots', task['conversation_bot_id'])
+        if (bot['archived'] or bot.get('_deleted') or origin['archived'] or origin.get('_deleted')
+                or bot['session_id'] != task['session_id']
                 or self._task_paused(task) or self._continuation_blocked(task)):
             raise ServiceError(409, 'The archived Work owner is not eligible for continuation.')
         return dict(task=task, item=item, scope=scope)
@@ -548,7 +550,8 @@ class WorkspaceRecovery:
                         raise ValueError('Dirty tracked edits changed before recovery.')
                     checkout_obstructions(request, receipt['merge_commit'], receipt['dirty'])
                     if result.returncode:
-                        checkout_git(request['repository'], 'update-ref', ref, receipt['merge_commit'],
+                        checkout_git(request['repository'], '-c', 'core.hooksPath=/dev/null',
+                                     'update-ref', ref, receipt['merge_commit'],
                                      '0' * len(receipt['merge_commit']))
                     checkout_git(request['path'], '-c', 'core.hooksPath=/dev/null', 'switch',
                                  '--no-overwrite-ignore', request['recovery_branch'])

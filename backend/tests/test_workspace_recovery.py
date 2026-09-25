@@ -248,6 +248,9 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         marker = self.root / 'hook-ran'
         hook.write_text('#!/bin/sh\nprintf unexpected > ' + str(marker) + '\n')
         hook.chmod(0o755)
+        reference_hook = self.repo / '.git' / 'hooks' / 'reference-transaction'
+        reference_hook.write_text('#!/bin/sh\nprintf unexpected > ' + str(marker) + '\n')
+        reference_hook.chmod(0o755)
         self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
         self.assertTrue(self.service.take_service_restart())
         self.restart()
@@ -262,6 +265,21 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
             'commit', '-m', 'mark saved checkout filter')
         payload['saved_head'] = git(self.repo, 'rev-parse', 'HEAD')
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+
+    def test_checkout_recovery_rejects_archived_conversation_before_git_write(self):
+        payload, dirty, artifact = self.checkout_incident()
+        conversation = self.write('/v1/bots', {'name': 'Archived conversation', 'role': ''})
+        task = self.service._get('tasks', self.task['id'])
+        task['conversation_bot_id'] = conversation['id']
+        self.service._put('tasks', task)
+        bot = self.service._get('bots', conversation['id'])
+        bot['archived'] = True
+        self.service._put('bots', bot)
         before = self.manifest.read_bytes()
         self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
         self.assertEqual(self.manifest.read_bytes(), before)
