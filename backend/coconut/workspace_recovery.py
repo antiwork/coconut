@@ -296,10 +296,11 @@ class WorkspaceRecovery:
         if task['status'] not in ('completed', 'failed'):
             raise ServiceError(409, 'The original owner is not terminal.')
         with contextlib.closing(sqlite3.connect((self.root / 'kanban' / 'kanban.db').as_uri() + '?mode=ro', uri=True)) as db:
-            native = db.execute('SELECT status,tenant,worker_pid,current_run_id FROM tasks WHERE id=?',
+            native = db.execute('SELECT status,tenant,worker_pid,current_run_id,workspace_path FROM tasks WHERE id=?',
                                 (request['native_task_id'],)).fetchone()
-        if native != ('archived', task['bot_id'], None, None):
-            raise ServiceError(409, 'The original native outcome is not an idle archived owner.')
+        if (not native or native[:4] != ('archived', task['bot_id'], None, None)
+                or Path(native[4]).resolve() != Path(request['path']).resolve()):
+            raise ServiceError(409, 'The original native outcome does not own this idle checkout.')
         item = self._native_continuation_item(task)
         if (item['kind'] != 'work' or item['task_id'] != task['id']
                 or item['bot_id'] != task['bot_id'] or item.get('_native_outcome_id') != request['native_task_id']

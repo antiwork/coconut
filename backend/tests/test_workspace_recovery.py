@@ -286,6 +286,23 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
         self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
 
+    def test_checkout_recovery_rejects_other_bound_worktree_of_same_execution(self):
+        payload, dirty, artifact = self.checkout_incident()
+        other_repo = self.root / 'other-repo'
+        other_repo.mkdir()
+        git(other_repo, 'init')
+        git(other_repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            'commit', '--allow-empty', '-m', 'other repo')
+        with patch.object(sys, 'path', [native.SOURCE, *sys.path]):
+            other = acquire(self.data / 'workspaces', self.owner, str(other_repo))
+        with sqlite3.connect(self.data / 'kanban' / 'kanban.db') as database:
+            database.execute('UPDATE tasks SET workspace_path=? WHERE id=?', (other['path'], self.native_id))
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+
     def test_checkout_recovery_retains_unstaged_tracked_deletion(self):
         payload, dirty, artifact = self.checkout_incident()
         (self.workspace / 'checkout-a.txt').unlink()
