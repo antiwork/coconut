@@ -912,6 +912,30 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertFalse(work_workspace.environment_names(process.pid, 'COCONUT_WORKSPACE_OUTCOME=on'))
         self.assertFalse(work_workspace.environment_names(process.pid, 'COCONUT_WORKSPACE_OUTCOME=two'))
 
+    def test_process_outcomes_reads_each_outcome_and_needs_a_visible_own_environment(self):
+        me = str(os.getpid())
+        listing = '\n'.join([f'{me} python service.py PATH=/usr/bin HOME=/x',
+                              '10 sleep 60 COCONUT_WORKSPACE_OUTCOME=one PATH=/usr/bin',
+                              '11 /bin/sh', '12 codex COCONUT_WORKSPACE_OUTCOME=two'])
+        # Without /proc, Coconut reads macOS `ps -E`. It trusts the list only when its own environment shows.
+        with patch('coconut.work_workspace.Path.exists', return_value=False), \
+                patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing)):
+            self.assertEqual(work_workspace.process_outcomes(), {'one', 'two'})
+        hidden = listing.replace(' PATH=/usr/bin HOME=/x', '')
+        with patch('coconut.work_workspace.Path.exists', return_value=False), \
+                patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=hidden)):
+            self.assertIsNone(work_workspace.process_outcomes())
+
+    def test_process_outcomes_finds_a_real_child_process(self):
+        process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
+                                   env=dict(os.environ, COCONUT_WORKSPACE_OUTCOME='probe-outcome'))
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        time.sleep(0.2)
+        found = work_workspace.process_outcomes()
+        if found is not None:
+            self.assertIn('probe-outcome', found)
+
     def test_elapsed_times_from_ps_become_seconds(self):
         self.assertEqual(work_workspace.elapsed_seconds('05'), 5)
         self.assertEqual(work_workspace.elapsed_seconds('02:03'), 123)

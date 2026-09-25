@@ -93,7 +93,12 @@ class NativeReviewerRuntimeTests(unittest.TestCase):
 
 
 class NativeWorkContinuationTests(unittest.TestCase):
-    setUp = fixtures.TargetedBotContinuationTests.setUp
+    def setUp(self):
+        fixtures.TargetedBotContinuationTests.setUp(self)
+        # Tests do not read this machine's processes. By default the environments are hidden, so a call can still run.
+        self.outcomes = patch('coconut.work_workspace.process_outcomes', return_value=None)
+        self.outcomes.start()
+        self.addCleanup(self.outcomes.stop)
     tearDown = fixtures.TargetedBotContinuationTests.tearDown
     write = fixtures.TargetedBotContinuationTests.write
     prepare = fixtures.TargetedBotContinuationTests.prepare
@@ -802,6 +807,61 @@ class NativeWorkContinuationTests(unittest.TestCase):
             with self.assertRaisesRegex(ServiceError, 'another execution'):
                 self.resume(coordinator)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_a_tool_call_whose_processes_ended_does_not_block_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # Two Care reviews stopped without results. No worker, native run, or process of their execution remains.
+        branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
+                      _waiting_on=[])
+        self.service._put('tasks', branch)
+        self.executing_receipt(branch)
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            for outcomes, worker in (({'coordinator-branch'}, False), (None, False), ({'another-execution'}, True)):
+                with self.subTest(outcomes=outcomes, worker=worker), \
+                        patch('coconut.work_workspace.process_outcomes', return_value=outcomes):
+                    if worker:
+                        self.service.running[branch['id']] = Mock(is_alive=Mock(return_value=True))
+                    with self.assertRaisesRegex(ServiceError, 'another execution'):
+                        self.resume(coordinator)
+                    self.service.running.pop(branch['id'], None)
+            with patch('coconut.work_workspace.process_outcomes', return_value={'another-execution'}):
+                self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+        # The receipt stays for the owner's next turn. Only the writer guard reads it as ended.
+        self.assertEqual(self.service._get('native_receipts', 'executing-' + branch['id'])['state'], 'executing')
+
+    def test_an_ended_wait_or_relay_call_still_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
+                      _waiting_on=[])
+        self.service._put('tasks', branch)
+        # A wait ends with a delivery, not with a process, so no process check can end it.
+        self.service._put('native_receipts', dict(id='wait-call', task_id=branch['id'], state='executing',
+            turn_id=branch.get('_native_turn_id'), action={'name': 'coconut_wait', 'arguments': {}}))
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        with patch.object(self.service, '_work_chain', side_effect=chains), \
+                patch('coconut.work_workspace.process_outcomes', return_value=set()):
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+
+    def test_a_blocked_card_with_a_block_kind_still_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
+                      _waiting_on=[], _kanban_claim={'native_id': 't_branch', 'input': 'branch'})
+        self.service._put('tasks', branch)
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        # A block check restarts a capability or input block. Hermes resumes a dependency or transient block.
+        for kind in ('capability', 'needs_input', 'dependency', 'transient'):
+            with self.subTest(kind=kind), patch.object(self.service, '_work_chain', side_effect=chains):
+                self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='blocked', block_kind=kind)
+                with self.assertRaisesRegex(ServiceError, 'another execution'):
+                    self.resume(coordinator)
+        self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='blocked', block_kind=None)
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
 
     def test_a_failed_branch_with_a_dispatchable_card_still_blocks_the_audited_pr(self):
         owner, coordinator, work, pr = self.audited_requester_pr()

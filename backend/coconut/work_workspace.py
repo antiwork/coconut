@@ -274,6 +274,35 @@ def environment_names(pid, mark):
     return mark in result.stdout.split()
 
 
+def process_outcomes():
+    """Return the COCONUT_WORKSPACE_OUTCOME values of the running processes.
+
+    Return None when this system hides process environments. Then no caller can prove that a process ended.
+    """
+    mark = 'COCONUT_WORKSPACE_OUTCOME='
+    proc = Path('/proc')
+    if (proc / 'self' / 'environ').exists():
+        found = set()
+        for environ in proc.glob('[0-9]*/environ'):
+            with contextlib.suppress(OSError):
+                found.update(item[len(mark):].decode(errors='replace') for item in environ.read_bytes().split(b'\0')
+                             if item.startswith(mark.encode()))
+        return found
+    try:
+        # On macOS, `ps -E` prints each environment after its command, for processes of the same user.
+        result = subprocess.run(['ps', '-E', '-A', '-ww', '-o', 'pid=,command='], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    found, visible = set(), False
+    for line in result.stdout.splitlines():
+        pid, _, rest = line.strip().partition(' ')
+        tokens = rest.split()
+        if pid == str(os.getpid()):
+            visible = any(token.startswith('PATH=') for token in tokens)
+        found.update(token[len(mark):] for token in tokens if token.startswith(mark))
+    return found if visible else None
+
+
 def running(pid):
     try:
         os.kill(pid, 0)

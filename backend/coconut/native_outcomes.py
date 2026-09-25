@@ -46,6 +46,10 @@ CONTINUE_SCHEMA = {
 }
 
 
+# These Hermes tools run a local command as a process of the execution.
+LOCAL_COMMAND_TOOLS = ('terminal', 'execute_code')
+
+
 class _NativeSnapshotsNeeded(Exception):
     def __init__(self, identities):
         self.identities = identities
@@ -66,19 +70,41 @@ class NativeOutcomes:
         source = self._get('tasks', owner['source_task_id']) if owner.get('source_task_id') else None
         pending_decisions = {d['task_id'] for d in self._all('decisions') if d['status'] == 'pending'}
         open_contexts = {c['task_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
+        outcomes = []
+
+        def running_tool(task):
+            # A tool call without a result blocks while its task can still run it. After the worker, the native run,
+            # and every process of the execution have ended, the call cannot change the worktree. Its unknown effect
+            # stays in the receipt for the owner's next turn. If the system hides process environments, it still blocks.
+            receipts = self._native_task_receipts(task['id'], state='executing')
+            if not receipts:
+                return False
+            # Only a local command runs as a process of the execution. A wait or a relay ends with a delivery instead.
+            if any((r.get('action') or {}).get('name') not in LOCAL_COMMAND_TOOLS for r in receipts):
+                return True
+            worker = self.running.get(task['id'])
+            card = snapshots.get(task['id']) or {}
+            if (worker and worker.is_alive()) or card.get('current_run_id') or card.get('worker_pid'):
+                return True
+            if not outcomes:
+                from . import work_workspace
+                outcomes.append(work_workspace.process_outcomes())
+            return outcomes[0] is None or execution_key(task) in outcomes[0]
 
         def quiet(task):
             # Every live signal that the writer guard reads. A failed task can still hold a running tool.
             worker = self.running.get(task['id'])
             bound = task.get('_native_outcome_id') or (task.get('_kanban_claim') or {}).get('native_id')
             card = snapshots.get(task['id'])
-            # Only a done, archived, or blocked card cannot start a writer by itself. A missing card counts as live.
-            # A live branch stays in the guard, and the guard requests its missing card with the others in one batch.
+            # Only a done, archived, or plainly blocked card cannot start a writer by itself. A block check restarts a
+            # capability or input block, and Hermes resumes a dependency or transient block, so a block kind is live.
+            # A missing card counts as live. A live branch stays in the guard, which requests its missing card in one batch.
             native_live = bool(bound) and (card is None or card.get('id') != bound
                                            or card.get('status') not in ('done', 'archived', 'blocked')
+                                           or (card.get('status') == 'blocked' and card.get('block_kind'))
                                            or card.get('current_run_id') or card.get('worker_pid'))
             return not (task.get('_waiting_on') or task.get('_return_pending') or (worker and worker.is_alive())
-                        or self._background_pending(task['id']) or self._native_task_receipts(task['id'], state='executing')
+                        or self._background_pending(task['id']) or running_tool(task)
                         or native_live or task['id'] in pending_decisions or task['id'] in open_contexts)
 
         def audit_finished():
@@ -233,7 +259,7 @@ class NativeOutcomes:
                                or self._task_paused(t) or self._get('exchanges', t['exchange_id']).get('cancelled')
                                or self._background_pending(t['id']) or self._unfinished_work(t)
                                or (self.running.get(t['id']) and self.running[t['id']].is_alive())
-                               or self._native_task_receipts(t['id'], state='executing')
+                               or running_tool(t)
                                for t, _ in linked.values())
                         or any(d['status'] == 'pending' and d['task_id'] in linked for d in self._all('decisions'))
                         or any(c['status'] in ('queued', 'working') and c['task_id'] in linked
