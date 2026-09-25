@@ -61,6 +61,7 @@ class NativeOutcomes:
         else:
             items = [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr') and a['task_id'] == owner['id']]
         linked_parent = None
+        audited_parent = None
         retained = []
         source = self._get('tasks', owner['source_task_id']) if owner.get('source_task_id') else None
         pending_decisions = {d['task_id'] for d in self._all('decisions') if d['status'] == 'pending'}
@@ -98,6 +99,8 @@ class NativeOutcomes:
                     and (root['task_id'] == owner.get('source_task_id') or audited)):
                 # A delegated PR shares the requester's Work presentation, not its execution.
                 linked_parent = root
+                if audited:
+                    audited_parent = root
                 retained.append(candidate)
             else:
                 retained.append(root)
@@ -121,6 +124,20 @@ class NativeOutcomes:
             # Only the caller is not a competing writer. When the coordinator calls for its audit, the audit stays guarded.
             callers = ({linked_parent['task_id']} if linked_parent and linked_parent['task_id'] != owner.get('source_task_id')
                        else {owner.get('source_task_id')})
+            if audited_parent:
+                # PR report fields are optional. Check the audited requester branches
+                # even when every report points back to the owner under continuation.
+                linked = {}
+                for identity in requesters:
+                    linked.update({key: value for key, value in self._work_chain(
+                        tasks[identity], tasks, records, include_continuations=True).items()
+                        if value[0]['status'] in self.ACTIVE or not quiet(value[0])
+                        or (value[0]['status'] == 'completed' and self._unfinished_work(value[0]))})
+                for identity in (*callers, owner['id']):
+                    linked.pop(identity, None)
+                native_tasks = [t for t, _ in linked.values()
+                                if t.get('_native_outcome_id') or t.get('_kanban_claim')]
+                peer_chains.append((item, source, linked, native_tasks, True))
             for peer in peers:
                 if linked_parent and peer['id'] == linked_parent['id']:
                     # The coordinating Work may remain active while its delegated PR resumes.
