@@ -941,6 +941,25 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.service._put('decisions', dict(id='branch-question', task_id=branch['id'], status='rejected'))
         self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
 
+    def test_the_audit_card_must_be_terminal_and_a_quiet_failed_audit_is_accepted(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        audit = dict(self.service._get('tasks', owner['source_task_id']), _kanban_claim={'native_id': 't_audit', 'input': 'audit'})
+        self.service._put('tasks', audit)
+        for card in (dict(id='t_audit', status='ready'), dict(id='t_audit', status='review'),
+                     dict(id='t_audit', status='done', current_run_id=7), dict(id='t_other', status='done'), None):
+            with self.subTest(card=card):
+                self.service.kanban.tasks.pop(audit['id'], None)
+                if card:
+                    self.service.kanban.tasks[audit['id']] = card
+                with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+                    self.resume(coordinator)
+                self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        # The audit's card is missing from the cached snapshot, so Coconut fetches it before the check.
+        self.service.kanban.tasks[audit['id']] = dict(id='t_audit', status='blocked')
+        self.service._put('tasks', dict(audit, status='failed'))
+        self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
     def test_an_owner_report_to_an_unrelated_task_still_blocks_the_audited_pr(self):
         owner, coordinator, work, pr = self.audited_requester_pr(report_to='unrelated')
         self.service._put('tasks', dict(coordinator, id='unrelated', status='completed', _execution_session_id='unrelated',
