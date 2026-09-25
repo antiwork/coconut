@@ -811,7 +811,8 @@ class NativeWorkContinuationTests(unittest.TestCase):
                       _waiting_on=[], _kanban_claim={'native_id': 't_branch', 'input': 'branch'})
         self.service._put('tasks', branch)
         chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
-        for card in (dict(id='t_branch', status='ready'), dict(id='t_other', status='blocked'), None):
+        for card in (dict(id='t_branch', status='ready'), dict(id='t_branch', status='review'),
+                     dict(id='t_branch', status='scheduled'), dict(id='t_other', status='blocked'), None):
             with self.subTest(card=card):
                 self.service.kanban.tasks.pop(branch['id'], None)
                 if card:
@@ -832,14 +833,15 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
     def test_an_unfinished_audit_still_blocks_the_audited_pr(self):
+        # The audit gate refuses first. test_an_active_branch_of_the_coordinator_still_blocks_the_audited_pr covers the writer guard.
         owner, coordinator, work, pr = self.audited_requester_pr()
         audit = self.service._get('tasks', owner['source_task_id'])
         self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status='pending'))
-        with self.assertRaisesRegex(ServiceError, 'another execution|belongs to another native outcome'):
+        with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
             self.resume(coordinator)
         self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status='rejected'))
         self.service._put('tasks', dict(audit, status='working'))
-        with self.assertRaisesRegex(ServiceError, 'another execution|belongs to another native outcome'):
+        with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
             self.resume(coordinator)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 

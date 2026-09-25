@@ -70,16 +70,19 @@ class NativeOutcomes:
             # Every live signal that the writer guard reads. A failed task can still hold a running tool.
             worker = self.running.get(task['id'])
             bound = task.get('_native_outcome_id') or (task.get('_kanban_claim') or {}).get('native_id')
-            if bound and task['id'] not in snapshots and snapshot_missing:
-                snapshot_missing([task['id']])
             card = snapshots.get(task['id'])
-            # A missing, rebound, or dispatchable card can still start a writer.
-            native_live = bool(bound) and (card is None or card.get('id') != bound or card.get('status') in ('ready', 'running')
+            # Only a done, archived, or blocked card cannot start a writer by itself. A missing card counts as live.
+            # A live branch stays in the guard, and the guard requests its missing card with the others in one batch.
+            native_live = bool(bound) and (card is None or card.get('id') != bound
+                                           or card.get('status') not in ('done', 'archived', 'blocked')
                                            or card.get('current_run_id') or card.get('worker_pid'))
             return not (task.get('_waiting_on') or task.get('_return_pending') or (worker and worker.is_alive())
                         or self._background_pending(task['id']) or self._native_task_receipts(task['id'], state='executing')
                         or native_live or task['id'] in pending_decisions or task['id'] in open_contexts)
         # The audit path skips the audit's own writer checks, so the audit must have finished.
+        if (source and snapshot_missing and source['id'] not in snapshots
+                and (source.get('_native_outcome_id') or (source.get('_kanban_claim') or {}).get('native_id'))):
+            snapshot_missing([source['id']])
         audit_finished = bool(source and source['status'] == 'completed' and quiet(source) and not self._unfinished_work(source))
         for candidate in items:
             root = self._work_outcome_artifact(candidate)
