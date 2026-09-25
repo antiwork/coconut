@@ -1,5 +1,6 @@
 """Let Hermes prune the native sessions of idle outcomes. Each bot keeps its one open chat session."""
 from datetime import datetime
+import json
 import logging
 import time
 
@@ -12,8 +13,9 @@ SESSION_RETENTION_DAYS = 7
 SESSION_MAINTENANCE_SECONDS = 60 * 60
 # Before it reads task state, maintenance waits this long for the service lock.
 SESSION_LOCK_WAIT_SECONDS = 5
-# Coconut records the newest session of conversations updated this recently. Older ones were recorded earlier.
+# After a bot's first full pass, Coconut records the newest session of conversations updated this recently.
 TIP_WINDOW_SECONDS = 30 * 86400
+TIPS_SETTING = 'sessions.tips-recorded.'
 
 
 class SessionMaintenance:
@@ -38,6 +40,8 @@ class SessionMaintenance:
             bots = [b for b in self._all('bots') if not b.get('archived')]
         finally:
             self.lock.release()
+        # The first pass for a bot records every conversation, so a prune cannot cut an old chain without a tip.
+        complete = {bot['id'] for bot in bots if self._setting(TIPS_SETTING + bot['id'])}
         outcomes, conversations = {}, {}
         for bot in bots:
             # The chat root. Coconut records the newest session of every conversation before any prune.
@@ -45,7 +49,8 @@ class SessionMaintenance:
         for task in tasks:
             key = (task.get('_execution_session_id'), task.get('_conversation_epoch'))
             # An unfinished conversation can resume at any age, so its tip is always recorded.
-            if key != (None, None) and (recent(task, current) or task['status'] not in ('completed', 'cancelled', 'failed')):
+            if key != (None, None) and (task['bot_id'] not in complete or recent(task, current)
+                                        or task['status'] not in ('completed', 'cancelled', 'failed')):
                 conversations.setdefault(task['bot_id'], {})[key] = dict(execution_session_id=key[0], epoch=key[1])
             # Only work has its own session. A chat task uses the bot's conversation, which stays open.
             # A status-only task has its own execution key but shares its owner's session, so it never decides.
@@ -69,6 +74,10 @@ class SessionMaintenance:
                     dict(id=bot['id'], session_id=bot['session_id']),
                     list(conversations.get(bot['id'], {}).values()), pending, SESSION_RETENTION_DAYS,
                     allow_vacuum=self._bot_quiet(bot['id']))
+                if bot['id'] not in complete:
+                    with self.transaction():
+                        self.db.execute('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                                        (TIPS_SETTING + bot['id'], json.dumps(True)))
             except Exception:
                 logging.getLogger(__name__).exception('Could not maintain the native sessions of bot %s.', bot['id'])
         return results
@@ -82,9 +91,14 @@ class SessionMaintenance:
         if not self.lock.acquire(timeout=SESSION_LOCK_WAIT_SECONDS):
             return False
         try:
-            return not any(t['bot_id'] == bot_id and (t['status'] in ACTIVE_STATUSES
-                           or (self.running.get(t['id']) and self.running[t['id']].is_alive()))
-                           for t in self._all('tasks'))
+            if any(t['bot_id'] == bot_id and (t['status'] in ACTIVE_STATUSES
+                   or (self.running.get(t['id']) and self.running[t['id']].is_alive()))
+                   for t in self._all('tasks')):
+                return False
+            # A decision context runs a turn while its task waits for a person.
+            return not any(c.get('bot_id') == bot_id and (c['status'] in ('queued', 'working')
+                           or (self.context_threads.get(c['id']) and self.context_threads[c['id']].is_alive()))
+                           for c in self._all('contexts'))
         finally:
             self.lock.release()
 

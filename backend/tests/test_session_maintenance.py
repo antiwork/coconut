@@ -70,17 +70,29 @@ class SessionSelectionTests(unittest.TestCase):
             self.service.maintain_native_sessions(current=datetime(2026, 9, 25, tzinfo=timezone.utc).timestamp())
         [(bot, conversations, outcomes, days)] = self.calls
         self.assertNotIn('owner-work', [o['execution_session_id'] for o in outcomes])
+        # The first pass records every conversation, even an old finished one.
+        self.assertIn('old-work', [c['execution_session_id'] for c in conversations])
+        with patch.object(self.service, '_finished_outcomes', return_value=set()):
+            self.service.maintain_native_sessions(current=datetime(2026, 9, 25, 2, tzinfo=timezone.utc).timestamp())
+        (bot, conversations, outcomes, days) = self.calls[-1]
         self.assertNotIn('old-work', [c['execution_session_id'] for c in conversations])
         # An unfinished conversation keeps its tip at any age.
         self.assertIn('running-work', [c['execution_session_id'] for c in conversations])
         # A working task keeps its bot from a VACUUM.
-        self.assertEqual(self.vacuums, [False])
+        self.assertEqual(self.vacuums[0], False)
 
     def test_a_pending_decision_does_not_block_the_vacuum(self):
         self.task(_execution_session_id='asking', status='needs_you')
         with patch.object(self.service, '_finished_outcomes', return_value=set()):
             self.service.maintain_native_sessions(current=0)
         self.assertEqual(self.vacuums, [True])
+
+    def test_a_running_decision_context_blocks_the_vacuum(self):
+        task = self.task(_execution_session_id='asking', status='needs_you')
+        self.service._put('contexts', dict(id='context', task_id=task['id'], bot_id=self.bot['id'], status='working'))
+        with patch.object(self.service, '_finished_outcomes', return_value=set()):
+            self.service.maintain_native_sessions(current=0)
+        self.assertEqual(self.vacuums, [False])
 
     def test_a_pending_restart_stops_the_bot_loop(self):
         self.service.restart_pending = True
