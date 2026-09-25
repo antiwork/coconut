@@ -811,7 +811,8 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.service._put('tasks', branch)
         self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='blocked', block_kind=None)
         self.service._put('native_receipts', dict(id='cut-off', task_id=branch['id'], state='executing',
-            turn_id=branch.get('_native_turn_id'), action={'name': action, 'arguments': {}}))
+            turn_id=branch.get('_native_turn_id'), action={'name': action, 'arguments': {}},
+            created_at='2026-09-25T14:19:42Z'))
         return branch
 
     def test_a_tool_call_whose_processes_ended_does_not_block_the_audited_pr(self):
@@ -861,6 +862,24 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'),
                                                       action={'name': 'coconut_wait', 'arguments': {}}))
             self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
+
+    def test_the_poller_waits_an_hour_before_it_trusts_the_checks(self):
+        from datetime import datetime, timezone
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.ended_branch(coordinator)
+        recent = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'), created_at=recent))
+        with patch('coconut.work_workspace.process_outcomes', return_value=set()) as outcomes, \
+                patch('coconut.work_workspace.busy_paths', return_value=set()):
+            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
+            outcomes.assert_not_called()
+            self.service.stopping.set()
+            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'),
+                                                      created_at='2026-09-25T14:19:42Z'))
+            # A stopping service does not write after its scans.
+            self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
+            self.service.stopping.clear()
+            self.assertEqual(self.service._mark_ended_tool_calls(current=122), ['cut-off'])
 
     def test_the_poller_checks_only_kanban_worker_calls_and_scans_files_only_when_needed(self):
         owner, coordinator, work, pr = self.audited_requester_pr()

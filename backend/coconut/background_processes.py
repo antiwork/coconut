@@ -10,6 +10,9 @@ import time
 
 # The poller checks interrupted tool calls at most this often, because lsof scans every process.
 ENDED_TOOL_CHECK_SECONDS = 60
+# macOS hides the environment of system programs, such as /bin/sh and git. Such an orphan that left its workspace
+# escapes both checks, so a call counts as ended only after it started this long ago.
+ENDED_TOOL_MIN_AGE_SECONDS = 60 * 60
 PENDING_COMPLETIONS = """
     (COALESCE(json_extract(data, '$._process_delivery'), '') IN ('', 0)
      OR json_extract(data, '$._delegation_ack_pending')=1)
@@ -132,6 +135,7 @@ class BackgroundProcesses:
         variable, so Coconut checks only native tasks, and not the calls of a context job. The receipt keeps its
         state, so the owner's next turn still sees the unknown effect.
         """
+        from datetime import datetime, timezone
         from .native_outcomes import LOCAL_COMMAND_TOOLS
         from .service import now
         from .work_capacity import execution_key
@@ -147,6 +151,12 @@ class BackgroundProcesses:
             candidates = []
             for record in records:
                 if (record.get('action') or {}).get('name') not in LOCAL_COMMAND_TOOLS or record.get('_process_ended_at'):
+                    continue
+                try:
+                    started = datetime.fromisoformat(record['created_at'].replace('Z', '+00:00'))
+                except (KeyError, TypeError, ValueError, AttributeError):
+                    continue
+                if (datetime.now(timezone.utc) - started).total_seconds() < ENDED_TOOL_MIN_AGE_SECONDS:
                     continue
                 row = self.db.execute('SELECT data FROM tasks WHERE id=?', (record['task_id'],)).fetchone()
                 if not row or self.db.execute('SELECT 1 FROM contexts WHERE id=?', (record.get('turn_id'),)).fetchone():
@@ -185,6 +195,9 @@ class BackgroundProcesses:
         except ValueError:
             return []
         ended = []
+        if self.stopping.is_set():
+            # close() may have closed the database while the scans ran.
+            return []
         with self.transaction():
             for identity, task_id, key, _ in candidates:
                 if key in outcomes or paths[identity] & busy:
