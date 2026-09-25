@@ -299,7 +299,7 @@ def stop_orphans(found, outcome, age):
     """Stop the old orphaned processes of the outcome in `found`, and their child processes. Return their IDs.
 
     An orphan is a process that launchd (PID 1) adopted after its parent ended. launchd also starts apps and agents.
-    So Coconut stops only a process whose environment names the outcome in COCONUT_WORKSPACE_OUTCOME.
+    So Coconut stops only an orphan whose environment names the outcome in COCONUT_WORKSPACE_OUTCOME, with its child processes.
     The worker of each turn sets this variable, and the processes of the turn inherit it.
     When the system does not show the environment of a process, for example a macOS platform binary, Coconut does not stop it.
     A process that does not end after SIGTERM gets SIGKILL.
@@ -308,10 +308,11 @@ def stop_orphans(found, outcome, age):
         return set()
     table = process_table()
     mark = 'COCONUT_WORKSPACE_OUTCOME=' + outcome
-    owned = lambda pid: pid != os.getpid() and environment_names(pid, mark)
-    stopped = {pid for pid in found if pid in table and table[pid][0] == 1 and table[pid][1] >= age and owned(pid)}
+    stopped = {pid for pid in found if pid in table and pid != os.getpid() and table[pid][0] == 1
+               and table[pid][1] >= age and environment_names(pid, mark)}
     while stopped:
-        children = {pid for pid, (parent, _) in table.items() if parent in stopped and pid not in stopped and owned(pid)}
+        # The parent proves who owns a child process. macOS also hides the environment of a child shell.
+        children = {pid for pid, (parent, _) in table.items() if parent in stopped and pid not in stopped}
         if not children:
             break
         stopped |= children

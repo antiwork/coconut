@@ -71,7 +71,8 @@ Retirement does these steps:
    Before this check, it stops the orphaned processes of the outcome that hold the worktree, and their child processes.
    An orphan is a process that launchd (PID 1) adopted, and that is older than `ORPHAN_AGE_SECONDS` (six hours).
    A service restart leaves such processes from earlier turns. launchd also starts apps and agents,
-   so Coconut stops only a process whose environment has `COCONUT_WORKSPACE_OUTCOME` set to the outcome.
+   so Coconut stops only an orphan whose environment has `COCONUT_WORKSPACE_OUTCOME` set to the outcome.
+   It also stops the child processes of that orphan, because their parent proves who owns them.
    The worker of each turn sets this variable. If the system hides the environment of a process, Coconut does not stop it.
    macOS hides it for its platform binaries, such as `/bin/sleep`.
    It sends `SIGTERM`, waits at most 5 seconds, and then sends `SIGKILL`.

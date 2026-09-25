@@ -680,6 +680,23 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.addCleanup(lambda: subprocess.run(['kill', str(pid)], capture_output=True))
         return pid
 
+    def orphan_with_child(self, path, outcome):
+        """Start an orphan of the outcome that has a /bin/sleep child. macOS hides the child's environment."""
+        script = "import subprocess, time; subprocess.Popen(['sleep', '60']); time.sleep(60)"
+        command = f'{shlex.quote(sys.executable)} -c {shlex.quote(script)} >/dev/null 2>&1 & echo $!'
+        started = subprocess.run(['sh', '-c', command], cwd=path, env=dict(os.environ, COCONUT_WORKSPACE_OUTCOME=outcome),
+                                 capture_output=True, text=True, check=True)
+        pid = int(started.stdout)
+        self.addCleanup(lambda: subprocess.run(['kill', str(pid)], capture_output=True))
+        for _ in range(50):
+            children = subprocess.run(['pgrep', '-P', str(pid)], capture_output=True, text=True).stdout.split()
+            if children:
+                break
+            time.sleep(0.1)
+        child = int(children[0])
+        self.addCleanup(lambda: subprocess.run(['kill', str(child)], capture_output=True))
+        return pid, child
+
     def alive(self, pid):
         return subprocess.run(['ps', '-p', str(pid)], capture_output=True).returncode == 0
 
@@ -712,6 +729,31 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.assertTrue(self.alive(pid))
             self.assertTrue(path.is_dir())
             self.assertNotIn('retired', self.registry()[identity])
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_an_orphan_and_its_child_process_are_both_stopped(self):
+        outcome, identity, path, _ = self.outcome()
+        pid, child = self.orphan_with_child(path, outcome)
+        self.holders.stop()
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(self.alive(pid))
+        self.assertFalse(self.alive(child))
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_a_process_of_the_outcome_with_a_live_parent_keeps_the_worktree(self):
+        outcome, identity, path, _ = self.outcome()
+        # A live worker has the service as its parent. Only launchd's adopted processes are orphans.
+        process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], cwd=path,
+                                   env=dict(os.environ, COCONUT_WORKSPACE_OUTCOME=outcome))
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        self.holders.stop()
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.assertEqual(self.retire(), [])
+        self.assertIsNone(process.poll())
+        self.assertTrue(path.is_dir())
+        self.assertNotIn('retired', self.registry()[identity])
 
     def test_elapsed_times_from_ps_become_seconds(self):
         self.assertEqual(work_workspace.elapsed_seconds('05'), 5)
