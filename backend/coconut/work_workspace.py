@@ -491,8 +491,9 @@ def compare_checkouts(bindings):
     """Compare each checkout at the path of a retired binding with its archive. Run without the registry lock.
 
     The archived files can total hundreds of megabytes, so Coconut reads them before it takes the lock.
-    Return a map from each binding, as JSON, to the fingerprint of its archived files.
-    Under the lock, unpack accepts a checkout only when its binding and its fingerprint did not change.
+    Return a map from each binding, as JSON, to the fingerprint of its archived files, or to None when
+    the checkout does not match. Under the lock, unpack accepts a checkout only when its binding and its
+    fingerprint did not change.
     """
     checked = {}
     for binding in bindings:
@@ -501,10 +502,11 @@ def compare_checkouts(bindings):
             path = Path(binding['path'])
             if retired.get('restore_failed') or not occupied(path):
                 continue
+            key = json.dumps(binding, sort_keys=True)
+            # An error in the comparison refuses the checkout.
+            checked[key] = None
             validate_binding(dict(binding))
-            marks = archived_marks(path, Path(retired['archive']))
-            if marks is not None:
-                checked[json.dumps(binding, sort_keys=True)] = marks
+            checked[key] = archived_marks(path, Path(retired['archive']))
     return checked
 
 
@@ -523,7 +525,12 @@ def unpack(binding, checked):
     if occupied(path):
         # Retirement stopped before Git removed the checkout, or a restore stopped before the registry changed.
         # compare_checkouts read the files without the lock. Here Coconut compares only their fingerprint.
-        marks = checked.get(json.dumps(binding, sort_keys=True))
+        key = json.dumps(binding, sort_keys=True)
+        if key not in checked:
+            # The checkout appeared or the binding changed after compare_checkouts. Compare the files
+            # under the lock, so that a valid checkout from an interrupted restore is not refused.
+            checked = compare_checkouts([binding])
+        marks = checked.get(key)
         try:
             validate_binding(dict(binding))
             intact = (marks is not None
@@ -578,7 +585,7 @@ def restore(binding, checked):
     """Recreate a retired worktree at its saved path. Hold the registry lock.
 
     `checked` comes from compare_checkouts before the lock. Without an entry for the binding,
-    Coconut does not accept a checkout that already exists at the path.
+    unpack compares a checkout that already exists at the path while it holds the lock.
 
     After a successful restore, the worktree holds every archived change, so Coconut deletes the archive.
     A failed restore keeps the archive and marks the binding `restore_failed`. Coconut does not try again

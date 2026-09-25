@@ -616,17 +616,18 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.assertEqual(self.retire(), [identity])
         self.assertEqual(shared, [True])
 
+    def write_checkout_files(self, path):
+        for name, text in (('tracked.txt', 'changed\n'), ('notes.md', 'untracked\n'), ('.env', 'SECRET=local\n')):
+            (path / name).write_text(text)
+
     def remaining_checkout(self):
         """Retire a worktree, then check it out again with the archived files, as an interrupted restore can."""
         outcome, identity, path, _ = self.outcome()
-        files = {'tracked.txt': 'changed\n', 'notes.md': 'untracked\n', '.env': 'SECRET=local\n'}
-        for name, text in files.items():
-            (path / name).write_text(text)
+        self.write_checkout_files(path)
         # The job also retires the worktree of an earlier subtest again.
         self.assertIn(identity, self.retire())
         git(self.repo, 'worktree', 'add', '-q', str(path), 'wt/' + identity)
-        for name, text in files.items():
-            (path / name).write_text(text)
+        self.write_checkout_files(path)
         return outcome, identity, path, Path(self.registry()[identity]['retired']['archive'])
 
     def test_the_comparison_with_the_archive_does_not_hold_the_registry_lock(self):
@@ -668,6 +669,26 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertIn('does not match the archive', self.registry()[identity]['retired']['restore_failed']['error'])
         self.assertTrue(archive.exists())
         self.assertEqual((path / '.env').read_text(), 'SECRET=other\n')
+
+    def test_a_checkout_that_appears_after_the_comparison_is_compared_under_the_lock(self):
+        outcome, identity, path, archive = self.remaining_checkout()
+        # Before the unlocked comparison, the path is empty.
+        git(self.repo, 'worktree', 'remove', '--force', str(path))
+        original, calls = work_workspace.compare_checkouts, []
+        def appear(bindings):
+            result = original(bindings)
+            if not calls:
+                # Another restore finished the checkout and stopped before it saved the registry.
+                git(self.repo, 'worktree', 'add', '-q', str(path), 'wt/' + identity)
+                self.write_checkout_files(path)
+            calls.append(result)
+            return result
+        with patch('coconut.work_workspace.compare_checkouts', side_effect=appear):
+            self.assertEqual(acquire(self.workspaces, outcome, str(self.repo))['path'], str(path))
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn('retired', self.registry()[identity])
+        self.assertFalse(archive.exists())
+        self.assertEqual((path / '.env').read_text(), 'SECRET=local\n')
 
     def commit_on_branch(self, branch):
         tree = git(self.repo, 'rev-parse', branch + '^{tree}')
