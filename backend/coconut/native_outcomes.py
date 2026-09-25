@@ -52,7 +52,7 @@ class _NativeSnapshotsNeeded(Exception):
 
 
 class NativeOutcomes:
-    def _retain_native_work(self, owner, native, snapshot_missing=None, snapshots=None):
+    def _retain_native_work(self, owner, native, snapshot_missing=None, snapshots=None, caller=None):
         from .service import ServiceError, now
         from .work_capacity import execution_key
         snapshots = self.kanban.tasks if snapshots is None else snapshots
@@ -62,13 +62,19 @@ class NativeOutcomes:
             items = [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr') and a['task_id'] == owner['id']]
         linked_parent = None
         retained = []
+        source = self._get('tasks', owner['source_task_id']) if owner.get('source_task_id') else None
         for candidate in items:
             root = self._work_outcome_artifact(candidate)
+            # A requester's source audit can delegate for an existing Work outcome of that requester.
+            # _source_native_ids lists the native outcomes that the audit commented on. That alone does not
+            # prove a delegation, so the Work's own task must also make this call.
+            audited = bool(source and caller and caller['id'] == root['task_id'] and root.get('_native_outcome_id')
+                           and root['_native_outcome_id'] in (source.get('_source_native_ids') or ()))
             if (root['bot_id'] != owner['bot_id'] and candidate['kind'] == 'pr'
                     and candidate['bot_id'] == owner['bot_id'] and candidate['task_id'] == owner['id']
                     and candidate.get('work_outcome_id') == root['id'] and root['kind'] == 'work'
                     and root['bot_id'] == owner.get('source_bot_id')
-                    and root['task_id'] == owner.get('source_task_id')):
+                    and (root['task_id'] == owner.get('source_task_id') or audited)):
                 # A delegated PR shares the requester's Work presentation, not its execution.
                 linked_parent = root
                 retained.append(candidate)
@@ -88,6 +94,12 @@ class NativeOutcomes:
             tasks = {t['id']: t for t in self._all('tasks')}
             records = self._pending_completion_receipts()
             peer_chains = []
+            # The requester's coordinating task can differ from the task that delegated this work.
+            requesters = {owner.get('source_task_id')} | ({linked_parent['task_id']} if linked_parent else set())
+            requesters.discard(None)
+            # Only the caller is not a competing writer. When the coordinator calls for its audit, the audit stays guarded.
+            callers = ({linked_parent['task_id']} if linked_parent and linked_parent['task_id'] != owner.get('source_task_id')
+                       else {owner.get('source_task_id')})
             for peer in peers:
                 if linked_parent and peer['id'] == linked_parent['id']:
                     # The coordinating Work may remain active while its delegated PR resumes.
@@ -119,9 +131,9 @@ class NativeOutcomes:
                     reporter_source = tasks.get(reporter.get('source_task_id'))
                     owner_report = (peer['id'] == item['id'] and peer['task_id'] == owner['id']
                         and reporter['bot_id'] == owner['bot_id']
-                        and reporter.get('_reply_to_task_id') == owner.get('source_task_id')
+                        and reporter.get('_reply_to_task_id') in requesters
                         and reporter_source is not None
-                        and self._work_execution_owner(reporter_source, tasks)['id'] == owner.get('source_task_id'))
+                        and self._work_execution_owner(reporter_source, tasks)['id'] in requesters)
                     passive_report = (field == '_activity_task_id' and peer['kind'] == 'pr'
                         and peer.get('url') and item.get('url')
                         and peer['url'].lower() == item['url'].lower()
@@ -131,16 +143,21 @@ class NativeOutcomes:
                     # that requester's other branches in the guard.
                     root = tasks[owner['source_task_id']] if passive_report else self._work_execution_owner(reporter, tasks)
                     linked = self._work_chain(root, tasks, records, include_continuations=True)
+                    if passive_report:
+                        # The coordinating requester task has its own branches. Keep them in the guard too.
+                        for identity in requesters - {root['id']}:
+                            if identity in tasks:
+                                linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
                     linked[root['id']] = (root, 0)
                     linked[reporter['id']] = (reporter, 0)
-                    if owner_report and reporter_source and reporter_source['id'] not in (owner['id'], owner['source_task_id']):
+                    if owner_report and reporter_source and reporter_source['id'] not in (owner['id'], *requesters):
                         linked[reporter_source['id']] = (reporter_source, 0)
                     if passive_report:
                         # The coordinator and the owner under continuation
                         # are not competing writers. Their other descendants
                         # still need terminal claims, returns, and decisions.
-                        linked.pop(owner['source_task_id'], None)
-                        linked.pop(owner['id'], None)
+                        for identity in (*callers, owner['id']):
+                            linked.pop(identity, None)
                     native_tasks = [t for t, _ in linked.values()
                                     if t.get('_native_outcome_id') or t.get('_kanban_claim')]
                     peer_chains.append((peer, reporter, linked, native_tasks, passive_report))
@@ -400,7 +417,7 @@ class NativeOutcomes:
                    for d in self._all('decisions')):
                 raise ServiceError(409, 'The existing decision must be answered before work continues.')
             if not owner.get('_native_outcome_id'):
-                self._retain_native_work(owner, native, snapshot_missing, snapshots)
+                self._retain_native_work(owner, native, snapshot_missing, snapshots, caller=source)
             owner['_native_outcome_id'] = identity
             self._restore_native_work_owner(owner)
             related_ids = {t['id'] for t in related}
