@@ -282,11 +282,16 @@ Each bot keeps one open chat session. Hermes compression continues it in a new s
 chain. After each turn, Coconut records the newest session in Hermes `state_meta` (`coconut.session-tip.<root>`).
 The next turn starts from it, so a prune of older ended sessions in the chain does not break the chat.
 
-Each outcome has its own work session. Once an hour, with worktree retirement, Coconut ends the newest session of
-each idle outcome with Hermes `end_session` and the reason `coconut_idle`. It never ends a chat session. Then it runs
-Hermes `maybe_auto_prune_and_vacuum` for each bot with `SESSION_RETENTION_DAYS` (7). Hermes deletes only ended
-sessions that were inactive that long, runs at most once a day, and vacuums only when enough space is free.
+Each outcome has its own work session. Once an hour, with worktree retirement, Coconut runs one Hermes script per bot:
+
+1. It records the newest session of every conversation root, the chat and all work. A prune can remove the ended
+   compression ancestors of an open chain, so this runs before any prune, also on the first run of an existing install.
+2. It ends the newest session of each idle outcome with Hermes `end_session` and the reason `coconut_idle`.
+   It checks again that the outcome is idle just before each bot. It never ends a chat session.
+3. It deletes ended sessions of source `coconut` that were inactive for `SESSION_RETENTION_DAYS` (7), with Hermes
+   `prune_sessions`. Sessions of other sources, such as cron or CLI, keep the profile's own Hermes settings.
+4. After a prune, at most once a week, it runs Hermes `vacuum`, but only when no other process holds the store.
 
 When an idle outcome resumes, Coconut reopens its session with `reopen_session`. If Hermes has already deleted it,
 Coconut seeds a new session from its own saved messages of that work. The native card keeps the work record.
-Coconut does not change Hermes. It uses only these `SessionDB` methods, which the Hermes contract check requires.
+Coconut does not change Hermes. It uses only these `SessionDB` methods and the `hermes_state_holders` checks, which the Hermes contract check requires.

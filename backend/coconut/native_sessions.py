@@ -1,40 +1,63 @@
-"""End the native sessions of idle outcomes, then let Hermes prune its own session store."""
+"""Keep each conversation's newest session recorded, end idle outcome sessions, and prune Coconut's old sessions."""
 from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
 import sys
+import time
 if __package__:
-    from .native_conversation import IDLE_END_REASON, resume_session, session_root
+    from .native_conversation import IDLE_END_REASON, TIP_KEY, resume_session, session_root
 else:
-    from native_conversation import IDLE_END_REASON, resume_session, session_root
+    from native_conversation import IDLE_END_REASON, TIP_KEY, resume_session, session_root
+
+VACUUM_KEY = 'coconut.last-vacuum'
+VACUUM_INTERVAL_SECONDS = 7 * 86400
 
 
 def maintain(request):
-    """End the newest session of each idle outcome, and run Hermes session maintenance.
+    """Run the session maintenance of one bot with Hermes SessionDB methods only.
 
-    Hermes deletes only ended sessions that were inactive for `retention_days`, and it runs at most once a day.
-    Coconut never ends a bot's chat, so its conversation stays open. A turn reopens an ended outcome session.
+    1. Record the newest session of every conversation root. A prune of ended compression ancestors cuts the
+       chain from the root, so this must happen before any prune.
+    2. End the newest session of each idle outcome. Coconut never ends a chat.
+    3. Prune ended Coconut sessions inactive for `retention_days`. Other sources keep the profile's own settings.
+    4. VACUUM after a prune, at most once a week, and only when no other process holds the store.
     """
     from hermes_state import SessionDB
+    from hermes_state_holders import foreign_state_db_holders, in_process_state_db_holders
 
     db = SessionDB()
-    ended = 0
+    result = dict(recorded=0, ended=0, pruned=0, vacuumed=False)
     try:
+        for item in request['conversations']:
+            root = session_root(request['bot'], execution=item.get('execution_session_id'), epoch=item.get('epoch'))
+            tip = resume_session(db, root)
+            if db.get_session(tip) and db.get_meta(TIP_KEY + root) != tip:
+                db.set_meta(TIP_KEY + root, tip)
+                result['recorded'] += 1
         for item in request['outcomes']:
             root = session_root(request['bot'], execution=item['execution_session_id'], epoch=item.get('epoch'))
             session_id = resume_session(db, root)
             session = db.get_session(session_id)
             if session and not session.get('ended_at'):
                 db.end_session(session_id, IDLE_END_REASON)
-                ended += 1
-        result = db.maybe_auto_prune_and_vacuum(retention_days=int(request['retention_days']),
-                                                sessions_dir=Path(os.environ['HERMES_HOME']) / 'sessions')
+                result['ended'] += 1
+        result['pruned'] = db.prune_sessions(older_than_days=float(request['retention_days']), source='coconut',
+                                             sessions_dir=Path(os.environ['HERMES_HOME']) / 'sessions',
+                                             exclude_active_write_guards=True)
+        last = db.get_meta(VACUUM_KEY)
+        due = not last or time.time() - float(last) >= VACUUM_INTERVAL_SECONDS
+        # VACUUM rewrites the whole file under an exclusive lock. Hermes skips it while another process
+        # holds the store or a WAL sidecar, and so does Coconut. The next hour tries again.
+        if result['pruned'] and due and not (foreign_state_db_holders(db.db_path)
+                                             + in_process_state_db_holders(db.db_path, exclude=db)):
+            db.vacuum()
+            db.set_meta(VACUUM_KEY, str(time.time()))
+            result['vacuumed'] = True
     finally:
         db.close()
-    return dict(ended=ended, pruned=result.get('pruned', 0), closed=result.get('closed', 0),
-                vacuumed=bool(result.get('vacuumed')), skipped=bool(result.get('skipped')), error=result.get('error'))
+    return result
 
 
 if __name__ == '__main__':

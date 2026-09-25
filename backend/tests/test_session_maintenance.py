@@ -21,7 +21,7 @@ class SessionSelectionTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.provider = ControlledProvider()
         self.calls = []
-        self.provider.maintain_sessions = lambda bot, outcomes, days: self.calls.append((bot, outcomes, days)) or {}
+        self.provider.maintain_sessions = lambda bot, conversations, outcomes, days: self.calls.append((bot, conversations, outcomes, days)) or {}
         self.service = Service(self.temp.name, self.provider, start_workers=False)
         self.addCleanup(self.service.close)
         self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'Desk', 'role': ''}, str(uuid4()))
@@ -43,10 +43,13 @@ class SessionSelectionTests(unittest.TestCase):
         finished = {'idle-work', chat['bot_id']}
         with patch.object(self.service, '_finished_outcomes', return_value=finished):
             self.service.maintain_native_sessions(current=0)
-        [(bot, outcomes, days)] = self.calls
+        [(bot, conversations, outcomes, days)] = self.calls
         self.assertEqual(bot, dict(id=self.bot['id'], session_id=self.bot['session_id']))
         # The chat has no execution session, so its conversation stays open.
         self.assertEqual(outcomes, [dict(execution_session_id=idle['_execution_session_id'], epoch='epoch-1')])
+        # Every conversation gets its tip recorded before the prune: the chat and all work, idle or not.
+        self.assertEqual(sorted((c['execution_session_id'] or '', c['epoch'] or '') for c in conversations),
+                         [('', ''), ('active-work', ''), ('idle-work', 'epoch-1')])
         self.assertEqual(days, session_maintenance.SESSION_RETENTION_DAYS)
 
     def test_an_outcome_that_resumes_before_its_bot_keeps_its_session(self):
@@ -54,7 +57,7 @@ class SessionSelectionTests(unittest.TestCase):
         # The second check, just before the bot, finds the outcome active again.
         with patch.object(self.service, '_finished_outcomes', side_effect=[{'idle-work'}, set()]):
             self.service.maintain_native_sessions(current=0)
-        [(bot, outcomes, days)] = self.calls
+        [(bot, conversations, outcomes, days)] = self.calls
         self.assertEqual(outcomes, [])
 
     def test_maintenance_runs_at_most_once_an_hour_and_skips_a_busy_service(self):
@@ -114,6 +117,50 @@ class NativeSessionTests(unittest.TestCase):
             again.close()
         ''')
 
+    def test_the_first_maintenance_records_tips_before_it_prunes_and_spares_other_sources(self):
+        self.run_native('''
+            from uuid import uuid4
+            from hermes_state import SessionDB
+            from coconut import native_sessions
+            from coconut.native_conversation import NativeConversation, TIP_KEY
+            bot = dict(id=str(uuid4()), session_id=str(uuid4()))
+            root = bot['session_id']
+            db = SessionDB()
+            # An existing install: a compressed chat chain with no recorded tip, and an ended cron session.
+            db.create_session(root, source='coconut')
+            db.append_message(root, 'user', 'Use the blue label.')
+            child = str(uuid4())
+            db.create_session(child, source='coconut', parent_session_id=root)
+            db.append_message(child, 'user', 'Summary: use the blue label.')
+            db.end_session(root, 'compression')
+            db.create_session('cron-run', source='cron')
+            db.append_message('cron-run', 'user', 'Nightly report.')
+            db.end_session('cron-run', 'cron_complete')
+            assert db.get_meta(TIP_KEY + root) is None
+            result = native_sessions.maintain(dict(bot=bot, conversations=[dict(execution_session_id=None, epoch=None)],
+                                                   outcomes=[], retention_days=0))
+            assert result['recorded'] == 1 and result['pruned'] >= 1, result
+            assert db.get_session(root) is None
+            # Coconut prunes only its own sessions. The profile's Hermes settings govern the rest.
+            assert db.get_session('cron-run') is not None
+            chat = NativeConversation(dict(operation='start', bot=bot, task=dict(id='chat'), history=[]), SessionDB())
+            assert chat.session_id == child, chat.session_id
+            chat.close()
+        ''')
+
+    def test_a_failed_tip_write_does_not_fail_the_turn(self):
+        self.run_native('''
+            from uuid import uuid4
+            from hermes_state import SessionDB
+            from coconut.native_conversation import NativeConversation
+            bot = dict(id=str(uuid4()), session_id=str(uuid4()))
+            conversation = NativeConversation(dict(operation='start', bot=bot, task=dict(id='chat'), history=[]), SessionDB())
+            def refuse(*arguments):
+                raise RuntimeError('database is locked')
+            conversation.db.set_meta = refuse
+            conversation.close()
+        ''')
+
     def test_an_idle_outcome_session_ends_reopens_and_returns_after_a_prune(self):
         self.run_native('''
             from uuid import uuid4
@@ -129,7 +176,7 @@ class NativeSessionTests(unittest.TestCase):
             db = SessionDB()
             chat = dict(operation='start', bot=bot, task=dict(id='chat'), history=[])
             NativeConversation(chat, SessionDB()).close()
-            result = native_sessions.maintain(dict(bot=bot, outcomes=[dict(execution_session_id='work')], retention_days=7))
+            result = native_sessions.maintain(dict(bot=bot, conversations=[], outcomes=[dict(execution_session_id='work')], retention_days=7))
             assert result['ended'] == 1, result
             work = db.get_session(session_root(bot, execution='work'))
             assert work['end_reason'] == IDLE_END_REASON, work
@@ -139,8 +186,8 @@ class NativeSessionTests(unittest.TestCase):
             assert not db.get_session(resumed.session_id)['ended_at']
             resumed.close()
             # After Hermes prunes the idle session, a resume seeds the visible conversation again.
-            native_sessions.maintain(dict(bot=bot, outcomes=[dict(execution_session_id='work')], retention_days=7))
-            assert db.prune_sessions(older_than_days=0) >= 1
+            result = native_sessions.maintain(dict(bot=bot, conversations=[], outcomes=[dict(execution_session_id='work')], retention_days=0))
+            assert result['pruned'] >= 1, result
             assert db.get_session(session_root(bot, execution='work')) is None
             returned = NativeConversation(request, SessionDB())
             texts = [row['content'] for row in returned.history]

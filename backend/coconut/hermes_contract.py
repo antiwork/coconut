@@ -99,7 +99,7 @@ def verify_contract():
         if not callable(getattr(AIAgent, name, None)):
             raise ValueError('Hermes removed native conversation cleanup.')
     for name in ('resolve_session_by_title', 'get_meta', 'set_meta', 'set_session_title', 'create_session', 'replace_messages', 'resolve_resume_session_id', 'get_resume_conversations', 'get_session', 'end_session', 'reopen_session',
-                 'maybe_auto_prune_and_vacuum', 'close'):
+                 'prune_sessions', 'vacuum', 'close'):
         if not callable(getattr(SessionDB, name, None)):
             raise ValueError('Hermes removed a required conversation storage interface: ' + name)
     require_keywords(SessionDB.replace_messages, {'archive_dropped', 'reject_active_turn_lease'})
@@ -111,7 +111,9 @@ def verify_contract():
     require_keywords(ContextCompressor._call_summary_llm, {'prompt', 'prompt_started_at'})
     require_keywords(ContextCompressor._generate_summary, {'turns_to_summarize'})
     # Coconut session maintenance calls these by keyword and reads the returned counts.
-    require_keywords(SessionDB.maybe_auto_prune_and_vacuum, {'retention_days', 'sessions_dir'})
+    require_keywords(SessionDB.prune_sessions, {'older_than_days', 'source', 'sessions_dir', 'exclude_active_write_guards'})
+    from hermes_state_holders import foreign_state_db_holders, in_process_state_db_holders
+    require_keywords(in_process_state_db_holders, {'exclude'})
     require_keywords(registry.register, {'name', 'toolset', 'schema', 'handler'})
     require_keywords(registry.dispatch, {'name', 'args'})
     require_keywords(registry.deregister, {'name'})

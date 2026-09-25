@@ -34,8 +34,14 @@ class SessionMaintenance:
             bots = [b for b in self._all('bots') if not b.get('archived')]
         finally:
             self.lock.release()
-        outcomes = {}
+        outcomes, conversations = {}, {}
+        for bot in bots:
+            # The chat root. Coconut records the newest session of every conversation before any prune.
+            conversations.setdefault(bot['id'], {})[(None, None)] = dict(execution_session_id=None, epoch=None)
         for task in tasks:
+            key = (task.get('_execution_session_id'), task.get('_conversation_epoch'))
+            if key != (None, None):
+                conversations.setdefault(task['bot_id'], {})[key] = dict(execution_session_id=key[0], epoch=key[1])
             # Only work has its own session. A chat task uses the bot's conversation, which stays open.
             if task.get('_execution_session_id') and execution_key(task) in idle:
                 item = dict(execution_session_id=task['_execution_session_id'], epoch=task.get('_conversation_epoch'))
@@ -53,7 +59,8 @@ class SessionMaintenance:
                 pending = [item for item in pending if still is not None and item['execution_session_id'] in still]
             try:
                 results[bot['id']] = self.provider.maintain_sessions(
-                    dict(id=bot['id'], session_id=bot['session_id']), pending, SESSION_RETENTION_DAYS)
+                    dict(id=bot['id'], session_id=bot['session_id']),
+                    list(conversations.get(bot['id'], {}).values()), pending, SESSION_RETENTION_DAYS)
             except Exception:
                 logging.getLogger(__name__).exception('Could not maintain the native sessions of bot %s.', bot['id'])
         return results

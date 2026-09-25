@@ -186,6 +186,9 @@ class NativeConversation:
             # Compression during the turn can move the conversation to a new session.
             if self.db.get_session(self.session_id):
                 self.db.set_meta(TIP_KEY + self.root, self.db.resolve_resume_session_id(self.session_id))
+        except Exception:
+            # Hourly maintenance records the tip again. This bookkeeping must not fail a finished turn.
+            pass
         finally:
             self.db.close()
 
