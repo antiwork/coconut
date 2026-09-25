@@ -240,6 +240,23 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._put('bots', bot)
             self.db.execute('DROP TABLE IF EXISTS policies')
             self.db.execute('DROP TABLE IF EXISTS preference_receipts')
+        try:
+            checkout_was_held = getattr(self, '_workspace_recovery_hold', False)
+            self._admit_checkout_recovery()
+            if checkout_was_held and not self._workspace_recovery_hold:
+                if hasattr(self.provider, 'migrate_model_default'):
+                    self.provider.migrate_model_default(self._setting('model'), self._setting('base_url'))
+                elif hasattr(self.provider, 'configure') and self._setting('model'):
+                    self.provider.configure(model=self._setting('model'), base_url=self._setting('base_url') or None)
+                if hasattr(self.provider, 'native_settings'):
+                    self.provider.native_settings('migrate', [b for b in self._all('bots') if not b.get('_deleted')])
+        except BaseException:
+            if self.kanban:
+                self.kanban.close()
+            self.db.close()
+            fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_UN)
+            self.process_lock.close()
+            raise
         if start_workers:
             self.start()
         if hasattr(self.provider, 'subscribe_model_catalog'):

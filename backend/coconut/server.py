@@ -124,6 +124,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, service.request_workspace_recovery(
                     self._body(), self.headers.get('Idempotency-Key', ''), device))
                 return
+            if method == 'POST' and url.path == '/v1/maintenance/checkout-recovery':
+                self._json(200, service.request_checkout_recovery(
+                    self._body(), self.headers.get('Idempotency-Key', ''), authorization[7:]))
+                return
             if method == 'GET':
                 if url.path == '/v1/state':
                     self._json(200, service.snapshot(timings=self.timings, content_only=self.headers.get('X-Coconut-State') in ('content', 'recent'),

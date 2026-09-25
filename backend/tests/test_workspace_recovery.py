@@ -27,6 +27,55 @@ from coconut.workspace_recovery import atomic_manifest
 import test_native_kanban as native
 
 
+class CheckoutFilterPreflightTests(unittest.TestCase):
+    """Exercise recovery's real Git preflight without a native task database."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name).resolve()
+        git(self.repo, 'init')
+        git(self.repo, 'config', 'user.name', 'Test')
+        git(self.repo, 'config', 'user.email', 'test@example.invalid')
+        (self.repo / 'retained.txt').write_text('retained\n')
+        git(self.repo, 'add', '.')
+        git(self.repo, 'commit', '-m', 'base')
+        self.attached = git(self.repo, 'rev-parse', 'HEAD')
+        git(self.repo, 'switch', '-c', 'saved')
+        (self.repo / 'new.txt').write_text('saved bytes\n')
+        git(self.repo, 'add', 'new.txt')
+        git(self.repo, 'commit', '-m', 'saved file')
+        self.saved = git(self.repo, 'rev-parse', 'HEAD')
+        git(self.repo, 'switch', '-c', 'attached', self.attached)
+        self.marker = self.repo / 'filter-ran'
+        git(self.repo, 'config', 'filter.unsafe.smudge', 'touch filter-ran; cat')
+
+    def test_untracked_attributes_reject_saved_only_path_before_filter_runs(self):
+        from coconut.workspace_recovery import reject_custom_git_commands
+        (self.repo / '.gitattributes').write_text('new.txt filter=unsafe\n')
+        before = git(self.repo, 'status', '--porcelain')
+        with self.assertRaisesRegex(ValueError, 'filter'):
+            reject_custom_git_commands(self.repo, (self.attached, self.saved))
+        self.assertFalse(self.marker.exists())
+        self.assertFalse((self.repo / 'new.txt').exists())
+        self.assertEqual(git(self.repo, 'status', '--porcelain'), before)
+        self.assertEqual(git(self.repo, 'rev-parse', 'HEAD'), self.attached)
+
+    def test_checkout_recheck_rejects_worktree_attributes_on_target_tree(self):
+        from coconut.workspace_recovery import checkout_obstructions
+        (self.repo / '.gitattributes').write_text('new.txt filter=unsafe\n')
+        request = dict(path=str(self.repo), attached_head=self.attached)
+        with self.assertRaisesRegex(ValueError, 'filter'):
+            checkout_obstructions(request, self.saved, {})
+        self.assertFalse(self.marker.exists())
+
+    def test_unused_filter_configuration_remains_allowed(self):
+        from coconut.workspace_recovery import reject_custom_git_commands
+        (self.repo / '.gitattributes').write_text('unrelated.txt filter=unsafe\n')
+        reject_custom_git_commands(self.repo, (self.attached, self.saved))
+        self.assertFalse(self.marker.exists())
+
+
 @unittest.skipUnless(native.SOURCE and native.PYTHON, 'Set Coconut Hermes paths for native integration checks.')
 class WorkspaceRecoveryTests(unittest.TestCase):
     def setUp(self):
@@ -115,6 +164,565 @@ class WorkspaceRecoveryTests(unittest.TestCase):
 
     def receipt(self):
         return self.service._get('workspace_recoveries', self.key)
+
+    def checkout_incident(self):
+        saved = 'wt/1ae0ae9f-35c9-4813-b7d0-69188eeb1b97-11ce49fd843261dc'
+        git(self.repo, 'branch', '-m', self.binding['branch'], saved)
+        registry = json.loads(self.manifest.read_text())
+        next(iter(registry.values()))['branch'] = saved
+        self.manifest.write_text(json.dumps(registry))
+        self.binding['branch'] = saved
+        for name in ('checkout-a.txt', 'checkout-b.txt', 'checkout-c.txt'):
+            (self.workspace / name).write_text('base\n')
+        git(self.workspace, 'add', 'checkout-a.txt', 'checkout-b.txt', 'checkout-c.txt')
+        git(self.workspace, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            'commit', '-m', 'common tracked base')
+        git(self.repo, 'branch', '-f', saved, 'reviewed-local-branch')
+        attached = 'gianfranco/checkout-confirmation-wording'
+        git(self.workspace, 'switch', '-c', attached)
+        for index in range(7):
+            (self.workspace / f'attached-{index}.txt').write_text(f'attached {index}\n')
+            git(self.workspace, 'add', f'attached-{index}.txt')
+            git(self.workspace, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                'commit', '-m', f'attached {index}')
+        git(self.repo, 'switch', saved)
+        for index in range(3):
+            (self.repo / f'saved-{index}.txt').write_text(f'saved {index}\n')
+            git(self.repo, 'add', f'saved-{index}.txt')
+            git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                'commit', '-m', f'saved {index}')
+        dirty = {}
+        for name in ('checkout-a.txt', 'checkout-b.txt', 'checkout-c.txt'):
+            dirty[name] = (name + ': original dirty edit\n').encode()
+            (self.workspace / name).write_bytes(dirty[name])
+        task = self.service._get('tasks', self.task['id'])
+        task['status'] = 'completed'
+        self.service._put('tasks', task)
+        self.program('board.kb.archive_task(board.conn, sys.argv[2])', self.native_id)
+        artifact = dict(id=str(uuid4()), kind='work', task_id=task['id'], bot_id=task['bot_id'],
+            _native_outcome_id=self.native_id, status='completed', title='Original Work', created_at=task['created_at'],
+            _completed_history=dict(report='original-result', evidence='Original verified result'))
+        self.service._put('artifacts', artifact)
+        self.service.kanban.call({'op': 'snapshot'})
+        payload = dict(task_id=task['id'], native_task_id=self.native_id, expected_owner=self.owner,
+            repository=str(self.repo), path=str(self.workspace), saved_branch=saved, attached_branch=attached,
+            saved_head=git(self.repo, 'rev-parse', saved), attached_head=git(self.workspace, 'rev-parse', 'HEAD'),
+            recovery_branch='wt/recovered-' + self.key, message='Resume the original archived Work without approval.')
+        return payload, dirty, artifact
+
+    def test_checkout_recovery_preserves_divergence_and_admits_native_successor(self):
+        payload, dirty, artifact = self.checkout_incident()
+        original = self.service._get('tasks', self.task['id'])
+        self.assertEqual(git(self.workspace, 'rev-list', '--count', payload['saved_head'] + '..' + payload['attached_head']), '7')
+        self.assertEqual(git(self.workspace, 'rev-list', '--count', payload['attached_head'] + '..' + payload['saved_head']), '3')
+        before = {name: git(self.repo, 'rev-parse', branch) for name, branch in
+                  (('saved', payload['saved_branch']), ('attached', payload['attached_branch']))}
+        status, response = self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)
+        self.assertEqual(status, 200, response)
+        self.assertEqual(response['state'], 'draining')
+        self.assertTrue(self.service.take_service_restart())
+        self.restart()
+        receipt = self.receipt()
+        self.assertEqual(receipt['state'], 'applied', receipt)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['recovery_branch'])
+        self.assertEqual({name: git(self.repo, 'rev-parse', branch) for name, branch in
+                          (('saved', payload['saved_branch']), ('attached', payload['attached_branch']))}, before)
+        self.assertEqual(git(self.workspace, 'rev-list', '--parents', '-n', '1', 'HEAD').split()[1:],
+                         [payload['attached_head'], payload['saved_head']])
+        for name, content in dirty.items():
+            self.assertEqual((self.workspace / name).read_bytes(), content)
+        self.assertEqual((self.workspace / 'retained.patch').read_text(), 'Original approved Gumroad patch fixture\n')
+        self.assertEqual((self.workspace / '.env').read_text(), 'SYNTHETIC=preserved\n')
+        self.assertEqual(self.service._get('tasks', self.task['id']), original)
+        retained = self.service._get('artifacts', artifact['id'])
+        self.assertEqual(retained['task_id'], receipt['successor_task_id'])
+        self.assertEqual(retained['_completed_history'], artifact['_completed_history'])
+        self.assertIn(self.task['id'], retained['_work_previous_task_ids'])
+        self.assertEqual(self.service._get('tasks', receipt['successor_task_id'])['_execution_session_id'], self.owner)
+        self.assertEqual(preferred(self.data / 'workspaces', self.owner), self.workspace)
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[1]['state'], 'applied')
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[1]['successor_task_id'],
+                         receipt['successor_task_id'])
+        self.service._dispatch_pending()
+        self.assertEqual(self.program('print(board.kb.get_task(board.conn, sys.argv[2]).status)', self.native_id), 'archived')
+        self.assertNotEqual(self.service.kanban.tasks[receipt['successor_task_id']]['id'], self.native_id)
+
+    def test_checkout_recovery_refuses_active_no_checkout_bisect(self):
+        payload, dirty, artifact = self.checkout_incident()
+        bisect_log = Path(git(self.workspace, 'rev-parse', '--git-path', 'BISECT_LOG'))
+        bisect_log.write_text('git bisect start --no-checkout\n')
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+
+    def test_checkout_recovery_requires_two_divergent_heads(self):
+        payload, dirty, artifact = self.checkout_incident()
+        before = self.manifest.read_bytes()
+        common = git(self.workspace, 'merge-base', payload['attached_head'], payload['saved_head'])
+        # The synthetic repository has the saved branch checked out separately.
+        for new_head in (payload['attached_head'], common):
+            git(self.repo, 'reset', '--hard', new_head)
+            payload['saved_head'] = new_head
+            self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+            self.assertEqual(self.manifest.read_bytes(), before)
+            self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+            self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+
+    def test_checkout_recovery_runs_deferred_provider_migrations_before_workers(self):
+        payload, dirty, artifact = self.checkout_incident()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        self.assertTrue(self.service.take_service_restart())
+        calls = []
+
+        class MigrationProvider(native.Provider):
+            def migrate_model_default(self, model, base_url):
+                calls.append(('model', model, base_url))
+
+            def native_settings(self, operation, bots):
+                calls.append(('native', operation, len(bots)))
+                return {'routines': []}
+
+        self.restart(MigrationProvider(self.data))
+        self.assertEqual(self.receipt()['state'], 'applied')
+        self.assertEqual([entry[0] for entry in calls], ['model', 'native'])
+        self.assertEqual(calls[1][1], 'migrate')
+        self.assertTrue(calls[1][2])
+        self.assertFalse(self.service._workspace_recovery_hold)
+
+    def test_checkout_recovery_disables_post_checkout_hook(self):
+        payload, dirty, artifact = self.checkout_incident()
+        hook = self.repo / '.git' / 'hooks' / 'post-checkout'
+        marker = self.root / 'hook-ran'
+        hook.write_text('#!/bin/sh\nprintf unexpected > ' + str(marker) + '\n')
+        hook.chmod(0o755)
+        reference_hook = self.repo / '.git' / 'hooks' / 'reference-transaction'
+        reference_hook.write_text('#!/bin/sh\nprintf unexpected > ' + str(marker) + '\n')
+        reference_hook.chmod(0o755)
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        self.assertTrue(self.service.take_service_restart())
+        self.restart()
+        self.assertEqual(self.receipt()['state'], 'applied', self.receipt())
+        self.assertFalse(marker.exists())
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+
+    def test_checkout_recovery_refuses_target_checkout_filter(self):
+        payload, dirty, artifact = self.checkout_incident()
+        (self.repo / '.gitattributes').write_text('saved-0.txt filter=unsafe\n')
+        git(self.repo, 'add', '.gitattributes')
+        git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            'commit', '-m', 'mark saved checkout filter')
+        payload['saved_head'] = git(self.repo, 'rev-parse', 'HEAD')
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+
+    def test_checkout_recovery_rejects_archived_conversation_before_git_write(self):
+        payload, dirty, artifact = self.checkout_incident()
+        conversation = self.write('/v1/bots', {'name': 'Archived conversation', 'role': ''})
+        task = self.service._get('tasks', self.task['id'])
+        task['conversation_bot_id'] = conversation['id']
+        self.service._put('tasks', task)
+        bot = self.service._get('bots', conversation['id'])
+        bot['archived'] = True
+        self.service._put('bots', bot)
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+
+    def test_checkout_recovery_rejects_other_bound_worktree_of_same_execution(self):
+        payload, dirty, artifact = self.checkout_incident()
+        other_repo = self.root / 'other-repo'
+        other_repo.mkdir()
+        git(other_repo, 'init')
+        git(other_repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            'commit', '--allow-empty', '-m', 'other repo')
+        with patch.object(sys, 'path', [native.SOURCE, *sys.path]):
+            other = acquire(self.data / 'workspaces', self.owner, str(other_repo))
+        with sqlite3.connect(self.data / 'kanban' / 'kanban.db') as database:
+            database.execute('UPDATE tasks SET workspace_path=? WHERE id=?', (other['path'], self.native_id))
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+
+    def test_checkout_recovery_refuses_custom_merge_drivers_before_planning(self):
+        payload, dirty, artifact = self.checkout_incident()
+        marker = self.root / 'merge-driver-ran'
+        git(self.repo, 'config', 'merge.unsafe.driver', 'touch ' + str(marker))
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+
+    def test_checkout_recovery_refuses_filters_before_merge_planning(self):
+        payload, dirty, artifact = self.checkout_incident()
+        marker = self.root / 'filter-ran'
+        git(self.repo, 'config', 'merge.renormalize', 'true')
+        git(self.repo, 'config', 'filter.unsafe.clean', 'touch ' + str(marker))
+        (self.workspace / '.gitattributes').write_text('checkout-a.txt filter=unsafe\n')
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+
+    def test_checkout_recovery_rejects_retired_binding_before_git_write(self):
+        payload, dirty, artifact = self.checkout_incident()
+        registry = json.loads(self.manifest.read_text())
+        next(iter(registry.values()))['retired'] = dict(head=payload['saved_head'], archive='retained')
+        self.manifest.write_text(json.dumps(registry))
+        before = self.manifest.read_bytes()
+        status, response = self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)
+        self.assertEqual(status, 409, response)
+        self.assertIn('retired', response['error'])
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+        self.assertEqual(git(self.repo, 'branch', '--list', payload['recovery_branch']), '')
+        self.assertEqual(self.service._all('workspace_recoveries'), [])
+
+    def test_checkout_recovery_rejects_worktree_filter_for_saved_only_file(self):
+        payload, dirty, artifact = self.checkout_incident()
+        marker = self.root / 'filter-executed'
+        git(self.repo, 'config', 'filter.unsafe.smudge', f'touch {marker}; cat')
+        (self.workspace / '.gitattributes').write_text('saved-0.txt filter=unsafe\n')
+        before = self.manifest.read_bytes()
+        status, response = self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)
+        self.assertEqual(status, 409, response)
+        self.assertIn('filter', response['error'])
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'rev-parse', 'HEAD'), payload['attached_head'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+        self.assertEqual(self.service._all('workspace_recoveries'), [])
+
+    def test_checkout_recovery_ignores_unapplied_global_filter(self):
+        payload, dirty, artifact = self.checkout_incident()
+        git(self.repo, 'config', 'filter.unused.clean', 'false')
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+
+    def test_checkout_recovery_refuses_disabled_git_filemode(self):
+        payload, dirty, artifact = self.checkout_incident()
+        git(self.repo, 'config', 'core.filemode', 'false')
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+
+    def test_checkout_recovery_retains_unstaged_tracked_deletion(self):
+        payload, dirty, artifact = self.checkout_incident()
+        (self.workspace / 'checkout-a.txt').unlink()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        self.assertTrue(self.service.take_service_restart())
+        self.restart()
+        self.assertEqual(self.receipt()['state'], 'applied', self.receipt())
+        self.assertFalse((self.workspace / 'checkout-a.txt').exists())
+        for name in ('checkout-b.txt', 'checkout-c.txt'):
+            self.assertEqual((self.workspace / name).read_bytes(), dirty[name])
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['recovery_branch'])
+
+    def test_checkout_recovery_rejects_blank_message_and_dirty_rename_source(self):
+        payload, dirty, artifact = self.checkout_incident()
+        blank = dict(payload, message='  \n  ')
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', blank, key=self.key)[0], 400)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        git(self.repo, 'mv', 'checkout-a.txt', 'renamed-a.txt')
+        git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            'commit', '-m', 'rename tracked source')
+        payload['saved_head'] = git(self.repo, 'rev-parse', payload['saved_branch'])
+        status, response = self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)
+        self.assertEqual(status, 409, response)
+        self.assertEqual((self.workspace / 'checkout-a.txt').read_bytes(), dirty['checkout-a.txt'])
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertIsNone(self.service.db.execute('SELECT data FROM workspace_recoveries WHERE id=?',
+                                                  (self.key,)).fetchone())
+
+    def test_checkout_recovery_refuses_hidden_index_edits_and_changed_gitlink(self):
+        payload, dirty, artifact = self.checkout_incident()
+        git(self.workspace, 'update-index', '--assume-unchanged', 'checkout-a.txt')
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        git(self.workspace, 'update-index', '--no-assume-unchanged', 'checkout-a.txt')
+        git(self.workspace, 'update-index', '--skip-worktree', 'checkout-a.txt')
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        git(self.workspace, 'update-index', '--no-skip-worktree', 'checkout-a.txt')
+        git(self.repo, 'update-index', '--add', '--cacheinfo',
+            '160000,' + payload['saved_head'] + ',module')
+        git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            'commit', '-m', 'add synthetic gitlink')
+        payload['saved_head'] = git(self.repo, 'rev-parse', payload['saved_branch'])
+        status, response = self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)
+        self.assertEqual(status, 409, response)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertIsNone(self.service.db.execute('SELECT data FROM workspace_recoveries WHERE id=?',
+                                                  (self.key,)).fetchone())
+
+    def test_checkout_recovery_rejects_foreign_work_and_active_writer(self):
+        payload, dirty, artifact = self.checkout_incident()
+        device_id = self.service.db.execute('SELECT id FROM devices LIMIT 1').fetchone()[0]
+        with self.assertRaises(ServiceError):
+            self.service.request_checkout_recovery(payload, self.key, device_id)
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key, token=False)[0], 401)
+        artifact['bot_id'] = str(uuid4())
+        self.service._put('artifacts', artifact)
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        artifact['bot_id'] = self.bot['id']
+        self.service._put('artifacts', artifact)
+        checkpoint = self.data / 'bots' / self.bot['id'] / 'home' / 'processes.json'
+        checkpoint.write_text(json.dumps([dict(pid=os.getpid())]))
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        self.assertFalse(self.service.take_service_restart())
+        self.assertEqual(self.receipt()['state'], 'held')
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+
+    def test_checkout_recovery_refuses_simultaneous_native_writer(self):
+        payload, dirty, artifact = self.checkout_incident()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        native_id = self.program('''
+identity = board.kb.create_task(board.conn, title='Unrelated native writer', tenant=sys.argv[2],
+    workspace_kind='dir', workspace_path=sys.argv[3], initial_status='blocked')
+board.kb.unblock_task(board.conn, identity)
+board.kb.claim_task(board.conn, identity)
+board.dispatch._set_worker_pid(board.conn, identity, int(sys.argv[4]))
+print(identity)
+''', self.bot['id'], str(self.workspace), str(os.getpid()))
+        self.assertFalse(self.service.take_service_restart())
+        self.assertEqual(self.receipt()['state'], 'held')
+        self.assertEqual(self.program('print(board.kb.get_task(board.conn, sys.argv[2]).worker_pid)', native_id),
+                         str(os.getpid()))
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual(self.provider.started, [])
+
+    def test_checkout_recovery_refuses_changed_dirty_content_or_task_input(self):
+        payload, dirty, artifact = self.checkout_incident()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        (self.workspace / 'checkout-a.txt').write_text('a newer edit\n')
+        self.restart()
+        self.assertEqual(self.receipt()['state'], 'held')
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual((self.workspace / 'checkout-a.txt').read_text(), 'a newer edit\n')
+        self.assertEqual(self.provider.started, [])
+        old_key = self.key
+        self.key = str(uuid4())
+        payload['recovery_branch'] = 'wt/recovered-' + self.key
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertEqual(self.service._get('workspace_recoveries', old_key)['state'], 'held')
+        (self.workspace / 'checkout-a.txt').write_bytes(dirty['checkout-a.txt'])
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        self.assertEqual(self.service._get('workspace_recoveries', old_key)['state'], 'superseded')
+        self.assertTrue(self.service.take_service_restart())
+        self.restart()
+        self.assertEqual(self.receipt()['state'], 'applied', self.receipt())
+        self.assertEqual((self.workspace / 'checkout-a.txt').read_bytes(), dirty['checkout-a.txt'])
+
+    def test_checkout_recovery_held_refuses_different_incident_and_manifest_change(self):
+        payload, dirty, artifact = self.checkout_incident()
+        original_manifest = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        (self.workspace / 'checkout-a.txt').write_text('changed after authorization\n')
+        self.restart()
+        original_key = self.key
+        self.key = str(uuid4())
+        replacement = dict(payload, recovery_branch='wt/recovered-' + self.key,
+                           attached_head=payload['saved_head'])
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', replacement, key=self.key)[0], 409)
+        self.assertEqual(self.service._get('workspace_recoveries', original_key)['state'], 'held')
+        self.assertEqual(self.manifest.read_bytes(), original_manifest)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual(git(self.workspace, 'rev-parse', 'HEAD'), payload['attached_head'])
+        self.assertEqual((self.workspace / 'checkout-a.txt').read_text(), 'changed after authorization\n')
+        (self.workspace / 'checkout-a.txt').write_bytes(dirty['checkout-a.txt'])
+        self.manifest.write_bytes(original_manifest + b' ')
+        replacement['attached_head'] = payload['attached_head']
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', replacement, key=self.key)[0], 409)
+        self.assertEqual(self.service._get('workspace_recoveries', original_key)['state'], 'held')
+        self.assertEqual(self.manifest.read_bytes(), original_manifest + b' ')
+
+    def test_checkout_recovery_ignored_obstruction_created_after_request_holds(self):
+        payload, dirty, artifact = self.checkout_incident()
+        git_dir = Path(git(self.workspace, 'rev-parse', '--git-common-dir'))
+        (git_dir / 'info' / 'exclude').write_text('saved-0.txt\n')
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        ignored = self.workspace / 'saved-0.txt'
+        ignored.write_text('ignored after request\n')
+        self.restart()
+        self.assertEqual(self.receipt()['state'], 'held', self.receipt())
+        self.assertEqual(ignored.read_text(), 'ignored after request\n')
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual(git(self.workspace, 'rev-parse', 'HEAD'), payload['attached_head'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+        self.assertEqual(self.provider.started, [])
+
+    def test_checkout_recovery_preserves_leading_space_tracked_filename(self):
+        payload, dirty, artifact = self.checkout_incident()
+        filename = ' leading-space.txt'
+        (self.workspace / filename).write_text('tracked base\n')
+        git(self.workspace, 'add', '--', filename)
+        git(self.workspace, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            'commit', '-m', 'leading space tracked path')
+        payload['attached_head'] = git(self.workspace, 'rev-parse', 'HEAD')
+        (self.workspace / filename).write_text('tracked dirty edit\n')
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        self.assertIn(filename, self.receipt()['dirty'])
+        self.restart()
+        self.assertEqual(self.receipt()['state'], 'applied', self.receipt())
+        self.assertEqual((self.workspace / filename).read_text(), 'tracked dirty edit\n')
+
+    def test_checkout_recovery_held_after_switch_cannot_be_superseded(self):
+        from coconut.workspace_recovery import checkout_git
+        payload, dirty, artifact = self.checkout_incident()
+        original_manifest = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        self.server.server_close()
+        self.service.close()
+        def crash(path, *arguments, **kwargs):
+            result = checkout_git(path, *arguments, **kwargs)
+            if 'switch' in arguments:
+                raise SystemExit('simulated crash after branch switch')
+            return result
+        with patch('coconut.workspace_recovery.checkout_git', side_effect=crash), self.assertRaises(SystemExit):
+            Service(self.data, native.Provider(self.data), start_workers=False)
+        with sqlite3.connect(self.data / 'coconut.sqlite3') as database:
+            task = json.loads(database.execute('SELECT data FROM tasks WHERE id=?', (self.task['id'],)).fetchone()[0])
+            task['title'] = 'changed after partial switch'
+            database.execute('UPDATE tasks SET data=? WHERE id=?', (json.dumps(task), self.task['id']))
+        self.service = Service(self.data, native.Provider(self.data), start_workers=False)
+        self.provider = self.service.provider
+        self.service.restart_enabled = True
+        self.server = APIServer(('127.0.0.1', 0), self.service)
+        original_key = self.key
+        self.assertEqual(self.receipt()['state'], 'held')
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['recovery_branch'])
+        self.key = str(uuid4())
+        replacement = dict(payload, recovery_branch='wt/recovered-' + self.key)
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', replacement, key=self.key)[0], 409)
+        self.assertEqual(self.service._get('workspace_recoveries', original_key)['state'], 'held')
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['recovery_branch'])
+        self.assertEqual(git(self.workspace, 'rev-parse', 'HEAD'), self.service._get('workspace_recoveries', original_key)['merge_commit'])
+        self.assertEqual(self.manifest.read_bytes(), original_manifest)
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+        self.assertEqual(self.provider.started, [])
+
+    def test_checkout_recovery_held_after_manifest_write_cannot_be_superseded(self):
+        payload, dirty, artifact = self.checkout_incident()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        self.server.server_close()
+        self.service.close()
+        def crash(path, data):
+            atomic_manifest(path, data)
+            raise SystemExit('simulated crash after manifest replacement')
+        with patch('coconut.workspace_recovery.atomic_manifest', side_effect=crash), self.assertRaises(SystemExit):
+            Service(self.data, native.Provider(self.data), start_workers=False)
+        recovered_manifest = self.manifest.read_bytes()
+        with sqlite3.connect(self.data / 'coconut.sqlite3') as database:
+            task = json.loads(database.execute('SELECT data FROM tasks WHERE id=?', (self.task['id'],)).fetchone()[0])
+            task['title'] = 'changed after manifest replacement'
+            database.execute('UPDATE tasks SET data=? WHERE id=?', (json.dumps(task), self.task['id']))
+        self.service = Service(self.data, native.Provider(self.data), start_workers=False)
+        self.provider = self.service.provider
+        self.service.restart_enabled = True
+        self.server = APIServer(('127.0.0.1', 0), self.service)
+        original_key = self.key
+        self.assertEqual(self.receipt()['state'], 'held')
+        self.key = str(uuid4())
+        replacement = dict(payload, recovery_branch='wt/recovered-' + self.key)
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', replacement, key=self.key)[0], 409)
+        self.assertEqual(self.service._get('workspace_recoveries', original_key)['state'], 'held')
+        self.assertEqual(self.manifest.read_bytes(), recovered_manifest)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['recovery_branch'])
+        self.assertEqual(git(self.workspace, 'rev-parse', 'HEAD'), self.service._get('workspace_recoveries', original_key)['merge_commit'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+        self.assertEqual(self.provider.started, [])
+
+    def test_checkout_recovery_refuses_changed_owner_input_before_git_write(self):
+        payload, dirty, artifact = self.checkout_incident()
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        task = self.service._get('tasks', self.task['id'])
+        task['title'] = 'A different approved scope'
+        self.service._put('tasks', task)
+        self.restart()
+        self.assertEqual(self.receipt()['state'], 'held')
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual(self.provider.started, [])
+
+    def test_checkout_recovery_replays_after_switch_and_manifest_crash(self):
+        payload, dirty, artifact = self.checkout_incident()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        self.server.server_close()
+        self.service.close()
+        def crash(path, data):
+            atomic_manifest(path, data)
+            raise SystemExit('simulated crash after manifest replacement')
+        with patch('coconut.workspace_recovery.atomic_manifest', side_effect=crash), self.assertRaises(SystemExit):
+            Service(self.data, native.Provider(self.data), start_workers=False)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['recovery_branch'])
+        self.assertEqual([(self.workspace / name).read_bytes() for name in dirty], list(dirty.values()))
+        self.service = Service(self.data, native.Provider(self.data), start_workers=False)
+        self.provider = self.service.provider
+        self.service.restart_enabled = True
+        self.server = APIServer(('127.0.0.1', 0), self.service)
+        self.assertEqual(self.receipt()['state'], 'applied', self.receipt())
+        successor_id = self.receipt()['successor_task_id']
+        self.restart()
+        self.assertEqual(self.receipt()['successor_task_id'], successor_id)
+        self.assertEqual(len([task for task in self.service._all('tasks') if task.get('_work_context_id') == artifact['id']]), 1)
+
+    def test_checkout_recovery_replays_after_branch_switch_before_manifest(self):
+        from coconut.workspace_recovery import checkout_git
+        payload, dirty, artifact = self.checkout_incident()
+        original_manifest = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        self.server.server_close()
+        self.service.close()
+        def crash(path, *arguments, **kwargs):
+            result = checkout_git(path, *arguments, **kwargs)
+            if 'switch' in arguments:
+                raise SystemExit('simulated crash after branch switch')
+            return result
+        with patch('coconut.workspace_recovery.checkout_git', side_effect=crash), self.assertRaises(SystemExit):
+            Service(self.data, native.Provider(self.data), start_workers=False)
+        self.assertEqual(self.manifest.read_bytes(), original_manifest)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['recovery_branch'])
+        self.service = Service(self.data, native.Provider(self.data), start_workers=False)
+        self.provider = self.service.provider
+        self.service.restart_enabled = True
+        self.server = APIServer(('127.0.0.1', 0), self.service)
+        self.assertEqual(self.receipt()['state'], 'applied', self.receipt())
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+
+    def test_checkout_recovery_replays_crash_after_successor_before_receipt(self):
+        payload, dirty, artifact = self.checkout_incident()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        self.server.server_close()
+        self.service.close()
+        original_reply = Service._reply
+        def crash(service, task, data):
+            original_reply(service, task, data)
+            raise SystemExit('simulated crash before successor transaction commits')
+        with patch.object(Service, '_reply', crash), self.assertRaises(SystemExit):
+            Service(self.data, native.Provider(self.data), start_workers=False)
+        self.service = Service(self.data, native.Provider(self.data), start_workers=False)
+        self.provider = self.service.provider
+        self.service.restart_enabled = True
+        self.server = APIServer(('127.0.0.1', 0), self.service)
+        receipt = self.receipt()
+        self.assertEqual(receipt['state'], 'applied', receipt)
+        self.assertEqual(len([task for task in self.service._all('tasks')
+                              if task.get('_work_context_id') == artifact['id']]), 1)
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
 
     def test_authenticated_drain_startup_and_exact_replay(self):
         with self.assertRaisesRegex(ValueError, 'changed branches'):

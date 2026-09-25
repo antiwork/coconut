@@ -233,3 +233,45 @@ An unchanged card does not start a model merely because it is old.
 Failed checks retry after the existing delay. Source failures retain the last known facts.
 The check cannot approve a choice. Human replies and current card revisions take priority.
 Other sources still use the configured intake routines and their recorded evidence.
+
+## Archived Work with divergent checkout histories
+
+`POST /v1/maintenance/checkout-recovery` is a separate paired-device, managed-service
+operation for an **idle archived native Work owner** whose saved branch and attached
+branch diverged. It requires a UUID `Idempotency-Key`, and exactly these JSON strings:
+`task_id`, `native_task_id`, `expected_owner`, `repository`, `path`, `saved_branch`,
+`attached_branch`, `saved_head`, `attached_head`, `recovery_branch`, `message`.
+The recovery branch must be `wt/recovered-` followed by the request UUID. The
+message is the operator's authenticated continuation input, not an approval.
+
+The request verifies the one original Work owner, its native archived binding,
+branch heads and exact worktree, then saves a durable receipt before draining.
+Before any Git write at startup it verifies native/background quiescence, unchanged
+owner, Work, heads, binding and dirty tracked file contents. Git merges the two
+heads into a **new local-only two-parent commit**; conflicts, staged or unmerged
+changes, custom merge drivers, disabled Git file-mode tracking, or paths that
+might overwrite dirty/untracked/ignored files hold admission for manual inspection.
+Changed-tree path obstructions and checkout filters are rechecked
+immediately before switching with `--no-overwrite-ignore`; the repair disables
+repository checkout hooks. The original refs are never moved. The new branch is switched
+in the same worktree and the manifest is updated only after verifying its checkout
+and dirty bytes. A crash after creating the branch, switching, or replacing the
+manifest replays against the recorded commit and exact input without repeating the
+switch or dropping edits. No Git operation publishes or pushes.
+
+While dispatch remains fenced, the service submits the paired device's message
+through the normal archived Work reply lifecycle, creating a linked native
+successor at reconciliation rather than reopening the immutable archived result.
+The receipt is `applied` only after the successor has been committed; it contains
+`successor_task_id` and `resume_path`. Pending decisions, foreign Work, changed
+inputs or unprovable writers hold the request. Do not send a second continuation
+for the same incident. As with other workspace recovery, unrelated shell writers
+and editors must be excluded by the operator; the service cannot fence arbitrary
+processes outside Coconut's native lifecycle and workspace lock.
+If a held checkout has not changed its original branch, heads, dirty tracked
+files or manifest and has not created its recovery ref, the same paired device
+may submit a fresh authorization for the same incident with a new UUID and
+recovery branch; the held receipt is marked `superseded` only after the new
+request validates. A partially applied checkout instead replays its recorded request
+or stays held for manual inspection. Staged edits, merge conflicts and Git
+versions without `merge-tree --write-tree` require separate manual resolution.
