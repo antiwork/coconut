@@ -27,6 +27,55 @@ from coconut.workspace_recovery import atomic_manifest
 import test_native_kanban as native
 
 
+class CheckoutFilterPreflightTests(unittest.TestCase):
+    """Exercise recovery's real Git preflight without a native task database."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name).resolve()
+        git(self.repo, 'init')
+        git(self.repo, 'config', 'user.name', 'Test')
+        git(self.repo, 'config', 'user.email', 'test@example.invalid')
+        (self.repo / 'retained.txt').write_text('retained\n')
+        git(self.repo, 'add', '.')
+        git(self.repo, 'commit', '-m', 'base')
+        self.attached = git(self.repo, 'rev-parse', 'HEAD')
+        git(self.repo, 'switch', '-c', 'saved')
+        (self.repo / 'new.txt').write_text('saved bytes\n')
+        git(self.repo, 'add', 'new.txt')
+        git(self.repo, 'commit', '-m', 'saved file')
+        self.saved = git(self.repo, 'rev-parse', 'HEAD')
+        git(self.repo, 'switch', '-c', 'attached', self.attached)
+        self.marker = self.repo / 'filter-ran'
+        git(self.repo, 'config', 'filter.unsafe.smudge', 'touch filter-ran; cat')
+
+    def test_untracked_attributes_reject_saved_only_path_before_filter_runs(self):
+        from coconut.workspace_recovery import reject_custom_git_commands
+        (self.repo / '.gitattributes').write_text('new.txt filter=unsafe\n')
+        before = git(self.repo, 'status', '--porcelain')
+        with self.assertRaisesRegex(ValueError, 'filter'):
+            reject_custom_git_commands(self.repo, (self.attached, self.saved))
+        self.assertFalse(self.marker.exists())
+        self.assertFalse((self.repo / 'new.txt').exists())
+        self.assertEqual(git(self.repo, 'status', '--porcelain'), before)
+        self.assertEqual(git(self.repo, 'rev-parse', 'HEAD'), self.attached)
+
+    def test_checkout_recheck_rejects_worktree_attributes_on_target_tree(self):
+        from coconut.workspace_recovery import checkout_obstructions
+        (self.repo / '.gitattributes').write_text('new.txt filter=unsafe\n')
+        request = dict(path=str(self.repo), attached_head=self.attached)
+        with self.assertRaisesRegex(ValueError, 'filter'):
+            checkout_obstructions(request, self.saved, {})
+        self.assertFalse(self.marker.exists())
+
+    def test_unused_filter_configuration_remains_allowed(self):
+        from coconut.workspace_recovery import reject_custom_git_commands
+        (self.repo / '.gitattributes').write_text('unrelated.txt filter=unsafe\n')
+        reject_custom_git_commands(self.repo, (self.attached, self.saved))
+        self.assertFalse(self.marker.exists())
+
+
 @unittest.skipUnless(native.SOURCE and native.PYTHON, 'Set Coconut Hermes paths for native integration checks.')
 class WorkspaceRecoveryTests(unittest.TestCase):
     def setUp(self):
@@ -338,6 +387,21 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
         self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
         self.assertEqual(git(self.repo, 'branch', '--list', payload['recovery_branch']), '')
+        self.assertEqual(self.service._all('workspace_recoveries'), [])
+
+    def test_checkout_recovery_rejects_worktree_filter_for_saved_only_file(self):
+        payload, dirty, artifact = self.checkout_incident()
+        marker = self.root / 'filter-executed'
+        git(self.repo, 'config', 'filter.unsafe.smudge', f'touch {marker}; cat')
+        (self.workspace / '.gitattributes').write_text('saved-0.txt filter=unsafe\n')
+        before = self.manifest.read_bytes()
+        status, response = self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)
+        self.assertEqual(status, 409, response)
+        self.assertIn('filter', response['error'])
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'rev-parse', 'HEAD'), payload['attached_head'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
         self.assertEqual(self.service._all('workspace_recoveries'), [])
 
     def test_checkout_recovery_ignores_unapplied_global_filter(self):

@@ -229,14 +229,20 @@ def reject_custom_git_commands(path, commits):
                              r'^merge\..*\.driver$'], capture_output=True, text=True, timeout=10)
     if result.returncode != 1:
         raise ValueError('Custom Git merge drivers require separate checkout inspection.')
-    for commit in (*commits, None):
-        names = (checkout_git(path, 'ls-tree', '-r', '--name-only', '-z', commit) if commit else
-                 checkout_git(path, 'ls-files', '-z'))
+    worktree_names = set(filter(None, checkout_git(path, 'ls-files', '-z').split('\0')))
+    for commit in commits:
+        names = checkout_git(path, 'ls-tree', '-r', '--name-only', '-z', commit)
+        worktree_names.update(filter(None, names.split('\0')))
         if not names:
             continue
-        args = ('check-attr', '--source', commit, '-z', '--stdin', 'filter') if commit else (
-            'check-attr', '-z', '--stdin', 'filter')
-        attributes = checkout_git(path, *args, input=names).split('\0')
+        attributes = checkout_git(path, 'check-attr', '--source', commit, '-z', '--stdin', 'filter',
+                                  input=names).split('\0')
+        if any(value not in ('unspecified', 'unset') for value in attributes[2::3]):
+            raise ValueError('A Git checkout filter requires separate inspection.')
+    # Untracked or edited attributes can apply to paths introduced by the target tree.
+    if worktree_names:
+        attributes = checkout_git(path, 'check-attr', '-z', '--stdin', 'filter',
+                                  input='\0'.join(sorted(worktree_names)) + '\0').split('\0')
         if any(value not in ('unspecified', 'unset') for value in attributes[2::3]):
             raise ValueError('A Git checkout filter requires separate inspection.')
 
