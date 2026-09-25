@@ -265,8 +265,8 @@ def environment_names(pid, mark):
     with contextlib.suppress(OSError):
         return mark.encode() in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
     try:
-        # On macOS, `ps -E` prints the environment after the command for a process of the same user.
-        result = subprocess.run(['ps', '-E', '-p', str(pid), '-o', 'command='], capture_output=True, text=True, timeout=10)
+        # On macOS, `ps -E -ww` prints the whole environment after the command for a process of the same user.
+        result = subprocess.run(['ps', '-E', '-ww', '-p', str(pid), '-o', 'command='], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return False
     return mark in result.stdout.split()
