@@ -73,6 +73,31 @@ class ReceiptContextTests(unittest.TestCase):
         self.assertIn('error', read_receipts(saved, {'receipt_id': saved[0]['id'], 'receipt_index': 0}))
         self.assertIn('error', read_receipts(saved + saved, {'receipt_id': saved[0]['id']}))
 
+    def test_reader_encodes_large_record_once_and_bounds_cache_per_snapshot(self):
+        from unittest.mock import patch
+        from coconut.native_receipt_context import receipt_reader
+        saved = receipts(2)
+        saved[0]['result'] = 'x' * 1500000
+        reader = receipt_reader(saved)
+        expected = json.dumps(saved[0], ensure_ascii=True)
+        with patch('coconut.native_receipt_context.json.dumps', wraps=json.dumps) as encode:
+            chunks, offset = [], 0
+            while offset is not None:
+                result = reader({'receipt_id': 'receipt-0', 'offset': offset})
+                chunks.append(result['json_chunk'])
+                offset = result['next_offset']
+            self.assertEqual(''.join(chunks), expected)
+            self.assertEqual(encode.call_count, 1)
+            self.assertIn('error', reader({'receipt_id': 'foreign'}))
+            self.assertEqual(encode.call_count, 1)
+            reader({'receipt_index': 1})
+            reader({'receipt_index': 0})
+            self.assertEqual(encode.call_count, 3)  # One entry; the second evicts the first.
+        other = receipt_reader(receipts(1))
+        self.assertNotEqual(other({'receipt_index': 0})['total_characters'], len(expected))
+        saved.reverse()
+        self.assertEqual(reader({'receipt_index': 0})['total_characters'], len(expected))
+
     def test_read_rejects_foreign_lookup_and_invalid_offsets(self):
         saved = receipts(1)
         for args in ({'receipt_index': -1}, {'receipt_index': 1}, {'offset': -1}, {'offset': True},

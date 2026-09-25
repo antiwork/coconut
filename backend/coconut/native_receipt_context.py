@@ -1,5 +1,21 @@
 """Bounded views of the authoritative service receipt snapshot, never a new journal."""
 import json
+from functools import lru_cache
+
+
+def receipt_reader(receipts):
+    # One encoded record per immutable turn snapshot, not an unbounded cache of
+    # every large result. The TurnScope owns this reader and its lifetime.
+    snapshot = tuple(receipts)
+
+    @lru_cache(maxsize=1)
+    def encoded(index):
+        return json.dumps(snapshot[index], ensure_ascii=True)
+
+    def read(arguments):
+        return read_receipts(snapshot, arguments, _encoded=encoded)
+
+    return read
 
 
 PAGE_SIZE = 12
@@ -51,7 +67,7 @@ def receipt_prompt(receipts):
                           'recent': [_entry(i, receipts[i]) for i in range(start, len(receipts))]}))
 
 
-def read_receipts(receipts, arguments) -> dict:
+def read_receipts(receipts, arguments, *, _encoded=None) -> dict:
     if not isinstance(arguments, dict) or set(arguments) - {'receipt_id', 'receipt_index', 'offset'}:
         return {'error': 'Use receipt_id or receipt_index, and offset only.'}
     offset = arguments.get('offset', 0)
@@ -70,7 +86,7 @@ def read_receipts(receipts, arguments) -> dict:
         end = min(len(receipts), offset + PAGE_SIZE)
         return {'total': len(receipts), 'receipts': [_entry(i, receipts[i]) for i in range(offset, end)],
                 'next_offset': end if end < len(receipts) else None}
-    record = json.dumps(receipts[index], ensure_ascii=True)
+    record = _encoded(index) if _encoded is not None else json.dumps(receipts[index], ensure_ascii=True)
     end = min(len(record), offset + CHUNK_SIZE)
     return {'receipt_index': index, 'offset': offset, 'total_characters': len(record),
             'json_chunk': record[offset:end], 'next_offset': end if end < len(record) else None}

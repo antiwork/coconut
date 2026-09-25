@@ -25,7 +25,7 @@ if __package__:
     from .tracked_work import TRACK_WORK_SCHEMA
     from .silent_responses import is_silent_response
     from .worker_protocol import MAX_EVENT_CHARACTERS, event_frame
-    from .native_receipt_context import receipt_prompt, read_receipts, SCHEMA as RECEIPT_SCHEMA
+    from .native_receipt_context import receipt_prompt, receipt_reader, SCHEMA as RECEIPT_SCHEMA
     from .native_failure import native_failure
 else:
     from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content
@@ -36,7 +36,7 @@ else:
     from tracked_work import TRACK_WORK_SCHEMA
     from silent_responses import is_silent_response
     from worker_protocol import MAX_EVENT_CHARACTERS, event_frame
-    from native_receipt_context import receipt_prompt, read_receipts, SCHEMA as RECEIPT_SCHEMA
+    from native_receipt_context import receipt_prompt, receipt_reader, SCHEMA as RECEIPT_SCHEMA
     from native_failure import native_failure
 
 
@@ -1221,9 +1221,9 @@ def run_turn(request, emit, request_receipt):
             allowed.add(workspace_schema['name'])
         # Register an empty view too, so reused workers never advertise a stale
         # process-wide definition without a handler for this specific turn.
+        read_snapshot = receipt_reader(request['task'].get('_native_receipts', []))
         scope.register(name=RECEIPT_SCHEMA['name'], toolset='coconut', schema=RECEIPT_SCHEMA,
-                       handler=lambda arguments, **kwargs: json.dumps(read_receipts(
-                           request['task'].get('_native_receipts', []), arguments)))
+                       handler=lambda arguments, **kwargs: json.dumps(read_snapshot(arguments)))
         allowed.add(RECEIPT_SCHEMA['name'])
         coconut_toolset = scope.toolset(allowed)
 
