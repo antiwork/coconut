@@ -775,17 +775,204 @@ class NativeWorkContinuationTests(unittest.TestCase):
                 self.resume(coordinator)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
+    def test_a_failed_branch_of_the_coordinator_does_not_block_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
+                      _waiting_on=[])
+        self.service._put('tasks', branch)
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+    def executing_receipt(self, task):
+        self.service._put('native_receipts', dict(id='executing-' + task['id'], task_id=task['id'], state='executing',
+            turn_id=task.get('_native_turn_id'), action={'name': 'terminal', 'arguments': {}}))
+
+    def test_a_failed_branch_with_a_running_tool_still_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # Recovery marks a task failed when a tool stopped without a receipt. The tool can still run.
+        branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
+                      _waiting_on=[])
+        self.service._put('tasks', branch)
+        self.executing_receipt(branch)
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_a_failed_branch_with_a_dispatchable_card_still_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # Coconut can record a failed branch while the native board still holds its card as ready.
+        branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
+                      _waiting_on=[], _kanban_claim={'native_id': 't_branch', 'input': 'branch'})
+        self.service._put('tasks', branch)
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        for card in (dict(id='t_branch', status='ready'), dict(id='t_branch', status='review'),
+                     dict(id='t_branch', status='scheduled'), dict(id='t_other', status='blocked'), None):
+            with self.subTest(card=card):
+                self.service.kanban.tasks.pop(branch['id'], None)
+                if card:
+                    self.service.kanban.tasks[branch['id']] = card
+                with patch.object(self.service, '_work_chain', side_effect=chains):
+                    with self.assertRaisesRegex(ServiceError, 'another execution'):
+                        self.resume(coordinator)
+        self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='blocked')
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+    def test_a_completed_audit_with_a_running_tool_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        self.executing_receipt(self.service._get('tasks', owner['source_task_id']))
+        with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+            self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def assert_terminal_coordinator_branch_is_guarded(self, passive_report):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        if not passive_report:
+            self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        branch = dict(coordinator, id='terminal-branch', status='completed',
+                      _assignment_task_id=coordinator['id'], _execution_session_id='terminal-branch',
+                      _native_outcome_id='t_branch', _work_context_id=None)
+        branch.pop('_waiting_on', None)
+        self.service._put('tasks', branch)
+        for status in ('completed', 'failed'):
+            self.service._put('tasks', dict(branch, status=status))
+            self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='running', current_run_id=123)
+            with self.subTest(status=status), self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+            self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='done')
+            self.service._put('decisions', dict(id='branch-question', task_id=branch['id'], status='pending'))
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+            self.service._put('decisions', dict(id='branch-question', task_id=branch['id'], status='rejected'))
+            self.service._put('contexts', dict(id='branch-context', task_id=branch['id'], bot_id=branch['bot_id'], status='working'))
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+            self.service._put('contexts', dict(id='branch-context', task_id=branch['id'], bot_id=branch['bot_id'], status='completed'))
+            with patch.object(self.service, '_native_task_receipts', side_effect=lambda identity, **kw:
+                              [{'id': 'pending-tool'}] if identity == branch['id'] and kw.get('state') == 'executing' else []):
+                with self.assertRaisesRegex(ServiceError, 'another execution'):
+                    self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+
+    def test_terminal_coordinator_branch_keeps_native_and_decision_guards(self):
+        self.assert_terminal_coordinator_branch_is_guarded(True)
+
+
+    def test_unreported_pr_keeps_coordinator_branch_guards(self):
+        self.assert_terminal_coordinator_branch_is_guarded(False)
+
+
+    def test_unreported_pr_keeps_audit_native_guard(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        audit = self.service._get('tasks', owner['source_task_id'])
+        audit['_native_outcome_id'] = 't_audit'
+        self.service._put('tasks', audit)
+        self.service.kanban.tasks[audit['id']] = dict(id='t_audit', status='running', current_run_id=124)
+        with self.assertRaisesRegex(ServiceError, 'another execution|belongs to another native outcome'):
+            self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+
+
     def test_an_unfinished_audit_still_blocks_the_audited_pr(self):
+        # The audit gate refuses first. test_an_active_branch_of_the_coordinator_still_blocks_the_audited_pr covers the writer guard.
         owner, coordinator, work, pr = self.audited_requester_pr()
         audit = self.service._get('tasks', owner['source_task_id'])
         self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status='pending'))
-        with self.assertRaisesRegex(ServiceError, 'another execution'):
+        with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
             self.resume(coordinator)
         self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status='rejected'))
         self.service._put('tasks', dict(audit, status='working'))
-        with self.assertRaisesRegex(ServiceError, 'another execution'):
+        with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
             self.resume(coordinator)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_an_unfinished_audit_blocks_an_audited_pr_without_a_report(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # Without a passive report, no peer check reads the audit. The audit path itself requires a finished audit.
+        self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        audit = self.service._get('tasks', owner['source_task_id'])
+        for changes, decision in ((dict(status='working'), None), (dict(_waiting_on=['child']), None),
+                                  (dict(_return_pending={'text': 'Undelivered'}), None), ({}, 'pending')):
+            with self.subTest(changes=changes, decision=decision):
+                self.service._put('tasks', dict(audit, **changes))
+                self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status=decision or 'rejected'))
+                with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+                    self.resume(coordinator)
+                self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.service._put('tasks', audit)
+        self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status='rejected'))
+        self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+    def test_unreported_pr_keeps_audit_worker_and_background_guards(self):
+        from unittest.mock import Mock
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        audit = self.service._get('tasks', owner['source_task_id'])
+        with patch.dict(self.service.running, {audit['id']: Mock(is_alive=lambda: True)}):
+            with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+                self.resume(coordinator)
+        with patch.object(self.service, '_background_pending', side_effect=lambda identity: identity == audit['id']):
+            with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+                self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+    def test_unreported_pr_keeps_audit_descendant_guards(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        branch = dict(coordinator, id='audit-branch', status='failed',
+                      _assignment_task_id=owner['source_task_id'], _execution_session_id='audit-branch',
+                      _native_outcome_id=None, _work_context_id=None, _waiting_on=[])
+        self.service._put('tasks', branch)
+        self.service._put('decisions', dict(id='branch-question', task_id=branch['id'], status='pending'))
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(coordinator)
+        self.service._put('decisions', dict(id='branch-question', task_id=branch['id'], status='rejected'))
+        self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+    def test_the_audit_card_must_be_terminal_and_a_quiet_failed_audit_is_accepted(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        audit = dict(self.service._get('tasks', owner['source_task_id']), _kanban_claim={'native_id': 't_audit', 'input': 'audit'})
+        self.service._put('tasks', audit)
+        for card in (dict(id='t_audit', status='ready'), dict(id='t_audit', status='review'),
+                     dict(id='t_audit', status='done', current_run_id=7), dict(id='t_other', status='done'), None):
+            with self.subTest(card=card):
+                self.service.kanban.tasks.pop(audit['id'], None)
+                if card:
+                    self.service.kanban.tasks[audit['id']] = card
+                with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+                    self.resume(coordinator)
+                self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        # The audit's card is missing from the cached snapshot, so Coconut fetches it before the check.
+        self.service.kanban.tasks[audit['id']] = dict(id='t_audit', status='blocked')
+        self.service._put('tasks', dict(audit, status='failed'))
+        self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
+    def test_passive_report_accepts_quiet_failed_audit_and_descendant(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        audit = self.service._get('tasks', owner['source_task_id'])
+        self.service._put('tasks', dict(audit, status='failed'))
+        branch = dict(coordinator, id='audit-child', status='failed',
+                      _assignment_task_id=audit['id'], _execution_session_id='audit-child',
+                      _native_outcome_id=None, _work_context_id=None, _waiting_on=[])
+        self.service._put('tasks', branch)
+        self.service._put('decisions', dict(id='audit-child-question', task_id=branch['id'], status='pending'))
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(coordinator)
+        self.service._put('decisions', dict(id='audit-child-question', task_id=branch['id'], status='rejected'))
+        self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
 
     def test_an_owner_report_to_an_unrelated_task_still_blocks_the_audited_pr(self):
         owner, coordinator, work, pr = self.audited_requester_pr(report_to='unrelated')

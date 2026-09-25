@@ -61,15 +61,44 @@ class NativeOutcomes:
         else:
             items = [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr') and a['task_id'] == owner['id']]
         linked_parent = None
+        audited_parent = None
         retained = []
         source = self._get('tasks', owner['source_task_id']) if owner.get('source_task_id') else None
+        pending_decisions = {d['task_id'] for d in self._all('decisions') if d['status'] == 'pending'}
+        open_contexts = {c['task_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
+
+        def quiet(task):
+            # Every live signal that the writer guard reads. A failed task can still hold a running tool.
+            worker = self.running.get(task['id'])
+            bound = task.get('_native_outcome_id') or (task.get('_kanban_claim') or {}).get('native_id')
+            card = snapshots.get(task['id'])
+            # Only a done, archived, or blocked card cannot start a writer by itself. A missing card counts as live.
+            # A live branch stays in the guard, and the guard requests its missing card with the others in one batch.
+            native_live = bool(bound) and (card is None or card.get('id') != bound
+                                           or card.get('status') not in ('done', 'archived', 'blocked')
+                                           or card.get('current_run_id') or card.get('worker_pid'))
+            return not (task.get('_waiting_on') or task.get('_return_pending') or (worker and worker.is_alive())
+                        or self._background_pending(task['id']) or self._native_task_receipts(task['id'], state='executing')
+                        or native_live or task['id'] in pending_decisions or task['id'] in open_contexts)
+
+        def audit_finished():
+            # The audit path skips the audit's own writer checks, so the audit must have finished.
+            # Coconut reads the audit's card only for an audited delegation.
+            if (snapshot_missing and source['id'] not in snapshots
+                    and (source.get('_native_outcome_id') or (source.get('_kanban_claim') or {}).get('native_id'))):
+                snapshot_missing([source['id']])
+            # A failed or cancelled audit is terminal. Its unfinished work items are expected, as for a branch.
+            return quiet(source) and (source['status'] in ('failed', 'cancelled') or (
+                source['status'] == 'completed' and not self._unfinished_work(source)))
+
         for candidate in items:
             root = self._work_outcome_artifact(candidate)
             # A requester's source audit can delegate for an existing Work outcome of that requester.
             # _source_native_ids lists the native outcomes that the audit commented on. That alone does not
             # prove a delegation, so the Work's own task must also make this call.
             audited = bool(source and caller and caller['id'] == root['task_id'] and root.get('_native_outcome_id')
-                           and root['_native_outcome_id'] in (source.get('_source_native_ids') or ()))
+                           and root['_native_outcome_id'] in (source.get('_source_native_ids') or ())
+                           and root['task_id'] != source['id'] and audit_finished())
             if (root['bot_id'] != owner['bot_id'] and candidate['kind'] == 'pr'
                     and candidate['bot_id'] == owner['bot_id'] and candidate['task_id'] == owner['id']
                     and candidate.get('work_outcome_id') == root['id'] and root['kind'] == 'work'
@@ -77,6 +106,8 @@ class NativeOutcomes:
                     and (root['task_id'] == owner.get('source_task_id') or audited)):
                 # A delegated PR shares the requester's Work presentation, not its execution.
                 linked_parent = root
+                if audited:
+                    audited_parent = root
                 retained.append(candidate)
             else:
                 retained.append(root)
@@ -100,6 +131,20 @@ class NativeOutcomes:
             # Only the caller is not a competing writer. When the coordinator calls for its audit, the audit stays guarded.
             callers = ({linked_parent['task_id']} if linked_parent and linked_parent['task_id'] != owner.get('source_task_id')
                        else {owner.get('source_task_id')})
+            if audited_parent:
+                # PR report fields are optional. Check the audited requester branches
+                # even when every report points back to the owner under continuation.
+                linked = {}
+                for identity in requesters:
+                    linked.update({key: value for key, value in self._work_chain(
+                        tasks[identity], tasks, records, include_continuations=True).items()
+                        if value[0]['status'] in self.ACTIVE or not quiet(value[0])
+                        or (value[0]['status'] == 'completed' and self._unfinished_work(value[0]))})
+                for identity in (*callers, owner['id']):
+                    linked.pop(identity, None)
+                native_tasks = [t for t, _ in linked.values()
+                                if t.get('_native_outcome_id') or t.get('_kanban_claim')]
+                peer_chains.append((item, source, linked, native_tasks, True))
             for peer in peers:
                 if linked_parent and peer['id'] == linked_parent['id']:
                     # The coordinating Work may remain active while its delegated PR resumes.
@@ -144,10 +189,15 @@ class NativeOutcomes:
                     root = tasks[owner['source_task_id']] if passive_report else self._work_execution_owner(reporter, tasks)
                     linked = self._work_chain(root, tasks, records, include_continuations=True)
                     if passive_report:
-                        # The coordinating requester task has its own branches. Keep them in the guard too.
+                        # The coordinating requester task has its own branches. Keep its live ones in the guard too.
+                        # A failed or cancelled branch with no live signal cannot write. Its unfinished work items
+                        # are expected. A completed branch with unfinished work items stays guarded.
                         for identity in requesters - {root['id']}:
                             if identity in tasks:
-                                linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
+                                linked.update({key: value for key, value in self._work_chain(
+                                    tasks[identity], tasks, records, include_continuations=True).items()
+                                    if value[0]['status'] in self.ACTIVE or not quiet(value[0])
+                                    or (value[0]['status'] == 'completed' and self._unfinished_work(value[0]))})
                     linked[root['id']] = (root, 0)
                     linked[reporter['id']] = (reporter, 0)
                     if owner_report and reporter_source and reporter_source['id'] not in (owner['id'], *requesters):
@@ -158,6 +208,12 @@ class NativeOutcomes:
                         # still need terminal claims, returns, and decisions.
                         for identity in (*callers, owner['id']):
                             linked.pop(identity, None)
+                        if audited_parent:
+                            # The same quiet-terminal rule applies to the audit's
+                            # own chain, whether or not a passive report exists.
+                            linked = {key: value for key, value in linked.items()
+                                      if value[0]['status'] in self.ACTIVE or not quiet(value[0])
+                                      or (value[0]['status'] == 'completed' and self._unfinished_work(value[0]))}
                     native_tasks = [t for t, _ in linked.values()
                                     if t.get('_native_outcome_id') or t.get('_kanban_claim')]
                     peer_chains.append((peer, reporter, linked, native_tasks, passive_report))
