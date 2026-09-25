@@ -313,6 +313,17 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         self.assertEqual(self.manifest.read_bytes(), before)
         self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
 
+    def test_checkout_recovery_refuses_filters_before_merge_planning(self):
+        payload, dirty, artifact = self.checkout_incident()
+        marker = self.root / 'filter-ran'
+        git(self.repo, 'config', 'merge.renormalize', 'true')
+        git(self.repo, 'config', 'filter.unsafe.clean', 'touch ' + str(marker))
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+
     def test_checkout_recovery_refuses_disabled_git_filemode(self):
         payload, dirty, artifact = self.checkout_incident()
         git(self.repo, 'config', 'core.filemode', 'false')
