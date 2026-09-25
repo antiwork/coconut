@@ -415,12 +415,17 @@ def remove_nested(root, path, repository, *, check_only=False):
     clean check does not look at ignored files. With check_only, Coconut only checks.
     Call this with check_only=False only after the process check of the parent path, which covers the nested folders.
     """
-    def clean(record):
+    def clean(record, group):
         inner = record['path']
         if record['locked']:
             raise ValueError('The worktree contains another worktree.')
         git_paths = git(inner, 'rev-parse', '--path-format=absolute', *(a for n in IN_PROGRESS for a in ('--git-path', n)))
-        if (git_output(inner, 'status', '--porcelain', '-z', strict=True) or ignored_files(inner)
+        # A worktree inside this one shows as an untracked folder. Coconut checks and removes it on its own.
+        others = {r['path'] for r in group if r is not record}
+        status = [entry for entry in git_output(inner, 'status', '--porcelain', '-z', '-uall', strict=True).split(b'\0')
+                  if entry and not (entry.startswith(b'?? ') and entry.endswith(b'/')
+                                    and (inner / os.fsdecode(entry[3:-1])).resolve() in others)]
+        if (status or ignored_files(inner)
                 or any(Path(p).exists() for p in git_paths.splitlines())):
             raise ValueError('The worktree contains another worktree with changes.')
         head = git(inner, 'rev-parse', 'HEAD')
@@ -442,7 +447,7 @@ def remove_nested(root, path, repository, *, check_only=False):
     for record in records:
         if record['path'] in owned:
             raise ValueError('The worktree contains another worktree.')
-        clean(record)
+        clean(record, records)
     if check_only or not records:
         return
     # acquire() registers a new binding under this lock, so no outcome can claim a nested worktree meanwhile.
@@ -453,7 +458,7 @@ def remove_nested(root, path, repository, *, check_only=False):
         for record in records:
             if record['path'] in owned:
                 raise ValueError('The worktree contains another worktree.')
-            clean(record)
+            clean(record, records)
         # Remove the deepest first. Removing a parent first would delete a worktree inside it without Git.
         for record in sorted(records, key=lambda r: len(r['path'].parts), reverse=True):
             git(repository, 'worktree', 'remove', str(record['path']), timeout=CHECKOUT_SECONDS)

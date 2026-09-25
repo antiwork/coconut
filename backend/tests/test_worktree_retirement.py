@@ -971,8 +971,6 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
             self.assertEqual(work_workspace.busy_paths({str(held), str(link)}), {str(held), str(link)})
 
-    def nested_worktree(self, parent, name='base'):
-
     def nested_worktree(self, parent, name='base', folder='tmp'):
         """Add a detached worktree inside the parent, as a bot does to test a base commit."""
         inner = parent / folder / name
