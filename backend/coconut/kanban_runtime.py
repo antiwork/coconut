@@ -290,9 +290,34 @@ class Board:
                 with self.kb.write_txn(self.conn):
                     self.conn.execute('INSERT INTO coconut_unlinks VALUES (?,?,?,NULL)',
                                       (request['request_id'], intent, generation))
-            # This is the only graph mutation. Intent is durable before entering
-            # the native helper, so lost replies and interrupted calls can replay.
-            self.kb.unlink_tasks(self.conn, parent_id, child_id)
+            # Native unlink starts its own write transaction. A connection-local
+            # trigger checks the generation inside that transaction, including
+            # graph writers outside Coconut's dispatch and receipt fences.
+            self.conn.execute('CREATE TEMP TABLE IF NOT EXISTS coconut_unlink_guard '
+                              '(parent_id TEXT, child_id TEXT, generation INTEGER)')
+            self.conn.execute('''CREATE TEMP TRIGGER IF NOT EXISTS coconut_guard_unlink
+                BEFORE DELETE ON main.task_links
+                WHEN EXISTS (SELECT 1 FROM coconut_unlink_guard
+                             WHERE parent_id=OLD.parent_id AND child_id=OLD.child_id)
+                BEGIN
+                    SELECT CASE WHEN EXISTS (
+                        SELECT 1 FROM coconut_unlink_guard AS g
+                        WHERE g.parent_id=OLD.parent_id AND g.child_id=OLD.child_id
+                          AND g.generation != COALESCE((
+                            SELECT MAX(id) FROM task_events WHERE task_id=OLD.child_id AND
+                              ((kind IN ('linked','unlinked') AND json_extract(payload,'$.parent')=OLD.parent_id
+                                AND json_extract(payload,'$.child')=OLD.child_id)
+                               OR (kind='created' AND EXISTS
+                                   (SELECT 1 FROM json_each(payload,'$.parents') WHERE value=OLD.parent_id)))
+                          ), 0)
+                    ) THEN RAISE(ABORT, 'The dependency generation changed before unlink.') END;
+                END''')
+            self.conn.execute('INSERT INTO coconut_unlink_guard VALUES (?,?,?)', (parent_id, child_id, generation))
+            try:
+                # Only the native helper mutates the graph and records its event.
+                self.kb.unlink_tasks(self.conn, parent_id, child_id)
+            finally:
+                self.conn.execute('DELETE FROM coconut_unlink_guard')
             unlinked = self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind='unlinked' AND id>? "
                 "AND json_extract(payload,'$.parent')=? AND json_extract(payload,'$.child')=? ORDER BY id LIMIT 1",
                 (child_id, generation, parent_id, child_id)).fetchone()

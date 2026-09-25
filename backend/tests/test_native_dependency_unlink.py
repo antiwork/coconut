@@ -143,6 +143,28 @@ class NativeDependencyUnlinkTests(unittest.TestCase):
             print('native-restart-relink: PASS')
         ''')
 
+    def test_foreign_native_writer_cannot_replace_generation_before_delete(self):
+        self.run_native('''
+            import sqlite3
+            original = kb.unlink_tasks
+            competitor = Board(home)
+            def racing(connection, parent_id, child_id):
+                original(competitor.conn, parent_id, child_id)
+                kb.link_tasks(competitor.conn, parent_id, child_id)
+                return original(connection, parent_id, child_id)
+            with patch.object(kb, 'unlink_tasks', side_effect=racing):
+                try:
+                    board.unlink_dependency(request)
+                    raise AssertionError('The new edge was deleted')
+                except sqlite3.IntegrityError as error:
+                    assert 'generation changed' in str(error)
+            assert conn.execute('SELECT 1 FROM task_links WHERE parent_id=? AND child_id=?', (parent, child)).fetchone()
+            assert kb.get_task(conn, child).status == 'todo'
+            assert kb.get_task(conn, parent).status == 'review'
+            assert conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='unlinked'", (child,)).fetchone()[0] == 1
+            competitor.conn.close()
+        ''')
+
     def test_native_lock_claims_binding_tenant_and_exact_edge_guards(self):
         self.run_native('''
             for change in [dict(child_bot_id='foreign'), dict(parent_external_id='other'), dict(parent_id=child)]:

@@ -404,6 +404,21 @@ class DependencyJournalTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM task_links').fetchone()[0], 2)
         self.assertEqual(self.unlink(), receipt)
 
+    def test_generation_change_immediately_before_native_delete_preserves_new_edge(self):
+        def racing(conn, parent, child):
+            self.fake_unlink(conn, parent, child)
+            self.link()
+            return self.fake_unlink(conn, parent, child)
+        self.board.kb.unlink_tasks.side_effect = racing
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'generation changed'):
+            self.unlink()
+        self.assertIsNotNone(self.conn.execute('SELECT 1 FROM task_links WHERE parent_id=? AND child_id=?',
+                             (self.arguments['parent_id'], self.arguments['child_id'])).fetchone())
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM coconut_unlink_guard').fetchone()[0], 0)
+        # The prior generation was removed by the racer; replay only reports it.
+        self.assertEqual(self.board._unlink_dependency(self.arguments, receipt_only=True)['status'], 'unlinked')
+        self.board.kb.unlink_tasks.assert_called_once()
+
     def test_receipt_only_reconciliation_never_writes_or_repeats_unlink(self):
         self.assertIsNone(self.board._unlink_dependency(self.arguments, receipt_only=True))
         self.board.kb.unlink_tasks.assert_not_called()
