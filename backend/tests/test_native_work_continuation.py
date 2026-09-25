@@ -707,6 +707,59 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.service._put('artifacts', pr)
         return owner, source, work, pr
 
+    def audited_requester_pr(self, audited=True, report_to='coordinator'):
+        """A requester's source audit delegates for its existing Work. A later coordinator task owns that Work."""
+        owner, source = self.scheduled_native()
+        self.service.kanban.tasks[owner['id']]['status'] = 'done'
+        # The coordinator's turn runs and calls coconut_continue_work. The audit that delegated has finished.
+        coordinator = dict(source, id='coordinator', status='working', _execution_session_id='coordinator',
+                           _native_outcome_id='t_requester', _work_context_id='requester-work')
+        self.service._put('tasks', coordinator)
+        audit = dict(self.service._get('tasks', source['id']), status='completed')
+        if audited:
+            audit['_source_native_ids'] = ['t_requester']
+        self.service._put('tasks', audit)
+        report = dict(owner, id='owner-report', status='completed', _execution_session_id='owner-report',
+                      source_task_id=report_to, _reply_to_task_id=report_to,
+                      _kanban_claim={'native_id': 't_report', 'input': 'report'})
+        report.pop('_work_todos', None)
+        report.pop('_waiting_on', None)
+        self.service._put('tasks', report)
+        self.service.kanban.tasks[report['id']] = dict(id='t_report', status='done')
+        work = dict(id='requester-work', task_id=coordinator['id'], bot_id=source['bot_id'],
+            kind='work', title='The request', status='waiting', _native_outcome_id='t_requester')
+        pr = dict(id='delegated-pr', task_id=owner['id'], bot_id=owner['bot_id'],
+            kind='pr', title='Draft correction', status='open', pr_state='open',
+            url='https://github.com/example/project/pull/1', work_outcome_id=work['id'],
+            _review_task_id=owner['id'], _activity_task_id=report['id'])
+        self.service._put('artifacts', work)
+        self.service._put('artifacts', pr)
+        return owner, coordinator, work, pr
+
+    def test_coordinator_continues_a_pr_delegated_by_its_source_audit(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        receipt = self.resume(coordinator)
+        self.assertEqual(receipt['task_id'], owner['id'])
+        continued = self.service._get('tasks', owner['id'])
+        self.assertEqual(continued['_execution_session_id'], owner['_execution_session_id'])
+        self.assertEqual(continued['_work_context_id'], pr['id'])
+        self.assertEqual(self.service._get('artifacts', work['id']), work)
+        self.assertEqual(self.service._get('tasks', coordinator['id'])['status'], 'working')
+
+    def test_an_unaudited_requester_work_does_not_own_the_delegated_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr(audited=False)
+        with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+            self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_an_owner_report_to_an_unrelated_task_still_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr(report_to='unrelated')
+        self.service._put('tasks', dict(coordinator, id='unrelated', status='completed', _execution_session_id='unrelated',
+                                        _native_outcome_id=None, _work_context_id=None))
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
     def test_requester_continues_linked_delegated_pr_without_taking_its_work(self):
         owner, source, work, pr = self.linked_requester_pr()
         receipt = self.resume(source)
