@@ -55,17 +55,27 @@ A Git-confirmed branch rename keeps the same owner and files. Coconut updates it
 The service keeps the registry under `workspaces/worktrees.json`.
 Coconut retains these worktrees after a turn ends. It does not delete uncommitted work.
 
-Once an hour, the work source poller retires the worktrees of finished outcomes.
-An outcome is finished when every Coconut task of its execution is completed or cancelled.
-It also has no pending decision, no running worker, and no pending background process.
-Its native task, if one exists, is done or archived.
-Its tasks have had no update for `WORKTREE_RETIRE_SECONDS` (two days).
+Once an hour, the work source poller retires the worktrees of idle outcomes.
+An outcome is idle when no Coconut task of its execution is queued, working, scheduled, or waiting.
+It also has no running worker and no pending background process.
+Its native task, if one exists, is done, archived, blocked, in triage, in review, todo, or scheduled.
+Its tasks have had no update for `WORKTREE_RETIRE_SECONDS` (six hours).
+A failed outcome, a pending decision, and a blocked native task do not keep the worktree.
+A turn restores the worktree before it starts, so work that resumes gets its files back.
 The poller holds the service lock only to read this state. It runs Git outside the service lock.
 Retirement does these steps:
 
 1. It validates the binding and the Git worktree record.
 2. It skips a locked worktree, a worktree that contains another worktree, and a Git operation in progress.
 3. It skips a worktree when `lsof` shows a process cwd or an open file in it, or when `lsof` is not available.
+   Before this check, it stops the orphaned processes of the outcome that hold the worktree, and their child processes.
+   An orphan is a process that launchd (PID 1) adopted, and that is older than `ORPHAN_AGE_SECONDS` (six hours).
+   A service restart leaves such processes from earlier turns. launchd also starts apps and agents,
+   so Coconut stops only an orphan whose environment has `COCONUT_WORKSPACE_OUTCOME` set to the outcome.
+   It also stops the child processes of that orphan, because their parent proves who owns them.
+   The worker of each turn sets this variable. If the system hides the environment of a process, Coconut does not stop it.
+   macOS hides it for its platform binaries, such as `/bin/sleep`.
+   It sends `SIGTERM`, waits at most 5 seconds, and then sends `SIGKILL`.
 4. It writes `workspaces/archive/<registry key>.tar.gz` with mode 0600. The archive contains these items:
    - `staged.patch` from `git diff --binary --cached HEAD`.
    - `unstaged.patch` from `git diff --binary`.

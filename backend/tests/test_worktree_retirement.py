@@ -6,7 +6,9 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -24,6 +26,24 @@ from coconut.work_workspace import acquire, git, preferred, save_bindings, valid
 
 OLD = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat().replace('+00:00', 'Z')
 RECENT = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def environments_visible():
+    """Return True when this system shows another process's environment.
+
+    macOS hides the environment of its platform binaries, such as /bin/sleep, so the probe runs this Python.
+    """
+    if not shutil.which('lsof') or os.uname().sysname != 'Darwin':
+        return False
+    process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(5)'], env=dict(os.environ, COCONUT_PROBE='1'))
+    try:
+        return work_workspace.environment_names(process.pid, 'COCONUT_PROBE=1')
+    finally:
+        process.kill()
+        process.wait()
+
+
+ENVIRONMENTS_VISIBLE = environments_visible()
 
 
 class WorktreeRetirementTests(unittest.TestCase):
@@ -45,10 +65,10 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'Coder', 'role': ''}, str(uuid4()))
         self.workspaces = self.service.root / 'workspaces'
         self.workspaces.mkdir(mode=0o700, exist_ok=True)
-        # Most tests do not depend on lsof. One test below checks a real process.
-        self.in_use = patch('coconut.work_workspace.in_use', return_value=False)
-        self.in_use.start()
-        self.addCleanup(self.in_use.stop)
+        # Most tests do not depend on lsof or send signals. The process tests below use real processes.
+        self.holders = patch('coconut.work_workspace.holders', return_value=set())
+        self.holders.start()
+        self.addCleanup(self.holders.stop)
 
     def commit(self, path, message):
         git(path, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '-m', message)
@@ -143,14 +163,9 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual((path / 'draft.txt').read_text(), 'keep\n')
         self.assertNotIn('retired', self.registry()[identity])
 
-    def test_unfinished_pending_recent_running_locked_and_native_outcomes_keep_their_worktrees(self):
-        kept = []
-        kept.append(self.outcome(status='working'))
-        kept.append(self.outcome(status='failed'))
+    def test_active_recent_running_locked_and_claimed_native_outcomes_keep_their_worktrees(self):
+        kept = [self.outcome(status=status) for status in retirement.ACTIVE_STATUSES]
         kept.append(self.outcome(updated_at=RECENT))
-        pending = self.outcome()
-        self.service._put('decisions', dict(id=str(uuid4()), task_id=pending[3]['id'], status='pending'))
-        kept.append(pending)
         running = self.outcome()
         self.service.running[running[3]['id']] = SimpleNamespace()
         self.addCleanup(self.service.running.pop, running[3]['id'])
@@ -158,16 +173,39 @@ class WorktreeRetirementTests(unittest.TestCase):
         locked = self.outcome()
         git(self.repo, 'worktree', 'lock', str(locked[2]))
         kept.append(locked)
-        native = self.outcome()
-        kept.append(native)
+        # An unknown native state keeps the worktree too.
+        claimed = [self.outcome(), self.outcome(), self.outcome()]
+        kept.extend(claimed)
         for _, _, path, _ in kept:
             (path / 'draft.txt').write_text('in progress\n')
-        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={native[3]['id']: dict(id='n1', status='blocked')})):
+        native = {claimed[0][3]['id']: dict(id='n1', status='running'), claimed[1][3]['id']: dict(id='n2', status='ready'),
+                  claimed[2][3]['id']: dict(id='n3', status='claiming')}
+        with patch.object(self.service, 'kanban', SimpleNamespace(tasks=native)):
             self.assertEqual(self.retire(), [])
         for _, identity, path, _ in kept:
             self.assertEqual((path / 'draft.txt').read_text(), 'in progress\n')
             self.assertNotIn('retired', self.registry()[identity])
         self.assertFalse((self.workspaces / 'archive' / (locked[1] + '.tar.gz')).exists())
+
+    def test_active_statuses_are_the_service_statuses_that_do_not_wait_for_a_person(self):
+        # A new active status must keep its worktree. This test fails until retirement lists it.
+        self.assertEqual(set(retirement.ACTIVE_STATUSES), Service.ACTIVE - {'needs_you', 'paused'})
+
+    def test_idle_outcomes_that_wait_or_failed_retire_and_return_with_their_changes(self):
+        idle = [self.outcome(status=status) for status in ('failed', 'paused', 'needs_you')]
+        self.service._put('decisions', dict(id=str(uuid4()), task_id=idle[2][3]['id'], status='pending'))
+        blocked = [self.outcome(), self.outcome()]
+        idle.extend(blocked)
+        for _, _, path, _ in idle:
+            (path / 'draft.txt').write_text('in progress\n')
+        native = {blocked[0][3]['id']: dict(id='n1', status='blocked'), blocked[1][3]['id']: dict(id='n2', status='triage')}
+        with patch.object(self.service, 'kanban', SimpleNamespace(tasks=native)):
+            self.assertEqual(sorted(self.retire()), sorted(identity for _, identity, _, _ in idle))
+        for outcome, identity, path, _ in idle:
+            self.assertFalse(path.exists())
+            self.assertEqual(preferred(self.workspaces, outcome), path)
+            self.assertEqual((path / 'draft.txt').read_text(), 'in progress\n')
+            self.assertNotIn('retired', self.registry()[identity])
 
     def test_the_job_runs_at_most_once_an_hour(self):
         _, identity, path, _ = self.outcome()
@@ -764,11 +802,121 @@ class WorktreeRetirementTests(unittest.TestCase):
         process = subprocess.Popen(['sleep', '60'], cwd=path)
         self.addCleanup(process.wait)
         self.addCleanup(process.kill)
-        self.in_use.stop()
+        self.holders.stop()
         self.assertTrue(work_workspace.in_use(path))
         self.assertEqual(self.retire(), [])
         self.assertTrue(path.is_dir())
         self.assertNotIn('retired', self.registry()[identity])
+
+
+    def orphan(self, path, outcome=None):
+        """Start a process in the path whose parent ends at once, so that launchd adopts it."""
+        env = dict(os.environ, COCONUT_WORKSPACE_OUTCOME=outcome) if outcome else None
+        command = f'{shlex.quote(sys.executable)} -c "import time; time.sleep(60)" >/dev/null 2>&1 & echo $!'
+        started = subprocess.run(['sh', '-c', command], cwd=path, env=env, capture_output=True, text=True, check=True)
+        pid = int(started.stdout)
+        self.addCleanup(lambda: subprocess.run(['kill', str(pid)], capture_output=True))
+        return pid
+
+    def orphan_with_child(self, path, outcome):
+        """Start an orphan of the outcome that has a /bin/sleep child. macOS hides the child's environment."""
+        script = "import subprocess, time; subprocess.Popen(['sleep', '60']); time.sleep(60)"
+        command = f'{shlex.quote(sys.executable)} -c {shlex.quote(script)} >/dev/null 2>&1 & echo $!'
+        started = subprocess.run(['sh', '-c', command], cwd=path, env=dict(os.environ, COCONUT_WORKSPACE_OUTCOME=outcome),
+                                 capture_output=True, text=True, check=True)
+        pid = int(started.stdout)
+        self.addCleanup(lambda: subprocess.run(['kill', str(pid)], capture_output=True))
+        for _ in range(50):
+            children = subprocess.run(['pgrep', '-P', str(pid)], capture_output=True, text=True).stdout.split()
+            if children:
+                break
+            time.sleep(0.1)
+        child = int(children[0])
+        self.addCleanup(lambda: subprocess.run(['kill', str(child)], capture_output=True))
+        return pid, child
+
+    def alive(self, pid):
+        return subprocess.run(['ps', '-p', str(pid)], capture_output=True).returncode == 0
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_an_old_orphaned_process_of_the_outcome_is_stopped_and_the_worktree_retires(self):
+        outcome, identity, path, _ = self.outcome()
+        pid = self.orphan(path, outcome)
+        self.holders.stop()
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(self.alive(pid))
+        self.assertIn('retired', self.registry()[identity])
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_young_foreign_and_locked_orphans_keep_their_processes_and_worktrees(self):
+        young_outcome, young, young_path, _ = self.outcome()
+        young_pid = self.orphan(young_path, young_outcome)
+        _, foreign, foreign_path, _ = self.outcome()
+        # launchd also starts apps and agents. A process without the outcome variable is not Coconut's.
+        foreign_pid = self.orphan(foreign_path, str(uuid4()))
+        locked_outcome, locked, locked_path, _ = self.outcome()
+        locked_pid = self.orphan(locked_path, locked_outcome)
+        git(self.repo, 'worktree', 'lock', str(locked_path))
+        self.holders.stop()
+        self.assertEqual(self.retire(), [])
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.assertEqual(self.retire(), [young])
+        self.assertFalse(self.alive(young_pid))
+        for pid, identity, path in ((foreign_pid, foreign, foreign_path), (locked_pid, locked, locked_path)):
+            self.assertTrue(self.alive(pid))
+            self.assertTrue(path.is_dir())
+            self.assertNotIn('retired', self.registry()[identity])
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_an_orphan_and_its_child_process_are_both_stopped(self):
+        outcome, identity, path, _ = self.outcome()
+        pid, child = self.orphan_with_child(path, outcome)
+        self.holders.stop()
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(self.alive(pid))
+        self.assertFalse(self.alive(child))
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_a_process_of_the_outcome_with_a_live_parent_keeps_the_worktree(self):
+        outcome, identity, path, _ = self.outcome()
+        # A live worker has the service as its parent. Only launchd's adopted processes are orphans.
+        process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'], cwd=path,
+                                   env=dict(os.environ, COCONUT_WORKSPACE_OUTCOME=outcome))
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        self.holders.stop()
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.assertEqual(self.retire(), [])
+        self.assertIsNone(process.poll())
+        self.assertTrue(path.is_dir())
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_holders_pairs_each_open_file_with_its_process(self):
+        path = self.root / 'work'
+        listing = b''.join([b'p10\nfcwd\nn/elsewhere\n', b'p11\nfcwd\nn' + os.fsencode(str(path)) + b'\n',
+                            b'p12\nf3\nn' + os.fsencode(str(path)) + b'/log.txt\nf4\nn/elsewhere/a\n',
+                            b'p13\nf5\nn' + os.fsencode(str(path)) + b'-other/file\n'])
+        self.holders.stop()
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing)):
+            self.assertEqual(work_workspace.holders(path), {11, 12})
+
+    def test_the_environment_of_another_process_is_read(self):
+        process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
+                                   env=dict(os.environ, COCONUT_WORKSPACE_OUTCOME='one'))
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        time.sleep(0.2)
+        self.assertTrue(work_workspace.environment_names(process.pid, 'COCONUT_WORKSPACE_OUTCOME=one'))
+        self.assertFalse(work_workspace.environment_names(process.pid, 'COCONUT_WORKSPACE_OUTCOME=on'))
+        self.assertFalse(work_workspace.environment_names(process.pid, 'COCONUT_WORKSPACE_OUTCOME=two'))
+
+    def test_elapsed_times_from_ps_become_seconds(self):
+        self.assertEqual(work_workspace.elapsed_seconds('05'), 5)
+        self.assertEqual(work_workspace.elapsed_seconds('02:03'), 123)
+        self.assertEqual(work_workspace.elapsed_seconds('1:02:03'), 3723)
+        self.assertEqual(work_workspace.elapsed_seconds('06-16:25:58'), 6 * 86400 + 16 * 3600 + 25 * 60 + 58)
 
 
 if __name__ == '__main__':
