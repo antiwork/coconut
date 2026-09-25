@@ -960,6 +960,20 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.service._put('tasks', dict(audit, status='failed'))
         self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
 
+    def test_passive_report_accepts_quiet_failed_audit_and_descendant(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        audit = self.service._get('tasks', owner['source_task_id'])
+        self.service._put('tasks', dict(audit, status='failed'))
+        branch = dict(coordinator, id='audit-child', status='failed',
+                      _assignment_task_id=audit['id'], _execution_session_id='audit-child',
+                      _native_outcome_id=None, _work_context_id=None, _waiting_on=[])
+        self.service._put('tasks', branch)
+        self.service._put('decisions', dict(id='audit-child-question', task_id=branch['id'], status='pending'))
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(coordinator)
+        self.service._put('decisions', dict(id='audit-child-question', task_id=branch['id'], status='rejected'))
+        self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+
     def test_an_owner_report_to_an_unrelated_task_still_blocks_the_audited_pr(self):
         owner, coordinator, work, pr = self.audited_requester_pr(report_to='unrelated')
         self.service._put('tasks', dict(coordinator, id='unrelated', status='completed', _execution_session_id='unrelated',

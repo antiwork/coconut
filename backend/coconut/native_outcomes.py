@@ -208,6 +208,12 @@ class NativeOutcomes:
                         # still need terminal claims, returns, and decisions.
                         for identity in (*callers, owner['id']):
                             linked.pop(identity, None)
+                        if audited_parent:
+                            # The same quiet-terminal rule applies to the audit's
+                            # own chain, whether or not a passive report exists.
+                            linked = {key: value for key, value in linked.items()
+                                      if value[0]['status'] in self.ACTIVE or not quiet(value[0])
+                                      or (value[0]['status'] == 'completed' and self._unfinished_work(value[0]))}
                     native_tasks = [t for t, _ in linked.values()
                                     if t.get('_native_outcome_id') or t.get('_kanban_claim')]
                     peer_chains.append((peer, reporter, linked, native_tasks, passive_report))
