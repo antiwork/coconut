@@ -958,13 +958,17 @@ class WorktreeRetirementTests(unittest.TestCase):
         free.mkdir()
         listing = b'p10\nfcwd\nn' + os.fsencode(str(held)) + b'/log.txt\np11\nfcwd\nn' + os.fsencode(str(free)) + b'-other\n'
         self.holders.stop()
-        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing)) as run:
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)) as run:
             self.assertEqual(work_workspace.busy_paths({str(held), str(free)}), {str(held)})
         self.assertEqual(run.call_count, 1)
+        # A failed lsof can print part of the list, so it does not count.
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=1)):
+            with self.assertRaises(ValueError):
+                work_workspace.busy_paths({str(held), str(free)})
         # Two paths with one resolved form are both busy.
         link = self.root / 'held-link'
         link.symlink_to(held)
-        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing)):
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
             self.assertEqual(work_workspace.busy_paths({str(held), str(link)}), {str(held), str(link)})
 
     def test_elapsed_times_from_ps_become_seconds(self):

@@ -241,8 +241,9 @@ def busy_paths(paths):
         result = subprocess.run(['lsof', '-n', '-P', '-w', '-F', 'n'], capture_output=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired):
         raise ValueError('Coconut cannot check open files without lsof.') from None
-    if not result.stdout:
-        raise ValueError('lsof did not list open files.')
+    # A failed lsof can print part of the list. A missing holder would release the writer guard, so require success.
+    if result.returncode or not result.stdout:
+        raise ValueError('lsof did not list all open files.')
     # Two paths can share one resolved form, such as /tmp and /private/tmp on macOS. Keep every path for each form.
     prefixes = {}
     for path in paths:

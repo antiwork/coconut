@@ -156,6 +156,9 @@ class BackgroundProcesses:
         with self.lock:
             records = [json.loads(row[0]) for row in self.db.execute(
                 "SELECT data FROM native_receipts WHERE json_extract(data,'$.state')='executing'")]
+            # Forget the back-off of a call that no longer runs.
+            executing = {record['id'] for record in records}
+            self._busy_tool_calls = {k: v for k, v in self._busy_tool_calls.items() if k in executing}
             candidates = []
             for record in records:
                 if (record.get('action') or {}).get('name') not in LOCAL_COMMAND_TOOLS or record.get('_process_ended_at'):

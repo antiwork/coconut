@@ -905,6 +905,11 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.assertEqual(busy.call_count, 2)
             busy.return_value = set()
             self.assertEqual(self.service._mark_ended_tool_calls(current=1802), ['cut-off'])
+        # A call that no longer runs loses its back-off.
+        self.service._busy_tool_calls['finished-call'] = (9999, 600)
+        self.service._ended_tool_check_at = 0
+        self.service._mark_ended_tool_calls(current=1900)
+        self.assertNotIn('finished-call', self.service._busy_tool_calls)
 
     def test_the_poller_never_ends_a_privileged_command(self):
         owner, coordinator, work, pr = self.audited_requester_pr()
