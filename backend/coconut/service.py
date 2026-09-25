@@ -2987,6 +2987,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         with bot_lock:
             reaction_feedback = []
             source_seen = {}
+            source_activity = []
             try:
                 with self.transaction():
                     task = self._get('tasks', task_id)
@@ -3158,16 +3159,19 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     self.provider.resume_task(provider_task, self._public(bot), history, self._public(decision) | {'action': decision.get('_action')}, emit)
                 else:
                     self.provider.start_task(provider_task, self._public(bot), history, emit)
-                self._record_source_seen(task_id, source_seen)
                 with self.lock:
                     current = self._get('tasks', task_id)
+                # A worker can fail before it constructs or receives the prompt.
+                # Retain the activity for a retry instead of acknowledging that failed turn.
+                if current['status'] not in ('failed', 'cancelled'):
+                    self._record_source_seen(task_id, source_seen, source_activity)
                 if current['status'] not in ('failed', 'cancelled'):
                     self._ack_reaction_feedback(bot['id'], task_id, reaction_feedback)
                 if current['status'] == 'working':
                     self.emit(task_id, 'completed', {'summary': 'Ready to review.'})
             except YieldForDecision as pause:
                 # The provider received the turn and paused it. The bot saw the source activity.
-                self._record_source_seen(task_id, source_seen)
+                self._record_source_seen(task_id, source_seen, source_activity)
                 if pause.decision_id:
                     self._ack_reaction_feedback(task['bot_id'], task_id, reaction_feedback)
             except Exception as error:
@@ -3194,23 +3198,38 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                                 self.push.record('message.completed', message, message['bot_id'], task_id)
                         self._refresh_bot(task['bot_id'])
 
-    def _record_source_seen(self, task_id, seen):
-        """Record the source revisions after the provider received the turn.
+    def _record_source_seen(self, task_id, seen, activity=None):
+        """Record delivered revisions and item signatures only after the provider receives a turn.
 
-        A failed delivery records nothing. The next turn then shows the same
-        activity again. A duplicate is better than a lost comment.
+        Failed delivery records nothing. Track the bounded items actually shown
+        so same-second GitHub rereads can detect new or edited comments.
         """
         if not seen:
             return
+        from .decision_sources import activity_signature, _issue_url
+        signatures = {}
+        for row in activity or []:
+            if isinstance(row.get('new_activity'), list) and row.get('url'):
+                key = _issue_url(row['url']).lower()
+                signatures.setdefault(key, []).extend(activity_signature(item) for item in row['new_activity'])
         with self.transaction():
             task = self._get('tasks', task_id)
-            # Continuations of the same assignment read the assignment record too.
             for record in {id(r): r for r in (task, self._assignment(task))}.values():
                 merged = dict(record.get('_source_activity_seen', {}))
-                # Another turn can record a later revision first. Keep the later value.
+                delivered = dict(record.get('_source_activity_items_seen', {}))
                 for key, revision in seen.items():
-                    merged[key] = max(merged.get(key, ''), revision)
+                    old_revision = merged.get(key, '')
+                    if revision < old_revision:
+                        continue
+                    merged[key] = revision
+                    old = delivered.get(key, {})
+                    # Carry signatures only across the same revision; older
+                    # records no longer occur in a new timestamp's activity.
+                    prior = old.get('signatures', []) if old.get('revision') == revision else []
+                    delivered[key] = dict(revision=revision,
+                                          signatures=list(dict.fromkeys([*prior, *signatures.get(key, [])]))[-100:])
                 record['_source_activity_seen'] = merged
+                record['_source_activity_items_seen'] = delivered
                 self._put('tasks', record)
 
     def emit(self, task_id: str, kind: str, payload: dict):

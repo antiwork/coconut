@@ -1,4 +1,6 @@
 """Keep the sources for a decision visible in chat and Inbox."""
+import hashlib
+import json
 from urllib.parse import urlsplit
 
 
@@ -149,9 +151,10 @@ SOURCE_READ_SECONDS = 6
 # The decisions_task index uses the same expression. Keep the two the same.
 # The reader stops once it has enough links, so the newest decisions come first.
 TASK_DECISIONS = ("SELECT data FROM decisions WHERE json_extract(data,'$.task_id') IN ({}) "
-                  "AND COALESCE(json_extract(data,'$._hidden'), 0) = 0 AND COALESCE(json_extract(data,'$._deleted'), 0) = 0 "
-                  "ORDER BY rowid DESC LIMIT 200")
-# 200 cards bound the read under the service lock. A task rarely has more.
+                  "AND COALESCE(json_extract(data,'$._hidden'), 0) = 0 "
+                  "AND COALESCE(json_extract(data,'$._deleted'), 0) = 0 ORDER BY rowid DESC")
+TASK_DECISIONS_PAGE = TASK_DECISIONS.replace('SELECT data', 'SELECT rowid, data', 1).replace(
+    ' ORDER BY rowid DESC', ' AND rowid < ? ORDER BY rowid DESC LIMIT 100')
 
 
 def operator_owners(service):
@@ -163,16 +166,31 @@ def operator_owners(service):
     entries (comma-separated). A bot can track any PR, so tracked PRs do not
     make a repository trusted.
     """
+    import json
     import os
+    from .service import ServiceError
+    from .work_sources import source_fingerprint
     owners = {owner.strip().lower() for owner in os.environ.get('COCONUT_GITHUB_TRUSTED_OWNERS', '').split(',') if owner.strip()}
+    path = service.root / 'work-sources.json'
+    try:
+        sources = json.loads(path.read_text()) if path.exists() else []
+        if not isinstance(sources, list):
+            sources = []
+    except (OSError, ValueError):
+        sources = []  # A broken configuration cannot add trust.
     with service.lock:
-        rows = service.db.execute(
-            "SELECT DISTINCT json_extract(data,'$._source_assignment.id') FROM tasks "
-            "WHERE json_extract(data,'$._source_assignment.id') IS NOT NULL").fetchall()
-    for (url,) in rows:
-        source = github_source(url)
-        if source:
-            owners.add('/'.join(source[1].split('/')[:2]).lower())
+        for source in sources:
+            if not isinstance(source, dict) or not isinstance(source.get('id'), str):
+                continue
+            try:
+                bot = service._get('bots', source.get('bot_id'))
+            except (KeyError, ServiceError):
+                continue
+            if bot.get('_deleted') or bot.get('archived'):
+                continue
+            state = service._setting('work-source:' + source['id'], {})
+            if isinstance(state, dict) and state.get('trusted_repositories_source') == source_fingerprint(source):
+                owners.update(repo for repo in state.get('trusted_repositories', []) if isinstance(repo, str))
     return owners
 
 
@@ -182,6 +200,11 @@ def operator_repository(url, trusted):
     return owner.lower() in trusted or f'{owner}/{repo}'.lower() in trusted
 
 
+def activity_signature(item):
+    """Fingerprint delivered metadata and bounded text, not untrusted raw input."""
+    return hashlib.sha256(json.dumps(item, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
 def read_source_activity(service, task_id, limit=3):
     """Read new activity on the task's GitHub sources before a turn starts.
 
@@ -189,25 +212,40 @@ def read_source_activity(service, task_id, limit=3):
     reads run outside the service lock. A failed read never blocks the turn.
     """
     import json
+    import time
 
+    started = time.monotonic()
     with service.lock:
         task = service._get('tasks', task_id)
         assignment = service._assignment(task)
         identities = list(dict.fromkeys((task['id'], assignment['id'])))
-        rows = service.db.execute(TASK_DECISIONS.format(','.join('?' for _ in identities)), identities)
-        decisions, distinct = [], set()
-        for (data,) in rows:
+        resumed = service._get('decisions', task['_resume_decision']) if task.get('_resume_decision') else None
+    # Decode outside the lock and release it between bounded database pages.
+    decisions, distinct = [], set()
+    before = 9223372036854775807
+    scanned = 0
+    selection_limited = False
+    while len(distinct) < limit:
+        if scanned >= 1000 or time.monotonic() - started >= 1:
+            selection_limited = True
+            break
+        with service.lock:
+            rows = service.db.execute(TASK_DECISIONS_PAGE.format(','.join('?' for _ in identities)),
+                                      (*identities, before)).fetchall()
+        scanned += len(rows)
+        for rowid, data in rows:
             decision = json.loads(data)
             if decision.get('_hidden') or decision.get('_deleted'):
                 continue
             decisions.append(decision)
             distinct |= {_issue_url(url).lower() for url in github_links(decision)}
-            # Read only as many cards as the link limit needs.
             if len(distinct) >= limit:
                 break
-        if task.get('_resume_decision'):
-            resumed = service._get('decisions', task['_resume_decision'])
-            decisions = [resumed] + [d for d in decisions if d['id'] != resumed['id']]
+        if len(rows) < 100:
+            break
+        before = rows[-1][0]
+    if resumed:
+        decisions = [resumed] + [d for d in decisions if d['id'] != resumed['id']]
     # Each candidate is a link and a known revision. The prompt shows only activity after the latest revision.
     candidates = []
     for record in (task, assignment):
@@ -228,12 +266,16 @@ def read_source_activity(service, task_id, limit=3):
         links.setdefault(key, github_source(url)[2])
         known.setdefault(key, set()).add(_github_time(revision))
     if not links:
-        return [], {}
+        return ([dict(selection_limited=True)] if selection_limited else []), {}
     operators = operator_owners(service)
+    delivered = {}
     for record in (assignment, task):
         for key, revision in record.get('_source_activity_seen', {}).items():
             if key in known:
                 known[key].add(_github_time(revision))
+        for key, state in record.get('_source_activity_items_seen', {}).items():
+            if key in known and isinstance(state, dict):
+                delivered.setdefault(key, []).append(state)
     import time
     # One wall-clock budget covers the gh login and all reads. The turn waits no longer than this.
     deadline = time.monotonic() + SOURCE_READ_SECONDS
@@ -251,8 +293,10 @@ def read_source_activity(service, task_id, limit=3):
         current = None
         if tracker is not None and time.monotonic() < deadline:
             try:
-                current = tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline,
-                                                         operator=operator_repository(url, operators))
+                options = dict(operator=operator_repository(url, operators))
+                if isinstance(tracker, GitHubPRTracker):
+                    options['include_same_second'] = True
+                current = tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline, **options)
             except Exception:
                 current = None
         if not isinstance(current, dict) or not isinstance(current.get('updated_at'), str):
@@ -260,10 +304,15 @@ def read_source_activity(service, task_id, limit=3):
             continue
         observed = current.get('observed_at')
         seen[key] = observed if isinstance(observed, str) and observed > current['updated_at'] else current['updated_at']
+        previous = {sig for state in delivered.get(key, []) for sig in state.get('signatures', []) if isinstance(sig, str)}
+        current['new_activity'] = [item for item in current.get('new_activity', [])
+                                   if activity_signature(item) not in previous]
         # Items at the recorded second can be new although the thread time did not move.
         if (since is None or current['updated_at'] > since or current.get('new_activity')
                 or current.get('incomplete') or current.get('changed_without_new_activity')):
             activity.append(dict(url=url, since=since, **{k: current.get(k) for k in (
                 'state', 'state_reason', 'title', 'title_withheld', 'updated_at', 'new_activity', 'omitted_items', 'incomplete',
                 'changed_without_new_activity') if k in current}))
+    if selection_limited:
+        activity.append(dict(selection_limited=True))
     return activity, seen

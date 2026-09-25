@@ -8,6 +8,7 @@ from urllib.error import URLError
 from urllib.parse import parse_qs
 
 from coconut import decision_sources
+from coconut.work_sources import source_fingerprint
 from coconut.hermes_worker import conversation_input
 from coconut.pr_tracking import GitHubPRTracker, PRTrackingError
 from coconut.service import YieldForDecision
@@ -157,6 +158,13 @@ class SourceActivityTests(unittest.TestCase):
             task['status'] = 'queued'
             self.service._put('tasks', task)
 
+    def test_failed_worker_does_not_ack_unseen_activity(self):
+        self.approve_card()
+        self.tracker.add(comment(7, 'owner', '2026-09-23T12:10:00Z', 'Unseen requirement'))
+        self.service.provider.resume_task = Mock(side_effect=lambda *args: args[-1]('failed', {'summary': 'Before prompt'}))
+        self.service._run_task(self.task['id'])
+        self.assertNotIn('_source_activity_seen', self.service._get('tasks', self.task['id']))
+
     def test_comments_after_approval_reach_the_next_turn_once(self):
         self.approve_card()
         self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'This must handle 10x the current volume.'),
@@ -178,13 +186,14 @@ class SourceActivityTests(unittest.TestCase):
         task, prompt = self.turn()
         self.assertNotIn('_source_activity', task)
         self.assertNotIn('10x the current volume', prompt)
-        self.assertEqual(self.tracker.paths[reads:], ['/repos/example/project/issues/42'])
+        self.assertEqual(len(self.tracker.paths[reads:]), 2)
+        self.assertIn('/issues/42/comments?since=', self.tracker.paths[reads + 1])
 
         self.tracker.add(comment(9, 'reviewer', '2026-09-23T13:00:00Z', 'Also keep the old export.'))
         self.requeue()
         task, prompt = self.turn()
         # The item at the recorded second can repeat. Its author is not trusted, so Coconut withholds its text.
-        self.assertEqual([c.get('body') for c in task['_source_activity'][0]['new_activity']], [None, 'Also keep the old export.'])
+        self.assertEqual([c.get('body') for c in task['_source_activity'][0]['new_activity']], ['Also keep the old export.'])
         self.assertNotIn('10x the current volume', prompt)
 
     def test_comment_while_the_card_waits_reaches_the_resumed_turn(self):
@@ -273,7 +282,14 @@ class SourceActivityTests(unittest.TestCase):
         self.assertIn('Operator member text.', prompt)
 
     def test_source_audit_uses_the_assignment_revision(self):
-        # The work-source assignment alone makes the repository owner an operator owner.
+        # The current work-source snapshot makes this exact repository trusted.
+        import json
+        source = dict(id='github', bot_id=self.bot['id'])
+        (self.service.root / 'work-sources.json').write_text(json.dumps([source]))
+        with self.service.transaction():
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                ('work-source:github', json.dumps(dict(trusted_repositories=['example/project'],
+                                                     trusted_repositories_source=source_fingerprint(source)))))
         environment = patch.dict('os.environ', COCONUT_GITHUB_TRUSTED_OWNERS='')
         environment.start()
         self.addCleanup(environment.stop)
@@ -326,11 +342,71 @@ class SourceActivityTests(unittest.TestCase):
         self.assertIn('https://github.com/example/project/issues/77', [a['url'] for a in activity])
         self.assertIn('https://github.com/example/project/issues/78', [a['url'] for a in activity])
 
+    def test_decision_lookup_pages_past_repeated_links(self):
+        with self.service.transaction():
+            self.service._put('decisions', dict(id='old-link', task_id=self.task['id'],
+                created_at=APPROVED, sources=[dict(kind='issue', title='Older', url=URL)]))
+            for number in range(225):
+                self.service._put('decisions', dict(id=f'new-{number}', task_id=self.task['id'],
+                    sources=[dict(kind='issue', title='Repeated', url=PR_URL)]))
+        tracker = ThreadTracker(self.service)
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            activity, _ = decision_sources.read_source_activity(self.service, self.task['id'])
+        self.assertIn('/repos/example/project/issues/42', tracker.paths)
+        self.assertIn('/repos/example/project/issues/43', tracker.paths)
+
+    def test_decision_lookup_warns_when_bounded_before_older_links(self):
+        with self.service.transaction():
+            self.service._put('decisions', dict(id='very-old', task_id=self.task['id'],
+                sources=[dict(kind='issue', title='Older', url=URL)]))
+            for number in range(1000):
+                self.service._put('decisions', dict(id=f'empty-{number}', task_id=self.task['id']))
+        with patch.object(self.service, '_pr_tracker_for', return_value=ThreadTracker(self.service)):
+            activity, _ = decision_sources.read_source_activity(self.service, self.task['id'])
+        self.assertTrue(any(item.get('selection_limited') for item in activity))
+        task = dict(self.service._get('tasks', self.task['id']), _source_activity=activity)
+        self.assertIn('could not select all linked GitHub threads',
+                      conversation_input(dict(operation='start', task=task, history=[]))[0])
+
+    def test_explicitly_visible_card_is_read(self):
+        with self.service.transaction():
+            self.service._put('decisions', dict(id='visible', task_id=self.task['id'],
+                created_at='2026-09-23T10:00:00Z', _hidden=False, _deleted=False,
+                sources=[dict(kind='issue', title='Visible', url=URL)]))
+        tracker = ThreadTracker(self.service)
+        with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
+            activity, _ = decision_sources.read_source_activity(self.service, self.task['id'])
+        self.assertIn(URL, [a['url'] for a in activity])
+
     def test_trust_covers_configured_repositories_not_whole_owners(self):
         trusted = {'acme/app'}
         self.assertTrue(decision_sources.operator_repository('https://github.com/Acme/App/issues/1', trusted))
         self.assertFalse(decision_sources.operator_repository('https://github.com/acme/other/issues/1', trusted))
         self.assertTrue(decision_sources.operator_repository('https://github.com/acme/other/pull/2', trusted | {'acme'}))
+
+    def test_same_second_comment_is_read_from_actual_tracker(self):
+        tracker = ThreadTracker()
+        tracker.add(comment(1, 'owner', APPROVED, 'Same-second requirement'))
+        observed = tracker.observe_issue_activity(URL, APPROVED, time.monotonic() + 5, operator=True,
+                                                  include_same_second=True)
+        self.assertEqual([item['body'] for item in observed['new_activity']], ['Same-second requirement'])
+
+    def test_same_second_comment_after_delivery_is_rechecked_for_edits(self):
+        self.approve_card()
+        self.tracker.add(comment(1, 'owner', APPROVED, 'First requirement'))
+        task, _ = self.turn()
+        self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['First requirement'])
+        self.tracker.threads[42].comments[0]['body'] = 'Edited requirement'
+        self.requeue()
+        task, _ = self.turn()
+        self.assertIn('Edited requirement', [c['body'] for c in task['_source_activity'][0]['new_activity']])
+        self.tracker.add(comment(2, 'owner', APPROVED, 'Later requirement'))
+        self.requeue()
+        task, _ = self.turn()
+        self.assertIn('Later requirement', [c['body'] for c in task['_source_activity'][0]['new_activity']])
+        self.requeue()
+        task, _ = self.turn()
+        self.assertNotIn('_source_activity', task)
 
     def test_same_second_items_keep_their_record(self):
         class SameSecond:
@@ -377,7 +453,7 @@ class SourceActivityTests(unittest.TestCase):
         self.tracker.add(comment(9, 'reviewer', '2026-09-23T12:30:00Z', 'Later.'))
         self.requeue()
         task, _ = self.turn(render=False)
-        self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['First.', 'Same second.', 'Later.'])
+        self.assertEqual([c['body'] for c in task['_source_activity'][0]['new_activity']], ['Later.'])
 
     def test_continuations_share_the_recorded_revision(self):
         with self.service.transaction():
@@ -413,11 +489,47 @@ class SourceActivityTests(unittest.TestCase):
         self.assertNotIn(other, self.service._profile_trackers)
         self.assertEqual(len(self.service._profile_trackers), 1)
 
-    def test_operator_owner_lookup_uses_an_index(self):
-        plan = ' '.join(str(row) for row in self.service.db.execute(
-            "EXPLAIN QUERY PLAN SELECT DISTINCT json_extract(data,'$._source_assignment.id') FROM tasks "
-            "WHERE json_extract(data,'$._source_assignment.id') IS NOT NULL").fetchall())
-        self.assertIn('tasks_source_assignment', plan)
+    def test_missing_work_source_bot_does_not_block_other_turns(self):
+        import json
+        valid = dict(id='valid', bot_id=self.bot['id'])
+        (self.service.root / 'work-sources.json').write_text(json.dumps([
+            dict(id='missing', bot_id='absent'), valid]))
+        with self.service.transaction():
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                ('work-source:valid', json.dumps(dict(trusted_repositories=['example/project'],
+                                                  trusted_repositories_source=source_fingerprint(valid)))))
+        self.assertIn('example/project', decision_sources.operator_owners(self.service))
+
+    def test_reconfigured_work_source_revokes_old_repository_before_next_audit(self):
+        import json
+        source = dict(id='source-one', bot_id=self.bot['id'], command=['old-source'])
+        (self.service.root / 'work-sources.json').write_text(json.dumps([source]))
+        with self.service.transaction():
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                ('work-source:source-one', json.dumps(dict(trusted_repositories=['example/project'],
+                                                       trusted_repositories_source=source_fingerprint(source),
+                                                       next_check=99999999999))))
+        with patch.dict('os.environ', COCONUT_GITHUB_TRUSTED_OWNERS=''):
+            self.assertIn('example/project', decision_sources.operator_owners(self.service))
+            source['command'] = ['replacement-source']
+            (self.service.root / 'work-sources.json').write_text(json.dumps([source]))
+            self.assertNotIn('example/project', decision_sources.operator_owners(self.service))
+
+    def test_removed_work_source_does_not_keep_historical_repository_trusted(self):
+        import json
+        source = dict(id='source-one', bot_id=self.bot['id'])
+        (self.service.root / 'work-sources.json').write_text(json.dumps([source]))
+        with self.service.transaction():
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                ('work-source:source-one', json.dumps(dict(trusted_repositories=['example/project'],
+                                                       trusted_repositories_source=source_fingerprint(source)))))
+            task = self.service._get('tasks', self.task['id'])
+            task['_source_assignment'] = dict(source_id='source-one', id=URL, updated_at=APPROVED)
+            self.service._put('tasks', task)
+        with patch.dict('os.environ', COCONUT_GITHUB_TRUSTED_OWNERS=''):
+            self.assertIn('example/project', decision_sources.operator_owners(self.service))
+            (self.service.root / 'work-sources.json').write_text('[]')
+            self.assertNotIn('example/project', decision_sources.operator_owners(self.service))
 
     def test_decision_lookup_uses_the_task_index(self):
         plan = ' '.join(str(row) for row in self.service.db.execute(
@@ -458,6 +570,14 @@ class IssueActivityReadTests(unittest.TestCase):
         return [comment(i, f'user{i}', f'2026-09-2{2 + i // 200}T{i // 60 % 24:02d}:{i % 60:02d}:00Z', 'x' * 10)
                 for i in range(1, count + 1)]
 
+    def test_same_second_reread_has_no_wall_clock_cutoff(self):
+        tracker = ThreadTracker()
+        tracker.add(comment(1, 'owner', APPROVED, 'Delayed requirement'))
+        result = tracker.observe_issue_activity(URL, APPROVED, time.monotonic() + 5,
+                                                operator=True, include_same_second=True)
+        self.assertEqual([item['body'] for item in result['new_activity']], ['Delayed requirement'])
+        self.assertTrue(any('/issues/42/comments?since=' in path for path in tracker.paths))
+
     def test_activity_keeps_the_newest_ten_comments_and_truncates_long_text(self):
         tracker = ThreadTracker()
         values = self.comments(12)
@@ -486,10 +606,21 @@ class IssueActivityReadTests(unittest.TestCase):
         tracker.paths.clear()
         result = tracker.observe_issue_activity(URL, values[334]['updated_at'], operator=True)
         self.assertEqual([c['author'] for c in result['new_activity']], [f'user{i}' for i in range(341, 351)])
-        # Pages 1 to 3 were not read. An edited comment there can be new, so the read is incomplete.
-        # The comment at the `since` second counts as new.
-        self.assertEqual((result['omitted_items'], result['incomplete']), (6, True))
-        self.assertEqual(tracker.paths[1:], ['/repos/example/project/issues/42/comments?per_page=100&page=4'])
+        # The filtered GitHub list has all updated comments, including edits
+        # on older pages; no unrelated historical page makes it incomplete.
+        self.assertEqual((result['omitted_items'], result['incomplete']), (6, False))
+        self.assertEqual(len(tracker.paths), 2)
+        self.assertIn('since=', tracker.paths[1])
+
+    def test_unchanged_long_thread_does_not_claim_older_pages_are_incomplete(self):
+        tracker = ThreadTracker()
+        values = self.comments(101)
+        tracker.add(*values)
+        since = values[-1]['updated_at']
+        result = tracker.observe_issue_activity(URL, since, operator=True, include_same_second=True)
+        self.assertEqual([c['id'] for c in result['new_activity']], [101])
+        self.assertFalse(result['incomplete'])
+        self.assertEqual(len(tracker.paths), 2)
 
     def test_unread_older_pages_mark_the_read_incomplete(self):
         tracker = ThreadTracker()
@@ -499,10 +630,20 @@ class IssueActivityReadTests(unittest.TestCase):
         tracker.add(*values)
         tracker.threads[42].updated_at = values[4]['updated_at']
         result = tracker.observe_issue_activity(URL, values[148]['updated_at'], operator=True)
-        self.assertEqual([c['author'] for c in result['new_activity']], ['user149', 'user150'])
-        self.assertTrue(result['incomplete'])
-        self.assertEqual(tracker.paths, ['/repos/example/project/issues/42',
-                                         '/repos/example/project/issues/42/comments?per_page=100&page=2'])
+        self.assertEqual([c['author'] for c in result['new_activity']], ['user149', 'user150', 'user5'])
+        self.assertFalse(result['incomplete'])
+        self.assertEqual(len(tracker.paths), 2)
+        self.assertIn('since=', tracker.paths[1])
+
+    def test_inline_review_comment_queries_before_recorded_second(self):
+        tracker = ThreadTracker()
+        thread = tracker.threads[43]
+        thread.pr_updated_at = '2026-09-23T11:46:32Z'
+        thread.review_comments = [dict(id=55, user=dict(login='owner', type='User'),
+            author_association='OWNER', updated_at=APPROVED, body='Same-second inline requirement')]
+        result = tracker.observe_issue_activity(PR_URL, APPROVED, operator=True)
+        self.assertEqual([item['body'] for item in result['new_activity']], ['Same-second inline requirement'])
+        self.assertIn('since=2026-09-23T11%3A46%3A30Z', ' '.join(tracker.paths))
 
     def test_long_pull_requests_show_the_newest_reviews(self):
         tracker = ThreadTracker()
@@ -521,7 +662,7 @@ class IssueActivityReadTests(unittest.TestCase):
         self.assertEqual([c['author'] for c in result['new_activity']], [f'lead{i}' for i in range(341, 351)])
         self.assertEqual((result['omitted_items'], result['incomplete']), (6, True))
         self.assertEqual([p for p in tracker.paths if '/reviews' in p],
-                         ['/repos/example/project/pulls/43/reviews?per_page=1&page=1',
+                         ['/repos/example/project/pulls/43/reviews?per_page=100&page=1',
                           '/repos/example/project/pulls/43/reviews?per_page=100&page=4'])
 
     def test_review_that_leaves_the_issue_record_unchanged_is_shown(self):
@@ -589,7 +730,7 @@ class IssueActivityReadTests(unittest.TestCase):
         self.assertEqual((review['state'], review['body'], review['author_association']),
                          ('CHANGES_REQUESTED', 'Handle retries.', 'COLLABORATOR'))
         self.assertEqual(result['new_activity'][2]['path'], 'app/worker.py')
-        self.assertIn('/repos/example/project/pulls/43/comments?since=2026-09-23T11%3A46%3A31Z&per_page=100&page=1',
+        self.assertIn('/repos/example/project/pulls/43/comments?since=2026-09-23T11%3A46%3A30Z&per_page=100&page=1',
                       tracker.paths)
         # Only the thread and PR records use the shared response cache.
         self.assertEqual({path for path, cache in tracker.cached.items() if cache},

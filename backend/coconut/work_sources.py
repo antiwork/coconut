@@ -11,6 +11,11 @@ import subprocess
 import time
 
 
+def source_fingerprint(source):
+    """Identify the current source configuration that supplied an audit."""
+    return hashlib.sha256(json.dumps(source, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
 def audit_item(task):
     if isinstance(task.get('_source_assignment'), dict):
         return task['_source_assignment']
@@ -218,7 +223,10 @@ class WorkSources:
             key = 'work-source:' + source['id']
             with self.lock:
                 state = self._setting(key, {})
-                if time.time() < state.get('next_check', 0) or self.stopping.is_set() or self.restart_pending:
+                if ((time.time() < state.get('next_check', 0)
+                     and (state.get('trusted_repositories_source') == source_fingerprint(source)
+                          or state.get('trusted_repositories_source_attempt') == source_fingerprint(source)))
+                        or self.stopping.is_set() or self.restart_pending):
                     continue
                 bot = self._get('bots', source['bot_id'])
                 if bot.get('_deleted') or bot['archived']:
@@ -366,11 +374,19 @@ class WorkSources:
                                                      retry_at=time.time() + min(3600, max(600, source.get('interval_seconds', 600))
                                                                                * 2 ** min(attempts - 1, 3)))
                     state['recoveries'] = recoveries
+                    # Only repositories in the current complete source snapshot confer role-based text trust.
+                    from .decision_sources import github_source
+                    state['trusted_repositories_source'] = source_fingerprint(source)
+                    state['trusted_repositories_source_attempt'] = source_fingerprint(source)
+                    state['trusted_repositories'] = sorted({
+                        '/'.join(github_source(item.get('id'))[1].split('/')[:2]).lower()
+                        for item in items if github_source(item.get('id'))})
                     state.update(checked_at=current.isoformat(), missing=[item['id'] for item in gaps], error=None,
                                  next_check=time.time() + max(60, source.get('interval_seconds', 600)))
                     self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(state)))
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 # Retain prior coverage on failed reads. Never turn a partial fetch into an empty Plate.
                 with self.transaction():
-                    state.update(error=type(error).__name__, next_check=time.time() + 60)
+                    state.update(error=type(error).__name__, next_check=time.time() + 60,
+                                 trusted_repositories_source_attempt=source_fingerprint(source))
                     self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(state)))
