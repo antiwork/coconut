@@ -752,6 +752,28 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.resume(coordinator)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
+    def test_another_requester_task_cannot_continue_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # Only the Work's own coordinator skips the competing-writer guard. Another requester task does not.
+        other = dict(coordinator, id='other-requester', _execution_session_id='other-requester',
+                     _native_outcome_id=None, _work_context_id=None)
+        self.service._put('tasks', other)
+        with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+            self.resume(other)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_an_active_branch_of_the_coordinator_still_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = dict(coordinator, id='coordinator-branch', status='working', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None)
+        self.service._put('tasks', branch)
+        # The coordinator's chain holds the active branch. The audit's chain does not.
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
     def test_an_owner_report_to_an_unrelated_task_still_blocks_the_audited_pr(self):
         owner, coordinator, work, pr = self.audited_requester_pr(report_to='unrelated')
         self.service._put('tasks', dict(coordinator, id='unrelated', status='completed', _execution_session_id='unrelated',
