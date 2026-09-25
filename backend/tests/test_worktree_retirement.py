@@ -961,6 +961,11 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing)) as run:
             self.assertEqual(work_workspace.busy_paths({str(held), str(free)}), {str(held)})
         self.assertEqual(run.call_count, 1)
+        # Two paths with one resolved form are both busy.
+        link = self.root / 'held-link'
+        link.symlink_to(held)
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing)):
+            self.assertEqual(work_workspace.busy_paths({str(held), str(link)}), {str(held), str(link)})
 
     def test_elapsed_times_from_ps_become_seconds(self):
         self.assertEqual(work_workspace.elapsed_seconds('05'), 5)

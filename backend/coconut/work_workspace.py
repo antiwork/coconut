@@ -243,15 +243,18 @@ def busy_paths(paths):
         raise ValueError('Coconut cannot check open files without lsof.') from None
     if not result.stdout:
         raise ValueError('lsof did not list open files.')
+    # Two paths can share one resolved form, such as /tmp and /private/tmp on macOS. Keep every path for each form.
     prefixes = {}
     for path in paths:
         for form in {str(path), str(Path(path).resolve())}:
-            prefixes[os.fsencode(form)] = path
+            prefixes.setdefault(os.fsencode(form), set()).add(path)
     busy = set()
     for line in result.stdout.splitlines():
         if line.startswith(b'n'):
             name = line[1:]
-            busy.update(path for prefix, path in prefixes.items() if name == prefix or name.startswith(prefix + b'/'))
+            for prefix, owners in prefixes.items():
+                if name == prefix or name.startswith(prefix + b'/'):
+                    busy |= owners
     return busy
 
 

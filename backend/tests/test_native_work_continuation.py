@@ -911,14 +911,14 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.ended_branch(coordinator)
         receipt = self.service._get('native_receipts', 'cut-off')
         for command in ('sudo make install', 'cd /repo && doas cp a b', 'su - root -c true', 'FOO=1 /usr/bin/sudo ls',
-                        '(pkexec true)', 'echo $(sudo id)'):
+                        '(pkexec true)', 'echo $(sudo id)', "bash -c 'sudo id'", 'xargs sudo rm', 'grep sudo README.md'):
             with self.subTest(command=command), patch('coconut.work_workspace.process_outcomes', return_value=set()), \
                     patch('coconut.work_workspace.busy_paths', return_value=set()):
                 self.service._put('native_receipts', dict(receipt, action={'name': 'terminal', 'arguments': {'command': command}}))
                 self.service._ended_tool_check_at = 0
                 self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
-        # A command that only mentions sudo does not run it.
-        for command in ('grep sudo README.md', 'git log --grep=pseudo'):
+        # A word that only contains a privileged name is not one.
+        for command in ('git log --grep=pseudo', 'make summary'):
             with self.subTest(command=command), patch('coconut.work_workspace.process_outcomes', return_value=set()), \
                     patch('coconut.work_workspace.busy_paths', return_value=set()):
                 self.service._put('native_receipts', dict(receipt, action={'name': 'terminal', 'arguments': {'command': command}}))

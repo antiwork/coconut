@@ -14,9 +14,9 @@ ENDED_TOOL_CHECK_SECONDS = 60
 # macOS hides the environment of system programs, such as /bin/sh and git. Such an orphan that left its workspace
 # escapes both checks, so a call counts as ended only after it started this long ago.
 ENDED_TOOL_MIN_AGE_SECONDS = 60 * 60
-# A privileged program at a command position of a shell command, or named anywhere in a code call.
-PRIVILEGED_COMMAND = re.compile(r'(?:^|[;&|(`\n]|\$\()\s*(?:\w+=\S*\s+)*(?:exec\s+|command\s+|env\s+)*(?:/\S*/)?(?:sudo|doas|su|pkexec|runas)\b')
-PRIVILEGED_NAME = re.compile(r'\b(?:sudo|doas|su|pkexec|runas)\b')
+# A call that names a privileged program anywhere never ends here. `bash -c 'sudo ...'` or `xargs sudo` hide the
+# program from a command-position match, so a call that only mentions one also stays blocked.
+PRIVILEGED = re.compile(r'\b(?:sudo|doas|su|pkexec|runas)\b')
 # A call whose workspace stays busy is checked again after this delay, which doubles up to an hour.
 BUSY_TOOL_BACKOFF_SECONDS = 10 * 60
 PENDING_COMPLETIONS = """
@@ -161,10 +161,7 @@ class BackgroundProcesses:
                 if (record.get('action') or {}).get('name') not in LOCAL_COMMAND_TOOLS or record.get('_process_ended_at'):
                     continue
                 # A privileged child runs as another user. Neither ps nor lsof can see it, so its call never ends here.
-                action = record.get('action') or {}
-                arguments = action.get('arguments') if isinstance(action.get('arguments'), dict) else {}
-                if (PRIVILEGED_COMMAND.search(str(arguments.get('command', ''))) if action.get('name') == 'terminal'
-                        else PRIVILEGED_NAME.search(json.dumps(arguments))):
+                if PRIVILEGED.search(json.dumps((record.get('action') or {}).get('arguments'))):
                     continue
                 if current < self._busy_tool_calls.get(record['id'], (0, 0))[0]:
                     continue
