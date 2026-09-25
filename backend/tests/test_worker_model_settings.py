@@ -245,7 +245,7 @@ class WorkerModelProcessTests(unittest.TestCase):
                     self.assertEqual((record['home'], record['hermes_home']), (pwd.getpwuid(os.getuid()).pw_dir, str(home)))
                     self.assertFalse(record['skip_context_files'])
                     self.assertFalse(record['skip_memory'])
-                expected = {'coconut_ask'}
+                expected = {'coconut_ask', 'coconut_read_receipts'}
                 if operation != 'context':
                     expected.update({'coconut_restart_service', 'coconut_suggest', 'coconut_track_pr', 'coconut_track_work', 'coconut_wait', 'coconut_continue_work', 'coconut_unlink_dependency'})
                 if operation == 'start' or status == 'modified':
