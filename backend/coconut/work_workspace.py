@@ -405,19 +405,19 @@ def check_worktree(path, binding, repository, *, processes=True):
         raise ValueError('A process uses the worktree.')
 
 
-def remove_nested(root, path, repository):
-    """Remove the clean worktrees that a bot created inside the path. Refuse one that holds work.
+def remove_nested(root, path, repository, *, check_only=False):
+    """Remove the clean worktrees that a bot created inside the path. Refuse all of them if one holds work.
 
-    A nested worktree is clean when it has no staged, unstaged, or untracked change, no ignored file outside the
-    rebuildable folders, and no Git operation in progress, and a branch or another ref holds its commit. Then the
-    shared repository keeps everything, and `git worktree remove` without --force refuses it if it changes first.
-    Call this only after the process check of the parent path, which covers the nested folders.
+    A nested worktree is clean when Coconut does not track it, it is not locked, it has no staged, unstaged,
+    untracked, or ignored file outside the rebuildable folders, no Git operation is in progress, and a branch or
+    another ref holds its commit. Then the shared repository keeps everything it had. Coconut checks every nested
+    worktree before it removes any, and checks again under the registry lock just before removal, because Git's own
+    clean check does not look at ignored files. With check_only, Coconut only checks.
+    Call this with check_only=False only after the process check of the parent path, which covers the nested folders.
     """
-    tracked = {Path(b['path']).resolve() for b in unlocked_registry(root).values()
-               if isinstance(b, dict) and isinstance(b.get('path'), str)}
-    for record in nested(path, registered(repository)):
+    def clean(record):
         inner = record['path']
-        if inner in tracked or record['locked']:
+        if record['locked']:
             raise ValueError('The worktree contains another worktree.')
         git_paths = git(inner, 'rev-parse', '--path-format=absolute', *(a for n in IN_PROGRESS for a in ('--git-path', n)))
         if (git_output(inner, 'status', '--porcelain', '-z', strict=True) or ignored_files(inner)
@@ -426,7 +426,36 @@ def remove_nested(root, path, repository):
         head = git(inner, 'rev-parse', 'HEAD')
         if not record['branch'] and not git(repository, 'for-each-ref', '--contains', head, '--count=1', '--format=%(refname)'):
             raise ValueError('The worktree contains another worktree with a commit that no ref holds.')
-        git(repository, 'worktree', 'remove', str(inner), timeout=CHECKOUT_SECONDS)
+
+    def tracked():
+        # A failed read must not hide another outcome's worktree, so this read is strict.
+        try:
+            saved = json.loads((Path(root) / 'worktrees.json').read_text())
+        except (OSError, ValueError) as error:
+            raise ValueError('Coconut cannot read the worktree registry: ' + str(error)) from None
+        if not isinstance(saved, dict):
+            raise ValueError('The worktree registry is not valid.')
+        return {Path(b['path']).resolve() for b in saved.values() if isinstance(b, dict) and isinstance(b.get('path'), str)}
+
+    records = nested(path, registered(repository))
+    owned = tracked()
+    for record in records:
+        if record['path'] in owned:
+            raise ValueError('The worktree contains another worktree.')
+        clean(record)
+    if check_only or not records:
+        return
+    # acquire() registers a new binding under this lock, so no outcome can claim a nested worktree meanwhile.
+    with (Path(root) / '.workspace.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        records = nested(path, registered(repository))
+        owned = tracked()
+        for record in records:
+            if record['path'] in owned:
+                raise ValueError('The worktree contains another worktree.')
+            clean(record)
+        for record in records:
+            git(repository, 'worktree', 'remove', str(record['path']), timeout=CHECKOUT_SECONDS)
 
 
 def release(path, outcome, orphan_age):
@@ -547,6 +576,8 @@ def retire(root, identity, finished, *, orphan_age=None):
     if nested(path, registered(repository)):
         # A bot can create worktrees inside its own worktree, for example to test a base commit.
         # Their files would count as ignored files of this worktree, so remove the clean ones first.
+        # Check first, so a refusal does not follow an orphan stop for nothing.
+        remove_nested(root, path, repository, check_only=True)
         if not finished(True):
             raise ValueError('The outcome resumed during retirement.')
         release(path, before['outcome'], orphan_age)
