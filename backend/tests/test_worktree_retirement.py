@@ -1052,6 +1052,15 @@ class WorktreeRetirementTests(unittest.TestCase):
                 work_workspace.remove_nested(self.workspaces, path.resolve(), self.repo)
         self.assertEqual((inner / '.env').read_text(), 'SECRET=1\n')
 
+    def test_a_doubly_nested_worktree_is_removed_deepest_first(self):
+        _, identity, path, _ = self.outcome()
+        outer = self.nested_worktree(path, 'outer', folder='checks')
+        inner = self.nested_worktree(outer, 'inner', folder='checks')
+        self.assertEqual(self.retire(), [identity])
+        self.assertFalse(outer.exists())
+        self.assertFalse(self.listed(inner))
+        self.assertFalse(self.listed(outer))
+
     def test_a_nested_record_without_its_folder_does_not_keep_the_parent(self):
         _, identity, path, _ = self.outcome()
         inner = self.nested_worktree(path)

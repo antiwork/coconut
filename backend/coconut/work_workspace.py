@@ -454,7 +454,8 @@ def remove_nested(root, path, repository, *, check_only=False):
             if record['path'] in owned:
                 raise ValueError('The worktree contains another worktree.')
             clean(record)
-        for record in records:
+        # Remove the deepest first. Removing a parent first would delete a worktree inside it without Git.
+        for record in sorted(records, key=lambda r: len(r['path'].parts), reverse=True):
             git(repository, 'worktree', 'remove', str(record['path']), timeout=CHECKOUT_SECONDS)
 
 
@@ -576,7 +577,9 @@ def retire(root, identity, finished, *, orphan_age=None):
     if nested(path, registered(repository)):
         # A bot can create worktrees inside its own worktree, for example to test a base commit.
         # Their files would count as ignored files of this worktree, so remove the clean ones first.
-        # Check first, so a refusal does not follow an orphan stop for nothing.
+        # Check first, so a refusal does not follow an orphan stop for nothing. The parent's own size and content
+        # checks must run after the removal, because the nested files would count toward them. If one of those
+        # refuses, only clean nested checkouts are gone, and the next hourly pass retries without them.
         remove_nested(root, path, repository, check_only=True)
         if not finished(True):
             raise ValueError('The outcome resumed during retirement.')
