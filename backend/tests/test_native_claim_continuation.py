@@ -354,9 +354,10 @@ else:
             self.service._put('tasks', report)
             self.service._put('tasks', caller)
             url = 'https://github.com/example/app/pull/6'
+            from coconut.service import now
             for task, activity in ((owner, report), (requester, caller)):
                 self.service._put('artifacts', dict(id=str(uuid4()), task_id=task['id'], bot_id=task['bot_id'],
-                    kind='pr', title='Retained PR', status='merged', pr_state='merged', url=url,
+                    created_at=now(), kind='pr', title='Retained PR', status='merged', pr_state='merged', url=url,
                     _review_task_id=task['id'], _activity_task_id=activity['id']))
             return owner, caller, identity, workspace
         self.prepare = prepare_callback
