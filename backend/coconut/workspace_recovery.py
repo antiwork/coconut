@@ -197,6 +197,8 @@ def checkout_state(request, *, initial):
 
 
 def dirty_state(path):
+    if checkout_git(path, 'config', '--bool', 'core.filemode').strip() != 'true':
+        raise ValueError('Checkout recovery requires Git file-mode tracking.')
     if checkout_git(path, 'diff', '--cached', '--name-only'):
         raise ValueError('Staged edits need separate inspection before checkout recovery.')
     if checkout_git(path, 'ls-files', '-u'):
@@ -222,8 +224,16 @@ def dirty_state(path):
     return dirty
 
 
+def reject_custom_merge_drivers(path):
+    result = subprocess.run(['git', '-C', str(path), 'config', '--get-regexp',
+                             r'^merge\..*\.driver$'], capture_output=True, text=True, timeout=10)
+    if result.returncode != 1:
+        raise ValueError('Custom Git merge drivers require separate checkout inspection.')
+
+
 def checkout_obstructions(request, tree, dirty):
     path = Path(request['path'])
+    reject_custom_merge_drivers(path)
     changed = set(filter(None, checkout_git(path, 'diff', '--no-renames', '--name-only', '-z',
                                             request['attached_head'], tree).split('\0')))
     if changed.intersection(dirty):
@@ -253,6 +263,7 @@ def checkout_plan(request):
     path = Path(request['path'])
     checkout_state(request, initial=True)
     dirty = dirty_state(path)
+    reject_custom_merge_drivers(path)
     common = checkout_git(path, 'merge-base', request['attached_head'], request['saved_head']).strip()
     if common in (request['attached_head'], request['saved_head']):
         raise ValueError('The original branch histories do not diverge.')

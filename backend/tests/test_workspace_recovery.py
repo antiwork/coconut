@@ -303,6 +303,25 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
         self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
 
+    def test_checkout_recovery_refuses_custom_merge_drivers_before_planning(self):
+        payload, dirty, artifact = self.checkout_incident()
+        marker = self.root / 'merge-driver-ran'
+        git(self.repo, 'config', 'merge.unsafe.driver', 'touch ' + str(marker))
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+
+    def test_checkout_recovery_refuses_disabled_git_filemode(self):
+        payload, dirty, artifact = self.checkout_incident()
+        git(self.repo, 'config', 'core.filemode', 'false')
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+
     def test_checkout_recovery_retains_unstaged_tracked_deletion(self):
         payload, dirty, artifact = self.checkout_incident()
         (self.workspace / 'checkout-a.txt').unlink()

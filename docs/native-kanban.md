@@ -234,8 +234,9 @@ branch heads and exact worktree, then saves a durable receipt before draining.
 Before any Git write at startup it verifies native/background quiescence, unchanged
 owner, Work, heads, binding and dirty tracked file contents. Git merges the two
 heads into a **new local-only two-parent commit**; conflicts, staged or unmerged
-changes, or paths that might overwrite dirty/untracked/ignored files hold admission for
-manual inspection. Changed-tree path obstructions and checkout filters are rechecked
+changes, custom merge drivers, disabled Git file-mode tracking, or paths that
+might overwrite dirty/untracked/ignored files hold admission for manual inspection.
+Changed-tree path obstructions and checkout filters are rechecked
 immediately before switching with `--no-overwrite-ignore`; the repair disables
 repository checkout hooks. The original refs are never moved. The new branch is switched
 in the same worktree and the manifest is updated only after verifying its checkout
