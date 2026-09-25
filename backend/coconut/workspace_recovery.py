@@ -201,7 +201,8 @@ def dirty_state(path):
         raise ValueError('Staged edits need separate inspection before checkout recovery.')
     if checkout_git(path, 'ls-files', '-u'):
         raise ValueError('An unmerged index needs separate inspection.')
-    for marker in ('MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'index.lock'):
+    for marker in ('MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG',
+                   'rebase-merge', 'rebase-apply', 'index.lock'):
         if Path(git(path, 'rev-parse', '--git-path', marker)).exists():
             raise ValueError('A Git operation is still in progress.')
     for entry in filter(None, checkout_git(path, 'ls-files', '-v', '-z').split('\0')):
@@ -243,6 +244,9 @@ def checkout_plan(request):
     path = Path(request['path'])
     checkout_state(request, initial=True)
     dirty = dirty_state(path)
+    common = checkout_git(path, 'merge-base', request['attached_head'], request['saved_head']).strip()
+    if common in (request['attached_head'], request['saved_head']):
+        raise ValueError('The original branch histories do not diverge.')
     tree = checkout_git(path, 'merge-tree', '--write-tree', request['attached_head'], request['saved_head']).splitlines()[0]
     checkout_obstructions(request, tree, dirty)
     environment = dict(os.environ, GIT_AUTHOR_NAME='Coconut local recovery',

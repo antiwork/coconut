@@ -198,6 +198,29 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         self.assertEqual(self.program('print(board.kb.get_task(board.conn, sys.argv[2]).status)', self.native_id), 'archived')
         self.assertNotEqual(self.service.kanban.tasks[receipt['successor_task_id']]['id'], self.native_id)
 
+    def test_checkout_recovery_refuses_active_no_checkout_bisect(self):
+        payload, dirty, artifact = self.checkout_incident()
+        bisect_log = Path(git(self.workspace, 'rev-parse', '--git-path', 'BISECT_LOG'))
+        bisect_log.write_text('git bisect start --no-checkout\n')
+        before = self.manifest.read_bytes()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+        self.assertEqual(self.manifest.read_bytes(), before)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+
+    def test_checkout_recovery_requires_two_divergent_heads(self):
+        payload, dirty, artifact = self.checkout_incident()
+        before = self.manifest.read_bytes()
+        common = git(self.workspace, 'merge-base', payload['attached_head'], payload['saved_head'])
+        # The synthetic repository has the saved branch checked out separately.
+        for new_head in (payload['attached_head'], common):
+            git(self.repo, 'reset', '--hard', new_head)
+            payload['saved_head'] = new_head
+            self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
+            self.assertEqual(self.manifest.read_bytes(), before)
+            self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+            self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
+
     def test_checkout_recovery_retains_unstaged_tracked_deletion(self):
         payload, dirty, artifact = self.checkout_incident()
         (self.workspace / 'checkout-a.txt').unlink()
