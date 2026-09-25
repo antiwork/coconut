@@ -26,6 +26,21 @@ OLD = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat().replace('+00:
 RECENT = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
+def environments_visible():
+    """Return True when this system shows another process's environment. macOS 27 does not."""
+    if not shutil.which('lsof') or os.uname().sysname != 'Darwin':
+        return False
+    process = subprocess.Popen(['sleep', '5'], env=dict(os.environ, COCONUT_PROBE='1'))
+    try:
+        return work_workspace.environment_names(process.pid, 'COCONUT_PROBE=1')
+    finally:
+        process.kill()
+        process.wait()
+
+
+ENVIRONMENTS_VISIBLE = environments_visible()
+
+
 class WorktreeRetirementTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -45,10 +60,10 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'Coder', 'role': ''}, str(uuid4()))
         self.workspaces = self.service.root / 'workspaces'
         self.workspaces.mkdir(mode=0o700, exist_ok=True)
-        # Most tests do not depend on lsof. One test below checks a real process.
-        self.in_use = patch('coconut.work_workspace.in_use', return_value=False)
-        self.in_use.start()
-        self.addCleanup(self.in_use.stop)
+        # Most tests do not depend on lsof or send signals. The process tests below use real processes.
+        self.holders = patch('coconut.work_workspace.holders', return_value=set())
+        self.holders.start()
+        self.addCleanup(self.holders.stop)
 
     def commit(self, path, message):
         git(path, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '-m', message)
@@ -640,16 +655,17 @@ class WorktreeRetirementTests(unittest.TestCase):
         process = subprocess.Popen(['sleep', '60'], cwd=path)
         self.addCleanup(process.wait)
         self.addCleanup(process.kill)
-        self.in_use.stop()
+        self.holders.stop()
         self.assertTrue(work_workspace.in_use(path))
         self.assertEqual(self.retire(), [])
         self.assertTrue(path.is_dir())
         self.assertNotIn('retired', self.registry()[identity])
 
 
-    def orphan(self, path):
+    def orphan(self, path, outcome=None):
         """Start a process in the path whose parent ends at once, so that launchd adopts it."""
-        started = subprocess.run(['sh', '-c', 'sleep 60 >/dev/null 2>&1 & echo $!'], cwd=path,
+        env = dict(os.environ, COCONUT_WORKSPACE_OUTCOME=outcome) if outcome else None
+        started = subprocess.run(['sh', '-c', 'sleep 60 >/dev/null 2>&1 & echo $!'], cwd=path, env=env,
                                  capture_output=True, text=True, check=True)
         pid = int(started.stdout)
         self.addCleanup(lambda: subprocess.run(['kill', str(pid)], capture_output=True))
@@ -658,31 +674,35 @@ class WorktreeRetirementTests(unittest.TestCase):
     def alive(self, pid):
         return subprocess.run(['ps', '-p', str(pid)], capture_output=True).returncode == 0
 
-    @unittest.skipUnless(shutil.which('lsof') and os.uname().sysname == 'Darwin', 'The test needs lsof and launchd.')
-    def test_an_old_orphaned_process_is_stopped_and_the_worktree_retires(self):
-        _, identity, path, _ = self.outcome()
-        pid = self.orphan(path)
-        self.in_use.stop()
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_an_old_orphaned_process_of_the_outcome_is_stopped_and_the_worktree_retires(self):
+        outcome, identity, path, _ = self.outcome()
+        pid = self.orphan(path, outcome)
+        self.holders.stop()
         with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
-            self.retire()
-            for _ in range(50):
-                if not self.alive(pid):
-                    break
-                time.sleep(0.1)
-            self.assertFalse(self.alive(pid))
-            if path.exists():
-                self.assertEqual(self.retire(), [identity])
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(self.alive(pid))
         self.assertIn('retired', self.registry()[identity])
 
-    @unittest.skipUnless(shutil.which('lsof') and os.uname().sysname == 'Darwin', 'The test needs lsof and launchd.')
-    def test_a_young_orphaned_process_keeps_the_worktree(self):
-        _, identity, path, _ = self.outcome()
-        pid = self.orphan(path)
-        self.in_use.stop()
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_young_foreign_and_locked_orphans_keep_their_processes_and_worktrees(self):
+        young_outcome, young, young_path, _ = self.outcome()
+        young_pid = self.orphan(young_path, young_outcome)
+        _, foreign, foreign_path, _ = self.outcome()
+        # launchd also starts apps and agents. A process without the outcome variable is not Coconut's.
+        foreign_pid = self.orphan(foreign_path, str(uuid4()))
+        locked_outcome, locked, locked_path, _ = self.outcome()
+        locked_pid = self.orphan(locked_path, locked_outcome)
+        git(self.repo, 'worktree', 'lock', str(locked_path))
+        self.holders.stop()
         self.assertEqual(self.retire(), [])
-        self.assertTrue(self.alive(pid))
-        self.assertTrue(path.is_dir())
-        self.assertNotIn('retired', self.registry()[identity])
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.assertEqual(self.retire(), [young])
+        self.assertFalse(self.alive(young_pid))
+        for pid, identity, path in ((foreign_pid, foreign, foreign_path), (locked_pid, locked, locked_path)):
+            self.assertTrue(self.alive(pid))
+            self.assertTrue(path.is_dir())
+            self.assertNotIn('retired', self.registry()[identity])
 
     def test_elapsed_times_from_ps_become_seconds(self):
         self.assertEqual(work_workspace.elapsed_seconds('05'), 5)

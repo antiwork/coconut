@@ -68,9 +68,12 @@ Retirement does these steps:
 1. It validates the binding and the Git worktree record.
 2. It skips a locked worktree, a worktree that contains another worktree, and a Git operation in progress.
 3. It skips a worktree when `lsof` shows a process cwd or an open file in it, or when `lsof` is not available.
-   Before this check, it stops an orphaned process that holds the worktree and its child processes with `SIGTERM`.
+   Before this check, it stops the orphaned processes of the outcome that hold the worktree, and their child processes.
    An orphan is a process that launchd (PID 1) adopted, and that is older than `ORPHAN_AGE_SECONDS` (six hours).
-   A service restart leaves such processes from earlier turns. A process under a shell or the service is not an orphan.
+   A service restart leaves such processes from earlier turns. launchd also starts apps and agents,
+   so Coconut stops only a process whose environment has `COCONUT_WORKSPACE_OUTCOME` set to the outcome.
+   The worker of each turn sets this variable. If the system hides process environments, as macOS 27 does, Coconut stops nothing.
+   It sends `SIGTERM`, waits at most 5 seconds, and then sends `SIGKILL`.
 4. It writes `workspaces/archive/<registry key>.tar.gz` with mode 0600. The archive contains these items:
    - `staged.patch` from `git diff --binary --cached HEAD`.
    - `unstaged.patch` from `git diff --binary`.

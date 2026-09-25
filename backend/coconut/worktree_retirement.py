@@ -76,13 +76,12 @@ class WorktreeRetirement:
         # Only this poller writes archives, and no retirement runs now.
         work_workspace.sweep_temporary(root)
         # The registry changes by atomic rename, so this read needs no lock. Retirement checks again under the lock.
-        bindings = {k: v for k, v in json.loads(manifest.read_text()).items() if not v.get('retired')}
+        bindings = {k: v['outcome'] for k, v in json.loads(manifest.read_text()).items() if not v.get('retired')}
         finished = self._finished_outcomes(current, timeout=SERVICE_WAIT_SECONDS)
         if finished is None:
             return []
         retired = []
-        for identity, binding in bindings.items():
-            outcome = binding['outcome']
+        for identity, outcome in bindings.items():
             if outcome not in finished:
                 continue
             if self.stopping.is_set() or self.restart_pending:
@@ -97,11 +96,7 @@ class WorktreeRetirement:
                 return outcome in result
             try:
                 # A service restart leaves the processes of earlier turns to launchd. They keep the worktree in use.
-                stopped = work_workspace.stop_orphans(binding['path'], ORPHAN_AGE_SECONDS)
-                if stopped:
-                    logging.getLogger(__name__).warning('Coconut stopped orphaned processes %s in worktree %s.',
-                                                        sorted(stopped), identity)
-                if work_workspace.retire(root, identity, still_finished):
+                if work_workspace.retire(root, identity, still_finished, orphan_age=ORPHAN_AGE_SECONDS):
                     retired.append(identity)
             except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.TimeoutExpired, sqlite3.Error) as error:
                 # sqlite3.Error covers a database that shutdown closed while this thread ran.

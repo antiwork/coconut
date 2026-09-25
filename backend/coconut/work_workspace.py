@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -12,6 +13,7 @@ import signal
 import stat
 import subprocess
 import tarfile
+import time
 from types import SimpleNamespace
 import zlib
 
@@ -226,6 +228,10 @@ def holders(path):
     return found
 
 
+# Coconut waits this long for orphaned processes to end after SIGTERM.
+STOP_SECONDS = 5
+
+
 def in_use(path):
     """Return True when a process has its cwd or an open file in the path."""
     return bool(holders(path))
@@ -240,15 +246,8 @@ def elapsed_seconds(value):
     return (int(days) if days else 0) * 86400 + seconds
 
 
-def stop_orphans(path, age):
-    """Stop the old orphaned processes that hold the path, and their child processes. Return their IDs.
-
-    An orphan is a process that launchd (PID 1) adopted after its parent ended. Coconut stops only an orphan
-    that holds the path itself and that is older than `age` seconds. A process under a shell or the service is not an orphan.
-    """
-    found = holders(path)
-    if not found:
-        return set()
+def processes():
+    """Return each process ID with its parent ID and its age in seconds."""
     try:
         result = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,etime='], capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
@@ -258,21 +257,74 @@ def stop_orphans(path, age):
         with contextlib.suppress(ValueError):
             pid, parent, elapsed = line.split()
             table[int(pid)] = (int(parent), elapsed_seconds(elapsed))
-    orphans = {pid for pid in found if pid != os.getpid() and table.get(pid, (None, 0))[0] == 1 and table[pid][1] >= age}
-    stopped = set(orphans)
-    while True:
-        children = {pid for pid, (parent, _) in table.items() if parent in stopped} - stopped
+    return table
+
+
+def environment_names(pid, mark):
+    """Return True when the environment of the process contains the `NAME=value` item `mark`."""
+    with contextlib.suppress(OSError):
+        return mark.encode() in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
+    try:
+        # On macOS, `ps -E` prints the environment after the command for a process of the same user.
+        result = subprocess.run(['ps', '-E', '-p', str(pid), '-o', 'command='], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return mark in result.stdout.split()
+
+
+def running(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def stop(pids, sig, seconds):
+    """Send the signal and wait at most `seconds` for the processes to end. Return the processes that remain."""
+    for pid in pids:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(pid, sig)
+    deadline = time.monotonic() + seconds
+    remaining = set(pids)
+    while remaining and time.monotonic() < deadline:
+        time.sleep(0.1)
+        remaining = {pid for pid in remaining if running(pid)}
+    return remaining
+
+
+def stop_orphans(found, outcome, age):
+    """Stop the old orphaned processes of the outcome in `found`, and their child processes. Return their IDs.
+
+    An orphan is a process that launchd (PID 1) adopted after its parent ended. launchd also starts apps and agents.
+    So Coconut stops only a process whose environment names the outcome in COCONUT_WORKSPACE_OUTCOME.
+    The worker of each turn sets this variable, and the processes of the turn inherit it.
+    When the system does not show the environment of a process, as macOS 27 does not, Coconut does not stop it.
+    A process that does not end after SIGTERM gets SIGKILL.
+    """
+    if not found:
+        return set()
+    table = processes()
+    mark = 'COCONUT_WORKSPACE_OUTCOME=' + outcome
+    owned = lambda pid: pid != os.getpid() and environment_names(pid, mark)
+    stopped = {pid for pid in found if pid in table and table[pid][0] == 1 and table[pid][1] >= age and owned(pid)}
+    while stopped:
+        children = {pid for pid, (parent, _) in table.items() if parent in stopped and pid not in stopped and owned(pid)}
         if not children:
             break
         stopped |= children
-    for pid in stopped:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.kill(pid, signal.SIGTERM)
+    if stopped:
+        stop(stop(stopped, signal.SIGTERM, STOP_SECONDS), signal.SIGKILL, 1)
     return stopped
 
 
-def check_worktree(path, binding, repository, *, processes=True):
-    """Refuse a worktree that Git or a process still uses."""
+def check_worktree(path, binding, repository, *, processes=True, orphan_age=None):
+    """Refuse a worktree that Git or a process still uses.
+
+    With `orphan_age`, stop the orphaned processes of the outcome after the Git checks pass. See stop_orphans.
+    """
     records = registered(repository)
     record = next((r for r in records if r['path'] == path), None)
     if not record or record['branch'] != 'refs/heads/' + binding['branch']:
@@ -284,7 +336,15 @@ def check_worktree(path, binding, repository, *, processes=True):
     git_paths = git(path, 'rev-parse', '--path-format=absolute', *(a for n in IN_PROGRESS for a in ('--git-path', n)))
     if any(Path(p).exists() for p in git_paths.splitlines()):
         raise ValueError('A Git operation is in progress in the worktree.')
-    if processes and in_use(path):
+    if not processes:
+        return
+    found = holders(path)
+    if found and orphan_age is not None:
+        stopped = stop_orphans(found, binding['outcome'], orphan_age)
+        if stopped:
+            logging.getLogger(__name__).warning('Coconut stopped orphaned processes %s in worktree %s.', sorted(stopped), path)
+        found -= stopped
+    if found:
         raise ValueError('A process uses the worktree.')
 
 
@@ -348,12 +408,13 @@ def stamp(moment):
     return moment.isoformat().replace('+00:00', 'Z')
 
 
-def retire(root, identity, finished):
+def retire(root, identity, finished, *, orphan_age=None):
     """Archive and remove the worktree of one finished outcome. Return the archive path.
 
     The caller supplies `finished(wait)`. It returns True when the outcome is still finished.
     With wait=False it waits only briefly for the service lock, and it raises ValueError when that lock stays busy.
     Coconut calls it with wait=True before it takes the registry lock, and with wait=False under that lock.
+    With `orphan_age`, Coconut first stops the orphaned processes of the outcome that are older than that many seconds.
     The Git, lsof, and archive work runs before the registry lock. Under the lock, Coconut only
     repeats the Git checks that do not wait for other processes.
     """
@@ -368,7 +429,7 @@ def retire(root, identity, finished):
         return None
     path = validate_binding(dict(before)).resolve()
     repository = Path(before['repository'])
-    check_worktree(path, before, repository)
+    check_worktree(path, before, repository, orphan_age=orphan_age)
     head = git(path, 'rev-parse', 'HEAD')
     current = changes(path)
     staged, unstaged, names = current
