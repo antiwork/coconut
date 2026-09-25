@@ -317,7 +317,9 @@ def process_outcomes():
         return found
     try:
         # On macOS, `ps -E` prints each environment after its command, for processes of the same user.
-        result = subprocess.run(['ps', '-E', '-A', '-ww', '-o', 'pid=,command='], capture_output=True, text=True, timeout=60)
+        # One process with a non-UTF-8 argument must not stop the whole scan.
+        result = subprocess.run(['ps', '-E', '-A', '-ww', '-o', 'pid=,command='], capture_output=True, text=True,
+                                errors='replace', timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         return None
     found, visible = set(), False

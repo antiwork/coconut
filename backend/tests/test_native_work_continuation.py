@@ -885,6 +885,22 @@ class NativeWorkContinuationTests(unittest.TestCase):
                 patch('coconut.work_workspace.busy_paths', return_value=set()):
             self.assertEqual(self.service._mark_ended_tool_calls(current=61), ['cut-off'])
 
+    def test_the_poller_never_ends_a_privileged_command(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        self.ended_branch(coordinator)
+        receipt = self.service._get('native_receipts', 'cut-off')
+        for command in ('sudo make install', 'cd /repo && doas cp a b', 'su - root -c true'):
+            with self.subTest(command=command), patch('coconut.work_workspace.process_outcomes', return_value=set()), \
+                    patch('coconut.work_workspace.busy_paths', return_value=set()):
+                self.service._put('native_receipts', dict(receipt, action={'name': 'terminal', 'arguments': {'command': command}}))
+                self.service._ended_tool_check_at = 0
+                self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
+        self.service._put('native_receipts', dict(receipt, action={'name': 'terminal', 'arguments': {'command': 'make summary'}}))
+        self.service._ended_tool_check_at = 0
+        with patch('coconut.work_workspace.process_outcomes', return_value=set()), \
+                patch('coconut.work_workspace.busy_paths', return_value=set()):
+            self.assertEqual(self.service._mark_ended_tool_calls(current=0), ['cut-off'])
+
     def test_the_poller_waits_an_hour_before_it_trusts_the_checks(self):
         from datetime import datetime, timezone
         owner, coordinator, work, pr = self.audited_requester_pr()

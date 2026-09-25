@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 import threading
 import time
@@ -13,6 +14,7 @@ ENDED_TOOL_CHECK_SECONDS = 60
 # macOS hides the environment of system programs, such as /bin/sh and git. Such an orphan that left its workspace
 # escapes both checks, so a call counts as ended only after it started this long ago.
 ENDED_TOOL_MIN_AGE_SECONDS = 60 * 60
+PRIVILEGED = re.compile(r'\b(sudo|doas|su|pkexec|runas)\b')
 PENDING_COMPLETIONS = """
     (COALESCE(json_extract(data, '$._process_delivery'), '') IN ('', 0)
      OR json_extract(data, '$._delegation_ack_pending')=1)
@@ -151,6 +153,10 @@ class BackgroundProcesses:
             candidates = []
             for record in records:
                 if (record.get('action') or {}).get('name') not in LOCAL_COMMAND_TOOLS or record.get('_process_ended_at'):
+                    continue
+                # A privileged child runs as another user. Neither ps nor lsof can see it, so its call never ends here.
+                command = json.dumps((record.get('action') or {}).get('arguments'))
+                if PRIVILEGED.search(command):
                     continue
                 try:
                     started = datetime.fromisoformat(record['created_at'].replace('Z', '+00:00'))
