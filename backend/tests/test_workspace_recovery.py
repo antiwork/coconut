@@ -221,6 +221,27 @@ class WorkspaceRecoveryTests(unittest.TestCase):
             self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
             self.assertEqual({name: (self.workspace / name).read_bytes() for name in dirty}, dirty)
 
+    def test_checkout_recovery_runs_deferred_provider_migrations_before_workers(self):
+        payload, dirty, artifact = self.checkout_incident()
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
+        self.assertTrue(self.service.take_service_restart())
+        calls = []
+
+        class MigrationProvider(native.Provider):
+            def migrate_model_default(self, model, base_url):
+                calls.append(('model', model, base_url))
+
+            def native_settings(self, operation, bots):
+                calls.append(('native', operation, len(bots)))
+                return {'routines': []}
+
+        self.restart(MigrationProvider(self.data))
+        self.assertEqual(self.receipt()['state'], 'applied')
+        self.assertEqual([entry[0] for entry in calls], ['model', 'native'])
+        self.assertEqual(calls[1][1], 'migrate')
+        self.assertTrue(calls[1][2])
+        self.assertFalse(self.service._workspace_recovery_hold)
+
     def test_checkout_recovery_retains_unstaged_tracked_deletion(self):
         payload, dirty, artifact = self.checkout_incident()
         (self.workspace / 'checkout-a.txt').unlink()
