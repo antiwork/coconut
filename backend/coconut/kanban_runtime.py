@@ -35,6 +35,8 @@ class Board:
         self.conn = kanban_db_connect.connect()
         self.conn.execute('CREATE TABLE IF NOT EXISTS coconut_bindings '
                           '(external_id TEXT PRIMARY KEY, native_id TEXT NOT NULL UNIQUE, intent TEXT NOT NULL)')
+        self.conn.execute('CREATE TABLE IF NOT EXISTS coconut_unlinks '
+                          '(request_id TEXT PRIMARY KEY, intent TEXT NOT NULL, generation INTEGER NOT NULL, receipt TEXT)')
         self.conn.execute('CREATE TABLE IF NOT EXISTS coconut_pr_followups '
                           '(native_id TEXT PRIMARY KEY, input_id TEXT NOT NULL)')
         self.conn.execute('CREATE TABLE IF NOT EXISTS coconut_outcomes (native_id TEXT PRIMARY KEY, initialized INTEGER NOT NULL DEFAULT 0)')
@@ -216,6 +218,96 @@ class Board:
                 self.kb.unblock_task(self.conn, identity)
             self.conn.execute('UPDATE coconut_outcomes SET initialized=1 WHERE native_id=?', (identity,))
 
+    def unlink_dependency(self, request):
+        from hermes_cli.kanban_db_connect import _dispatch_tick_lock
+        # The native lock fails open if its file cannot be opened. Prove that
+        # it actually excludes another handle; unsupported locks fail closed.
+        import fcntl
+        path = self.kb.kanban_db_path()
+        with path.with_name(path.name + '.dispatch.lock').open('a+b') as probe:
+            with _dispatch_tick_lock(path) as acquired:
+                if not acquired:
+                    raise ValueError('Native dispatch is in progress. Retry after it finishes.')
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    pass
+                else:
+                    fcntl.flock(probe, fcntl.LOCK_UN)
+                    raise ValueError('The native dispatch lock is unavailable.')
+                return self._unlink_dependency(request)
+
+    def _unlink_dependency(self, request, *, receipt_only=False):
+        # Adapter requests serialize bind/sync; the native dispatch lock fences
+        # claims. Do not nest a transaction around unlink_tasks: it commits and
+        # recomputes readiness itself. Its unlinked event is the mutation receipt.
+        parent_id, child_id = request['parent_id'], request['child_id']
+        intent = json.dumps(request, sort_keys=True)
+        previous = self.conn.execute('SELECT intent,generation,receipt FROM coconut_unlinks WHERE request_id=?',
+                                     (request['request_id'],)).fetchone()
+        if receipt_only and not previous:
+            return None
+        if previous and previous[0] != intent:
+            raise ValueError('The dependency unlink request identity changed.')
+        tasks = []
+        for identity, external, tenant in ((parent_id, request['parent_external_id'], request['parent_bot_id']),
+                                           (child_id, request['child_external_id'], request['child_bot_id'])):
+            task = self.kb.get_task(self.conn, identity)
+            binding = self.conn.execute('SELECT native_id FROM coconut_bindings WHERE external_id=?', (external,)).fetchone()
+            if not task or task.id != identity or task.tenant != tenant or not binding or binding[0] != identity:
+                raise ValueError('The saved Coconut and native dependency mapping does not match.')
+            tasks.append(task)
+        if previous and previous[2]:
+            return json.loads(previous[2])
+        events = self.conn.execute("SELECT id,CASE WHEN kind='created' THEN 'linked' ELSE kind END FROM task_events "
+            "WHERE task_id=? AND ((kind IN ('linked','unlinked') AND json_extract(payload,'$.parent')=? "
+            "AND json_extract(payload,'$.child')=?) OR (kind='created' AND EXISTS "
+            "(SELECT 1 FROM json_each(payload,'$.parents') WHERE value=?))) ORDER BY id",
+            (child_id, parent_id, child_id, parent_id)).fetchall()
+        edge = self.conn.execute('SELECT 1 FROM task_links WHERE parent_id=? AND child_id=?', (parent_id, child_id)).fetchone()
+        generation = previous[1] if previous else next((row[0] for row in reversed(events) if row[1] == 'linked'), None)
+        later = [row for row in events if generation is not None and row[0] > generation]
+        unlinked = next((row[0] for row in later if row[1] == 'unlinked'), None)
+        if previous and later:
+            if later[0][1] != 'unlinked':
+                raise ValueError('The dependency was linked again. The original unlink is unresolved; nothing changed.')
+            # Whether absent or re-added, never remove another edge generation.
+        else:
+            if receipt_only:
+                return None
+            if not edge or generation is None:
+                raise ValueError('The exact dependency has no matching linked event. Nothing changed; unlink unresolved.')
+            parent, child = tasks
+            if child.status != 'todo' or any(t.status == 'running' or t.current_run_id or t.worker_pid for t in tasks):
+                raise ValueError('The child must be TODO and both native outcomes must have no active run.')
+            # Other native workers in this tenant can use raw kanban_link.
+            active = self.conn.execute("SELECT id FROM tasks WHERE tenant=? AND (status='running' OR current_run_id IS NOT NULL "
+                'OR worker_pid IS NOT NULL) AND id<>? LIMIT 1',
+                (request['child_bot_id'], request.get('source_native_id') or '')).fetchone()
+            if active:
+                raise ValueError('Wait for the child owner’s other native work before unlinking.')
+            if not previous:
+                with self.kb.write_txn(self.conn):
+                    self.conn.execute('INSERT INTO coconut_unlinks VALUES (?,?,?,NULL)',
+                                      (request['request_id'], intent, generation))
+            # This is the only graph mutation. Intent is durable before entering
+            # the native helper, so lost replies and interrupted calls can replay.
+            self.kb.unlink_tasks(self.conn, parent_id, child_id)
+            unlinked = self.conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind='unlinked' AND id>? "
+                "AND json_extract(payload,'$.parent')=? AND json_extract(payload,'$.child')=? ORDER BY id LIMIT 1",
+                (child_id, generation, parent_id, child_id)).fetchone()
+            unlinked = unlinked[0] if unlinked else None
+            if unlinked is None:
+                raise ValueError('The native unlink has no mutation receipt. Read the dependency before retrying.')
+        receipt = dict(status='unlinked', parent_id=parent_id, child_id=child_id,
+                       request_id=request['request_id'], linked_event_id=generation, unlinked_event_id=unlinked)
+        if receipt_only:
+            return receipt
+        with self.kb.write_txn(self.conn):
+            self.conn.execute('UPDATE coconut_unlinks SET receipt=? WHERE request_id=?',
+                              (json.dumps(receipt, sort_keys=True), request['request_id']))
+        return receipt
+
     def finish(self, identity, run_id, state, summary):
         task = self.kb.get_task(self.conn, identity)
         if not task or task.current_run_id != run_id or task.status != 'running':
@@ -393,6 +485,10 @@ def main():
                 elif request['op'] == 'bind':
                     board.bind(request['id'], request['external_id'])
                     result = {'ok': True}
+                elif request['op'] == 'unlink_receipt':
+                    result = {'receipt': board._unlink_dependency(request | {'op': 'unlink_dependency'}, receipt_only=True)}
+                elif request['op'] == 'unlink_dependency':
+                    result = board.unlink_dependency(request)
                 elif request['op'] == 'snapshot':
                     result = {'tasks': board.snapshot(request.get('external_ids', []))}
                 else:

@@ -33,6 +33,7 @@ jobs:
           PYTHONPATH: backend
         run: |
           python -m unittest discover -s backend/tests -p test_worker_model_settings.py
+          python -m unittest discover -s backend/tests -p test_dependency_unlink.py
           python -m unittest discover -s backend/tests -p test_live_messages.py
           python -m unittest discover -s backend/tests -p test_message_interactions.py
           python -m unittest discover -s backend/tests -p test_bot_references.py
@@ -80,6 +81,7 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_initial_input.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_api_fallback.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_kanban.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_dependency_unlink.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_claim_continuation.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_work_continuation.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_continuation_snapshot_eviction.py

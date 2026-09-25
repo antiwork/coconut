@@ -194,6 +194,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.chat_dispatcher: threading.Thread | None = None
         self._kanban_dispatching = False
         self._kanban_claiming = 0
+        self._dependency_unlinking = False
         self._kanban_dispatch_uncertain = False
         self.pr_poller: threading.Thread | None = None
         self.process_poller: threading.Thread | None = None
@@ -255,6 +256,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         import sys
         from .turn_timings import timed_lock
         with timed_lock(self.lock, sys._getframe(2).f_code.co_name):
+            # Unlink validates service guards, then calls the adapter without
+            # this lock. Defer writes until that short native operation ends.
+            while getattr(self, '_dependency_unlinking', False):
+                self.changed.wait()
             self.db.execute('BEGIN IMMEDIATE')
             self._profile_pending = {}
             try:
@@ -2718,7 +2723,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
     def _dispatch_foreground(self):
         # Caller holds the service lock. Native admission reserves background slots.
-        if self.restart_pending or self.stopping.is_set() or getattr(self, '_workspace_recovery_hold', False):
+        if (self.restart_pending or self.stopping.is_set() or self._dependency_unlinking
+                or getattr(self, '_workspace_recovery_hold', False)):
             return
         self.running = {k: v for k, v in self.running.items() if v.is_alive()}
         self.context_threads = {k: v for k, v in self.context_threads.items() if v.is_alive()}
@@ -3238,6 +3244,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 if payload.get('turn_id') != self._get('tasks', task_id).get('_native_turn_id'):
                     return
             return self._deliver_live_messages(task_id)
+        if kind == 'dependency_unlink':
+            return self.unlink_native_dependency(task_id, payload)
         if kind == 'work_continue':
             return self.continue_native_work(task_id, payload)
         if kind == 'work_wait':
