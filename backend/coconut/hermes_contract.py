@@ -132,6 +132,9 @@ def verify_contract():
     require_keywords(ContextCompressor._generate_summary, {'turns_to_summarize'})
     # Coconut session maintenance calls these by keyword and reads the returned counts.
     require_keywords(SessionDB.prune_sessions, {'older_than_days', 'source', 'sessions_dir', 'exclude_active_write_guards'})
+    from hermes_state_maintenance import _PRUNE_FILTER_NAMES
+    if 'end_reason' not in _PRUNE_FILTER_NAMES:
+        raise ValueError('Hermes no longer prunes sessions by end reason.')
     from hermes_state_holders import foreign_state_db_holders, in_process_state_db_holders
     require_keywords(in_process_state_db_holders, {'exclude'})
     require_keywords(registry.register, {'name', 'toolset', 'schema', 'handler'})

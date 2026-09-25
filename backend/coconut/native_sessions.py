@@ -34,7 +34,8 @@ def maintain(request):
        chain from the root, so this must happen before any prune. A tip row is about 100 bytes, and Hermes has no
        public call to delete one, so a row stays after Hermes prunes its conversation. resume_session() ignores it.
     2. End the newest session of each idle outcome. Coconut never ends a chat.
-    3. Prune ended Coconut sessions inactive for `retention_days`. Other sources keep the profile's own settings.
+    3. Prune ended idle work sessions inactive for `retention_days`, and other ended Coconut sessions, such as
+       compressed chat sessions, inactive for `history_days`. Other sources keep the profile's own settings.
     4. VACUUM at most once a week when more than a quarter of the file is free, the service reports the bot quiet,
        and no other process holds the store. The free-page test, not this run's prune count, decides, so a VACUUM
        that a holder deferred runs on a later hour.
@@ -62,9 +63,13 @@ def maintain(request):
             if session and not session.get('ended_at'):
                 db.end_session(session_id, IDLE_END_REASON)
                 result['ended'] += 1
+        sessions_dir = Path(os.environ['HERMES_HOME']) / 'sessions'
+        # Idle work goes first. Chat history, including compressed chat sessions, stays searchable longer.
         result['pruned'] = db.prune_sessions(older_than_days=float(request['retention_days']), source='coconut',
-                                             sessions_dir=Path(os.environ['HERMES_HOME']) / 'sessions',
+                                             end_reason=IDLE_END_REASON, sessions_dir=sessions_dir,
                                              exclude_active_write_guards=True)
+        result['pruned'] += db.prune_sessions(older_than_days=float(request.get('history_days', request['retention_days'])),
+                                              source='coconut', sessions_dir=sessions_dir, exclude_active_write_guards=True)
         last = db.get_meta(VACUUM_KEY)
         due = not last or time.time() - float(last) >= VACUUM_INTERVAL_SECONDS
         # VACUUM rewrites the whole file under an exclusive lock. Hermes skips it while another process

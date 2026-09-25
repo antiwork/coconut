@@ -10,6 +10,8 @@ from .worktree_retirement import ACTIVE_STATUSES
 # Hermes deletes an ended session after it has been inactive this long. Coconut's own messages and the native
 # card keep the record, and a resumed outcome gets its visible conversation again (see NativeConversation).
 SESSION_RETENTION_DAYS = 7
+# Other ended Coconut sessions, such as the compressed parts of a chat, stay searchable this long.
+SESSION_HISTORY_DAYS = 30
 SESSION_MAINTENANCE_SECONDS = 60 * 60
 # Before it reads task state, maintenance waits this long for the service lock.
 SESSION_LOCK_WAIT_SECONDS = 5

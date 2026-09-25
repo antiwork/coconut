@@ -288,8 +288,9 @@ Each outcome has its own work session. Once an hour, with worktree retirement, C
    compression ancestors of an open chain, so this runs before any prune, also on the first run of an existing install.
 2. It ends the newest session of each idle outcome with Hermes `end_session` and the reason `coconut_idle`.
    It checks again that the outcome is idle just before each bot. It never ends a chat session.
-3. It deletes ended sessions of source `coconut` that were inactive for `SESSION_RETENTION_DAYS` (7), with Hermes
-   `prune_sessions`. Sessions of other sources, such as cron or CLI, keep the profile's own Hermes settings.
+3. With Hermes `prune_sessions`, it deletes idle work sessions (`coconut_idle`) inactive for `SESSION_RETENTION_DAYS` (7),
+   and other ended `coconut` sessions, such as compressed parts of a chat, inactive for `SESSION_HISTORY_DAYS` (30).
+   So native `session_search` finds a month of chat history. Sessions of other sources, such as cron or CLI, keep the profile's own Hermes settings.
 4. At most once a week, it runs Hermes `vacuum`. The free-page test decides, so a VACUUM that a holder deferred runs later. It needs more than a quarter of the file free, as Hermes
    requires, no running worker and no active or queued task for the bot, and no other process holding the store.
 

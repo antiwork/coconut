@@ -261,8 +261,9 @@ class HermesProvider(FixtureProvider):
     def maintain_sessions(self, bot, conversations, outcomes, retention_days, *, allow_vacuum=False):
         """Record session tips, end the native sessions of idle outcomes, and prune Coconut sessions for one bot."""
         env, cwd = self.environment(bot['id'])
+        from .session_maintenance import SESSION_HISTORY_DAYS
         request = dict(bot=bot, conversations=conversations, outcomes=outcomes, retention_days=retention_days,
-                       allow_vacuum=allow_vacuum)
+                       history_days=SESSION_HISTORY_DAYS, allow_vacuum=allow_vacuum)
         # A first VACUUM of a large session store can take minutes. Hermes throttles later runs.
         result = subprocess.run([self.python, str(Path(__file__).with_name('native_sessions.py'))],
                                 input=json.dumps(request), text=True, capture_output=True,

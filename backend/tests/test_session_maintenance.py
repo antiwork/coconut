@@ -196,7 +196,7 @@ class NativeSessionTests(unittest.TestCase):
             db.end_session('cron-run', 'cron_complete')
             assert db.get_meta(TIP_KEY + root) is None
             result = native_sessions.maintain(dict(bot=bot, conversations=[dict(execution_session_id=None, epoch=None)],
-                                                   outcomes=[], retention_days=0, allow_vacuum=True))
+                                                   outcomes=[], retention_days=0, history_days=0, allow_vacuum=True))
             assert result['recorded'] == 1 and result['pruned'] >= 1, result
             assert db.get_session(root) is None
             # Coconut prunes only its own sessions. The profile's Hermes settings govern the rest.
@@ -221,7 +221,7 @@ class NativeSessionTests(unittest.TestCase):
                 db.end_session(f'old-{index}', 'coconut_idle')
             import time
             time.sleep(1.1)
-            request = dict(bot=bot, conversations=[], outcomes=[], retention_days=0, allow_vacuum=True)
+            request = dict(bot=bot, conversations=[], outcomes=[], retention_days=0, history_days=0, allow_vacuum=True)
             # Another process holds the store, so the first run prunes and defers its VACUUM.
             with patch('hermes_state_holders.foreign_state_db_holders', return_value=[(1, 'state.db')]):
                 first = native_sessions.maintain(request)
@@ -246,11 +246,33 @@ class NativeSessionTests(unittest.TestCase):
                     db.append_message(f'old-{index}', 'user', 'x' * 2000)
                 db.end_session(f'old-{index}', 'coconut_idle')
             time.sleep(1.1)
-            request = dict(bot=bot, conversations=[], outcomes=[], retention_days=0, allow_vacuum=True)
+            request = dict(bot=bot, conversations=[], outcomes=[], retention_days=0, history_days=0, allow_vacuum=True)
             with patch('hermes_state_holders.foreign_state_db_holders', return_value=[]), \
                     patch.object(SessionDB, 'vacuum', side_effect=RuntimeError('database is locked')):
                 result = native_sessions.maintain(request)
             assert result['pruned'] >= 40 and not result['vacuumed'] and 'locked' in result['vacuum_error'], result
+        ''')
+
+    def test_idle_work_goes_after_its_retention_while_compressed_chat_stays_searchable(self):
+        self.run_native('''
+            import time
+            from uuid import uuid4
+            from hermes_state import SessionDB
+            from coconut import native_sessions
+            bot = dict(id=str(uuid4()), session_id=str(uuid4()))
+            db = SessionDB()
+            db.create_session('idle-work', source='coconut')
+            db.append_message('idle-work', 'user', 'Old work.')
+            db.end_session('idle-work', 'coconut_idle')
+            db.create_session('chat-part', source='coconut')
+            db.append_message('chat-part', 'user', 'A decision from last week.')
+            db.end_session('chat-part', 'compression')
+            time.sleep(1.1)
+            result = native_sessions.maintain(dict(bot=bot, conversations=[], outcomes=[], retention_days=0,
+                                                   history_days=30, allow_vacuum=False))
+            assert result['pruned'] == 1, result
+            assert db.get_session('idle-work') is None
+            assert db.get_session('chat-part') is not None
         ''')
 
     def test_a_failed_tip_write_does_not_fail_the_turn(self):
