@@ -32,6 +32,25 @@ final class TrackedWorkItemTests: XCTestCase {
         XCTAssertTrue(TrackedWorkItem.nativeTasks(in: [native], botId: "unrelated", tasks: [owner]).isEmpty)
     }
 
+    func testStoppedNativeTaskOffersRecoveryOnlyWithOwnerAndExplicitConfirmation() throws {
+        var stopped = item(status: "cancelled")
+        stopped.nativeTaskId = "native-export"; stopped.taskId = "owner"; stopped.workState = "cancelled"
+        XCTAssertTrue(TrackedWorkItem.nativeTasks(in: [stopped], botId: "bot").first?.canOfferCheckoutRecovery == true)
+        stopped.taskId = nil
+        XCTAssertFalse(TrackedWorkItem.nativeTasks(in: [stopped], botId: "bot").first?.canOfferCheckoutRecovery == true)
+        let json = """
+        {"key":"123","dirty_count":3,"resume_consent":"fresh","request":{"task_id":"owner","native_task_id":"native","expected_owner":"execution","repository":"/repo","path":"/worktree","saved_branch":"saved","attached_branch":"attached","saved_head":"a","attached_head":"b","recovery_branch":"recovery","message":"Continue"}}
+        """
+        let preview = try APIJSON.decoder().decode(CheckoutRecoveryPreview.self, from: Data(json.utf8))
+        let unconfirmed = try APIJSON.encode(preview.request)
+        XCTAssertFalse(String(decoding: unconfirmed, as: UTF8.self).contains("resume_confirmed"))
+        var confirmed = preview.request
+        confirmed.resumeConsent = preview.resumeConsent; confirmed.resumeConfirmed = true
+        let body = try APIJSON.encode(confirmed)
+        XCTAssertTrue(String(decoding: body, as: UTF8.self).contains("\"resume_confirmed\":true"))
+        XCTAssertTrue(String(decoding: body, as: UTF8.self).contains("\"resume_consent\":\"fresh\""))
+    }
+
     func testWorkIncludesExplicitItemsButNotFiles() {
         let file = Artifact(id: "file", botId: "bot", title: "Notes", kind: "file", status: "ready", preview: "", createdAt: "")
         XCTAssertEqual(TrackedWorkItem.tracked(in: [file, item()]).map(\.id), ["work:export"])

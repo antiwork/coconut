@@ -20,6 +20,10 @@ struct TrackedWorkItem: Identifiable {
         if let state = artifact.workState { return ["completed", "cancelled"].contains(state) }
         return pullRequests.isEmpty ? ["completed", "cancelled"].contains(artifact.status) : pullRequests.allSatisfy(\.isFinished)
     }
+    var canOfferCheckoutRecovery: Bool {
+        artifact.kind == "work" && artifact.nativeTaskId != nil && artifact.taskId != nil
+            && artifact.workState == "cancelled"
+    }
 
     static func nativeTasks(in artifacts: [Artifact], botId: String, tasks: [AgentTask] = []) -> [Self] {
         let conversationTasks = Set(tasks.filter { $0.conversationBotId == botId }.map(\.id))

@@ -1,5 +1,32 @@
 import SwiftUI
 
+struct CheckoutRecoveryRequest: Codable, Sendable {
+    let taskId: String
+    let nativeTaskId: String
+    let expectedOwner: String
+    let repository: String
+    let path: String
+    let savedBranch: String
+    let attachedBranch: String
+    let savedHead: String
+    let attachedHead: String
+    let recoveryBranch: String
+    let message: String
+    var resumeConsent: String?
+    var resumeConfirmed: Bool?
+}
+
+struct CheckoutRecoveryPreview: Decodable, Sendable {
+    let key: String
+    let request: CheckoutRecoveryRequest
+    let resumeConsent: String
+    let dirtyCount: Int
+}
+
+struct CheckoutRecoveryReceipt: Decodable, Sendable {
+    let state: String
+}
+
 struct TrackedPullRequest: Identifiable {
     let artifact: Artifact
     let url: URL
@@ -87,6 +114,9 @@ struct NativeTaskDetailsView: View {
     @State private var cancelling: Set<String> = []
     @State private var error: String?
     @State private var taskToStop: TrackedWorkItem?
+    @State private var recovery: CheckoutRecoveryPreview?
+    @State private var recovering: Set<String> = []
+    @State private var recoveryRequested: Set<String> = []
 
     private var items: [TrackedWorkItem] {
         TrackedWorkItem.nativeTasks(in: store.artifacts, botId: botId, tasks: store.tasks)
@@ -116,6 +146,19 @@ struct NativeTaskDetailsView: View {
                         .disabled(cancelling.contains(item.id))
                         .accessibilityIdentifier("task-stop-" + item.artifact.id)
                     }
+                    if item.canOfferCheckoutRecovery {
+                        Button(recoveryRequested.contains(item.artifact.taskId ?? "") ? "Recovery requested" :
+                               recovering.contains(item.id) ? "Checking…" : "Recover checkout") {
+                            recovering.insert(item.id)
+                            Task {
+                                do { recovery = try await store.checkoutRecoveryPreview(item) }
+                                catch { error = error.localizedDescription }
+                                recovering.remove(item.id)
+                            }
+                        }
+                        .disabled(recovering.contains(item.id) || recoveryRequested.contains(item.artifact.taskId ?? ""))
+                        .accessibilityIdentifier("task-recover-" + item.artifact.id)
+                    }
                 }
                 .padding(.vertical, 4)
                 .accessibilityElement(children: .contain)
@@ -142,5 +185,19 @@ struct NativeTaskDetailsView: View {
         .alert("Stop not confirmed", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK") { error = nil }
         } message: { Text(error ?? "") }
+        .alert("Recover this checkout?", isPresented: Binding(
+            get: { recovery != nil }, set: { if !$0 { recovery = nil } })) {
+            Button("Not now", role: .cancel) { recovery = nil }
+            Button("Recover checkout") {
+                guard let preview = recovery else { return }
+                recovery = nil
+                Task {
+                    error = await store.confirmCheckoutRecovery(preview)
+                    if error == nil { recoveryRequested.insert(preview.request.taskId) }
+                }
+            }.accessibilityIdentifier("confirm-checkout-recovery")
+        } message: {
+            Text("This resumes the stopped Work in its original workspace. The Mac will check the saved branches and local edits before continuing. Nothing changes until you confirm.")
+        }
     }
 }

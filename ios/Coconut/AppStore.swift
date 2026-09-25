@@ -663,6 +663,33 @@ final class AppStore {
         let _: Acknowledgement? = await write("work/items/\(item.artifact.id)/resume", payload: EmptyRequest(), as: Acknowledgement.self)
     }
 
+    func checkoutRecoveryPreview(_ item: TrackedWorkItem) async throws -> CheckoutRecoveryPreview {
+        guard !isDemo, item.canOfferCheckoutRecovery, let taskId = item.artifact.taskId,
+              let pairing, let token = PairingToken.read() else {
+            throw ServiceError.configuration("Pair with your Mac to check this task.")
+        }
+        let client = try APIClient(serverURL: pairing.serverURL, fingerprint: pairing.fingerprint, token: token)
+        let preview: CheckoutRecoveryPreview = try await client.request("tasks/\(taskId)/checkout-recovery")
+        guard self.pairing?.deviceId == pairing.deviceId, self.pairing?.serverURL == pairing.serverURL,
+              self.pairing?.fingerprint == pairing.fingerprint,
+              artifacts.first(where: { $0.id == item.artifact.id })?.workState == "cancelled" else {
+            throw ServiceError.configuration("This task changed. Check it again.")
+        }
+        return preview
+    }
+
+    func confirmCheckoutRecovery(_ preview: CheckoutRecoveryPreview) async -> String? {
+        var request = preview.request
+        request.resumeConsent = preview.resumeConsent
+        request.resumeConfirmed = true
+        var failure: String?
+        let receipt: CheckoutRecoveryReceipt? = await write("maintenance/checkout-recovery", payload: request,
+            as: CheckoutRecoveryReceipt.self, idempotencyKey: preview.key,
+            onFailure: { failure = $0.localizedDescription })
+        guard receipt != nil else { return failure ?? "Recovery was not confirmed. Check the task and try again." }
+        return nil
+    }
+
     @discardableResult
     func cancelWork(_ item: TrackedWorkItem) async -> String? {
         if isDemo {

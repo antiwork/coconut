@@ -13,7 +13,7 @@ import sqlite3
 import stat
 import subprocess
 import tempfile
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from .work_capacity import execution_key
 from .work_workspace import git, validate_binding
@@ -180,37 +180,44 @@ def checkout_git(path, *arguments, input=None, env=None):
     return result.stdout
 
 
-def checkout_state(request, *, initial):
+def checkout_state(request, *, initial, read_only=False):
     path = Path(request['path'])
     repository = request['repository']
+    def read(location, *arguments):
+        if read_only:
+            return checkout_git(location, *arguments, env=dict(os.environ, GIT_OPTIONAL_LOCKS='0')).strip()
+        return git(location, *arguments)
     for branch, head in ((request['saved_branch'], request['saved_head']),
                          (request['attached_branch'], request['attached_head'])):
-        if git(repository, 'rev-parse', '--verify', 'refs/heads/' + branch) != head:
+        if read(repository, 'rev-parse', '--verify', 'refs/heads/' + branch) != head:
             raise ValueError('An original branch moved after authorization.')
-    records = git(repository, 'worktree', 'list', '--porcelain').split('\n\n')
+    records = read(repository, 'worktree', 'list', '--porcelain').split('\n\n')
     branch = request['attached_branch'] if initial else request['recovery_branch']
     if not any(('worktree ' + str(path)) in record.splitlines()
                and ('branch refs/heads/' + branch) in record.splitlines() for record in records):
         raise ValueError('Git does not register the expected worktree and branch.')
-    if git(path, 'rev-parse', 'HEAD') != (request['attached_head'] if initial else request['merge_commit']):
+    if read(path, 'rev-parse', 'HEAD') != (request['attached_head'] if initial else request['merge_commit']):
         raise ValueError('The checked-out commit changed after authorization.')
 
 
-def dirty_state(path):
-    if checkout_git(path, 'config', '--bool', 'core.filemode').strip() != 'true':
+def dirty_state(path, *, read_only=False):
+    def read(*arguments):
+        environment = dict(os.environ, GIT_OPTIONAL_LOCKS='0') if read_only else None
+        return checkout_git(path, *arguments, env=environment)
+    if read('config', '--bool', 'core.filemode').strip() != 'true':
         raise ValueError('Checkout recovery requires Git file-mode tracking.')
-    if checkout_git(path, 'diff', '--cached', '--name-only'):
+    if read('diff', '--cached', '--name-only'):
         raise ValueError('Staged edits need separate inspection before checkout recovery.')
-    if checkout_git(path, 'ls-files', '-u'):
+    if read('ls-files', '-u'):
         raise ValueError('An unmerged index needs separate inspection.')
     for marker in ('MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG',
                    'rebase-merge', 'rebase-apply', 'index.lock'):
-        if Path(git(path, 'rev-parse', '--git-path', marker)).exists():
+        if Path(read('rev-parse', '--git-path', marker).strip()).exists():
             raise ValueError('A Git operation is still in progress.')
-    for entry in filter(None, checkout_git(path, 'ls-files', '-v', '-z').split('\0')):
+    for entry in filter(None, read('ls-files', '-v', '-z').split('\0')):
         if entry[0].islower() or entry[0] == 'S':
             raise ValueError('A tracked file has assume-unchanged or skip-worktree set.')
-    names = checkout_git(path, 'ls-files', '-m', '-z').split('\0')
+    names = read('ls-files', '-m', '-z').split('\0')
     dirty = {}
     for name in filter(None, names):
         target = path / name
@@ -320,7 +327,7 @@ class WorkspaceRecovery:
         from .service import ServiceError
         scope = self._recovery_task_scope(request)
         task = self._get('tasks', request['task_id'])
-        if task['status'] not in ('completed', 'failed'):
+        if task['status'] not in ('completed', 'failed', 'cancelled'):
             raise ServiceError(409, 'The original owner is not terminal.')
         with contextlib.closing(sqlite3.connect((self.root / 'kanban' / 'kanban.db').as_uri() + '?mode=ro', uri=True)) as db:
             native = db.execute('SELECT status,tenant,worker_pid,current_run_id,workspace_path FROM tasks WHERE id=?',
@@ -335,6 +342,10 @@ class WorkspaceRecovery:
                 or any(other['kind'] in ('work', 'pr') and other['id'] != item['id']
                        and other['task_id'] == task['id'] for other in self._all('artifacts'))):
             raise ServiceError(409, 'The original Work owner is foreign or ambiguous.')
+        cancellation = self._setting('work.cancelled.work:' + item['id'])
+        if (task['status'] == 'cancelled' and (self._work_identity(item) != 'work:' + item['id']
+                or not cancellation)) or (task['status'] != 'cancelled' and cancellation):
+            raise ServiceError(409, 'The original Work stop changed.')
         thread_tasks = {related['id'] for related in self._all('tasks')
                         if related['thread_id'] == task['thread_id']}
         if any(decision['status'] == 'pending' and decision['task_id'] in thread_tasks
@@ -344,17 +355,98 @@ class WorkspaceRecovery:
         origin = self._get('bots', task['conversation_bot_id'])
         if (bot['archived'] or bot.get('_deleted') or origin['archived'] or origin.get('_deleted')
                 or bot['session_id'] != task['session_id']
-                or self._task_paused(task) or self._continuation_blocked(task)):
+                or self._task_paused(task) or self._continuation_blocked(task) or self._work_pause(item)):
             raise ServiceError(409, 'The archived Work owner is not eligible for continuation.')
         return dict(task=task, item=item, scope=scope)
+
+    @staticmethod
+    def _checkout_resume_consent(request, scope, cancellation, dirty, device):
+        return hashlib.sha256(encoded([request, scope, cancellation, dirty, device]).encode()).hexdigest()
+
+    def checkout_recovery_preview(self, task_id, device):
+        from .service import ServiceError
+        with self.dispatch_gate, self.lock:
+            if not self.db.execute('SELECT 1 FROM devices WHERE id=?', (device,)).fetchone():
+                raise ServiceError(403, 'Pair this phone with the Mac to continue.')
+            task = self._get('tasks', task_id)
+            if task['status'] != 'cancelled' or not task.get('_native_outcome_id'):
+                raise ServiceError(409, 'This task has no stopped checkout to recover.')
+            owner = execution_key(task)
+            manifest = self.root / 'workspaces' / 'worktrees.json'
+            try:
+                if manifest.is_symlink():
+                    raise ValueError('The saved workspace registry is unsafe.')
+                bindings = json.loads(manifest.read_text())
+                if not isinstance(bindings, dict) or any(not isinstance(value, dict) for value in bindings.values()):
+                    raise ValueError('The original checkout registry is ambiguous.')
+                matches = [(identity, binding) for identity, binding in bindings.items()
+                           if isinstance(binding, dict) and binding.get('outcome') == owner]
+                if len(matches) != 1 or matches[0][1].get('retired'):
+                    raise ValueError('The original checkout binding is missing or ambiguous.')
+                identity, binding = matches[0]
+                repository, path, saved = (binding[field] for field in ('repository', 'path', 'branch'))
+                if (any(not isinstance(value, str) or not value for value in (repository, path, saved))
+                        or identity != owner + '-' + hashlib.sha256(repository.encode()).hexdigest()[:16]
+                        or any(not Path(value).is_absolute() or str(Path(value).resolve()) != value
+                               for value in (repository, path))):
+                    raise ValueError('The original checkout binding changed.')
+                if any(name != identity and (not isinstance(value.get('path'), str)
+                        or Path(value['path']).resolve() == Path(path)) for name, value in bindings.items()):
+                    raise ValueError('Another saved binding names this checkout.')
+                environment = dict(os.environ, GIT_OPTIONAL_LOCKS='0')
+                records = checkout_git(repository, 'worktree', 'list', '--porcelain', env=environment).split('\n\n')
+                attached = [line.removeprefix('branch refs/heads/') for record in records
+                            if 'worktree ' + path in record.splitlines()
+                            for line in record.splitlines() if line.startswith('branch refs/heads/')]
+                if len(attached) != 1:
+                    raise ValueError('The original checkout is not attached to one branch.')
+                key = str(uuid4())
+                request = dict(task_id=task_id, native_task_id=task['_native_outcome_id'], expected_owner=owner,
+                               repository=repository, path=path, saved_branch=saved, attached_branch=attached[0],
+                               saved_head=checkout_git(repository, 'rev-parse', '--verify', 'refs/heads/' + saved,
+                                                       env=environment).strip(),
+                               attached_head=checkout_git(path, 'rev-parse', 'HEAD', env=environment).strip(),
+                               recovery_branch='wt/recovered-' + key,
+                               message='Continue the original Work in its recovered checkout. Check existing approvals before any delivery.')
+                scope = self._checkout_scope(request)
+                validate_binding(dict(binding, branch=attached[0]))
+                checkout_state(request, initial=True, read_only=True)
+                dirty = dirty_state(Path(path), read_only=True)
+                cancellation = self._setting('work.cancelled.work:' + scope['item']['id'])
+                consent = self._checkout_resume_consent(request, (scope['scope'], scope['item']), cancellation, dirty, device)
+                return dict(key=key, request=request, resume_consent=consent, dirty_count=len(dirty))
+            except (ValueError, OSError, KeyError, TypeError, sqlite3.Error, subprocess.TimeoutExpired) as error:
+                raise ServiceError(409, str(error)) from error
+
+    def _checkout_cancellation(self, request, scope, device, dirty):
+        from .service import ServiceError
+        if scope['task']['status'] != 'cancelled':
+            return None
+        cancellation = self._setting('work.cancelled.work:' + scope['item']['id'])
+        if (request.get('resume_confirmed') is not True or not isinstance(request.get('resume_consent'), str)
+                or request['resume_consent'] != self._checkout_resume_consent(
+                    {field: value for field, value in request.items() if field not in ('resume_consent', 'resume_confirmed')},
+                    (scope['scope'], scope['item']), cancellation, dirty, device)):
+            raise ServiceError(409, 'Confirm this stopped checkout again on the paired phone.')
+        return cancellation
+
+    def _check_checkout_consent(self, receipt, scope):
+        from .service import ServiceError
+        if 'cancellation' not in receipt:
+            return
+        cancellation = self._setting('work.cancelled.work:' + scope['item']['id'])
+        if (scope['task']['status'] != 'cancelled' or cancellation != receipt['cancellation']
+                or self._checkout_cancellation(receipt['request'], scope, receipt['device_id'], receipt['dirty']) != cancellation):
+            raise ServiceError(409, 'The Work stop changed after confirmation.')
 
     def request_checkout_recovery(self, data, key, token):
         from .service import ServiceError, now
         fields = {'task_id', 'native_task_id', 'expected_owner', 'repository', 'path', 'saved_branch',
                   'attached_branch', 'saved_head', 'attached_head', 'recovery_branch', 'message'}
-        if (not isinstance(data, dict) or set(data) != fields
+        if (not isinstance(data, dict) or set(data) not in (fields, fields | {'resume_confirmed', 'resume_consent'})
                 or any(not isinstance(value, str) or not value or len(value) > 4096
-                       for field, value in data.items() if field != 'message')
+                       for field, value in data.items() if field not in ('message', 'resume_confirmed'))
+                or ('resume_confirmed' in data and data['resume_confirmed'] is not True)
                 or not isinstance(data['message'], str) or not data['message'].strip()
                 or len(data['message']) > 16000):
             raise ServiceError(400, 'Supply one exact checkout, archived Work, and recovery message.')
@@ -380,8 +472,10 @@ class WorkspaceRecovery:
                 raise ServiceError(409, 'Checkout recovery requires an idle managed native service.')
             try:
                 if held_checkout and (pending['device_id'] != device or
-                        {field: value for field, value in pending['request'].items() if field != 'recovery_branch'} !=
-                        {field: value for field, value in data.items() if field != 'recovery_branch'}):
+                        {field: value for field, value in pending['request'].items()
+                         if field not in ('recovery_branch', 'resume_consent')} !=
+                        {field: value for field, value in data.items()
+                         if field not in ('recovery_branch', 'resume_consent')}):
                     raise ValueError('A held checkout can only be reauthorized for the same incident and device.')
                 for field in ('repository', 'path'):
                     path = Path(data[field])
@@ -431,12 +525,16 @@ class WorkspaceRecovery:
                     if subprocess.run(['git', '-C', data['repository'], 'show-ref', '--verify', '--quiet',
                                        'refs/heads/' + data['recovery_branch']], timeout=10).returncode == 0:
                         raise ValueError('The recovery branch already exists.')
+                    checkout_state(data, initial=True, read_only=True)
+                    cancellation = self._checkout_cancellation(data, scope, device, dirty_state(Path(data['path']), read_only=True))
                     dirty, commit = checkout_plan(data)
                     receipt = dict(id=key, device_id=device, request=data, task_scope=scope['scope'],
                         task_input=scope['task'],
                         work_item=scope['item'], binding=binding, binding_id=identity, dirty=dirty,
                         manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
                         merge_commit=commit, state='draining', created_at=now())
+                    if cancellation is not None:
+                        receipt['cancellation'] = cancellation
                 with self.transaction():
                     if held_checkout:
                         pending['state'] = 'superseded'
@@ -547,6 +645,7 @@ class WorkspaceRecovery:
         try:
             self._check_recovery_writers(startup=True)
             scope = self._checkout_scope(request)
+            self._check_checkout_consent(receipt, scope)
             if (scope['scope'] != receipt['task_scope'] or scope['task'] != receipt['task_input']
                     or scope['item'] != receipt['work_item']):
                 raise ValueError('The archived Work or its input changed before admission.')
@@ -628,6 +727,7 @@ class WorkspaceRecovery:
                     raise ValueError('The recovered dirty edits changed before admission.')
                 validate_binding(dict(receipt['recovered_binding']))
                 scope = self._checkout_scope(request)
+                self._check_checkout_consent(receipt, scope)
                 if (scope['scope'] != receipt['task_scope'] or scope['task'] != receipt['task_input']
                         or scope['item'] != receipt['work_item']):
                     raise ValueError('The archived Work changed before admission.')
@@ -635,6 +735,14 @@ class WorkspaceRecovery:
                 if self.kanban.tasks.get(request['task_id'], {}).get('status') != 'archived':
                     raise ValueError('The archived native owner changed before admission.')
                 with self.transaction():
+                    scope = self._checkout_scope(request)
+                    self._check_checkout_consent(receipt, scope)
+                    if 'cancellation' in receipt:
+                        setting = 'work.cancelled.work:' + scope['item']['id']
+                        removed = self.db.execute('DELETE FROM settings WHERE key=? AND value=?',
+                                                  (setting, encoded(receipt['cancellation'])))
+                        if removed.rowcount != 1:
+                            raise ValueError('The Work stop changed before admission.')
                     self._request_device_id = receipt['device_id']
                     self._request_key = receipt['id']
                     try:

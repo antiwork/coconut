@@ -129,7 +129,10 @@ class Handler(BaseHTTPRequestHandler):
                     self._body(), self.headers.get('Idempotency-Key', ''), authorization[7:]))
                 return
             if method == 'GET':
-                if url.path == '/v1/state':
+                if url.path.startswith('/v1/tasks/') and url.path.endswith('/checkout-recovery'):
+                    self._json(200, service.checkout_recovery_preview(
+                        url.path.removeprefix('/v1/tasks/').removesuffix('/checkout-recovery'), device))
+                elif url.path == '/v1/state':
                     self._json(200, service.snapshot(timings=self.timings, content_only=self.headers.get('X-Coconut-State') in ('content', 'recent'),
                         compact_history=self.headers.get('X-Coconut-State') == 'recent'))
                 elif url.path == '/v1/search':
