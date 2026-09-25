@@ -58,7 +58,7 @@ Coconut retains these worktrees after a turn ends. It does not delete uncommitte
 Once an hour, the work source poller retires the worktrees of idle outcomes.
 An outcome is idle when no Coconut task of its execution is queued, working, scheduled, or waiting.
 It also has no running worker and no pending background process.
-Its native task, if one exists, is not running or ready.
+Its native task, if one exists, is done, archived, blocked, in triage, in review, todo, or scheduled.
 Its tasks have had no update for `WORKTREE_RETIRE_SECONDS` (six hours).
 A failed outcome, a pending decision, and a blocked native task do not keep the worktree.
 A turn restores the worktree before it starts, so work that resumes gets its files back.

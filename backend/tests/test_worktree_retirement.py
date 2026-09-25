@@ -173,11 +173,13 @@ class WorktreeRetirementTests(unittest.TestCase):
         locked = self.outcome()
         git(self.repo, 'worktree', 'lock', str(locked[2]))
         kept.append(locked)
-        claimed = [self.outcome(), self.outcome()]
+        # An unknown native state keeps the worktree too.
+        claimed = [self.outcome(), self.outcome(), self.outcome()]
         kept.extend(claimed)
         for _, _, path, _ in kept:
             (path / 'draft.txt').write_text('in progress\n')
-        native = {claimed[0][3]['id']: dict(id='n1', status='running'), claimed[1][3]['id']: dict(id='n2', status='ready')}
+        native = {claimed[0][3]['id']: dict(id='n1', status='running'), claimed[1][3]['id']: dict(id='n2', status='ready'),
+                  claimed[2][3]['id']: dict(id='n3', status='claiming')}
         with patch.object(self.service, 'kanban', SimpleNamespace(tasks=native)):
             self.assertEqual(self.retire(), [])
         for _, identity, path, _ in kept:
@@ -754,6 +756,25 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertIsNone(process.poll())
         self.assertTrue(path.is_dir())
         self.assertNotIn('retired', self.registry()[identity])
+
+    def test_holders_pairs_each_open_file_with_its_process(self):
+        path = self.root / 'work'
+        listing = b''.join([b'p10\nfcwd\nn/elsewhere\n', b'p11\nfcwd\nn' + os.fsencode(str(path)) + b'\n',
+                            b'p12\nf3\nn' + os.fsencode(str(path)) + b'/log.txt\nf4\nn/elsewhere/a\n',
+                            b'p13\nf5\nn' + os.fsencode(str(path)) + b'-other/file\n'])
+        self.holders.stop()
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing)):
+            self.assertEqual(work_workspace.holders(path), {11, 12})
+
+    def test_the_environment_of_another_process_is_read(self):
+        process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
+                                   env=dict(os.environ, COCONUT_WORKSPACE_OUTCOME='one'))
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        time.sleep(0.2)
+        self.assertTrue(work_workspace.environment_names(process.pid, 'COCONUT_WORKSPACE_OUTCOME=one'))
+        self.assertFalse(work_workspace.environment_names(process.pid, 'COCONUT_WORKSPACE_OUTCOME=on'))
+        self.assertFalse(work_workspace.environment_names(process.pid, 'COCONUT_WORKSPACE_OUTCOME=two'))
 
     def test_elapsed_times_from_ps_become_seconds(self):
         self.assertEqual(work_workspace.elapsed_seconds('05'), 5)

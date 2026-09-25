@@ -322,11 +322,27 @@ def stop_orphans(found, outcome, age):
     return stopped - stop(stop(stopped, signal.SIGTERM, STOP_SECONDS), signal.SIGKILL, 1)
 
 
-def check_worktree(path, binding, repository, *, processes=True, orphan_age=None):
-    """Refuse a worktree that Git or a process still uses.
+def check_worktree(path, binding, repository, *, processes=True):
+    """Refuse a worktree that Git or a process still uses."""
+    check_git(path, binding, repository)
+    if processes and in_use(path):
+        raise ValueError('A process uses the worktree.')
 
-    With `orphan_age`, stop the orphaned processes of the outcome after the Git checks pass. See stop_orphans.
-    """
+
+def release(path, outcome, orphan_age):
+    """Stop the old orphaned processes of the outcome in the path. Refuse the path if another process uses it."""
+    found = holders(path)
+    if found and orphan_age is not None:
+        stopped = stop_orphans(found, outcome, orphan_age)
+        if stopped:
+            logging.getLogger(__name__).warning('Coconut stopped orphaned processes %s in worktree %s.', sorted(stopped), path)
+        found -= stopped
+    if found:
+        raise ValueError('A process uses the worktree.')
+
+
+def check_git(path, binding, repository):
+    """Refuse a worktree that Git still uses."""
     records = registered(repository)
     record = next((r for r in records if r['path'] == path), None)
     if not record or record['branch'] != 'refs/heads/' + binding['branch']:
@@ -338,16 +354,6 @@ def check_worktree(path, binding, repository, *, processes=True, orphan_age=None
     git_paths = git(path, 'rev-parse', '--path-format=absolute', *(a for n in IN_PROGRESS for a in ('--git-path', n)))
     if any(Path(p).exists() for p in git_paths.splitlines()):
         raise ValueError('A Git operation is in progress in the worktree.')
-    if not processes:
-        return
-    found = holders(path)
-    if found and orphan_age is not None:
-        stopped = stop_orphans(found, binding['outcome'], orphan_age)
-        if stopped:
-            logging.getLogger(__name__).warning('Coconut stopped orphaned processes %s in worktree %s.', sorted(stopped), path)
-        found -= stopped
-    if found:
-        raise ValueError('A process uses the worktree.')
 
 
 def file_digest(stream):
@@ -431,7 +437,7 @@ def retire(root, identity, finished, *, orphan_age=None):
         return None
     path = validate_binding(dict(before)).resolve()
     repository = Path(before['repository'])
-    check_worktree(path, before, repository, orphan_age=orphan_age)
+    check_git(path, before, repository)
     head = git(path, 'rev-parse', 'HEAD')
     current = changes(path)
     staged, unstaged, names = current
@@ -446,6 +452,10 @@ def retire(root, identity, finished, *, orphan_age=None):
     if untracked > UNTRACKED_LIMIT_BYTES:
         raise ValueError('The untracked files in the worktree are larger than the archive limit.')
     entries = [(UNTRACKED + name, name) for name in names] + [(IGNORED + name, name) for name in ignored_files(path)]
+    # Stop orphans only after every check that does not need them stopped. Then no refusal follows a stop for nothing.
+    if not finished(True):
+        raise ValueError('The outcome resumed during retirement.')
+    release(path, before['outcome'], orphan_age)
     directory = root / 'archive'
     directory.mkdir(mode=0o700, exist_ok=True)
     moment = datetime.now(timezone.utc)

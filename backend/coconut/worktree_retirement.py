@@ -18,8 +18,8 @@ ORPHAN_AGE_SECONDS = WORKTREE_RETIRE_SECONDS
 # These Coconut task states mean that a turn runs or starts soon. They are Service.ACTIVE without the states
 # that wait for a person. A test keeps the two lists in step.
 ACTIVE_STATUSES = ('queued', 'working', 'scheduled', 'waiting')
-# These native states mean that a worker runs or claims the outcome soon.
-NATIVE_ACTIVE_STATUSES = ('running', 'ready')
+# These native states mean that no worker runs or claims the outcome soon. Another state keeps the worktree.
+NATIVE_IDLE_STATUSES = ('done', 'archived', 'blocked', 'triage', 'review', 'todo', 'scheduled')
 RETIREMENT_INTERVAL_SECONDS = 60 * 60
 # Before the registry lock, retirement waits this long for the service lock. Under the registry lock, it waits only LOCKED_WAIT_SECONDS.
 SERVICE_WAIT_SECONDS = 5
@@ -54,8 +54,8 @@ class WorktreeRetirement:
                     continue
                 if any(t['status'] in ACTIVE_STATUSES or t['id'] in self.running for t in tasks):
                     continue
-                if any((native.get(t['id']) or by_native_id.get(t.get('_native_outcome_id')) or {}).get('status')
-                       in NATIVE_ACTIVE_STATUSES for t in tasks):
+                if any((native.get(t['id']) or by_native_id.get(t.get('_native_outcome_id')) or {}).get('status', 'done')
+                       not in NATIVE_IDLE_STATUSES for t in tasks):
                     continue
                 if any(self._background_pending(t['id']) for t in tasks):
                     continue
