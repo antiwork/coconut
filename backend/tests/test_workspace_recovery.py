@@ -318,11 +318,17 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         marker = self.root / 'filter-ran'
         git(self.repo, 'config', 'merge.renormalize', 'true')
         git(self.repo, 'config', 'filter.unsafe.clean', 'touch ' + str(marker))
+        (self.workspace / '.gitattributes').write_text('checkout-a.txt filter=unsafe\n')
         before = self.manifest.read_bytes()
         self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 409)
         self.assertFalse(marker.exists())
         self.assertEqual(self.manifest.read_bytes(), before)
         self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+
+    def test_checkout_recovery_ignores_unapplied_global_filter(self):
+        payload, dirty, artifact = self.checkout_incident()
+        git(self.repo, 'config', 'filter.unused.clean', 'false')
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
 
     def test_checkout_recovery_refuses_disabled_git_filemode(self):
         payload, dirty, artifact = self.checkout_incident()

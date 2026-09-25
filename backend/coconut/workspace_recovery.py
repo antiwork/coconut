@@ -224,17 +224,26 @@ def dirty_state(path):
     return dirty
 
 
-def reject_custom_git_commands(path):
+def reject_custom_git_commands(path, commits):
     result = subprocess.run(['git', '-C', str(path), 'config', '--get-regexp',
-                             r'^(merge\..*\.driver|filter\..*\.(clean|smudge|process))$'],
-                            capture_output=True, text=True, timeout=10)
+                             r'^merge\..*\.driver$'], capture_output=True, text=True, timeout=10)
     if result.returncode != 1:
-        raise ValueError('Custom Git merge or filter commands require separate checkout inspection.')
+        raise ValueError('Custom Git merge drivers require separate checkout inspection.')
+    for commit in (*commits, None):
+        names = (checkout_git(path, 'ls-tree', '-r', '--name-only', '-z', commit) if commit else
+                 checkout_git(path, 'ls-files', '-z'))
+        if not names:
+            continue
+        args = ('check-attr', '--source', commit, '-z', '--stdin', 'filter') if commit else (
+            'check-attr', '-z', '--stdin', 'filter')
+        attributes = checkout_git(path, *args, input=names).split('\0')
+        if any(value not in ('unspecified', 'unset') for value in attributes[2::3]):
+            raise ValueError('A Git checkout filter requires separate inspection.')
 
 
 def checkout_obstructions(request, tree, dirty):
     path = Path(request['path'])
-    reject_custom_git_commands(path)
+    reject_custom_git_commands(path, (request['attached_head'], tree))
     changed = set(filter(None, checkout_git(path, 'diff', '--no-renames', '--name-only', '-z',
                                             request['attached_head'], tree).split('\0')))
     if changed.intersection(dirty):
@@ -264,7 +273,7 @@ def checkout_plan(request):
     path = Path(request['path'])
     checkout_state(request, initial=True)
     dirty = dirty_state(path)
-    reject_custom_git_commands(path)
+    reject_custom_git_commands(path, (request['attached_head'], request['saved_head']))
     common = checkout_git(path, 'merge-base', request['attached_head'], request['saved_head']).strip()
     if common in (request['attached_head'], request['saved_head']):
         raise ValueError('The original branch histories do not diverge.')
