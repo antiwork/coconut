@@ -22,6 +22,14 @@ class SessionDB:
 ''')
     (source / 'hermes_cli').mkdir(exist_ok=True)
     (source / 'hermes_cli/__init__.py').write_text('')
+    (source / 'hermes_constants.py').write_text('''import os
+from contextvars import ContextVar
+from pathlib import Path
+_home = ContextVar('hermes_home', default=None)
+def get_hermes_home(): return Path(_home.get() or os.environ['HERMES_HOME']).expanduser()
+def set_hermes_home_override(home): return _home.set(home)
+def reset_hermes_home_override(token): _home.reset(token)
+''')
     (source / 'dotenv.py').write_text('def dotenv_values(path): return {}\n')
     (source / 'hermes_cli/config.py').write_text('''import json
 from pathlib import Path
