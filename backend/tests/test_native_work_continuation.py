@@ -793,7 +793,8 @@ class NativeWorkContinuationTests(unittest.TestCase):
         owner, coordinator, work, pr = self.audited_requester_pr()
         # Recovery marks a task failed when a tool stopped without a receipt. The tool can still run.
         branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
-                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None)
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
+                      _waiting_on=[])
         self.service._put('tasks', branch)
         self.executing_receipt(branch)
         chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
@@ -801,6 +802,26 @@ class NativeWorkContinuationTests(unittest.TestCase):
             with self.assertRaisesRegex(ServiceError, 'another execution'):
                 self.resume(coordinator)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_a_failed_branch_with_a_dispatchable_card_still_blocks_the_audited_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # Coconut can record a failed branch while the native board still holds its card as ready.
+        branch = dict(coordinator, id='coordinator-branch', status='failed', parent_task_id=coordinator['id'],
+                      _execution_session_id='coordinator-branch', _native_outcome_id=None, _work_context_id=None,
+                      _waiting_on=[], _kanban_claim={'native_id': 't_branch', 'input': 'branch'})
+        self.service._put('tasks', branch)
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        for card in (dict(id='t_branch', status='ready'), dict(id='t_other', status='blocked'), None):
+            with self.subTest(card=card):
+                self.service.kanban.tasks.pop(branch['id'], None)
+                if card:
+                    self.service.kanban.tasks[branch['id']] = card
+                with patch.object(self.service, '_work_chain', side_effect=chains):
+                    with self.assertRaisesRegex(ServiceError, 'another execution'):
+                        self.resume(coordinator)
+        self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='blocked')
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
 
     def test_a_completed_audit_with_a_running_tool_blocks_the_audited_pr(self):
         owner, coordinator, work, pr = self.audited_requester_pr()

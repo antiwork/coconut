@@ -69,11 +69,16 @@ class NativeOutcomes:
         def quiet(task):
             # Every live signal that the writer guard reads. A failed task can still hold a running tool.
             worker = self.running.get(task['id'])
-            card = snapshots.get(task['id'], {})
+            bound = task.get('_native_outcome_id') or (task.get('_kanban_claim') or {}).get('native_id')
+            if bound and task['id'] not in snapshots and snapshot_missing:
+                snapshot_missing([task['id']])
+            card = snapshots.get(task['id'])
+            # A missing, rebound, or dispatchable card can still start a writer.
+            native_live = bool(bound) and (card is None or card.get('id') != bound or card.get('status') in ('ready', 'running')
+                                           or card.get('current_run_id') or card.get('worker_pid'))
             return not (task.get('_waiting_on') or task.get('_return_pending') or (worker and worker.is_alive())
                         or self._background_pending(task['id']) or self._native_task_receipts(task['id'], state='executing')
-                        or card.get('current_run_id') or card.get('worker_pid')
-                        or task['id'] in pending_decisions or task['id'] in open_contexts)
+                        or native_live or task['id'] in pending_decisions or task['id'] in open_contexts)
         # The audit path skips the audit's own writer checks, so the audit must have finished.
         audit_finished = bool(source and source['status'] == 'completed' and quiet(source) and not self._unfinished_work(source))
         for candidate in items:
@@ -158,12 +163,14 @@ class NativeOutcomes:
                     linked = self._work_chain(root, tasks, records, include_continuations=True)
                     if passive_report:
                         # The coordinating requester task has its own branches. Keep its live ones in the guard too.
-                        # A failed, cancelled, or completed branch with no live signal cannot write.
+                        # A failed or cancelled branch with no live signal cannot write. Its unfinished work items
+                        # are expected. A completed branch with unfinished work items stays guarded.
                         for identity in requesters - {root['id']}:
                             if identity in tasks:
                                 linked.update({key: value for key, value in self._work_chain(
                                     tasks[identity], tasks, records, include_continuations=True).items()
-                                    if value[0]['status'] in self.ACTIVE or not quiet(value[0])})
+                                    if value[0]['status'] in self.ACTIVE or not quiet(value[0])
+                                    or (value[0]['status'] == 'completed' and self._unfinished_work(value[0]))})
                     linked[root['id']] = (root, 0)
                     linked[reporter['id']] = (reporter, 0)
                     if owner_report and reporter_source and reporter_source['id'] not in (owner['id'], *requesters):
