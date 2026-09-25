@@ -186,6 +186,57 @@ class NativeOutcomes:
                     self.changed.notify_all()
             self.dispatch_gate.release()
 
+    def _requester_callback_foreground(self, caller, requester, tasks, snapshots):
+        """Qualify only the authenticated caller's recorded requester continuation."""
+        from .work_capacity import execution_key
+        if not caller or not requester or caller['id'] == requester['id']:
+            return False
+        bot = self._get('bots', caller['bot_id'])
+        if (caller['status'] != 'working' or not caller.get('_native_turn_id')
+                or bot.get('archived') or bot.get('_deleted')
+                or caller.get('session_id') != bot.get('session_id')
+                or caller.get('_conversation_epoch') != self._setting('conversation_epoch')
+                or execution_key(caller) != execution_key(requester)
+                or any(caller.get(k) != requester.get(k) for k in
+                       ('bot_id', 'session_id', 'thread_id', 'conversation_bot_id', '_conversation_epoch'))):
+            return False
+        # Execution identity alone is not return provenance. Follow reciprocal
+        # continuation links, or a callback's exact persisted delivery and route.
+        current, seen = caller, set()
+        while current['id'] != requester['id']:
+            if current['id'] in seen:
+                return False
+            seen.add(current['id'])
+            previous = tasks.get(current.get('parent_task_id'))
+            if previous and self._continued_work_task(previous, tasks) == current:
+                current = previous
+                continue
+            producer = tasks.get(current.get('source_task_id'))
+            if (not current.get('_is_return') or current.get('_assignment_task_id') != requester['id']
+                    or not producer or current.get('source_bot_id') != producer['bot_id']
+                    or producer.get('source_bot_id') != requester['bot_id']
+                    or (producer.get('_reply_to_task_id') or producer.get('source_task_id')) != requester['id']
+                    or current.get('exchange_id') != producer.get('exchange_id')
+                    or not any(d.get('source_task_id') == producer['id']
+                               and d.get('target_bot_id') == current['bot_id']
+                               and d.get('receipt', {}).get('task_id') == current['id']
+                               and d.get('receipt', {}).get('target_bot_id') == current['bot_id']
+                               and d.get('receipt', {}).get('thread_id') == current['thread_id']
+                               and d.get('receipt', {}).get('status') in ('queued', 'paused')
+                               for d in self._all('deliveries'))):
+                return False
+            current = requester
+        claim = caller.get('_kanban_claim') or {}
+        card = snapshots.get(caller['id'], {})
+        # A different native run (including a reviewer) is never our foreground.
+        return bool(claim.get('native_id') and claim.get('run_id')
+                    and claim.get('external_id') == caller['id'] and not claim.get('context')
+                    and caller.get('_native_outcome_id') in (None, claim['native_id'])
+                    and card.get('id') == claim['native_id'] and card.get('status') == 'running'
+                    and card.get('claim_source_status') != 'review'
+                    and card.get('current_run_id') == claim['run_id']
+                    and (not card.get('worker_pid') or card['worker_pid'] == claim.get('pid')))
+
     def _retain_native_work(self, owner, native, snapshot_missing=None, snapshots=None, caller=None):
         from .service import ServiceError, now
         from .work_capacity import execution_key
@@ -371,18 +422,26 @@ class NativeOutcomes:
             if missing and snapshot_missing:
                 snapshot_missing(missing)
             for peer, reporter, linked, native_tasks, passive_report in peer_chains:
+                foreground = (caller['id'] if passive_report and caller and caller['id'] in linked
+                    and any(self._requester_callback_foreground(caller, tasks.get(identity), tasks, snapshots)
+                            for identity in callers) else None)
                 native_pending = any(
                     (snapshot := snapshots.get(t['id'], {})).get('status') != 'done'
                     or snapshot.get('id') != (t.get('_native_outcome_id') or t['_kanban_claim'].get('native_id'))
-                    or snapshot.get('current_run_id') or snapshot.get('worker_pid') for t in native_tasks)
+                    or snapshot.get('current_run_id') or snapshot.get('worker_pid')
+                    for t in native_tasks if t['id'] != foreground)
                 if (native_pending or peer['kind'] != 'pr'
                         or ((peer['bot_id'] == owner['bot_id'] or reporter['bot_id'] == owner['bot_id'])
                             and not passive_report)
-                        or any(t['status'] != 'completed' or t.get('_waiting_on') or t.get('_return_pending')
+                        or any((t['status'] != 'completed' and t['id'] != foreground)
+                               or t.get('_waiting_on') or t.get('_return_pending')
                                or self._task_paused(t) or self._get('exchanges', t['exchange_id']).get('cancelled')
                                or self._background_pending(t['id']) or self._unfinished_work(t)
-                               or (self.running.get(t['id']) and self.running[t['id']].is_alive())
+                               or (t['id'] != foreground and self.running.get(t['id']) and self.running[t['id']].is_alive())
                                or running_tool(t)
+                               or (t['id'] == foreground and (self._task_work_is_paused(t)
+                                   or t.get('_steering') or t.get('_live_messages') or t.get('_blocked_followup')
+                                   or t.get('_native_reply_pending')))
                                for t, _ in linked.values())
                         or any(d['status'] == 'pending' and d['task_id'] in linked for d in self._all('decisions'))
                         or any(c['status'] in ('queued', 'working') and c['task_id'] in linked
@@ -538,6 +597,9 @@ class NativeOutcomes:
     def continue_native_work(self, source_id, payload):
         requested = set()
         snapshots = {}
+        with self.lock:
+            source = self._get('tasks', source_id)
+            invocation = (source.get('_native_turn_id'), source.get('_kanban_claim'))
 
         def snapshot_missing(identities):
             missing = set(identities) - requested
@@ -549,7 +611,7 @@ class NativeOutcomes:
         # re-read all ownership, peer links and pause guards in a new transaction.
         for attempt in range(5):
             try:
-                return self._continue_native_work(source_id, payload, snapshot_missing, snapshots)
+                return self._continue_native_work(source_id, payload, snapshot_missing, snapshots, invocation)
             except _NativeSnapshotsNeeded as pending:
                 if attempt == 4:
                     break
@@ -562,7 +624,7 @@ class NativeOutcomes:
         from .service import ServiceError
         raise ServiceError(409, 'The native work changed while checking it. Read its current activity and retry.')
 
-    def _continue_native_work(self, source_id, payload, snapshot_missing, snapshots):
+    def _continue_native_work(self, source_id, payload, snapshot_missing, snapshots, invocation):
         from .service import ServiceError, now, uid, digest, encoded, require_text
         from .work_capacity import execution_key
         with self.transaction():
@@ -570,6 +632,8 @@ class NativeOutcomes:
             # cached claims win over the targeted fallback; eviction cannot erase it.
             snapshots = snapshots | (self.kanban.tasks if self.kanban else {})
             source = self._get('tasks', source_id)
+            if (source.get('_native_turn_id'), source.get('_kanban_claim')) != invocation:
+                raise ServiceError(409, 'The calling turn changed while checking this work. Read its current activity and retry.')
             if source['status'] != 'working' or self._task_paused(source):
                 raise ServiceError(409, 'This task cannot continue work now.')
             identity = require_text(payload, 'task_id', 100)
