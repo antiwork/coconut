@@ -228,16 +228,19 @@ def checkout_obstructions(request, tree, dirty):
                                             request['attached_head'], tree).split('\0')))
     if changed.intersection(dirty):
         raise ValueError('The merge changes a dirty tracked file; manual reconciliation is required.')
+    trees = {}
+    for commit in (request['attached_head'], tree):
+        trees[commit] = {name: details.split()[0] for entry in
+                         filter(None, checkout_git(path, 'ls-tree', '-r', '-z', commit).split('\0'))
+                         for details, name in (entry.split('\t', 1),)}
     for name in changed:
-        if any(checkout_git(path, 'ls-tree', commit, '--', name).startswith('160000 ')
-               for commit in (request['attached_head'], tree)):
+        if any(trees[commit].get(name) == '160000' for commit in trees):
             raise ValueError('A changed submodule needs separate checkout inspection.')
         target = path / name
         if any(parent.is_symlink() for parent in target.parents if parent != path and parent.is_relative_to(path)):
             raise ValueError('The merge touches a path under a symlink.')
-        if target.exists() or target.is_symlink():
-            if not checkout_git(path, 'ls-tree', '-r', '--name-only', request['attached_head'], '--', name):
-                raise ValueError('The merge would overwrite an untracked or ignored file.')
+        if (target.exists() or target.is_symlink()) and name not in trees[request['attached_head']]:
+            raise ValueError('The merge would overwrite an untracked or ignored file.')
 
 
 def checkout_plan(request):
@@ -354,9 +357,13 @@ class WorkspaceRecovery:
                     raise ValueError('The three branch names must be distinct.')
                 if data['recovery_branch'] != 'wt/recovered-' + key:
                     raise ValueError('The recovery branch must be unique to this authorization.')
-                if any(len(data[field]) != 40 or any(char not in '0123456789abcdef' for char in data[field])
+                object_format = git(data['repository'], 'rev-parse', '--show-object-format')
+                if object_format not in ('sha1', 'sha256'):
+                    raise ValueError('The repository uses an unsupported Git object format.')
+                oid_length = 40 if object_format == 'sha1' else 64
+                if any(len(data[field]) != oid_length or any(char not in '0123456789abcdef' for char in data[field])
                        for field in ('saved_head', 'attached_head')):
-                    raise ValueError('Supply exact Git commit IDs.')
+                    raise ValueError('Supply exact Git commit IDs for this repository.')
                 scope = self._checkout_scope(data)
                 with workspace_lock(self.root):
                     manifest = self.root / 'workspaces' / 'worktrees.json'
@@ -536,7 +543,7 @@ class WorkspaceRecovery:
                     checkout_obstructions(request, receipt['merge_commit'], receipt['dirty'])
                     if result.returncode:
                         checkout_git(request['repository'], 'update-ref', ref, receipt['merge_commit'],
-                                     '0000000000000000000000000000000000000000')
+                                     '0' * len(receipt['merge_commit']))
                     checkout_git(request['path'], 'switch', '--no-overwrite-ignore', request['recovery_branch'])
                 checkout_state(dict(request, merge_commit=receipt['merge_commit']), initial=False)
                 if dirty_state(Path(request['path'])) != receipt['dirty']:
