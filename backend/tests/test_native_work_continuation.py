@@ -779,13 +779,30 @@ class NativeWorkContinuationTests(unittest.TestCase):
         owner, coordinator, work, pr = self.audited_requester_pr()
         audit = self.service._get('tasks', owner['source_task_id'])
         self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status='pending'))
-        with self.assertRaisesRegex(ServiceError, 'another execution'):
+        with self.assertRaisesRegex(ServiceError, 'another execution|belongs to another native outcome'):
             self.resume(coordinator)
         self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status='rejected'))
         self.service._put('tasks', dict(audit, status='working'))
-        with self.assertRaisesRegex(ServiceError, 'another execution'):
+        with self.assertRaisesRegex(ServiceError, 'another execution|belongs to another native outcome'):
             self.resume(coordinator)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_an_unfinished_audit_blocks_an_audited_pr_without_a_report(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # Without a passive report, no peer check reads the audit. The audit path itself requires a finished audit.
+        self.service._put('artifacts', dict(pr, _activity_task_id=owner['id']))
+        audit = self.service._get('tasks', owner['source_task_id'])
+        for changes, decision in ((dict(status='working'), None), (dict(_waiting_on=['child']), None),
+                                  (dict(_return_pending={'text': 'Undelivered'}), None), ({}, 'pending')):
+            with self.subTest(changes=changes, decision=decision):
+                self.service._put('tasks', dict(audit, **changes))
+                self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status=decision or 'rejected'))
+                with self.assertRaisesRegex(ServiceError, 'belongs to another native outcome'):
+                    self.resume(coordinator)
+                self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.service._put('tasks', audit)
+        self.service._put('decisions', dict(id='audit-question', task_id=audit['id'], status='rejected'))
+        self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
 
     def test_an_owner_report_to_an_unrelated_task_still_blocks_the_audited_pr(self):
         owner, coordinator, work, pr = self.audited_requester_pr(report_to='unrelated')

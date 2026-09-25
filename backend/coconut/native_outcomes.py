@@ -63,12 +63,18 @@ class NativeOutcomes:
         linked_parent = None
         retained = []
         source = self._get('tasks', owner['source_task_id']) if owner.get('source_task_id') else None
+        # The audit path skips the audit's own writer checks, so the audit must have finished.
+        worker = self.running.get(source['id']) if source else None
+        audit_finished = bool(source and source['status'] == 'completed' and not source.get('_waiting_on')
+                              and not source.get('_return_pending') and not (worker and worker.is_alive())
+                              and not self._background_pending(source['id'])
+                              and not any(d['status'] == 'pending' and d['task_id'] == source['id'] for d in self._all('decisions')))
         for candidate in items:
             root = self._work_outcome_artifact(candidate)
             # A requester's source audit can delegate for an existing Work outcome of that requester.
             # _source_native_ids lists the native outcomes that the audit commented on. That alone does not
             # prove a delegation, so the Work's own task must also make this call.
-            audited = bool(source and caller and caller['id'] == root['task_id'] and root.get('_native_outcome_id')
+            audited = bool(audit_finished and caller and caller['id'] == root['task_id'] and root.get('_native_outcome_id')
                            and root['_native_outcome_id'] in (source.get('_source_native_ids') or ()))
             if (root['bot_id'] != owner['bot_id'] and candidate['kind'] == 'pr'
                     and candidate['bot_id'] == owner['bot_id'] and candidate['task_id'] == owner['id']
