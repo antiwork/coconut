@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import subprocess
@@ -20,8 +21,8 @@ class SessionSelectionTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.provider = ControlledProvider()
-        self.calls = []
-        self.provider.maintain_sessions = lambda bot, conversations, outcomes, days: self.calls.append((bot, conversations, outcomes, days)) or {}
+        self.calls, self.vacuums = [], []
+        self.provider.maintain_sessions = lambda bot, conversations, outcomes, days, allow_vacuum=False: self.calls.append((bot, conversations, outcomes, days)) or self.vacuums.append(allow_vacuum) or {}
         self.service = Service(self.temp.name, self.provider, start_workers=False)
         self.addCleanup(self.service.close)
         self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'Desk', 'role': ''}, str(uuid4()))
@@ -31,7 +32,7 @@ class SessionSelectionTests(unittest.TestCase):
 
     def task(self, **fields):
         task = dict(id=str(uuid4()), bot_id=self.bot['id'], title='Work', status='completed', summary='',
-                    created_at='2026-09-20T10:00:00Z', updated_at='2026-09-20T10:00:00Z', **fields)
+                    created_at='2026-09-20T10:00:00Z', updated_at='2026-09-20T10:00:00Z') | fields
         with self.service.transaction():
             self.service._put('tasks', task)
         return task
@@ -59,6 +60,25 @@ class SessionSelectionTests(unittest.TestCase):
             self.service.maintain_native_sessions(current=0)
         [(bot, conversations, outcomes, days)] = self.calls
         self.assertEqual(outcomes, [])
+
+    def test_status_only_and_old_tasks_do_not_select_sessions_and_vacuum_waits_for_a_quiet_bot(self):
+        self.task(_execution_session_id='owner-work', _work_status_only=True)
+        self.task(_execution_session_id='old-work', updated_at='2026-07-01T10:00:00Z', created_at='2026-07-01T10:00:00Z')
+        self.task(_execution_session_id='running-work', status='working')
+        # The owner group is active, but the status-only task sits in its own group under its own id.
+        with patch.object(self.service, '_finished_outcomes', return_value={'owner-work', 'old-work', 'running-work'}):
+            self.service.maintain_native_sessions(current=datetime(2026, 9, 25, tzinfo=timezone.utc).timestamp())
+        [(bot, conversations, outcomes, days)] = self.calls
+        self.assertNotIn('owner-work', [o['execution_session_id'] for o in outcomes])
+        self.assertNotIn('old-work', [c['execution_session_id'] for c in conversations])
+        # A working task keeps its bot from a VACUUM.
+        self.assertEqual(self.vacuums, [False])
+
+    def test_a_pending_restart_stops_the_bot_loop(self):
+        self.service.restart_pending = True
+        with patch.object(self.service, '_finished_outcomes', return_value=set()):
+            self.service.maintain_native_sessions(current=0)
+        self.assertEqual(self.calls, [])
 
     def test_maintenance_runs_at_most_once_an_hour_and_skips_a_busy_service(self):
         with patch.object(self.service, '_finished_outcomes', return_value=set()):
@@ -138,7 +158,7 @@ class NativeSessionTests(unittest.TestCase):
             db.end_session('cron-run', 'cron_complete')
             assert db.get_meta(TIP_KEY + root) is None
             result = native_sessions.maintain(dict(bot=bot, conversations=[dict(execution_session_id=None, epoch=None)],
-                                                   outcomes=[], retention_days=0))
+                                                   outcomes=[], retention_days=0, allow_vacuum=True))
             assert result['recorded'] == 1 and result['pruned'] >= 1, result
             assert db.get_session(root) is None
             # Coconut prunes only its own sessions. The profile's Hermes settings govern the rest.

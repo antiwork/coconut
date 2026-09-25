@@ -13,6 +13,16 @@ else:
 
 VACUUM_KEY = 'coconut.last-vacuum'
 VACUUM_INTERVAL_SECONDS = 7 * 86400
+# Hermes vacuums only above this free-page fraction. Below it, a rewrite costs more than it returns.
+VACUUM_MIN_FREELIST_RATIO = 0.25
+
+
+def freelist_ratio(path):
+    import sqlite3
+    with sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=5) as connection:
+        pages = connection.execute('PRAGMA page_count').fetchone()[0]
+        free = connection.execute('PRAGMA freelist_count').fetchone()[0]
+    return free / pages if pages else 0.0
 
 
 def maintain(request):
@@ -22,7 +32,8 @@ def maintain(request):
        chain from the root, so this must happen before any prune.
     2. End the newest session of each idle outcome. Coconut never ends a chat.
     3. Prune ended Coconut sessions inactive for `retention_days`. Other sources keep the profile's own settings.
-    4. VACUUM after a prune, at most once a week, and only when no other process holds the store.
+    4. VACUUM after a prune, at most once a week, when more than a quarter of the file is free, the service
+       reports the bot quiet, and no other process holds the store.
     """
     from hermes_state import SessionDB
     from hermes_state_holders import foreign_state_db_holders, in_process_state_db_holders
@@ -50,8 +61,9 @@ def maintain(request):
         due = not last or time.time() - float(last) >= VACUUM_INTERVAL_SECONDS
         # VACUUM rewrites the whole file under an exclusive lock. Hermes skips it while another process
         # holds the store or a WAL sidecar, and so does Coconut. The next hour tries again.
-        if result['pruned'] and due and not (foreign_state_db_holders(db.db_path)
-                                             + in_process_state_db_holders(db.db_path, exclude=db)):
+        if (request.get('allow_vacuum') and result['pruned'] and due
+                and freelist_ratio(db.db_path) > VACUUM_MIN_FREELIST_RATIO
+                and not (foreign_state_db_holders(db.db_path) + in_process_state_db_holders(db.db_path, exclude=db))):
             db.vacuum()
             db.set_meta(VACUUM_KEY, str(time.time()))
             result['vacuumed'] = True
