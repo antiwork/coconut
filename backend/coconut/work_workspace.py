@@ -113,6 +113,8 @@ RETRY_AFTER = timedelta(days=1)
 # Git commands that write or delete a whole checkout can take minutes for a large repository.
 CHECKOUT_SECONDS = 600
 GIT_ERRORS = (ValueError, OSError, subprocess.TimeoutExpired)
+# EOFError and zlib.error come from a damaged or truncated archive.
+RESTORE_ERRORS = (*GIT_ERRORS, KeyError, TypeError, AttributeError, tarfile.TarError, EOFError, zlib.error)
 DIFF = ('--binary', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', '--no-relative',
         '--src-prefix=a/', '--dst-prefix=b/')
 
@@ -451,36 +453,91 @@ def place_link(path, name, target):
     os.symlink(target, link)
 
 
-def archived_files_present(path, archive):
-    """Return True when every archived untracked and ignored file exists with the same size or link."""
+def archived_members(tar):
+    """Yield each archived untracked and ignored file with its name in the worktree."""
+    for member in tar.getmembers():
+        prefix = next((p for p in (UNTRACKED, IGNORED) if member.name.startswith(p)), None)
+        if prefix:
+            yield member, member.name[len(prefix):]
+
+
+def occupied(path):
+    # Hermes can create an empty directory at the path for a native claim. Git checks out into it.
+    return path.exists() and (not path.is_dir() or any(path.iterdir()))
+
+
+def archived_marks(path, archive):
+    """Return the fingerprint of the archived files when the checkout holds each one. Otherwise return None.
+
+    Coconut takes the fingerprint before it reads the files. A write during the comparison then changes it.
+    """
     with tarfile.open(archive) as tar:
-        for member in tar.getmembers():
-            prefix = next((p for p in (UNTRACKED, IGNORED) if member.name.startswith(p)), None)
-            if not prefix:
-                continue
-            target = path / member.name[len(prefix):]
+        members = list(archived_members(tar))
+        # A missing file raises OSError. compare_checkouts then records no fingerprint for the binding.
+        marks = fingerprint(path, [name for _, name in members])
+        for member, name in members:
+            target = path / name
             if member.issym():
                 if not target.is_symlink() or os.readlink(target) != member.linkname:
-                    return False
+                    return None
             elif (not target.is_file() or target.is_symlink() or target.stat().st_size != member.size
                     or path_digest(target) != file_digest(tar.extractfile(member))):
                 # Same size is not enough. Compare the contents with the archived copy.
-                return False
-    return True
+                return None
+    return marks
 
 
-def unpack(binding):
+def compare_checkouts(bindings):
+    """Compare each checkout at the path of a retired binding with its archive. Run without the registry lock.
+
+    The archived files can total hundreds of megabytes, so Coconut reads them before it takes the lock.
+    Return a map from each binding, as JSON, to the fingerprint of its archived files, or to None when
+    the checkout does not match. Under the lock, unpack accepts a checkout only when its binding and its
+    fingerprint did not change.
+    """
+    checked = {}
+    for binding in bindings:
+        with contextlib.suppress(*RESTORE_ERRORS):
+            retired = binding['retired']
+            path = Path(binding['path'])
+            if retired.get('restore_failed') or not occupied(path):
+                continue
+            key = json.dumps(binding, sort_keys=True)
+            # An error in the comparison refuses the checkout.
+            checked[key] = None
+            validate_binding(dict(binding))
+            checked[key] = archived_marks(path, Path(retired['archive']))
+    return checked
+
+
+def unlocked_registry(root):
+    # save_bindings replaces the registry by an atomic rename, so this read needs no lock.
+    try:
+        saved = json.loads((Path(root) / 'worktrees.json').read_text())
+    except (OSError, ValueError):
+        return {}
+    return saved if isinstance(saved, dict) else {}
+
+
+def unpack(binding, checked):
     retired = binding['retired']
     path, archive, repository = Path(binding['path']), Path(retired['archive']), Path(binding['repository'])
-    # Hermes can create an empty directory at the path for a native claim. Git checks out into it.
-    if path.exists() and (not path.is_dir() or any(path.iterdir())):
+    if occupied(path):
         # Retirement stopped before Git removed the checkout, or a restore stopped before the registry changed.
+        # compare_checkouts read the files without the lock. Here Coconut compares only their fingerprint.
+        key = json.dumps(binding, sort_keys=True)
+        if key not in checked:
+            # The checkout appeared or the binding changed after compare_checkouts. Compare the files
+            # under the lock, so that a valid checkout from an interrupted restore is not refused.
+            checked = compare_checkouts([binding])
+        marks = checked.get(key)
         try:
             validate_binding(dict(binding))
-            intact = (git(path, 'rev-parse', 'HEAD') == retired['head']
+            intact = (marks is not None
+                      and git(path, 'rev-parse', 'HEAD') == retired['head']
                       and changes_digest(*changes(path)) == retired['changes']
-                      and archived_files_present(path, Path(retired['archive'])))
-        except (*GIT_ERRORS, tarfile.TarError, EOFError, zlib.error):
+                      and fingerprint(path, [name for name, *_ in marks]) == marks)
+        except GIT_ERRORS:
             intact = False
         if not intact:
             raise ValueError(f'The path {path} is not empty and does not match the archive.')
@@ -502,11 +559,7 @@ def unpack(binding):
             if unstaged:
                 git_output(path, 'apply', '--binary', '--whitespace=nowarn', '-', data=unstaged)
             links = []
-            for member in tar.getmembers():
-                prefix = next((p for p in (UNTRACKED, IGNORED) if member.name.startswith(p)), None)
-                if not prefix:
-                    continue
-                name = member.name[len(prefix):]
+            for member, name in archived_members(tar):
                 if os.path.lexists(path / name):
                     raise ValueError('The checkout already contains ' + name + '.')
                 if member.issym():
@@ -528,8 +581,11 @@ def unpack(binding):
         raise
 
 
-def restore(binding):
-    """Recreate a retired worktree at its saved path.
+def restore(binding, checked):
+    """Recreate a retired worktree at its saved path. Hold the registry lock.
+
+    `checked` comes from compare_checkouts before the lock. Without an entry for the binding,
+    unpack compares a checkout that already exists at the path while it holds the lock.
 
     After a successful restore, the worktree holds every archived change, so Coconut deletes the archive.
     A failed restore keeps the archive and marks the binding `restore_failed`. Coconut does not try again
@@ -540,10 +596,8 @@ def restore(binding):
     failure = retired.get('restore_failed')
     if not failure:
         try:
-            unpack(binding)
-        except (ValueError, OSError, KeyError, TypeError, AttributeError, tarfile.TarError,
-                subprocess.TimeoutExpired, EOFError, zlib.error) as error:
-            # EOFError and zlib.error come from a damaged or truncated archive.
+            unpack(binding, checked)
+        except RESTORE_ERRORS as error:
             failure = dict(at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'), error=str(error)[:1000])
             binding['retired'] = dict(retired, restore_failed=failure)
         else:
@@ -570,6 +624,7 @@ def acquire(root, outcome, repository, existing_worktree=None):
     if '/' in outcome or outcome in ('', '.', '..'):
         raise ValueError('Invalid work identity.')
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    checked = compare_checkouts([unlocked_registry(root).get(identity)])
     with (root / '.workspace.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         manifest = root / 'worktrees.json'
@@ -579,7 +634,7 @@ def acquire(root, outcome, repository, existing_worktree=None):
             previous = dict(binding)
             try:
                 if binding.get('retired'):
-                    restore(binding)
+                    restore(binding, checked)
                 else:
                     validate_binding(binding, allow_rename=True)
             finally:
@@ -644,6 +699,8 @@ def preferred(root, outcome, *, verify=True):
             return root / outcome
     # The provider calls this before a turn without the service lock, so a restore can hold the registry lock.
     if manifest.exists():
+        checked = compare_checkouts(v for v in unlocked_registry(root).values()
+                                    if isinstance(v, dict) and v.get('outcome') == outcome)
         with (root / '.workspace.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             saved = json.loads(manifest.read_text())
@@ -653,7 +710,7 @@ def preferred(root, outcome, *, verify=True):
                 if binding.get('retired'):
                     # A failed restore does not stop new work. coconut_workspace reports the archive to the bot.
                     with contextlib.suppress(ValueError):
-                        restore(binding)
+                        restore(binding, checked)
                 else:
                     validate_binding(binding, allow_rename=True)
             if json.dumps(saved, sort_keys=True) != before:
