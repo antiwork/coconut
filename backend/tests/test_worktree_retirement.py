@@ -1150,6 +1150,15 @@ class WorktreeRetirementTests(unittest.TestCase):
         os.utime(archive, (old, old))
         work_workspace.sweep_temporary(self.workspaces)
         self.assertFalse(archive.exists())
+        # Over the size limit, the oldest archives go first.
+        folder = self.workspaces / 'archive' / 'nested'
+        for index, age in enumerate((300, 200, 100)):
+            item = folder / f'item-{index}.tar.gz'
+            item.write_bytes(b'x' * 1000)
+            os.utime(item, (time.time() - age, time.time() - age))
+        with patch('coconut.work_workspace.NESTED_ARCHIVE_LIMIT_BYTES', 2000):
+            work_workspace.sweep_temporary(self.workspaces)
+        self.assertEqual(sorted(p.name for p in folder.glob('*.tar.gz')), ['item-1.tar.gz', 'item-2.tar.gz'])
 
     def test_an_outcome_that_resumes_during_the_nested_archive_keeps_the_nested_worktree(self):
         _, identity, path, _ = self.outcome()

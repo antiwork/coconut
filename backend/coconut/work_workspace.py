@@ -112,8 +112,10 @@ IGNORED_LIMIT_BYTES = 200 * 1024 * 1024
 UNTRACKED_LIMIT_BYTES = 200 * 1024 * 1024
 # Coconut keeps a worktree when its staged and unstaged patches together are larger than this limit.
 PATCH_LIMIT_BYTES = 200 * 1024 * 1024
-# Coconut deletes an archive of a nested worktree after this many days.
+# Coconut deletes an archive of a nested worktree after this many days, and the oldest ones when all of them
+# together are larger than NESTED_ARCHIVE_LIMIT_BYTES.
 NESTED_ARCHIVE_DAYS = 30
+NESTED_ARCHIVE_LIMIT_BYTES = 2 * 1024 ** 3
 # After Git refuses to remove a worktree, Coconut waits this long before the next attempt.
 RETRY_AFTER = timedelta(days=1)
 # Git commands that write or delete a whole checkout can take minutes for a large repository.
@@ -877,16 +879,25 @@ def sweep_temporary(root):
     """Delete archive files that an interrupted retirement did not finish, and old nested archives.
 
     Run before any retirement starts. No binding names a nested archive, and Coconut never restores one.
-    It is kept NESTED_ARCHIVE_DAYS for a person to recover a subagent's uncommitted work.
+    It is kept NESTED_ARCHIVE_DAYS, within NESTED_ARCHIVE_LIMIT_BYTES, for a person to recover a subagent's work.
     """
     for folder in (Path(root) / 'archive', Path(root) / 'archive' / 'nested'):
         for temporary in folder.glob('.*.tar.gz.tmp'):
             temporary.unlink(missing_ok=True)
-    oldest = time.time() - NESTED_ARCHIVE_DAYS * 86400
+    oldest, kept = time.time() - NESTED_ARCHIVE_DAYS * 86400, []
     for archive in (Path(root) / 'archive' / 'nested').glob('*.tar.gz'):
         with contextlib.suppress(FileNotFoundError):
-            if archive.stat().st_mtime < oldest:
+            status = archive.stat()
+            if status.st_mtime < oldest:
                 archive.unlink()
+            else:
+                kept.append((status.st_mtime, status.st_size, archive))
+    total = sum(size for _, size, _ in kept)
+    for _, size, archive in sorted(kept):
+        if total <= NESTED_ARCHIVE_LIMIT_BYTES:
+            break
+        archive.unlink(missing_ok=True)
+        total -= size
 
 
 def discard_checkout(repository, path):
