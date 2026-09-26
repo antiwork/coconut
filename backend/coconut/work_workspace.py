@@ -614,7 +614,11 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
             if archive.exists():
                 continue
             # Read the patches again for this worktree only. They must match the plan.
-            current, entries = archive_entries(record['path'], {r['path'] for r in records if r is not record})
+            try:
+                current, entries = archive_entries(record['path'], {r['path'] for r in records if r is not record})
+            except ValueError as error:
+                # Name the nested checkout, so an operator can find the file.
+                raise ValueError(f"The nested worktree {record['path']} cannot be archived: {error}") from None
             if changes_digest(*current) != plan['changes'] or entries != plan['entries']:
                 raise ValueError('A worktree inside the worktree changed during retirement.')
             staged, unstaged, _ = current
@@ -926,6 +930,8 @@ def trim_nested_archives(root, keep=()):
             status = archive.stat()
             if status.st_mtime < oldest:
                 archive.unlink()
+                logging.getLogger(__name__).warning('Coconut deleted nested archive %s after %s days.', archive,
+                                                    NESTED_ARCHIVE_DAYS)
             else:
                 kept.append((status.st_mtime, status.st_size, archive))
     total += sum(size for _, size, _ in kept)
@@ -933,6 +939,8 @@ def trim_nested_archives(root, keep=()):
         if total <= NESTED_ARCHIVE_LIMIT_BYTES:
             break
         archive.unlink(missing_ok=True)
+        logging.getLogger(__name__).warning('Coconut deleted nested archive %s to keep the folder within %s bytes.',
+                                            archive, NESTED_ARCHIVE_LIMIT_BYTES)
         total -= size
 
 

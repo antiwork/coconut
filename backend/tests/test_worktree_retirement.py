@@ -1184,8 +1184,10 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertTrue(archive.exists())
         old = time.time() - (work_workspace.NESTED_ARCHIVE_DAYS + 1) * 86400
         os.utime(archive, (old, old))
-        work_workspace.sweep_temporary(self.workspaces)
+        with self.assertLogs('coconut.work_workspace', 'WARNING') as logs:
+            work_workspace.sweep_temporary(self.workspaces)
         self.assertFalse(archive.exists())
+        self.assertIn(archive.name, '\n'.join(logs.output))
         # Over the size limit, the oldest archives go first.
         folder = self.workspaces / 'archive' / 'nested'
         for index, age in enumerate((300, 200, 100)):
