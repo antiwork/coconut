@@ -121,6 +121,8 @@ class WorktreeRetirement:
         # An outcome that used only a scratch workspace has no registry entry. Its orphans still go.
         if not root.is_dir():
             return []
+        # Only this poller writes archives, and no retirement runs now.
+        work_workspace.sweep_temporary(root)
         finished = self._finished_outcomes(current, timeout=SERVICE_WAIT_SECONDS)
         if finished is None:
             return []
@@ -131,8 +133,6 @@ class WorktreeRetirement:
         except (ValueError, OSError, KeyError, subprocess.TimeoutExpired, sqlite3.Error) as error:
             # A failed orphan check must not stop retirement.
             logging.getLogger(__name__).warning('Coconut could not stop the orphans of idle outcomes: %s', error)
-        # Only this poller writes archives, and no retirement runs now.
-        work_workspace.sweep_temporary(root)
         if not saved:
             return []
         bindings = {k: v['outcome'] for k, v in saved.items() if not v.get('retired')}

@@ -306,9 +306,13 @@ def elapsed_seconds(value):
 # The list names each shared service. A wider folder, such as /Library/ or /Applications/, also holds the JDK,
 # Xcode, and the Command Line Tools, whose orphans Coconut must stop. macOS hides the environment of its system
 # programs, so the orphan rules already never stop a system daemon.
-SHARED_EXECUTABLE_PREFIXES = ('/Applications/OrbStack.app/', '/Applications/Docker.app/',
+# The app bundles also hold client programs, such as docker, orb, and kubectl. Those belong to their turn,
+# so the list names only the service programs of each bundle.
+SHARED_EXECUTABLE_PREFIXES = ('/Applications/OrbStack.app/Contents/Frameworks/',
+                              '/Applications/Docker.app/Contents/MacOS/',
                               '/Library/Developer/PrivateFrameworks/CoreSimulator.framework/',
                               '/Library/Developer/CoreSimulator/')
+SHARED_EXECUTABLES = ('/Applications/OrbStack.app/Contents/MacOS/OrbStack',)
 # launchd_sim runs a booted iOS simulator.
 SHARED_EXECUTABLE_NAMES = ('launchd_sim',)
 # The adb server serves the emulators of every outcome. An adb client, such as adb logcat, belongs to its turn.
@@ -343,7 +347,8 @@ def shared(executable, pid=None):
     name = executable.rsplit('/', 1)[-1]
     if name == 'adb':
         return pid is not None and ADB_SERVER_ARGUMENT in arguments(pid).split()
-    return executable.startswith(SHARED_EXECUTABLE_PREFIXES) or name in SHARED_EXECUTABLE_NAMES
+    return (executable in SHARED_EXECUTABLES or executable.startswith(SHARED_EXECUTABLE_PREFIXES)
+            or name in SHARED_EXECUTABLE_NAMES)
 
 
 def environment_names(pid, mark):

@@ -1176,6 +1176,7 @@ class WorktreeRetirementTests(unittest.TestCase):
 
     def test_only_named_shared_services_are_exempt(self):
         for executable in ('/Applications/OrbStack.app/Contents/MacOS/OrbStack',
+                           '/Applications/OrbStack.app/Contents/Frameworks/OrbStack Helper.app/Contents/MacOS/OrbStack Helper',
                            '/Applications/Docker.app/Contents/MacOS/com.docker.backend',
                            '/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/bin/simdiskimaged',
                            'launchd_sim',
@@ -1187,6 +1188,10 @@ class WorktreeRetirementTests(unittest.TestCase):
                            '/Library/Frameworks/Python.framework/Versions/3.12/bin/python3',
                            '/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild',
                            '/System/Library/Frameworks/WebKit.framework/XPCServices/WebContent',
+                           # A client of a shared service belongs to its turn.
+                           '/Applications/OrbStack.app/Contents/MacOS/xbin/docker',
+                           '/Applications/OrbStack.app/Contents/MacOS/bin/orbctl',
+                           '/Applications/Docker.app/Contents/Resources/bin/docker',
                            '/Users/me/Library/Android/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64'):
             self.assertFalse(work_workspace.shared(executable), executable)
         # Only the adb server is shared. An adb client belongs to its turn.
@@ -1244,6 +1249,15 @@ class WorktreeRetirementTests(unittest.TestCase):
                     patch('coconut.work_workspace.process_table', return_value={pid: (77, 99999, executable)}):
                 self.assertNotIn(other, self.retire())
             self.assertNotIn('retired', self.registry()[other])
+
+    def test_a_busy_service_still_sweeps_unfinished_archives(self):
+        self.outcome()
+        (self.workspaces / 'archive').mkdir()
+        leftover = self.workspaces / 'archive' / '.old.tar.gz.tmp'
+        leftover.write_bytes(b'partial')
+        with patch.object(self.service, '_finished_outcomes', return_value=None):
+            self.assertEqual(self.retire(), [])
+        self.assertFalse(leftover.exists())
 
     def test_an_empty_registry_still_sweeps_unfinished_archives(self):
         (self.workspaces / 'worktrees.json').write_text('{}')
