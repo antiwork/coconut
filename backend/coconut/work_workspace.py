@@ -565,7 +565,9 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
             mode, _, name = entry.partition(b'\t')
             if mode.startswith(b'160000') and (inner / os.fsdecode(name) / '.git').exists():
                 raise ValueError(f'The nested worktree {inner} contains a submodule.')
-        return dict(head=head, current=current, entries=entries, marks=fingerprint(inner, [name for _, name in entries]))
+        # A plan keeps a digest of the patches, not the patches, so many nested worktrees do not fill the memory.
+        return dict(head=head, changes=changes_digest(*current), entries=entries,
+                    marks=fingerprint(inner, [name for _, name in entries]))
 
     def tracked():
         # A failed read must not hide another outcome's worktree, so this read is strict.
@@ -600,14 +602,18 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
             directory.mkdir(mode=0o700, exist_ok=True)
             # The name comes from the content. When a removal fails, the next pass finds the same archive
             # and writes no second copy.
-            key = hashlib.sha256(json.dumps([str(record['path']), plan['head'], changes_digest(*plan['current']),
+            key = hashlib.sha256(json.dumps([str(record['path']), plan['head'], plan['changes'],
                                              plan['marks']]).encode()).hexdigest()[:16]
             archive = directory / (record['path'].name + '-' + key + '.tar.gz')
             temporary = directory / ('.' + archive.name + '.tmp')
             written[record['path']] = (temporary, archive)
             if archive.exists():
                 continue
-            staged, unstaged, _ = plan['current']
+            # Read the patches again for this worktree only. They must match the plan.
+            current, entries = archive_entries(record['path'], {r['path'] for r in records if r is not record})
+            if changes_digest(*current) != plan['changes'] or entries != plan['entries']:
+                raise ValueError('A worktree inside the worktree changed during retirement.')
+            staged, unstaged, _ = current
             write_archive(temporary, dict(branch=record['branch'], head=plan['head'], parent=str(path),
                                           repository=str(repository), path=str(record['path']),
                                           at=stamp(datetime.now(timezone.utc))),
