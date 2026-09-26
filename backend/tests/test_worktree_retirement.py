@@ -70,7 +70,7 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.workspaces = self.service.root / 'workspaces'
         self.workspaces.mkdir(mode=0o700, exist_ok=True)
         # Most tests do not depend on lsof or send signals. The process tests below use real processes.
-        self.holders = patch.multiple('coconut.work_workspace', holders=MagicMock(return_value=set()),
+        self.holders = patch.multiple('coconut.work_workspace', holders=MagicMock(side_effect=lambda path, detail=False: {} if detail else set()),
                                       holders_by_path=MagicMock(side_effect=lambda paths, detail=False: {
                                           str(p): {} if detail else set() for p in paths}))
         self.holders.start()
@@ -1201,7 +1201,14 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.assertTrue(work_workspace.shared(adb, 10))
         with patch('coconut.work_workspace.arguments', return_value='adb logcat\n'):
             self.assertFalse(work_workspace.shared(adb, 10))
-        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout='adb fork-server server')) as run:
+        with patch('coconut.work_workspace.arguments', return_value='adb nodaemon server\n'):
+            self.assertTrue(work_workspace.shared(adb, 10))
+        # When ps cannot read the command line, Coconut keeps the process.
+        with patch('coconut.work_workspace.arguments', return_value=None):
+            self.assertTrue(work_workspace.shared(adb, 10))
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout='', returncode=1)):
+            self.assertTrue(work_workspace.shared(adb, 10))
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout='adb fork-server server', returncode=0)) as run:
             work_workspace.shared(adb, 10)
         self.assertIn('-ww', run.call_args.args[0])
         self.assertFalse(work_workspace.shared(adb))

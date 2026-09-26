@@ -108,7 +108,7 @@ orphans of an outcome, it checks again that the outcome is idle, because a turn 
 A failed check is logged, and retirement continues.
 Coconut never stops a shared service that a turn started, such as OrbStack, Docker Desktop, CoreSimulator,
 `launchd_sim`, or the `adb` server, because every outcome uses it. `SHARED_APP_BUNDLES`,
-`SHARED_EXECUTABLE_PREFIXES`, `SHARED_EXECUTABLE_NAMES`, and `ADB_SERVER_ARGUMENT` in `work_workspace.py` name
+`SHARED_EXECUTABLE_PREFIXES`, `SHARED_EXECUTABLE_NAMES`, and `ADB_SERVER_ARGUMENTS` in `work_workspace.py` name
 these services. `SHARED_APP_BUNDLES` also names the client folders of each app bundle. An `adb` client,
 a client program such as `docker`, the JDK, Xcode, and the Command Line Tools are not shared. A shared service whose cwd is in a worktree does not keep
 the worktree. An open file of a shared service still keeps it.

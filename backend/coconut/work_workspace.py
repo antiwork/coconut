@@ -315,7 +315,8 @@ SHARED_APP_BUNDLES = {'/Applications/OrbStack.app/': ('Contents/MacOS/bin/', 'Co
 # launchd_sim runs a booted iOS simulator.
 SHARED_EXECUTABLE_NAMES = ('launchd_sim',)
 # The adb server serves the emulators of every outcome. An adb client, such as adb logcat, belongs to its turn.
-ADB_SERVER_ARGUMENT = 'fork-server'
+# The server runs as `adb ... fork-server server` or `adb nodaemon server`.
+ADB_SERVER_ARGUMENTS = ('fork-server', 'nodaemon')
 
 
 def process_table():
@@ -334,19 +335,26 @@ def process_table():
 
 
 def arguments(pid):
+    """Return the command line of the process, or None when ps cannot read it."""
     try:
         # -ww keeps the whole command line. A cut line could hide the adb server's argument.
-        return subprocess.run(['ps', '-ww', '-o', 'args=', '-p', str(pid)], capture_output=True, text=True,
-                              errors='replace', timeout=10).stdout
+        result = subprocess.run(['ps', '-ww', '-o', 'args=', '-p', str(pid)], capture_output=True, text=True,
+                                errors='replace', timeout=10)
     except (OSError, subprocess.TimeoutExpired):
-        return ''
+        return None
+    return result.stdout if result.returncode == 0 else None
 
 
 def shared(executable, pid=None):
     """Return True for a shared service. An adb process counts only when `pid` shows the adb server."""
     name = executable.rsplit('/', 1)[-1]
     if name == 'adb':
-        return pid is not None and ADB_SERVER_ARGUMENT in arguments(pid).split()
+        if pid is None:
+            return False
+        line = arguments(pid)
+        # An unknown command line counts as the server, so Coconut never stops the server by mistake.
+        words = [] if line is None else line.split()
+        return line is None or ('server' in words and any(a in words for a in ADB_SERVER_ARGUMENTS))
     if any(executable.startswith(bundle) and not executable[len(bundle):].startswith(clients)
            for bundle, clients in SHARED_APP_BUNDLES.items()):
         return True
