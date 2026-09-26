@@ -569,7 +569,8 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
             if mode.startswith(b'160000') and (inner / os.fsdecode(name) / '.git').exists():
                 raise ValueError(f'The nested worktree {inner} contains a submodule.')
         # A plan keeps a digest of the patches, not the patches, so many nested worktrees do not fill the memory.
-        return dict(head=head, changes=changes_digest(*current), entries=entries,
+        # The branch is part of the plan, so a branch switch at the same commit also counts as a change.
+        return dict(branch=record['branch'], head=head, changes=changes_digest(*current), entries=entries,
                     marks=fingerprint(inner, [name for _, name in entries]))
 
     def tracked():
@@ -635,6 +636,9 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
             # The plans hold the head, the changes, the archived names, and their inode marks.
             if checked != planned:
                 raise ValueError('A worktree inside the worktree changed during retirement.')
+            # The parent can change while Coconut writes the archives. Check its own files again, so a parent that
+            # cannot retire keeps its nested worktrees.
+            archive_entries(path, {r['path'] for r in again})
             if written and finished and not finished(False):
                 raise ValueError('The outcome resumed during retirement.')
             for inner, (temporary, archive) in written.items():

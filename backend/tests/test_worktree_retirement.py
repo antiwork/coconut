@@ -1112,6 +1112,39 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual((inner / 'vendor' / 'lib' / 'lib.txt').read_text(), 'uncommitted edit\n')
         self.assertEqual(self.nested_archives(), [])
 
+    def test_a_branch_switch_during_the_archive_keeps_the_nested_worktree(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path)
+        (inner / 'draft.txt').write_text('keep\n')
+        real = work_workspace.write_archive
+
+        def switch(*arguments, **options):
+            result = real(*arguments, **options)
+            git(inner, 'checkout', '-q', '-b', 'switched')
+            return result
+        with patch('coconut.work_workspace.write_archive', side_effect=switch):
+            with self.assertRaisesRegex(ValueError, 'changed during retirement'):
+                work_workspace.remove_nested(self.workspaces, path.resolve(), self.repo)
+        self.assertTrue((inner / 'draft.txt').is_file())
+        self.assertTrue(self.listed(inner))
+
+    def test_a_parent_that_grows_during_the_archive_keeps_its_nested_worktree(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path)
+        (inner / 'draft.txt').write_text('keep\n')
+        real = work_workspace.write_archive
+
+        def grow(*arguments, **options):
+            result = real(*arguments, **options)
+            (path / 'large.bin').write_bytes(b'x' * 2048)
+            return result
+        with patch('coconut.work_workspace.write_archive', side_effect=grow), \
+                patch('coconut.work_workspace.UNTRACKED_LIMIT_BYTES', 1024):
+            with self.assertRaisesRegex(ValueError, 'larger than the archive limit'):
+                work_workspace.remove_nested(self.workspaces, path.resolve(), self.repo)
+        self.assertTrue((inner / 'draft.txt').is_file())
+        self.assertTrue(self.listed(inner))
+
     def test_a_link_to_a_sibling_nested_worktree_stays_in_the_archive(self):
         _, identity, path, _ = self.outcome()
         first = self.nested_worktree(path, 'first', folder='.worktrees')
