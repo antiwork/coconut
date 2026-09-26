@@ -568,6 +568,24 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(attempt.call_count, 1)
         self.assertTrue(any(identity in line and 'service was busy' in line for line in logs.output))
 
+    def test_a_busy_check_under_the_registry_lock_is_retried_with_one_archive(self):
+        outcome, identity, path, _ = self.outcome()
+        (path / 'draft.txt').write_text('keep\n')
+        finished, answers = self.service._finished_outcomes, []
+
+        def busy_under_lock(current, *, timeout=-1, only=None):
+            # The check under the registry lock, after the archive write, finds the service busy once.
+            if only is not None and timeout == retirement.LOCKED_WAIT_SECONDS and not answers:
+                answers.append(None)
+                return None
+            return finished(current, timeout=timeout, only=only)
+        with patch.object(self.service, '_finished_outcomes', side_effect=busy_under_lock), \
+                patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0):
+            self.assertEqual(self.retire(), [identity])
+        self.assertEqual(answers, [None])
+        archive = self.workspaces / 'archive'
+        self.assertEqual(sorted(p.name for p in archive.iterdir() if p.is_file()), [identity + '.tar.gz'])
+
     def test_a_service_that_stays_busy_is_logged_after_the_last_retry(self):
         outcome, identity, path, _ = self.outcome()
         with patch('coconut.work_workspace.retire', side_effect=retirement.ServiceBusy(retirement.BUSY_MESSAGE)) as attempt, \

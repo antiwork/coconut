@@ -24,9 +24,9 @@ NATIVE_IDLE_STATUSES = ('done', 'archived', 'blocked', 'triage', 'review', 'todo
 RETIREMENT_INTERVAL_SECONDS = 60 * 60
 # Before the registry lock, retirement waits this long for the service lock. Under the registry lock, it waits only LOCKED_WAIT_SECONDS.
 SERVICE_WAIT_SECONDS = 5
-# Some service passes hold their lock for seconds. The check under the registry lock comes after the archive write,
-# so this wait keeps a busy service from wasting the archive. A turn that starts meanwhile waits at most this long.
-LOCKED_WAIT_SECONDS = 3
+# The service usually holds its lock for milliseconds. A short wait under the registry lock lets retirement finish on
+# a busy service. The wait stays short, because the removal trusts the content checks that ran just before it.
+LOCKED_WAIT_SECONDS = 0.25
 # A worktree that meets a busy service is tried again in the same pass, after this pause, at most BUSY_RETRIES times.
 # Some service passes hold the lock for seconds, and the next pass is an hour away. A retry can repeat the archive
 # write, so there is one.
