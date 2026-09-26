@@ -861,6 +861,30 @@ class DuplicateRestoreFailed(ValueError):
     """A proven duplicate recovery started, but encountered a different restore failure."""
 
 
+def intent_failure(failure):
+    # PR92's duplicate retry reached the final digest check, then rolled back.
+    # Do not admit generic digest failures or another failure of this recovery.
+    return (isinstance(failure, dict) and set(failure) == {'at', 'error', 'duplicate_retry_failed'}
+            and failure['duplicate_retry_failed'] is True
+            and failure['error'] == 'The restored files do not match the archive.')
+
+
+def apply_unstaged(path, unstaged):
+    # Only intent-to-add files can be additions in a working-tree diff. Restore
+    # their index intent before extracting the separately archived untracked files.
+    # Do not use `apply --intent-to-add`: Git 2.50 can replace the existing index
+    # with just those additions. `add -N` preserves staged content and other entries.
+    before = set(git_output(path, 'ls-files', '--others', '-z').split(b'\0'))
+    git_output(path, 'apply', '--binary', '--whitespace=nowarn', '-', data=unstaged)
+    added = [name for name in git_output(path, 'ls-files', '--others', '-z').split(b'\0')
+             if name and name not in before]
+    if added:
+        # Include ignored additions and literal names (including whitespace and
+        # pathspec magic), without staging any content or touching other paths.
+        git_output(path, '--literal-pathspecs', 'add', '--intent-to-add', '--force',
+                   '--pathspec-from-file=-', '--pathspec-file-nul', data=b'\0'.join(added) + b'\0')
+
+
 def unpack(binding, checked, *, retry_failure=None):
     retired = binding['retired']
     path, archive, repository = Path(binding['path']), Path(retired['archive']), Path(binding['repository'])
@@ -908,10 +932,22 @@ def unpack(binding, checked, *, retry_failure=None):
                 # identical second member for a pre-existing checkout conflict.
                 # Links were deferred and failed differently, so they do not prove this case.
                 collision = next((name for member, name in duplicates if member.isfile()), None)
-                if (collision is None or retry_failure.get('error') != 'The checkout already contains ' + collision + '.'
+                legacy_intent = intent_failure(retry_failure)
+                if (collision is None
+                        or not legacy_intent and retry_failure.get('error') != 'The checkout already contains ' + collision + '.'
                         or any(metadata.get(key) != binding[key] for key in ('outcome', 'repository', 'path'))
                         or metadata.get('at') != retired.get('at')):
                     raise ValueError('The saved failure is not an identical legacy archive collision.')
+                if legacy_intent:
+                    # Independently bind the archived patches to the original digest.
+                    # Scope this second recovery to PR92's observed empty staged patch
+                    # and no untracked members, with a real Git-parsed unstaged addition.
+                    # A failure message alone never proves lost index intent.
+                    if (staged or not unstaged or any(member.name.startswith(UNTRACKED) for member, _ in members)
+                            or changes_digest(staged, unstaged, []) != retired['changes']
+                            or not any(line.startswith(b' create mode ') for line in
+                                       git_output(repository, 'apply', '--summary', '-', data=unstaged).splitlines())):
+                        raise ValueError('The archive does not prove the legacy intent-to-add mismatch.')
             # Archive validation can take time. Do not roll back someone else's files
             # if the previously empty path became occupied before Git starts.
             if occupied(path) or path.is_symlink() or retry_failure and path.resolve() != path:
@@ -922,7 +958,7 @@ def unpack(binding, checked, *, retry_failure=None):
             if staged:
                 git_output(path, 'apply', '--index', '--binary', '--whitespace=nowarn', '-', data=staged)
             if unstaged:
-                git_output(path, 'apply', '--binary', '--whitespace=nowarn', '-', data=unstaged)
+                apply_unstaged(path, unstaged)
             links = []
             for member, name in members:
                 if os.path.lexists(path / name):
@@ -957,14 +993,16 @@ def restore(binding, checked, *, retry_duplicates=False):
     After a successful restore, the worktree holds every archived change, so Coconut deletes the archive.
     A failed restore keeps the archive and marks the binding `restore_failed`. Only an
     explicit same-owner acquire can retry a proven legacy identical-duplicate collision
-    into a missing or empty path. All other failures retain the operator fence.
+    or its proven post-PR92 intent-to-add mismatch into a missing or empty path.
+    All other failures retain the operator fence.
     """
     retired = binding['retired']
     archive = retired['archive']
     failure = retired.get('restore_failed')
-    retry = (retry_duplicates and isinstance(failure, dict) and not failure.get('duplicate_retry_failed')
+    retry = (retry_duplicates and isinstance(failure, dict) and not failure.get('intent_retry_failed')
+             and (intent_failure(failure) or (not failure.get('duplicate_retry_failed')
              and isinstance(failure.get('error'), str)
-             and failure['error'].startswith('The checkout already contains '))
+             and failure['error'].startswith('The checkout already contains '))))
     if not failure or retry:
         try:
             unpack(binding, checked, retry_failure=failure)
@@ -973,7 +1011,9 @@ def restore(binding, checked, *, retry_duplicates=False):
             if isinstance(error, DuplicateRestoreFailed) or not failure:
                 failure = dict(at=stamp(datetime.now(timezone.utc)), error=str(error)[:1000])
                 if isinstance(error, DuplicateRestoreFailed):
-                    failure = dict(failure, duplicate_retry_failed=True)
+                    # Every recovery now preserves intent. Even an identical new
+                    # digest failure must not masquerade as the old PR92 failure.
+                    failure = dict(failure, duplicate_retry_failed=True, intent_retry_failed=True)
             binding['retired'] = dict(retired, restore_failed=failure)
         else:
             binding.pop('retired')
