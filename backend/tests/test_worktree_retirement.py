@@ -1093,6 +1093,21 @@ class WorktreeRetirementTests(unittest.TestCase):
         # The outer archive holds its own .gitignore change, but not the files of the worktree inside it.
         self.assertEqual(names[str(outer.resolve())], ['retirement.json', 'staged.patch', 'unstaged.patch'])
 
+    def test_a_link_to_a_sibling_nested_worktree_stays_in_the_archive(self):
+        _, identity, path, _ = self.outcome()
+        first = self.nested_worktree(path, 'first', folder='.worktrees')
+        second = self.nested_worktree(path, 'second', folder='.worktrees')
+        (first / 'draft.txt').write_text('keep\n')
+        # Git lists an ignored link at the top level as one entry without a slash.
+        (first / 'peer').symlink_to(second)
+        (first / '.gitignore').write_text('peer\n')
+        self.assertEqual(self.retire(), [identity])
+        names = {}
+        for archive in self.nested_archives():
+            with tarfile.open(archive) as tar:
+                names[json.loads(tar.extractfile('retirement.json').read())['path']] = sorted(tar.getnames())
+        self.assertIn('ignored/peer', names[str(first.resolve())])
+
     def test_a_parent_that_cannot_retire_keeps_its_nested_worktree(self):
         _, identity, path, _ = self.outcome()
         inner = self.nested_worktree(path)

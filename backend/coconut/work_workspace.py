@@ -164,7 +164,9 @@ def ignored_files(path, inside=()):
         # Removal would delete the files that Coconut cannot read. Keep the checkout.
         raise ValueError('Coconut cannot read all ignored files in the worktree: ' + str(error)) from error
     for entry in (os.fsdecode(name) for name in listing.split(b'\0') if name):
-        if rebuildable(entry) or (inside and (path / entry.rstrip('/')).resolve() in inside):
+        # A link to a nested worktree is a file of this worktree. Keep it; resolve() would follow it.
+        if rebuildable(entry) or (inside and not (path / entry.rstrip('/')).is_symlink()
+                                  and (path / entry.rstrip('/')).resolve() in inside):
             continue
         candidates = [entry]
         if entry.endswith('/'):
@@ -760,6 +762,7 @@ def retire(root, identity, finished, *, orphan_age=None):
         # and the next hourly pass retries without them.
         remove_nested(root, path, repository, check_only=True)
         # Check the parent's own files first, without the nested worktrees. A refusal then removes nothing.
+        # The parent is read again after the removal, so the archive reflects its files at that time.
         archive_entries(path, {r['path'] for r in nested(path, registered(repository))})
         if not finished(True):
             raise ValueError('The outcome resumed during retirement.')
