@@ -97,6 +97,30 @@ final class TrackedWorkItemTests: XCTestCase {
         XCTAssertFalse(store.checkoutConfirmation?.isUncertain == true)
     }
 
+    func testOnlyUncertainConfirmationErrorAllowsAlertRecoveryRetry() throws {
+        var saved = CheckoutRecoveryConfirmation(preview: try recoveryPreview(), pairing: recoveryPairing,
+                                                 workItemId: "export")
+        saved.markUncertain()
+        let confirmationError = try XCTUnwrap(NativeTaskDetailsError(result: .uncertain("Timed out"),
+                                                                    storageWarning: nil))
+        XCTAssertEqual(confirmationError.origin, .confirmation)
+        XCTAssertTrue(confirmationError.allowsRecoveryRetry(with: saved))
+
+        for origin in [NativeTaskDetailsError.Origin.stopRecovery, .stopTask, .preview, .storage] {
+            let otherError = NativeTaskDetailsError(origin: origin, message: "Timed out")
+            XCTAssertFalse(otherError.allowsRecoveryRetry(with: saved), "\(origin) must not retry recovery")
+        }
+        let storageError = try XCTUnwrap(NativeTaskDetailsError(result: .accepted(.draining),
+                                                               storageWarning: "Could not save status"))
+        XCTAssertEqual(storageError.origin, .storage)
+        XCTAssertFalse(storageError.allowsRecoveryRetry(with: saved))
+        XCTAssertNil(NativeTaskDetailsError(result: .accepted(.applied), storageWarning: nil))
+
+        saved.clearUncertain()
+        XCTAssertFalse(confirmationError.allowsRecoveryRetry(with: saved))
+        XCTAssertFalse(confirmationError.allowsRecoveryRetry(with: nil))
+    }
+
     private func item(status: String = "working") -> Artifact {
         Artifact(id: "export", botId: "bot", title: "Export account data", kind: "work", status: status,
                  preview: "", createdAt: "2026-09-13T00:00:00Z", activity: "Preparing the export",

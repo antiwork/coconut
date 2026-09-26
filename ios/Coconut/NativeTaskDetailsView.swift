@@ -154,6 +154,30 @@ enum CheckoutRecoveryConfirmationResult: Equatable, Sendable {
     }
 }
 
+struct NativeTaskDetailsError: Equatable {
+    enum Origin: Equatable {
+        case confirmation, stopRecovery, stopTask, preview, storage
+    }
+
+    let origin: Origin
+    let message: String
+
+    init(origin: Origin, message: String) {
+        self.origin = origin
+        self.message = message
+    }
+
+    init?(result: CheckoutRecoveryConfirmationResult, storageWarning: String?) {
+        let message = [result.failureReason, storageWarning].compactMap { $0 }.joined(separator: " ")
+        guard !message.isEmpty else { return nil }
+        self.init(origin: result.failureReason == nil ? .storage : .confirmation, message: message)
+    }
+
+    func allowsRecoveryRetry(with confirmation: CheckoutRecoveryConfirmation?) -> Bool {
+        origin == .confirmation && confirmation?.isUncertain == true
+    }
+}
+
 struct TrackedPullRequest: Identifiable {
     let artifact: Artifact
     let url: URL
@@ -239,7 +263,7 @@ struct NativeTaskDetailsView: View {
     @Environment(\.dismiss) private var dismiss
     let botId: String
     @State private var cancelling: Set<String> = []
-    @State private var error: String?
+    @State private var error: NativeTaskDetailsError?
     @State private var taskToStop: TrackedWorkItem?
     @State private var recovery: CheckoutRecoveryCheck?
     @State private var confirming = false
@@ -253,6 +277,7 @@ struct NativeTaskDetailsView: View {
     }
 
     private var confirmation: CheckoutRecoveryConfirmation? { store.checkoutConfirmation }
+    private var canRetryError: Bool { error?.allowsRecoveryRetry(with: confirmation) == true }
 
     private func retryConfirmation() {
         guard let confirmation, !confirming else { return }
@@ -260,8 +285,7 @@ struct NativeTaskDetailsView: View {
         Task {
             let result = await store.confirmCheckoutRecovery(confirmation)
             let storageWarning = store.recordCheckoutRecoveryResult(result, for: confirmation)
-            error = [result.failureReason, storageWarning].compactMap { $0 }.joined(separator: " ")
-            if error?.isEmpty == true { error = nil }
+            error = NativeTaskDetailsError(result: result, storageWarning: storageWarning)
             confirming = false
         }
     }
@@ -322,7 +346,9 @@ struct NativeTaskDetailsView: View {
                             recovering.insert(item.id)
                             Task {
                                 do { recovery = try await store.checkoutRecoveryPreview(item) }
-                                catch { error = error.localizedDescription }
+                                catch {
+                                    self.error = NativeTaskDetailsError(origin: .preview, message: error.localizedDescription)
+                                }
                                 recovering.remove(item.id)
                             }
                         }
@@ -347,7 +373,7 @@ struct NativeTaskDetailsView: View {
                 stoppingRecovery = true
                 Task {
                     let failure = await store.stopPendingCheckoutRecovery(pending)
-                    error = failure
+                    error = failure.map { NativeTaskDetailsError(origin: .stopRecovery, message: $0) }
                     stopConfirmationMessage = failure == nil ? "Stop sent. Check recovery status to reconcile the original request." : nil
                     stoppingRecovery = false
                 }
@@ -362,23 +388,27 @@ struct NativeTaskDetailsView: View {
             Button("Stop task", role: .destructive) {
                 cancelling.insert(item.id)
                 Task {
-                    error = await store.cancelWork(item)
+                    error = (await store.cancelWork(item)).map { NativeTaskDetailsError(origin: .stopTask, message: $0) }
                     cancelling.remove(item.id)
                 }
             }.accessibilityIdentifier("confirm-stop-task")
         } message: { _ in
             Text("The Mac records the stop request. An action already executing can finish before it stops.")
         }
-        .alert(confirmation?.isUncertain == true ? "Recovery confirmation uncertain" : "Request not confirmed",
+        .alert(canRetryError ? "Recovery confirmation uncertain" : "Request not confirmed",
                isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
-            if confirmation?.isUncertain == true {
-                Button("Retry same confirmation") { error = nil; retryConfirmation() }
+            if canRetryError {
+                Button("Retry same confirmation") {
+                    guard canRetryError else { return }
+                    error = nil
+                    retryConfirmation()
+                }
                 Button("Later", role: .cancel) { error = nil }
             } else {
                 Button("OK") { error = nil }
             }
-        } message: { Text(confirmation?.isUncertain != true ? (error ?? "") :
-            "The Mac may have accepted this request. Retry uses the same confirmation and key. \(error ?? "")") }
+        } message: { Text(!canRetryError ? (error?.message ?? "") :
+            "The Mac may have accepted this request. Retry uses the same confirmation and key. \(error?.message ?? "")") }
         .alert("Recover this checkout?", isPresented: Binding(
             get: { recovery != nil }, set: { if !$0 { recovery = nil } })) {
             Button("Not now", role: .cancel) { recovery = nil }
@@ -389,7 +419,7 @@ struct NativeTaskDetailsView: View {
                     try store.stageCheckoutRecovery(CheckoutRecoveryConfirmation(preview: check.preview,
                         pairing: check.pairing, workItemId: check.workItemId))
                     retryConfirmation()
-                } catch { self.error = error.localizedDescription }
+                } catch { self.error = NativeTaskDetailsError(origin: .storage, message: error.localizedDescription) }
             }.disabled(confirmation != nil).accessibilityIdentifier("confirm-checkout-recovery")
         } message: {
             Text("\(recovery?.preview.confirmationSummary ?? "")\n\nThis resumes the stopped Work in its original workspace. The Mac will check these branches and edits before continuing. Nothing changes until you confirm.")
