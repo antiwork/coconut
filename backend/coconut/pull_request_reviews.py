@@ -303,7 +303,14 @@ class PullRequestReviews:
                     if self.stopping.is_set() or self.restart_pending:
                         return
                     bot = self._get('bots', bot_id)
-                    for artifact in self._all('artifacts'):
+                    # Read the artifacts and decisions once. This loop changes only the artifact that it
+                    # reviews, and that object is also in its peer list, so later peers see the change.
+                    artifacts, decisions = self._all('artifacts'), self._all('decisions')
+                    by_url = {}
+                    for item in artifacts:
+                        if item['kind'] == 'pr':
+                            by_url.setdefault(item.get('url', '').lower(), []).append(item)
+                    for artifact in artifacts:
                         if (artifact['bot_id'] != bot_id or artifact['kind'] != 'pr'
                                 or (artifact_ids is not None and artifact['id'] not in artifact_ids)
                                 or not artifact.get('_review_task_id') or artifact.get('refresh_error')
@@ -324,8 +331,8 @@ class PullRequestReviews:
                         if not self._can_resume_process(task, bot) or self._task_paused(task):
                             continue
                         # One outstanding review per PR, even when several bots register it.
-                        peers = [a for a in self._all('artifacts') if a['kind'] == 'pr' and a.get('url', '').lower() == artifact['url'].lower()]
-                        if self._work_pause(artifact, peers=peers):
+                        peers = by_url.get(artifact['url'].lower(), [])
+                        if self._work_pause(artifact, decisions=decisions, peers=peers):
                             continue
                         owner = self._pr_review_owner(peers)
                         if not owner or owner['id'] != artifact['id']:

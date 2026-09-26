@@ -309,7 +309,7 @@ class WorkStatus:
         return linked
 
     def _link_external_work(self, tasks, linked, explicit_waits):
-        artifacts = {a['id']: a for a in self._all('artifacts') if a['kind'] == 'work'}
+        artifacts = {a['id']: a for a in self._all_shared('artifacts') if a['kind'] == 'work'}
         for item in artifacts.values():
             if item.get('_work_resuming') or not item.get('external_wait'):
                 continue

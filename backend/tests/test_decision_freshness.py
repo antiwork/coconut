@@ -46,6 +46,33 @@ class DecisionFreshnessTests(unittest.TestCase):
         context['status'] = 'completed'
         self.service._put('contexts', context)
 
+    def test_a_refresh_pass_parses_each_table_once_for_many_questions(self):
+        decision = self.question(old=False)
+        for index in range(4):
+            self.service._put('decisions', dict(decision, id=f'extra-{index}', title=f'Question {index}?'))
+        original, reads = self.service._all, []
+        def read(table):
+            reads.append(table)
+            return original(table)
+        # The service lock is held for the whole pass, so each whole-table read blocks every other thread.
+        with patch.object(self.service, '_all', side_effect=read):
+            self.service._queue_decision_refreshes()
+        self.assertEqual(reads.count('artifacts'), 1)
+        self.assertEqual(reads.count('tasks'), 1)
+        self.assertLessEqual(reads.count('messages'), 1)
+
+    def test_shared_reads_see_each_write(self):
+        with self.service.transaction(), self.service._shared_reads():
+            first = self.service._task_map()
+            self.assertIs(self.service._task_map(), first)
+            self.assertIs(self.service._all_shared('tasks'), self.service._all_shared('tasks'))
+            task = self.service._get('tasks', self.task['id'])
+            task['summary'] = 'Changed in this pass.'
+            self.service._put('tasks', task)
+            self.assertEqual(self.service._task_map()[task['id']]['summary'], 'Changed in this pass.')
+            self.assertIsNot(self.service._task_map(), first)
+        self.assertIsNot(self.service._task_map(), self.service._task_map())
+
     def test_changed_source_hides_assessment_until_fenced_check_confirms_it(self):
         decision = self.question(old=False)
         url = 'https://github.com/example/project/pull/42'

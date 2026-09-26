@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from dataclasses import replace
+from unittest.mock import patch
 from uuid import uuid4
 
 from coconut.service import Service
@@ -56,6 +57,29 @@ class PRReviewTests(unittest.TestCase):
         result = replace(observation('ready_for_review'), pr_state='open', draft=False, checks_state='passed')
         self.tracker.observations.append(replace(result, **changes))
         self.service.refresh_pull_requests()
+
+    def test_a_review_pass_reads_the_artifacts_once_for_every_pr_of_a_bot(self):
+        self.green()
+        original = self.service._all
+        def count(extra):
+            with self.service.transaction():
+                artifact = self.service._get('artifacts', self.artifact_id)
+                # Finish the review turn that green() queued, so each PR reaches the peer check.
+                task = self.service._get('tasks', artifact['_review_task_id'])
+                task['status'] = 'completed'
+                self.service._put('tasks', task)
+                for index in range(extra):
+                    self.service._put('artifacts', dict(artifact, id=f'copy-{extra}-{index}', url=f'{URL}-{extra}-{index}',
+                                                        _reviewed_states={}, _reviewed_heads=[]))
+            reads = []
+            def read(table):
+                reads.append(table)
+                return original(table)
+            with patch.object(self.service, '_all', side_effect=read):
+                self.service._queue_pr_reviews()
+            return reads.count('artifacts')
+        # The cost does not grow with the number of pull requests.
+        self.assertEqual(count(1), count(6))
 
     def test_green_wakes_dev_then_desk_offers_one_pending_merge_card(self):
         before = len(self.service._all('messages'))

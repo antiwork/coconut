@@ -359,6 +359,49 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 # Valid rows can outgrow SQLite's limit for a single combined value.
                 return [json.loads(row[0]) for row in self.db.execute(f'SELECT data FROM {table} ORDER BY rowid')]
 
+    @contextlib.contextmanager
+    def _shared_reads(self):
+        """Parse each table at most once in one service operation, until the next write.
+
+        Inside this block, _all_shared, _task_map, and _shared_pending_receipts return shared objects. Only code that
+        reads may use them. Code that changes a row reads it with _all or _get and writes it with _put, and each
+        _put drops every shared object, so a later read sees the write.
+        """
+        if getattr(self, '_shared_tables', None) is not None:
+            yield
+            return
+        previous = getattr(self, '_work_graphs', None)
+        self._shared_tables, self._work_graphs = {}, {}
+        try:
+            yield
+        finally:
+            self._shared_tables, self._work_graphs = None, previous
+
+    def _all_shared(self, table):
+        cache = getattr(self, '_shared_tables', None)
+        if cache is None:
+            return self._all(table)
+        if table not in cache:
+            cache[table] = self._all(table)
+        return cache[table]
+
+    def _task_map(self):
+        # _work_chain reuses a work graph for the same task map object, so every reader gets one map.
+        cache = getattr(self, '_shared_tables', None)
+        if cache is None:
+            return {task['id']: task for task in self._all('tasks')}
+        if 'task map' not in cache:
+            cache['task map'] = {task['id']: task for task in self._all_shared('tasks')}
+        return cache['task map']
+
+    def _shared_pending_receipts(self):
+        cache = getattr(self, '_shared_tables', None)
+        if cache is None:
+            return self._pending_completion_receipts()
+        if 'pending receipts' not in cache:
+            cache['pending receipts'] = self._pending_completion_receipts()
+        return cache['pending receipts']
+
     def _read_one(self, statement, parameters):
         cache = getattr(self, '_read_cache', None)
         if cache is None:
@@ -385,6 +428,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         return json.loads(row[0])
 
     def _put(self, table: str, obj: dict):
+        if getattr(self, '_shared_tables', None):
+            # A write can change any graph that the shared objects built.
+            self._shared_tables.clear()
+            self._work_graphs = {}
         self.db.execute(f'INSERT INTO {table}(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data', (obj['id'], encoded(obj)))
 
     def _event(self, event_type: str, data: dict, bot_id: str | None = None, task_id: str | None = None):
