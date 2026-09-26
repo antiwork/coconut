@@ -86,6 +86,17 @@ class DecisionFreshnessTests(unittest.TestCase):
                 self.assertIsNot(view._task_map(), shared)
             self.assertIs(self.service._task_map(), shared)
         self.assertEqual(seen, [None])
+        # Another thread waits for the service lock before it opens its own block.
+        with self.service._shared_reads():
+            opened = threading.Event()
+            def other_block():
+                with self.service._shared_reads():
+                    opened.set()
+            other = threading.Thread(target=other_block)
+            other.start()
+            self.assertFalse(opened.wait(0.2))
+        other.join()
+        self.assertTrue(opened.is_set())
 
     def test_changed_source_hides_assessment_until_fenced_check_confirms_it(self):
         decision = self.question(old=False)

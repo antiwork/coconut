@@ -367,15 +367,17 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         _work_chain reuses its graphs. Only code that reads may use them. Code that changes a row reads it with
         _all or _get and writes it with _put, and each _put drops every shared object, so a later read sees the write.
         The shared objects belong to the thread that opened the block. Other threads and read views never see them.
+        The block holds the service lock, so no other thread writes or opens a second block meanwhile.
         """
-        if self._shared_cache() is not None:
-            yield
-            return
-        self._shared_state = (threading.get_ident(), {})
-        try:
-            yield
-        finally:
-            self._shared_state = None
+        with self.lock:
+            if self._shared_cache() is not None:
+                yield
+                return
+            previous, self._shared_state = getattr(self, '_shared_state', None), (threading.get_ident(), {})
+            try:
+                yield
+            finally:
+                self._shared_state = previous
 
     def _shared_cache(self):
         state = getattr(self, '_shared_state', None)
