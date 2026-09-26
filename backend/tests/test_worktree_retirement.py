@@ -1017,6 +1017,8 @@ class WorktreeRetirementTests(unittest.TestCase):
                 (inner / 'new.txt').write_text('commit\n'), git(inner, 'add', 'new.txt'), self.commit(inner, 'Only here')),
             'git operation': lambda inner: Path(git(inner, 'rev-parse', '--path-format=absolute', '--git-path', 'MERGE_HEAD'))
                 .write_text(git(inner, 'rev-parse', 'HEAD') + '\n'),
+            # An archive cannot hold a plain repository inside the nested worktree.
+            'nested repository': lambda inner: (git(inner / 'vendor', 'init', '-q') if (inner / 'vendor').mkdir() is None else None),
         }
         for name, change in cases.items():
             with self.subTest(name=name):
@@ -1059,6 +1061,37 @@ class WorktreeRetirementTests(unittest.TestCase):
                          ('refs/heads/subagent-branch', str(path.resolve()), str(inner.resolve())))
         # The branch keeps the nested worktree's commits.
         self.assertTrue(git(self.repo, 'rev-parse', '--verify', 'refs/heads/subagent-branch'))
+
+    def test_a_refused_nested_removal_keeps_one_archive(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path)
+        (inner / 'draft.txt').write_text('keep\n')
+        real = work_workspace.git
+
+        def refuse(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove') and Path(arguments[-1]) == inner.resolve():
+                raise ValueError('working trees containing submodules cannot be removed')
+            return real(where, *arguments, **options)
+        with patch('coconut.work_workspace.git', side_effect=refuse):
+            self.assertEqual(self.retire(), [])
+            self.assertEqual(self.retire(), [])
+        self.assertEqual(len(self.nested_archives()), 1)
+        self.assertTrue((inner / 'draft.txt').is_file())
+
+    def test_a_worktree_inside_a_nested_worktree_is_archived_only_once(self):
+        _, identity, path, _ = self.outcome()
+        outer = self.nested_worktree(path, 'outer', folder='.worktrees')
+        (outer / '.gitignore').write_text('build/\n')
+        inner = self.nested_worktree(outer, 'inner', folder='build')
+        (inner / 'draft.txt').write_text('keep\n')
+        self.assertEqual(self.retire(), [identity])
+        names = {}
+        for archive in self.nested_archives():
+            with tarfile.open(archive) as tar:
+                names[json.loads(tar.extractfile('retirement.json').read())['path']] = sorted(tar.getnames())
+        self.assertEqual(names[str(inner.resolve())], ['retirement.json', 'staged.patch', 'unstaged.patch', 'untracked/draft.txt'])
+        # The outer archive holds its own .gitignore change, but not the files of the worktree inside it.
+        self.assertEqual(names[str(outer.resolve())], ['retirement.json', 'staged.patch', 'unstaged.patch'])
 
     def test_an_outcome_that_resumes_during_the_nested_archive_keeps_the_nested_worktree(self):
         _, identity, path, _ = self.outcome()
@@ -1104,12 +1137,12 @@ class WorktreeRetirementTests(unittest.TestCase):
         inner = self.nested_worktree(path)
         original = work_workspace.ignored_files
         calls = []
-        def late(where):
+        def late(where, inside=()):
             calls.append(where)
             # The file appears after the first check and before the removal.
             if where == inner.resolve() and len([c for c in calls if c == inner.resolve()]) == 2:
                 (inner / '.env').write_text('SECRET=1\n')
-            return original(where)
+            return original(where, inside)
         with patch('coconut.work_workspace.ignored_files', side_effect=late):
             with self.assertRaisesRegex(ValueError, 'changed during retirement'):
                 work_workspace.remove_nested(self.workspaces, path.resolve(), self.repo)

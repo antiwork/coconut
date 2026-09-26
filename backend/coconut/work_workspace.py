@@ -153,8 +153,8 @@ def rebuildable(name):
             or any('/'.join(parts[:end]) in REBUILDABLE_PATHS for end in range(1, len(parts) + 1)))
 
 
-def ignored_files(path):
-    """Return the ignored files and links to archive. Skip rebuildable folders, sockets, and pipes."""
+def ignored_files(path, inside=()):
+    """Return the ignored files and links to archive. Skip rebuildable folders and the worktrees in `inside`."""
     listing = git_output(path, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z', strict=True)
     names, seen, size = [], set(), 0
 
@@ -162,7 +162,7 @@ def ignored_files(path):
         # Removal would delete the files that Coconut cannot read. Keep the checkout.
         raise ValueError('Coconut cannot read all ignored files in the worktree: ' + str(error)) from error
     for entry in (os.fsdecode(name) for name in listing.split(b'\0') if name):
-        if rebuildable(entry):
+        if rebuildable(entry) or (inside and (path / entry.rstrip('/')).resolve() in inside):
             continue
         candidates = [entry]
         if entry.endswith('/'):
@@ -171,7 +171,8 @@ def ignored_files(path):
                 relative = Path(directory).relative_to(path).as_posix()
                 # os.walk lists a link to a folder with the folders. Keep the link and do not follow it.
                 links = [folder for folder in folders if (Path(directory) / folder).is_symlink()]
-                folders[:] = [f for f in folders if f not in links and not rebuildable(relative + '/' + f)]
+                folders[:] = [f for f in folders if f not in links and not rebuildable(relative + '/' + f)
+                              and not (inside and (Path(directory) / f).resolve() in inside)]
                 candidates += [relative + '/' + name for name in files + links]
         for name in candidates:
             # Git can list both a directory and its children when its own .gitignore
@@ -508,7 +509,9 @@ def archive_entries(path, inside=()):
     if untracked > UNTRACKED_LIMIT_BYTES:
         raise ValueError('The untracked files in the worktree are larger than the archive limit.')
     current = (staged, unstaged, names)
-    return current, [(UNTRACKED + name, name) for name in names] + [(IGNORED + name, name) for name in ignored_files(path)]
+    # Sort the entries, so two reads of the same files compare equal. os.walk returns directory order.
+    return current, sorted([(UNTRACKED + name, name) for name in names]
+                           + [(IGNORED + name, name) for name in ignored_files(path, inside)])
 
 
 def check_worktree(path, binding, repository, *, processes=True):
@@ -581,13 +584,19 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
             if plan is None:
                 continue
             directory.mkdir(parents=True, mode=0o700, exist_ok=True)
-            moment = datetime.now(timezone.utc)
-            name = record['path'].name + '-' + moment.strftime('%Y%m%dT%H%M%S%fZ') + '.tar.gz'
-            temporary = directory / ('.' + name + '.tmp')
-            written[record['path']] = (temporary, directory / name)
+            # The name comes from the content. When a removal fails, the next pass finds the same archive
+            # and writes no second copy.
+            key = hashlib.sha256(json.dumps([str(record['path']), plan['head'], changes_digest(*plan['current']),
+                                             plan['marks']]).encode()).hexdigest()[:16]
+            archive = directory / (record['path'].name + '-' + key + '.tar.gz')
+            temporary = directory / ('.' + archive.name + '.tmp')
+            written[record['path']] = (temporary, archive)
+            if archive.exists():
+                continue
             staged, unstaged, _ = plan['current']
             write_archive(temporary, dict(branch=record['branch'], head=plan['head'], parent=str(path),
-                                          repository=str(repository), path=str(record['path']), at=stamp(moment)),
+                                          repository=str(repository), path=str(record['path']),
+                                          at=stamp(datetime.now(timezone.utc))),
                           record['path'], dict(zip(PATCHES, (staged, unstaged))), plan['entries'])
         if written:
             if finished and not finished(True):
@@ -603,17 +612,17 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
                 raise ValueError('A worktree inside the worktree changed during retirement.')
             if written and finished and not finished(False):
                 raise ValueError('The outcome resumed during retirement.')
-            for temporary, archive in written.values():
-                temporary.replace(archive)
+            for inner, (temporary, archive) in written.items():
+                if temporary.exists():
+                    temporary.replace(archive)
+                logging.getLogger(__name__).warning('Coconut archived the changes of nested worktree %s in %s.',
+                                                    inner, archive)
             if written:
                 sync_directory(directory)
             # Remove the deepest first. Removing a parent first would delete a worktree inside it without Git.
             for record in sorted(again, key=lambda r: len(r['path'].parts), reverse=True):
                 force = ('--force',) if record['path'] in written else ()
                 git(repository, 'worktree', 'remove', *force, str(record['path']), timeout=CHECKOUT_SECONDS)
-                if record['path'] in written:
-                    logging.getLogger(__name__).warning('Coconut archived the changes of nested worktree %s in %s.',
-                                                        record['path'], written[record['path']][1])
             return [archive for _, archive in written.values()]
     finally:
         for temporary, _ in written.values():
