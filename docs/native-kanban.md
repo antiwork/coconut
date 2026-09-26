@@ -103,7 +103,12 @@ Before it retires any worktree, each hourly run also stops the old orphans of ev
 outcome's worktrees and its scratch workspace (`workspaces/<outcome>`), with one `lsof` scan, and uses the same
 orphan rules. This runs even when retirement refuses the worktree, for example for a nested worktree with changes.
 Such orphans, for example an Android emulator or a test script left by a crashed worker, otherwise hold disk space,
-CPU, and memory for days.
+CPU, and memory for days. This step also runs for an outcome that has only a scratch workspace. Before it stops the
+orphans of an outcome, it checks again that the outcome is idle, because a turn can start during the `lsof` scan.
+A failed check is logged, and retirement continues.
+Coconut never stops a shared service that a turn started, such as OrbStack, Docker Desktop, CoreSimulator, or the
+`adb` server, because every outcome uses it. `SHARED_EXECUTABLE_PREFIXES` and `SHARED_EXECUTABLE_NAMES` in
+`work_workspace.py` name these services. The JDK, Xcode, and the Command Line Tools are not on the list.
 
 The log names the cause when Coconut does not retire a worktree, for example a busy service or a changed worktree.
 Steps 1 to 7 do not hold the registry lock. Step 8 runs Git commands that do not wait for other processes.

@@ -303,7 +303,12 @@ def elapsed_seconds(value):
 
 # A shared app or system daemon can inherit a turn's environment when a turn starts it, for example OrbStack for
 # Docker. Stopping it would stop it for every outcome, so Coconut never stops a process under these folders.
-SHARED_EXECUTABLE_PREFIXES = ('/Applications/', '/System/', '/Library/')
+# The list names each shared service. A wider folder, such as /Library/ or /Applications/, also holds the JDK,
+# Xcode, and the Command Line Tools, whose orphans Coconut must stop.
+SHARED_EXECUTABLE_PREFIXES = ('/System/', '/Applications/OrbStack.app/', '/Applications/Docker.app/',
+                              '/Library/Developer/PrivateFrameworks/CoreSimulator.framework/')
+# The adb server serves the emulators of every outcome.
+SHARED_EXECUTABLE_NAMES = ('adb',)
 
 
 def process_table():
@@ -322,7 +327,7 @@ def process_table():
 
 
 def shared(executable):
-    return executable.startswith(SHARED_EXECUTABLE_PREFIXES)
+    return executable.startswith(SHARED_EXECUTABLE_PREFIXES) or executable.rsplit('/', 1)[-1] in SHARED_EXECUTABLE_NAMES
 
 
 def environment_names(pid, mark):
@@ -416,7 +421,7 @@ def stop_orphans(found, outcome, age):
     So Coconut stops only an orphan whose environment names the outcome in COCONUT_WORKSPACE_OUTCOME, with its child processes.
     The worker of each turn sets this variable, and the processes of the turn inherit it.
     When the system does not show the environment of a process, for example a macOS platform binary, Coconut does not stop it.
-    It never stops a shared app or system daemon under SHARED_EXECUTABLE_PREFIXES, such as OrbStack.
+    It never stops a shared app or system daemon that `shared` names, such as OrbStack.
     A process that does not end after SIGTERM gets SIGKILL.
     """
     if not found:

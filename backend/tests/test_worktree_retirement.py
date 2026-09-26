@@ -36,6 +36,9 @@ def environments_visible():
     """
     if not shutil.which('lsof') or os.uname().sysname != 'Darwin':
         return False
+    # Coconut never stops a shared program, so an orphan of such an interpreter cannot show the rules.
+    if work_workspace.shared(sys.executable):
+        return False
     process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(5)'], env=dict(os.environ, COCONUT_PROBE='1'))
     try:
         return work_workspace.environment_names(process.pid, 'COCONUT_PROBE=1')
@@ -1110,6 +1113,71 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
             self.assertEqual(self.retire(), [])
         self.assertTrue(self.alive(pid))
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_an_idle_outcome_with_only_a_scratch_workspace_loses_its_orphans(self):
+        outcome = str(uuid4())
+        with self.service.transaction():
+            self.service._put('tasks', dict(id=str(uuid4()), bot_id=self.bot['id'], _execution_session_id=outcome,
+                                            title='Change', status='completed', summary='', created_at=OLD, updated_at=OLD))
+        scratch = self.workspaces / outcome
+        scratch.mkdir()
+        pid = self.orphan(scratch, outcome)
+        self.assertFalse((self.workspaces / 'worktrees.json').exists())
+        self.holders.stop()
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.assertEqual(self.retire(), [])
+        for _ in range(50):
+            if not self.alive(pid):
+                break
+            time.sleep(0.1)
+        self.assertFalse(self.alive(pid))
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_an_outcome_that_resumes_during_the_scan_keeps_its_orphans(self):
+        outcome, identity, path, task = self.outcome()
+        git(self.repo, 'worktree', 'lock', str(path))
+        pid = self.orphan(path, outcome)
+        self.holders.stop()
+        scan = work_workspace.holders_by_path
+
+        def resume_then_scan(paths):
+            with self.service.transaction():
+                self.service._put('tasks', dict(task, status='working', updated_at=RECENT))
+            return scan(paths)
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0), \
+                patch('coconut.work_workspace.holders_by_path', side_effect=resume_then_scan):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(self.alive(pid))
+
+    def test_a_failed_orphan_check_does_not_stop_retirement(self):
+        outcome, identity, path, _ = self.outcome()
+        with patch('coconut.work_workspace.holders_by_path', return_value={str(path): {12345}}), \
+                patch('coconut.work_workspace.stop_orphans', side_effect=ValueError('Coconut cannot list processes without ps.')):
+            self.assertEqual(self.retire(), [identity])
+        self.assertIn('retired', self.registry()[identity])
+
+    def test_a_registry_entry_without_a_path_does_not_stop_retirement(self):
+        outcome, identity, path, _ = self.outcome()
+        saved = self.registry()
+        saved['broken'] = dict(outcome=outcome, branch='wt/broken', repository=str(self.repo))
+        (self.workspaces / 'worktrees.json').write_text(json.dumps(saved))
+        self.assertEqual(self.retire(), [identity])
+
+    def test_only_named_shared_services_are_exempt(self):
+        for executable in ('/Applications/OrbStack.app/Contents/MacOS/OrbStack',
+                           '/Applications/Docker.app/Contents/MacOS/com.docker.backend',
+                           '/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder',
+                           '/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/bin/simdiskimaged',
+                           '/Users/me/Library/Android/sdk/platform-tools/adb'):
+            self.assertTrue(work_workspace.shared(executable), executable)
+        # The developer toolchain lives in these folders too. Its orphans must go.
+        for executable in ('/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home/bin/java',
+                           '/Library/Developer/CommandLineTools/usr/bin/git',
+                           '/Library/Frameworks/Python.framework/Versions/3.12/bin/python3',
+                           '/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild',
+                           '/Users/me/Library/Android/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64'):
+            self.assertFalse(work_workspace.shared(executable), executable)
 
     def test_holders_by_path_maps_each_path_from_one_scan(self):
         held, other = self.root / 'held', self.root / 'other'
