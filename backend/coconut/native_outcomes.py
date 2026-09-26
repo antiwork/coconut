@@ -103,6 +103,7 @@ class NativeOutcomes:
         tasks = {t['id']: t for t in self._all('tasks')}
         # Legacy recovery proves only an original producer's own completed return.
         # Continuation-owned results need separate provenance, not inferred ancestry.
+        messages = None
         for delivery in self._all('deliveries'):
             receipt = delivery.get('receipt') or {}
             producer = tasks.get(delivery.get('source_task_id'))
@@ -130,6 +131,8 @@ class NativeOutcomes:
             if (message.get('sender_bot_id') != producer['bot_id'] or message.get('text') != delivery['text']
                     or message.get('result_status') != 'completed' or message.get('progress_only')):
                 continue
+            if messages is None:
+                messages = self._all('messages')
             if any(m.get('sender_bot_id') == producer['bot_id'] and m.get('thread_id') == child['thread_id']
                    and m.get('text') == delivery['text'] and m.get('role') == 'assistant'
                    and ((m.get('task_id') == producer['id'] and m.get('kind') == 'text'
@@ -137,7 +140,7 @@ class NativeOutcomes:
                         or (m.get('task_id') == child['id'] and m.get('kind') == 'bot_exchange'
                             and m.get('recipient_bot_ids') == [child['bot_id']]))
                    and not any(m.get(k) for k in ('_hidden', '_deleted', '_direct_reply_message_id', 'streaming'))
-                   for m in self._all('messages')):
+                   for m in messages):
                 return True
         return False
 

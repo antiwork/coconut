@@ -128,6 +128,17 @@ class MissingEpochUnlinkTests(fixtures.DependencyUnlinkTests):
             self.unlink(source)
         self.assertEqual(self.requests, [])
 
+    def test_missing_return_message_is_read_once_across_delivery_candidates(self):
+        child, parent, source = self.setup_edge()
+        delivery = next(d for d in self.service._all('deliveries') if d['source_task_id'] == self.producer['id'])
+        for index in range(3):
+            self.service._put('deliveries', delivery | {'id': f'repeated-return-{index}'})
+        message = next(m for m in self.service._all('messages') if m['task_id'] == self.producer['id'] and m['kind'] == 'text')
+        self.service._put('messages', message | {'_hidden': True})
+        with patch.object(self.service, '_all', wraps=self.service._all) as read:
+            self.assertFalse(self.service._unlink_conversation_current(child))
+        self.assertEqual(sum(call.args == ('messages',) for call in read.call_args_list), 1)
+
     def test_explicit_null_stale_epoch_and_nonoriginal_execution_reject(self):
         child, parent, source = self.setup_edge()
         for change in ({'_conversation_epoch': None}, {'_conversation_epoch': 'old'},
