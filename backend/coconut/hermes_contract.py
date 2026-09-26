@@ -123,6 +123,12 @@ def verify_contract():
         if not callable(getattr(SessionDB, name, None)):
             raise ValueError('Hermes removed a required conversation storage interface: ' + name)
     require_keywords(SessionDB.replace_messages, {'archive_dropped', 'reject_active_turn_lease'})
+    # The catalog offers only the reasoning efforts that Hermes sends to xAI.
+    from agent.model_metadata import is_grok_46_family
+    from agent.reasoning_effort import XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort
+    assert callable(is_grok_46_family) and XAI_GROK46_EFFORTS and XAI_LEGACY_EFFORTS
+    if clamp_effort('max', XAI_LEGACY_EFFORTS) != 'high':
+        raise ValueError('Hermes changed how it clamps a reasoning effort.')
     from agent.context_compressor import ContextCompressor, pin_summary_route, take_pinned_summary_route
     from agent.auxiliary_client import AuxiliaryClientUnavailable
     assert callable(pin_summary_route) and callable(take_pinned_summary_route)

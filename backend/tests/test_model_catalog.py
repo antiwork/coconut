@@ -318,6 +318,48 @@ with open(os.devnull, 'w') as quiet, contextlib.redirect_stdout(quiet), contextl
         expected = self.run_native("from agent.reasoning_effort import codex_supported_efforts\nresult = list(codex_supported_efforts('gpt-6-astra'))")
         self.assertEqual(result['models'][0]['reasoning_efforts'], expected)
 
+    def test_an_xai_subscription_lists_its_grok_models(self):
+        # xai-oauth is an xAI subscription through Hermes device-code sign-in.
+        (self.home / 'config.yaml').write_text('model:\n  default: gpt-6-astra\n  provider: openai-codex\n')
+        result = self.run_native("config, model, provider, url = m._native_state()\nresult = m._catalog(config, model, provider, url, ["
+                                 "{'slug': provider, 'models': [model], 'source': 'hermes'}, "
+                                 "{'slug': 'xai-oauth', 'models': ['grok-4.7', 'grok-4.6'], 'source': 'hermes'}, "
+                                 "{'slug': 'unsupported-provider', 'models': ['other'], 'source': 'hermes'}])")
+        grok = [m for m in result['models'] if m['id'] == 'grok-4.7']
+        self.assertEqual([m['provider'] for m in grok], ['xai-oauth'])
+        self.assertEqual([m['base_url'] for m in grok], ['https://api.x.ai/v1'])
+        self.assertNotIn('other', [m['id'] for m in result['models']])
+        # Coconut offers exactly the efforts that Hermes sends on the xAI route.
+        expected = self.run_native("from agent.reasoning_effort import XAI_GROK46_EFFORTS as a, XAI_LEGACY_EFFORTS as b\nresult = [list(a), list(b)]")
+        efforts = {m['id']: m['reasoning_efforts'] for m in result['models'] if m['provider'] == 'xai-oauth'}
+        self.assertEqual(efforts, {'grok-4.6': expected[0], 'grok-4.7': expected[1]})
+        self.assertNotIn('none', efforts['grok-4.7'])
+
+    def test_a_saved_grok_effort_shows_what_hermes_sends(self):
+        # Hermes clamps an unsupported level to the nearest weaker one, and cannot disable Grok reasoning.
+        (self.home / 'config.yaml').write_text('model:\n  default: gpt-6-astra\n  provider: openai-codex\n'
+                                              'agent:\n  reasoning_overrides:\n    grok-4.6: max\n    grok-4.7: none\n    grok-4.5: medium\n')
+        result = self.run_native("config, model, provider, url = m._native_state()\nresult = m._catalog(config, model, provider, url, ["
+                                 "{'slug': provider, 'models': [model], 'source': 'hermes'}, "
+                                 "{'slug': 'xai-oauth', 'models': ['grok-4.6', 'grok-4.7', 'grok-4.5'], 'source': 'hermes'}])")
+        efforts = {m['id']: m['default_reasoning_effort'] for m in result['models'] if m['provider'] == 'xai-oauth'}
+        # A disable stays 'none', so the model call still omits the reasoning field.
+        self.assertEqual(efforts, {'grok-4.6': 'xhigh', 'grok-4.7': 'none', 'grok-4.5': 'medium'})
+
+    def test_a_grok_default_shows_the_effort_that_hermes_sends(self):
+        (self.home / 'config.yaml').write_text('model:\n  default: grok-4.7\n  provider: xai-oauth\nagent:\n  reasoning_effort: max\n')
+        result = self.run_native("config, model, provider, url = m._native_state()\nresult = m._catalog(config, model, provider, url, ["
+                                 "{'slug': provider, 'models': [model], 'source': 'hermes'}])")
+        self.assertEqual(result['default']['reasoning_effort'], 'high')
+        self.assertIn(result['default']['reasoning_effort'], result['models'][0]['reasoning_efforts'])
+
+    def test_a_bot_grok_override_shows_the_effort_that_hermes_sends(self):
+        (self.home / 'config.yaml').write_text('model:\n  default: grok-4.7\n  provider: xai-oauth\nagent:\n  reasoning_effort: max\n')
+        inherited = {'model': 'gpt-6-astra', 'provider': 'openai-codex', 'base_url': None, 'reasoning_effort': None}
+        result = self.run_native(f"result = m._read_profile(os.environ['HERMES_HOME'], {inherited!r})")
+        self.assertEqual(result['model_override'], {'model': 'grok-4.7', 'provider': 'xai-oauth', 'reasoning_effort': 'high'})
+        self.assertEqual(result['effective_model']['reasoning_effort'], 'high')
+
     def test_active_profile_reads_its_own_native_config(self):
         profile = self.home / 'profiles/work'
         profile.mkdir(parents=True)

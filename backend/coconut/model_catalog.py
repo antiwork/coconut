@@ -22,7 +22,8 @@ RUNTIME_KEYS = frozenset(('provider', 'api_mode', 'base_url', 'api_key', 'reques
                           'acp_command', 'acp_args', 'command', 'args'))
 ENV_KEYS = ('PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
             'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY')
-SUPPORTED_PROVIDERS = frozenset(('openai-codex', 'anthropic', 'openai', 'openai-api', 'openrouter'))
+# xai-oauth is an xAI subscription through Hermes device-code sign-in. It uses the codex_responses API.
+SUPPORTED_PROVIDERS = frozenset(('openai-codex', 'anthropic', 'openai', 'openai-api', 'openrouter', 'xai-oauth'))
 UNSUPPORTED_RUNTIME_FIELDS = frozenset(('extra_headers', 'extra_body', 'request_overrides', 'capabilities', 'key_cmd'))
 UNSUPPORTED_ROUTE_MESSAGE = 'This Hermes provider setup is not supported in Coconut yet. Use it in Hermes Terminal.'
 
@@ -399,6 +400,35 @@ def _native_state():
     return config, model_id, provider, base_url
 
 
+def _sent_effort(effort, supported):
+    """Return the effort that Hermes sends for a saved effort on a route with these levels.
+
+    Hermes clamps an unsupported level to the nearest weaker one. A saved disable stays 'none': this value also
+    reaches the model call, where 'none' omits the reasoning field and None would request Hermes' default effort.
+    """
+    from agent.reasoning_effort import clamp_effort
+    if effort is None or effort == 'none' or effort in supported:
+        return effort
+    return clamp_effort(effort, supported)
+
+
+def _route_efforts(provider, model_id):
+    """Return the efforts a route narrows to, or None when it accepts the whole Hermes ladder."""
+    if provider == 'openai-codex':
+        from agent.reasoning_effort import codex_supported_efforts
+        return list(codex_supported_efforts(model_id))
+    if provider == 'xai-oauth':
+        return _xai_efforts(model_id)
+    return None
+
+
+def _xai_efforts(model_id):
+    """Return the efforts that Hermes sends to xAI for this model. Grok 4.6 accepts xhigh, and older Grok tops out at high."""
+    from agent.model_metadata import is_grok_46_family
+    from agent.reasoning_effort import XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS
+    return list(XAI_GROK46_EFFORTS if is_grok_46_family(model_id) else XAI_LEGACY_EFFORTS)
+
+
 def _native_rows(config, model, provider, base_url, refresh=False):
     from hermes_cli.model_switch_providers import list_authenticated_providers
     return list_authenticated_providers(
@@ -436,7 +466,6 @@ def _catalog(config, model, provider, base_url, rows):
     from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort, resolve_reasoning_config
     from hermes_cli.auth import PROVIDER_REGISTRY
     efforts = [value for value in ('none', *VALID_REASONING_EFFORTS) if parse_reasoning_effort(value) is not None]
-    from agent.reasoning_effort import codex_supported_efforts
     items, seen = [], set()
     per_model_config = {'agent': {'reasoning_overrides': (config.get('agent') or {}).get('reasoning_overrides') or {}}}
     registration = PROVIDER_REGISTRY.get(provider)
@@ -464,15 +493,23 @@ def _catalog(config, model, provider, base_url, rows):
             if not _supported_route(config, slug, model_id, url):
                 continue
             seen.add((slug, model_id))
-            supported = list(codex_supported_efforts(model_id)) if slug == 'openai-codex' else list(efforts)
+            supported = _route_efforts(slug, model_id)
+            # An empty route list means the route takes no effort. Only None widens to the whole ladder.
+            supported = list(efforts) if supported is None else supported
             items.append({'id': model_id, 'name': model_id, 'provider': slug, 'base_url': url,
                           'reasoning_efforts': supported,
-                          'default_reasoning_effort': _effort(resolve_reasoning_config(per_model_config, model_id)),
+                          'default_reasoning_effort': _sent_effort(
+                              _effort(resolve_reasoning_config(per_model_config, model_id)), supported),
                           'configured': True, 'source': row.get('source', 'hermes')})
     configured = any(item['id'] == model and item['provider'] == provider for item in items)
     supported_default = _supported_route(config, provider, model, default_url)
+    default_effort = _effort(resolve_reasoning_config(config, model))
+    entry = next((item for item in items if item['id'] == model and item['provider'] == provider), None)
+    if entry is not None:
+        # Show the effort that the default route sends, as for each listed model.
+        default_effort = _sent_effort(default_effort, entry['reasoning_efforts'])
     return {'default': {'model': model, 'provider': provider, 'base_url': default_url,
-                        'reasoning_effort': _effort(resolve_reasoning_config(config, model)),
+                        'reasoning_effort': default_effort,
                         'configured': configured, 'supported': supported_default,
                         **({'unavailable_reason': UNSUPPORTED_ROUTE_MESSAGE} if not supported_default else {})},
             'models': items, 'model_source': 'hermes_cli.model_switch_providers.list_authenticated_providers',
@@ -549,6 +586,10 @@ def _read_profile(home, inherited):
         registration = PROVIDER_REGISTRY.get(provider)
         base_url = inherited.get('base_url') if provider == inherited['provider'] else None
         base_url = base_url or (public_endpoint(registration.inference_base_url) if registration else None)
+    supported = _route_efforts(provider, model)
+    if supported:
+        # A bot override shows the effort that its route sends, as the catalog does.
+        effort = _sent_effort(effort, supported)
     selection = {'model': model, 'provider': provider, 'reasoning_effort': effort}
     return {'model_override': selection, 'effective_model': dict(selection, base_url=base_url)}
 
