@@ -499,8 +499,13 @@ def _catalog(config, model, provider, base_url, rows):
                           'configured': True, 'source': row.get('source', 'hermes')})
     configured = any(item['id'] == model and item['provider'] == provider for item in items)
     supported_default = _supported_route(config, provider, model, default_url)
+    default_effort = _effort(resolve_reasoning_config(config, model))
+    entry = next((item for item in items if item['id'] == model and item['provider'] == provider), None)
+    if entry is not None:
+        # Show the effort that the default route sends, as for each listed model.
+        default_effort = _sent_effort(default_effort, entry['reasoning_efforts'])
     return {'default': {'model': model, 'provider': provider, 'base_url': default_url,
-                        'reasoning_effort': _effort(resolve_reasoning_config(config, model)),
+                        'reasoning_effort': default_effort,
                         'configured': configured, 'supported': supported_default,
                         **({'unavailable_reason': UNSUPPORTED_ROUTE_MESSAGE} if not supported_default else {})},
             'models': items, 'model_source': 'hermes_cli.model_switch_providers.list_authenticated_providers',
