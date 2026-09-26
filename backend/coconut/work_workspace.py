@@ -244,18 +244,26 @@ def holders_by_path(paths):
         if line.startswith(b'p'):
             pid = int(line[1:])
         elif line.startswith(b'n'):
+            # Look up the name and each of its parent folders, so the cost does not grow with the number of paths.
             name = line[1:]
-            for prefix, owners in prefixes.items():
-                if name == prefix or name.startswith(prefix + b'/'):
-                    for owner in owners:
-                        found[owner].add(pid)
+            while name:
+                for owner in prefixes.get(name, ()):
+                    found[owner].add(pid)
+                cut = name.rfind(b'/')
+                if cut <= 0:
+                    break
+                name = name[:cut]
     return found
 
 
 def busy_paths(paths):
-    """Return the paths in which a process has its cwd or an open file. Use one lsof scan for all paths."""
+    """Return the paths in which a process that is not a shared service has its cwd or an open file. Use one lsof scan."""
     held = holders_by_path(paths)
-    return {path for path in paths if held[str(path)]}
+    busy = {path for path in paths if held[str(path)]}
+    if not busy:
+        return busy
+    table = process_table()
+    return {path for path in busy if any(not (pid in table and shared(table[pid][2])) for pid in held[str(path)])}
 
 
 def in_use(path):
@@ -419,8 +427,8 @@ def stop_orphans(found, outcome, age):
                and table[pid][1] >= age and not shared(table[pid][2]) and environment_names(pid, mark)}
     while stopped:
         # The parent proves who owns a child process. macOS also hides the environment of a child shell.
-        children = {pid for pid, (parent, _, executable) in table.items()
-                    if parent in stopped and pid not in stopped and not shared(executable)}
+        # The shared services have launchd as their parent, so the shared check applies to the first set only.
+        children = {pid for pid, (parent, _, _) in table.items() if parent in stopped and pid not in stopped}
         if not children:
             break
         stopped |= children

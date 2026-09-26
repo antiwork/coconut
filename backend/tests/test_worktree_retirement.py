@@ -973,6 +973,10 @@ class WorktreeRetirementTests(unittest.TestCase):
         free.mkdir()
         listing = b'p10\nfcwd\nn' + os.fsencode(str(held)) + b'/log.txt\np11\nfcwd\nn' + os.fsencode(str(free)) + b'-other\n'
         self.holders.stop()
+        # busy_paths reads the process table only to exempt shared services.
+        table = patch('coconut.work_workspace.process_table', return_value={})
+        table.start()
+        self.addCleanup(table.stop)
         with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)) as run:
             self.assertEqual(work_workspace.busy_paths({str(held), str(free)}), {str(held)})
         self.assertEqual(run.call_count, 1)
@@ -1231,6 +1235,35 @@ class WorktreeRetirementTests(unittest.TestCase):
         leftover.write_bytes(b'partial')
         self.assertEqual(self.retire(), [])
         self.assertFalse(leftover.exists())
+
+    def test_holders_by_path_matches_only_whole_folders(self):
+        held = self.root / 'held'
+        held.mkdir()
+        listing = b''.join([b'p10\nfcwd\nn' + os.fsencode(str(held)) + b'/deep/file\n',
+                            b'p11\nfcwd\nn' + os.fsencode(str(held)) + b'-other/file\n',
+                            b'p12\nfcwd\nn' + os.fsencode(str(held)) + b'\n', b'p13\nfcwd\nn/\n'])
+        self.holders.stop()
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
+            self.assertEqual(work_workspace.holders_by_path({str(held)}), {str(held): {10, 12}})
+
+    def test_a_shared_service_does_not_make_a_path_busy(self):
+        held = self.root / 'held'
+        held.mkdir()
+        listing = b'p10\nfcwd\nn' + os.fsencode(str(held)) + b'\n'
+        self.holders.stop()
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
+            with patch('coconut.work_workspace.process_table', return_value={10: (1, 50, '/opt/sdk/platform-tools/adb')}):
+                self.assertEqual(work_workspace.busy_paths({str(held)}), set())
+            with patch('coconut.work_workspace.process_table', return_value={10: (1, 50, '/usr/bin/ruby')}):
+                self.assertEqual(work_workspace.busy_paths({str(held)}), {str(held)})
+
+    def test_a_shared_child_of_an_orphan_is_stopped_with_it(self):
+        table = {200: (1, 99999, '/usr/bin/safaridriver'), 201: (200, 99999, '/System/Library/Frameworks/WebKit.framework/XPCServices/WebContent'),
+                 202: (201, 99999, '/usr/bin/tee')}
+        with patch('coconut.work_workspace.process_table', return_value=table), \
+                patch('coconut.work_workspace.environment_names', return_value=True), \
+                patch('coconut.work_workspace.stop', return_value=set()):
+            self.assertEqual(work_workspace.stop_orphans({200}, 'outcome', 0), {200, 201, 202})
 
     def test_process_table_reads_executables_with_spaces(self):
         listing = '  100     1 06-16:25:58 /Applications/OrbStack.app/Contents/MacOS/OrbStack Helper\n  200   100    02:03 /bin/bash\n'
