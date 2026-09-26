@@ -80,7 +80,8 @@ class WorktreeRetirement:
                     and isinstance(binding.get('path'), str)):
                 places.setdefault(binding['outcome'], set()).add(binding['path'])
         for outcome in finished:
-            if '/' not in outcome and (root / outcome).is_dir():
+            # acquire() uses the same rule for a scratch workspace name.
+            if '/' not in outcome and outcome not in ('', '.', '..') and (root / outcome).is_dir():
                 places.setdefault(outcome, set()).add(str(root / outcome))
         paths = {path for group in places.values() for path in group if Path(path).is_dir()}
         if not paths or self.stopping.is_set():

@@ -1160,6 +1160,12 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.assertEqual(self.retire(), [])
         self.assertTrue(self.alive(pid))
 
+    def test_an_outcome_named_like_a_folder_link_scans_no_scratch_workspace(self):
+        scanned = []
+        with patch('coconut.work_workspace.holders_by_path', side_effect=lambda paths: scanned.append(set(paths)) or {}):
+            self.service._stop_idle_orphans({'.', '..', ''}, {})
+        self.assertEqual(scanned, [])
+
     def test_a_failed_orphan_check_does_not_stop_retirement(self):
         outcome, identity, path, _ = self.outcome()
         with patch('coconut.work_workspace.holders_by_path', return_value={str(path): {12345}}), \
