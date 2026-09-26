@@ -548,6 +548,9 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
         git_paths = git(inner, 'rev-parse', '--path-format=absolute', *(a for n in IN_PROGRESS for a in ('--git-path', n)))
         if any(Path(p).exists() for p in git_paths.splitlines()):
             raise ValueError('The worktree contains another worktree with a Git operation in progress.')
+        # A patch cannot hold a conflicted file, and git apply cannot restore one.
+        if git_output(inner, 'ls-files', '--unmerged', '-z'):
+            raise ValueError('The worktree contains another worktree with unmerged files.')
         head = git(inner, 'rev-parse', 'HEAD')
         if not record['branch'] and not git(repository, 'for-each-ref', '--contains', head, '--count=1', '--format=%(refname)',
                                             timeout=CHECKOUT_SECONDS):
@@ -639,6 +642,8 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
                                                     inner, archive)
             if written:
                 sync_directory(directory)
+                # One pass can write several archives. Keep the folder within its limit now.
+                trim_nested_archives(root)
             # Remove the deepest first. Removing a parent first would delete a worktree inside it without Git.
             for record in sorted(again, key=lambda r: len(r['path'].parts), reverse=True):
                 force = ('--force',) if record['path'] in written else ()
@@ -890,6 +895,11 @@ def sweep_temporary(root):
     for folder in (Path(root) / 'archive', Path(root) / 'archive' / 'nested'):
         for temporary in folder.glob('.*.tar.gz.tmp'):
             temporary.unlink(missing_ok=True)
+    trim_nested_archives(root)
+
+
+def trim_nested_archives(root):
+    """Delete nested archives older than NESTED_ARCHIVE_DAYS, then the oldest over NESTED_ARCHIVE_LIMIT_BYTES."""
     oldest, kept = time.time() - NESTED_ARCHIVE_DAYS * 86400, []
     for archive in (Path(root) / 'archive' / 'nested').glob('*.tar.gz'):
         with contextlib.suppress(FileNotFoundError):

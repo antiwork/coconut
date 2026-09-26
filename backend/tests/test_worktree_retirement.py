@@ -1017,6 +1017,9 @@ class WorktreeRetirementTests(unittest.TestCase):
                 (inner / 'new.txt').write_text('commit\n'), git(inner, 'add', 'new.txt'), self.commit(inner, 'Only here')),
             'git operation': lambda inner: Path(git(inner, 'rev-parse', '--path-format=absolute', '--git-path', 'MERGE_HEAD'))
                 .write_text(git(inner, 'rev-parse', 'HEAD') + '\n'),
+            'unmerged file': lambda inner: subprocess.run(['git', '-C', str(inner), 'update-index', '--index-info'], check=True,
+                input=''.join(f"{mode} {git(inner, 'hash-object', '-w', 'tracked.txt')} {stage}\ttracked.txt\n"
+                              for mode, stage in (('0', 0), ('100644', 1), ('100644', 2), ('100644', 3))), text=True),
             # An archive cannot hold a plain repository inside the nested worktree.
             'nested repository': lambda inner: (git(inner / 'vendor', 'init', '-q') if (inner / 'vendor').mkdir() is None else None),
         }

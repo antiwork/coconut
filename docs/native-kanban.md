@@ -77,8 +77,8 @@ Retirement does these steps:
    any nested worktree, so a parent that cannot retire keeps its nested worktrees.
    Coconut does not restore a nested worktree when the outcome resumes.
    Coconut skips the parent when it tracks a nested worktree for an outcome, when one is locked, has a Git
-   operation in progress, has a commit that no ref holds, has a populated submodule and changes, or has files that
-   an archive cannot hold.
+   operation in progress or unmerged files, has a commit that no ref holds, has a populated submodule and changes,
+   or has files that an archive cannot hold.
    It checks every nested worktree before it archives or removes any, and checks again under the registry lock.
    A nested record whose folder is gone does not count.
 3. It skips a worktree when `lsof` shows a process cwd or an open file in it, or when `lsof` is not available.
