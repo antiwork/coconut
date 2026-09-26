@@ -73,7 +73,7 @@ Retirement does these steps:
    folders, Coconut first writes them to an archive in `workspaces/archive/nested/`. The archive name comes from
    the content, so a failed removal does not write a second copy. Coconut deletes it after 30 days
    (`NESTED_ARCHIVE_DAYS`), and deletes the oldest ones when all of them are larger than 2 GiB
-   (`NESTED_ARCHIVE_LIMIT_BYTES`). Its branch keeps its commits. Coconut checks that it can archive the parent's own files
+   (`NESTED_ARCHIVE_LIMIT_BYTES`). The size limit never deletes an archive younger than one day. Its branch keeps its commits. Coconut checks that it can archive the parent's own files
    before it removes any nested worktree, and again under the registry lock just before the removal. So a parent
    that is too large to archive keeps its nested worktrees.
    Other refusals of the parent can come after the removal. The nested changes are then in their archives.

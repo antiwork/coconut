@@ -1196,13 +1196,19 @@ class WorktreeRetirementTests(unittest.TestCase):
             item = folder / f'item-{index}.tar.gz'
             item.write_bytes(b'x' * 1000)
             os.utime(item, (time.time() - age, time.time() - age))
+        # An archive younger than a day stays, even over the limit.
         with patch('coconut.work_workspace.NESTED_ARCHIVE_LIMIT_BYTES', 2000):
+            work_workspace.sweep_temporary(self.workspaces)
+        self.assertEqual(len(list(folder.glob('*.tar.gz'))), 3)
+        with patch('coconut.work_workspace.NESTED_ARCHIVE_LIMIT_BYTES', 2000), \
+                patch('coconut.work_workspace.NESTED_ARCHIVE_KEEP_SECONDS', 0):
             work_workspace.sweep_temporary(self.workspaces)
         self.assertEqual(sorted(p.name for p in folder.glob('*.tar.gz')), ['item-1.tar.gz', 'item-2.tar.gz'])
         # An archive that a pass depends on stays, even when it is old or the folder is over the limit.
         needed = folder / 'item-1.tar.gz'
         os.utime(needed, (old, old))
-        with patch('coconut.work_workspace.NESTED_ARCHIVE_LIMIT_BYTES', 500):
+        with patch('coconut.work_workspace.NESTED_ARCHIVE_LIMIT_BYTES', 500), \
+                patch('coconut.work_workspace.NESTED_ARCHIVE_KEEP_SECONDS', 0):
             work_workspace.trim_nested_archives(self.workspaces, keep={needed})
         self.assertEqual(sorted(p.name for p in folder.glob('*.tar.gz')), ['item-1.tar.gz'])
 

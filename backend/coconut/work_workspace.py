@@ -116,6 +116,8 @@ PATCH_LIMIT_BYTES = 200 * 1024 * 1024
 # together are larger than NESTED_ARCHIVE_LIMIT_BYTES.
 NESTED_ARCHIVE_DAYS = 30
 NESTED_ARCHIVE_LIMIT_BYTES = 2 * 1024 ** 3
+# The size limit never deletes an archive younger than this, so a person has time to recover the work.
+NESTED_ARCHIVE_KEEP_SECONDS = 24 * 60 * 60
 # After Git refuses to remove a worktree, Coconut waits this long before the next attempt.
 RETRY_AFTER = timedelta(days=1)
 # Git commands that write or delete a whole checkout can take minutes for a large repository.
@@ -925,7 +927,7 @@ def sweep_temporary(root):
 def trim_nested_archives(root, keep=()):
     """Delete nested archives older than NESTED_ARCHIVE_DAYS, then the oldest over NESTED_ARCHIVE_LIMIT_BYTES.
 
-    The archives in `keep` stay and count toward the limit.
+    The archives in `keep` and those younger than NESTED_ARCHIVE_KEEP_SECONDS stay, and count toward the limit.
     """
     oldest, kept, total = time.time() - NESTED_ARCHIVE_DAYS * 86400, [], 0
     for archive in (Path(root) / 'archive' / 'nested').glob('*.tar.gz'):
@@ -942,8 +944,9 @@ def trim_nested_archives(root, keep=()):
             else:
                 kept.append((status.st_mtime, status.st_size, archive))
     total += sum(size for _, size, _ in kept)
-    for _, size, archive in sorted(kept):
-        if total <= NESTED_ARCHIVE_LIMIT_BYTES:
+    young = time.time() - NESTED_ARCHIVE_KEEP_SECONDS
+    for moment, size, archive in sorted(kept):
+        if total <= NESTED_ARCHIVE_LIMIT_BYTES or moment >= young:
             break
         archive.unlink(missing_ok=True)
         logging.getLogger(__name__).warning('Coconut deleted nested archive %s to keep the folder within %s bytes.',
