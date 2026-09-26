@@ -1089,7 +1089,7 @@ def changed_archive_member(member, **fields):
     return member
 
 
-class ArchiveDuplicateTests(unittest.TestCase):
+class ArchiveFixture(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -1197,6 +1197,8 @@ class ArchiveDuplicateTests(unittest.TestCase):
         if saved_unchanged:
             self.assertEqual(self.registry(), saved)
 
+
+class ArchiveDuplicateTests(ArchiveFixture):
     def test_real_git_overlap_is_counted_once_and_roundtrips(self):
         self.files()
         listing = work_workspace.git_output(self.path, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z')
@@ -1530,6 +1532,296 @@ class ArchiveDuplicateTests(unittest.TestCase):
             for name in ('draft', '.knapsack_pro/.gitignore', '.knapsack_pro/result.json', '.knapsack_pro/.gitignore'):
                 tar.add(self.path / name, arcname=('untracked/' if name == 'draft' else 'ignored/') + name)
         return archive
+
+
+class ArchiveIntentTests(ArchiveFixture):
+    def intent_files(self):
+        folder = self.path / '.knapsack_pro'
+        folder.mkdir()
+        (folder / '.gitignore').write_text('*\n')
+        (folder / 'marker').write_bytes(b'')
+        (self.path / 'tracked').write_text('unstaged edit\n')
+        (self.path / 'addition').write_text('intent to add\n')
+        work_workspace.git(self.path, 'add', '-N', 'addition')
+        self.changes = work_workspace.changes(self.path)
+        self.index = work_workspace.git_output(self.path, 'ls-files', '--stage', '-z')
+        self.assertEqual(self.changes[0], b'')
+        self.assertEqual(self.changes[2], [])
+
+    def intent_archive(self, *, duplicate=True):
+        self.intent_files()
+        archive = self.retire()
+        if duplicate:
+            self.rewrite(archive, lambda rows: rows + [copy.deepcopy(next(
+                row for row in rows if row[0].name == 'ignored/.knapsack_pro/.gitignore'))])
+        return archive
+
+    def intent_marker(self):
+        saved = self.registry()
+        saved[self.identity]['retired']['restore_failed'] = dict(
+            at=RECENT, error='The restored files do not match the archive.', duplicate_retry_failed=True)
+        save_bindings(self.saved / 'worktrees.json', saved)
+        return saved
+
+    def assert_intent_restored(self, archive):
+        restored = self.acquire()
+        self.assertNotIn('retired', restored)
+        self.assertNotIn('retired', self.registry()[self.identity])
+        self.assertEqual(work_workspace.changes(self.path), self.changes)
+        self.assertEqual(work_workspace.git_output(self.path, 'ls-files', '--stage', '-z'), self.index)
+        self.assertEqual(work_workspace.git(self.path, 'rev-parse', 'HEAD'), self.head)
+        self.assertEqual(work_workspace.git(self.path, 'branch', '--show-current'), self.branch)
+        self.assertEqual({key: restored[key] for key in ('path', 'repository', 'branch', 'outcome')},
+                         {key: self.binding[key] for key in ('path', 'repository', 'branch', 'outcome')})
+        self.assertEqual((self.path / 'addition').read_text(), 'intent to add\n')
+        self.assertEqual((self.path / '.knapsack_pro/.gitignore').read_bytes(), b'*\n')
+        self.assertEqual((self.path / '.knapsack_pro/marker').read_bytes(), b'')
+        self.assertFalse(archive.exists())
+        self.assertEqual(self.acquire(), restored)
+
+    def test_new_intent_archive_restores_exact_index_and_unstaged_patch(self):
+        archive = self.intent_archive(duplicate=False)
+        self.assert_intent_restored(archive)
+
+    def test_text_binary_empty_ignored_executable_link_and_literal_intent_paths_roundtrip(self):
+        files = {'text': b'text\n', 'empty': b'', 'binary': bytes(range(256)), 'executable': b'#!/bin/sh\n',
+                 'sub/space and ü': b'unicode\n', 'tab\tline\nname': b'newline\n',
+                 ':(glob)*': b'literal pathspec\n', '-option': b'not an option\n',
+                 'ignored/intent': b'ignored but tracked with intent\n'}
+        (self.path / '.gitignore').write_text('ignored/\n')
+        work_workspace.git(self.path, 'add', '.gitignore')
+        for name, data in files.items():
+            target = self.path / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        (self.path / 'executable').chmod(0o755)
+        (self.path / 'link').symlink_to('text')
+        names = [*files, 'link']
+        work_workspace.git_output(self.path, '--literal-pathspecs', 'add', '-N', '-f',
+                                  '--pathspec-from-file=-', '--pathspec-file-nul',
+                                  data=b'\0'.join(os.fsencode(name) for name in names) + b'\0')
+        before = work_workspace.changes(self.path)
+        index = work_workspace.git_output(self.path, 'ls-files', '--stage', '-z')
+        archive = self.retire()
+        self.acquire()
+        self.assertEqual(work_workspace.changes(self.path), before)
+        self.assertEqual(work_workspace.git_output(self.path, 'ls-files', '--stage', '-z'), index)
+        for name, data in files.items():
+            self.assertEqual((self.path / name).read_bytes(), data)
+        # Git preserves executable versus non-executable mode, not umask-masked
+        # group/other permissions. The exact index modes are compared above.
+        self.assertEqual((self.path / 'executable').stat().st_mode & 0o100, 0o100)
+        self.assertEqual(os.readlink(self.path / 'link'), 'text')
+        self.assertFalse(archive.exists())
+
+    def test_mixed_staged_unstaged_deletions_and_untracked_are_not_restaged(self):
+        self.intent_files()
+        (self.path / 'tracked').write_text('staged edit\n')
+        work_workspace.git(self.path, 'add', 'tracked')
+        (self.path / 'tracked').write_text('staged edit\nunstaged edit\n')
+        (self.path / 'staged-new').write_text('staged addition\n')
+        (self.path / 'staged-empty').write_bytes(b'')
+        (self.path / 'staged-removed-in-worktree').write_text('staged only\n')
+        work_workspace.git(self.path, 'add', 'staged-new', 'staged-empty', 'staged-removed-in-worktree')
+        (self.path / 'staged-new').write_text('staged addition\nunstaged addition\n')
+        (self.path / 'staged-removed-in-worktree').unlink()
+        (self.path / 'untracked').write_text('must stay untracked\n')
+        self.changes = work_workspace.changes(self.path)
+        self.index = work_workspace.git_output(self.path, 'ls-files', '--stage', '-z')
+        archive = self.retire()
+        self.assert_intent_restored(archive)
+        self.assertEqual(work_workspace.git(self.path, 'show', ':staged-new'), 'staged addition')
+        self.assertEqual(work_workspace.git(self.path, 'show', ':tracked'), 'staged edit')
+        self.assertFalse((self.path / 'staged-removed-in-worktree').exists())
+        self.assertEqual((self.path / 'untracked').read_text(), 'must stay untracked\n')
+
+    def test_post_pr92_intent_failure_restores_only_via_same_owner_acquire(self):
+        archive = self.intent_archive()
+        digest = work_workspace.path_digest(archive)
+        self.intent_marker()
+        before = self.registry()
+        self.assertEqual(work_workspace.preferred(self.saved, self.outcome), self.saved / self.outcome)
+        self.assertEqual(work_workspace.preferred(self.saved, self.outcome, verify=False), self.saved / self.outcome)
+        self.assertEqual(self.registry(), before)
+        self.assertEqual(work_workspace.path_digest(archive), digest)
+        self.assertFalse(self.path.exists())
+        self.assert_intent_restored(archive)
+
+    def test_legacy_intent_recovery_accepts_only_empty_native_destination(self):
+        archive = self.intent_archive()
+        self.intent_marker()
+        self.path.mkdir()
+        self.assert_intent_restored(archive)
+
+    def test_digest_failure_without_exact_pr92_marker_stays_fenced(self):
+        archive = self.intent_archive()
+        original = self.intent_marker()
+        valid = original[self.identity]['retired']['restore_failed']
+        variants = [dict(at=RECENT, error=valid['error']), dict(valid, duplicate_retry_failed=False),
+                    dict(valid, duplicate_retry_failed=1), dict(valid, intent_retry_failed=True),
+                    dict(valid, unexpected=True), dict(valid, error=valid['error'] + ' extra'),
+                    dict(valid, error='The checkout already contains .knapsack_pro/.gitignore.'),
+                    dict(valid, error='Git stopped while it removed the checkout, and part of the checkout remains.'),
+                    dict(valid, error='not a patch'), dict(valid, error='The saved branch moved after retirement.')]
+        for failure in variants:
+            with self.subTest(failure=failure):
+                saved = copy.deepcopy(original)
+                saved[self.identity]['retired']['restore_failed'] = failure
+                save_bindings(self.saved / 'worktrees.json', saved)
+                self.assert_refused(archive)
+
+    def test_intent_marker_without_identical_regular_duplicate_is_not_proof(self):
+        archive = self.intent_archive(duplicate=False)
+        self.intent_marker()
+        self.assert_refused(archive)
+        def symlinks(rows):
+            member = tarfile.TarInfo('ignored/link')
+            member.type, member.linkname = tarfile.SYMTYPE, 'target'
+            return rows + [(member, None), (copy.deepcopy(member), None)]
+        self.rewrite(archive, symlinks)
+        self.assert_refused(archive)
+
+    def test_no_unstaged_addition_staged_changes_or_untracked_members_do_not_qualify(self):
+        archive = self.intent_archive()
+        original, saved = archive.read_bytes(), self.intent_marker()
+        # Correctly bind each altered patch set to its digest; this isolates the
+        # shape gate rather than merely failing the digest check.
+        for variant in ('no-addition', 'empty-unstaged', 'staged', 'untracked'):
+            with self.subTest(variant=variant):
+                archive.write_bytes(original)
+                def alter(rows):
+                    for i, (member, data) in enumerate(rows):
+                        if member.name == 'unstaged.patch':
+                            if variant == 'no-addition':
+                                data = b'diff --git a/tracked b/tracked\nindex 4b48dee..c8d7fa7 100644\n--- a/tracked\n+++ b/tracked\n@@ -1 +1 @@\n-original\n+changed\n'
+                            elif variant == 'empty-unstaged':
+                                data = b''
+                            rows[i] = (member, data)
+                        elif member.name == 'staged.patch' and variant == 'staged':
+                            rows[i] = (member, b'nonempty staged patch')
+                    if variant == 'untracked':
+                        rows.append((tarfile.TarInfo('untracked/draft'), b'untracked'))
+                    return rows
+                self.rewrite(archive, alter)
+                current = copy.deepcopy(saved)
+                with tarfile.open(archive) as tar:
+                    parts = [tar.extractfile(name).read() for name in work_workspace.PATCHES]
+                current[self.identity]['retired']['changes'] = work_workspace.changes_digest(
+                    *parts, ['draft'] if variant == 'untracked' else [])
+                save_bindings(self.saved / 'worktrees.json', current)
+                self.assert_refused(archive)
+
+    def test_intent_recovery_requires_original_patch_digest_and_archive_binding(self):
+        archive = self.intent_archive()
+        original = archive.read_bytes()
+        saved = self.intent_marker()
+        for key in ('outcome', 'repository', 'path', 'at', 'branch', 'head', 'patch', 'changes'):
+            with self.subTest(key=key):
+                archive.write_bytes(original)
+                current = copy.deepcopy(saved)
+                if key == 'changes':
+                    current[self.identity]['retired']['changes'] = '0' * 64
+                else:
+                    def alter(rows):
+                        for i, (member, data) in enumerate(rows):
+                            if key == 'patch' and member.name == 'unstaged.patch':
+                                rows[i] = (member, data.replace(b'intent to add', b'other content'))
+                            elif key != 'patch' and member.name == 'retirement.json':
+                                metadata = json.loads(data)
+                                metadata[key] = 'different'
+                                rows[i] = (member, json.dumps(metadata).encode())
+                        return rows
+                    self.rewrite(archive, alter)
+                save_bindings(self.saved / 'worktrees.json', current)
+                self.assert_refused(archive)
+
+    def test_conflicting_or_truncated_legacy_intent_archive_retains_failure(self):
+        archive = self.intent_archive()
+        original = archive.read_bytes()
+        self.intent_marker()
+        self.rewrite(archive, lambda rows: rows[:-1] + [(rows[-1][0], b'different\n')])
+        self.assert_refused(archive)
+        archive.write_bytes(original[:len(original) // 2])
+        self.assert_refused(archive)
+
+    def test_occupied_redirected_moved_branch_and_wrong_owner_remain_fenced(self):
+        archive = self.intent_archive()
+        self.intent_marker()
+        self.path.mkdir()
+        (self.path / 'sentinel').write_bytes(b'keep')
+        self.assert_refused(archive)
+        self.assertEqual((self.path / 'sentinel').read_bytes(), b'keep')
+        (self.path / 'sentinel').unlink()
+        self.path.rmdir()
+        target = self.root / 'redirect'
+        target.mkdir()
+        self.path.symlink_to(target, target_is_directory=True)
+        self.assert_refused(archive)
+        self.assertEqual(list(target.iterdir()), [])
+        self.path.unlink()
+        self.path.parent.rmdir()
+        self.path.parent.symlink_to(target, target_is_directory=True)
+        self.assert_refused(archive)
+        self.assertEqual(list(target.iterdir()), [])
+        self.path.parent.unlink()
+        self.path.parent.mkdir()
+        saved, digest = self.registry(), work_workspace.path_digest(archive)
+        with self.assertRaisesRegex(ValueError, 'linked worktree'):
+            work_workspace.acquire(self.saved, 'other-owner', str(self.repo), str(self.path))
+        self.assertEqual(self.registry(), saved)
+        self.assertEqual(work_workspace.path_digest(archive), digest)
+        current = copy.deepcopy(saved)
+        current[self.identity]['outcome'] = 'other-owner'
+        save_bindings(self.saved / 'worktrees.json', current)
+        self.assert_refused(archive)
+        save_bindings(self.saved / 'worktrees.json', saved)
+        tree = work_workspace.git(self.repo, 'rev-parse', self.branch + '^{tree}')
+        moved = work_workspace.git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                                  'commit-tree', tree, '-p', self.branch, '-m', 'Moved')
+        work_workspace.git(self.repo, 'update-ref', 'refs/heads/' + self.branch, moved)
+        self.assert_refused(archive)
+
+    def test_new_digest_failure_during_intent_recovery_rolls_back_and_never_retries(self):
+        self.failed_recovery(intent=True)
+
+    def test_new_digest_failure_during_duplicate_recovery_cannot_pose_as_pr92(self):
+        self.failed_recovery(intent=False)
+
+    def failed_recovery(self, *, intent):
+        archive = self.intent_archive()
+        if intent:
+            self.intent_marker()
+        else:
+            self.saved_failure()
+        digest = work_workspace.path_digest(archive)
+        apply = work_workspace.apply_unstaged
+        def changed(path, unstaged):
+            apply(path, unstaged)
+            (path / 'tracked').write_text('unexpected change\n')
+        with patch.object(work_workspace, 'apply_unstaged', side_effect=changed), \
+                patch.object(work_workspace, 'discard_checkout', wraps=work_workspace.discard_checkout) as discard:
+            with self.assertRaisesRegex(ValueError, 'The restored files do not match the archive'):
+                self.acquire()
+            discard.assert_called_once()
+        failure = self.registry()[self.identity]['retired']['restore_failed']
+        self.assertEqual(work_workspace.path_digest(archive), digest)
+        self.assertFalse(self.path.exists())
+        self.assertFalse(any(record['path'] == self.path for record in work_workspace.registered(self.repo)))
+        self.assert_refused(archive)
+        self.assertTrue(failure['intent_retry_failed'])
+        self.assertTrue(failure['duplicate_retry_failed'])
+
+    def test_intent_recovery_does_not_overwrite_archived_path_collision(self):
+        archive = self.intent_archive()
+        self.intent_marker()
+        self.rewrite(archive, lambda rows: rows + [(tarfile.TarInfo('ignored/addition'), b'collision')])
+        digest = work_workspace.path_digest(archive)
+        with self.assertRaisesRegex(ValueError, 'The checkout already contains addition'):
+            self.acquire()
+        self.assertEqual(work_workspace.path_digest(archive), digest)
+        self.assertFalse(self.path.exists())
+        self.assertTrue(self.registry()[self.identity]['retired']['restore_failed']['intent_retry_failed'])
+        self.assert_refused(archive)
 
 
 if __name__ == '__main__':
