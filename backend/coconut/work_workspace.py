@@ -216,55 +216,80 @@ def registered(repository):
     return records
 
 
-def holders(path):
-    """Return the IDs of the processes that have their cwd or an open file in the path."""
-    try:
-        result = subprocess.run(['lsof', '-n', '-P', '-w', '-F', 'pn'], capture_output=True, timeout=120)
-    except (OSError, subprocess.TimeoutExpired):
-        raise ValueError('Coconut cannot check open files without lsof.') from None
-    if not result.stdout:
-        raise ValueError('lsof did not list open files.')
-    prefixes = {os.fsencode(str(path)), os.fsencode(str(Path(path).resolve()))}
-    found, pid = set(), None
-    for line in result.stdout.splitlines():
-        if line.startswith(b'p'):
-            pid = int(line[1:])
-        elif line.startswith(b'n') and any(line[1:] == prefix or line[1:].startswith(prefix + b'/') for prefix in prefixes):
-            found.add(pid)
-    return found
+def holders(path, *, detail=False):
+    """Return the IDs of the processes that have their cwd or an open file in the path. See holders_by_path for detail."""
+    return holders_by_path({path}, detail=detail)[str(path)]
 
 
 # Coconut waits this long for orphaned processes to end after SIGTERM.
 STOP_SECONDS = 5
 
 
-def busy_paths(paths):
-    """Return the paths in which a process has its cwd or an open file. Use one lsof scan for all paths."""
+def holders_by_path(paths, *, detail=False):
+    """Return, for each path, the IDs of the processes that have their cwd or an open file in it. Use one lsof scan.
+
+    With detail, each path maps each ID to True when the process holds only its cwd there.
+    """
     try:
-        result = subprocess.run(['lsof', '-n', '-P', '-w', '-F', 'n'], capture_output=True, timeout=120)
+        result = subprocess.run(['lsof', '-n', '-P', '-w', '-F', 'pn'], capture_output=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired):
         raise ValueError('Coconut cannot check open files without lsof.') from None
-    # A failed lsof can print part of the list. A missing holder would release the writer guard, so require success.
+    # A failed lsof can print part of the list. A missing holder would release a busy path, so require success.
     if result.returncode or not result.stdout:
         raise ValueError('lsof did not list all open files.')
     # Two paths can share one resolved form, such as /tmp and /private/tmp on macOS. Keep every path for each form.
     prefixes = {}
     for path in paths:
         for form in {str(path), str(Path(path).resolve())}:
-            prefixes.setdefault(os.fsencode(form), set()).add(path)
-    busy = set()
+            prefixes.setdefault(os.fsencode(form), set()).add(str(path))
+    held, pid, descriptor = {str(path): {} for path in paths}, None, None
     for line in result.stdout.splitlines():
-        if line.startswith(b'n'):
+        if line.startswith(b'p'):
+            pid = int(line[1:])
+        elif line.startswith(b'f'):
+            descriptor = line[1:]
+        elif line.startswith(b'n'):
+            # Look up the name and each of its parent folders, so the cost does not grow with the number of paths.
             name = line[1:]
-            for prefix, owners in prefixes.items():
-                if name == prefix or name.startswith(prefix + b'/'):
-                    busy |= owners
-    return busy
+            while name:
+                for owner in prefixes.get(name, ()):
+                    held[owner][pid] = held[owner].get(pid, True) and descriptor == b'cwd'
+                cut = name.rfind(b'/')
+                if cut <= 0:
+                    break
+                name = name[:cut]
+    return held if detail else {path: set(pids) for path, pids in held.items()}
+
+
+def busy_paths(paths):
+    """Return the paths in which a process that is not a shared service has its cwd or an open file. Use one lsof scan."""
+    held = holders_by_path(paths, detail=True)
+    busy = {path for path in paths if held[str(path)]}
+    if not busy:
+        return busy
+    table = process_table()
+    return {path for path in busy if blocking(held[str(path)], path, table)}
 
 
 def in_use(path):
-    """Return True when a process has its cwd or an open file in the path."""
-    return bool(holders(path))
+    """Return True when a process has an open file in the path, or has its cwd there and is not a shared service."""
+    return bool(blocking(holders(path, detail=True), path))
+
+
+def blocking(held, path, table=None):
+    """Return the holders that keep a path. `held` maps each process ID to True when it holds only its cwd there.
+
+    A shared service, such as the adb server, can keep the cwd of the turn that started it. It serves every
+    outcome and outlives the worktree, so its cwd does not keep the worktree. Coconut never stops it.
+    An open file still keeps the path, because the removal would break the service.
+    """
+    if not held:
+        return set()
+    table = process_table() if table is None else table
+    exempt = {pid for pid, cwd_only in held.items() if cwd_only and pid in table and shared(table[pid][2], pid)}
+    if exempt:
+        logging.getLogger(__name__).warning('Shared services %s have their cwd in %s. They do not keep it.', sorted(exempt), path)
+    return set(held) - exempt
 
 
 def elapsed_seconds(value):
@@ -276,18 +301,69 @@ def elapsed_seconds(value):
     return (int(days) if days else 0) * 86400 + seconds
 
 
+# A shared service can inherit a turn's environment when a turn starts it, for example OrbStack for Docker.
+# Stopping it would stop it for every outcome, so Coconut never stops a process under these folders.
+# The list names each shared service. A wider folder, such as /Library/ or /Applications/, also holds the JDK,
+# Xcode, and the Command Line Tools, whose orphans Coconut must stop. macOS hides the environment of its system
+# programs, so the orphan rules already never stop a system daemon.
+SHARED_EXECUTABLE_PREFIXES = ('/Library/Developer/PrivateFrameworks/CoreSimulator.framework/',
+                              '/Library/Developer/CoreSimulator/')
+# These app bundles run shared services, such as the OrbStack VM manager. Their client folders hold programs such
+# as docker, orb, and kubectl, which belong to their turn.
+SHARED_APP_BUNDLES = {'/Applications/OrbStack.app/': ('Contents/MacOS/bin/', 'Contents/MacOS/xbin/'),
+                      '/Applications/Docker.app/': ('Contents/Resources/bin/', 'Contents/Resources/cli-plugins/')}
+# launchd_sim runs a booted iOS simulator.
+SHARED_EXECUTABLE_NAMES = ('launchd_sim',)
+# The adb server serves the emulators of every outcome. An adb client, such as adb logcat, belongs to its turn.
+# The server runs as `adb ... fork-server server` or `adb nodaemon server`.
+ADB_SERVER_ARGUMENTS = ('fork-server', 'nodaemon')
+
+
 def process_table():
-    """Return each process ID with its parent ID and its age in seconds."""
+    """Return each process ID with its parent ID, its age in seconds, and its executable path."""
     try:
-        result = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,etime='], capture_output=True, text=True, timeout=60)
+        result = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,etime=,comm='], capture_output=True, text=True,
+                                errors='replace', timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         raise ValueError('Coconut cannot list processes without ps.') from None
     table = {}
     for line in result.stdout.splitlines():
         with contextlib.suppress(ValueError):
-            pid, parent, elapsed = line.split()
-            table[int(pid)] = (int(parent), elapsed_seconds(elapsed))
+            pid, parent, elapsed, executable = line.split(None, 3)
+            table[int(pid)] = (int(parent), elapsed_seconds(elapsed), executable.strip())
     return table
+
+
+def arguments(pid):
+    """Return the command line of the process, or None when ps cannot read it."""
+    try:
+        # -ww keeps the whole command line. A cut line could hide the adb server's argument.
+        result = subprocess.run(['ps', '-ww', '-o', 'args=', '-p', str(pid)], capture_output=True, text=True,
+                                errors='replace', timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def shared(executable, pid=None, *, unknown=False):
+    """Return True for a shared service. An adb process counts only when `pid` shows the adb server.
+
+    `unknown` is the answer when ps cannot read the adb command line. A stop passes True, so Coconut never stops
+    the server by mistake. A holder check passes False, so an adb client still keeps its worktree.
+    """
+    name = executable.rsplit('/', 1)[-1]
+    if name == 'adb':
+        if pid is None:
+            return False
+        line = arguments(pid)
+        if line is None:
+            return unknown
+        words = line.split()
+        return 'server' in words and any(a in words for a in ADB_SERVER_ARGUMENTS)
+    if any(executable.startswith(bundle) and not executable[len(bundle):].startswith(clients)
+           for bundle, clients in SHARED_APP_BUNDLES.items()):
+        return True
+    return executable.startswith(SHARED_EXECUTABLE_PREFIXES) or name in SHARED_EXECUTABLE_NAMES
 
 
 def environment_names(pid, mark):
@@ -381,17 +457,28 @@ def stop_orphans(found, outcome, age):
     So Coconut stops only an orphan whose environment names the outcome in COCONUT_WORKSPACE_OUTCOME, with its child processes.
     The worker of each turn sets this variable, and the processes of the turn inherit it.
     When the system does not show the environment of a process, for example a macOS platform binary, Coconut does not stop it.
+    It never stops a shared app or system daemon that `shared` names, such as OrbStack.
     A process that does not end after SIGTERM gets SIGKILL.
     """
     if not found:
         return set()
     table = process_table()
     mark = 'COCONUT_WORKSPACE_OUTCOME=' + outcome
+    answers = {}
+
+    def is_shared(pid):
+        # shared() can run ps for an adb process. Ask once for each process.
+        if pid not in answers:
+            answers[pid] = shared(table[pid][2], pid, unknown=True)
+        return answers[pid]
     stopped = {pid for pid in found if pid in table and pid != os.getpid() and table[pid][0] == 1
-               and table[pid][1] >= age and environment_names(pid, mark)}
+               and table[pid][1] >= age and not is_shared(pid) and environment_names(pid, mark)}
     while stopped:
         # The parent proves who owns a child process. macOS also hides the environment of a child shell.
-        children = {pid for pid, (parent, _) in table.items() if parent in stopped and pid not in stopped}
+        # A shared service stays even as a child. A system program that the orphan started, such as a WebKit
+        # process of safaridriver, belongs to the orphan and stops with it.
+        children = {pid for pid, (parent, _, _) in table.items()
+                    if parent in stopped and pid not in stopped and not is_shared(pid)}
         if not children:
             break
         stopped |= children
@@ -475,13 +562,13 @@ def remove_nested(root, path, repository, *, check_only=False):
 
 def release(path, outcome, orphan_age):
     """Stop the old orphaned processes of the outcome in the path. Refuse the path if another process uses it."""
-    found = holders(path)
-    if found and orphan_age is not None:
-        stopped = stop_orphans(found, outcome, orphan_age)
+    held = holders(path, detail=True)
+    if held and orphan_age is not None:
+        stopped = stop_orphans(set(held), outcome, orphan_age)
         if stopped:
             logging.getLogger(__name__).warning('Coconut stopped orphaned processes %s in worktree %s.', sorted(stopped), path)
-        found -= stopped
-    if found:
+        held = {pid: cwd_only for pid, cwd_only in held.items() if pid not in stopped}
+    if blocking(held, path):
         raise ValueError('A process uses the worktree.')
 
 
@@ -617,7 +704,8 @@ def retire(root, identity, finished, *, orphan_age=None):
     if untracked > UNTRACKED_LIMIT_BYTES:
         raise ValueError('The untracked files in the worktree are larger than the archive limit.')
     entries = [(UNTRACKED + name, name) for name in names] + [(IGNORED + name, name) for name in ignored_files(path)]
-    # Stop orphans only after every check that does not need them stopped. Then no refusal follows a stop for nothing.
+    # Stop orphans only after every check that does not need them stopped. The hourly pass already stopped the old
+    # orphans of every idle outcome, so this stop covers only the processes that became old since.
     if not finished(True):
         raise ValueError('The outcome resumed during retirement.')
     release(path, before['outcome'], orphan_age)

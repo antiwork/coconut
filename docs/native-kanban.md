@@ -99,6 +99,20 @@ Retirement does these steps:
    It runs `git worktree remove --force` with a 600-second limit. It keeps the branch and its commits.
 10. It deletes the other archives of the same worktree that no binding names.
 
+Before it retires any worktree, each hourly run also stops the old orphans of every idle outcome. It checks the
+outcome's worktrees and its scratch workspace (`workspaces/<outcome>`), with one `lsof` scan, and uses the same
+orphan rules. This runs even when retirement refuses the worktree, for example for a nested worktree with changes.
+Such orphans, for example an Android emulator or a test script left by a crashed worker, otherwise hold disk space,
+CPU, and memory for days. This step also runs for an outcome that has only a scratch workspace. Before it stops the
+orphans of an outcome, it checks again that the outcome is idle, because a turn can start during the `lsof` scan.
+A failed check is logged, and retirement continues.
+Coconut never stops a shared service that a turn started, such as OrbStack, Docker Desktop, CoreSimulator,
+`launchd_sim`, or the `adb` server, because every outcome uses it. `SHARED_APP_BUNDLES`,
+`SHARED_EXECUTABLE_PREFIXES`, `SHARED_EXECUTABLE_NAMES`, and `ADB_SERVER_ARGUMENTS` in `work_workspace.py` name
+these services. `SHARED_APP_BUNDLES` also names the client folders of each app bundle. An `adb` client,
+a client program such as `docker`, the JDK, Xcode, and the Command Line Tools are not shared. A shared service whose cwd is in a worktree does not keep
+the worktree. An open file of a shared service still keeps it.
+
 The log names the cause when Coconut does not retire a worktree, for example a busy service or a changed worktree.
 Steps 1 to 7 do not hold the registry lock. Step 8 runs Git commands that do not wait for other processes.
 A path hint for native dispatch reads `worktrees.json` without the registry lock, because dispatch holds the service lock.

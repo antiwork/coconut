@@ -16,7 +16,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from coconut import work_workspace
@@ -35,6 +35,9 @@ def environments_visible():
     macOS hides the environment of its platform binaries, such as /bin/sleep, so the probe runs this Python.
     """
     if not shutil.which('lsof') or os.uname().sysname != 'Darwin':
+        return False
+    # Coconut never stops a shared program, so an orphan of such an interpreter cannot show the rules.
+    if work_workspace.shared(sys.executable):
         return False
     process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(5)'], env=dict(os.environ, COCONUT_PROBE='1'))
     try:
@@ -67,7 +70,9 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.workspaces = self.service.root / 'workspaces'
         self.workspaces.mkdir(mode=0o700, exist_ok=True)
         # Most tests do not depend on lsof or send signals. The process tests below use real processes.
-        self.holders = patch('coconut.work_workspace.holders', return_value=set())
+        self.holders = patch.multiple('coconut.work_workspace', holders=MagicMock(side_effect=lambda path, detail=False: {} if detail else set()),
+                                      holders_by_path=MagicMock(side_effect=lambda paths, detail=False: {
+                                          str(p): {} if detail else set() for p in paths}))
         self.holders.start()
         self.addCleanup(self.holders.stop)
 
@@ -850,7 +855,7 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertIn('retired', self.registry()[identity])
 
     @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
-    def test_young_foreign_and_locked_orphans_keep_their_processes_and_worktrees(self):
+    def test_young_and_foreign_orphans_stay_and_a_locked_worktree_keeps_its_files(self):
         young_outcome, young, young_path, _ = self.outcome()
         young_pid = self.orphan(young_path, young_outcome)
         _, foreign, foreign_path, _ = self.outcome()
@@ -864,8 +869,14 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
             self.assertEqual(self.retire(), [young])
         self.assertFalse(self.alive(young_pid))
-        for pid, identity, path in ((foreign_pid, foreign, foreign_path), (locked_pid, locked, locked_path)):
-            self.assertTrue(self.alive(pid))
+        self.assertTrue(self.alive(foreign_pid))
+        # An idle outcome loses its orphans even when its worktree cannot retire. The locked worktree stays.
+        for _ in range(50):
+            if not self.alive(locked_pid):
+                break
+            time.sleep(0.1)
+        self.assertFalse(self.alive(locked_pid))
+        for identity, path in ((foreign, foreign_path), (locked, locked_path)):
             self.assertTrue(path.is_dir())
             self.assertNotIn('retired', self.registry()[identity])
 
@@ -900,8 +911,12 @@ class WorktreeRetirementTests(unittest.TestCase):
                             b'p12\nf3\nn' + os.fsencode(str(path)) + b'/log.txt\nf4\nn/elsewhere/a\n',
                             b'p13\nf5\nn' + os.fsencode(str(path)) + b'-other/file\n'])
         self.holders.stop()
-        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing)):
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
             self.assertEqual(work_workspace.holders(path), {11, 12})
+        # A partial list could hide a holder, so a failed lsof refuses the worktree.
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=1)):
+            with self.assertRaises(ValueError):
+                work_workspace.holders(path)
 
     def test_the_environment_of_another_process_is_read(self):
         process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
@@ -959,6 +974,10 @@ class WorktreeRetirementTests(unittest.TestCase):
         free.mkdir()
         listing = b'p10\nfcwd\nn' + os.fsencode(str(held)) + b'/log.txt\np11\nfcwd\nn' + os.fsencode(str(free)) + b'-other\n'
         self.holders.stop()
+        # busy_paths reads the process table only to exempt shared services.
+        table = patch('coconut.work_workspace.process_table', return_value={})
+        table.start()
+        self.addCleanup(table.stop)
         with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)) as run:
             self.assertEqual(work_workspace.busy_paths({str(held), str(free)}), {str(held)})
         self.assertEqual(run.call_count, 1)
@@ -1074,6 +1093,283 @@ class WorktreeRetirementTests(unittest.TestCase):
         save_bindings(self.workspaces / 'worktrees.json', saved)
         self.assertEqual(self.retire(), [])
         self.assertTrue(inner.is_dir())
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_an_idle_outcome_loses_its_orphans_even_when_its_worktree_cannot_retire(self):
+        outcome, identity, path, _ = self.outcome()
+        # A locked worktree cannot retire. Its orphan still goes.
+        git(self.repo, 'worktree', 'lock', str(path))
+        scratch = self.workspaces / outcome
+        scratch.mkdir()
+        in_worktree, in_scratch = self.orphan(path, outcome), self.orphan(scratch, outcome)
+        foreign = self.orphan(scratch, str(uuid4()))
+        self.holders.stop()
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.assertEqual(self.retire(), [])
+        for _ in range(50):
+            if not (self.alive(in_worktree) or self.alive(in_scratch)):
+                break
+            time.sleep(0.1)
+        self.assertFalse(self.alive(in_worktree))
+        self.assertFalse(self.alive(in_scratch))
+        self.assertTrue(self.alive(foreign))
+        self.assertNotIn('retired', self.registry()[identity])
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_an_active_outcome_keeps_its_orphans(self):
+        outcome, identity, path, task = self.outcome(status='working')
+        pid = self.orphan(path, outcome)
+        self.holders.stop()
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(self.alive(pid))
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_an_idle_outcome_with_only_a_scratch_workspace_loses_its_orphans(self):
+        outcome = str(uuid4())
+        with self.service.transaction():
+            self.service._put('tasks', dict(id=str(uuid4()), bot_id=self.bot['id'], _execution_session_id=outcome,
+                                            title='Change', status='completed', summary='', created_at=OLD, updated_at=OLD))
+        scratch = self.workspaces / outcome
+        scratch.mkdir()
+        pid = self.orphan(scratch, outcome)
+        self.assertFalse((self.workspaces / 'worktrees.json').exists())
+        self.holders.stop()
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.assertEqual(self.retire(), [])
+        for _ in range(50):
+            if not self.alive(pid):
+                break
+            time.sleep(0.1)
+        self.assertFalse(self.alive(pid))
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_an_outcome_that_resumes_during_the_scan_keeps_its_orphans(self):
+        outcome, identity, path, task = self.outcome()
+        git(self.repo, 'worktree', 'lock', str(path))
+        pid = self.orphan(path, outcome)
+        self.holders.stop()
+        scan = work_workspace.holders_by_path
+
+        def resume_then_scan(paths):
+            with self.service.transaction():
+                self.service._put('tasks', dict(task, status='working', updated_at=RECENT))
+            return scan(paths)
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0), \
+                patch('coconut.work_workspace.holders_by_path', side_effect=resume_then_scan):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(self.alive(pid))
+
+    def test_an_outcome_named_like_a_folder_link_scans_no_scratch_workspace(self):
+        scanned = []
+        with patch('coconut.work_workspace.holders_by_path', side_effect=lambda paths: scanned.append(set(paths)) or {}):
+            self.service._stop_idle_orphans({'.', '..', ''}, {})
+        self.assertEqual(scanned, [])
+
+    def test_a_pending_restart_skips_the_orphan_pass(self):
+        outcome, identity, path, _ = self.outcome()
+        self.service.restart_pending = True
+        try:
+            with patch('coconut.work_workspace.holders_by_path', return_value={str(path): {12345}}) as scan, \
+                    patch('coconut.work_workspace.stop_orphans') as stop:
+                self.service._stop_idle_orphans({outcome}, self.registry())
+        finally:
+            self.service.restart_pending = False
+        scan.assert_not_called()
+        stop.assert_not_called()
+
+    def test_stop_orphans_reads_each_adb_command_line_once(self):
+        table = {300: (1, 99999, '/usr/bin/ruby'), 301: (300, 99999, '/usr/bin/sh'), 302: (301, 99999, '/usr/bin/tee'),
+                 400: (1, 99999, '/opt/sdk/platform-tools/adb')}
+        with patch('coconut.work_workspace.process_table', return_value=table), \
+                patch('coconut.work_workspace.environment_names', return_value=True), \
+                patch('coconut.work_workspace.stop', return_value=set()), \
+                patch('coconut.work_workspace.arguments', return_value='adb fork-server server') as read:
+            self.assertEqual(work_workspace.stop_orphans({300, 400}, 'outcome', 0), {300, 301, 302})
+        self.assertEqual(read.call_count, 1)
+
+    def test_a_failed_orphan_check_does_not_stop_retirement(self):
+        outcome, identity, path, _ = self.outcome()
+        with patch('coconut.work_workspace.holders_by_path', return_value={str(path): {12345}}), \
+                patch('coconut.work_workspace.stop_orphans', side_effect=ValueError('Coconut cannot list processes without ps.')):
+            self.assertEqual(self.retire(), [identity])
+        self.assertIn('retired', self.registry()[identity])
+
+    def test_a_registry_entry_without_a_path_does_not_stop_retirement(self):
+        outcome, identity, path, _ = self.outcome()
+        saved = self.registry()
+        saved['broken'] = dict(outcome=outcome, branch='wt/broken', repository=str(self.repo))
+        (self.workspaces / 'worktrees.json').write_text(json.dumps(saved))
+        self.assertEqual(self.retire(), [identity])
+
+    def test_only_named_shared_services_are_exempt(self):
+        for executable in ('/Applications/OrbStack.app/Contents/MacOS/OrbStack',
+                           '/Applications/OrbStack.app/Contents/Frameworks/OrbStack Helper.app/Contents/MacOS/OrbStack Helper',
+                           '/Applications/OrbStack.app/Contents/MacOS/vmgr',
+                           '/Applications/Docker.app/Contents/MacOS/com.docker.backend',
+                           '/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/bin/simdiskimaged',
+                           'launchd_sim',
+                           '/Library/Developer/CoreSimulator/Volumes/iOS_23A/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS.simruntime/Contents/Resources/RuntimeRoot/usr/libexec/installd'):
+            self.assertTrue(work_workspace.shared(executable), executable)
+        # The developer toolchain and system programs live in these folders too. Their orphans must go.
+        for executable in ('/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home/bin/java',
+                           '/Library/Developer/CommandLineTools/usr/bin/git',
+                           '/Library/Frameworks/Python.framework/Versions/3.12/bin/python3',
+                           '/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild',
+                           '/System/Library/Frameworks/WebKit.framework/XPCServices/WebContent',
+                           # A client of a shared service belongs to its turn.
+                           '/Applications/OrbStack.app/Contents/MacOS/xbin/docker',
+                           '/Applications/OrbStack.app/Contents/MacOS/bin/orbctl',
+                           '/Applications/Docker.app/Contents/Resources/bin/docker',
+                           '/Applications/Docker.app/Contents/Resources/cli-plugins/docker-compose',
+                           '/Users/me/Library/Android/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64'):
+            self.assertFalse(work_workspace.shared(executable), executable)
+        # Only the adb server is shared. An adb client belongs to its turn.
+        adb = '/Users/me/Library/Android/sdk/platform-tools/adb'
+        with patch('coconut.work_workspace.arguments', return_value='adb -L tcp:5037 fork-server server --reply-fd 4\n'):
+            self.assertTrue(work_workspace.shared(adb, 10))
+        with patch('coconut.work_workspace.arguments', return_value='adb logcat\n'):
+            self.assertFalse(work_workspace.shared(adb, 10))
+        with patch('coconut.work_workspace.arguments', return_value='adb nodaemon server\n'):
+            self.assertTrue(work_workspace.shared(adb, 10))
+        # When ps cannot read the command line, a stop keeps the process, and the process still keeps its path.
+        with patch('coconut.work_workspace.arguments', return_value=None):
+            self.assertTrue(work_workspace.shared(adb, 10, unknown=True))
+            self.assertFalse(work_workspace.shared(adb, 10))
+            self.assertEqual(work_workspace.blocking({10: True}, self.root, {10: (1, 50, adb)}), {10})
+            with patch('coconut.work_workspace.environment_names', return_value=True), \
+                    patch('coconut.work_workspace.process_table', return_value={10: (1, 50, adb)}), \
+                    patch('coconut.work_workspace.stop', return_value=set()):
+                self.assertEqual(work_workspace.stop_orphans({10}, 'outcome', 0), set())
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout='', returncode=1)):
+            self.assertTrue(work_workspace.shared(adb, 10, unknown=True))
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout='adb fork-server server', returncode=0)) as run:
+            work_workspace.shared(adb, 10)
+        self.assertIn('-ww', run.call_args.args[0])
+        self.assertFalse(work_workspace.shared(adb))
+
+    def test_holders_by_path_maps_each_path_from_one_scan(self):
+        held, other = self.root / 'held', self.root / 'other'
+        held.mkdir()
+        other.mkdir()
+        listing = b'p10\nfcwd\nn' + os.fsencode(str(held)) + b'/log\np11\nfcwd\nn' + os.fsencode(str(other)) + b'\np12\nfcwd\nn/elsewhere\n'
+        self.holders.stop()
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)) as run:
+            self.assertEqual(work_workspace.holders_by_path({str(held), str(other)}), {str(held): {10}, str(other): {11}})
+        self.assertEqual(run.call_count, 1)
+
+    def test_a_shared_app_daemon_with_the_outcome_environment_is_never_stopped(self):
+        # A turn started OrbStack, so its helper carries the outcome variable and has launchd as its parent.
+        table = {100: (1, 99999, '/Applications/OrbStack.app/Contents/Frameworks/OrbStack Helper.app/Contents/MacOS/OrbStack Helper'),
+                 101: (100, 99999, '/Applications/OrbStack.app/Contents/MacOS/vmgr'),
+                 200: (1, 99999, '/bin/bash'), 201: (200, 99999, '/usr/bin/tee')}
+        sent = []
+        with patch('coconut.work_workspace.process_table', return_value=table), \
+                patch('coconut.work_workspace.environment_names', return_value=True), \
+                patch('coconut.work_workspace.stop', side_effect=lambda pids, sig, seconds: sent.append(set(pids)) or set()):
+            stopped = work_workspace.stop_orphans({100, 200}, 'outcome', 0)
+        self.assertEqual(stopped, {200, 201})
+        self.assertTrue(all(not ({100, 101} & group) for group in sent))
+
+    def test_a_shared_service_that_holds_the_worktree_does_not_keep_it(self):
+        _, identity, path, _ = self.outcome()
+        self.holders.stop()
+        server = patch('coconut.work_workspace.arguments', return_value='adb fork-server server')
+        server.start()
+        self.addCleanup(server.stop)
+        def listing(pid, descriptor, target):
+            return lambda paths, detail=False: (
+                {str(p): ({pid: descriptor == 'cwd'} if detail else {pid}) if str(p) == str(target) else ({} if detail else set())
+                 for p in paths})
+        # The adb server keeps the cwd of the turn that started it.
+        with patch('coconut.work_workspace.holders_by_path', side_effect=listing(500, 'cwd', path.resolve())), \
+                patch('coconut.work_workspace.process_table', return_value={500: (1, 99999, '/opt/sdk/platform-tools/adb')}), \
+                patch('coconut.work_workspace.stop') as stop:
+            self.assertEqual(self.retire(), [identity])
+        stop.assert_not_called()
+        self.assertIn('retired', self.registry()[identity])
+        # An open file of a shared service, and any holder that is not shared, still keep the worktree.
+        for pid, descriptor, executable in ((501, '12', '/opt/sdk/platform-tools/adb'), (502, 'cwd', '/usr/bin/ruby')):
+            _, other, other_path, _ = self.outcome()
+            with patch('coconut.work_workspace.holders_by_path', side_effect=listing(pid, descriptor, other_path.resolve())), \
+                    patch('coconut.work_workspace.process_table', return_value={pid: (77, 99999, executable)}):
+                self.assertNotIn(other, self.retire())
+            self.assertNotIn('retired', self.registry()[other])
+
+    def test_a_busy_service_still_sweeps_unfinished_archives(self):
+        self.outcome()
+        (self.workspaces / 'archive').mkdir()
+        leftover = self.workspaces / 'archive' / '.old.tar.gz.tmp'
+        leftover.write_bytes(b'partial')
+        with patch.object(self.service, '_finished_outcomes', return_value=None):
+            self.assertEqual(self.retire(), [])
+        self.assertFalse(leftover.exists())
+
+    def test_an_empty_registry_still_sweeps_unfinished_archives(self):
+        (self.workspaces / 'worktrees.json').write_text('{}')
+        (self.workspaces / 'archive').mkdir()
+        leftover = self.workspaces / 'archive' / '.old.tar.gz.tmp'
+        leftover.write_bytes(b'partial')
+        self.assertEqual(self.retire(), [])
+        self.assertFalse(leftover.exists())
+
+    def test_holders_by_path_matches_only_whole_folders(self):
+        held = self.root / 'held'
+        held.mkdir()
+        listing = b''.join([b'p10\nfcwd\nn' + os.fsencode(str(held)) + b'/deep/file\n',
+                            b'p11\nfcwd\nn' + os.fsencode(str(held)) + b'-other/file\n',
+                            b'p12\nfcwd\nn' + os.fsencode(str(held)) + b'\n', b'p13\nfcwd\nn/\n'])
+        self.holders.stop()
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
+            self.assertEqual(work_workspace.holders_by_path({str(held)}), {str(held): {10, 12}})
+        # One process with its cwd and an open file in the path holds more than its cwd, in either order.
+        for records in ((b'fcwd\nn' + os.fsencode(str(held)) + b'\n', b'f12\nn' + os.fsencode(str(held)) + b'/log\n'),
+                        (b'f12\nn' + os.fsencode(str(held)) + b'/log\n', b'fcwd\nn' + os.fsencode(str(held)) + b'\n')):
+            both = b'p10\n' + b''.join(records) + b'p11\nfcwd\nn' + os.fsencode(str(held)) + b'\n'
+            with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=both, returncode=0)):
+                self.assertEqual(work_workspace.holders_by_path({str(held)}, detail=True), {str(held): {10: False, 11: True}})
+
+    def test_a_shared_service_does_not_make_a_path_busy(self):
+        server = patch('coconut.work_workspace.arguments', return_value='adb fork-server server')
+        server.start()
+        self.addCleanup(server.stop)
+        held = self.root / 'held'
+        held.mkdir()
+        listing = b'p10\nfcwd\nn' + os.fsencode(str(held)) + b'\n'
+        self.holders.stop()
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
+            with patch('coconut.work_workspace.process_table', return_value={10: (1, 50, '/opt/sdk/platform-tools/adb')}):
+                self.assertEqual(work_workspace.busy_paths({str(held)}), set())
+        # An open file of a shared service keeps the path busy.
+        opened = b'p10\nf12\nn' + os.fsencode(str(held)) + b'/data\n'
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=opened, returncode=0)):
+            with patch('coconut.work_workspace.process_table', return_value={10: (1, 50, '/opt/sdk/platform-tools/adb')}):
+                self.assertEqual(work_workspace.busy_paths({str(held)}), {str(held)})
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
+            with patch('coconut.work_workspace.process_table', return_value={10: (1, 50, '/usr/bin/ruby')}):
+                self.assertEqual(work_workspace.busy_paths({str(held)}), {str(held)})
+
+    def test_a_system_child_of_an_orphan_stops_and_a_shared_child_stays(self):
+        table = {200: (1, 99999, '/usr/bin/safaridriver'), 201: (200, 99999, '/System/Library/Frameworks/WebKit.framework/XPCServices/WebContent'),
+                 202: (201, 99999, '/usr/bin/tee')}
+        with patch('coconut.work_workspace.process_table', return_value=table), \
+                patch('coconut.work_workspace.environment_names', return_value=True), \
+                patch('coconut.work_workspace.stop', return_value=set()):
+            self.assertEqual(work_workspace.stop_orphans({200}, 'outcome', 0), {200, 201, 202})
+        # A shared service stays, even as the child of an orphan.
+        table = {300: (1, 99999, '/usr/bin/ruby'), 301: (300, 99999, '/opt/sdk/platform-tools/adb'), 302: (300, 99999, '/usr/bin/tee')}
+        with patch('coconut.work_workspace.process_table', return_value=table), \
+                patch('coconut.work_workspace.environment_names', return_value=True), \
+                patch('coconut.work_workspace.stop', return_value=set()), \
+                patch('coconut.work_workspace.arguments', return_value='adb fork-server server'):
+            self.assertEqual(work_workspace.stop_orphans({300}, 'outcome', 0), {300, 302})
+
+    def test_process_table_reads_executables_with_spaces(self):
+        listing = '  100     1 06-16:25:58 /Applications/OrbStack.app/Contents/MacOS/OrbStack Helper\n  200   100    02:03 /bin/bash\n'
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing)):
+            table = work_workspace.process_table()
+        self.assertEqual(table[100], (1, 6 * 86400 + 16 * 3600 + 25 * 60 + 58, '/Applications/OrbStack.app/Contents/MacOS/OrbStack Helper'))
+        self.assertEqual(table[200], (100, 123, '/bin/bash'))
 
     def test_elapsed_times_from_ps_become_seconds(self):
         self.assertEqual(work_workspace.elapsed_seconds('05'), 5)
