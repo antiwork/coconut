@@ -464,14 +464,21 @@ def stop_orphans(found, outcome, age):
         return set()
     table = process_table()
     mark = 'COCONUT_WORKSPACE_OUTCOME=' + outcome
+    answers = {}
+
+    def is_shared(pid):
+        # shared() can run ps for an adb process. Ask once for each process.
+        if pid not in answers:
+            answers[pid] = shared(table[pid][2], pid, unknown=True)
+        return answers[pid]
     stopped = {pid for pid in found if pid in table and pid != os.getpid() and table[pid][0] == 1
-               and table[pid][1] >= age and not shared(table[pid][2], pid, unknown=True) and environment_names(pid, mark)}
+               and table[pid][1] >= age and not is_shared(pid) and environment_names(pid, mark)}
     while stopped:
         # The parent proves who owns a child process. macOS also hides the environment of a child shell.
         # A shared service stays even as a child. A system program that the orphan started, such as a WebKit
         # process of safaridriver, belongs to the orphan and stops with it.
-        children = {pid for pid, (parent, _, executable) in table.items()
-                    if parent in stopped and pid not in stopped and not shared(executable, pid, unknown=True)}
+        children = {pid for pid, (parent, _, _) in table.items()
+                    if parent in stopped and pid not in stopped and not is_shared(pid)}
         if not children:
             break
         stopped |= children
@@ -674,8 +681,7 @@ def retire(root, identity, finished, *, orphan_age=None):
     if nested(path, registered(repository)):
         # A bot can create worktrees inside its own worktree, for example to test a base commit.
         # Their files would count as ignored files of this worktree, so remove the clean ones first.
-        # Check first, so a refusal does not follow an orphan stop for nothing. The hourly pass already stopped the old
-        # orphans of every idle outcome, so this stop covers only the processes that became old since. The parent's own size and content
+        # Check first, so a refusal does not follow an orphan stop for nothing. The parent's own size and content
         # checks must run after the removal, because the nested files would count toward them. If one of those
         # refuses, only clean nested checkouts are gone, and the next hourly pass retries without them.
         remove_nested(root, path, repository, check_only=True)

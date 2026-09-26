@@ -1166,6 +1166,28 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.service._stop_idle_orphans({'.', '..', ''}, {})
         self.assertEqual(scanned, [])
 
+    def test_a_pending_restart_skips_the_orphan_pass(self):
+        outcome, identity, path, _ = self.outcome()
+        self.service.restart_pending = True
+        try:
+            with patch('coconut.work_workspace.holders_by_path', return_value={str(path): {12345}}) as scan, \
+                    patch('coconut.work_workspace.stop_orphans') as stop:
+                self.service._stop_idle_orphans({outcome}, self.registry())
+        finally:
+            self.service.restart_pending = False
+        scan.assert_not_called()
+        stop.assert_not_called()
+
+    def test_stop_orphans_reads_each_adb_command_line_once(self):
+        table = {300: (1, 99999, '/usr/bin/ruby'), 301: (300, 99999, '/usr/bin/sh'), 302: (301, 99999, '/usr/bin/tee'),
+                 400: (1, 99999, '/opt/sdk/platform-tools/adb')}
+        with patch('coconut.work_workspace.process_table', return_value=table), \
+                patch('coconut.work_workspace.environment_names', return_value=True), \
+                patch('coconut.work_workspace.stop', return_value=set()), \
+                patch('coconut.work_workspace.arguments', return_value='adb fork-server server') as read:
+            self.assertEqual(work_workspace.stop_orphans({300, 400}, 'outcome', 0), {300, 301, 302})
+        self.assertEqual(read.call_count, 1)
+
     def test_a_failed_orphan_check_does_not_stop_retirement(self):
         outcome, identity, path, _ = self.outcome()
         with patch('coconut.work_workspace.holders_by_path', return_value={str(path): {12345}}), \

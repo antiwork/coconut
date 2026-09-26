@@ -84,7 +84,7 @@ class WorktreeRetirement:
             if '/' not in outcome and outcome not in ('', '.', '..') and (root / outcome).is_dir():
                 places.setdefault(outcome, set()).add(str(root / outcome))
         paths = {path for group in places.values() for path in group if Path(path).is_dir()}
-        if not paths or self.stopping.is_set():
+        if not paths or self.stopping.is_set() or self.restart_pending:
             return []
         try:
             holders = work_workspace.holders_by_path(paths)
@@ -94,7 +94,7 @@ class WorktreeRetirement:
         stopped = []
         for outcome, group in places.items():
             found = set().union(*(holders.get(path, set()) for path in group))
-            if not found or self.stopping.is_set():
+            if not found or self.stopping.is_set() or self.restart_pending:
                 continue
             # The outcome can resume while lsof runs. A resumed turn may use an old process, so check again.
             again = self._finished_outcomes(time.time(), timeout=SERVICE_WAIT_SECONDS, only=outcome)
