@@ -557,6 +557,12 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
             raise ValueError(f'The nested worktree {inner} cannot be archived: {error}') from None
         if not (current[0] or current[1] or entries):
             return None
+        # git worktree remove --force also deletes a submodule, and an archive cannot hold its files.
+        listing = git_output(inner, 'ls-files', '--stage', '-z')
+        for entry in (e for e in listing.split(b'\0') if e):
+            mode, _, name = entry.partition(b'\t')
+            if mode.startswith(b'160000') and (inner / os.fsdecode(name) / '.git').exists():
+                raise ValueError(f'The nested worktree {inner} contains a submodule.')
         return dict(head=head, current=current, entries=entries, marks=fingerprint(inner, [name for _, name in entries]))
 
     def tracked():

@@ -1093,6 +1093,22 @@ class WorktreeRetirementTests(unittest.TestCase):
         # The outer archive holds its own .gitignore change, but not the files of the worktree inside it.
         self.assertEqual(names[str(outer.resolve())], ['retirement.json', 'staged.patch', 'unstaged.patch'])
 
+    def test_a_nested_worktree_with_a_submodule_keeps_the_parent(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path)
+        library = self.root / 'library'
+        library.mkdir()
+        git(library, 'init', '-q')
+        (library / 'lib.txt').write_text('library\n')
+        git(library, 'add', '.')
+        self.commit(library, 'Library')
+        subprocess.run(['git', '-C', str(inner), '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q',
+                        str(library), 'vendor/lib'], check=True, capture_output=True)
+        (inner / 'vendor' / 'lib' / 'lib.txt').write_text('uncommitted edit\n')
+        self.assertEqual(self.retire(), [])
+        self.assertEqual((inner / 'vendor' / 'lib' / 'lib.txt').read_text(), 'uncommitted edit\n')
+        self.assertEqual(self.nested_archives(), [])
+
     def test_a_link_to_a_sibling_nested_worktree_stays_in_the_archive(self):
         _, identity, path, _ = self.outcome()
         first = self.nested_worktree(path, 'first', folder='.worktrees')
