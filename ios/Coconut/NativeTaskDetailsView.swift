@@ -21,6 +21,13 @@ struct CheckoutRecoveryPreview: Decodable, Sendable {
     let request: CheckoutRecoveryRequest
     let resumeConsent: String
     let dirtyCount: Int
+
+    var confirmationSummary: String {
+        "Repository: \(request.repository)\nWorktree: \(request.path)\n" +
+        "Saved: \(request.savedBranch) (\(request.savedHead))\n" +
+        "Attached: \(request.attachedBranch) (\(request.attachedHead))\n" +
+        "Tracked edits: \(dirtyCount)"
+    }
 }
 
 struct CheckoutRecoveryPairing: Codable, Equatable, Sendable {
@@ -64,6 +71,7 @@ struct CheckoutRecoveryConfirmation: Codable, Sendable {
     }
 
     mutating func markUncertain() { isUncertain = true }
+    mutating func clearUncertain() { isUncertain = false }
 
     func matches(pairing: CheckoutRecoveryPairing) -> Bool { self.pairing == pairing }
 
@@ -107,12 +115,13 @@ enum CheckoutRecoveryAcceptedState: String, Equatable, Sendable {
 enum CheckoutRecoveryConfirmationResult: Equatable, Sendable {
     case accepted(CheckoutRecoveryAcceptedState)
     case rejected(String)
+    case notSent(String)
     case uncertain(String)
 
     var failureReason: String? {
         switch self {
         case .accepted: return nil
-        case .rejected(let reason), .uncertain(let reason): return reason
+        case .rejected(let reason), .notSent(let reason), .uncertain(let reason): return reason
         }
     }
 
@@ -245,14 +254,20 @@ struct NativeTaskDetailsView: View {
         confirming = true
         Task {
             let result = await store.confirmCheckoutRecovery(confirmation)
-            store.recordCheckoutRecoveryResult(result, for: confirmation)
-            error = result.failureReason
+            let storageWarning = store.recordCheckoutRecoveryResult(result, for: confirmation)
+            error = [result.failureReason, storageWarning].compactMap { $0 }.joined(separator: " ")
+            if error?.isEmpty == true { error = nil }
             confirming = false
         }
     }
 
     var body: some View {
         List {
+            if confirmation?.isUncertain == true {
+                Text("The Mac may have accepted this checkout recovery. Check recovery status using the same saved confirmation and key; do not start a new recovery.")
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("uncertain-checkout-recovery")
+            }
             if confirmation != nil {
                 Button("Check recovery status") { retryConfirmation() }
                     .disabled(confirming)
@@ -365,7 +380,7 @@ struct NativeTaskDetailsView: View {
                 } catch { self.error = error.localizedDescription }
             }.disabled(confirmation != nil).accessibilityIdentifier("confirm-checkout-recovery")
         } message: {
-            Text("This resumes the stopped Work in its original workspace. The Mac will check the saved branches and local edits before continuing. Nothing changes until you confirm.")
+            Text("\(recovery?.preview.confirmationSummary ?? "")\n\nThis resumes the stopped Work in its original workspace. The Mac will check these branches and edits before continuing. Nothing changes until you confirm.")
         }
     }
 }

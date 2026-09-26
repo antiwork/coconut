@@ -5,12 +5,13 @@ final class TrackedWorkItemTests: XCTestCase {
     private let recoveryPairing = CheckoutRecoveryPairing(deviceId: "phone", serverURL: "https://original.example:443",
                                                           fingerprint: String(repeating: "a", count: 64))
 
-    private func recoveryPreview(key: String = "same-key") throws -> CheckoutRecoveryPreview {
+    private func recoveryPreview(key: String = "same-key", owner: String = "execution") throws -> CheckoutRecoveryPreview {
         let fixture = """
         {"key":"same-key","dirty_count":3,"resume_consent":"fresh","request":{"task_id":"owner","native_task_id":"native","expected_owner":"execution","repository":"/repo","path":"/worktree","saved_branch":"saved","attached_branch":"attached","saved_head":"a","attached_head":"b","recovery_branch":"recovery","message":"Continue"}}
         """
         return try APIJSON.decoder().decode(CheckoutRecoveryPreview.self,
-            from: Data(fixture.replacingOccurrences(of: "same-key", with: key).utf8))
+            from: Data(fixture.replacingOccurrences(of: "same-key", with: key)
+                .replacingOccurrences(of: "\"expected_owner\":\"execution\"", with: "\"expected_owner\":\"\(owner)\"").utf8))
     }
 
     private func roundtripPendingCheckout(_ confirmation: CheckoutRecoveryConfirmation) throws -> CheckoutRecoveryConfirmation {
@@ -18,6 +19,82 @@ final class TrackedWorkItemTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: location) }
         try ProtectedCache.write(confirmation, name: "checkout-recovery.json", in: location)
         return try XCTUnwrap(ProtectedCache.readPendingCheckout(for: confirmation.pairing, in: location))
+    }
+
+    func testCheckoutConfirmationSummaryIdentifiesPreviewWithoutOwnerUUID() throws {
+        let ownerId = "fa0a6cbc-1111-2222-3333-444444444444"
+        let preview = try recoveryPreview(owner: ownerId)
+        let summary = preview.confirmationSummary
+        for detail in ["/repo", "/worktree", "saved", "attached", "(a)", "(b)", "Tracked edits: 3"] {
+            XCTAssertTrue(summary.contains(detail), detail)
+        }
+        XCTAssertFalse(summary.contains(ownerId))
+        XCTAssertFalse(summary.contains(preview.key))
+    }
+
+    @MainActor
+    func testRecoveryUncertaintyPersistsWithExactConfirmationAndKnownResultsClearIt() throws {
+        let location = FileManager.default.temporaryDirectory.appendingPathComponent("checkout-recovery-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: location) }
+        let original = CheckoutRecoveryConfirmation(preview: try recoveryPreview(), pairing: recoveryPairing,
+                                                    workItemId: "export")
+        try ProtectedCache.write(original, name: "checkout-recovery.json", in: location)
+        let originalBody = try APIJSON.encode(original.request)
+        let store = AppStore(demo: true)
+        store.checkoutConfirmation = original
+        XCTAssertNil(store.recordCheckoutRecoveryResult(.uncertain("Network timed out"), for: original, in: location))
+        let restored = try XCTUnwrap(ProtectedCache.readPendingCheckout(for: recoveryPairing, in: location))
+        XCTAssertTrue(restored.isUncertain)
+        XCTAssertEqual(restored.key, original.key)
+        XCTAssertEqual(restored.workItemId, original.workItemId)
+        XCTAssertEqual(restored.pairing, original.pairing)
+        XCTAssertEqual(try APIJSON.encode(restored.request), originalBody)
+        XCTAssertNil(ProtectedCache.readPendingCheckout(for: CheckoutRecoveryPairing(deviceId: "other",
+            serverURL: recoveryPairing.serverURL, fingerprint: recoveryPairing.fingerprint), in: location))
+
+        let relaunched = AppStore(demo: true)
+        relaunched.checkoutConfirmation = restored
+        XCTAssertNil(relaunched.recordCheckoutRecoveryResult(.accepted(.draining), for: restored, in: location))
+        let draining = try XCTUnwrap(ProtectedCache.readPendingCheckout(for: recoveryPairing, in: location))
+        XCTAssertFalse(draining.isUncertain)
+        XCTAssertEqual(draining.key, original.key)
+        XCTAssertEqual(try APIJSON.encode(draining.request), originalBody)
+        XCTAssertNil(relaunched.recordCheckoutRecoveryResult(.accepted(.applied), for: draining, in: location))
+        XCTAssertNil(ProtectedCache.readPendingCheckout(for: recoveryPairing, in: location))
+
+        try ProtectedCache.write(original, name: "checkout-recovery.json", in: location)
+        relaunched.checkoutConfirmation = original
+        XCTAssertNil(relaunched.recordCheckoutRecoveryResult(.rejected("Held"), for: original, in: location))
+        XCTAssertNil(ProtectedCache.readPendingCheckout(for: recoveryPairing, in: location))
+    }
+
+    @MainActor
+    func testRecoveryUncertaintyWriteFailureKeepsOriginalKey() throws {
+        let location = FileManager.default.temporaryDirectory.appendingPathComponent("checkout-recovery-file-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: location) }
+        try Data("not a directory".utf8).write(to: location)
+        let original = CheckoutRecoveryConfirmation(preview: try recoveryPreview(), pairing: recoveryPairing)
+        let store = AppStore(demo: true)
+        store.checkoutConfirmation = original
+        let warning = store.recordCheckoutRecoveryResult(.uncertain("Timed out"), for: original, in: location)
+        XCTAssertNotNil(warning)
+        XCTAssertTrue(warning?.contains("could not save") == true)
+        XCTAssertEqual(store.checkoutConfirmation?.key, original.key)
+        XCTAssertEqual(store.checkoutConfirmation?.request, original.request)
+        XCTAssertTrue(store.checkoutConfirmation?.isUncertain == true)
+    }
+
+    @MainActor
+    func testRequestNotSentRetainsOriginalConfirmationWithoutUncertainty() throws {
+        let original = CheckoutRecoveryConfirmation(preview: try recoveryPreview(), pairing: recoveryPairing)
+        let store = AppStore(demo: true)
+        store.checkoutConfirmation = original
+        let result: CheckoutRecoveryConfirmationResult = .notSent("The phone could not save the warning. No request was sent.")
+        XCTAssertEqual(result.failureReason, "The phone could not save the warning. No request was sent.")
+        XCTAssertNil(store.recordCheckoutRecoveryResult(result, for: original))
+        XCTAssertEqual(store.checkoutConfirmation?.key, original.key)
+        XCTAssertEqual(store.checkoutConfirmation?.request, original.request)
+        XCTAssertFalse(store.checkoutConfirmation?.isUncertain == true)
     }
 
     private func item(status: String = "working") -> Artifact {
@@ -182,10 +259,12 @@ final class TrackedWorkItemTests: XCTestCase {
         XCTAssertFalse(String(decoding: requestBytes, as: UTF8.self).contains("work_item_id"))
         var saved = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(restored)) as? [String: Any])
         saved.removeValue(forKey: "workItemId")
+        saved.removeValue(forKey: "isUncertain")
         let legacy = try JSONDecoder().decode(CheckoutRecoveryConfirmation.self,
                                               from: JSONSerialization.data(withJSONObject: saved))
         XCTAssertEqual(legacy.key, restored.key)
         XCTAssertEqual(legacy.request, restored.request)
+        XCTAssertFalse(legacy.isUncertain)
         XCTAssertNil(CheckoutRecoveryStop(confirmation: legacy))
     }
 

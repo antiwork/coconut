@@ -547,8 +547,11 @@ class WorkspaceRecovery:
                                        'refs/heads/' + data['recovery_branch']], timeout=10).returncode == 0:
                         raise ValueError('The recovery branch already exists.')
                     checkout_state(data, initial=True, read_only=True)
-                    cancellation = self._checkout_cancellation(data, scope, device, dirty_state(Path(data['path']), read_only=True))
+                    consented_dirty = dirty_state(Path(data['path']), read_only=True)
+                    cancellation = self._checkout_cancellation(data, scope, device, consented_dirty)
                     dirty, commit = checkout_plan(data)
+                    if dirty != consented_dirty:
+                        raise ValueError('The tracked edits changed after checkout confirmation. Confirm this checkout again.')
                     receipt = dict(id=key, device_id=device, request=data, task_scope=scope['scope'],
                         task_input=scope['task'],
                         work_item=scope['item'], binding=binding, binding_id=identity, dirty=dirty,

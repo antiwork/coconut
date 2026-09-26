@@ -714,8 +714,16 @@ final class AppStore {
         guard let pending = checkoutConfirmation, pending.matches(confirmation),
               let saved = ProtectedCache.readPendingCheckout(for: confirmation.pairing),
               saved.matches(confirmation) else {
-            return .uncertain("The saved confirmation is unavailable. No request was sent. Check recovery status again.")
+            return .notSent("The saved confirmation is unavailable. No request was sent. Check recovery status again.")
         }
+        var intent = pending
+        intent.markUncertain()
+        do {
+            try ProtectedCache.write(intent, name: "checkout-recovery.json")
+        } catch {
+            return .notSent("The phone could not save the recovery retry warning. No request was sent. Keep this confirmation and key; retry when storage is available: \(error.localizedDescription)")
+        }
+        checkoutConfirmation = intent
         var failure: CheckoutRecoveryConfirmationResult?
         let receipt: CheckoutRecoveryReceipt? = await write("maintenance/checkout-recovery", payload: confirmation.request,
             as: CheckoutRecoveryReceipt.self, idempotencyKey: confirmation.key,
@@ -729,18 +737,35 @@ final class AppStore {
         return failure ?? .uncertain("Recovery was not confirmed. Retry the same confirmation to check it.")
     }
 
+    @discardableResult
     func recordCheckoutRecoveryResult(_ result: CheckoutRecoveryConfirmationResult,
-                                      for confirmation: CheckoutRecoveryConfirmation) {
-        guard checkoutConfirmation?.matches(confirmation) == true else { return }
+                                      for confirmation: CheckoutRecoveryConfirmation,
+                                      in location: URL? = nil) -> String? {
+        guard checkoutConfirmation?.matches(confirmation) == true else { return nil }
         switch result {
         case .accepted(.applied), .rejected:
             checkoutConfirmation = nil
-            if !isDemo { ProtectedCache.remove("checkout-recovery.json") }
+            if !isDemo || location != nil { ProtectedCache.remove("checkout-recovery.json", in: location) }
         case .accepted(.accepted), .accepted(.draining):
+            var known = confirmation
+            known.clearUncertain()
+            if !isDemo || location != nil {
+                do { try ProtectedCache.write(known, name: "checkout-recovery.json", in: location) }
+                catch { return "The Mac accepted recovery, but the phone could not save its status. Keep this confirmation and key: \(error.localizedDescription)" }
+            }
+            checkoutConfirmation = known
+        case .notSent:
             break
         case .uncertain:
-            checkoutConfirmation?.markUncertain()
+            var uncertain = checkoutConfirmation ?? confirmation
+            uncertain.markUncertain()
+            checkoutConfirmation = uncertain
+            if !isDemo || location != nil {
+                do { try ProtectedCache.write(uncertain, name: "checkout-recovery.json", in: location) }
+                catch { return "The phone could not save the recovery retry warning. Keep this confirmation and key: \(error.localizedDescription)" }
+            }
         }
+        return nil
     }
 
     @discardableResult
@@ -1968,7 +1993,9 @@ enum ProtectedCache {
         try JSONEncoder().encode(value).write(to: directory.appendingPathComponent(name), options: [.atomic, .completeFileProtection])
     }
 
-    static func remove(_ name: String) { try? FileManager.default.removeItem(at: directory.appendingPathComponent(name)) }
+    static func remove(_ name: String, in location: URL? = nil) {
+        try? FileManager.default.removeItem(at: (location ?? directory).appendingPathComponent(name))
+    }
 }
 
 private extension AppStore {
