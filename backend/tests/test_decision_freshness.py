@@ -61,6 +61,23 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.assertEqual(reads.count('tasks'), 1)
         self.assertLessEqual(reads.count('messages'), 1)
 
+    def test_a_card_write_in_the_refresh_pass_keeps_the_other_shared_tables(self):
+        decision = self.question()
+        for index in range(4):
+            extra = dict(decision, id=f'extra-{index}', title=f'Question {index}?', risk='It can change the order.')
+            extra['_freshness'] = dict(decision['_freshness'], fingerprint='old')
+            self.service._put('decisions', extra)
+        original, reads = self.service._all, []
+        def read(table):
+            reads.append(table)
+            return original(table)
+        with patch.object(self.service, '_all', side_effect=read):
+            self.service._queue_decision_refreshes()
+        # The pass rewrote the changed cards. Messages and artifacts are still parsed once.
+        self.assertTrue(all(self.service._get('decisions', f'extra-{i}')['assessment_stale'] for i in range(4)))
+        self.assertEqual(reads.count('messages'), 1)
+        self.assertEqual(reads.count('artifacts'), 1)
+
     def test_shared_reads_see_each_write(self):
         with self.service.transaction(), self.service._shared_reads():
             first = self.service._task_map()

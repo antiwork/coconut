@@ -365,7 +365,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
         Inside this block, _all_shared, _task_map, and _shared_pending_receipts return shared objects, and
         _work_chain reuses its graphs. Only code that reads may use them. Code that changes a row reads it with
-        _all or _get and writes it with _put, and each _put drops every shared object, so a later read sees the write.
+        _all or _get and writes it with _put. Each _put drops the shared objects that the write can change, so a
+        later read sees the write.
         The shared objects belong to the thread that opened the block. Other threads and read views never see them.
         The block holds the service lock, so no other thread writes or opens a second block meanwhile.
         """
@@ -436,8 +437,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
     def _put(self, table: str, obj: dict):
         cache = self._shared_cache()
         if cache is not None:
-            # A write can change any shared row and any graph that was built from them.
-            cache.clear()
+            # Drop what this write can change. Work graphs come from tasks, receipts, decisions, and artifacts.
+            cache.pop(table, None)
+            cache.pop({'tasks': 'task map', 'native_receipts': 'pending receipts'}.get(table), None)
+            if table in ('tasks', 'native_receipts', 'decisions', 'artifacts'):
+                cache.pop('graphs', None)
         self.db.execute(f'INSERT INTO {table}(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data', (obj['id'], encoded(obj)))
 
     def _event(self, event_type: str, data: dict, bot_id: str | None = None, task_id: str | None = None):
