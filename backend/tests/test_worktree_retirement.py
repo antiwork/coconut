@@ -526,7 +526,7 @@ class WorktreeRetirementTests(unittest.TestCase):
         def busy_once(root, name, finished, **options):
             calls.append(name)
             if len(calls) == 1:
-                raise ValueError(retirement.BUSY_MESSAGE)
+                raise retirement.ServiceBusy(retirement.BUSY_MESSAGE)
             return real(root, name, finished, **options)
         with patch('coconut.work_workspace.retire', side_effect=busy_once), \
                 patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0):
@@ -534,9 +534,23 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(calls, [identity, identity])
         self.assertIn('retired', self.registry()[identity])
 
+    def test_a_real_busy_check_is_retried(self):
+        outcome, identity, path, _ = self.outcome()
+        finished, answers = self.service._finished_outcomes, []
+
+        def busy_first(current, *, timeout=-1, only=None):
+            # The first check for this outcome finds the service busy.
+            if only is not None and not answers:
+                answers.append(None)
+                return None
+            return finished(current, timeout=timeout, only=only)
+        with patch.object(self.service, '_finished_outcomes', side_effect=busy_first), \
+                patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0):
+            self.assertEqual(self.retire(), [identity])
+
     def test_a_service_that_stays_busy_is_logged_after_the_last_retry(self):
         outcome, identity, path, _ = self.outcome()
-        with patch('coconut.work_workspace.retire', side_effect=ValueError(retirement.BUSY_MESSAGE)) as attempt, \
+        with patch('coconut.work_workspace.retire', side_effect=retirement.ServiceBusy(retirement.BUSY_MESSAGE)) as attempt, \
                 patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0), \
                 self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
             self.assertEqual(self.retire(), [])

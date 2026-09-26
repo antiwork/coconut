@@ -24,13 +24,18 @@ NATIVE_IDLE_STATUSES = ('done', 'archived', 'blocked', 'triage', 'review', 'todo
 RETIREMENT_INTERVAL_SECONDS = 60 * 60
 # Before the registry lock, retirement waits this long for the service lock. Under the registry lock, it waits only LOCKED_WAIT_SECONDS.
 SERVICE_WAIT_SECONDS = 5
-# The service usually holds its lock for milliseconds. A short wait under the registry lock lets retirement finish on a busy service.
-LOCKED_WAIT_SECONDS = 0.25
+# Some service passes hold their lock for seconds. The check under the registry lock comes after the archive write,
+# so this wait keeps a busy service from wasting the archive. A turn that starts meanwhile waits at most this long.
+LOCKED_WAIT_SECONDS = 3
 # A worktree that meets a busy service is tried again in the same pass, after this pause, at most BUSY_RETRIES times.
 # Some service passes hold the lock for seconds, and the next pass is an hour away.
 BUSY_RETRY_SECONDS = 30
 BUSY_RETRIES = 3
 BUSY_MESSAGE = 'The service was busy. Coconut tries again in an hour.'
+
+
+class ServiceBusy(ValueError):
+    """The service lock stayed busy during a retirement check."""
 
 
 class WorktreeRetirement:
@@ -157,14 +162,14 @@ class WorktreeRetirement:
                     # so a short, bounded wait there cannot deadlock.
                     result = self._finished_outcomes(time.time(), timeout=SERVICE_WAIT_SECONDS if wait else LOCKED_WAIT_SECONDS, only=outcome)
                     if result is None:
-                        raise ValueError(BUSY_MESSAGE)
+                        raise ServiceBusy(BUSY_MESSAGE)
                     return outcome in result
                 try:
                     # A service restart leaves the processes of earlier turns to launchd. They keep the worktree in use.
                     if work_workspace.retire(root, identity, still_finished, orphan_age=ORPHAN_AGE_SECONDS):
                         retired.append(identity)
                 except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.TimeoutExpired, sqlite3.Error) as error:
-                    if str(error) == BUSY_MESSAGE and attempt < BUSY_RETRIES:
+                    if isinstance(error, ServiceBusy) and attempt < BUSY_RETRIES:
                         busy.append((identity, outcome))
                         continue
                     # sqlite3.Error covers a database that shutdown closed while this thread ran.
