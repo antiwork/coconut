@@ -90,6 +90,24 @@ class DecisionFreshnessTests(unittest.TestCase):
             self.assertIsNot(self.service._task_map(), first)
         self.assertIsNot(self.service._task_map(), self.service._task_map())
 
+    def test_a_write_to_a_graph_table_drops_the_shared_graphs(self):
+        from coconut.service import now
+        rows = {'tasks': self.service._get('tasks', self.task['id']),
+                'artifacts': dict(id='graph-artifact', kind='work', bot_id=self.task['bot_id'], task_id=self.task['id'],
+                                  title='Graph', status='active'),
+                'decisions': dict(self.question(old=False), id='graph-decision'),
+                'native_receipts': dict(id='graph-receipt', task_id=self.task['id'], turn_id='turn', state='completed',
+                                        created_at=now(), action={'name': 'terminal', 'arguments': {}})}
+        with self.service.transaction(), self.service._shared_reads():
+            for table, row in rows.items():
+                self.service._graph_memo()['probe'] = True
+                self.service._put(table, row)
+                self.assertNotIn('probe', self.service._graph_memo(), table)
+            # A write to another table keeps the graphs.
+            self.service._graph_memo()['probe'] = True
+            self.service._put('bots', self.service._get('bots', self.task['bot_id']))
+            self.assertIn('probe', self.service._graph_memo())
+
     def test_other_threads_and_read_views_do_not_see_shared_reads(self):
         import threading
         seen = []
