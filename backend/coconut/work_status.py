@@ -271,9 +271,27 @@ class WorkStatus:
             linked.setdefault(task['id'], set()).update(task.get('_waiting_on', []))
         return linked, explicit_waits
 
+    # The work graph builders read these tables: _work_links reads tasks and receipts, _proposal_work_links
+    # reads decisions, and _link_external_work reads artifacts. A write to one of them drops the shared graphs.
+    GRAPH_TABLES = frozenset(('tasks', 'native_receipts', 'decisions', 'artifacts'))
+
+    def _graph_memo(self, records=None):
+        shared = self._shared_cache()
+        if shared is None:
+            # A read scope sets _work_graphs. It does not write, so its graphs stay current.
+            return getattr(self, '_work_graphs', None)
+        # Inside _shared_reads, each _put drops these graphs. The shared receipt list repeats for the whole pass.
+        # A card's own receipt list repeats only while Coconut checks that card, so one slot holds its graphs.
+        if records is not None and records is not shared.get('pending receipts'):
+            latest = shared.get('latest graphs')
+            if latest is None or latest[0] is not records:
+                latest = shared['latest graphs'] = (records, {})
+            return latest[1]
+        return shared.setdefault('graphs', {})
+
     def _proposal_work_links(self, tasks):
         import json
-        graphs = getattr(self, '_work_graphs', None)
+        graphs = self._graph_memo()
         key = ('proposals', id(tasks))
         if graphs is not None and key in graphs:
             return graphs[key][1]
@@ -309,7 +327,7 @@ class WorkStatus:
         return linked
 
     def _link_external_work(self, tasks, linked, explicit_waits):
-        artifacts = {a['id']: a for a in self._all('artifacts') if a['kind'] == 'work'}
+        artifacts = {a['id']: a for a in self._all_shared('artifacts') if a['kind'] == 'work'}
         for item in artifacts.values():
             if item.get('_work_resuming') or not item.get('external_wait'):
                 continue
@@ -335,7 +353,7 @@ class WorkStatus:
 
     def _work_chain(self, root, tasks, records, *, include_continuations=False):
         """Follow recorded callbacks, including replies that assign further work."""
-        graphs = getattr(self, '_work_graphs', None)
+        graphs = self._graph_memo(records)
         key = (id(tasks), id(records), include_continuations)
         if graphs is not None and key in graphs:
             _, _, linked, explicit_waits = graphs[key]

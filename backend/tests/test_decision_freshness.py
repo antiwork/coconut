@@ -46,6 +46,101 @@ class DecisionFreshnessTests(unittest.TestCase):
         context['status'] = 'completed'
         self.service._put('contexts', context)
 
+    def test_a_refresh_pass_parses_each_table_once_for_many_questions(self):
+        decision = self.question(old=False)
+        for index in range(4):
+            self.service._put('decisions', dict(decision, id=f'extra-{index}', title=f'Question {index}?'))
+        original, reads = self.service._all, []
+        def read(table):
+            reads.append(table)
+            return original(table)
+        # The service lock is held for the whole pass, so each whole-table read blocks every other thread.
+        with patch.object(self.service, '_all', side_effect=read):
+            self.service._queue_decision_refreshes()
+        self.assertEqual(reads.count('artifacts'), 1)
+        self.assertEqual(reads.count('tasks'), 1)
+        self.assertLessEqual(reads.count('messages'), 1)
+
+    def test_a_card_write_in_the_refresh_pass_keeps_the_other_shared_tables(self):
+        decision = self.question()
+        for index in range(4):
+            extra = dict(decision, id=f'extra-{index}', title=f'Question {index}?', risk='It can change the order.')
+            extra['_freshness'] = dict(decision['_freshness'], fingerprint='old')
+            self.service._put('decisions', extra)
+        original, reads = self.service._all, []
+        def read(table):
+            reads.append(table)
+            return original(table)
+        with patch.object(self.service, '_all', side_effect=read):
+            self.service._queue_decision_refreshes()
+        # The pass rewrote the changed cards. Messages and artifacts are still parsed once.
+        self.assertTrue(all(self.service._get('decisions', f'extra-{i}')['assessment_stale'] for i in range(4)))
+        self.assertEqual(reads.count('messages'), 1)
+        self.assertEqual(reads.count('artifacts'), 1)
+
+    def test_shared_reads_see_each_write(self):
+        with self.service.transaction(), self.service._shared_reads():
+            first = self.service._task_map()
+            self.assertIs(self.service._task_map(), first)
+            self.assertIs(self.service._all_shared('tasks'), self.service._all_shared('tasks'))
+            task = self.service._get('tasks', self.task['id'])
+            task['summary'] = 'Changed in this pass.'
+            self.service._put('tasks', task)
+            self.assertEqual(self.service._task_map()[task['id']]['summary'], 'Changed in this pass.')
+            self.assertIsNot(self.service._task_map(), first)
+        self.assertIsNot(self.service._task_map(), self.service._task_map())
+
+    def test_a_write_to_a_graph_table_drops_the_shared_graphs(self):
+        from coconut.service import now
+        rows = {'tasks': self.service._get('tasks', self.task['id']),
+                'artifacts': dict(id='graph-artifact', kind='work', bot_id=self.task['bot_id'], task_id=self.task['id'],
+                                  title='Graph', status='active'),
+                'decisions': dict(self.question(old=False), id='graph-decision'),
+                'native_receipts': dict(id='graph-receipt', task_id=self.task['id'], turn_id='turn', state='completed',
+                                        created_at=now(), action={'name': 'terminal', 'arguments': {}})}
+        self.assertEqual(set(rows), self.service.GRAPH_TABLES)
+        with self.service.transaction(), self.service._shared_reads():
+            own = []
+            for table, row in rows.items():
+                self.service._graph_memo()['probe'] = True
+                self.service._graph_memo(own)['probe'] = True
+                self.service._put(table, row)
+                self.assertNotIn('probe', self.service._graph_memo(), table)
+                self.assertNotIn('probe', self.service._graph_memo(own), table)
+            # One slot holds the graphs of a card's own receipt list.
+            self.service._graph_memo(own)['probe'] = True
+            self.assertIn('probe', self.service._graph_memo(own))
+            self.assertNotIn('probe', self.service._graph_memo([]))
+            # A write to another table keeps the graphs.
+            self.service._graph_memo()['probe'] = True
+            self.service._put('bots', self.service._get('bots', self.task['bot_id']))
+            self.assertIn('probe', self.service._graph_memo())
+
+    def test_other_threads_and_read_views_do_not_see_shared_reads(self):
+        import threading
+        seen = []
+        with self.service.transaction(), self.service._shared_reads():
+            shared = self.service._task_map()
+            other = threading.Thread(target=lambda: seen.append(self.service._shared_cache()))
+            other.start()
+            other.join()
+            with self.service._read_view() as view:
+                self.assertIsNone(view._shared_cache())
+                self.assertIsNot(view._task_map(), shared)
+            self.assertIs(self.service._task_map(), shared)
+        self.assertEqual(seen, [None])
+        # Another thread waits for the service lock before it opens its own block.
+        with self.service._shared_reads():
+            opened = threading.Event()
+            def other_block():
+                with self.service._shared_reads():
+                    opened.set()
+            other = threading.Thread(target=other_block)
+            other.start()
+            self.assertFalse(opened.wait(0.2))
+        other.join()
+        self.assertTrue(opened.is_set())
+
     def test_changed_source_hides_assessment_until_fenced_check_confirms_it(self):
         decision = self.question(old=False)
         url = 'https://github.com/example/project/pull/42'

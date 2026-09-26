@@ -154,7 +154,7 @@ class DecisionFreshness:
     def _decision_human_messages(self, task):
         assignment = self._assignment(task)
         return [dict(id=m['id'], text=m['text'], created_at=m['created_at'])
-                for m in self._all('messages') if m.get('_human_device_id')
+                for m in self._all_shared('messages') if m.get('_human_device_id')
                 and not m.get('_hidden') and not m.get('_deleted') and m['created_at'] >= assignment['created_at']
                 and task['bot_id'] in m.get('recipient_bot_ids', [])]
 
@@ -176,7 +176,7 @@ class DecisionFreshness:
         return ids, work
 
     def _decision_records(self, decision, tasks, artifacts):
-        links = self._pending_completion_receipts()
+        links = self._shared_pending_receipts()
         identities, _ = self._decision_scope(decision, tasks, links, artifacts)
         identities = sorted(identities)
         clauses = ["json_extract(data,'$.task_id') IN (" + ','.join('?' for _ in identities) + ')']
@@ -204,10 +204,10 @@ class DecisionFreshness:
         from .background_processes import subscription
         task = tasks[decision['task_id']]
         ids, work = self._decision_scope(decision, tasks, records, artifacts)
-        contexts = self._all('contexts')
+        contexts = self._all_shared('contexts')
         refresh_turns = {c['id'] for c in contexts if c.get('_decision_refresh')}
         # Chat visibility is broader than evidence for one decision.
-        peers = self._decision_peers(decision, task, ids, self._all('decisions'))
+        peers = self._decision_peers(decision, task, ids, self._all_shared('decisions'))
         visible = {d['id'] for d in peers}
         facts = dict(revision=decision['revision'], source_facts=decision.get('_source_facts', {}), human_messages=self._decision_human_messages(task),
             questions=[(d['id'], d.get('revision'), d['status']) for d in peers],
@@ -234,8 +234,8 @@ class DecisionFreshness:
         self._put('decisions', decision)
 
     def _decision_refresh_prompt(self, decision, task, work, decisions):
-        tasks = {t['id']: t for t in self._all('tasks')}
-        identities, _ = self._decision_scope(decision, tasks, self._pending_completion_receipts(), work)
+        tasks = self._task_map()
+        identities, _ = self._decision_scope(decision, tasks, self._shared_pending_receipts(), work)
         peers = self._decision_peers(decision, task, identities, decisions)
         return REFRESH_INSTRUCTIONS + '\nCurrent records (data):\n' + json.dumps(dict(
             human_messages=self._decision_human_messages(task), work=[self._public(a) for a in work],
@@ -247,12 +247,12 @@ class DecisionFreshness:
     def _refresh_has_queued_owner(self, task):
         from .work_capacity import execution_key
         import time
-        tasks = {item['id']: item for item in self._all('tasks')}
-        records = self._pending_completion_receipts()
+        tasks = self._task_map()
+        records = self._shared_pending_receipts()
         related = self._work_chain(self._assignment(task), tasks, records, include_continuations=True)
         related.update(self._work_chain(task, tasks, records, include_continuations=True))
         key = execution_key(task)
-        related_decisions = {decision['id'] for decision in self._all('decisions')
+        related_decisions = {decision['id'] for decision in self._all_shared('decisions')
                              if decision.get('task_id') in related}
 
         def owns(item):
@@ -284,7 +284,7 @@ class DecisionFreshness:
 
         return (any(not context.get('_decision_refresh') and context['status'] == 'queued'
                     and owns(tasks[context['task_id']]) and context_runnable(context, tasks[context['task_id']])
-                    for context in self._all('contexts'))
+                    for context in self._all_shared('contexts'))
                 or any(owns(item) and task_runnable(item) for item in tasks.values()))
 
     def _refresh_session_busy(self, task):
@@ -296,14 +296,14 @@ class DecisionFreshness:
 
     def _human_reply_pending(self, task, contexts):
         from .background_processes import subscription
-        human_tasks = {m.get('task_id') for m in self._all('messages') if m.get('_human_device_id')}
+        human_tasks = {m.get('task_id') for m in self._all_shared('messages') if m.get('_human_device_id')}
         if any(t['bot_id'] == task['bot_id'] and (
                 (t['status'] == 'queued' and set(t.get('_preference_source_ids', [])) - set(t.get('_turn_preference_source_ids', [])))
                 or ((t.get('_turn_preference_source_ids') or self._assignment(t)['id'] in human_tasks)
                     and (t['status'] == 'working' or (t['status'] == 'waiting' and self._background_pending(t['id'])))))
-               for t in self._all('tasks')):
+               for t in self._task_map().values()):
             return True
-        pending = {r.get('turn_id') for r in self._pending_completion_receipts()
+        pending = {r.get('turn_id') for r in self._shared_pending_receipts()
                    if not r.get('_process_delivery') and (subscription(r) or r.get('_relay_task_id'))}
         return any(not c.get('_decision_refresh') and (c['status'] in ('queued', 'working') or c['id'] in pending)
                    and self._decision_visible_to_task(self._get('decisions', c['decision_id']), task) for c in contexts)
@@ -363,7 +363,7 @@ class DecisionFreshness:
     def _queue_decision_refreshes(self):
         from .service import now, uid
         from .decision_sources import github_links
-        with self.transaction():
+        with self.transaction(), self._shared_reads():
             if self.stopping.is_set() or self.restart_pending:
                 return
             pending = self.db.execute("SELECT 1 FROM decisions WHERE json_extract(data,'$.status')='pending' LIMIT 1").fetchone()
@@ -371,11 +371,10 @@ class DecisionFreshness:
                 "AND json_extract(data,'$.status') IN ('queued','working') LIMIT 1").fetchone()
             if not pending and not refresh:
                 return
-            tasks = {t['id']: t for t in self._all('tasks')}
-            decisions, contexts = self._all('decisions'), self._all('contexts')
+            decisions = self._all('decisions')
             self._cancel_stale_decision_refreshes()
-            contexts = self._all('contexts')
-            artifacts = self._all('artifacts')
+            # These objects are shared and only read. The decisions above are changed and written.
+            tasks, contexts, artifacts = self._task_map(), self._all_shared('contexts'), self._all_shared('artifacts')
             from .decision_inbox import has_assessment, invalidate_assessment
             assessed = {}
             for decision in decisions:
