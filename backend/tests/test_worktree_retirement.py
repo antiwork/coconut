@@ -507,6 +507,7 @@ class WorktreeRetirementTests(unittest.TestCase):
             threading.Thread(target=watch_registry_lock, daemon=True).start()
         with patch('coconut.work_workspace.write_archive', side_effect=archive), \
                 patch('coconut.worktree_retirement.SERVICE_WAIT_SECONDS', .5), \
+                patch('coconut.worktree_retirement.BUSY_RETRIES', 0), \
                 self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
             try:
                 self.assertEqual(self.retire(), [])
@@ -516,6 +517,31 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(blocked, [])
         self.assertTrue(path.is_dir())
         self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_worktree_that_meets_a_busy_service_is_tried_again_in_the_same_pass(self):
+        outcome, identity, path, _ = self.outcome()
+        real = work_workspace.retire
+        calls = []
+
+        def busy_once(root, name, finished, **options):
+            calls.append(name)
+            if len(calls) == 1:
+                raise ValueError(retirement.BUSY_MESSAGE)
+            return real(root, name, finished, **options)
+        with patch('coconut.work_workspace.retire', side_effect=busy_once), \
+                patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0):
+            self.assertEqual(self.retire(), [identity])
+        self.assertEqual(calls, [identity, identity])
+        self.assertIn('retired', self.registry()[identity])
+
+    def test_a_service_that_stays_busy_is_logged_after_the_last_retry(self):
+        outcome, identity, path, _ = self.outcome()
+        with patch('coconut.work_workspace.retire', side_effect=ValueError(retirement.BUSY_MESSAGE)) as attempt, \
+                patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0), \
+                self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        self.assertEqual(attempt.call_count, retirement.BUSY_RETRIES + 1)
+        self.assertEqual(sum('service was busy' in line for line in logs.output), 1)
 
     def test_a_refused_removal_keeps_its_archive_and_waits_a_day(self):
         outcome, identity, path, _ = self.outcome()

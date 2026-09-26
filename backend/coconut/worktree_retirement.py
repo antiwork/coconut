@@ -24,8 +24,13 @@ NATIVE_IDLE_STATUSES = ('done', 'archived', 'blocked', 'triage', 'review', 'todo
 RETIREMENT_INTERVAL_SECONDS = 60 * 60
 # Before the registry lock, retirement waits this long for the service lock. Under the registry lock, it waits only LOCKED_WAIT_SECONDS.
 SERVICE_WAIT_SECONDS = 5
-# The service holds its lock for milliseconds. A short wait under the registry lock lets retirement finish on a busy service.
+# The service usually holds its lock for milliseconds. A short wait under the registry lock lets retirement finish on a busy service.
 LOCKED_WAIT_SECONDS = 0.25
+# A worktree that meets a busy service is tried again in the same pass, after this pause, at most BUSY_RETRIES times.
+# Some service passes hold the lock for seconds, and the next pass is an hour away.
+BUSY_RETRY_SECONDS = 30
+BUSY_RETRIES = 3
+BUSY_MESSAGE = 'The service was busy. Coconut tries again in an hour.'
 
 
 class WorktreeRetirement:
@@ -138,24 +143,31 @@ class WorktreeRetirement:
             return []
         bindings = {k: v['outcome'] for k, v in saved.items() if not v.get('retired')}
         retired = []
-        for identity, outcome in bindings.items():
-            if outcome not in finished:
-                continue
-            if self.stopping.is_set() or self.restart_pending:
+        pending = [(identity, outcome) for identity, outcome in bindings.items() if outcome in finished]
+        for attempt in range(BUSY_RETRIES + 1):
+            if attempt and (not pending or self.stopping.wait(BUSY_RETRY_SECONDS)):
                 break
+            busy = []
+            for identity, outcome in pending:
+                if self.stopping.is_set() or self.restart_pending:
+                    return retired
 
-            def still_finished(wait, outcome=outcome):
-                # Under the registry lock, wait is False. No thread waits for the registry lock while it holds the service lock,
-                # so a short, bounded wait there cannot deadlock.
-                result = self._finished_outcomes(time.time(), timeout=SERVICE_WAIT_SECONDS if wait else LOCKED_WAIT_SECONDS, only=outcome)
-                if result is None:
-                    raise ValueError('The service was busy. Coconut tries again in an hour.')
-                return outcome in result
-            try:
-                # A service restart leaves the processes of earlier turns to launchd. They keep the worktree in use.
-                if work_workspace.retire(root, identity, still_finished, orphan_age=ORPHAN_AGE_SECONDS):
-                    retired.append(identity)
-            except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.TimeoutExpired, sqlite3.Error) as error:
-                # sqlite3.Error covers a database that shutdown closed while this thread ran.
-                logging.getLogger(__name__).warning('Coconut did not retire worktree %s: %s', identity, error)
+                def still_finished(wait, outcome=outcome):
+                    # Under the registry lock, wait is False. No thread waits for the registry lock while it holds the service lock,
+                    # so a short, bounded wait there cannot deadlock.
+                    result = self._finished_outcomes(time.time(), timeout=SERVICE_WAIT_SECONDS if wait else LOCKED_WAIT_SECONDS, only=outcome)
+                    if result is None:
+                        raise ValueError(BUSY_MESSAGE)
+                    return outcome in result
+                try:
+                    # A service restart leaves the processes of earlier turns to launchd. They keep the worktree in use.
+                    if work_workspace.retire(root, identity, still_finished, orphan_age=ORPHAN_AGE_SECONDS):
+                        retired.append(identity)
+                except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.TimeoutExpired, sqlite3.Error) as error:
+                    if str(error) == BUSY_MESSAGE and attempt < BUSY_RETRIES:
+                        busy.append((identity, outcome))
+                        continue
+                    # sqlite3.Error covers a database that shutdown closed while this thread ran.
+                    logging.getLogger(__name__).warning('Coconut did not retire worktree %s: %s', identity, error)
+            pending = busy
         return retired
