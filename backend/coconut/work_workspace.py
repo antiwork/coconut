@@ -345,16 +345,21 @@ def arguments(pid):
     return result.stdout if result.returncode == 0 else None
 
 
-def shared(executable, pid=None):
-    """Return True for a shared service. An adb process counts only when `pid` shows the adb server."""
+def shared(executable, pid=None, *, unknown=False):
+    """Return True for a shared service. An adb process counts only when `pid` shows the adb server.
+
+    `unknown` is the answer when ps cannot read the adb command line. A stop passes True, so Coconut never stops
+    the server by mistake. A holder check passes False, so an adb client still keeps its worktree.
+    """
     name = executable.rsplit('/', 1)[-1]
     if name == 'adb':
         if pid is None:
             return False
         line = arguments(pid)
-        # An unknown command line counts as the server, so Coconut never stops the server by mistake.
-        words = [] if line is None else line.split()
-        return line is None or ('server' in words and any(a in words for a in ADB_SERVER_ARGUMENTS))
+        if line is None:
+            return unknown
+        words = line.split()
+        return 'server' in words and any(a in words for a in ADB_SERVER_ARGUMENTS)
     if any(executable.startswith(bundle) and not executable[len(bundle):].startswith(clients)
            for bundle, clients in SHARED_APP_BUNDLES.items()):
         return True
@@ -460,13 +465,13 @@ def stop_orphans(found, outcome, age):
     table = process_table()
     mark = 'COCONUT_WORKSPACE_OUTCOME=' + outcome
     stopped = {pid for pid in found if pid in table and pid != os.getpid() and table[pid][0] == 1
-               and table[pid][1] >= age and not shared(table[pid][2], pid) and environment_names(pid, mark)}
+               and table[pid][1] >= age and not shared(table[pid][2], pid, unknown=True) and environment_names(pid, mark)}
     while stopped:
         # The parent proves who owns a child process. macOS also hides the environment of a child shell.
         # A shared service stays even as a child. A system program that the orphan started, such as a WebKit
         # process of safaridriver, belongs to the orphan and stops with it.
         children = {pid for pid, (parent, _, executable) in table.items()
-                    if parent in stopped and pid not in stopped and not shared(executable, pid)}
+                    if parent in stopped and pid not in stopped and not shared(executable, pid, unknown=True)}
         if not children:
             break
         stopped |= children

@@ -1203,11 +1203,17 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.assertFalse(work_workspace.shared(adb, 10))
         with patch('coconut.work_workspace.arguments', return_value='adb nodaemon server\n'):
             self.assertTrue(work_workspace.shared(adb, 10))
-        # When ps cannot read the command line, Coconut keeps the process.
+        # When ps cannot read the command line, a stop keeps the process, and the process still keeps its path.
         with patch('coconut.work_workspace.arguments', return_value=None):
-            self.assertTrue(work_workspace.shared(adb, 10))
+            self.assertTrue(work_workspace.shared(adb, 10, unknown=True))
+            self.assertFalse(work_workspace.shared(adb, 10))
+            self.assertEqual(work_workspace.blocking({10: True}, self.root, {10: (1, 50, adb)}), {10})
+            with patch('coconut.work_workspace.environment_names', return_value=True), \
+                    patch('coconut.work_workspace.process_table', return_value={10: (1, 50, adb)}), \
+                    patch('coconut.work_workspace.stop', return_value=set()):
+                self.assertEqual(work_workspace.stop_orphans({10}, 'outcome', 0), set())
         with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout='', returncode=1)):
-            self.assertTrue(work_workspace.shared(adb, 10))
+            self.assertTrue(work_workspace.shared(adb, 10, unknown=True))
         with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout='adb fork-server server', returncode=0)) as run:
             work_workspace.shared(adb, 10)
         self.assertIn('-ww', run.call_args.args[0])
