@@ -130,6 +130,24 @@ def verify_contract():
     require_keywords(pin_summary_route, {'route'})
     require_keywords(ContextCompressor._call_summary_llm, {'prompt', 'prompt_started_at'})
     require_keywords(ContextCompressor._generate_summary, {'turns_to_summarize'})
+    for name, keywords in (
+        ('_protect_head_size', {'messages'}),
+        ('_find_tail_cut_by_tokens', {'messages', 'head_end'}),
+        ('_find_last_assistant_message_idx', {'messages', 'head_end'}),
+        ('_find_last_user_message_idx', {'messages', 'head_end'}),
+        ('_real_user_indices_desc', {'messages', 'head_end'}),
+        ('_align_boundary_forward', {'messages', 'idx'}),
+        ('_strip_context_summary_handoff_message', {'message'}),
+        ('_is_context_summary_message', {'message'}),
+    ):
+        require_keywords(getattr(ContextCompressor, name), keywords)
+    from agent.context_compressor import _estimate_msg_budget_tokens
+    from agent.conversation_compression import _is_real_user_message
+    from agent.message_sanitization import tool_call_id_variants, tool_result_id_variants
+    require_keywords(tool_call_id_variants, {'tc'})
+    require_keywords(tool_result_id_variants, {'tool_call_id'})
+    require_keywords(_estimate_msg_budget_tokens, {'msg'})
+    assert callable(_is_real_user_message)
     # Coconut session maintenance calls these by keyword and reads the returned counts.
     require_keywords(SessionDB.prune_sessions, {'older_than_days', 'source', 'sessions_dir', 'exclude_active_write_guards'})
     from hermes_state_maintenance import _PRUNE_FILTER_NAMES

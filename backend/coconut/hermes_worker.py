@@ -1364,6 +1364,8 @@ def run_turn(request, emit, request_receipt):
                         save_trajectories=False, run_budget_seconds=None)
         from native_compression import install as install_compression_fallback
         install_compression_fallback(agent, profile_config, fallback)
+        from native_compression_head import install as install_compression_head
+        install_compression_head(agent, profile_config)
         scope.agent = agent
         from live_messages import LiveMessages
         scope.turn_id = request['task'].get('_native_turn_id')
