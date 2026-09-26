@@ -642,12 +642,16 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
                                                     inner, archive)
             if written:
                 sync_directory(directory)
-                # One pass can write several archives. Keep the folder within its limit now.
-                trim_nested_archives(root)
-            # Remove the deepest first. Removing a parent first would delete a worktree inside it without Git.
-            for record in sorted(again, key=lambda r: len(r['path'].parts), reverse=True):
-                force = ('--force',) if record['path'] in written else ()
-                git(repository, 'worktree', 'remove', *force, str(record['path']), timeout=CHECKOUT_SECONDS)
+            try:
+                # Remove the deepest first. Removing a parent first would delete a worktree inside it without Git.
+                for record in sorted(again, key=lambda r: len(r['path'].parts), reverse=True):
+                    force = ('--force',) if record['path'] in written else ()
+                    git(repository, 'worktree', 'remove', *force, str(record['path']), timeout=CHECKOUT_SECONDS)
+            finally:
+                if written:
+                    # One pass can write several archives. Keep the folder within its limit, but keep this pass's
+                    # archives: they hold the only copy of the changes.
+                    trim_nested_archives(root, keep={archive for _, archive in written.values()})
             return [archive for _, archive in written.values()]
     finally:
         for temporary, _ in written.values():
@@ -898,17 +902,24 @@ def sweep_temporary(root):
     trim_nested_archives(root)
 
 
-def trim_nested_archives(root):
-    """Delete nested archives older than NESTED_ARCHIVE_DAYS, then the oldest over NESTED_ARCHIVE_LIMIT_BYTES."""
-    oldest, kept = time.time() - NESTED_ARCHIVE_DAYS * 86400, []
+def trim_nested_archives(root, keep=()):
+    """Delete nested archives older than NESTED_ARCHIVE_DAYS, then the oldest over NESTED_ARCHIVE_LIMIT_BYTES.
+
+    The archives in `keep` stay and count toward the limit.
+    """
+    oldest, kept, total = time.time() - NESTED_ARCHIVE_DAYS * 86400, [], 0
     for archive in (Path(root) / 'archive' / 'nested').glob('*.tar.gz'):
+        if archive in keep:
+            with contextlib.suppress(FileNotFoundError):
+                total += archive.stat().st_size
+            continue
         with contextlib.suppress(FileNotFoundError):
             status = archive.stat()
             if status.st_mtime < oldest:
                 archive.unlink()
             else:
                 kept.append((status.st_mtime, status.st_size, archive))
-    total = sum(size for _, size, _ in kept)
+    total += sum(size for _, size, _ in kept)
     for _, size, archive in sorted(kept):
         if total <= NESTED_ARCHIVE_LIMIT_BYTES:
             break

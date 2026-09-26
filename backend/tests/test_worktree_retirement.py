@@ -1162,6 +1162,12 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch('coconut.work_workspace.NESTED_ARCHIVE_LIMIT_BYTES', 2000):
             work_workspace.sweep_temporary(self.workspaces)
         self.assertEqual(sorted(p.name for p in folder.glob('*.tar.gz')), ['item-1.tar.gz', 'item-2.tar.gz'])
+        # An archive that a pass depends on stays, even when it is old or the folder is over the limit.
+        needed = folder / 'item-1.tar.gz'
+        os.utime(needed, (old, old))
+        with patch('coconut.work_workspace.NESTED_ARCHIVE_LIMIT_BYTES', 500):
+            work_workspace.trim_nested_archives(self.workspaces, keep={needed})
+        self.assertEqual(sorted(p.name for p in folder.glob('*.tar.gz')), ['item-1.tar.gz'])
 
     def test_an_outcome_that_resumes_during_the_nested_archive_keeps_the_nested_worktree(self):
         _, identity, path, _ = self.outcome()
