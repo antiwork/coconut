@@ -272,12 +272,13 @@ class WorkStatus:
         return linked, explicit_waits
 
     def _graph_memo(self, records=None):
-        graphs = getattr(self, '_work_graphs', None)
-        if graphs is not None:
-            return graphs
         shared = self._shared_cache()
-        # Keep a shared graph only for inputs that repeat. A card's own receipt list is read once.
-        if shared is None or (records is not None and records is not shared.get('pending receipts')):
+        if shared is None:
+            # A read scope sets _work_graphs. It does not write, so its graphs stay current.
+            return getattr(self, '_work_graphs', None)
+        # Inside _shared_reads, each _put drops these graphs. Keep a graph only for inputs that repeat;
+        # a card's own receipt list is read once.
+        if records is not None and records is not shared.get('pending receipts'):
             return None
         return shared.setdefault('graphs', {})
 
