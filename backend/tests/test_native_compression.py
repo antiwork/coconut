@@ -30,4 +30,4 @@ class NativeCompressionTests(unittest.TestCase):
                 '--python', os.environ['COCONUT_HERMES_PYTHON'], '--evidence', evidence],
                 capture_output=True, text=True, timeout=240)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn('Stale-head worker regressions passed (7 cases)', result.stdout)
+            self.assertIn('Stale-head worker regressions passed (8 cases)', result.stdout)

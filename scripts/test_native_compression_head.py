@@ -27,7 +27,7 @@ def sized(text, size):
     return (text * (size // len(text) + 1))[:size]
 
 
-def history(production=False, dangling=False):
+def history(production=False, dangling=False, unknown_middle=False):
     from agent.context_compressor import SUMMARY_PREFIX
     summary_size = 14612 if production else 1200
     rows = [{'role': 'user', 'content': sized(SUMMARY_PREFIX + '\n' + SUMMARY + '\n', summary_size),
@@ -55,6 +55,10 @@ def history(production=False, dangling=False):
             {'id': 'uncertain-delegate', 'type': 'function', 'function': {
                 'name': 'delegate_task', 'arguments': '{"tasks":[{"goal":"Prior interrupted work"}]}'}}]})
         rows.append({'role': 'user', 'content': 'Previous continuation failed before a tool result.'})
+    if unknown_middle:
+        unresolved = group('unresolved-middle', UNKNOWN)
+        unresolved[-1]['effect_disposition'] = 'unknown'
+        rows[5:5] = unresolved
     return rows
 
 
@@ -99,7 +103,8 @@ def child(case, evidence, control):
     db = SessionDB()
     db.create_session(session, source='coconut')
     db.set_meta('coconut.history-context.' + session, 'complete')
-    rows = history('production' in case, dangling='dangling' in case)
+    rows = history('production' in case, dangling='dangling' in case, unknown_middle='unknown-middle' in case)
+    declined = case.startswith(('original', 'held'))
     db.replace_messages(session, rows)
     before = db.get_messages(session)
     db.close()
@@ -217,9 +222,9 @@ def child(case, evidence, control):
             assert saved is not None
             differences = {key: (value, saved.get(key)) for key, value in row.items() if value != saved.get(key)}
             assert differences in ({}, {'active': (1, 0)}, {'active': (1, 0), 'compacted': (0, 1)}), ('Original row mutated', row['id'], differences)
-            if not case.startswith('original'):
+            if not declined:
                 assert saved['active'] == 0, ('Original row was not archived', row['id'])
-        if case.startswith('original'):
+        if declined:
             assert not summary_calls and not tool_calls
             assert not any(e['type'] == 'completed' for e in events), events
             assert compressor._last_compression_telemetry['middle_window_tokens'] == 0
@@ -346,6 +351,17 @@ def contracts():
                 'function': {'name': 'terminal', 'arguments': '{}'}}]
             rows.insert(4, {'role': 'tool', 'tool_call_id': 'visible-read', 'content': 'Complete.'})
             self.assertEqual(agent.context_compressor._protect_head_size(rows), 5)
+
+        def test_unresolved_effect_window_is_not_summarized(self):
+            _, agent, rows = self.agent()
+            middle = copy.deepcopy(rows)
+            middle[6]['effect_disposition'] = 'unknown'
+            before = copy.deepcopy(middle)
+            self.assertEqual(agent.context_compressor._protect_head_size(middle), 0)
+            self.assertEqual(middle, before)
+            tail = copy.deepcopy(rows)
+            tail[-2]['effect_disposition'] = 'unknown'
+            self.assertEqual(agent.context_compressor._protect_head_size(tail), 4)
 
         def test_native_tool_identifiers_and_reuse(self):
             _, agent, rows = self.agent()
@@ -549,7 +565,7 @@ if __name__ == '__main__':
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--child')
     parser.add_argument('--control', type=Path)
-    parser.add_argument('--cases', nargs='+', default=['original-compact', 'fixed-compact', 'original-production', 'fixed-production', 'original-production-dangling', 'fixed-production-dangling', 'contracts'])
+    parser.add_argument('--cases', nargs='+', default=['original-compact', 'fixed-compact', 'original-production', 'fixed-production', 'original-production-dangling', 'fixed-production-dangling', 'held-unknown-middle', 'contracts'])
     args = parser.parse_args()
     if args.child == 'contracts':
         contracts()

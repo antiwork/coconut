@@ -85,6 +85,10 @@ def install(agent, config):
         if recovered_cut > latest or not any(not compressor._is_context_summary_message(row)
                                              for row in messages[end:recovered_cut]):
             return head
+        # An unresolved effect must remain verbatim, never entrusted to a
+        # generated summary. Leave native protection unchanged in that case.
+        if any(row.get('effect_disposition') == 'unknown' for row in messages[end:recovered_cut]):
+            return head
         # Summarized groups must be complete. An older unanswered call wholly
         # inside the unchanged tail remains native replay's responsibility, but
         # do not intervene during an unfinished current-request tool group.
