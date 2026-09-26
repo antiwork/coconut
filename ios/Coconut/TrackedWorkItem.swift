@@ -33,7 +33,7 @@ struct TrackedWorkItem: Identifiable {
         guard originalTaskStatus == "cancelled", let recoveryWork, recoveryWork.kind == "work",
               recoveryWork.workOutcomeId == nil || recoveryWork.workOutcomeId == recoveryWork.id,
               recoveryWork.nativeTaskId != nil, recoveryWork.taskId != nil,
-              recoveryWork.workState == "cancelled" else { return nil }
+              recoveryWork.workState == "cancelled", recoveryWork.checkoutRecoveryStopped == true else { return nil }
         return recoveryWork
     }
     var canOfferCheckoutRecovery: Bool { checkoutRecoveryWork != nil }

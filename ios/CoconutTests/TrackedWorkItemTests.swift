@@ -58,6 +58,7 @@ final class TrackedWorkItemTests: XCTestCase {
     func testStoppedNativeTaskOffersRecoveryOnlyWithOwnerAndExplicitConfirmation() throws {
         var stopped = item(status: "cancelled")
         stopped.nativeTaskId = "native-export"; stopped.taskId = "owner"; stopped.workState = "cancelled"
+        stopped.checkoutRecoveryStopped = true
         XCTAssertTrue(TrackedWorkItem.nativeTasks(in: [stopped], botId: "bot", tasks: [owner(status: "cancelled")])
             .first?.canOfferCheckoutRecovery == true)
         XCTAssertFalse(TrackedWorkItem.nativeTasks(in: [stopped], botId: "bot").first?.canOfferCheckoutRecovery == true)
@@ -81,11 +82,38 @@ final class TrackedWorkItemTests: XCTestCase {
         XCTAssertTrue(String(decoding: body, as: UTF8.self).contains("\"resume_consent\":\"fresh\""))
     }
 
+    func testRecoveryStopMarkerDecodesAndMissingOrFalseFailsClosed() throws {
+        var stopped = item(status: "cancelled")
+        stopped.nativeTaskId = "native-export"; stopped.taskId = "owner"; stopped.workState = "cancelled"
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: APIJSON.encode(stopped)) as? [String: Any])
+        func decoded() throws -> Artifact {
+            try APIJSON.decoder().decode(Artifact.self, from: JSONSerialization.data(withJSONObject: json))
+        }
+        let cancelledOwner = [owner(status: "cancelled")]
+        json["checkout_recovery_stopped"] = true
+        let explicitlyStopped = try decoded()
+        XCTAssertEqual(explicitlyStopped.checkoutRecoveryStopped, true)
+        XCTAssertTrue(TrackedWorkItem.nativeTasks(in: [explicitlyStopped], botId: "bot", tasks: cancelledOwner)
+            .first?.canOfferCheckoutRecovery == true)
+        json["checkout_recovery_stopped"] = false
+        let taskOnlyStop = try decoded()
+        XCTAssertEqual(taskOnlyStop.checkoutRecoveryStopped, false)
+        XCTAssertFalse(TrackedWorkItem.nativeTasks(in: [taskOnlyStop], botId: "bot", tasks: cancelledOwner)
+            .first?.canOfferCheckoutRecovery == true)
+        json.removeValue(forKey: "checkout_recovery_stopped")
+        let olderServer = try decoded()
+        XCTAssertNil(olderServer.checkoutRecoveryStopped)
+        XCTAssertFalse(TrackedWorkItem.nativeTasks(in: [olderServer], botId: "bot", tasks: cancelledOwner)
+            .first?.canOfferCheckoutRecovery == true)
+    }
+
     func testLinkedPullRequestRecoversCanonicalStoppedWorkNotPRTask() {
         var stopped = item(status: "cancelled")
         stopped.nativeTaskId = "native-export"; stopped.taskId = "original-owner"; stopped.workState = "cancelled"
+        stopped.checkoutRecoveryStopped = true
         var pr = stopped
         pr.id = "pr"; pr.kind = "pr"; pr.botId = "reviewer"; pr.taskId = "review-task"
+        pr.checkoutRecoveryStopped = nil
         pr.nativeTaskId = nil; pr.workOutcomeId = stopped.id
         pr.url = "https://github.com/example/project/pull/42"
         let row = TrackedWorkItem.nativeTasks(in: [stopped, pr], botId: "bot",
@@ -105,6 +133,7 @@ final class TrackedWorkItemTests: XCTestCase {
         var stopped = item(status: "cancelled")
         stopped.nativeTaskId = "native-export"; stopped.taskId = "owner"
         stopped.workState = "cancelled"; stopped.workDismissalId = "dismissal"
+        stopped.checkoutRecoveryStopped = true
         XCTAssertTrue(TrackedWorkItem.tracked(in: [stopped]).isEmpty)
         XCTAssertTrue(TrackedWorkItem.nativeTasks(in: [stopped], botId: "bot", tasks: [owner(status: "cancelled")]).isEmpty)
         let details = TrackedWorkItem.nativeTasks(in: [stopped], botId: "bot", tasks: [owner(status: "cancelled")],
@@ -124,8 +153,10 @@ final class TrackedWorkItemTests: XCTestCase {
         var stopped = item(status: "cancelled")
         stopped.nativeTaskId = "native-export"; stopped.taskId = "owner"
         stopped.workState = "cancelled"; stopped.workDismissalId = "dismissal"
+        stopped.checkoutRecoveryStopped = true
         var pr = stopped
         pr.id = "pr"; pr.kind = "pr"; pr.nativeTaskId = nil
+        pr.checkoutRecoveryStopped = nil
         pr.workOutcomeId = stopped.id; pr.url = "https://github.com/example/project/pull/42"
         XCTAssertTrue(TrackedWorkItem.tracked(in: [stopped, pr]).isEmpty)
         let details = TrackedWorkItem.nativeTasks(in: [stopped, pr], botId: "bot", tasks: [owner(status: "cancelled")],

@@ -149,6 +149,10 @@ class CheckoutPreviewHTTPTests(unittest.TestCase):
         stop_key = str(uuid4())
         status, response = self.http('POST', endpoint, {}, key=stop_key)
         self.assertEqual(status, 200, response)
+        self.assertIs(response['artifacts'][0]['checkout_recovery_stopped'], True)
+        row = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == 'work')
+        self.assertIs(row['checkout_recovery_stopped'], True)
+        self.assertNotIn('checkout_recovery_stopped', self.service._get('artifacts', 'work'))
         first = self.service._setting('work.cancelled.work:work')
         self.assertNotEqual(first, original)
         _, preview = self.http('GET', '/v1/tasks/' + self.task_id + '/checkout-recovery')
@@ -166,6 +170,31 @@ class CheckoutPreviewHTTPTests(unittest.TestCase):
             self.service._check_checkout_consent(receipt, scope)
         self.assertEqual(self.http('POST', '/v1/maintenance/checkout-recovery', request,
                                    key=preview['key'])[0], 409)
+
+    def test_task_stop_does_not_grant_work_stop_recovery_authority(self):
+        self.service.db.execute('DELETE FROM settings WHERE key=?', ('work.cancelled.work:work',))
+        task = self.service._get('tasks', self.task_id)
+        task['status'] = 'queued'
+        self.service._put('tasks', task)
+        work = self.service._get('artifacts', 'work')
+        work['status'] = 'waiting'
+        self.service._put('artifacts', work)
+        status, stopped = self.http('POST', '/v1/tasks/' + self.task_id + '/cancel', {})
+        self.assertEqual(status, 200, stopped)
+        self.assertEqual(self.service._get('tasks', self.task_id)['status'], 'cancelled')
+        self.assertIsNone(self.service._setting('work.cancelled.work:work'))
+        row = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == 'work')
+        self.assertNotIn('checkout_recovery_stopped', row)
+        self.assertEqual(self.http('GET', '/v1/tasks/' + self.task_id + '/checkout-recovery')[0], 409)
+
+    def test_clearing_work_stop_marker_removes_projected_recovery_flag(self):
+        before = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == 'work')
+        self.assertIs(before['checkout_recovery_stopped'], True)
+        self.service.db.execute('DELETE FROM settings WHERE key=?', ('work.cancelled.work:work',))
+        after = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == 'work')
+        self.assertNotIn('checkout_recovery_stopped', after)
+        self.assertNotIn('checkout_recovery_stopped', self.service._work_projection([dict(before)])[0])
+        self.assertEqual(self.http('GET', '/v1/tasks/' + self.task_id + '/checkout-recovery')[0], 409)
 
     def test_preview_is_paired_read_only_and_stale_consent_fails(self):
         path = '/v1/tasks/' + self.task_id + '/checkout-recovery'
