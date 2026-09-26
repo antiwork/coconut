@@ -1177,6 +1177,7 @@ class WorktreeRetirementTests(unittest.TestCase):
     def test_only_named_shared_services_are_exempt(self):
         for executable in ('/Applications/OrbStack.app/Contents/MacOS/OrbStack',
                            '/Applications/OrbStack.app/Contents/Frameworks/OrbStack Helper.app/Contents/MacOS/OrbStack Helper',
+                           '/Applications/OrbStack.app/Contents/MacOS/vmgr',
                            '/Applications/Docker.app/Contents/MacOS/com.docker.backend',
                            '/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/bin/simdiskimaged',
                            'launchd_sim',
@@ -1200,6 +1201,9 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.assertTrue(work_workspace.shared(adb, 10))
         with patch('coconut.work_workspace.arguments', return_value='adb logcat\n'):
             self.assertFalse(work_workspace.shared(adb, 10))
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout='adb fork-server server')) as run:
+            work_workspace.shared(adb, 10)
+        self.assertIn('-ww', run.call_args.args[0])
         self.assertFalse(work_workspace.shared(adb))
 
     def test_holders_by_path_maps_each_path_from_one_scan(self):
