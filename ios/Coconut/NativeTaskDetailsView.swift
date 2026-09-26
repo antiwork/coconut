@@ -73,6 +73,11 @@ struct CheckoutRecoveryConfirmation: Codable, Sendable {
     mutating func markUncertain() { isUncertain = true }
     mutating func clearUncertain() { isUncertain = false }
 
+    var targetSummary: String {
+        "Work: \(request.nativeTaskId)\nRepository: \(request.repository)\nWorktree: \(request.path)\n" +
+        "Saved branch: \(request.savedBranch)\nAttached branch: \(request.attachedBranch)"
+    }
+
     func matches(pairing: CheckoutRecoveryPairing) -> Bool { self.pairing == pairing }
 
     func matches(_ other: Self) -> Bool {
@@ -269,6 +274,13 @@ struct NativeTaskDetailsView: View {
                     .accessibilityIdentifier("uncertain-checkout-recovery")
             }
             if confirmation != nil {
+                if let confirmation {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Pending checkout recovery target").font(.headline)
+                        Text(confirmation.targetSummary).font(.subheadline)
+                    }
+                    .accessibilityIdentifier("pending-checkout-recovery-target")
+                }
                 Button("Check recovery status") { retryConfirmation() }
                     .disabled(confirming)
                     .accessibilityIdentifier("retry-checkout-recovery")
@@ -340,8 +352,8 @@ struct NativeTaskDetailsView: View {
                     stoppingRecovery = false
                 }
             }.accessibilityIdentifier("confirm-stop-pending-checkout-recovery")
-        } message: { _ in
-            Text("This sends a fresh Stop for the original Work. If recovery already resumed, it stops that Work. Check recovery status afterward; Stop never confirms a new recovery.")
+        } message: { pending in
+            Text("Stop targets:\n\(pending.targetSummary)\n\nThis sends a fresh Stop for the original Work. If recovery already resumed, it stops that Work. Check recovery status afterward; Stop never confirms a new recovery.")
         }
         .alert("Stop this task?", isPresented: Binding(
             get: { taskToStop != nil }, set: { if !$0 { taskToStop = nil } }),

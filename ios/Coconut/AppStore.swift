@@ -787,7 +787,7 @@ final class AppStore {
         }
         do {
             let client = try APIClient(serverURL: pairing.serverURL, fingerprint: pairing.fingerprint, token: token)
-            let snapshot: StateSnapshot = try await client.request("state")
+            let snapshot: StateSnapshot = try await client.request("state", fullState: true)
             guard let current = self.pairing, confirmation.matches(pairing: CheckoutRecoveryPairing(
                 deviceId: current.deviceId, serverURL: current.serverURL, fingerprint: current.fingerprint)) else {
                 return "The pairing changed. Check the task again."

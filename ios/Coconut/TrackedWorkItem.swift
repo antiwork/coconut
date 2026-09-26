@@ -47,9 +47,8 @@ struct TrackedWorkItem: Identifiable {
         let taskStatuses = Dictionary(tasks.map { ($0.id, $0.status) }, uniquingKeysWith: { first, _ in first })
         let visibleArtifacts = artifacts.filter { identities.contains($0.workIdentity) }
         let dismissedIdentities = includeDismissed ? Set(visibleArtifacts.filter {
-            $0.kind == "work" && ($0.workOutcomeId == nil || $0.workOutcomeId == $0.id)
-                && $0.nativeTaskId != nil && $0.workState == "cancelled"
-                && $0.taskId.flatMap { taskStatuses[$0] } == "cancelled"
+            Self(artifact: $0, pullRequests: [],
+                 originalTaskStatus: $0.taskId.flatMap { taskStatuses[$0] }).canOfferCheckoutRecovery
         }.map(\.workIdentity)) : []
         return tracked(in: visibleArtifacts, includeDismissedWorkIdentities: dismissedIdentities).map { item in
             let taskStatus = item.recoveryWork?.taskId.flatMap { taskStatuses[$0] }
