@@ -414,6 +414,16 @@ def _sent_effort(effort, supported):
     return clamp_effort(effort, supported)
 
 
+def _route_efforts(provider, model_id):
+    """Return the efforts a route narrows to, or None when it accepts the whole Hermes ladder."""
+    if provider == 'openai-codex':
+        from agent.reasoning_effort import codex_supported_efforts
+        return list(codex_supported_efforts(model_id))
+    if provider == 'xai-oauth':
+        return _xai_efforts(model_id)
+    return None
+
+
 def _xai_efforts(model_id):
     """Return the efforts that Hermes sends to xAI for this model. Grok 4.6 accepts xhigh, and older Grok tops out at high."""
     from agent.model_metadata import is_grok_46_family
@@ -458,7 +468,6 @@ def _catalog(config, model, provider, base_url, rows):
     from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort, resolve_reasoning_config
     from hermes_cli.auth import PROVIDER_REGISTRY
     efforts = [value for value in ('none', *VALID_REASONING_EFFORTS) if parse_reasoning_effort(value) is not None]
-    from agent.reasoning_effort import codex_supported_efforts
     items, seen = [], set()
     per_model_config = {'agent': {'reasoning_overrides': (config.get('agent') or {}).get('reasoning_overrides') or {}}}
     registration = PROVIDER_REGISTRY.get(provider)
@@ -486,12 +495,7 @@ def _catalog(config, model, provider, base_url, rows):
             if not _supported_route(config, slug, model_id, url):
                 continue
             seen.add((slug, model_id))
-            if slug == 'openai-codex':
-                supported = list(codex_supported_efforts(model_id))
-            elif slug == 'xai-oauth':
-                supported = _xai_efforts(model_id)
-            else:
-                supported = list(efforts)
+            supported = _route_efforts(slug, model_id) or list(efforts)
             items.append({'id': model_id, 'name': model_id, 'provider': slug, 'base_url': url,
                           'reasoning_efforts': supported,
                           'default_reasoning_effort': _sent_effort(
@@ -582,6 +586,10 @@ def _read_profile(home, inherited):
         registration = PROVIDER_REGISTRY.get(provider)
         base_url = inherited.get('base_url') if provider == inherited['provider'] else None
         base_url = base_url or (public_endpoint(registration.inference_base_url) if registration else None)
+    supported = _route_efforts(provider, model)
+    if supported:
+        # A bot override shows the effort that its route sends, as the catalog does.
+        effort = _sent_effort(effort, supported)
     selection = {'model': model, 'provider': provider, 'reasoning_effort': effort}
     return {'model_override': selection, 'effective_model': dict(selection, base_url=base_url)}
 

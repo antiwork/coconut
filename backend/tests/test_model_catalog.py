@@ -352,6 +352,13 @@ with open(os.devnull, 'w') as quiet, contextlib.redirect_stdout(quiet), contextl
         self.assertEqual(result['default']['reasoning_effort'], 'high')
         self.assertIn(result['default']['reasoning_effort'], result['models'][0]['reasoning_efforts'])
 
+    def test_a_bot_grok_override_shows_the_effort_that_hermes_sends(self):
+        (self.home / 'config.yaml').write_text('model:\n  default: grok-4.7\n  provider: xai-oauth\nagent:\n  reasoning_effort: max\n')
+        inherited = {'model': 'gpt-6-astra', 'provider': 'openai-codex', 'base_url': None, 'reasoning_effort': None}
+        result = self.run_native(f"result = m._read_profile(os.environ['HERMES_HOME'], {inherited!r})")
+        self.assertEqual(result['model_override'], {'model': 'grok-4.7', 'provider': 'xai-oauth', 'reasoning_effort': 'high'})
+        self.assertEqual(result['effective_model']['reasoning_effort'], 'high')
+
     def test_active_profile_reads_its_own_native_config(self):
         profile = self.home / 'profiles/work'
         profile.mkdir(parents=True)
