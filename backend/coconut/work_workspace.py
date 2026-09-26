@@ -259,8 +259,23 @@ def busy_paths(paths):
 
 
 def in_use(path):
-    """Return True when a process has its cwd or an open file in the path."""
-    return bool(holders(path))
+    """Return True when a process that is not a shared service has its cwd or an open file in the path."""
+    return bool(blocking(holders(path), path))
+
+
+def blocking(found, path):
+    """Return the holders that keep a worktree on disk.
+
+    A shared service, such as the adb server, can keep the cwd of the turn that started it. It serves every
+    outcome and outlives the worktree, so it does not keep the worktree. Coconut never stops it.
+    """
+    if not found:
+        return found
+    table = process_table()
+    exempt = {pid for pid in found if pid in table and shared(table[pid][2])}
+    if exempt:
+        logging.getLogger(__name__).warning('Shared services %s hold %s. They do not keep it.', sorted(exempt), path)
+    return found - exempt
 
 
 def elapsed_seconds(value):
@@ -277,9 +292,10 @@ def elapsed_seconds(value):
 # The list names each shared service. A wider folder, such as /Library/ or /Applications/, also holds the JDK,
 # Xcode, and the Command Line Tools, whose orphans Coconut must stop.
 SHARED_EXECUTABLE_PREFIXES = ('/System/', '/Applications/OrbStack.app/', '/Applications/Docker.app/',
-                              '/Library/Developer/PrivateFrameworks/CoreSimulator.framework/')
-# The adb server serves the emulators of every outcome.
-SHARED_EXECUTABLE_NAMES = ('adb',)
+                              '/Library/Developer/PrivateFrameworks/CoreSimulator.framework/',
+                              '/Library/Developer/CoreSimulator/')
+# The adb server serves the emulators of every outcome. launchd_sim runs a booted iOS simulator.
+SHARED_EXECUTABLE_NAMES = ('adb', 'launchd_sim')
 
 
 def process_table():
@@ -494,7 +510,7 @@ def release(path, outcome, orphan_age):
         if stopped:
             logging.getLogger(__name__).warning('Coconut stopped orphaned processes %s in worktree %s.', sorted(stopped), path)
         found -= stopped
-    if found:
+    if blocking(found, path):
         raise ValueError('A process uses the worktree.')
 
 

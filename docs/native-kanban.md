@@ -109,6 +109,7 @@ A failed check is logged, and retirement continues.
 Coconut never stops a shared service that a turn started, such as OrbStack, Docker Desktop, CoreSimulator, or the
 `adb` server, because every outcome uses it. `SHARED_EXECUTABLE_PREFIXES` and `SHARED_EXECUTABLE_NAMES` in
 `work_workspace.py` name these services. The JDK, Xcode, and the Command Line Tools are not on the list.
+A shared service that holds a worktree, for example the `adb` server with its cwd there, does not keep it.
 
 The log names the cause when Coconut does not retire a worktree, for example a busy service or a changed worktree.
 Steps 1 to 7 do not hold the registry lock. Step 8 runs Git commands that do not wait for other processes.

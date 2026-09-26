@@ -1174,7 +1174,8 @@ class WorktreeRetirementTests(unittest.TestCase):
                            '/Applications/Docker.app/Contents/MacOS/com.docker.backend',
                            '/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder',
                            '/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/bin/simdiskimaged',
-                           '/Users/me/Library/Android/sdk/platform-tools/adb'):
+                           '/Users/me/Library/Android/sdk/platform-tools/adb', 'launchd_sim',
+                           '/Library/Developer/CoreSimulator/Volumes/iOS_23A/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS.simruntime/Contents/Resources/RuntimeRoot/usr/libexec/installd'):
             self.assertTrue(work_workspace.shared(executable), executable)
         # The developer toolchain lives in these folders too. Its orphans must go.
         for executable in ('/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home/bin/java',
@@ -1206,6 +1207,30 @@ class WorktreeRetirementTests(unittest.TestCase):
             stopped = work_workspace.stop_orphans({100, 200}, 'outcome', 0)
         self.assertEqual(stopped, {200, 201})
         self.assertTrue(all(not ({100, 101} & group) for group in sent))
+
+    def test_a_shared_service_that_holds_the_worktree_does_not_keep_it(self):
+        _, identity, path, _ = self.outcome()
+        self.holders.stop()
+        # The adb server keeps the cwd of the turn that started it.
+        with patch('coconut.work_workspace.holders', return_value={500}), \
+                patch('coconut.work_workspace.process_table', return_value={500: (1, 99999, '/opt/sdk/platform-tools/adb')}), \
+                patch('coconut.work_workspace.stop') as stop:
+            self.assertEqual(self.retire(), [identity])
+        stop.assert_not_called()
+        self.assertIn('retired', self.registry()[identity])
+        _, other, other_path, _ = self.outcome()
+        with patch('coconut.work_workspace.holders', return_value={501}), \
+                patch('coconut.work_workspace.process_table', return_value={501: (77, 99999, '/usr/bin/ruby')}):
+            self.assertEqual(self.retire(), [])
+        self.assertNotIn('retired', self.registry()[other])
+
+    def test_an_empty_registry_still_sweeps_unfinished_archives(self):
+        (self.workspaces / 'worktrees.json').write_text('{}')
+        (self.workspaces / 'archive').mkdir()
+        leftover = self.workspaces / 'archive' / '.old.tar.gz.tmp'
+        leftover.write_bytes(b'partial')
+        self.assertEqual(self.retire(), [])
+        self.assertFalse(leftover.exists())
 
     def test_process_table_reads_executables_with_spaces(self):
         listing = '  100     1 06-16:25:58 /Applications/OrbStack.app/Contents/MacOS/OrbStack Helper\n  200   100    02:03 /bin/bash\n'
