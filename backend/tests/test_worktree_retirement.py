@@ -1193,6 +1193,7 @@ class WorktreeRetirementTests(unittest.TestCase):
                            '/Applications/OrbStack.app/Contents/MacOS/xbin/docker',
                            '/Applications/OrbStack.app/Contents/MacOS/bin/orbctl',
                            '/Applications/Docker.app/Contents/Resources/bin/docker',
+                           '/Applications/Docker.app/Contents/Resources/cli-plugins/docker-compose',
                            '/Users/me/Library/Android/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64'):
             self.assertFalse(work_workspace.shared(executable), executable)
         # Only the adb server is shared. An adb client belongs to its turn.
@@ -1293,6 +1294,12 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.holders.stop()
         with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
             self.assertEqual(work_workspace.holders_by_path({str(held)}), {str(held): {10, 12}})
+        # One process with its cwd and an open file in the path holds more than its cwd, in either order.
+        for records in ((b'fcwd\nn' + os.fsencode(str(held)) + b'\n', b'f12\nn' + os.fsencode(str(held)) + b'/log\n'),
+                        (b'f12\nn' + os.fsencode(str(held)) + b'/log\n', b'fcwd\nn' + os.fsencode(str(held)) + b'\n')):
+            both = b'p10\n' + b''.join(records) + b'p11\nfcwd\nn' + os.fsencode(str(held)) + b'\n'
+            with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=both, returncode=0)):
+                self.assertEqual(work_workspace.holders_by_path({str(held)}, detail=True), {str(held): {10: False, 11: True}})
 
     def test_a_shared_service_does_not_make_a_path_busy(self):
         server = patch('coconut.work_workspace.arguments', return_value='adb fork-server server')

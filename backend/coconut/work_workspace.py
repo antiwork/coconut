@@ -311,7 +311,7 @@ SHARED_EXECUTABLE_PREFIXES = ('/Library/Developer/PrivateFrameworks/CoreSimulato
 # These app bundles run shared services, such as the OrbStack VM manager. Their client folders hold programs such
 # as docker, orb, and kubectl, which belong to their turn.
 SHARED_APP_BUNDLES = {'/Applications/OrbStack.app/': ('Contents/MacOS/bin/', 'Contents/MacOS/xbin/'),
-                      '/Applications/Docker.app/': ('Contents/Resources/bin/',)}
+                      '/Applications/Docker.app/': ('Contents/Resources/bin/', 'Contents/Resources/cli-plugins/')}
 # launchd_sim runs a booted iOS simulator.
 SHARED_EXECUTABLE_NAMES = ('launchd_sim',)
 # The adb server serves the emulators of every outcome. An adb client, such as adb logcat, belongs to its turn.
