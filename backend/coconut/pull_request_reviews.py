@@ -269,14 +269,14 @@ class PullRequestReviews:
             heads.add(artifact['_reviewed_head'])
         return heads
 
-    def _pr_has_recorded_merge_decision(self, artifact, peers):
+    def _pr_has_recorded_merge_decision(self, artifact, peers, decisions=None):
         recorded_check = max((a.get('_review_checked_at', '') for a in peers), default='')
         return any(d.get('merge_pr_url', '').lower() == artifact['url'].lower()
             and d['status'] in ('approved', 'rejected', 'executed', 'dismissed')
             and (d.get('_merge_pr_head') == artifact.get('head_sha')
                 or (not d.get('_merge_pr_head') and (not recorded_check
                     or (d.get('decided_at') or d['created_at']) >= recorded_check)))
-            for d in self._all('decisions') if d.get('merge_pr_url'))
+            for d in (self._all('decisions') if decisions is None else decisions) if d.get('merge_pr_url'))
 
     def _queue_pr_reviews(self, *, artifact_ids=None):
         from .service import now, uid
@@ -337,7 +337,7 @@ class PullRequestReviews:
                         owner = self._pr_review_owner(peers)
                         if not owner or owner['id'] != artifact['id']:
                             continue
-                        if not terminal and self._pr_has_recorded_merge_decision(artifact, peers):
+                        if not terminal and self._pr_has_recorded_merge_decision(artifact, peers, decisions):
                             continue
                         review_key = f"{artifact['pr_state']}:{artifact['head_sha']}" if terminal else artifact['head_sha']
                         signal = json.dumps([artifact['head_sha'], artifact.get('checks_state'),

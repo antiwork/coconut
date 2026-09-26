@@ -271,9 +271,16 @@ class WorkStatus:
             linked.setdefault(task['id'], set()).update(task.get('_waiting_on', []))
         return linked, explicit_waits
 
+    def _graph_memo(self):
+        graphs = getattr(self, '_work_graphs', None)
+        if graphs is not None:
+            return graphs
+        shared = self._shared_cache()
+        return None if shared is None else shared.setdefault('graphs', {})
+
     def _proposal_work_links(self, tasks):
         import json
-        graphs = getattr(self, '_work_graphs', None)
+        graphs = self._graph_memo()
         key = ('proposals', id(tasks))
         if graphs is not None and key in graphs:
             return graphs[key][1]
@@ -335,7 +342,7 @@ class WorkStatus:
 
     def _work_chain(self, root, tasks, records, *, include_continuations=False):
         """Follow recorded callbacks, including replies that assign further work."""
-        graphs = getattr(self, '_work_graphs', None)
+        graphs = self._graph_memo()
         key = (id(tasks), id(records), include_continuations)
         if graphs is not None and key in graphs:
             _, _, linked, explicit_waits = graphs[key]

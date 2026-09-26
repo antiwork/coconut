@@ -363,22 +363,26 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
     def _shared_reads(self):
         """Parse each table at most once in one service operation, until the next write.
 
-        Inside this block, _all_shared, _task_map, and _shared_pending_receipts return shared objects. Only code that
-        reads may use them. Code that changes a row reads it with _all or _get and writes it with _put, and each
-        _put drops every shared object, so a later read sees the write.
+        Inside this block, _all_shared, _task_map, and _shared_pending_receipts return shared objects, and
+        _work_chain reuses its graphs. Only code that reads may use them. Code that changes a row reads it with
+        _all or _get and writes it with _put, and each _put drops every shared object, so a later read sees the write.
+        The shared objects belong to the thread that opened the block. Other threads and read views never see them.
         """
-        if getattr(self, '_shared_tables', None) is not None:
+        if self._shared_cache() is not None:
             yield
             return
-        previous = getattr(self, '_work_graphs', None)
-        self._shared_tables, self._work_graphs = {}, {}
+        self._shared_state = (threading.get_ident(), {})
         try:
             yield
         finally:
-            self._shared_tables, self._work_graphs = None, previous
+            self._shared_state = None
+
+    def _shared_cache(self):
+        state = getattr(self, '_shared_state', None)
+        return state[1] if state is not None and state[0] == threading.get_ident() else None
 
     def _all_shared(self, table):
-        cache = getattr(self, '_shared_tables', None)
+        cache = self._shared_cache()
         if cache is None:
             return self._all(table)
         if table not in cache:
@@ -387,7 +391,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
     def _task_map(self):
         # _work_chain reuses a work graph for the same task map object, so every reader gets one map.
-        cache = getattr(self, '_shared_tables', None)
+        cache = self._shared_cache()
         if cache is None:
             return {task['id']: task for task in self._all('tasks')}
         if 'task map' not in cache:
@@ -395,7 +399,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         return cache['task map']
 
     def _shared_pending_receipts(self):
-        cache = getattr(self, '_shared_tables', None)
+        cache = self._shared_cache()
         if cache is None:
             return self._pending_completion_receipts()
         if 'pending receipts' not in cache:
@@ -428,10 +432,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         return json.loads(row[0])
 
     def _put(self, table: str, obj: dict):
-        if getattr(self, '_shared_tables', None):
-            # A write can change any graph that the shared objects built.
-            self._shared_tables.clear()
-            self._work_graphs = {}
+        cache = self._shared_cache()
+        if cache is not None:
+            # A write can change any shared row and any graph that was built from them.
+            cache.clear()
         self.db.execute(f'INSERT INTO {table}(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data', (obj['id'], encoded(obj)))
 
     def _event(self, event_type: str, data: dict, bot_id: str | None = None, task_id: str | None = None):
@@ -756,6 +760,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             view.db = db
             view.lock = threading.RLock()
             view._read_cache = None
+            # A read view has its own connection. It must not use the writer's shared objects.
+            view._shared_state = None
             yield view
 
     @contextlib.contextmanager

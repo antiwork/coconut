@@ -73,6 +73,20 @@ class DecisionFreshnessTests(unittest.TestCase):
             self.assertIsNot(self.service._task_map(), first)
         self.assertIsNot(self.service._task_map(), self.service._task_map())
 
+    def test_other_threads_and_read_views_do_not_see_shared_reads(self):
+        import threading
+        seen = []
+        with self.service.transaction(), self.service._shared_reads():
+            shared = self.service._task_map()
+            other = threading.Thread(target=lambda: seen.append(self.service._shared_cache()))
+            other.start()
+            other.join()
+            with self.service._read_view() as view:
+                self.assertIsNone(view._shared_cache())
+                self.assertIsNot(view._task_map(), shared)
+            self.assertIs(self.service._task_map(), shared)
+        self.assertEqual(seen, [None])
+
     def test_changed_source_hides_assessment_until_fenced_check_confirms_it(self):
         decision = self.question(old=False)
         url = 'https://github.com/example/project/pull/42'
