@@ -400,6 +400,20 @@ def _native_state():
     return config, model_id, provider, base_url
 
 
+def _sent_effort(effort, supported):
+    """Return the effort that Hermes sends for a saved effort on a route with these levels.
+
+    Hermes clamps an unsupported level to the nearest weaker one. A disable that the route cannot send keeps
+    the model's own default, so it shows as None.
+    """
+    from agent.reasoning_effort import clamp_effort
+    if effort is None or effort in supported:
+        return effort
+    if effort == 'none':
+        return None
+    return clamp_effort(effort, supported)
+
+
 def _xai_efforts(model_id):
     """Return the efforts that Hermes sends to xAI for this model. Grok 4.6 accepts xhigh, and older Grok tops out at high."""
     from agent.model_metadata import is_grok_46_family
@@ -478,11 +492,10 @@ def _catalog(config, model, provider, base_url, rows):
                 supported = _xai_efforts(model_id)
             else:
                 supported = list(efforts)
-            default_effort = _effort(resolve_reasoning_config(per_model_config, model_id))
             items.append({'id': model_id, 'name': model_id, 'provider': slug, 'base_url': url,
                           'reasoning_efforts': supported,
-                          # A saved effort that the route cannot send leaves the model's own default.
-                          'default_reasoning_effort': default_effort if default_effort in supported else None,
+                          'default_reasoning_effort': _sent_effort(
+                              _effort(resolve_reasoning_config(per_model_config, model_id)), supported),
                           'configured': True, 'source': row.get('source', 'hermes')})
     configured = any(item['id'] == model and item['provider'] == provider for item in items)
     supported_default = _supported_route(config, provider, model, default_url)

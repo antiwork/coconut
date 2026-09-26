@@ -335,6 +335,16 @@ with open(os.devnull, 'w') as quiet, contextlib.redirect_stdout(quiet), contextl
         self.assertEqual(efforts, {'grok-4.6': expected[0], 'grok-4.7': expected[1]})
         self.assertNotIn('none', efforts['grok-4.7'])
 
+    def test_a_saved_grok_effort_shows_what_hermes_sends(self):
+        # Hermes clamps an unsupported level to the nearest weaker one, and cannot disable Grok reasoning.
+        (self.home / 'config.yaml').write_text('model:\n  default: gpt-6-astra\n  provider: openai-codex\n'
+                                              'agent:\n  reasoning_overrides:\n    grok-4.6: max\n    grok-4.7: none\n    grok-4.5: medium\n')
+        result = self.run_native("config, model, provider, url = m._native_state()\nresult = m._catalog(config, model, provider, url, ["
+                                 "{'slug': provider, 'models': [model], 'source': 'hermes'}, "
+                                 "{'slug': 'xai-oauth', 'models': ['grok-4.6', 'grok-4.7', 'grok-4.5'], 'source': 'hermes'}])")
+        efforts = {m['id']: m['default_reasoning_effort'] for m in result['models'] if m['provider'] == 'xai-oauth'}
+        self.assertEqual(efforts, {'grok-4.6': 'xhigh', 'grok-4.7': None, 'grok-4.5': 'medium'})
+
     def test_active_profile_reads_its_own_native_config(self):
         profile = self.home / 'profiles/work'
         profile.mkdir(parents=True)
