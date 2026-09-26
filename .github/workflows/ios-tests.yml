@@ -52,7 +52,9 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/CoconutDerivedData" \
             -resultBundlePath "$RUNNER_TEMP/CoconutTests.xcresult" \
             -only-testing:CoconutTests \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM=""
       - name: Summarize test results
         if: always()
         run: |
