@@ -1093,6 +1093,33 @@ class WorktreeRetirementTests(unittest.TestCase):
         # The outer archive holds its own .gitignore change, but not the files of the worktree inside it.
         self.assertEqual(names[str(outer.resolve())], ['retirement.json', 'staged.patch', 'unstaged.patch'])
 
+    def test_a_parent_that_cannot_retire_keeps_its_nested_worktree(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path)
+        (inner / 'draft.txt').write_text('keep\n')
+        # The parent's own untracked files are over the archive limit.
+        (path / 'large.bin').write_bytes(b'x' * 2048)
+        with patch('coconut.work_workspace.UNTRACKED_LIMIT_BYTES', 1024):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue((inner / 'draft.txt').is_file())
+        self.assertTrue(self.listed(inner))
+        self.assertEqual(self.nested_archives(), [])
+
+    def test_old_nested_archives_are_deleted_and_the_folders_are_private(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path)
+        (inner / 'draft.txt').write_text('keep\n')
+        self.assertEqual(self.retire(), [identity])
+        [archive] = self.nested_archives()
+        self.assertEqual((self.workspaces / 'archive').stat().st_mode & 0o777, 0o700)
+        self.assertEqual(archive.parent.stat().st_mode & 0o777, 0o700)
+        work_workspace.sweep_temporary(self.workspaces)
+        self.assertTrue(archive.exists())
+        old = time.time() - (work_workspace.NESTED_ARCHIVE_DAYS + 1) * 86400
+        os.utime(archive, (old, old))
+        work_workspace.sweep_temporary(self.workspaces)
+        self.assertFalse(archive.exists())
+
     def test_an_outcome_that_resumes_during_the_nested_archive_keeps_the_nested_worktree(self):
         _, identity, path, _ = self.outcome()
         inner = self.nested_worktree(path)

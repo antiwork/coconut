@@ -71,7 +71,9 @@ Retirement does these steps:
    to test a base commit. After the outcome and process checks, Coconut removes each such worktree with
    `git worktree remove`. When one has staged, unstaged, untracked, or ignored files outside the rebuildable
    folders, Coconut first writes them to an archive in `workspaces/archive/nested/`. The archive name comes from
-   the content, so a failed removal does not write a second copy. Its branch keeps its commits.
+   the content, so a failed removal does not write a second copy. Coconut deletes it after 30 days
+   (`NESTED_ARCHIVE_DAYS`). Its branch keeps its commits. Coconut checks the parent's own files before it removes
+   any nested worktree, so a parent that cannot retire keeps its nested worktrees.
    Coconut does not restore a nested worktree when the outcome resumes.
    Coconut skips the parent when it tracks a nested worktree for an outcome, when one is locked, has a Git
    operation in progress, has a commit that no ref holds, or has files that an archive cannot hold.

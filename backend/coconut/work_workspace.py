@@ -112,6 +112,8 @@ IGNORED_LIMIT_BYTES = 200 * 1024 * 1024
 UNTRACKED_LIMIT_BYTES = 200 * 1024 * 1024
 # Coconut keeps a worktree when its staged and unstaged patches together are larger than this limit.
 PATCH_LIMIT_BYTES = 200 * 1024 * 1024
+# Coconut deletes an archive of a nested worktree after this many days.
+NESTED_ARCHIVE_DAYS = 30
 # After Git refuses to remove a worktree, Coconut waits this long before the next attempt.
 RETRY_AFTER = timedelta(days=1)
 # Git commands that write or delete a whole checkout can take minutes for a large repository.
@@ -583,7 +585,9 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
             plan = planned[record['path']]
             if plan is None:
                 continue
-            directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+            # mkdir applies the mode only to the last folder, so create each folder.
+            directory.parent.mkdir(mode=0o700, exist_ok=True)
+            directory.mkdir(mode=0o700, exist_ok=True)
             # The name comes from the content. When a removal fails, the next pass finds the same archive
             # and writes no second copy.
             key = hashlib.sha256(json.dumps([str(record['path']), plan['head'], changes_digest(*plan['current']),
@@ -755,6 +759,8 @@ def retire(root, identity, finished, *, orphan_age=None):
         # toward them. If one of those refuses, only the nested checkouts are gone. Their changes are in archives,
         # and the next hourly pass retries without them.
         remove_nested(root, path, repository, check_only=True)
+        # Check the parent's own files first, without the nested worktrees. A refusal then removes nothing.
+        archive_entries(path, {r['path'] for r in nested(path, registered(repository))})
         if not finished(True):
             raise ValueError('The outcome resumed during retirement.')
         release(path, before['outcome'], orphan_age)
@@ -859,10 +865,19 @@ def drop_other_archives(directory, identity, keep, saved):
 
 
 def sweep_temporary(root):
-    """Delete archive files that an interrupted retirement did not finish. Run before any retirement starts."""
+    """Delete archive files that an interrupted retirement did not finish, and old nested archives.
+
+    Run before any retirement starts. No binding names a nested archive, and Coconut never restores one.
+    It is kept NESTED_ARCHIVE_DAYS for a person to recover a subagent's uncommitted work.
+    """
     for folder in (Path(root) / 'archive', Path(root) / 'archive' / 'nested'):
         for temporary in folder.glob('.*.tar.gz.tmp'):
             temporary.unlink(missing_ok=True)
+    oldest = time.time() - NESTED_ARCHIVE_DAYS * 86400
+    for archive in (Path(root) / 'archive' / 'nested').glob('*.tar.gz'):
+        with contextlib.suppress(FileNotFoundError):
+            if archive.stat().st_mtime < oldest:
+                archive.unlink()
 
 
 def discard_checkout(repository, path):
