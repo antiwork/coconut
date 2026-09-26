@@ -16,7 +16,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from coconut import work_workspace
@@ -70,7 +70,8 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.workspaces = self.service.root / 'workspaces'
         self.workspaces.mkdir(mode=0o700, exist_ok=True)
         # Most tests do not depend on lsof or send signals. The process tests below use real processes.
-        self.holders = patch('coconut.work_workspace.holders', return_value=set())
+        self.holders = patch.multiple('coconut.work_workspace', holders=MagicMock(return_value=set()),
+                                      holders_by_path=MagicMock(side_effect=lambda paths: {str(p): set() for p in paths}))
         self.holders.start()
         self.addCleanup(self.holders.stop)
 
@@ -909,8 +910,12 @@ class WorktreeRetirementTests(unittest.TestCase):
                             b'p12\nf3\nn' + os.fsencode(str(path)) + b'/log.txt\nf4\nn/elsewhere/a\n',
                             b'p13\nf5\nn' + os.fsencode(str(path)) + b'-other/file\n'])
         self.holders.stop()
-        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing)):
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
             self.assertEqual(work_workspace.holders(path), {11, 12})
+        # A partial list could hide a holder, so a failed lsof refuses the worktree.
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=1)):
+            with self.assertRaises(ValueError):
+                work_workspace.holders(path)
 
     def test_the_environment_of_another_process_is_read(self):
         process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],

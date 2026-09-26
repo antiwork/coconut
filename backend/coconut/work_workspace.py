@@ -218,20 +218,7 @@ def registered(repository):
 
 def holders(path):
     """Return the IDs of the processes that have their cwd or an open file in the path."""
-    try:
-        result = subprocess.run(['lsof', '-n', '-P', '-w', '-F', 'pn'], capture_output=True, timeout=120)
-    except (OSError, subprocess.TimeoutExpired):
-        raise ValueError('Coconut cannot check open files without lsof.') from None
-    if not result.stdout:
-        raise ValueError('lsof did not list open files.')
-    prefixes = {os.fsencode(str(path)), os.fsencode(str(Path(path).resolve()))}
-    found, pid = set(), None
-    for line in result.stdout.splitlines():
-        if line.startswith(b'p'):
-            pid = int(line[1:])
-        elif line.startswith(b'n') and any(line[1:] == prefix or line[1:].startswith(prefix + b'/') for prefix in prefixes):
-            found.add(pid)
-    return found
+    return holders_by_path({path})[str(path)]
 
 
 # Coconut waits this long for orphaned processes to end after SIGTERM.
@@ -244,8 +231,10 @@ def holders_by_path(paths):
         result = subprocess.run(['lsof', '-n', '-P', '-w', '-F', 'pn'], capture_output=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired):
         raise ValueError('Coconut cannot check open files without lsof.') from None
+    # A failed lsof can print part of the list. A missing holder would release a busy path, so require success.
     if result.returncode or not result.stdout:
         raise ValueError('lsof did not list all open files.')
+    # Two paths can share one resolved form, such as /tmp and /private/tmp on macOS. Keep every path for each form.
     prefixes = {}
     for path in paths:
         for form in {str(path), str(Path(path).resolve())}:
@@ -265,26 +254,8 @@ def holders_by_path(paths):
 
 def busy_paths(paths):
     """Return the paths in which a process has its cwd or an open file. Use one lsof scan for all paths."""
-    try:
-        result = subprocess.run(['lsof', '-n', '-P', '-w', '-F', 'n'], capture_output=True, timeout=120)
-    except (OSError, subprocess.TimeoutExpired):
-        raise ValueError('Coconut cannot check open files without lsof.') from None
-    # A failed lsof can print part of the list. A missing holder would release the writer guard, so require success.
-    if result.returncode or not result.stdout:
-        raise ValueError('lsof did not list all open files.')
-    # Two paths can share one resolved form, such as /tmp and /private/tmp on macOS. Keep every path for each form.
-    prefixes = {}
-    for path in paths:
-        for form in {str(path), str(Path(path).resolve())}:
-            prefixes.setdefault(os.fsencode(form), set()).add(path)
-    busy = set()
-    for line in result.stdout.splitlines():
-        if line.startswith(b'n'):
-            name = line[1:]
-            for prefix, owners in prefixes.items():
-                if name == prefix or name.startswith(prefix + b'/'):
-                    busy |= owners
-    return busy
+    held = holders_by_path(paths)
+    return {path for path in paths if held[str(path)]}
 
 
 def in_use(path):
@@ -636,7 +607,8 @@ def retire(root, identity, finished, *, orphan_age=None):
     if nested(path, registered(repository)):
         # A bot can create worktrees inside its own worktree, for example to test a base commit.
         # Their files would count as ignored files of this worktree, so remove the clean ones first.
-        # Check first, so a refusal does not follow an orphan stop for nothing. The parent's own size and content
+        # Check first, so a refusal does not follow an orphan stop for nothing. The hourly pass already stopped the old
+        # orphans of every idle outcome, so this stop covers only the processes that became old since. The parent's own size and content
         # checks must run after the removal, because the nested files would count toward them. If one of those
         # refuses, only clean nested checkouts are gone, and the next hourly pass retries without them.
         remove_nested(root, path, repository, check_only=True)
@@ -659,7 +631,8 @@ def retire(root, identity, finished, *, orphan_age=None):
     if untracked > UNTRACKED_LIMIT_BYTES:
         raise ValueError('The untracked files in the worktree are larger than the archive limit.')
     entries = [(UNTRACKED + name, name) for name in names] + [(IGNORED + name, name) for name in ignored_files(path)]
-    # Stop orphans only after every check that does not need them stopped. Then no refusal follows a stop for nothing.
+    # Stop orphans only after every check that does not need them stopped. The hourly pass already stopped the old
+    # orphans of every idle outcome, so this stop covers only the processes that became old since.
     if not finished(True):
         raise ValueError('The outcome resumed during retirement.')
     release(path, before['outcome'], orphan_age)
