@@ -67,11 +67,22 @@ Retirement does these steps:
 
 1. It validates the binding and the Git worktree record.
 2. It skips a locked worktree and a Git operation in progress.
-   A bot can create worktrees inside its own worktree, for example to test a base commit.
-   After the outcome and process checks, Coconut removes each such worktree with `git worktree remove`.
-   It removes one only when Coconut does not track it, it is not locked, it has no change, no ignored file
-   outside the rebuildable folders, and no Git operation in progress, and a branch or another ref holds its commit.
-   Otherwise it skips the parent. A nested record whose folder is gone does not count.
+   A bot or a Hermes subagent can create worktrees inside its own worktree, for example to work in parallel or
+   to test a base commit. After the outcome and process checks, Coconut removes each such worktree with
+   `git worktree remove`. When one has staged, unstaged, untracked, or ignored files outside the rebuildable
+   folders, Coconut first writes them to an archive in `workspaces/archive/nested/`. The archive name comes from
+   the content, so a failed removal does not write a second copy. Coconut deletes it after 30 days
+   (`NESTED_ARCHIVE_DAYS`), and deletes the oldest ones when all of them are larger than 2 GiB
+   (`NESTED_ARCHIVE_LIMIT_BYTES`). The size limit never deletes an archive younger than one day. Its branch keeps its commits. Coconut checks that it can archive the parent's own files
+   before it removes any nested worktree, and again under the registry lock just before the removal. So a parent
+   that is too large to archive keeps its nested worktrees.
+   Other refusals of the parent can come after the removal. The nested changes are then in their archives.
+   Coconut does not restore a nested worktree when the outcome resumes.
+   Coconut skips the parent when it tracks a nested worktree for an outcome, when one is locked, has a Git
+   operation in progress or unmerged files, has a commit that no ref holds, has a populated submodule and changes,
+   or has files that an archive cannot hold.
+   It checks every nested worktree before it archives or removes any, and checks again under the registry lock.
+   A nested record whose folder is gone does not count.
 3. It skips a worktree when `lsof` shows a process cwd or an open file in it, or when `lsof` is not available.
    Before this check, it stops the orphaned processes of the outcome that hold the worktree, and their child processes.
    An orphan is a process that launchd (PID 1) adopted, and that is older than `ORPHAN_AGE_SECONDS` (six hours).
@@ -101,7 +112,7 @@ Retirement does these steps:
 
 Before it retires any worktree, each hourly run also stops the old orphans of every idle outcome. It checks the
 outcome's worktrees and its scratch workspace (`workspaces/<outcome>`), with one `lsof` scan, and uses the same
-orphan rules. This runs even when retirement refuses the worktree, for example for a nested worktree with changes.
+orphan rules. This runs even when retirement refuses the worktree, for example for a locked nested worktree.
 Such orphans, for example an Android emulator or a test script left by a crashed worker, otherwise hold disk space,
 CPU, and memory for days. This step also runs for an outcome that has only a scratch workspace. Before it stops the
 orphans of an outcome, it checks again that the outcome is idle, because a turn can start during the `lsof` scan.
