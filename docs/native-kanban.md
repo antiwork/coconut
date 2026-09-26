@@ -244,6 +244,22 @@ branch diverged. It requires a UUID `Idempotency-Key`, and exactly these JSON st
 The recovery branch must be `wt/recovered-` followed by the request UUID. The
 message is the operator's authenticated continuation input, not an approval.
 
+For stopped Work, open the original bot conversation's **Bot options → Task details**
+and choose **Recover checkout**. The phone first calls the paired read-only
+`GET /v1/tasks/{task_id}/checkout-recovery` preview. Reading the preview does not
+resume Work or plan a Git merge. A separate confirmation adds `resume_confirmed: true`
+and the preview's `resume_consent` to the POST. The consent binds the paired device,
+original owner, cancellation generation, saved checkout and local tracked edits.
+A later Stop invalidates it, including another Stop while the Work is already stopped.
+The service clears only that Work's cancellation during successful successor admission.
+Installing the action never resumes stopped Work by itself.
+
+The phone retains the confirmed request and key so a lost reply can be reconciled by
+retrying that exact request. A `draining` receipt is not completed recovery. Check
+its status until it is `applied` or held; a held receipt permits a new preview only
+when the original-checkout guards below still pass. Pairing changes cannot send the
+retained request to a different Mac.
+
 The request verifies the one original Work owner, its native archived binding,
 branch heads and exact worktree, then saves a durable receipt before draining.
 Before any Git write at startup it verifies native/background quiescence, unchanged

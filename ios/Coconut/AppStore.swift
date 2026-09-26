@@ -21,7 +21,6 @@ final class AppStore {
     var decisionReplyDrafts: [String: String] = [:]
     var artifacts: [Artifact] = []
     var checkoutConfirmation: CheckoutRecoveryConfirmation?
-    var requestedCheckoutRecoveryTaskIds: Set<String> = []
     var workVisibility: [String: Bool] = [:]
     var workUndo: [WorkDismissal] = []
     @ObservationIgnored private var workMutationTail: Task<Void, Never>?
@@ -158,6 +157,10 @@ final class AppStore {
         #if DEBUG && targetEnvironment(simulator)
         configureFromLaunchEnvironment()
         #endif
+        if let pairing {
+            checkoutConfirmation = ProtectedCache.readPendingCheckout(for: CheckoutRecoveryPairing(
+                deviceId: pairing.deviceId, serverURL: pairing.serverURL, fingerprint: pairing.fingerprint))
+        }
     }
 
     func start() {
@@ -274,6 +277,7 @@ final class AppStore {
 
     func disconnect() {
         workVisibility = [:]; workUndo = []; workMutationIds = [:]
+        checkoutConfirmation = nil
         if let deviceId = pairing?.deviceId {
             PushRelayClient.shared.disable(deviceId: deviceId)
             NotificationKeys.forget(deviceId: deviceId)
@@ -298,6 +302,7 @@ final class AppStore {
             ProtectedCache.remove("pairing.json")
             cacheQueue.sync { ProtectedCache.remove("snapshot.json") }
             ProtectedCache.remove("outgoing.json")
+            ProtectedCache.remove("checkout-recovery.json")
         }
         bots = []; tasks = []; messages = []; decisions = []; artifacts = []; learning = []
         routines = []
@@ -681,11 +686,27 @@ final class AppStore {
             deviceId: pairing.deviceId, serverURL: pairing.serverURL, fingerprint: pairing.fingerprint))
     }
 
+    func stageCheckoutRecovery(_ confirmation: CheckoutRecoveryConfirmation) throws {
+        guard !isDemo, checkoutConfirmation == nil, let pairing,
+              confirmation.matches(pairing: CheckoutRecoveryPairing(deviceId: pairing.deviceId,
+                  serverURL: pairing.serverURL, fingerprint: pairing.fingerprint)),
+              PairingToken.read() != nil else {
+            throw ServiceError.configuration("The pairing or task changed. Check the task again.")
+        }
+        try ProtectedCache.write(confirmation, name: "checkout-recovery.json")
+        checkoutConfirmation = confirmation
+    }
+
     func confirmCheckoutRecovery(_ confirmation: CheckoutRecoveryConfirmation) async -> CheckoutRecoveryConfirmationResult {
         guard let pairing, confirmation.matches(pairing: CheckoutRecoveryPairing(
             deviceId: pairing.deviceId, serverURL: pairing.serverURL, fingerprint: pairing.fingerprint)),
               PairingToken.read() != nil else {
             return .rejected("The pairing changed. Check the task again.")
+        }
+        guard let pending = checkoutConfirmation, pending.matches(confirmation),
+              let saved = ProtectedCache.readPendingCheckout(for: confirmation.pairing),
+              saved.matches(confirmation) else {
+            return .uncertain("The saved confirmation is unavailable. No request was sent. Check recovery status again.")
         }
         var failure: CheckoutRecoveryConfirmationResult?
         let receipt: CheckoutRecoveryReceipt? = await write("maintenance/checkout-recovery", payload: confirmation.request,
@@ -702,14 +723,13 @@ final class AppStore {
 
     func recordCheckoutRecoveryResult(_ result: CheckoutRecoveryConfirmationResult,
                                       for confirmation: CheckoutRecoveryConfirmation) {
-        guard checkoutConfirmation?.key == confirmation.key,
-              checkoutConfirmation?.pairing == confirmation.pairing else { return }
+        guard checkoutConfirmation?.matches(confirmation) == true else { return }
         switch result {
-        case .accepted:
-            requestedCheckoutRecoveryTaskIds.insert(confirmation.request.taskId)
+        case .accepted(.applied), .rejected:
             checkoutConfirmation = nil
-        case .rejected:
-            checkoutConfirmation = nil
+            if !isDemo { ProtectedCache.remove("checkout-recovery.json") }
+        case .accepted(.accepted), .accepted(.draining):
+            break
         case .uncertain:
             checkoutConfirmation?.markUncertain()
         }
@@ -1873,18 +1893,24 @@ private struct ModelResponse: Decodable, Sendable { let model: String; let model
 private struct AttachmentRequest: Encodable { let botId: String; let filename: String; let contentBase64: String }
 private struct LearningResponse: Decodable, Sendable { let groups: [LearningGroup] }
 
-private enum ProtectedCache {
+enum ProtectedCache {
     private static var directory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Coconut", isDirectory: true)
     }
 
-    static func read<T: Decodable>(_ name: String) -> T? {
-        guard let data = try? Data(contentsOf: directory.appendingPathComponent(name)) else { return nil }
+    static func read<T: Decodable>(_ name: String, in location: URL? = nil) -> T? {
+        guard let data = try? Data(contentsOf: (location ?? directory).appendingPathComponent(name)) else { return nil }
         return try? JSONDecoder().decode(T.self, from: data)
     }
 
-    static func write<T: Encodable>(_ value: T, name: String) throws {
-        var directory = directory
+    static func readPendingCheckout(for pairing: CheckoutRecoveryPairing, in location: URL? = nil) -> CheckoutRecoveryConfirmation? {
+        guard let pending: CheckoutRecoveryConfirmation = read("checkout-recovery.json", in: location),
+              pending.matches(pairing: pairing) else { return nil }
+        return pending
+    }
+
+    static func write<T: Encodable>(_ value: T, name: String, in location: URL? = nil) throws {
+        var directory = location ?? directory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.protectionKey: FileProtectionType.complete])
         var resourceValues = URLResourceValues()
         resourceValues.isExcludedFromBackup = true

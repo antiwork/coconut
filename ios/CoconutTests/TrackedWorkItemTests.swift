@@ -5,11 +5,19 @@ final class TrackedWorkItemTests: XCTestCase {
     private let recoveryPairing = CheckoutRecoveryPairing(deviceId: "phone", serverURL: "https://original.example:443",
                                                           fingerprint: String(repeating: "a", count: 64))
 
-    private func recoveryPreview() throws -> CheckoutRecoveryPreview {
+    private func recoveryPreview(key: String = "same-key") throws -> CheckoutRecoveryPreview {
         let fixture = """
         {"key":"same-key","dirty_count":3,"resume_consent":"fresh","request":{"task_id":"owner","native_task_id":"native","expected_owner":"execution","repository":"/repo","path":"/worktree","saved_branch":"saved","attached_branch":"attached","saved_head":"a","attached_head":"b","recovery_branch":"recovery","message":"Continue"}}
         """
-        return try APIJSON.decoder().decode(CheckoutRecoveryPreview.self, from: Data(fixture.utf8))
+        return try APIJSON.decoder().decode(CheckoutRecoveryPreview.self,
+            from: Data(fixture.replacingOccurrences(of: "same-key", with: key).utf8))
+    }
+
+    private func roundtripPendingCheckout(_ confirmation: CheckoutRecoveryConfirmation) throws -> CheckoutRecoveryConfirmation {
+        let location = FileManager.default.temporaryDirectory.appendingPathComponent("checkout-recovery-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: location) }
+        try ProtectedCache.write(confirmation, name: "checkout-recovery.json", in: location)
+        return try XCTUnwrap(ProtectedCache.readPendingCheckout(for: confirmation.pairing, in: location))
     }
 
     private func item(status: String = "working") -> Artifact {
@@ -94,6 +102,8 @@ final class TrackedWorkItemTests: XCTestCase {
         XCTAssertEqual(try APIJSON.encode(XCTUnwrap(store.checkoutConfirmation).request), initialBody)
         XCTAssertEqual(CheckoutRecoveryConfirmationResult.classify(error: ServiceError.invalidResponse),
                        .uncertain("The Mac returned an unreadable response."))
+        XCTAssertEqual(CheckoutRecoveryConfirmationResult.classify(error: ServiceError.response(408, "Request timed out.")),
+                       .uncertain("Request timed out."))
         XCTAssertEqual(CheckoutRecoveryConfirmationResult.classify(receipt: CheckoutRecoveryReceipt(state: "unexpected", error: nil)),
                        .uncertain("The Mac returned an unrecognized recovery state. Retry the same confirmation to check it."))
         XCTAssertTrue(String(decoding: initialBody, as: UTF8.self).contains("\"resume_confirmed\":true"))
@@ -112,7 +122,6 @@ final class TrackedWorkItemTests: XCTestCase {
         store.checkoutConfirmation = confirmation
         store.recordCheckoutRecoveryResult(result, for: confirmation)
         XCTAssertNil(store.checkoutConfirmation)
-        XCTAssertFalse(store.requestedCheckoutRecoveryTaskIds.contains("owner"))
     }
 
     @MainActor
@@ -126,21 +135,72 @@ final class TrackedWorkItemTests: XCTestCase {
         store.checkoutConfirmation = confirmation
         store.recordCheckoutRecoveryResult(result, for: confirmation)
         XCTAssertNil(store.checkoutConfirmation)
-        XCTAssertTrue(store.requestedCheckoutRecoveryTaskIds.isEmpty)
     }
 
     @MainActor
-    func testAcceptedDrainingAndAppliedReceiptsRecordSuccess() throws {
-        for state in [CheckoutRecoveryAcceptedState.accepted, .draining, .applied] {
-            let store = AppStore(demo: true)
-            let confirmation = CheckoutRecoveryConfirmation(preview: try recoveryPreview(), pairing: recoveryPairing)
-            store.checkoutConfirmation = confirmation
-            let result = CheckoutRecoveryConfirmationResult.classify(receipt: CheckoutRecoveryReceipt(state: state.rawValue, error: nil))
-            XCTAssertEqual(result, .accepted(state))
-            store.recordCheckoutRecoveryResult(result, for: confirmation)
-            XCTAssertNil(store.checkoutConfirmation)
-            XCTAssertTrue(store.requestedCheckoutRecoveryTaskIds.contains("owner"))
+    func testDrainingThenHeldAllowsFreshStopPreview() throws {
+        let store = AppStore(demo: true)
+        let confirmation = CheckoutRecoveryConfirmation(preview: try recoveryPreview(), pairing: recoveryPairing)
+        store.checkoutConfirmation = confirmation
+        for state in [CheckoutRecoveryAcceptedState.accepted, .draining] {
+            store.recordCheckoutRecoveryResult(.classify(receipt: CheckoutRecoveryReceipt(state: state.rawValue, error: nil)),
+                                               for: confirmation)
+            XCTAssertTrue(store.checkoutConfirmation?.matches(confirmation) == true)
         }
+        let restored = try roundtripPendingCheckout(XCTUnwrap(store.checkoutConfirmation))
+        store.checkoutConfirmation = restored
+        let held = CheckoutRecoveryConfirmationResult.classify(receipt: CheckoutRecoveryReceipt(state: "held", error: "Stop changed."))
+        store.recordCheckoutRecoveryResult(held, for: restored)
+        XCTAssertEqual(held, .rejected("Stop changed."))
+        XCTAssertNil(store.checkoutConfirmation)
+        let fresh = CheckoutRecoveryConfirmation(preview: try recoveryPreview(key: "new-stop-key"), pairing: recoveryPairing)
+        store.checkoutConfirmation = fresh
+        XCTAssertEqual(store.checkoutConfirmation?.key, "new-stop-key")
+    }
+
+    @MainActor
+    func testDrainingThenAppliedAllowsFreshStopPreview() throws {
+        let store = AppStore(demo: true)
+        let confirmation = CheckoutRecoveryConfirmation(preview: try recoveryPreview(), pairing: recoveryPairing)
+        store.checkoutConfirmation = confirmation
+        store.recordCheckoutRecoveryResult(.classify(receipt: CheckoutRecoveryReceipt(state: "draining", error: nil)),
+                                           for: confirmation)
+        XCTAssertEqual(store.checkoutConfirmation?.key, confirmation.key)
+        let restored = try roundtripPendingCheckout(XCTUnwrap(store.checkoutConfirmation))
+        store.checkoutConfirmation = restored
+        store.recordCheckoutRecoveryResult(.classify(receipt: CheckoutRecoveryReceipt(state: "applied", error: nil)),
+                                           for: restored)
+        XCTAssertNil(store.checkoutConfirmation)
+        let fresh = CheckoutRecoveryConfirmation(preview: try recoveryPreview(key: "later-stop-key"), pairing: recoveryPairing)
+        store.checkoutConfirmation = fresh
+        XCTAssertEqual(store.checkoutConfirmation?.key, "later-stop-key")
+    }
+
+    @MainActor
+    func testLostReplyRestoresExactRequestAndPairingFromPrivateCache() throws {
+        let location = FileManager.default.temporaryDirectory.appendingPathComponent("checkout-recovery-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: location) }
+        let original = CheckoutRecoveryConfirmation(preview: try recoveryPreview(), pairing: recoveryPairing)
+        let requestBytes = try APIJSON.encode(original.request)
+        try ProtectedCache.write(original, name: "checkout-recovery.json", in: location)
+        let persisted = try Data(contentsOf: location.appendingPathComponent("checkout-recovery.json"))
+        XCTAssertFalse(String(decoding: persisted, as: UTF8.self).contains("token"))
+        let restored = try XCTUnwrap(ProtectedCache.readPendingCheckout(for: recoveryPairing, in: location))
+        XCTAssertEqual(restored.key, original.key)
+        XCTAssertEqual(restored.pairing, original.pairing)
+        XCTAssertEqual(try APIJSON.encode(restored.request), requestBytes)
+        XCTAssertNil(ProtectedCache.readPendingCheckout(for: CheckoutRecoveryPairing(
+            deviceId: "re-paired", serverURL: recoveryPairing.serverURL, fingerprint: recoveryPairing.fingerprint), in: location))
+        XCTAssertNil(ProtectedCache.readPendingCheckout(for: CheckoutRecoveryPairing(
+            deviceId: recoveryPairing.deviceId, serverURL: "https://different.example", fingerprint: recoveryPairing.fingerprint), in: location))
+        XCTAssertNil(ProtectedCache.readPendingCheckout(for: CheckoutRecoveryPairing(
+            deviceId: recoveryPairing.deviceId, serverURL: recoveryPairing.serverURL,
+            fingerprint: String(repeating: "b", count: 64)), in: location))
+        let relaunchedStore = AppStore(demo: true)
+        relaunchedStore.checkoutConfirmation = restored
+        relaunchedStore.recordCheckoutRecoveryResult(.classify(error: URLError(.networkConnectionLost)), for: restored)
+        XCTAssertEqual(relaunchedStore.checkoutConfirmation?.key, original.key)
+        XCTAssertEqual(try APIJSON.encode(XCTUnwrap(relaunchedStore.checkoutConfirmation).request), requestBytes)
     }
 
     @MainActor
