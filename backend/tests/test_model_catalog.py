@@ -318,6 +318,18 @@ with open(os.devnull, 'w') as quiet, contextlib.redirect_stdout(quiet), contextl
         expected = self.run_native("from agent.reasoning_effort import codex_supported_efforts\nresult = list(codex_supported_efforts('gpt-6-astra'))")
         self.assertEqual(result['models'][0]['reasoning_efforts'], expected)
 
+    def test_an_xai_subscription_lists_its_grok_models(self):
+        # xai-oauth is an xAI subscription through Hermes device-code sign-in.
+        (self.home / 'config.yaml').write_text('model:\n  default: gpt-6-astra\n  provider: openai-codex\n')
+        result = self.run_native("config, model, provider, url = m._native_state()\nresult = m._catalog(config, model, provider, url, ["
+                                 "{'slug': provider, 'models': [model], 'source': 'hermes'}, "
+                                 "{'slug': 'xai-oauth', 'models': ['grok-4.7'], 'source': 'hermes'}, "
+                                 "{'slug': 'unsupported-provider', 'models': ['other'], 'source': 'hermes'}])")
+        grok = [m for m in result['models'] if m['id'] == 'grok-4.7']
+        self.assertEqual([m['provider'] for m in grok], ['xai-oauth'])
+        self.assertEqual([m['base_url'] for m in grok], ['https://api.x.ai/v1'])
+        self.assertNotIn('other', [m['id'] for m in result['models']])
+
     def test_active_profile_reads_its_own_native_config(self):
         profile = self.home / 'profiles/work'
         profile.mkdir(parents=True)

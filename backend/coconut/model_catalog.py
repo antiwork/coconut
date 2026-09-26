@@ -22,7 +22,8 @@ RUNTIME_KEYS = frozenset(('provider', 'api_mode', 'base_url', 'api_key', 'reques
                           'acp_command', 'acp_args', 'command', 'args'))
 ENV_KEYS = ('PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
             'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY')
-SUPPORTED_PROVIDERS = frozenset(('openai-codex', 'anthropic', 'openai', 'openai-api', 'openrouter'))
+# xai-oauth is an xAI subscription through Hermes device-code sign-in. It uses the codex_responses API.
+SUPPORTED_PROVIDERS = frozenset(('openai-codex', 'anthropic', 'openai', 'openai-api', 'openrouter', 'xai-oauth'))
 UNSUPPORTED_RUNTIME_FIELDS = frozenset(('extra_headers', 'extra_body', 'request_overrides', 'capabilities', 'key_cmd'))
 UNSUPPORTED_ROUTE_MESSAGE = 'This Hermes provider setup is not supported in Coconut yet. Use it in Hermes Terminal.'
 
