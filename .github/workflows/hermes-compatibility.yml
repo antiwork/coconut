@@ -33,7 +33,7 @@ jobs:
           PYTHONPATH: backend
         run: |
           python -m unittest discover -s backend/tests -p test_worker_model_settings.py
-          python -m unittest discover -s backend/tests -p test_dependency_unlink.py
+          python -m unittest discover -s backend/tests -p 'test_dependency_unlink*.py'
           python -m unittest discover -s backend/tests -p test_live_messages.py
           python -m unittest discover -s backend/tests -p test_message_interactions.py
           python -m unittest discover -s backend/tests -p test_bot_references.py
