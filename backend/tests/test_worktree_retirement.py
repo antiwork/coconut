@@ -1010,14 +1010,13 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertFalse(self.listed(inner))
         self.assertIn('retired', self.registry()[identity])
 
-    def test_a_nested_worktree_that_holds_work_keeps_the_parent(self):
+    def test_a_nested_worktree_that_git_cannot_rebuild_keeps_the_parent(self):
         cases = {
-            'untracked': lambda inner: (inner / 'draft.txt').write_text('keep\n'),
-            'modified': lambda inner: (inner / 'tracked.txt').write_text('changed\n'),
-            'ignored': lambda inner: (inner / '.env').write_text('SECRET=1\n'),
             'locked': lambda inner: git(self.repo, 'worktree', 'lock', str(inner)),
             'unsaved commit': lambda inner: (
                 (inner / 'new.txt').write_text('commit\n'), git(inner, 'add', 'new.txt'), self.commit(inner, 'Only here')),
+            'git operation': lambda inner: Path(git(inner, 'rev-parse', '--path-format=absolute', '--git-path', 'MERGE_HEAD'))
+                .write_text(git(inner, 'rev-parse', 'HEAD') + '\n'),
         }
         for name, change in cases.items():
             with self.subTest(name=name):
@@ -1029,22 +1028,68 @@ class WorktreeRetirementTests(unittest.TestCase):
                 self.assertTrue(self.listed(inner))
                 self.assertNotIn('retired', self.registry()[identity])
 
+    def nested_archives(self):
+        return sorted((self.workspaces / 'archive' / 'nested').glob('*.tar.gz'))
+
+    def test_a_nested_worktree_with_changes_is_archived_and_the_parent_retires(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path, 'subagent', folder='.worktrees')
+        git(self.repo, 'branch', 'subagent-branch', git(inner, 'rev-parse', 'HEAD'))
+        git(inner, 'checkout', '-q', 'subagent-branch')
+        (inner / 'tracked.txt').write_text('one\nstaged\n')
+        git(inner, 'add', 'tracked.txt')
+        (inner / 'tracked.txt').write_text('one\nstaged\nunstaged\n')
+        (inner / 'draft.md').write_text('untracked draft\n')
+        (inner / '.env').write_text('SECRET=1\n')
+        (inner / 'node_modules').mkdir()
+        (inner / 'node_modules' / 'cache.js').write_text('rebuildable\n')
+        self.assertEqual(self.retire(), [identity])
+        self.assertFalse(inner.exists())
+        self.assertFalse(self.listed(inner))
+        self.assertIn('retired', self.registry()[identity])
+        [archive] = self.nested_archives()
+        self.assertEqual(archive.stat().st_mode & 0o777, 0o600)
+        with tarfile.open(archive) as tar:
+            self.assertEqual(sorted(tar.getnames()), ['ignored/.env', 'retirement.json', 'staged.patch', 'unstaged.patch',
+                                                      'untracked/draft.md'])
+            metadata = json.loads(tar.extractfile('retirement.json').read())
+            self.assertIn(b'+staged', tar.extractfile('staged.patch').read())
+            self.assertIn(b'+unstaged', tar.extractfile('unstaged.patch').read())
+        self.assertEqual((metadata['branch'], metadata['parent'], metadata['path']),
+                         ('refs/heads/subagent-branch', str(path.resolve()), str(inner.resolve())))
+        # The branch keeps the nested worktree's commits.
+        self.assertTrue(git(self.repo, 'rev-parse', '--verify', 'refs/heads/subagent-branch'))
+
+    def test_an_outcome_that_resumes_during_the_nested_archive_keeps_the_nested_worktree(self):
+        _, identity, path, _ = self.outcome()
+        inner = self.nested_worktree(path)
+        (inner / 'draft.txt').write_text('keep\n')
+        answers = iter([True, False])
+        with self.assertRaisesRegex(ValueError, 'resumed'):
+            work_workspace.remove_nested(self.workspaces, path.resolve(), self.repo, finished=lambda wait: next(answers))
+        self.assertTrue((inner / 'draft.txt').is_file())
+        self.assertTrue(self.listed(inner))
+        self.assertEqual(self.nested_archives(), [])
+        self.assertEqual(list((self.workspaces / 'archive' / 'nested').glob('.*')), [])
+
     def test_a_nested_worktree_at_a_path_that_git_does_not_ignore_is_removed(self):
         _, identity, path, _ = self.outcome()
         inner = self.nested_worktree(path, folder='checks')
         self.assertEqual(self.retire(), [identity])
         self.assertFalse(inner.exists())
 
-    def test_one_nested_worktree_with_work_keeps_every_nested_worktree(self):
+    def test_one_nested_worktree_that_cannot_go_keeps_every_nested_worktree(self):
         _, identity, path, _ = self.outcome()
         first = self.nested_worktree(path, 'first')
         second = self.nested_worktree(path, 'second')
-        (second / 'draft.txt').write_text('keep\n')
+        (first / 'draft.txt').write_text('keep\n')
+        git(self.repo, 'worktree', 'lock', str(second))
         self.assertEqual(self.retire(), [])
-        # Coconut checks all nested worktrees before it removes any.
-        self.assertTrue(first.is_dir())
+        # Coconut checks all nested worktrees before it archives or removes any.
+        self.assertTrue((first / 'draft.txt').is_file())
         self.assertTrue(self.listed(first))
         self.assertTrue(second.is_dir())
+        self.assertEqual(self.nested_archives(), [])
 
     def test_an_unreadable_registry_keeps_the_nested_worktree(self):
         _, identity, path, _ = self.outcome()
@@ -1066,9 +1111,10 @@ class WorktreeRetirementTests(unittest.TestCase):
                 (inner / '.env').write_text('SECRET=1\n')
             return original(where)
         with patch('coconut.work_workspace.ignored_files', side_effect=late):
-            with self.assertRaisesRegex(ValueError, 'with changes'):
+            with self.assertRaisesRegex(ValueError, 'changed during retirement'):
                 work_workspace.remove_nested(self.workspaces, path.resolve(), self.repo)
         self.assertEqual((inner / '.env').read_text(), 'SECRET=1\n')
+        self.assertTrue(self.listed(inner))
 
     def test_a_doubly_nested_worktree_is_removed_deepest_first(self):
         _, identity, path, _ = self.outcome()
