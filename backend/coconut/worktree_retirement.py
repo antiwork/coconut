@@ -28,9 +28,10 @@ SERVICE_WAIT_SECONDS = 5
 # so this wait keeps a busy service from wasting the archive. A turn that starts meanwhile waits at most this long.
 LOCKED_WAIT_SECONDS = 3
 # A worktree that meets a busy service is tried again in the same pass, after this pause, at most BUSY_RETRIES times.
-# Some service passes hold the lock for seconds, and the next pass is an hour away.
+# Some service passes hold the lock for seconds, and the next pass is an hour away. A retry can repeat the archive
+# write, so there is one.
 BUSY_RETRY_SECONDS = 30
-BUSY_RETRIES = 3
+BUSY_RETRIES = 1
 BUSY_MESSAGE = 'The service was busy. Coconut tries again in an hour.'
 
 
@@ -149,12 +150,23 @@ class WorktreeRetirement:
         bindings = {k: v['outcome'] for k, v in saved.items() if not v.get('retired')}
         retired = []
         pending = [(identity, outcome) for identity, outcome in bindings.items() if outcome in finished]
+
+        def dropped(items):
+            for identity, _ in items:
+                logging.getLogger(__name__).warning('Coconut did not retire worktree %s: %s', identity, BUSY_MESSAGE)
         for attempt in range(BUSY_RETRIES + 1):
-            if attempt and (not pending or self.stopping.wait(BUSY_RETRY_SECONDS)):
+            if attempt and not pending:
+                break
+            if attempt and (self.stopping.wait(BUSY_RETRY_SECONDS) or self.restart_pending):
+                dropped(pending)
                 break
             busy = []
-            for identity, outcome in pending:
+            for index, (identity, outcome) in enumerate(pending):
                 if self.stopping.is_set() or self.restart_pending:
+                    if attempt:
+                        # These worktrees met a busy service before. Name them.
+                        dropped(pending[index:])
+                    dropped(busy)
                     return retired
 
                 def still_finished(wait, outcome=outcome):

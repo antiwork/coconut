@@ -125,8 +125,9 @@ a client program such as `docker`, the JDK, Xcode, and the Command Line Tools ar
 the worktree. An open file of a shared service still keeps it.
 
 The log names the cause when Coconut does not retire a worktree, for example a busy service or a changed worktree.
-When the service is busy, Coconut tries that worktree again in the same pass, up to three times, 30 seconds apart
-(`BUSY_RETRIES`, `BUSY_RETRY_SECONDS`).
+When the service is busy, Coconut tries that worktree again once in the same pass, 30 seconds later
+(`BUSY_RETRIES`, `BUSY_RETRY_SECONDS`). A stop or a pending restart ends the pass, and the log names each busy
+worktree.
 Steps 1 to 7 do not hold the registry lock. Step 8 runs Git commands that do not wait for other processes.
 A path hint for native dispatch reads `worktrees.json` without the registry lock, because dispatch holds the service lock.
 The provider's verified lookup runs before a turn without the service lock. It can wait for the registry lock.
