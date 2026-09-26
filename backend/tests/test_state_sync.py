@@ -44,6 +44,21 @@ class StateSyncTests(unittest.TestCase):
             state = self.service.snapshot(content_only=True)
         self.assertEqual([t['id'] for t in state['tasks']], [task['id']])
 
+    def test_full_state_retains_cancelled_original_after_recent_history_ages_out(self):
+        original = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Original checkout'})
+        successor = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Resumed checkout'})
+        with self.service.transaction():
+            original['status'] = 'cancelled'
+            self.service._put('tasks', original)
+            for number in range(80):
+                self.service._message(self.bot['id'], str(number))
+        recent = self.service.snapshot(content_only=True, compact_history=True)
+        full = self.service.snapshot()
+        self.assertNotIn(original['id'], {task['id'] for task in recent['tasks']})
+        self.assertIn(successor['id'], {task['id'] for task in recent['tasks']})
+        self.assertIn(original['id'], {task['id'] for task in full['tasks']})
+        self.assertIn(successor['id'], {task['id'] for task in full['tasks']})
+
     def test_recent_snapshot_loads_card_history_with_its_conversation_page(self):
         task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Review this outcome'})
         template = dict(bot_id=self.bot['id'], task_id=task['id'], action_type='question',

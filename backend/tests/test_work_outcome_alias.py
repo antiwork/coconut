@@ -84,6 +84,9 @@ class WorkOutcomeAliasTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', child['id'])['status'], 'cancelled')
         row = self.service._work_projection([self.service._get('artifacts', pr['id'])])[0]
         self.assertEqual(row['work_state'], 'cancelled')
+        self.assertNotIn('checkout_recovery_stopped', row)
+        canonical = self.service._work_projection([self.service._get('artifacts', parent['id'])])[0]
+        self.assertIs(canonical['checkout_recovery_stopped'], True)
 
     def test_hidden_delegate_keeps_context_for_existing_discussions(self):
         parent = self.track()

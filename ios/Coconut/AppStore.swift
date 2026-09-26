@@ -20,6 +20,7 @@ final class AppStore {
     var answeringDecisionIds: Set<String> = []
     var decisionReplyDrafts: [String: String] = [:]
     var artifacts: [Artifact] = []
+    var checkoutConfirmation: CheckoutRecoveryConfirmation?
     var workVisibility: [String: Bool] = [:]
     var workUndo: [WorkDismissal] = []
     @ObservationIgnored private var workMutationTail: Task<Void, Never>?
@@ -156,6 +157,10 @@ final class AppStore {
         #if DEBUG && targetEnvironment(simulator)
         configureFromLaunchEnvironment()
         #endif
+        if let pairing {
+            checkoutConfirmation = ProtectedCache.readPendingCheckout(for: CheckoutRecoveryPairing(
+                deviceId: pairing.deviceId, serverURL: pairing.serverURL, fingerprint: pairing.fingerprint))
+        }
     }
 
     func start() {
@@ -272,6 +277,7 @@ final class AppStore {
 
     func disconnect() {
         workVisibility = [:]; workUndo = []; workMutationIds = [:]
+        checkoutConfirmation = nil
         if let deviceId = pairing?.deviceId {
             PushRelayClient.shared.disable(deviceId: deviceId)
             NotificationKeys.forget(deviceId: deviceId)
@@ -296,6 +302,7 @@ final class AppStore {
             ProtectedCache.remove("pairing.json")
             cacheQueue.sync { ProtectedCache.remove("snapshot.json") }
             ProtectedCache.remove("outgoing.json")
+            ProtectedCache.remove("checkout-recovery.json")
         }
         bots = []; tasks = []; messages = []; decisions = []; artifacts = []; learning = []
         routines = []
@@ -663,6 +670,139 @@ final class AppStore {
         let _: Acknowledgement? = await write("work/items/\(item.artifact.id)/resume", payload: EmptyRequest(), as: Acknowledgement.self)
     }
 
+    func checkoutRecoveryPreview(_ item: TrackedWorkItem) async throws -> CheckoutRecoveryCheck {
+        guard !isDemo, let work = item.checkoutRecoveryWork, let taskId = work.taskId,
+              tasks.contains(where: { $0.id == taskId && $0.status == "cancelled" }),
+              let pairing, let token = PairingToken.read() else {
+            throw ServiceError.configuration("Pair with your Mac to check this task.")
+        }
+        let client = try APIClient(serverURL: pairing.serverURL, fingerprint: pairing.fingerprint, token: token)
+        let preview: CheckoutRecoveryPreview = try await client.request("tasks/\(taskId)/checkout-recovery")
+        guard self.pairing?.deviceId == pairing.deviceId, self.pairing?.serverURL == pairing.serverURL,
+              self.pairing?.fingerprint == pairing.fingerprint,
+              artifacts.first(where: { $0.id == work.id })?.workState == "cancelled",
+              tasks.contains(where: { $0.id == taskId && $0.status == "cancelled" }) else {
+            throw ServiceError.configuration("This task changed. Check it again.")
+        }
+        return CheckoutRecoveryCheck(preview: preview, pairing: CheckoutRecoveryPairing(
+            deviceId: pairing.deviceId, serverURL: pairing.serverURL, fingerprint: pairing.fingerprint),
+            workItemId: work.id)
+    }
+
+    func stageCheckoutRecovery(_ confirmation: CheckoutRecoveryConfirmation) throws {
+        guard !isDemo, checkoutConfirmation == nil, let pairing,
+              let workItemId = confirmation.workItemId,
+              artifacts.contains(where: { $0.id == workItemId && $0.kind == "work" &&
+                  ($0.workOutcomeId == nil || $0.workOutcomeId == $0.id) &&
+                  $0.taskId == confirmation.request.taskId && $0.workState == "cancelled" }),
+              tasks.contains(where: { $0.id == confirmation.request.taskId && $0.status == "cancelled" }),
+              confirmation.matches(pairing: CheckoutRecoveryPairing(deviceId: pairing.deviceId,
+                  serverURL: pairing.serverURL, fingerprint: pairing.fingerprint)),
+              PairingToken.read() != nil else {
+            throw ServiceError.configuration("The pairing or task changed. Check the task again.")
+        }
+        try ProtectedCache.write(confirmation, name: "checkout-recovery.json")
+        checkoutConfirmation = confirmation
+    }
+
+    func confirmCheckoutRecovery(_ confirmation: CheckoutRecoveryConfirmation) async -> CheckoutRecoveryConfirmationResult {
+        guard let pairing, confirmation.matches(pairing: CheckoutRecoveryPairing(
+            deviceId: pairing.deviceId, serverURL: pairing.serverURL, fingerprint: pairing.fingerprint)),
+              PairingToken.read() != nil else {
+            return .rejected("The pairing changed. Check the task again.")
+        }
+        guard let pending = checkoutConfirmation, pending.matches(confirmation),
+              let saved = ProtectedCache.readPendingCheckout(for: confirmation.pairing),
+              saved.matches(confirmation) else {
+            return .notSent("The saved confirmation is unavailable. No request was sent. Check recovery status again.")
+        }
+        var intent = pending
+        intent.markUncertain()
+        do {
+            try ProtectedCache.write(intent, name: "checkout-recovery.json")
+        } catch {
+            return .notSent("The phone could not save the recovery retry warning. No request was sent. Keep this confirmation and key; retry when storage is available: \(error.localizedDescription)")
+        }
+        checkoutConfirmation = intent
+        var failure: CheckoutRecoveryConfirmationResult?
+        let receipt: CheckoutRecoveryReceipt? = await write("maintenance/checkout-recovery", payload: confirmation.request,
+            as: CheckoutRecoveryReceipt.self, idempotencyKey: confirmation.key,
+            expectedPairing: confirmation.pairing,
+            onFailure: { failure = CheckoutRecoveryConfirmationResult.classify(error: $0) })
+        guard let current = self.pairing, confirmation.matches(pairing: CheckoutRecoveryPairing(
+            deviceId: current.deviceId, serverURL: current.serverURL, fingerprint: current.fingerprint)) else {
+            return .rejected("The pairing changed. Check the task again.")
+        }
+        if let receipt { return .classify(receipt: receipt) }
+        return failure ?? .uncertain("Recovery was not confirmed. Retry the same confirmation to check it.")
+    }
+
+    @discardableResult
+    func recordCheckoutRecoveryResult(_ result: CheckoutRecoveryConfirmationResult,
+                                      for confirmation: CheckoutRecoveryConfirmation,
+                                      in location: URL? = nil) -> String? {
+        guard checkoutConfirmation?.matches(confirmation) == true else { return nil }
+        switch result {
+        case .accepted(.applied), .rejected:
+            checkoutConfirmation = nil
+            if !isDemo || location != nil { ProtectedCache.remove("checkout-recovery.json", in: location) }
+        case .accepted(.accepted), .accepted(.draining):
+            var known = confirmation
+            known.clearUncertain()
+            if !isDemo || location != nil {
+                do { try ProtectedCache.write(known, name: "checkout-recovery.json", in: location) }
+                catch { return "The Mac accepted recovery, but the phone could not save its status. Keep this confirmation and key: \(error.localizedDescription)" }
+            }
+            checkoutConfirmation = known
+        case .notSent:
+            break
+        case .uncertain:
+            var uncertain = checkoutConfirmation ?? confirmation
+            uncertain.markUncertain()
+            checkoutConfirmation = uncertain
+            if !isDemo || location != nil {
+                do { try ProtectedCache.write(uncertain, name: "checkout-recovery.json", in: location) }
+                catch { return "The phone could not save the recovery retry warning. Keep this confirmation and key: \(error.localizedDescription)" }
+            }
+        }
+        return nil
+    }
+
+    @discardableResult
+    func stopPendingCheckoutRecovery(_ confirmation: CheckoutRecoveryConfirmation) async -> String? {
+        guard !isDemo, checkoutConfirmation?.matches(confirmation) == true,
+              let saved = ProtectedCache.readPendingCheckout(for: confirmation.pairing),
+              saved.matches(confirmation), let stop = CheckoutRecoveryStop(confirmation: confirmation) else {
+            return "The saved recovery request is unavailable. Check recovery status before stopping it."
+        }
+        var workFailure: Error?
+        let failure = await cancelWorkItem(path: stop.path, idempotencyKey: stop.key,
+            expectedPairing: confirmation.pairing, onFailure: { workFailure = $0 })
+        guard let failure, let workError = workFailure as? ServiceError,
+              case .response(409, _) = workError else { return failure }
+        guard let pairing, confirmation.matches(pairing: CheckoutRecoveryPairing(
+            deviceId: pairing.deviceId, serverURL: pairing.serverURL, fingerprint: pairing.fingerprint)),
+              let token = PairingToken.read() else {
+            return "The pairing changed. Check the task again."
+        }
+        do {
+            let client = try APIClient(serverURL: pairing.serverURL, fingerprint: pairing.fingerprint, token: token)
+            let snapshot: StateSnapshot = try await client.request("state", fullState: true)
+            guard let current = self.pairing, confirmation.matches(pairing: CheckoutRecoveryPairing(
+                deviceId: current.deviceId, serverURL: current.serverURL, fingerprint: current.fingerprint)) else {
+                return "The pairing changed. Check the task again."
+            }
+            guard let successor = stop.admittedSuccessor(in: snapshot.artifacts, tasks: snapshot.tasks) else { return failure }
+            var successorFailure: String?
+            let receipt: AgentTask? = await write("tasks/\(successor.id)/cancel", payload: EmptyRequest(),
+                as: AgentTask.self, refreshInBackground: true, idempotencyKey: UUID().uuidString,
+                expectedPairing: confirmation.pairing, onFailure: { successorFailure = $0.localizedDescription })
+            return receipt == nil ? successorFailure ?? "The resumed task was not confirmed stopped. Try again." : nil
+        } catch {
+            return "The Mac could not verify whether Work already resumed. No additional Stop was sent: \(error.localizedDescription)"
+        }
+    }
+
     @discardableResult
     func cancelWork(_ item: TrackedWorkItem) async -> String? {
         if isDemo {
@@ -672,10 +812,17 @@ final class AppStore {
             }
             return nil
         }
+        return await cancelWorkItem(path: "work/items/\(item.artifact.id)/cancel")
+    }
+
+    private func cancelWorkItem(path: String, idempotencyKey: String? = nil,
+                                expectedPairing: CheckoutRecoveryPairing? = nil,
+                                onFailure: ((Error) -> Void)? = nil) async -> String? {
         let generation = connectionGeneration
         var failure: String?
-        let receipt = await write("work/items/\(item.artifact.id)/cancel", payload: EmptyRequest(), as: WorkCancellationReceipt.self,
-            refreshInBackground: true, onFailure: { failure = $0.localizedDescription })
+        let receipt = await write(path, payload: EmptyRequest(), as: WorkCancellationReceipt.self,
+            refreshInBackground: true, idempotencyKey: idempotencyKey, expectedPairing: expectedPairing,
+            onFailure: { failure = $0.localizedDescription; onFailure?($0) })
         guard let receipt, receipt.ok else { return failure ?? "Cancellation was not confirmed. Try again." }
         guard generation == connectionGeneration else { return nil }
         if let updated = receipt.applying(to: artifacts, after: cursor) {
@@ -1172,8 +1319,18 @@ final class AppStore {
         return result?.ok == true
     }
 
-    private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, refreshInBackground: Bool = false, idempotencyKey: String? = nil, onFailure: ((Error) -> Void)? = nil, onSuccess: ((Response) -> Void)? = nil) async -> Response? {
+    private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, refreshInBackground: Bool = false, idempotencyKey: String? = nil, expectedPairing: CheckoutRecoveryPairing? = nil, onFailure: ((Error) -> Void)? = nil, onSuccess: ((Response) -> Void)? = nil) async -> Response? {
+        if let expectedPairing,
+           pairing.map({ CheckoutRecoveryPairing(deviceId: $0.deviceId, serverURL: $0.serverURL,
+                                                 fingerprint: $0.fingerprint) }) != expectedPairing {
+            onFailure?(ServiceError.configuration("The pairing changed. Check the task again."))
+            return nil
+        }
         guard let pairing, let token = PairingToken.read() else {
+            if expectedPairing != nil {
+                onFailure?(ServiceError.configuration("Pair with your Mac and check the task again."))
+                return nil
+            }
             if !quiet { error = "Pair with your Mac in Settings to continue." }
             return nil
         }
@@ -1811,18 +1968,24 @@ private struct ModelResponse: Decodable, Sendable { let model: String; let model
 private struct AttachmentRequest: Encodable { let botId: String; let filename: String; let contentBase64: String }
 private struct LearningResponse: Decodable, Sendable { let groups: [LearningGroup] }
 
-private enum ProtectedCache {
+enum ProtectedCache {
     private static var directory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Coconut", isDirectory: true)
     }
 
-    static func read<T: Decodable>(_ name: String) -> T? {
-        guard let data = try? Data(contentsOf: directory.appendingPathComponent(name)) else { return nil }
+    static func read<T: Decodable>(_ name: String, in location: URL? = nil) -> T? {
+        guard let data = try? Data(contentsOf: (location ?? directory).appendingPathComponent(name)) else { return nil }
         return try? JSONDecoder().decode(T.self, from: data)
     }
 
-    static func write<T: Encodable>(_ value: T, name: String) throws {
-        var directory = directory
+    static func readPendingCheckout(for pairing: CheckoutRecoveryPairing, in location: URL? = nil) -> CheckoutRecoveryConfirmation? {
+        guard let pending: CheckoutRecoveryConfirmation = read("checkout-recovery.json", in: location),
+              pending.matches(pairing: pairing) else { return nil }
+        return pending
+    }
+
+    static func write<T: Encodable>(_ value: T, name: String, in location: URL? = nil) throws {
+        var directory = location ?? directory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.protectionKey: FileProtectionType.complete])
         var resourceValues = URLResourceValues()
         resourceValues.isExcludedFromBackup = true
@@ -1830,7 +1993,9 @@ private enum ProtectedCache {
         try JSONEncoder().encode(value).write(to: directory.appendingPathComponent(name), options: [.atomic, .completeFileProtection])
     }
 
-    static func remove(_ name: String) { try? FileManager.default.removeItem(at: directory.appendingPathComponent(name)) }
+    static func remove(_ name: String, in location: URL? = nil) {
+        try? FileManager.default.removeItem(at: (location ?? directory).appendingPathComponent(name))
+    }
 }
 
 private extension AppStore {

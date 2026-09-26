@@ -4,6 +4,7 @@ All databases, profiles, worktrees, HTTP servers and model responses are local
 disposable fixtures. No installed service state or model credentials are used.
 """
 import copy
+import hashlib
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -15,15 +16,17 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from coconut.providers import HermesProvider
+from coconut.providers import FixtureProvider, HermesProvider
 from coconut.server import APIServer
 from coconut.service import Service, ServiceError
 from coconut.work_workspace import acquire, git, preferred
 from coconut.workspace_recovery import atomic_manifest
+import coconut.workspace_recovery as recovery
 import test_native_kanban as native
 
 
@@ -74,6 +77,315 @@ class CheckoutFilterPreflightTests(unittest.TestCase):
         (self.repo / '.gitattributes').write_text('unrelated.txt filter=unsafe\n')
         reject_custom_git_commands(self.repo, (self.attached, self.saved))
         self.assertFalse(self.marker.exists())
+
+
+class CheckoutPreviewHTTPTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.data = self.root / 'service'
+        self.service = Service(self.data, FixtureProvider(self.data), start_workers=False)
+        self.addCleanup(self.service.close)
+        self.server = APIServer(('127.0.0.1', 0), self.service)
+        self.addCleanup(self.server.server_close)
+        self.token = self.http('POST', '/v1/pair', {'code': self.service.pairing_code(), 'name': 'Test phone'}, auth=False)[1]['token']
+        bot = self.http('POST', '/v1/bots', {'name': 'Test bot', 'role': ''})[1]
+        task = self.http('POST', '/v1/bots/' + bot['id'] + '/messages', {'text': 'Original checkout'})[1]
+        self.task_id = task['id']
+        owner = self.service._get('tasks', self.task_id)
+        self.service._ensure_execution_session(owner)
+        self.owner = owner['_execution_session_id']
+        self.repo = self.root / 'repo'
+        self.repo.mkdir()
+        git(self.repo, 'init')
+        (self.repo / 'tracked.txt').write_text('base\n')
+        git(self.repo, 'add', 'tracked.txt')
+        git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'base')
+        self.workspace = self.root / 'original'
+        git(self.repo, 'worktree', 'add', '-b', 'saved', str(self.workspace))
+        git(self.repo, 'switch', '-c', 'attached')
+        (self.repo / 'attached.txt').write_text('attached\n')
+        git(self.repo, 'add', 'attached.txt')
+        git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'attached')
+        git(self.workspace, 'switch', '-c', 'attached-copy', 'attached')
+        (self.workspace / 'tracked.txt').write_text('dirty original\n')
+        registry = self.data / 'workspaces'
+        registry.mkdir(exist_ok=True)
+        binding_id = self.owner + '-' + hashlib.sha256(str(self.repo).encode()).hexdigest()[:16]
+        (registry / 'worktrees.json').write_text(json.dumps({binding_id: dict(outcome=self.owner,
+            repository=str(self.repo), path=str(self.workspace), branch='saved')}))
+        board = self.data / 'kanban'
+        board.mkdir(exist_ok=True)
+        with sqlite3.connect(board / 'kanban.db') as db:
+            db.execute('CREATE TABLE tasks (id TEXT, status TEXT, tenant TEXT, worker_pid INTEGER, current_run_id TEXT, workspace_path TEXT)')
+            db.execute('CREATE TABLE coconut_bindings (external_id TEXT, native_id TEXT)')
+            db.execute('INSERT INTO tasks VALUES (?, ?, ?, NULL, NULL, ?)', ('native', 'archived', bot['id'], str(self.workspace)))
+            db.execute('INSERT INTO coconut_bindings VALUES (?, ?)', (self.task_id, 'native'))
+        owner.update(status='cancelled', _native_outcome_id='native', _work_context_id='work')
+        self.service._put('tasks', owner)
+        self.service._put('artifacts', dict(id='work', kind='work', task_id=self.task_id, bot_id=bot['id'],
+            _native_outcome_id='native', status='cancelled', title='Original checkout', created_at=owner['created_at']))
+        self.service.db.execute('INSERT INTO settings(key,value) VALUES (?, ?)', ('work.cancelled.work:work', json.dumps('first stop')))
+
+    def http(self, method, path, data=None, *, auth=True, key=None):
+        thread = threading.Thread(target=self.server.handle_request)
+        thread.start()
+        connection = http.client.HTTPConnection(*self.server.server_address, timeout=20)
+        headers = {'Content-Type': 'application/json', 'Idempotency-Key': key or str(uuid4())}
+        if auth and getattr(self, 'token', None):
+            headers['Authorization'] = 'Bearer ' + self.token
+        try:
+            connection.request(method, path, json.dumps(data) if data is not None else None, headers)
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            connection.close()
+            thread.join(20)
+
+    def test_repeated_stop_route_invalidates_draining_consent_but_not_idempotent_retry(self):
+        endpoint = '/v1/work/items/work/cancel'
+        original = self.service._setting('work.cancelled.work:work')
+        stop_key = str(uuid4())
+        status, response = self.http('POST', endpoint, {}, key=stop_key)
+        self.assertEqual(status, 200, response)
+        self.assertIs(response['artifacts'][0]['checkout_recovery_stopped'], True)
+        row = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == 'work')
+        self.assertIs(row['checkout_recovery_stopped'], True)
+        self.assertNotIn('checkout_recovery_stopped', self.service._get('artifacts', 'work'))
+        first = self.service._setting('work.cancelled.work:work')
+        self.assertNotEqual(first, original)
+        _, preview = self.http('GET', '/v1/tasks/' + self.task_id + '/checkout-recovery')
+        request = dict(preview['request'], resume_consent=preview['resume_consent'], resume_confirmed=True)
+        scope = self.service._checkout_scope(request)
+        receipt = dict(request=request, device_id=self.service.authenticate(self.token),
+                       dirty=recovery.dirty_state(self.workspace, read_only=True), cancellation=first)
+        self.service._check_checkout_consent(receipt, scope)
+        self.assertEqual(self.http('POST', endpoint, {}, key=stop_key), (200, response))
+        self.assertEqual(self.service._setting('work.cancelled.work:work'), first)
+        self.service._check_checkout_consent(receipt, scope)
+        self.assertEqual(self.http('POST', endpoint, {}, key=str(uuid4()))[0], 200)
+        self.assertNotEqual(self.service._setting('work.cancelled.work:work'), first)
+        with self.assertRaisesRegex(ServiceError, 'stop changed'):
+            self.service._check_checkout_consent(receipt, scope)
+        self.assertEqual(self.http('POST', '/v1/maintenance/checkout-recovery', request,
+                                   key=preview['key'])[0], 409)
+
+    def test_task_stop_does_not_grant_work_stop_recovery_authority(self):
+        self.service.db.execute('DELETE FROM settings WHERE key=?', ('work.cancelled.work:work',))
+        task = self.service._get('tasks', self.task_id)
+        task['status'] = 'queued'
+        self.service._put('tasks', task)
+        work = self.service._get('artifacts', 'work')
+        work['status'] = 'waiting'
+        self.service._put('artifacts', work)
+        status, stopped = self.http('POST', '/v1/tasks/' + self.task_id + '/cancel', {})
+        self.assertEqual(status, 200, stopped)
+        self.assertEqual(self.service._get('tasks', self.task_id)['status'], 'cancelled')
+        self.assertIsNone(self.service._setting('work.cancelled.work:work'))
+        row = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == 'work')
+        self.assertNotIn('checkout_recovery_stopped', row)
+        self.assertEqual(self.http('GET', '/v1/tasks/' + self.task_id + '/checkout-recovery')[0], 409)
+
+    def test_clearing_work_stop_marker_removes_projected_recovery_flag(self):
+        before = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == 'work')
+        self.assertIs(before['checkout_recovery_stopped'], True)
+        self.service.db.execute('DELETE FROM settings WHERE key=?', ('work.cancelled.work:work',))
+        after = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == 'work')
+        self.assertNotIn('checkout_recovery_stopped', after)
+        self.assertNotIn('checkout_recovery_stopped', self.service._work_projection([dict(before)])[0])
+        self.assertEqual(self.http('GET', '/v1/tasks/' + self.task_id + '/checkout-recovery')[0], 409)
+
+    def test_preview_is_paired_read_only_and_stale_consent_fails(self):
+        path = '/v1/tasks/' + self.task_id + '/checkout-recovery'
+        self.assertEqual(self.http('GET', path, auth=False)[0], 401)
+        before = (git(self.repo, 'show-ref'), git(self.workspace, 'status', '--porcelain'),
+                  (self.data / 'workspaces' / 'worktrees.json').read_bytes(), (self.workspace / 'tracked.txt').read_bytes())
+        original = recovery.checkout_git
+        calls = []
+        def checked(*args, **kwargs):
+            calls.append(args[1:])
+            if any(command in args[1:] for command in ('merge-tree', 'commit-tree', 'update-ref', 'switch')):
+                self.fail('Discovery tried to plan or mutate Git.')
+            return original(*args, **kwargs)
+        with patch.object(recovery, 'checkout_git', checked), patch.object(recovery, 'checkout_plan', side_effect=AssertionError('planned')):
+            status, preview = self.http('GET', path)
+        self.assertEqual(status, 200, preview)
+        self.assertEqual(preview['request']['expected_owner'], self.owner)
+        self.assertEqual(preview['request']['attached_branch'], 'attached-copy')
+        self.assertEqual(preview['dirty_count'], 1)
+        self.assertTrue(calls)
+        self.assertEqual((git(self.repo, 'show-ref'), git(self.workspace, 'status', '--porcelain'),
+                          (self.data / 'workspaces' / 'worktrees.json').read_bytes(),
+                          (self.workspace / 'tracked.txt').read_bytes()), before)
+        request = dict(preview['request'], resume_consent=preview['resume_consent'], resume_confirmed=True)
+        self.assertEqual(self.http('POST', '/v1/maintenance/checkout-recovery', request, auth=False)[0], 401)
+        self.assertEqual(self.http('POST', '/v1/maintenance/checkout-recovery', preview['request'])[0], 409)
+        self.service.db.execute('UPDATE settings SET value=? WHERE key=?', (json.dumps('second stop'), 'work.cancelled.work:work'))
+        scope = self.service._checkout_scope(request)
+        with self.assertRaisesRegex(ServiceError, 'Confirm'):
+            self.service._checkout_cancellation(request, scope, self.service.authenticate(self.token),
+                                                recovery.dirty_state(self.workspace, read_only=True))
+        self.service.db.execute('UPDATE settings SET value=? WHERE key=?', (json.dumps('first stop'), 'work.cancelled.work:work'))
+        changed = dict(request, saved_head='0' * len(request['saved_head']))
+        with self.assertRaisesRegex(ServiceError, 'Confirm'):
+            self.service._checkout_cancellation(changed, scope, self.service.authenticate(self.token),
+                                                recovery.dirty_state(self.workspace, read_only=True))
+        (self.workspace / 'tracked.txt').write_text('changed edit\n')
+        with self.assertRaisesRegex(ServiceError, 'Confirm'):
+            self.service._checkout_cancellation(request, scope, self.service.authenticate(self.token),
+                                                recovery.dirty_state(self.workspace, read_only=True))
+        self.assertEqual(self.service._all('workspace_recoveries'), [])
+
+    def test_preview_rejects_other_owner_and_pending_decision(self):
+        path = '/v1/tasks/' + self.task_id + '/checkout-recovery'
+        decision = dict(id=str(uuid4()), task_id=self.task_id, status='pending')
+        self.service._put('decisions', decision)
+        self.assertEqual(self.http('GET', path)[0], 409)
+        self.service.db.execute('DELETE FROM decisions WHERE id=?', (decision['id'],))
+        task = self.service._get('tasks', self.task_id)
+        task['_native_outcome_id'] = 'foreign'
+        self.service._put('tasks', task)
+        self.assertEqual(self.http('GET', path)[0], 409)
+        self.assertEqual(self.service._all('workspace_recoveries'), [])
+
+    def test_paired_post_rejects_missing_and_stale_consent_before_git_planning(self):
+        _, preview = self.http('GET', '/v1/tasks/' + self.task_id + '/checkout-recovery')
+        endpoint = '/v1/maintenance/checkout-recovery'
+        self.service.restart_enabled = True
+        self.service.kanban = SimpleNamespace(close=lambda: None, tasks={})
+        request = dict(preview['request'], resume_consent=preview['resume_consent'], resume_confirmed=True)
+        def post(body, **kwargs):
+            return self.http('POST', endpoint, body, key=preview['key'], **kwargs)
+        with patch.object(recovery, 'checkout_plan', side_effect=AssertionError('Git planning reached')) as planner:
+            wrong_status, wrong_response = self.http('POST', endpoint, request, key=str(uuid4()))
+            self.assertEqual(wrong_status, 409, wrong_response)
+            self.assertIn('recovery branch must be unique', json.dumps(wrong_response))
+            self.assertEqual(post(preview['request'])[0], 409)
+            self.assertEqual(post(dict(preview['request'], resume_consent=preview['resume_consent']))[0], 400)
+            self.assertEqual(post(request, auth=False)[0], 401)
+            self.assertEqual(post(dict(request, expected_owner='foreign'))[0], 409)
+            self.assertEqual(post(dict(request, attached_head='0' * len(request['attached_head'])))[0], 409)
+            self.service.db.execute('UPDATE settings SET value=? WHERE key=?',
+                                    (json.dumps('another phone stop'), 'work.cancelled.work:work'))
+            self.assertEqual(post(request)[0], 409)
+            self.service.db.execute('UPDATE settings SET value=? WHERE key=?',
+                                    (json.dumps('first stop'), 'work.cancelled.work:work'))
+            (self.workspace / 'tracked.txt').write_text('new dirty bytes\n')
+            self.assertEqual(post(request)[0], 409)
+            (self.workspace / 'tracked.txt').write_text('dirty original\n')
+            decision = dict(id=str(uuid4()), task_id=self.task_id, status='pending')
+            self.service._put('decisions', decision)
+            self.assertEqual(post(request)[0], 409)
+            self.service.db.execute('DELETE FROM decisions WHERE id=?', (decision['id'],))
+            planner.assert_not_called()
+            with self.assertRaisesRegex(AssertionError, 'Git planning reached'):
+                self.service.request_checkout_recovery(request, preview['key'], self.token)
+        self.assertEqual(self.service._all('workspace_recoveries'), [])
+
+    def held_checkout(self):
+        git(self.repo, 'switch', 'saved')
+        (self.repo / 'saved.txt').write_text('saved-only change\n')
+        git(self.repo, 'add', 'saved.txt')
+        git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            'commit', '-m', 'divergent saved branch')
+        self.service.restart_enabled = True
+        self.service.kanban = SimpleNamespace(close=lambda: None, tasks={})
+        path = '/v1/tasks/' + self.task_id + '/checkout-recovery'
+        status, preview = self.http('GET', path)
+        self.assertEqual(status, 200, preview)
+        request = dict(preview['request'], resume_consent=preview['resume_consent'], resume_confirmed=True)
+        status, draining = self.http('POST', '/v1/maintenance/checkout-recovery', request, key=preview['key'])
+        self.assertEqual((status, draining['state']), (200, 'draining'), draining)
+        receipt = self.service._get('workspace_recoveries', preview['key'])
+        return path, preview, receipt
+
+    def test_paired_checkout_refuses_edits_changed_between_consent_and_plan(self):
+        git(self.repo, 'switch', 'saved')
+        (self.repo / 'saved.txt').write_text('saved-only change\n')
+        git(self.repo, 'add', 'saved.txt')
+        git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            'commit', '-m', 'divergent saved branch')
+        self.service.restart_enabled = True
+        self.service.kanban = SimpleNamespace(close=lambda: None, tasks={})
+        endpoint = '/v1/maintenance/checkout-recovery'
+        status, preview = self.http('GET', '/v1/tasks/' + self.task_id + '/checkout-recovery')
+        self.assertEqual(status, 200, preview)
+        request = dict(preview['request'], resume_consent=preview['resume_consent'], resume_confirmed=True)
+        original_plan = recovery.checkout_plan
+        before_head = git(self.workspace, 'rev-parse', 'HEAD')
+        before_branch = git(self.workspace, 'branch', '--show-current')
+
+        def edit_before_plan(planned_request):
+            (self.workspace / 'tracked.txt').write_text('changed after verification\n')
+            return original_plan(planned_request)
+
+        with patch.object(recovery, 'checkout_plan', side_effect=edit_before_plan) as planner:
+            status, response = self.http('POST', endpoint, request, key=preview['key'])
+        self.assertEqual(planner.call_count, 1)
+        self.assertEqual(status, 409, response)
+        self.assertIn('tracked edits changed', json.dumps(response))
+        self.assertEqual(self.service._all('workspace_recoveries'), [])
+        self.assertFalse(self.service.restart_pending)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), before_branch)
+        self.assertEqual(git(self.workspace, 'rev-parse', 'HEAD'), before_head)
+        self.assertEqual((self.workspace / 'tracked.txt').read_text(), 'changed after verification\n')
+
+        (self.workspace / 'tracked.txt').write_text('dirty original\n')
+        status, unchanged = self.http('POST', endpoint, request, key=preview['key'])
+        self.assertEqual(status, 200, unchanged)
+        self.assertEqual(unchanged['state'], 'draining')
+        self.assertEqual(self.service._get('workspace_recoveries', preview['key'])['dirty'],
+                         recovery.dirty_state(self.workspace, read_only=True))
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), before_branch)
+
+    def test_held_preview_rejects_partially_switched_checkout(self):
+        path, preview, receipt = self.held_checkout()
+        receipt['state'] = 'held'
+        self.service._put('workspace_recoveries', receipt)
+        git(self.repo, 'branch', preview['request']['recovery_branch'], receipt['merge_commit'])
+        status, response = self.http('GET', path)
+        self.assertEqual(status, 409, response)
+        self.assertIn('inspect', json.dumps(response).lower())
+        git(self.workspace, 'switch', '--no-overwrite-ignore', preview['request']['recovery_branch'])
+        manifest = self.data / 'workspaces' / 'worktrees.json'
+        bindings = json.loads(manifest.read_text())
+        recovered = dict(receipt['binding'], branch=preview['request']['recovery_branch'],
+                         _recovery_request_id=preview['key'])
+        bindings[receipt['binding_id']] = recovered
+        manifest.write_text(json.dumps(bindings))
+        before = (manifest.read_bytes(), git(self.repo, 'show-ref'),
+                  (self.workspace / 'tracked.txt').read_bytes())
+        with patch.object(recovery, 'checkout_plan', side_effect=AssertionError('planned')):
+            status, response = self.http('GET', path)
+        self.assertEqual(status, 409, response)
+        self.assertIn('inspect', json.dumps(response).lower())
+        self.assertEqual((manifest.read_bytes(), git(self.repo, 'show-ref'),
+                          (self.workspace / 'tracked.txt').read_bytes()), before)
+        self.assertEqual(self.service._get('workspace_recoveries', preview['key'])['state'], 'held')
+
+    def test_held_preview_allows_original_checkout_and_rejects_drain(self):
+        path, preview, receipt = self.held_checkout()
+        status, response = self.http('GET', path)
+        self.assertEqual(status, 409, response)
+        self.assertIn('receipt', json.dumps(response).lower())
+        receipt['state'] = 'held'
+        self.service._put('workspace_recoveries', receipt)
+        manifest = self.data / 'workspaces' / 'worktrees.json'
+        before = (manifest.read_bytes(), git(self.repo, 'show-ref'),
+                  (self.workspace / 'tracked.txt').read_bytes())
+        with patch.object(recovery, 'checkout_plan', side_effect=AssertionError('planned')):
+            status, retry = self.http('GET', path)
+        self.assertEqual(status, 200, retry)
+        self.assertNotEqual(retry['key'], preview['key'])
+        self.assertEqual({field: value for field, value in retry['request'].items() if field != 'recovery_branch'},
+                         {field: value for field, value in preview['request'].items() if field != 'recovery_branch'})
+        self.assertEqual((manifest.read_bytes(), git(self.repo, 'show-ref'),
+                          (self.workspace / 'tracked.txt').read_bytes()), before)
+        fresh = dict(retry['request'], resume_consent=retry['resume_consent'], resume_confirmed=True)
+        status, result = self.http('POST', '/v1/maintenance/checkout-recovery', fresh, key=retry['key'])
+        self.assertEqual((status, result['state']), (200, 'draining'), result)
+        self.assertEqual(self.service._get('workspace_recoveries', preview['key'])['state'], 'superseded')
 
 
 @unittest.skipUnless(native.SOURCE and native.PYTHON, 'Set Coconut Hermes paths for native integration checks.')
@@ -165,7 +477,7 @@ class WorkspaceRecoveryTests(unittest.TestCase):
     def receipt(self):
         return self.service._get('workspace_recoveries', self.key)
 
-    def checkout_incident(self):
+    def checkout_incident(self, *, stopped=False):
         saved = 'wt/1ae0ae9f-35c9-4813-b7d0-69188eeb1b97-11ce49fd843261dc'
         git(self.repo, 'branch', '-m', self.binding['branch'], saved)
         registry = json.loads(self.manifest.read_text())
@@ -198,9 +510,10 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         task = self.service._get('tasks', self.task['id'])
         task['status'] = 'completed'
         self.service._put('tasks', task)
-        self.program('board.kb.archive_task(board.conn, sys.argv[2])', self.native_id)
+        if not stopped:
+            self.program('board.kb.archive_task(board.conn, sys.argv[2])', self.native_id)
         artifact = dict(id=str(uuid4()), kind='work', task_id=task['id'], bot_id=task['bot_id'],
-            _native_outcome_id=self.native_id, status='completed', title='Original Work', created_at=task['created_at'],
+            _native_outcome_id=self.native_id, status='waiting' if stopped else 'completed', title='Original Work', created_at=task['created_at'],
             _completed_history=dict(report='original-result', evidence='Original verified result'))
         self.service._put('artifacts', artifact)
         self.service.kanban.call({'op': 'snapshot'})
@@ -209,6 +522,146 @@ class WorkspaceRecoveryTests(unittest.TestCase):
             saved_head=git(self.repo, 'rev-parse', saved), attached_head=git(self.workspace, 'rev-parse', 'HEAD'),
             recovery_branch='wt/recovered-' + self.key, message='Resume the original archived Work without approval.')
         return payload, dirty, artifact
+
+    def test_phone_stopped_archived_checkout_needs_fresh_confirmation(self):
+        payload, dirty, artifact = self.checkout_incident(stopped=True)
+        self.assertEqual(self.http('/v1/work/items/' + artifact['id'] + '/cancel', {})[0], 200)
+        self.program('board.kb.archive_task(board.conn, sys.argv[2])', self.native_id)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'cancelled')
+        original = self.service._get('tasks', self.task['id'])
+        refs = {branch: git(self.repo, 'rev-parse', branch) for branch in (payload['saved_branch'], payload['attached_branch'])}
+        self.assertIsNotNone(self.service._setting('work.cancelled.work:' + artifact['id']))
+        status, preview = self.http_get('/v1/tasks/' + self.task['id'] + '/checkout-recovery')
+        self.assertEqual(status, 200, preview)
+        self.key = preview['key']
+        self.assertEqual(preview['request']['task_id'], payload['task_id'])
+        self.assertEqual(preview['request']['saved_head'], payload['saved_head'])
+        self.assertEqual(preview['dirty_count'], 3)
+        self.assertEqual(self.http_get('/v1/tasks/' + self.task['id'] + '/checkout-recovery', token=False)[0], 401)
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'cancelled')
+        self.assertEqual(self.service._get('tasks', self.task['id']), original)
+        self.assertEqual({branch: git(self.repo, 'rev-parse', branch) for branch in refs}, refs)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', preview['request'], key=self.key)[0], 409)
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery',
+            dict(preview['request'], resume_consent=preview['resume_consent']), key=self.key)[0], 400)
+        request = dict(preview['request'], resume_consent=preview['resume_consent'], resume_confirmed=True)
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', request, key=self.key, token=False)[0], 401)
+        status, response = self.http('/v1/maintenance/checkout-recovery', request, key=self.key)
+        self.assertEqual(status, 200, response)
+        self.assertIsNotNone(self.service._setting('work.cancelled.work:' + artifact['id']))
+        self.assertTrue(self.service.take_service_restart())
+        self.restart()
+        receipt = self.receipt()
+        self.assertEqual(receipt['state'], 'applied', receipt)
+        self.assertEqual(self.service._setting('work.cancelled.work:' + artifact['id']), None)
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'cancelled')
+        self.assertEqual(self.service._get('artifacts', artifact['id'])['task_id'], receipt['successor_task_id'])
+        self.assertEqual(self.service._get('tasks', receipt['successor_task_id'])['_execution_session_id'], self.owner)
+        self.assertEqual(preferred(self.data / 'workspaces', self.owner), self.workspace)
+        for name, content in dirty.items():
+            self.assertEqual((self.workspace / name).read_bytes(), content)
+        self.service._dispatch_pending()
+        successor_native = self.service.kanban.tasks[receipt['successor_task_id']]['id']
+        self.assertNotEqual(successor_native, self.native_id)
+        self.assertEqual(self.program('print(board.kb.get_task(board.conn, sys.argv[2]).status)', self.native_id), 'archived')
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', request, key=self.key)[1]['state'], 'applied')
+
+    def test_phone_checkout_rejects_other_owner_and_changed_consent(self):
+        payload, dirty, artifact = self.checkout_incident(stopped=True)
+        self.assertEqual(self.http('/v1/work/items/' + artifact['id'] + '/cancel', {})[0], 200)
+        self.program('board.kb.archive_task(board.conn, sys.argv[2])', self.native_id)
+        self.service.kanban.call({'op': 'snapshot'})
+        _, preview = self.http_get('/v1/tasks/' + self.task['id'] + '/checkout-recovery')
+        request = dict(preview['request'], resume_consent=preview['resume_consent'], resume_confirmed=True)
+        changed = dict(request, expected_owner='foreign-owner')
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', changed, key=preview['key'])[0], 409)
+        changed = dict(request, saved_head='0' * len(payload['saved_head']))
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', changed, key=preview['key'])[0], 409)
+        (self.workspace / 'checkout-a.txt').write_text('changed after preview\n')
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', request, key=preview['key'])[0], 409)
+        self.assertEqual(self.service._all('workspace_recoveries'), [])
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+
+    def test_phone_checkout_rejects_new_stop_and_pending_approval(self):
+        payload, dirty, artifact = self.checkout_incident(stopped=True)
+        self.assertEqual(self.http('/v1/work/items/' + artifact['id'] + '/cancel', {})[0], 200)
+        self.program('board.kb.archive_task(board.conn, sys.argv[2])', self.native_id)
+        self.service.kanban.call({'op': 'snapshot'})
+        _, preview = self.http_get('/v1/tasks/' + self.task['id'] + '/checkout-recovery')
+        request = dict(preview['request'], resume_consent=preview['resume_consent'], resume_confirmed=True)
+        self.service.db.execute('UPDATE settings SET value=? WHERE key=?',
+            (json.dumps('new cancellation generation'), 'work.cancelled.work:' + artifact['id']))
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', request, key=preview['key'])[0], 409)
+        _, preview = self.http_get('/v1/tasks/' + self.task['id'] + '/checkout-recovery')
+        request = dict(preview['request'], resume_consent=preview['resume_consent'], resume_confirmed=True)
+        decision = dict(id=str(uuid4()), task_id=self.task['id'], status='pending')
+        self.service._put('decisions', decision)
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', request, key=preview['key'])[0], 409)
+        self.assertEqual(self.http_get('/v1/tasks/' + self.task['id'] + '/checkout-recovery')[0], 409)
+        self.assertEqual(self.service._all('workspace_recoveries'), [])
+
+    def test_phone_checkout_replays_crash_before_receipt_without_duplicate_successor(self):
+        payload, dirty, artifact = self.checkout_incident(stopped=True)
+        self.assertEqual(self.http('/v1/work/items/' + artifact['id'] + '/cancel', {})[0], 200)
+        self.program('board.kb.archive_task(board.conn, sys.argv[2])', self.native_id)
+        self.service.kanban.call({'op': 'snapshot'})
+        _, preview = self.http_get('/v1/tasks/' + self.task['id'] + '/checkout-recovery')
+        request = dict(preview['request'], resume_consent=preview['resume_consent'], resume_confirmed=True)
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', request, key=preview['key'])[0], 200)
+        self.server.server_close()
+        self.service.close()
+        original_reply = Service._reply
+        def crash(service, task, data):
+            original_reply(service, task, data)
+            raise SystemExit('synthetic crash after successor before commit')
+        with patch.object(Service, '_reply', crash), self.assertRaises(SystemExit):
+            Service(self.data, native.Provider(self.data), start_workers=False)
+        self.service = Service(self.data, native.Provider(self.data), start_workers=False)
+        self.provider = self.service.provider
+        self.service.restart_enabled = True
+        self.server = APIServer(('127.0.0.1', 0), self.service)
+        receipt = self.service._get('workspace_recoveries', preview['key'])
+        self.assertEqual(receipt['state'], 'applied', receipt)
+        self.assertEqual(len([task for task in self.service._all('tasks')
+                              if task.get('_work_context_id') == artifact['id'] and task['id'] != self.task['id']]), 1)
+        self.assertEqual(self.service._setting('work.cancelled.work:' + artifact['id']), None)
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', request, key=preview['key'])[1]['state'], 'applied')
+
+    def test_phone_checkout_new_stop_during_drain_holds_before_git_write(self):
+        payload, dirty, artifact = self.checkout_incident(stopped=True)
+        stop_path = '/v1/work/items/' + artifact['id'] + '/cancel'
+        first_key = str(uuid4())
+        self.assertEqual(self.http(stop_path, {}, key=first_key)[0], 200)
+        self.program('board.kb.archive_task(board.conn, sys.argv[2])', self.native_id)
+        self.service.kanban.call({'op': 'snapshot'})
+        _, preview = self.http_get('/v1/tasks/' + self.task['id'] + '/checkout-recovery')
+        request = dict(preview['request'], resume_consent=preview['resume_consent'], resume_confirmed=True)
+        self.assertEqual(self.http('/v1/maintenance/checkout-recovery', request, key=preview['key'])[0], 200)
+        first = self.service._setting('work.cancelled.work:' + artifact['id'])
+        self.assertEqual(self.http(stop_path, {}, key=first_key)[0], 200)
+        self.assertEqual(self.service._setting('work.cancelled.work:' + artifact['id']), first)
+        self.assertEqual(self.http(stop_path, {}, key=str(uuid4()))[0], 200)
+        self.assertNotEqual(self.service._setting('work.cancelled.work:' + artifact['id']), first)
+        self.restart()
+        receipt = self.service._get('workspace_recoveries', preview['key'])
+        self.assertEqual(receipt['state'], 'held', receipt)
+        self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
+        self.assertEqual(self.service._get('artifacts', artifact['id'])['task_id'], self.task['id'])
+        self.assertIsNotNone(self.service._setting('work.cancelled.work:' + artifact['id']))
+
+    def http_get(self, path, *, token=True):
+        thread = threading.Thread(target=self.server.handle_request)
+        thread.start()
+        connection = http.client.HTTPConnection(*self.server.server_address, timeout=20)
+        try:
+            connection.request('GET', path, headers={'Authorization': 'Bearer ' + self.token} if token else {})
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            connection.close()
+            thread.join(20)
 
     def test_checkout_recovery_preserves_divergence_and_admits_native_successor(self):
         payload, dirty, artifact = self.checkout_incident()

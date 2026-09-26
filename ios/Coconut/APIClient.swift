@@ -140,8 +140,10 @@ final class APIClient: @unchecked Sendable {
     }
 
     func request<Response: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil,
-                                      idempotencyKey: String? = nil, retryTransient: Bool = true) async throws -> Response {
-        let (data, _) = try await transfer(path, method: method, body: body, idempotencyKey: idempotencyKey, retryTransient: retryTransient)
+                                      idempotencyKey: String? = nil, retryTransient: Bool = true,
+                                      fullState: Bool = false) async throws -> Response {
+        let (data, _) = try await transfer(path, method: method, body: body, idempotencyKey: idempotencyKey,
+                                           retryTransient: retryTransient, fullState: fullState)
         do { return try APIJSON.decoder().decode(Response.self, from: data) }
         catch { throw ServiceError.invalidResponse }
     }
@@ -152,26 +154,14 @@ final class APIClient: @unchecked Sendable {
     }
 
     private func transfer(_ path: String, method: String = "GET", body: Data? = nil,
-                          idempotencyKey: String? = nil, retryTransient: Bool = true) async throws -> (Data, HTTPURLResponse) {
-        guard let url = URL(string: "/v1/" + path, relativeTo: baseURL)?.absoluteURL,
-              url.host == baseURL.host, url.scheme == baseURL.scheme, url.port == baseURL.port else {
-            throw ServiceError.configuration("The service route is invalid.")
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        if path == "state" { request.setValue("recent", forHTTPHeaderField: "X-Coconut-State") }
-        if path.hasPrefix("updates?") { request.setValue("4", forHTTPHeaderField: "X-Coconut-Updates") }
-        request.httpBody = body
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
-        if let token { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
-        if method != "GET" {
-            // The same request and key survive the network retry.
-            request.setValue(idempotencyKey ?? UUID().uuidString, forHTTPHeaderField: "Idempotency-Key")
-        }
+                          idempotencyKey: String? = nil, retryTransient: Bool = true,
+                          fullState: Bool = false) async throws -> (Data, HTTPURLResponse) {
+        let request = try makeRequest(path, method: method, body: body, idempotencyKey: idempotencyKey,
+                                      fullState: fullState)
+        guard let url = request.url else { throw ServiceError.configuration("The service route is invalid.") }
         let wait = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
             .first(where: { $0.name == "wait" })?.value.flatMap(Double.init) ?? 0
-        let shortRead = method == "GET" && (path == "state" || path.hasPrefix("cards/")
+        let shortRead = method == "GET" && ((path == "state" && !fullState) || path.hasPrefix("cards/")
             || path.hasPrefix("history/") || path.hasPrefix("search?")
             || (path.hasPrefix("updates?") && wait <= 0))
         let transport = shortRead ? foregroundSession : session
@@ -189,6 +179,27 @@ final class APIClient: @unchecked Sendable {
             }
         }
         throw ServiceError.invalidResponse
+    }
+
+    func makeRequest(_ path: String, method: String = "GET", body: Data? = nil,
+                     idempotencyKey: String? = nil, fullState: Bool = false) throws -> URLRequest {
+        guard let url = URL(string: "/v1/" + path, relativeTo: baseURL)?.absoluteURL,
+              url.host == baseURL.host, url.scheme == baseURL.scheme, url.port == baseURL.port else {
+            throw ServiceError.configuration("The service route is invalid.")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        if path == "state" && !fullState { request.setValue("recent", forHTTPHeaderField: "X-Coconut-State") }
+        if path.hasPrefix("updates?") { request.setValue("4", forHTTPHeaderField: "X-Coconut-Updates") }
+        request.httpBody = body
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        if let token { request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
+        if method != "GET" {
+            // The same request and key survive the network retry.
+            request.setValue(idempotencyKey ?? UUID().uuidString, forHTTPHeaderField: "Idempotency-Key")
+        }
+        return request
     }
 
     private static func canRetry(_ error: URLError) -> Bool {

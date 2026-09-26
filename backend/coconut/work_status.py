@@ -1,6 +1,7 @@
 """Present PR activity from bot reports and current execution evidence."""
 from datetime import datetime, timezone
 from collections import deque
+from uuid import uuid4
 
 PAUSE_DECISION_STATES = ('approved', 'rejected', 'modified', 'replied', 'executed', 'failed')
 
@@ -441,9 +442,16 @@ class WorkStatus:
 
     def _work_projection(self, artifacts):
         if self.kanban and getattr(self.provider, 'supports_native_outcomes', False):
-            return self._native_work_view(artifacts)
-        self._project_work_outcomes(artifacts, {t['id']: t for t in self._all('tasks')},
-                                    self._pending_completion_receipts(), self._all('decisions'), datetime.now(timezone.utc))
+            self._native_work_view(artifacts)
+        else:
+            self._project_work_outcomes(artifacts, {t['id']: t for t in self._all('tasks')},
+                                        self._pending_completion_receipts(), self._all('decisions'), datetime.now(timezone.utc))
+        for item in artifacts:
+            item.pop('checkout_recovery_stopped', None)
+            if (item['kind'] == 'work' and item.get('work_outcome_id') in (None, item['id'])
+                    and self._work_identity(item) == 'work:' + item['id']
+                    and self._setting('work.cancelled.work:' + item['id'])):
+                item['checkout_recovery_stopped'] = True
         return artifacts
 
     def _tracked_pr_observations(self, task, urls):
@@ -520,6 +528,8 @@ class WorkStatus:
             raise ServiceError(400, 'This item does not appear in Work.')
         identity = self._work_identity(item)
         if self._setting('work.cancelled.' + identity):
+            self.db.execute('UPDATE settings SET value=? WHERE key=?',
+                            (encoded(str(uuid4())), 'work.cancelled.' + identity))
             peers = [a for a in self._all('artifacts') if a['kind'] in ('pr', 'work')
                      and self._work_identity(a) == identity]
             return dict(ok=True, artifacts=[self._public(a) for a in self._work_projection(peers) if not a.get('_hidden')], cursor=self._cursor())

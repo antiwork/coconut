@@ -274,10 +274,16 @@ private struct MacConnectionSettingsView: View {
         }
         .scrollContentBackground(.hidden).background(BoardStyle.paper)
         .navigationTitle("Your Mac").navigationBarTitleDisplayMode(.inline)
-        .confirmationDialog("Unpair this iPhone?", isPresented: $disconnectOpen, titleVisibility: .visible) {
-            Button("Unpair", role: .destructive) { store.disconnect() }
+        .confirmationDialog(store.checkoutConfirmation == nil ? "Unpair this iPhone?" : "Unpair with recovery unresolved?",
+                            isPresented: $disconnectOpen, titleVisibility: .visible) {
+            Button(store.checkoutConfirmation == nil ? "Unpair" : "Unpair anyway", role: .destructive) { store.disconnect() }
+            if store.checkoutConfirmation != nil {
+                Button("Keep pairing to check or stop recovery", role: .cancel) {}
+            }
         } message: {
-            Text("Your Mac keeps the bots and their history. This iPhone needs a new pairing code to reconnect.")
+            Text(store.checkoutConfirmation == nil
+                 ? "Your Mac keeps the bots and their history. This iPhone needs a new pairing code to reconnect."
+                 : "Unpairing does not cancel recovery on your Mac. You will lose paired access to check its status or stop it. Keep this pairing to check or stop recovery, or unpair anyway if you cannot reach your Mac.")
         }
     }
 }

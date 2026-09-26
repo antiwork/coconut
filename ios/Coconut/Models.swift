@@ -452,6 +452,7 @@ struct Artifact: Codable, Identifiable, Equatable, Sendable {
     var activityBotId: String? = nil
     var workDismissalId: String? = nil
     var workState: String? = nil
+    var checkoutRecoveryStopped: Bool? = nil
     var workNextStep: String? = nil
     var workDecisionId: String? = nil
     var workQueuePosition: Int? = nil

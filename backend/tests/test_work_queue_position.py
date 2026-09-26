@@ -139,6 +139,7 @@ class WorkQueuePositionTests(unittest.TestCase):
         self.assertTrue(result['ok'])
         self.assertEqual(result['artifacts'][0]['id'], item['id'])
         self.assertEqual(result['artifacts'][0]['work_state'], 'cancelled')
+        self.assertIs(result['artifacts'][0]['checkout_recovery_stopped'], True)
         self.assertEqual(result['artifacts'][0]['activity'], 'Stopped')
         self.assertFalse(any(k.startswith('_') for k in result['artifacts'][0]))
         self.assertEqual(result['cursor'], self.service._cursor())
@@ -146,6 +147,18 @@ class WorkQueuePositionTests(unittest.TestCase):
         self.assertEqual(again['artifacts'][0]['work_state'], 'cancelled')
         self.assertEqual(again['cursor'], result['cursor'])
         self.assertEqual(stopped, [self.task['id']])
+        self.assertNotIn('checkout_recovery_stopped', self.service._get('artifacts', item['id']))
+        self.service.db.execute('DELETE FROM settings WHERE key=?', ('work.cancelled.work:' + item['id'],))
+        self.assertNotIn('checkout_recovery_stopped', self.row())
+        self.assertNotIn('checkout_recovery_stopped', self.service._work_projection([dict(result['artifacts'][0])])[0])
+
+    def test_task_cancel_does_not_project_explicit_work_stop(self):
+        item = self.track()
+        stopped = self.write('POST', f'/v1/tasks/{self.task["id"]}/cancel', {})
+        self.assertEqual(stopped['status'], 'cancelled')
+        self.assertEqual(self.row()['work_state'], 'cancelled')
+        self.assertNotIn('checkout_recovery_stopped', self.row())
+        self.assertIsNone(self.service._setting('work.cancelled.work:' + item['id']))
 
     def test_shared_task_keeps_other_work_and_receives_scoped_stop(self):
         first = self.track()
