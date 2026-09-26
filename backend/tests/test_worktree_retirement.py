@@ -1113,6 +1113,10 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(self.retire(), [])
         self.assertEqual((inner / 'vendor' / 'lib' / 'lib.txt').read_text(), 'uncommitted edit\n')
         self.assertEqual(self.nested_archives(), [])
+        # A gitlink folder with files but without its .git also stays.
+        (inner / 'vendor' / 'lib' / '.git').unlink()
+        self.assertEqual(self.retire(), [])
+        self.assertEqual((inner / 'vendor' / 'lib' / 'lib.txt').read_text(), 'uncommitted edit\n')
 
     def test_a_branch_switch_during_the_archive_keeps_the_nested_worktree(self):
         _, identity, path, _ = self.outcome()

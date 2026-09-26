@@ -568,7 +568,9 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
         listing = git_output(inner, 'ls-files', '--stage', '-z')
         for entry in (e for e in listing.split(b'\0') if e):
             mode, _, name = entry.partition(b'\t')
-            if mode.startswith(b'160000') and (inner / os.fsdecode(name) / '.git').exists():
+            target = inner / os.fsdecode(name)
+            # This matches Git's own submodule check, which --force skips: any non-empty gitlink folder.
+            if mode.startswith(b'160000') and target.is_dir() and any(target.iterdir()):
                 raise ValueError(f'The nested worktree {inner} contains a submodule.')
         # A plan keeps a digest of the patches, not the patches, so many nested worktrees do not fill the memory.
         # The branch is part of the plan, so a branch switch at the same commit also counts as a change.
