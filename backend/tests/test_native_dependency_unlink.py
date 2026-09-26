@@ -81,6 +81,76 @@ class NativeDependencyUnlinkTests(unittest.TestCase):
             print('native-unlink-preservation-readiness: PASS')
         ''')
 
+    def test_missing_epoch_service_provider_preserves_native_graph_and_input(self):
+        self.run_native('''
+            import os
+            import sys
+            from pathlib import Path
+            from types import SimpleNamespace
+            from unittest.mock import patch
+            from coconut.kanban_runtime import Board
+            from test_dependency_unlink_epoch import MissingEpochUnlinkTests
+            from test_provider import ProviderTests
+            fixture = MissingEpochUnlinkTests()
+            fixture.setUp()
+            try:
+                child, parent, source = fixture.setup_edge()
+                service = fixture.service
+                board = Board(Path(sys.argv[1]) / 'kanban')
+                kb, conn = board.kb, board.conn
+                workspace = Path(sys.argv[1]) / 'retained-workspace'
+                workspace.mkdir()
+                (workspace / 'owned.txt').write_text('Unpublished original work')
+                def native(task):
+                    identity = kb.create_task(conn, title=task['id'], body='Retained epoch fixture', assignee='default',
+                        tenant=task['bot_id'], workspace_kind='dir', workspace_path=str(workspace), initial_status='blocked')
+                    board.bind(identity, task['id'])
+                    service._put('tasks', task | {'_native_outcome_id': identity})
+                    return identity
+                parent_id, child_id = native(parent), native(child)
+                other = kb.create_task(conn, title='Other dependency', body='Must remain', assignee='default',
+                    tenant=parent['bot_id'], workspace_kind='dir', workspace_path=str(workspace), initial_status='blocked')
+                assert kb.request_review(conn, parent_id, summary='Appearance remains pending')
+                kb.link_tasks(conn, parent_id, child_id)
+                kb.link_tasks(conn, other, child_id)
+                def call(request):
+                    assert not service.lock._is_owned()
+                    if request['op'] == 'snapshot':
+                        return {'tasks': board.snapshot(request.get('external_ids', []))}
+                    if request['op'] == 'unlink_receipt':
+                        return {'receipt': board._unlink_dependency(request | {'op': 'unlink_dependency'}, receipt_only=True)}
+                    return board.unlink_dependency(request)
+                service.kanban = SimpleNamespace(tasks={t['external_id']: t for t in board.snapshot()}, call=call, close=conn.close)
+                arguments = fixture.arguments | {'parent_id': parent_id, 'child_id': child_id}
+                fixture.root = Path(fixture.temp.name) / 'provider'
+                provider = ProviderTests.fake_hermes(fixture,
+                    "receipt = json.loads(registry.dispatch('coconut_unlink_dependency', " + repr(arguments) + "))\\n"
+                    "assert receipt['status'] == 'unlinked', receipt\\n"
+                    "return {'completed': True, 'final_response': 'Exact dependency removed.'}\\n")
+                before = {table: service._all(table) for table in ('tasks', 'messages', 'artifacts', 'decisions', 'contexts')}
+                bindings = [tuple(r) for r in conn.execute('SELECT * FROM coconut_bindings')]
+                graph = [tuple(r) for r in conn.execute('SELECT * FROM task_links')]
+                receipts = []
+                def emit(kind, data):
+                    if kind == 'dependency_unlink':
+                        result = service.emit(source['id'], kind, data)
+                        receipts.append(result)
+                        return result
+                with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+                    provider.start_task(source, fixture.desk, [], emit)
+                assert len(receipts) == 1 and receipts[0]['status'] == 'unlinked', receipts
+                assert before == {table: service._all(table) for table in before}
+                assert bindings == [tuple(r) for r in conn.execute('SELECT * FROM coconut_bindings')]
+                assert [tuple(r) for r in conn.execute('SELECT * FROM task_links')] == [r for r in graph if r[:2] != (parent_id, child_id)]
+                assert kb.get_task(conn, parent_id).status == 'review'
+                assert kb.get_task(conn, child_id).status == 'todo'
+                assert (workspace / 'owned.txt').read_text() == 'Unpublished original work'
+                print('missing-epoch-native-service-provider: PASS')
+            finally:
+                fixture.tearDown()
+                fixture.doCleanups()
+        ''', setup=False)
+
     def test_dependency_created_with_the_child_can_be_removed(self):
         self.run_native('''
             identity = kb.create_task(conn, title='created-child', body='Created parent fixture', assignee='default',
