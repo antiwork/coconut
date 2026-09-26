@@ -34,8 +34,6 @@ class DecisionVisibilityTests(unittest.TestCase):
             self.service._put('messages', message)
         self.assertEqual([d['id'] for d in self.service.decision_chat_input(task)['_pending_decisions']], [decision['id']])
 
-
-class SharedVisibilityTests(DecisionVisibilityTests):
     def test_a_shared_pass_sees_a_newly_shared_message_and_ignores_a_hidden_one(self):
         decision = self.question()
         peer = self.write('POST', '/v1/bots', {'name': 'Delegate', 'role': ''})
