@@ -629,6 +629,8 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
         # acquire() registers a new binding under this lock, so no outcome can claim a nested worktree meanwhile.
         with (Path(root) / '.workspace.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
+            # This read repeats the diffs under the lock, as retire() does for the parent. An edit to a tracked
+            # file shows only in the diff, not in the file marks.
             again, checked = plans()
             # The plans hold the head, the changes, the archived names, and their inode marks.
             if checked != planned:
@@ -638,6 +640,9 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
             for inner, (temporary, archive) in written.items():
                 if temporary.exists():
                     temporary.replace(archive)
+                # --force deletes the changes, so the archive must exist.
+                if not archive.is_file():
+                    raise ValueError(f'The archive of nested worktree {inner} is missing.')
                 logging.getLogger(__name__).warning('Coconut archived the changes of nested worktree %s in %s.',
                                                     inner, archive)
             if written:
