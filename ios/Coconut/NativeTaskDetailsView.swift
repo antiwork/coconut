@@ -32,21 +32,35 @@ struct CheckoutRecoveryPairing: Codable, Equatable, Sendable {
 struct CheckoutRecoveryCheck: Sendable {
     let preview: CheckoutRecoveryPreview
     let pairing: CheckoutRecoveryPairing
+    let workItemId: String
 }
 
 struct CheckoutRecoveryConfirmation: Codable, Sendable {
     let key: String
     let request: CheckoutRecoveryRequest
     let pairing: CheckoutRecoveryPairing
+    let workItemId: String?
     private(set) var isUncertain = false
 
-    init(preview: CheckoutRecoveryPreview, pairing: CheckoutRecoveryPairing) {
+    init(preview: CheckoutRecoveryPreview, pairing: CheckoutRecoveryPairing, workItemId: String? = nil) {
         key = preview.key
         self.pairing = pairing
+        self.workItemId = workItemId
         var request = preview.request
         request.resumeConsent = preview.resumeConsent
         request.resumeConfirmed = true
         self.request = request
+    }
+
+    private enum CodingKeys: String, CodingKey { case key, request, pairing, workItemId, isUncertain }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decode(String.self, forKey: .key)
+        request = try container.decode(CheckoutRecoveryRequest.self, forKey: .request)
+        pairing = try container.decode(CheckoutRecoveryPairing.self, forKey: .pairing)
+        workItemId = try container.decodeIfPresent(String.self, forKey: .workItemId)
+        isUncertain = try container.decodeIfPresent(Bool.self, forKey: .isUncertain) ?? false
     }
 
     mutating func markUncertain() { isUncertain = true }
@@ -54,7 +68,30 @@ struct CheckoutRecoveryConfirmation: Codable, Sendable {
     func matches(pairing: CheckoutRecoveryPairing) -> Bool { self.pairing == pairing }
 
     func matches(_ other: Self) -> Bool {
-        key == other.key && request == other.request && pairing == other.pairing
+        key == other.key && request == other.request && pairing == other.pairing && workItemId == other.workItemId
+    }
+}
+
+struct CheckoutRecoveryStop {
+    let workItemId: String
+    let originalTaskId: String
+    let path: String
+    let key: String
+
+    init?(confirmation: CheckoutRecoveryConfirmation) {
+        guard let workItemId = confirmation.workItemId, !workItemId.isEmpty else { return nil }
+        self.workItemId = workItemId
+        originalTaskId = confirmation.request.taskId
+        path = "work/items/\(workItemId)/cancel"
+        key = UUID().uuidString
+    }
+
+    func admittedSuccessor(in artifacts: [Artifact], tasks: [AgentTask]) -> AgentTask? {
+        guard let work = artifacts.first(where: { $0.id == workItemId && $0.kind == "work" &&
+            ($0.workOutcomeId == nil || $0.workOutcomeId == $0.id) }),
+              let successorId = work.taskId, successorId != originalTaskId,
+              tasks.contains(where: { $0.id == originalTaskId && $0.status == "cancelled" }) else { return nil }
+        return tasks.first(where: { $0.id == successorId && $0.botId == work.botId && $0.isActive })
     }
 }
 
@@ -193,9 +230,12 @@ struct NativeTaskDetailsView: View {
     @State private var recovery: CheckoutRecoveryCheck?
     @State private var confirming = false
     @State private var recovering: Set<String> = []
+    @State private var stoppingRecovery = false
+    @State private var stopPendingConfirmation: CheckoutRecoveryConfirmation?
+    @State private var stopConfirmationMessage: String?
 
     private var items: [TrackedWorkItem] {
-        TrackedWorkItem.nativeTasks(in: store.artifacts, botId: botId, tasks: store.tasks)
+        TrackedWorkItem.nativeTasks(in: store.artifacts, botId: botId, tasks: store.tasks, includeDismissed: true)
     }
 
     private var confirmation: CheckoutRecoveryConfirmation? { store.checkoutConfirmation }
@@ -217,6 +257,16 @@ struct NativeTaskDetailsView: View {
                 Button("Check recovery status") { retryConfirmation() }
                     .disabled(confirming)
                     .accessibilityIdentifier("retry-checkout-recovery")
+                if let confirmation, confirmation.workItemId != nil {
+                    Button(stoppingRecovery ? "Stopping…" : "Stop recovery", role: .destructive) {
+                        stopPendingConfirmation = confirmation
+                    }
+                    .disabled(stoppingRecovery)
+                    .accessibilityIdentifier("stop-pending-checkout-recovery")
+                }
+                if let stopConfirmationMessage {
+                    Text(stopConfirmationMessage).font(.footnote).foregroundStyle(.secondary)
+                }
             }
             if items.isEmpty {
                 Text("No tasks").foregroundStyle(.secondary)
@@ -261,6 +311,23 @@ struct NativeTaskDetailsView: View {
         .navigationTitle("Task details")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+        .alert("Stop this recovery?", isPresented: Binding(
+            get: { stopPendingConfirmation != nil }, set: { if !$0 { stopPendingConfirmation = nil } }),
+            presenting: stopPendingConfirmation) { pending in
+            Button("Not now", role: .cancel) { stopPendingConfirmation = nil }
+            Button("Stop recovery", role: .destructive) {
+                stopPendingConfirmation = nil
+                stoppingRecovery = true
+                Task {
+                    let failure = await store.stopPendingCheckoutRecovery(pending)
+                    error = failure
+                    stopConfirmationMessage = failure == nil ? "Stop sent. Check recovery status to reconcile the original request." : nil
+                    stoppingRecovery = false
+                }
+            }.accessibilityIdentifier("confirm-stop-pending-checkout-recovery")
+        } message: { _ in
+            Text("This sends a fresh Stop for the original Work. If recovery already resumed, it stops that Work. Check recovery status afterward; Stop never confirms a new recovery.")
+        }
         .alert("Stop this task?", isPresented: Binding(
             get: { taskToStop != nil }, set: { if !$0 { taskToStop = nil } }),
             presenting: taskToStop) { item in
@@ -292,7 +359,8 @@ struct NativeTaskDetailsView: View {
                 guard let check = recovery, confirmation == nil else { return }
                 recovery = nil
                 do {
-                    try store.stageCheckoutRecovery(CheckoutRecoveryConfirmation(preview: check.preview, pairing: check.pairing))
+                    try store.stageCheckoutRecovery(CheckoutRecoveryConfirmation(preview: check.preview,
+                        pairing: check.pairing, workItemId: check.workItemId))
                     retryConfirmation()
                 } catch { self.error = error.localizedDescription }
             }.disabled(confirmation != nil).accessibilityIdentifier("confirm-checkout-recovery")

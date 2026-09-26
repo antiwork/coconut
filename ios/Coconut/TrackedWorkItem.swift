@@ -4,10 +4,13 @@ struct TrackedWorkItem: Identifiable {
     let artifact: Artifact
     let pullRequests: [TrackedPullRequest]
     let recoveryWork: Artifact?
-    init(artifact: Artifact, pullRequests: [TrackedPullRequest], recoveryWork: Artifact? = nil) {
+    let originalTaskStatus: String?
+    init(artifact: Artifact, pullRequests: [TrackedPullRequest], recoveryWork: Artifact? = nil,
+         originalTaskStatus: String? = nil) {
         self.artifact = artifact
         self.pullRequests = pullRequests
         self.recoveryWork = recoveryWork ?? (artifact.kind == "work" ? artifact : nil)
+        self.originalTaskStatus = originalTaskStatus
     }
     var pullRequest: TrackedPullRequest? { pullRequests.count == 1 ? pullRequests.first : nil }
     var id: String { artifact.workIdentity }
@@ -27,21 +30,36 @@ struct TrackedWorkItem: Identifiable {
         return pullRequests.isEmpty ? ["completed", "cancelled"].contains(artifact.status) : pullRequests.allSatisfy(\.isFinished)
     }
     var checkoutRecoveryWork: Artifact? {
-        guard let recoveryWork, recoveryWork.kind == "work", recoveryWork.nativeTaskId != nil,
-              recoveryWork.taskId != nil, recoveryWork.workState == "cancelled" else { return nil }
+        guard originalTaskStatus == "cancelled", let recoveryWork, recoveryWork.kind == "work",
+              recoveryWork.workOutcomeId == nil || recoveryWork.workOutcomeId == recoveryWork.id,
+              recoveryWork.nativeTaskId != nil, recoveryWork.taskId != nil,
+              recoveryWork.workState == "cancelled" else { return nil }
         return recoveryWork
     }
     var canOfferCheckoutRecovery: Bool { checkoutRecoveryWork != nil }
 
-    static func nativeTasks(in artifacts: [Artifact], botId: String, tasks: [AgentTask] = []) -> [Self] {
+    static func nativeTasks(in artifacts: [Artifact], botId: String, tasks: [AgentTask] = [],
+                            includeDismissed: Bool = false) -> [Self] {
         let conversationTasks = Set(tasks.filter { $0.conversationBotId == botId }.map(\.id))
         let identities = Set(artifacts.filter {
             $0.nativeTaskId != nil && ($0.botId == botId || $0.taskId.map(conversationTasks.contains) == true)
         }.map(\.workIdentity))
-        return tracked(in: artifacts.filter { identities.contains($0.workIdentity) })
+        let taskStatuses = Dictionary(tasks.map { ($0.id, $0.status) }, uniquingKeysWith: { first, _ in first })
+        let visibleArtifacts = artifacts.filter { identities.contains($0.workIdentity) }
+        let dismissedIdentities = includeDismissed ? Set(visibleArtifacts.filter {
+            $0.kind == "work" && ($0.workOutcomeId == nil || $0.workOutcomeId == $0.id)
+                && $0.nativeTaskId != nil && $0.workState == "cancelled"
+                && $0.taskId.flatMap { taskStatuses[$0] } == "cancelled"
+        }.map(\.workIdentity)) : []
+        return tracked(in: visibleArtifacts, includeDismissedWorkIdentities: dismissedIdentities).map { item in
+            let taskStatus = item.recoveryWork?.taskId.flatMap { taskStatuses[$0] }
+            return Self(artifact: item.artifact, pullRequests: item.pullRequests,
+                        recoveryWork: item.recoveryWork, originalTaskStatus: taskStatus)
+        }
     }
 
-    static func tracked(in artifacts: [Artifact], visibility: [String: Bool] = [:], at date: Date = Date()) -> [Self] {
+    static func tracked(in artifacts: [Artifact], visibility: [String: Bool] = [:], at date: Date = Date(),
+                        includeDismissedWorkIdentities: Set<String> = []) -> [Self] {
         let allRequests = TrackedPullRequest.tracked(in: artifacts, visibility: visibility)
         let represented = Set(allRequests.map { $0.artifact.workIdentity })
         let requests = Dictionary(grouping: allRequests, by: { $0.artifact.workIdentity }).values.map { copies in
@@ -56,7 +74,8 @@ struct TrackedWorkItem: Identifiable {
         let groupedTasks = Dictionary(grouping: artifacts.filter { $0.kind == "work" }, by: \.workIdentity)
         let tasks = groupedTasks.compactMap { identity, copies -> Self? in
             guard !represented.contains(identity),
-                  !(visibility[identity] ?? copies.contains { $0.workDismissalId != nil }) else { return nil }
+                  !(visibility[identity] ?? copies.contains { $0.workDismissalId != nil })
+                    || includeDismissedWorkIdentities.contains(identity) else { return nil }
             let ordered = copies.sorted { $0.id < $1.id }
             guard let item = ordered.first(where: { $0.workOutcomeId == nil || $0.workOutcomeId == $0.id })
                     ?? ordered.first else { return nil }

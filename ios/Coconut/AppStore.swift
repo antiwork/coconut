@@ -672,6 +672,7 @@ final class AppStore {
 
     func checkoutRecoveryPreview(_ item: TrackedWorkItem) async throws -> CheckoutRecoveryCheck {
         guard !isDemo, let work = item.checkoutRecoveryWork, let taskId = work.taskId,
+              tasks.contains(where: { $0.id == taskId && $0.status == "cancelled" }),
               let pairing, let token = PairingToken.read() else {
             throw ServiceError.configuration("Pair with your Mac to check this task.")
         }
@@ -679,15 +680,22 @@ final class AppStore {
         let preview: CheckoutRecoveryPreview = try await client.request("tasks/\(taskId)/checkout-recovery")
         guard self.pairing?.deviceId == pairing.deviceId, self.pairing?.serverURL == pairing.serverURL,
               self.pairing?.fingerprint == pairing.fingerprint,
-              artifacts.first(where: { $0.id == work.id })?.workState == "cancelled" else {
+              artifacts.first(where: { $0.id == work.id })?.workState == "cancelled",
+              tasks.contains(where: { $0.id == taskId && $0.status == "cancelled" }) else {
             throw ServiceError.configuration("This task changed. Check it again.")
         }
         return CheckoutRecoveryCheck(preview: preview, pairing: CheckoutRecoveryPairing(
-            deviceId: pairing.deviceId, serverURL: pairing.serverURL, fingerprint: pairing.fingerprint))
+            deviceId: pairing.deviceId, serverURL: pairing.serverURL, fingerprint: pairing.fingerprint),
+            workItemId: work.id)
     }
 
     func stageCheckoutRecovery(_ confirmation: CheckoutRecoveryConfirmation) throws {
         guard !isDemo, checkoutConfirmation == nil, let pairing,
+              let workItemId = confirmation.workItemId,
+              artifacts.contains(where: { $0.id == workItemId && $0.kind == "work" &&
+                  ($0.workOutcomeId == nil || $0.workOutcomeId == $0.id) &&
+                  $0.taskId == confirmation.request.taskId && $0.workState == "cancelled" }),
+              tasks.contains(where: { $0.id == confirmation.request.taskId && $0.status == "cancelled" }),
               confirmation.matches(pairing: CheckoutRecoveryPairing(deviceId: pairing.deviceId,
                   serverURL: pairing.serverURL, fingerprint: pairing.fingerprint)),
               PairingToken.read() != nil else {
@@ -736,6 +744,41 @@ final class AppStore {
     }
 
     @discardableResult
+    func stopPendingCheckoutRecovery(_ confirmation: CheckoutRecoveryConfirmation) async -> String? {
+        guard !isDemo, checkoutConfirmation?.matches(confirmation) == true,
+              let saved = ProtectedCache.readPendingCheckout(for: confirmation.pairing),
+              saved.matches(confirmation), let stop = CheckoutRecoveryStop(confirmation: confirmation) else {
+            return "The saved recovery request is unavailable. Check recovery status before stopping it."
+        }
+        var workFailure: Error?
+        let failure = await cancelWorkItem(path: stop.path, idempotencyKey: stop.key,
+            expectedPairing: confirmation.pairing, onFailure: { workFailure = $0 })
+        guard let failure, let workError = workFailure as? ServiceError,
+              case .response(409, _) = workError else { return failure }
+        guard let pairing, confirmation.matches(pairing: CheckoutRecoveryPairing(
+            deviceId: pairing.deviceId, serverURL: pairing.serverURL, fingerprint: pairing.fingerprint)),
+              let token = PairingToken.read() else {
+            return "The pairing changed. Check the task again."
+        }
+        do {
+            let client = try APIClient(serverURL: pairing.serverURL, fingerprint: pairing.fingerprint, token: token)
+            let snapshot: StateSnapshot = try await client.request("state")
+            guard let current = self.pairing, confirmation.matches(pairing: CheckoutRecoveryPairing(
+                deviceId: current.deviceId, serverURL: current.serverURL, fingerprint: current.fingerprint)) else {
+                return "The pairing changed. Check the task again."
+            }
+            guard let successor = stop.admittedSuccessor(in: snapshot.artifacts, tasks: snapshot.tasks) else { return failure }
+            var successorFailure: String?
+            let receipt: AgentTask? = await write("tasks/\(successor.id)/cancel", payload: EmptyRequest(),
+                as: AgentTask.self, refreshInBackground: true, idempotencyKey: UUID().uuidString,
+                expectedPairing: confirmation.pairing, onFailure: { successorFailure = $0.localizedDescription })
+            return receipt == nil ? successorFailure ?? "The resumed task was not confirmed stopped. Try again." : nil
+        } catch {
+            return "The Mac could not verify whether Work already resumed. No additional Stop was sent: \(error.localizedDescription)"
+        }
+    }
+
+    @discardableResult
     func cancelWork(_ item: TrackedWorkItem) async -> String? {
         if isDemo {
             for index in artifacts.indices where artifacts[index].id == item.artifact.id {
@@ -744,10 +787,17 @@ final class AppStore {
             }
             return nil
         }
+        return await cancelWorkItem(path: "work/items/\(item.artifact.id)/cancel")
+    }
+
+    private func cancelWorkItem(path: String, idempotencyKey: String? = nil,
+                                expectedPairing: CheckoutRecoveryPairing? = nil,
+                                onFailure: ((Error) -> Void)? = nil) async -> String? {
         let generation = connectionGeneration
         var failure: String?
-        let receipt = await write("work/items/\(item.artifact.id)/cancel", payload: EmptyRequest(), as: WorkCancellationReceipt.self,
-            refreshInBackground: true, onFailure: { failure = $0.localizedDescription })
+        let receipt = await write(path, payload: EmptyRequest(), as: WorkCancellationReceipt.self,
+            refreshInBackground: true, idempotencyKey: idempotencyKey, expectedPairing: expectedPairing,
+            onFailure: { failure = $0.localizedDescription; onFailure?($0) })
         guard let receipt, receipt.ok else { return failure ?? "Cancellation was not confirmed. Try again." }
         guard generation == connectionGeneration else { return nil }
         if let updated = receipt.applying(to: artifacts, after: cursor) {
