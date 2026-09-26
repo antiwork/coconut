@@ -343,7 +343,8 @@ with open(os.devnull, 'w') as quiet, contextlib.redirect_stdout(quiet), contextl
                                  "{'slug': provider, 'models': [model], 'source': 'hermes'}, "
                                  "{'slug': 'xai-oauth', 'models': ['grok-4.6', 'grok-4.7', 'grok-4.5'], 'source': 'hermes'}])")
         efforts = {m['id']: m['default_reasoning_effort'] for m in result['models'] if m['provider'] == 'xai-oauth'}
-        self.assertEqual(efforts, {'grok-4.6': 'xhigh', 'grok-4.7': None, 'grok-4.5': 'medium'})
+        # A disable stays 'none', so the model call still omits the reasoning field.
+        self.assertEqual(efforts, {'grok-4.6': 'xhigh', 'grok-4.7': 'none', 'grok-4.5': 'medium'})
 
     def test_a_grok_default_shows_the_effort_that_hermes_sends(self):
         (self.home / 'config.yaml').write_text('model:\n  default: grok-4.7\n  provider: xai-oauth\nagent:\n  reasoning_effort: max\n')

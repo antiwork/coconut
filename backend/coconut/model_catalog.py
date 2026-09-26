@@ -403,14 +403,12 @@ def _native_state():
 def _sent_effort(effort, supported):
     """Return the effort that Hermes sends for a saved effort on a route with these levels.
 
-    Hermes clamps an unsupported level to the nearest weaker one. A disable that the route cannot send keeps
-    the model's own default, so it shows as None.
+    Hermes clamps an unsupported level to the nearest weaker one. A saved disable stays 'none': this value also
+    reaches the model call, where 'none' omits the reasoning field and None would request Hermes' default effort.
     """
     from agent.reasoning_effort import clamp_effort
-    if effort is None or effort in supported:
+    if effort is None or effort == 'none' or effort in supported:
         return effort
-    if effort == 'none':
-        return None
     return clamp_effort(effort, supported)
 
 
