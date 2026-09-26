@@ -850,7 +850,7 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertIn('retired', self.registry()[identity])
 
     @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
-    def test_young_foreign_and_locked_orphans_keep_their_processes_and_worktrees(self):
+    def test_young_and_foreign_orphans_stay_and_a_locked_worktree_keeps_its_files(self):
         young_outcome, young, young_path, _ = self.outcome()
         young_pid = self.orphan(young_path, young_outcome)
         _, foreign, foreign_path, _ = self.outcome()
@@ -864,8 +864,14 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
             self.assertEqual(self.retire(), [young])
         self.assertFalse(self.alive(young_pid))
-        for pid, identity, path in ((foreign_pid, foreign, foreign_path), (locked_pid, locked, locked_path)):
-            self.assertTrue(self.alive(pid))
+        self.assertTrue(self.alive(foreign_pid))
+        # An idle outcome loses its orphans even when its worktree cannot retire. The locked worktree stays.
+        for _ in range(50):
+            if not self.alive(locked_pid):
+                break
+            time.sleep(0.1)
+        self.assertFalse(self.alive(locked_pid))
+        for identity, path in ((foreign, foreign_path), (locked, locked_path)):
             self.assertTrue(path.is_dir())
             self.assertNotIn('retired', self.registry()[identity])
 
@@ -1074,6 +1080,46 @@ class WorktreeRetirementTests(unittest.TestCase):
         save_bindings(self.workspaces / 'worktrees.json', saved)
         self.assertEqual(self.retire(), [])
         self.assertTrue(inner.is_dir())
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_an_idle_outcome_loses_its_orphans_even_when_its_worktree_cannot_retire(self):
+        outcome, identity, path, _ = self.outcome()
+        # A locked worktree cannot retire. Its orphan still goes.
+        git(self.repo, 'worktree', 'lock', str(path))
+        scratch = self.workspaces / outcome
+        scratch.mkdir()
+        in_worktree, in_scratch = self.orphan(path, outcome), self.orphan(scratch, outcome)
+        foreign = self.orphan(scratch, str(uuid4()))
+        self.holders.stop()
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.assertEqual(self.retire(), [])
+        for _ in range(50):
+            if not (self.alive(in_worktree) or self.alive(in_scratch)):
+                break
+            time.sleep(0.1)
+        self.assertFalse(self.alive(in_worktree))
+        self.assertFalse(self.alive(in_scratch))
+        self.assertTrue(self.alive(foreign))
+        self.assertNotIn('retired', self.registry()[identity])
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_an_active_outcome_keeps_its_orphans(self):
+        outcome, identity, path, task = self.outcome(status='working')
+        pid = self.orphan(path, outcome)
+        self.holders.stop()
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(self.alive(pid))
+
+    def test_holders_by_path_maps_each_path_from_one_scan(self):
+        held, other = self.root / 'held', self.root / 'other'
+        held.mkdir()
+        other.mkdir()
+        listing = b'p10\nfcwd\nn' + os.fsencode(str(held)) + b'/log\np11\nfcwd\nn' + os.fsencode(str(other)) + b'\np12\nfcwd\nn/elsewhere\n'
+        self.holders.stop()
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)) as run:
+            self.assertEqual(work_workspace.holders_by_path({str(held), str(other)}), {str(held): {10}, str(other): {11}})
+        self.assertEqual(run.call_count, 1)
 
     def test_elapsed_times_from_ps_become_seconds(self):
         self.assertEqual(work_workspace.elapsed_seconds('05'), 5)

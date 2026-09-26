@@ -4,6 +4,7 @@ A turn restores a retired worktree before it starts, so an idle outcome that res
 from datetime import datetime
 import json
 import logging
+from pathlib import Path
 import sqlite3
 import subprocess
 import tarfile
@@ -64,6 +65,41 @@ class WorktreeRetirement:
         finally:
             self.lock.release()
 
+    def _stop_idle_orphans(self, finished, saved):
+        """Stop the old orphaned processes of each idle outcome, in its worktrees and its scratch workspace.
+
+        Retirement can refuse a worktree for another reason, for example a nested worktree with changes, and a
+        scratch workspace is never a worktree. Their orphans still hold the disk, the CPU, and the memory, so this
+        step runs for every idle outcome. It uses the retirement rules: launchd adopted the process, it is older
+        than ORPHAN_AGE_SECONDS, and its environment names the outcome.
+        """
+        root = self.root / 'workspaces'
+        places = {}
+        for binding in saved.values():
+            if isinstance(binding, dict) and binding.get('outcome') in finished and not binding.get('retired'):
+                places.setdefault(binding['outcome'], set()).add(binding['path'])
+        for outcome in finished:
+            if '/' not in outcome and (root / outcome).is_dir():
+                places.setdefault(outcome, set()).add(str(root / outcome))
+        paths = {path for group in places.values() for path in group if Path(path).is_dir()}
+        if not paths or self.stopping.is_set():
+            return []
+        try:
+            holders = work_workspace.holders_by_path(paths)
+        except ValueError as error:
+            logging.getLogger(__name__).warning('Coconut could not check idle outcome processes: %s', error)
+            return []
+        stopped = []
+        for outcome, group in places.items():
+            found = set().union(*(holders.get(path, set()) for path in group))
+            if found:
+                ended = work_workspace.stop_orphans(found, outcome, ORPHAN_AGE_SECONDS)
+                if ended:
+                    logging.getLogger(__name__).warning('Coconut stopped orphaned processes %s of idle outcome %s.',
+                                                        sorted(ended), outcome)
+                    stopped.extend(ended)
+        return stopped
+
     def retire_finished_worktrees(self, current=None):
         """Run at most once an hour. Git and file work run outside the service lock."""
         current = time.time() if current is None else current
@@ -81,6 +117,7 @@ class WorktreeRetirement:
         finished = self._finished_outcomes(current, timeout=SERVICE_WAIT_SECONDS)
         if finished is None:
             return []
+        self._stop_idle_orphans(finished, json.loads(manifest.read_text()))
         retired = []
         for identity, outcome in bindings.items():
             if outcome not in finished:

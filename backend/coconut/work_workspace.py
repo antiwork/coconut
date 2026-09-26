@@ -238,6 +238,31 @@ def holders(path):
 STOP_SECONDS = 5
 
 
+def holders_by_path(paths):
+    """Return, for each path, the IDs of the processes that have their cwd or an open file in it. Use one lsof scan."""
+    try:
+        result = subprocess.run(['lsof', '-n', '-P', '-w', '-F', 'pn'], capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        raise ValueError('Coconut cannot check open files without lsof.') from None
+    if result.returncode or not result.stdout:
+        raise ValueError('lsof did not list all open files.')
+    prefixes = {}
+    for path in paths:
+        for form in {str(path), str(Path(path).resolve())}:
+            prefixes.setdefault(os.fsencode(form), set()).add(str(path))
+    found, pid = {str(path): set() for path in paths}, None
+    for line in result.stdout.splitlines():
+        if line.startswith(b'p'):
+            pid = int(line[1:])
+        elif line.startswith(b'n'):
+            name = line[1:]
+            for prefix, owners in prefixes.items():
+                if name == prefix or name.startswith(prefix + b'/'):
+                    for owner in owners:
+                        found[owner].add(pid)
+    return found
+
+
 def busy_paths(paths):
     """Return the paths in which a process has its cwd or an open file. Use one lsof scan for all paths."""
     try:

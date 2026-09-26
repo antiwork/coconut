@@ -99,6 +99,12 @@ Retirement does these steps:
    It runs `git worktree remove --force` with a 600-second limit. It keeps the branch and its commits.
 10. It deletes the other archives of the same worktree that no binding names.
 
+Before it retires any worktree, each hourly run also stops the old orphans of every idle outcome. It checks the
+outcome's worktrees and its scratch workspace (`workspaces/<outcome>`), with one `lsof` scan, and uses the same
+orphan rules. This runs even when retirement refuses the worktree, for example for a nested worktree with changes.
+Such orphans, for example an Android emulator or a test script left by a crashed worker, otherwise hold disk space,
+CPU, and memory for days.
+
 The log names the cause when Coconut does not retire a worktree, for example a busy service or a changed worktree.
 Steps 1 to 7 do not hold the registry lock. Step 8 runs Git commands that do not wait for other processes.
 A path hint for native dispatch reads `worktrees.json` without the registry lock, because dispatch holds the service lock.
