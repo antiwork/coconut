@@ -71,7 +71,8 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.workspaces.mkdir(mode=0o700, exist_ok=True)
         # Most tests do not depend on lsof or send signals. The process tests below use real processes.
         self.holders = patch.multiple('coconut.work_workspace', holders=MagicMock(return_value=set()),
-                                      holders_by_path=MagicMock(side_effect=lambda paths: {str(p): set() for p in paths}))
+                                      holders_by_path=MagicMock(side_effect=lambda paths, detail=False: {
+                                          str(p): {} if detail else set() for p in paths}))
         self.holders.start()
         self.addCleanup(self.holders.stop)
 
@@ -1176,18 +1177,25 @@ class WorktreeRetirementTests(unittest.TestCase):
     def test_only_named_shared_services_are_exempt(self):
         for executable in ('/Applications/OrbStack.app/Contents/MacOS/OrbStack',
                            '/Applications/Docker.app/Contents/MacOS/com.docker.backend',
-                           '/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder',
                            '/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/bin/simdiskimaged',
-                           '/Users/me/Library/Android/sdk/platform-tools/adb', 'launchd_sim',
+                           'launchd_sim',
                            '/Library/Developer/CoreSimulator/Volumes/iOS_23A/Library/Developer/CoreSimulator/Profiles/Runtimes/iOS.simruntime/Contents/Resources/RuntimeRoot/usr/libexec/installd'):
             self.assertTrue(work_workspace.shared(executable), executable)
-        # The developer toolchain lives in these folders too. Its orphans must go.
+        # The developer toolchain and system programs live in these folders too. Their orphans must go.
         for executable in ('/Library/Java/JavaVirtualMachines/zulu-17.jdk/Contents/Home/bin/java',
                            '/Library/Developer/CommandLineTools/usr/bin/git',
                            '/Library/Frameworks/Python.framework/Versions/3.12/bin/python3',
                            '/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild',
+                           '/System/Library/Frameworks/WebKit.framework/XPCServices/WebContent',
                            '/Users/me/Library/Android/sdk/emulator/qemu/darwin-aarch64/qemu-system-aarch64'):
             self.assertFalse(work_workspace.shared(executable), executable)
+        # Only the adb server is shared. An adb client belongs to its turn.
+        adb = '/Users/me/Library/Android/sdk/platform-tools/adb'
+        with patch('coconut.work_workspace.arguments', return_value='adb -L tcp:5037 fork-server server --reply-fd 4\n'):
+            self.assertTrue(work_workspace.shared(adb, 10))
+        with patch('coconut.work_workspace.arguments', return_value='adb logcat\n'):
+            self.assertFalse(work_workspace.shared(adb, 10))
+        self.assertFalse(work_workspace.shared(adb))
 
     def test_holders_by_path_maps_each_path_from_one_scan(self):
         held, other = self.root / 'held', self.root / 'other'
@@ -1215,18 +1223,27 @@ class WorktreeRetirementTests(unittest.TestCase):
     def test_a_shared_service_that_holds_the_worktree_does_not_keep_it(self):
         _, identity, path, _ = self.outcome()
         self.holders.stop()
+        server = patch('coconut.work_workspace.arguments', return_value='adb fork-server server')
+        server.start()
+        self.addCleanup(server.stop)
+        def listing(pid, descriptor, target):
+            return lambda paths, detail=False: (
+                {str(p): ({pid: descriptor == 'cwd'} if detail else {pid}) if str(p) == str(target) else ({} if detail else set())
+                 for p in paths})
         # The adb server keeps the cwd of the turn that started it.
-        with patch('coconut.work_workspace.holders', return_value={500}), \
+        with patch('coconut.work_workspace.holders_by_path', side_effect=listing(500, 'cwd', path.resolve())), \
                 patch('coconut.work_workspace.process_table', return_value={500: (1, 99999, '/opt/sdk/platform-tools/adb')}), \
                 patch('coconut.work_workspace.stop') as stop:
             self.assertEqual(self.retire(), [identity])
         stop.assert_not_called()
         self.assertIn('retired', self.registry()[identity])
-        _, other, other_path, _ = self.outcome()
-        with patch('coconut.work_workspace.holders', return_value={501}), \
-                patch('coconut.work_workspace.process_table', return_value={501: (77, 99999, '/usr/bin/ruby')}):
-            self.assertEqual(self.retire(), [])
-        self.assertNotIn('retired', self.registry()[other])
+        # An open file of a shared service, and any holder that is not shared, still keep the worktree.
+        for pid, descriptor, executable in ((501, '12', '/opt/sdk/platform-tools/adb'), (502, 'cwd', '/usr/bin/ruby')):
+            _, other, other_path, _ = self.outcome()
+            with patch('coconut.work_workspace.holders_by_path', side_effect=listing(pid, descriptor, other_path.resolve())), \
+                    patch('coconut.work_workspace.process_table', return_value={pid: (77, 99999, executable)}):
+                self.assertNotIn(other, self.retire())
+            self.assertNotIn('retired', self.registry()[other])
 
     def test_an_empty_registry_still_sweeps_unfinished_archives(self):
         (self.workspaces / 'worktrees.json').write_text('{}')
@@ -1247,6 +1264,9 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.assertEqual(work_workspace.holders_by_path({str(held)}), {str(held): {10, 12}})
 
     def test_a_shared_service_does_not_make_a_path_busy(self):
+        server = patch('coconut.work_workspace.arguments', return_value='adb fork-server server')
+        server.start()
+        self.addCleanup(server.stop)
         held = self.root / 'held'
         held.mkdir()
         listing = b'p10\nfcwd\nn' + os.fsencode(str(held)) + b'\n'
@@ -1254,16 +1274,29 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
             with patch('coconut.work_workspace.process_table', return_value={10: (1, 50, '/opt/sdk/platform-tools/adb')}):
                 self.assertEqual(work_workspace.busy_paths({str(held)}), set())
+        # An open file of a shared service keeps the path busy.
+        opened = b'p10\nf12\nn' + os.fsencode(str(held)) + b'/data\n'
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=opened, returncode=0)):
+            with patch('coconut.work_workspace.process_table', return_value={10: (1, 50, '/opt/sdk/platform-tools/adb')}):
+                self.assertEqual(work_workspace.busy_paths({str(held)}), {str(held)})
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
             with patch('coconut.work_workspace.process_table', return_value={10: (1, 50, '/usr/bin/ruby')}):
                 self.assertEqual(work_workspace.busy_paths({str(held)}), {str(held)})
 
-    def test_a_shared_child_of_an_orphan_is_stopped_with_it(self):
+    def test_a_system_child_of_an_orphan_stops_and_a_shared_child_stays(self):
         table = {200: (1, 99999, '/usr/bin/safaridriver'), 201: (200, 99999, '/System/Library/Frameworks/WebKit.framework/XPCServices/WebContent'),
                  202: (201, 99999, '/usr/bin/tee')}
         with patch('coconut.work_workspace.process_table', return_value=table), \
                 patch('coconut.work_workspace.environment_names', return_value=True), \
                 patch('coconut.work_workspace.stop', return_value=set()):
             self.assertEqual(work_workspace.stop_orphans({200}, 'outcome', 0), {200, 201, 202})
+        # A shared service stays, even as the child of an orphan.
+        table = {300: (1, 99999, '/usr/bin/ruby'), 301: (300, 99999, '/opt/sdk/platform-tools/adb'), 302: (300, 99999, '/usr/bin/tee')}
+        with patch('coconut.work_workspace.process_table', return_value=table), \
+                patch('coconut.work_workspace.environment_names', return_value=True), \
+                patch('coconut.work_workspace.stop', return_value=set()), \
+                patch('coconut.work_workspace.arguments', return_value='adb fork-server server'):
+            self.assertEqual(work_workspace.stop_orphans({300}, 'outcome', 0), {300, 302})
 
     def test_process_table_reads_executables_with_spaces(self):
         listing = '  100     1 06-16:25:58 /Applications/OrbStack.app/Contents/MacOS/OrbStack Helper\n  200   100    02:03 /bin/bash\n'
