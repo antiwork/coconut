@@ -1121,6 +1121,26 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.assertEqual(work_workspace.holders_by_path({str(held), str(other)}), {str(held): {10}, str(other): {11}})
         self.assertEqual(run.call_count, 1)
 
+    def test_a_shared_app_daemon_with_the_outcome_environment_is_never_stopped(self):
+        # A turn started OrbStack, so its helper carries the outcome variable and has launchd as its parent.
+        table = {100: (1, 99999, '/Applications/OrbStack.app/Contents/Frameworks/OrbStack Helper.app/Contents/MacOS/OrbStack Helper'),
+                 101: (100, 99999, '/Applications/OrbStack.app/Contents/MacOS/vmgr'),
+                 200: (1, 99999, '/bin/bash'), 201: (200, 99999, '/usr/bin/tee')}
+        sent = []
+        with patch('coconut.work_workspace.process_table', return_value=table), \
+                patch('coconut.work_workspace.environment_names', return_value=True), \
+                patch('coconut.work_workspace.stop', side_effect=lambda pids, sig, seconds: sent.append(set(pids)) or set()):
+            stopped = work_workspace.stop_orphans({100, 200}, 'outcome', 0)
+        self.assertEqual(stopped, {200, 201})
+        self.assertTrue(all(not ({100, 101} & group) for group in sent))
+
+    def test_process_table_reads_executables_with_spaces(self):
+        listing = '  100     1 06-16:25:58 /Applications/OrbStack.app/Contents/MacOS/OrbStack Helper\n  200   100    02:03 /bin/bash\n'
+        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing)):
+            table = work_workspace.process_table()
+        self.assertEqual(table[100], (1, 6 * 86400 + 16 * 3600 + 25 * 60 + 58, '/Applications/OrbStack.app/Contents/MacOS/OrbStack Helper'))
+        self.assertEqual(table[200], (100, 123, '/bin/bash'))
+
     def test_elapsed_times_from_ps_become_seconds(self):
         self.assertEqual(work_workspace.elapsed_seconds('05'), 5)
         self.assertEqual(work_workspace.elapsed_seconds('02:03'), 123)

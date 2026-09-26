@@ -301,18 +301,28 @@ def elapsed_seconds(value):
     return (int(days) if days else 0) * 86400 + seconds
 
 
+# A shared app or system daemon can inherit a turn's environment when a turn starts it, for example OrbStack for
+# Docker. Stopping it would stop it for every outcome, so Coconut never stops a process under these folders.
+SHARED_EXECUTABLE_PREFIXES = ('/Applications/', '/System/', '/Library/')
+
+
 def process_table():
-    """Return each process ID with its parent ID and its age in seconds."""
+    """Return each process ID with its parent ID, its age in seconds, and its executable path."""
     try:
-        result = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,etime='], capture_output=True, text=True, timeout=60)
+        result = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,etime=,comm='], capture_output=True, text=True,
+                                errors='replace', timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         raise ValueError('Coconut cannot list processes without ps.') from None
     table = {}
     for line in result.stdout.splitlines():
         with contextlib.suppress(ValueError):
-            pid, parent, elapsed = line.split()
-            table[int(pid)] = (int(parent), elapsed_seconds(elapsed))
+            pid, parent, elapsed, executable = line.split(None, 3)
+            table[int(pid)] = (int(parent), elapsed_seconds(elapsed), executable.strip())
     return table
+
+
+def shared(executable):
+    return executable.startswith(SHARED_EXECUTABLE_PREFIXES)
 
 
 def environment_names(pid, mark):
@@ -406,6 +416,7 @@ def stop_orphans(found, outcome, age):
     So Coconut stops only an orphan whose environment names the outcome in COCONUT_WORKSPACE_OUTCOME, with its child processes.
     The worker of each turn sets this variable, and the processes of the turn inherit it.
     When the system does not show the environment of a process, for example a macOS platform binary, Coconut does not stop it.
+    It never stops a shared app or system daemon under SHARED_EXECUTABLE_PREFIXES, such as OrbStack.
     A process that does not end after SIGTERM gets SIGKILL.
     """
     if not found:
@@ -413,10 +424,11 @@ def stop_orphans(found, outcome, age):
     table = process_table()
     mark = 'COCONUT_WORKSPACE_OUTCOME=' + outcome
     stopped = {pid for pid in found if pid in table and pid != os.getpid() and table[pid][0] == 1
-               and table[pid][1] >= age and environment_names(pid, mark)}
+               and table[pid][1] >= age and not shared(table[pid][2]) and environment_names(pid, mark)}
     while stopped:
         # The parent proves who owns a child process. macOS also hides the environment of a child shell.
-        children = {pid for pid, (parent, _) in table.items() if parent in stopped and pid not in stopped}
+        children = {pid for pid, (parent, _, executable) in table.items()
+                    if parent in stopped and pid not in stopped and not shared(executable)}
         if not children:
             break
         stopped |= children
