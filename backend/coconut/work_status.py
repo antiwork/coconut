@@ -271,6 +271,10 @@ class WorkStatus:
             linked.setdefault(task['id'], set()).update(task.get('_waiting_on', []))
         return linked, explicit_waits
 
+    # The work graph builders read these tables: _work_links reads tasks and receipts, _proposal_work_links
+    # reads decisions, and _link_external_work reads artifacts. A write to one of them drops the shared graphs.
+    GRAPH_TABLES = frozenset(('tasks', 'native_receipts', 'decisions', 'artifacts'))
+
     def _graph_memo(self, records=None):
         shared = self._shared_cache()
         if shared is None:

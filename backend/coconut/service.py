@@ -437,10 +437,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
     def _put(self, table: str, obj: dict):
         cache = self._shared_cache()
         if cache is not None:
-            # Drop what this write can change. Work graphs come from tasks, receipts, decisions, and artifacts.
+            # Drop what this write can change. WorkStatus.GRAPH_TABLES names the tables of the work graphs.
             cache.pop(table, None)
             cache.pop({'tasks': 'task map', 'native_receipts': 'pending receipts'}.get(table), None)
-            if table in ('tasks', 'native_receipts', 'decisions', 'artifacts'):
+            if table in self.GRAPH_TABLES:
                 cache.pop('graphs', None)
         self.db.execute(f'INSERT INTO {table}(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data', (obj['id'], encoded(obj)))
 

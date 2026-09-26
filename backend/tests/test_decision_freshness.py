@@ -98,6 +98,7 @@ class DecisionFreshnessTests(unittest.TestCase):
                 'decisions': dict(self.question(old=False), id='graph-decision'),
                 'native_receipts': dict(id='graph-receipt', task_id=self.task['id'], turn_id='turn', state='completed',
                                         created_at=now(), action={'name': 'terminal', 'arguments': {}})}
+        self.assertEqual(set(rows), self.service.GRAPH_TABLES)
         with self.service.transaction(), self.service._shared_reads():
             for table, row in rows.items():
                 self.service._graph_memo()['probe'] = True
