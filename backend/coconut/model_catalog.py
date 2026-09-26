@@ -493,7 +493,9 @@ def _catalog(config, model, provider, base_url, rows):
             if not _supported_route(config, slug, model_id, url):
                 continue
             seen.add((slug, model_id))
-            supported = _route_efforts(slug, model_id) or list(efforts)
+            supported = _route_efforts(slug, model_id)
+            # An empty route list means the route takes no effort. Only None widens to the whole ladder.
+            supported = list(efforts) if supported is None else supported
             items.append({'id': model_id, 'name': model_id, 'provider': slug, 'base_url': url,
                           'reasoning_efforts': supported,
                           'default_reasoning_effort': _sent_effort(
