@@ -271,12 +271,15 @@ class WorkStatus:
             linked.setdefault(task['id'], set()).update(task.get('_waiting_on', []))
         return linked, explicit_waits
 
-    def _graph_memo(self):
+    def _graph_memo(self, records=None):
         graphs = getattr(self, '_work_graphs', None)
         if graphs is not None:
             return graphs
         shared = self._shared_cache()
-        return None if shared is None else shared.setdefault('graphs', {})
+        # Keep a shared graph only for inputs that repeat. A card's own receipt list is read once.
+        if shared is None or (records is not None and records is not shared.get('pending receipts')):
+            return None
+        return shared.setdefault('graphs', {})
 
     def _proposal_work_links(self, tasks):
         import json
@@ -342,7 +345,7 @@ class WorkStatus:
 
     def _work_chain(self, root, tasks, records, *, include_continuations=False):
         """Follow recorded callbacks, including replies that assign further work."""
-        graphs = self._graph_memo()
+        graphs = self._graph_memo(records)
         key = (id(tasks), id(records), include_continuations)
         if graphs is not None and key in graphs:
             _, _, linked, explicit_waits = graphs[key]
