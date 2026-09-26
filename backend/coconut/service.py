@@ -442,6 +442,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             cache.pop({'tasks': 'task map', 'native_receipts': 'pending receipts'}.get(table), None)
             if table in self.GRAPH_TABLES:
                 cache.pop('graphs', None)
+                cache.pop('latest graphs', None)
         self.db.execute(f'INSERT INTO {table}(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data', (obj['id'], encoded(obj)))
 
     def _event(self, event_type: str, data: dict, bot_id: str | None = None, task_id: str | None = None):

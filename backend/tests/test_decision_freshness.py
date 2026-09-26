@@ -100,10 +100,17 @@ class DecisionFreshnessTests(unittest.TestCase):
                                         created_at=now(), action={'name': 'terminal', 'arguments': {}})}
         self.assertEqual(set(rows), self.service.GRAPH_TABLES)
         with self.service.transaction(), self.service._shared_reads():
+            own = []
             for table, row in rows.items():
                 self.service._graph_memo()['probe'] = True
+                self.service._graph_memo(own)['probe'] = True
                 self.service._put(table, row)
                 self.assertNotIn('probe', self.service._graph_memo(), table)
+                self.assertNotIn('probe', self.service._graph_memo(own), table)
+            # One slot holds the graphs of a card's own receipt list.
+            self.service._graph_memo(own)['probe'] = True
+            self.assertIn('probe', self.service._graph_memo(own))
+            self.assertNotIn('probe', self.service._graph_memo([]))
             # A write to another table keeps the graphs.
             self.service._graph_memo()['probe'] = True
             self.service._put('bots', self.service._get('bots', self.task['bot_id']))
