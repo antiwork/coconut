@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import copy
 import fcntl
 import hashlib
 import io
@@ -1079,6 +1080,456 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(work_workspace.elapsed_seconds('02:03'), 123)
         self.assertEqual(work_workspace.elapsed_seconds('1:02:03'), 3723)
         self.assertEqual(work_workspace.elapsed_seconds('06-16:25:58'), 6 * 86400 + 16 * 3600 + 25 * 60 + 58)
+
+
+def changed_archive_member(member, **fields):
+    member = copy.deepcopy(member)
+    for key, value in fields.items():
+        setattr(member, key, value)
+    return member
+
+
+class ArchiveDuplicateTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.repo = self.root / 'repo'
+        self.repo.mkdir()
+        work_workspace.git(self.repo, 'init', '-q')
+        (self.repo / 'tracked').write_text('original\n')
+        work_workspace.git(self.repo, 'add', '.')
+        work_workspace.git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                      'commit', '-qm', 'Fixture')
+        self.saved = self.root / 'registry'
+        self.saved.mkdir()
+        self.outcome = 'original-owner'
+        self.identity = self.outcome + '-' + hashlib.sha256(str(self.repo).encode()).hexdigest()[:16]
+        self.path = self.repo / '.worktrees' / self.identity
+        self.branch = 'wt/' + self.identity
+        work_workspace.git(self.repo, 'worktree', 'add', '-qb', self.branch, str(self.path))
+        self.binding = dict(path=str(self.path), repository=str(self.repo), branch=self.branch, outcome=self.outcome)
+        work_workspace.validate_binding(self.binding)
+        work_workspace.save_bindings(self.saved / 'worktrees.json', {self.identity: self.binding})
+        self.head = work_workspace.git(self.path, 'rev-parse', 'HEAD')
+
+    def registry(self):
+        return json.loads((self.saved / 'worktrees.json').read_text())
+
+    def files(self):
+        # A nested ignore-all file makes real Git list both the directory and children.
+        folder = self.path / '.knapsack_pro'
+        folder.mkdir()
+        (folder / '.gitignore').write_text('*\n')
+        (folder / 'result.json').write_bytes(b'{"fixture": true}\n')
+        (self.path / 'tracked').write_text('staged\n')
+        work_workspace.git(self.path, 'add', 'tracked')
+        (self.path / 'tracked').write_text('staged\nunstaged\n')
+        (self.path / 'draft').write_text('untracked\n')
+        self.changes = work_workspace.changes(self.path)
+
+    def retire(self):
+        with patch.object(work_workspace, 'holders', return_value=set()):
+            archive = work_workspace.retire(self.saved, self.identity, lambda wait: True)
+        self.assertFalse(self.path.exists())
+        return archive
+
+    def rewrite(self, archive, transform):
+        with tarfile.open(archive) as tar:
+            rows = [(copy.deepcopy(member), tar.extractfile(member).read() if member.isfile() else None)
+                    for member in tar.getmembers()]
+        rows = transform(rows)
+        with tarfile.open(archive, 'w:gz') as tar:
+            for member, data in rows:
+                if data is not None:
+                    member.size = len(data)
+                tar.addfile(member, io.BytesIO(data) if data is not None else None)
+
+    def legacy_archive(self, *, symlink=False):
+        self.files()
+        if symlink:
+            (self.path / '.knapsack_pro/link').symlink_to('../../outside')
+        archive = self.retire()
+        def duplicate(rows):
+            name = 'ignored/.knapsack_pro/' + ('link' if symlink else '.gitignore')
+            # Reproduce old ignored_files' directory expansion followed by Git's child listing.
+            first = next(row for row in rows if row[0].name == name)
+            return rows + [copy.deepcopy(first)]
+        self.rewrite(archive, duplicate)
+        return archive
+
+    def saved_failure(self, error='The checkout already contains .knapsack_pro/.gitignore.'):
+        saved = self.registry()
+        saved[self.identity]['retired']['restore_failed'] = dict(at='2026-09-26T12:00:00Z', error=error)
+        work_workspace.save_bindings(self.saved / 'worktrees.json', saved)
+        return saved
+
+    def acquire(self):
+        return work_workspace.acquire(self.saved, self.outcome, str(self.repo))
+
+    def assert_restored(self, archive):
+        restored = self.acquire()
+        self.assertNotIn('retired', restored)
+        self.assertNotIn('retired', self.registry()[self.identity])
+        self.assertEqual({key: restored[key] for key in ('path', 'repository', 'branch', 'outcome')},
+                         {key: self.binding[key] for key in ('path', 'repository', 'branch', 'outcome')})
+        self.assertEqual(work_workspace.git(self.path, 'rev-parse', 'HEAD'), self.head)
+        self.assertEqual(work_workspace.git(self.path, 'branch', '--show-current'), self.branch)
+        self.assertEqual(work_workspace.changes(self.path), self.changes)
+        self.assertEqual((self.path / '.knapsack_pro/.gitignore').read_bytes(), b'*\n')
+        self.assertEqual((self.path / '.knapsack_pro/result.json').read_bytes(), b'{"fixture": true}\n')
+        self.assertFalse(archive.exists())
+        self.assertEqual(self.acquire(), restored)
+
+    def assert_refused(self, archive, *, saved_unchanged=True):
+        saved = self.registry()
+        digest = work_workspace.path_digest(archive)
+        branch = work_workspace.git(self.repo, 'rev-parse', 'refs/heads/' + self.branch)
+        records = work_workspace.registered(self.repo)
+        with patch.object(work_workspace, 'discard_checkout', wraps=work_workspace.discard_checkout) as discard:
+            with self.assertRaisesRegex(ValueError, 'could not restore|another owner'):
+                self.acquire()
+            # All these failures must occur before Git creates a checkout.
+            discard.assert_not_called()
+        self.assertEqual(work_workspace.path_digest(archive), digest)
+        self.assertEqual(work_workspace.git(self.repo, 'rev-parse', 'refs/heads/' + self.branch), branch)
+        self.assertEqual(work_workspace.registered(self.repo), records)
+        if saved_unchanged:
+            self.assertEqual(self.registry(), saved)
+
+    def test_real_git_overlap_is_counted_once_and_roundtrips(self):
+        self.files()
+        listing = work_workspace.git_output(self.path, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z')
+        self.assertIn(b'.knapsack_pro/\0', listing)
+        self.assertIn(b'.knapsack_pro/.gitignore\0', listing)
+        expected = ['.knapsack_pro/.gitignore', '.knapsack_pro/result.json']
+        total = sum((self.path / name).stat().st_size for name in expected)
+        with patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', total):
+            self.assertEqual(sorted(work_workspace.ignored_files(self.path)), expected)
+            archive = self.retire()
+        with tarfile.open(archive) as tar:
+            self.assertEqual(len(tar.getnames()), len(set(tar.getnames())))
+        self.assert_restored(archive)
+
+    def test_identical_legacy_duplicates_restore_once(self):
+        archive = self.legacy_archive()
+        self.assert_restored(archive)
+
+    def test_saved_legacy_collision_is_retried_only_by_same_owner_acquire(self):
+        archive = self.legacy_archive()
+        self.saved_failure()
+        before = self.registry()
+        self.assertEqual(work_workspace.preferred(self.saved, self.outcome), self.saved / self.outcome)
+        self.assertEqual(work_workspace.preferred(self.saved, self.outcome, verify=False), self.saved / self.outcome)
+        self.assertEqual(self.registry(), before)
+        self.assertFalse(self.path.exists())
+        self.assert_restored(archive)
+
+    def test_saved_legacy_collision_allows_native_empty_directory(self):
+        archive = self.legacy_archive()
+        self.saved_failure()
+        self.path.mkdir()
+        self.assert_restored(archive)
+
+    def test_actual_legacy_extraction_failure_rolls_back_then_same_owner_recovers(self):
+        archive = self.legacy_archive()
+        digest = work_workspace.path_digest(archive)
+
+        def legacy_members(tar):
+            # The old extraction loop visited every member without deduplication.
+            # Exercise its real collision, rollback, and durable restore_failed write.
+            return [(m, m.name.split('/', 1)[1]) for m in tar.getmembers()
+                    if m.name.startswith((work_workspace.UNTRACKED, work_workspace.IGNORED))], []
+
+        with patch.object(work_workspace, 'archive_inventory', side_effect=legacy_members):
+            with self.assertRaisesRegex(ValueError, 'The checkout already contains .knapsack_pro/.gitignore'):
+                self.acquire()
+        failure = self.registry()[self.identity]['retired']['restore_failed']
+        self.assertEqual(set(failure), {'at', 'error'})
+        self.assertEqual(failure['error'], 'The checkout already contains .knapsack_pro/.gitignore.')
+        self.assertFalse(self.path.exists())
+        self.assertFalse(any(record['path'] == self.path for record in work_workspace.registered(self.repo)))
+        self.assertEqual(work_workspace.path_digest(archive), digest)
+        # No registry or archive rewrite between the old failure and supported recovery.
+        self.assert_restored(archive)
+
+    def test_a_new_failure_during_duplicate_recovery_is_fenced_without_repeated_writes(self):
+        archive = self.legacy_archive()
+        self.saved_failure()
+        digest = work_workspace.path_digest(archive)
+        original = work_workspace.git_output
+
+        def refuse_apply(path, *arguments, **options):
+            if arguments[0] == 'apply':
+                # Even a new failure with the same wording must not authorize another retry.
+                raise ValueError('The checkout already contains .knapsack_pro/.gitignore.')
+            return original(path, *arguments, **options)
+
+        with patch.object(work_workspace, 'git_output', side_effect=refuse_apply), \
+                patch.object(work_workspace, 'discard_checkout', wraps=work_workspace.discard_checkout) as discard:
+            with self.assertRaisesRegex(ValueError, 'could not restore'):
+                self.acquire()
+            discard.assert_called_once()
+        self.assertTrue(self.registry()[self.identity]['retired']['restore_failed']['duplicate_retry_failed'])
+        self.assertEqual(work_workspace.path_digest(archive), digest)
+        self.assertFalse(self.path.exists())
+        self.assert_refused(archive)
+
+    def test_truncated_legacy_archive_preserves_the_original_failure_and_branch(self):
+        archive = self.legacy_archive()
+        self.saved_failure()
+        data = archive.read_bytes()
+        archive.write_bytes(data[:len(data) // 2])
+        self.assert_refused(archive)
+
+    def test_duplicate_acceptance_does_not_overwrite_a_file_from_git_checkout(self):
+        archive = self.legacy_archive()
+
+        def tracked_collision(rows):
+            member = tarfile.TarInfo('untracked/tracked')
+            return rows + [(member, b'overwrite'), (copy.deepcopy(member), b'overwrite')]
+
+        self.rewrite(archive, tracked_collision)
+        digest = work_workspace.path_digest(archive)
+        with patch.object(work_workspace, 'discard_checkout', wraps=work_workspace.discard_checkout) as discard:
+            with self.assertRaisesRegex(ValueError, 'The checkout already contains tracked'):
+                self.acquire()
+            discard.assert_called_once()
+        self.assertFalse(self.path.exists())
+        self.assertEqual(work_workspace.path_digest(archive), digest)
+        self.assertEqual(work_workspace.git(self.repo, 'show', self.branch + ':tracked'), 'original')
+
+    def test_identical_symlink_duplicates_restore_links_without_following(self):
+        archive = self.legacy_archive(symlink=True)
+        self.assert_restored(archive)
+        self.assertTrue((self.path / '.knapsack_pro/link').is_symlink())
+        self.assertEqual(os.readlink(self.path / '.knapsack_pro/link'), '../../outside')
+        self.assertFalse((self.path.parent / 'outside').exists())
+
+    def test_saved_failure_on_symlink_duplicates_is_not_regular_collision_proof(self):
+        archive = self.legacy_archive(symlink=True)
+        self.saved_failure('The checkout already contains .knapsack_pro/link.')
+        self.assert_refused(archive)
+
+    def test_conflicting_duplicate_content_and_headers_are_refused_before_extraction(self):
+        archive = self.legacy_archive()
+        original = archive.read_bytes()
+        variants = {
+            'content': lambda m, d: (m, b'x\n'),
+            'mode': lambda m, d: (m.replace(mode=m.mode ^ 0o100), d),
+            'type': lambda m, d: (changed_archive_member(m, type=tarfile.SYMTYPE, linkname='target', size=0), None),
+            'linkname': lambda m, d: (m.replace(linkname='different'), d),
+            'mtime': lambda m, d: (changed_archive_member(m, mtime=m.mtime + 1, pax_headers={}), d),
+            'uid': lambda m, d: (m.replace(uid=m.uid + 1), d),
+            'pax': lambda m, d: (changed_archive_member(m, pax_headers=dict(m.pax_headers, comment='different')), d),
+            'prefix': lambda m, d: (m.replace(name='untracked/.knapsack_pro/.gitignore'), d),
+        }
+        for label, change in variants.items():
+            with self.subTest(label=label):
+                archive.write_bytes(original)
+                self.rewrite(archive, lambda rows: rows[:-1] + [change(*rows[-1])])
+                self.saved_failure()
+                self.assert_refused(archive)
+
+    def test_control_duplicates_unsafe_names_types_and_overlap_are_refused(self):
+        archive = self.legacy_archive()
+        original = archive.read_bytes()
+        names = ('ignored/../escape', 'ignored//absolute', 'ignored/a/../../escape',
+                 'ignored/./alias', 'ignored/.git/config', 'ignored/.GIT/config',
+                 'ignored/a//b', '/absolute', 'ignored/.knapsack_pro/.gitignore/child',
+                 'ignored/.knapsack_pro', 'ignored/')
+        for name in names:
+            with self.subTest(name=name):
+                archive.write_bytes(original)
+                self.rewrite(archive, lambda rows: rows + [(tarfile.TarInfo(name), b'unsafe')])
+                self.saved_failure()
+                self.assert_refused(archive)
+        for name in ('retirement.json', *work_workspace.PATCHES):
+            with self.subTest(control=name):
+                archive.write_bytes(original)
+                self.rewrite(archive, lambda rows: rows + [copy.deepcopy(next(row for row in rows if row[0].name == name))])
+                self.assert_refused(archive)
+        for kind in (tarfile.LNKTYPE, tarfile.DIRTYPE, tarfile.FIFOTYPE):
+            with self.subTest(kind=kind):
+                archive.write_bytes(original)
+                def special(rows):
+                    member = tarfile.TarInfo('ignored/special')
+                    member.type, member.linkname = kind, 'ignored/.knapsack_pro/.gitignore'
+                    return rows + [(member, None)]
+                self.rewrite(archive, special)
+                self.assert_refused(archive)
+
+    def test_conflicting_symlink_target_is_refused(self):
+        archive = self.legacy_archive(symlink=True)
+        self.rewrite(archive, lambda rows: rows[:-1] + [(rows[-1][0].replace(linkname='another'), None)])
+        self.assert_refused(archive, saved_unchanged=False)
+
+    def test_conflicting_duplicate_is_preflighted_even_without_saved_failure(self):
+        archive = self.legacy_archive()
+        self.rewrite(archive, lambda rows: rows[:-1] + [(rows[-1][0], b'x\n')])
+        self.assert_refused(archive, saved_unchanged=False)
+        self.assertIn('conflicting entries', self.registry()[self.identity]['retired']['restore_failed']['error'])
+
+    def test_other_failure_markers_never_authorize_retry(self):
+        archive = self.legacy_archive()
+        for error in ('not a patch', 'The saved branch moved after retirement.',
+                      'Git stopped while it removed the checkout, and part of the checkout remains.',
+                      'The checkout already contains tracked.',
+                      'The checkout already contains .knapsack_pro/.gitignore. extra'):
+            with self.subTest(error=error):
+                self.saved_failure(error)
+                self.assert_refused(archive)
+
+    def test_collision_message_without_duplicate_is_not_retry_proof(self):
+        self.files()
+        archive = self.retire()
+        self.saved_failure()
+        self.assert_refused(archive)
+
+    def test_archive_owner_repository_path_time_branch_and_head_must_match(self):
+        archive = self.legacy_archive()
+        original = archive.read_bytes()
+        self.saved_failure()
+        for key in ('outcome', 'repository', 'path', 'at', 'branch', 'head'):
+            with self.subTest(key=key):
+                archive.write_bytes(original)
+                def alter(rows):
+                    for index, (member, data) in enumerate(rows):
+                        if member.name == 'retirement.json':
+                            metadata = json.loads(data)
+                            metadata[key] = 'different'
+                            rows[index] = (member, json.dumps(metadata).encode())
+                    return rows
+                self.rewrite(archive, alter)
+                self.assert_refused(archive)
+
+    def test_changed_branch_and_deleted_branch_preserve_archive(self):
+        archive = self.legacy_archive()
+        self.saved_failure()
+        tree = work_workspace.git(self.repo, 'rev-parse', self.branch + '^{tree}')
+        moved = work_workspace.git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                              'commit-tree', tree, '-p', self.branch, '-m', 'Moved')
+        work_workspace.git(self.repo, 'update-ref', 'refs/heads/' + self.branch, moved)
+        self.assert_refused(archive)
+        work_workspace.git(self.repo, 'branch', '-D', self.branch)
+        digest, saved = work_workspace.path_digest(archive), self.registry()
+        with self.assertRaisesRegex(ValueError, 'could not restore'):
+            self.acquire()
+        self.assertEqual(work_workspace.path_digest(archive), digest)
+        self.assertEqual(self.registry(), saved)
+        self.assertFalse(self.path.exists())
+
+    def test_occupied_checkout_is_not_adopted_or_overwritten_on_retry(self):
+        archive = self.legacy_archive()
+        self.saved_failure()
+        self.path.mkdir()
+        sentinel = self.path / 'sentinel'
+        sentinel.write_bytes(b'keep')
+        self.assert_refused(archive)
+        self.assertEqual(sentinel.read_bytes(), b'keep')
+        sentinel.unlink()
+        self.path.rmdir()
+        work_workspace.git(self.repo, 'worktree', 'add', str(self.path), self.branch)
+        self.assert_refused(archive)
+        self.assertEqual((self.path / 'tracked').read_text(), 'original\n')
+
+    def test_empty_and_dangling_symlink_worktree_paths_are_not_followed(self):
+        archive = self.legacy_archive()
+        self.saved_failure()
+        target = self.root / 'empty'
+        target.mkdir()
+        self.path.symlink_to(target, target_is_directory=True)
+        self.assert_refused(archive)
+        self.assertEqual(list(target.iterdir()), [])
+        self.path.unlink()
+        self.path.symlink_to(self.root / 'missing', target_is_directory=True)
+        self.assert_refused(archive)
+        self.assertTrue(self.path.is_symlink())
+
+    def test_symlink_ancestor_of_an_archived_file_is_refused_before_extraction(self):
+        archive = self.legacy_archive()
+        self.saved_failure()
+        original = archive.read_bytes()
+        outside = self.root / 'outside'
+        outside.mkdir()
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                archive.write_bytes(original)
+                def overlap(rows):
+                    link = tarfile.TarInfo('ignored/redirect')
+                    link.type, link.linkname = tarfile.SYMTYPE, str(outside)
+                    entries = [(link, None), (tarfile.TarInfo('untracked/redirect/file'), b'unsafe')]
+                    return rows + (list(reversed(entries)) if reverse else entries)
+                self.rewrite(archive, overlap)
+                self.assert_refused(archive)
+                self.assertEqual(list(outside.iterdir()), [])
+
+    def test_path_occupied_during_archive_validation_is_preserved(self):
+        archive = self.legacy_archive()
+        self.saved_failure()
+        inventory = work_workspace.archive_inventory
+        sentinel = self.path / 'sentinel'
+
+        def appear(tar):
+            result = inventory(tar)
+            self.path.mkdir()
+            sentinel.write_bytes(b'keep')
+            return result
+
+        with patch.object(work_workspace, 'archive_inventory', side_effect=appear):
+            self.assert_refused(archive)
+        self.assertEqual(sentinel.read_bytes(), b'keep')
+
+    def test_redirected_parent_of_missing_checkout_is_not_used_for_retry(self):
+        archive = self.legacy_archive()
+        self.saved_failure()
+        target = self.root / 'redirected-parent'
+        target.mkdir()
+        self.path.parent.rmdir()
+        self.path.parent.symlink_to(target, target_is_directory=True)
+        self.assert_refused(archive)
+        self.assertEqual(list(target.iterdir()), [])
+
+    def test_another_owner_cannot_adopt_the_failed_binding(self):
+        archive = self.legacy_archive()
+        self.saved_failure()
+        before, digest = self.registry(), work_workspace.path_digest(archive)
+        with self.assertRaisesRegex(ValueError, 'linked worktree'):
+            work_workspace.acquire(self.saved, 'other-owner', str(self.repo), str(self.path))
+        self.assertEqual(self.registry(), before)
+        self.assertEqual(work_workspace.path_digest(archive), digest)
+        self.assertFalse(self.path.exists())
+        # Even a mismatched registry key must not grant the current caller another owner's binding.
+        corrupt = self.registry()
+        corrupt[self.identity]['outcome'] = 'other-owner'
+        work_workspace.save_bindings(self.saved / 'worktrees.json', corrupt)
+        self.assert_refused(archive)
+
+    def test_archive_writer_and_verifier_refuse_duplicates(self):
+        self.files()
+        target = self.root / 'test.tar.gz'
+        entries = [('ignored/.knapsack_pro/.gitignore', '.knapsack_pro/.gitignore')] * 2
+        with self.assertRaisesRegex(ValueError, 'more than once'):
+            work_workspace.write_archive(target, {}, self.path, dict.fromkeys(work_workspace.PATCHES, b''), entries)
+        self.assertFalse(target.exists())
+        archive = self.legacy_archive_for_verifier()
+        with self.assertRaisesRegex(ValueError, 'expected files'):
+            work_workspace.check_archive(archive, dict(zip(work_workspace.PATCHES, self.changes[:2])), self.path,
+                                    [('untracked/draft', 'draft'),
+                                     ('ignored/.knapsack_pro/.gitignore', '.knapsack_pro/.gitignore'),
+                                     ('ignored/.knapsack_pro/result.json', '.knapsack_pro/result.json')])
+
+    def legacy_archive_for_verifier(self):
+        # Construct an archive without removing its source files, to isolate the verifier guard.
+        archive = self.root / 'duplicate.tar.gz'
+        with tarfile.open(archive, 'w:gz') as tar:
+            for name, data in [('retirement.json', b'{}'), *zip(work_workspace.PATCHES, self.changes[:2])]:
+                member = tarfile.TarInfo(name)
+                member.size = len(data)
+                tar.addfile(member, io.BytesIO(data))
+            for name in ('draft', '.knapsack_pro/.gitignore', '.knapsack_pro/result.json', '.knapsack_pro/.gitignore'):
+                tar.add(self.path / name, arcname=('untracked/' if name == 'draft' else 'ignored/') + name)
+        return archive
 
 
 if __name__ == '__main__':
