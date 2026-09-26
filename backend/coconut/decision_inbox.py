@@ -224,8 +224,25 @@ class DecisionInbox:
         if owner != task['conversation_bot_id']:
             return False
         # The conversation owner sees delegated cards. Delegates see only shared messages.
-        return task['bot_id'] == owner or any(
-            message.get('decision_id') == decision['id'] for message in self._history(task['bot_id']))
+        return task['bot_id'] == owner or decision['id'] in self._history_decision_ids(task['bot_id'])
+
+    def _history_decision_ids(self, bot_id):
+        """Return the IDs of the cards that messages in the bot's history name. This is the _history filter.
+
+        Inside _shared_reads, Coconut reads each bot once, and a write to messages drops the answer.
+        """
+        cache = self._shared_cache()
+        key = ('history decisions', bot_id)
+        if cache is not None and key in cache:
+            return cache[key]
+        ids = {row[0] for row in self.db.execute(
+            "SELECT DISTINCT json_extract(m.data, '$.decision_id') FROM message_audience a "
+            "JOIN messages m ON m.id=a.message_id WHERE a.bot_id=? "
+            "AND COALESCE(json_extract(m.data, '$._hidden'),0)=0 AND COALESCE(json_extract(m.data, '$._deleted'),0)=0 "
+            "AND json_extract(m.data, '$.decision_id') IS NOT NULL", (bot_id,))}
+        if cache is not None:
+            cache[key] = ids
+        return ids
 
     def resolve_chat_decision(self, task_id, payload):
         callbacks = []

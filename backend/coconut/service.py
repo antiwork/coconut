@@ -443,6 +443,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             if table in self.GRAPH_TABLES:
                 cache.pop('graphs', None)
                 cache.pop('latest graphs', None)
+            if table == 'messages':
+                # Triggers keep message_audience in step with messages, so this drops every history answer.
+                for key in [k for k in cache if isinstance(k, tuple) and k[0] == 'history decisions']:
+                    del cache[key]
         self.db.execute(f'INSERT INTO {table}(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data', (obj['id'], encoded(obj)))
 
     def _event(self, event_type: str, data: dict, bot_id: str | None = None, task_id: str | None = None):
