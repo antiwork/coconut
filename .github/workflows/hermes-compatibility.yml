@@ -100,6 +100,7 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_targeted_bot_continuation.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_kanban_workers.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_session_maintenance.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_model_catalog_native.py
           "$COCONUT_HERMES_PYTHON" scripts/test_native_kanban.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON"
           "$COCONUT_HERMES_PYTHON" scripts/test_completed_routine_continuation.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON"
           "$COCONUT_HERMES_PYTHON" scripts/test_script_routines.py --local

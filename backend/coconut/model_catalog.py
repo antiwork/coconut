@@ -751,4 +751,9 @@ def main():
 
 
 if __name__ == '__main__':
+    # Python puts this folder first on the path. Coconut's providers.py would then hide the Hermes providers
+    # package, which Hermes imports while it lists models. Keep this folder last, so Hermes modules win and
+    # Coconut siblings such as native_settings still import.
+    if sys.path and Path(sys.path[0] or '.').resolve() == Path(__file__).resolve().parent:
+        sys.path.append(sys.path.pop(0))
     main()
