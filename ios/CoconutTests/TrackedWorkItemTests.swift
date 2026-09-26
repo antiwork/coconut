@@ -231,12 +231,12 @@ final class TrackedWorkItemTests: XCTestCase {
         let initialBody = try APIJSON.encode(XCTUnwrap(store.checkoutConfirmation).request)
         let transport = CheckoutRecoveryConfirmationResult.classify(error: URLError(.timedOut))
         guard case .uncertain = transport else { return XCTFail("Transport must remain uncertain") }
-        store.recordCheckoutRecoveryResult(transport, for: XCTUnwrap(store.checkoutConfirmation))
+        store.recordCheckoutRecoveryResult(transport, for: try XCTUnwrap(store.checkoutConfirmation))
         XCTAssertTrue(store.checkoutConfirmation?.isUncertain == true)
         XCTAssertEqual(store.checkoutConfirmation?.key, "same-key")
         XCTAssertEqual(try APIJSON.encode(XCTUnwrap(store.checkoutConfirmation).request), initialBody)
         store.recordCheckoutRecoveryResult(.classify(error: ServiceError.response(503, "Unavailable")),
-                                           for: XCTUnwrap(store.checkoutConfirmation))
+                                           for: try XCTUnwrap(store.checkoutConfirmation))
         XCTAssertEqual(store.checkoutConfirmation?.key, preview.key)
         XCTAssertEqual(try APIJSON.encode(XCTUnwrap(store.checkoutConfirmation).request), initialBody)
         XCTAssertEqual(CheckoutRecoveryConfirmationResult.classify(error: ServiceError.invalidResponse),
