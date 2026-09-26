@@ -156,7 +156,7 @@ def rebuildable(name):
 def ignored_files(path):
     """Return the ignored files and links to archive. Skip rebuildable folders, sockets, and pipes."""
     listing = git_output(path, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z', strict=True)
-    names, size = [], 0
+    names, seen, size = [], set(), 0
 
     def unreadable(error):
         # Removal would delete the files that Coconut cannot read. Keep the checkout.
@@ -174,8 +174,11 @@ def ignored_files(path):
                 folders[:] = [f for f in folders if f not in links and not rebuildable(relative + '/' + f)]
                 candidates += [relative + '/' + name for name in files + links]
         for name in candidates:
-            if rebuildable(name):
+            # Git can list both a directory and its children when its own .gitignore
+            # ignores everything. The directory walk already included those children.
+            if name in seen or rebuildable(name):
                 continue
+            seen.add(name)
             status = os.lstat(path / name)
             if stat.S_ISREG(status.st_mode):
                 size += status.st_size
@@ -518,7 +521,8 @@ def path_digest(path):
 def check_archive(archive, patches, path, entries):
     with tarfile.open(archive) as tar:
         members = {member.name: member for member in tar.getmembers()}
-        if set(members) != {'retirement.json', *patches, *(arcname for arcname, _ in entries)}:
+        if (len(members) != len(tar.getmembers())
+                or set(members) != {'retirement.json', *patches, *(arcname for arcname, _ in entries)}):
             raise ValueError('The archive does not list the expected files.')
         if any(file_digest(tar.extractfile(members[name])) != hashlib.sha256(data).hexdigest()
                for name, data in patches.items()):
@@ -535,6 +539,8 @@ def check_archive(archive, patches, path, entries):
 
 
 def write_archive(temporary, metadata, path, patches, entries):
+    if len({arcname for arcname, _ in entries}) != len(entries):
+        raise ValueError('The archive input lists a file more than once.')
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'wb') as output:
         with tarfile.open(fileobj=output, mode='w:gz') as tar:
@@ -734,12 +740,49 @@ def place_link(path, name, target):
     os.symlink(target, link)
 
 
-def archived_members(tar):
-    """Yield each archived untracked and ignored file with its name in the worktree."""
+def archive_inventory(tar):
+    """Validate the entire archive before writing; coalesce only identical legacy entries.
+
+    Compare headers as well as bytes. Cross-prefix collisions are never duplicates:
+    they disagree about whether Git ignored a path. No file or link can be an ancestor
+    of another entry, and control members must occur exactly once.
+    """
+    controls, entries, duplicates = {}, {}, []
     for member in tar.getmembers():
+        if member.name in ('retirement.json', *PATCHES):
+            if member.name in controls or member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE) or member.sparse is not None:
+                raise ValueError('The archive has an invalid control entry: ' + member.name)
+            controls[member.name] = member
+            continue
         prefix = next((p for p in (UNTRACKED, IGNORED) if member.name.startswith(p)), None)
-        if prefix:
-            yield member, member.name[len(prefix):]
+        if not prefix:
+            raise ValueError('The archive contains an unexpected entry: ' + member.name)
+        name = member.name[len(prefix):]
+        if any(part in ('', '.', '..') or part.casefold() == '.git' for part in name.split('/')):
+            raise ValueError('The archive contains an unsafe path: ' + name)
+        if member.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.SYMTYPE) or member.sparse is not None:
+            raise ValueError('The archive contains an unexpected entry for ' + name + '.')
+        previous = entries.get(name)
+        if previous is not None:
+            fields = ('name', 'type', 'mode', 'size', 'linkname', 'uid', 'gid', 'uname', 'gname', 'mtime', 'pax_headers')
+            same = all(getattr(previous, field) == getattr(member, field) for field in fields)
+            if same and member.isfile():
+                same = file_digest(tar.extractfile(previous)) == file_digest(tar.extractfile(member))
+            if not same:
+                raise ValueError('The archive contains conflicting entries for ' + name + '.')
+            duplicates.append((member, name))
+        else:
+            entries[name] = member
+    if set(controls) != {'retirement.json', *PATCHES}:
+        raise ValueError('The archive is missing its control entries.')
+    for name in entries:
+        if any(parent.as_posix() in entries for parent in Path(name).parents):
+            raise ValueError('The archive contains overlapping paths: ' + name)
+    return [(member, name) for name, member in entries.items()], duplicates
+
+
+def archived_members(tar):
+    return iter(archive_inventory(tar)[0])
 
 
 def occupied(path):
@@ -814,9 +857,17 @@ def unlocked_registry(root):
     return saved if isinstance(saved, dict) else {}
 
 
-def unpack(binding, checked):
+class DuplicateRestoreFailed(ValueError):
+    """A proven duplicate recovery started, but encountered a different restore failure."""
+
+
+def unpack(binding, checked, *, retry_failure=None):
     retired = binding['retired']
     path, archive, repository = Path(binding['path']), Path(retired['archive']), Path(binding['repository'])
+    if path.is_symlink():
+        raise ValueError('The saved worktree path is a symbolic link.')
+    if retry_failure and occupied(path):
+        raise ValueError('A failed restore cannot be retried over an occupied path.')
     if occupied(path):
         # Retirement stopped before Git removed the checkout, or a restore stopped before the registry changed.
         # compare_checkouts read the files without the lock. Here Coconut compares only their fingerprint.
@@ -845,12 +896,26 @@ def unpack(binding, checked):
     created = False
     try:
         with tarfile.open(archive) as tar:
+            members, duplicates = archive_inventory(tar)
             metadata = json.loads(tar.extractfile('retirement.json').read())
             staged, unstaged = (tar.extractfile(name).read() for name in PATCHES)
             if (metadata['branch'], metadata['head']) != (binding['branch'], retired['head']):
                 raise ValueError('The archive belongs to another branch or commit.')
             if git(repository, 'rev-parse', '--verify', 'refs/heads/' + binding['branch']) != retired['head']:
                 raise ValueError('The saved branch moved after retirement.')
+            if retry_failure:
+                # Old unpack extracted the first regular member, then mistook an
+                # identical second member for a pre-existing checkout conflict.
+                # Links were deferred and failed differently, so they do not prove this case.
+                collision = next((name for member, name in duplicates if member.isfile()), None)
+                if (collision is None or retry_failure.get('error') != 'The checkout already contains ' + collision + '.'
+                        or any(metadata.get(key) != binding[key] for key in ('outcome', 'repository', 'path'))
+                        or metadata.get('at') != retired.get('at')):
+                    raise ValueError('The saved failure is not an identical legacy archive collision.')
+            # Archive validation can take time. Do not roll back someone else's files
+            # if the previously empty path became occupied before Git starts.
+            if occupied(path) or path.is_symlink() or retry_failure and path.resolve() != path:
+                raise ValueError('The saved worktree path is no longer empty or has been redirected.')
             # Mark the checkout before Git starts. An interrupted add can leave a registered partial checkout.
             created = True
             git(repository, 'worktree', 'add', str(path), binding['branch'], timeout=CHECKOUT_SECONDS)
@@ -859,7 +924,7 @@ def unpack(binding, checked):
             if unstaged:
                 git_output(path, 'apply', '--binary', '--whitespace=nowarn', '-', data=unstaged)
             links = []
-            for member, name in archived_members(tar):
+            for member, name in members:
                 if os.path.lexists(path / name):
                     raise ValueError('The checkout already contains ' + name + '.')
                 if member.issym():
@@ -874,31 +939,41 @@ def unpack(binding, checked):
                 place_link(path, name, target)
         if git(path, 'rev-parse', 'HEAD') != retired['head'] or changes_digest(*changes(path)) != retired['changes']:
             raise ValueError('The restored files do not match the archive.')
-    except BaseException:
+    except BaseException as error:
         if created:
             # Remove only the partial checkout. The archive stays.
             discard_checkout(repository, path)
+            if retry_failure and isinstance(error, RESTORE_ERRORS):
+                raise DuplicateRestoreFailed(str(error)) from error
         raise
 
 
-def restore(binding, checked):
+def restore(binding, checked, *, retry_duplicates=False):
     """Recreate a retired worktree at its saved path. Hold the registry lock.
 
     `checked` comes from compare_checkouts before the lock. Without an entry for the binding,
     unpack compares a checkout that already exists at the path while it holds the lock.
 
     After a successful restore, the worktree holds every archived change, so Coconut deletes the archive.
-    A failed restore keeps the archive and marks the binding `restore_failed`. Coconut does not try again
-    until an operator removes that mark. The caller saves the registry.
+    A failed restore keeps the archive and marks the binding `restore_failed`. Only an
+    explicit same-owner acquire can retry a proven legacy identical-duplicate collision
+    into a missing or empty path. All other failures retain the operator fence.
     """
     retired = binding['retired']
     archive = retired['archive']
     failure = retired.get('restore_failed')
-    if not failure:
+    retry = (retry_duplicates and isinstance(failure, dict) and not failure.get('duplicate_retry_failed')
+             and isinstance(failure.get('error'), str)
+             and failure['error'].startswith('The checkout already contains '))
+    if not failure or retry:
         try:
-            unpack(binding, checked)
+            unpack(binding, checked, retry_failure=failure)
         except RESTORE_ERRORS as error:
-            failure = dict(at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'), error=str(error)[:1000])
+            # A rejected recovery must not replace or clear the original failure proof.
+            if isinstance(error, DuplicateRestoreFailed) or not failure:
+                failure = dict(at=stamp(datetime.now(timezone.utc)), error=str(error)[:1000])
+                if isinstance(error, DuplicateRestoreFailed):
+                    failure = dict(failure, duplicate_retry_failed=True)
             binding['retired'] = dict(retired, restore_failed=failure)
         else:
             binding.pop('retired')
@@ -931,10 +1006,12 @@ def acquire(root, outcome, repository, existing_worktree=None):
         saved = json.loads(manifest.read_text()) if manifest.exists() else {}
         binding = saved.get(identity)
         if binding:
+            if binding.get('outcome') != outcome or binding.get('repository') != str(repository):
+                raise ValueError('The saved workspace belongs to another owner or repository.')
             previous = dict(binding)
             try:
                 if binding.get('retired'):
-                    restore(binding, checked)
+                    restore(binding, checked, retry_duplicates=True)
                 else:
                     validate_binding(binding, allow_rename=True)
             finally:
