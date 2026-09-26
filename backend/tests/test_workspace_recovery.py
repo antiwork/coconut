@@ -249,6 +249,71 @@ class CheckoutPreviewHTTPTests(unittest.TestCase):
                 self.service.request_checkout_recovery(request, preview['key'], self.token)
         self.assertEqual(self.service._all('workspace_recoveries'), [])
 
+    def held_checkout(self):
+        git(self.repo, 'switch', 'saved')
+        (self.repo / 'saved.txt').write_text('saved-only change\n')
+        git(self.repo, 'add', 'saved.txt')
+        git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+            'commit', '-m', 'divergent saved branch')
+        self.service.restart_enabled = True
+        self.service.kanban = SimpleNamespace(close=lambda: None, tasks={})
+        path = '/v1/tasks/' + self.task_id + '/checkout-recovery'
+        status, preview = self.http('GET', path)
+        self.assertEqual(status, 200, preview)
+        request = dict(preview['request'], resume_consent=preview['resume_consent'], resume_confirmed=True)
+        status, draining = self.http('POST', '/v1/maintenance/checkout-recovery', request, key=preview['key'])
+        self.assertEqual((status, draining['state']), (200, 'draining'), draining)
+        receipt = self.service._get('workspace_recoveries', preview['key'])
+        return path, preview, receipt
+
+    def test_held_preview_rejects_partially_switched_checkout(self):
+        path, preview, receipt = self.held_checkout()
+        receipt['state'] = 'held'
+        self.service._put('workspace_recoveries', receipt)
+        git(self.repo, 'branch', preview['request']['recovery_branch'], receipt['merge_commit'])
+        status, response = self.http('GET', path)
+        self.assertEqual(status, 409, response)
+        self.assertIn('inspect', json.dumps(response).lower())
+        git(self.workspace, 'switch', '--no-overwrite-ignore', preview['request']['recovery_branch'])
+        manifest = self.data / 'workspaces' / 'worktrees.json'
+        bindings = json.loads(manifest.read_text())
+        recovered = dict(receipt['binding'], branch=preview['request']['recovery_branch'],
+                         _recovery_request_id=preview['key'])
+        bindings[receipt['binding_id']] = recovered
+        manifest.write_text(json.dumps(bindings))
+        before = (manifest.read_bytes(), git(self.repo, 'show-ref'),
+                  (self.workspace / 'tracked.txt').read_bytes())
+        with patch.object(recovery, 'checkout_plan', side_effect=AssertionError('planned')):
+            status, response = self.http('GET', path)
+        self.assertEqual(status, 409, response)
+        self.assertIn('inspect', json.dumps(response).lower())
+        self.assertEqual((manifest.read_bytes(), git(self.repo, 'show-ref'),
+                          (self.workspace / 'tracked.txt').read_bytes()), before)
+        self.assertEqual(self.service._get('workspace_recoveries', preview['key'])['state'], 'held')
+
+    def test_held_preview_allows_original_checkout_and_rejects_drain(self):
+        path, preview, receipt = self.held_checkout()
+        status, response = self.http('GET', path)
+        self.assertEqual(status, 409, response)
+        self.assertIn('receipt', json.dumps(response).lower())
+        receipt['state'] = 'held'
+        self.service._put('workspace_recoveries', receipt)
+        manifest = self.data / 'workspaces' / 'worktrees.json'
+        before = (manifest.read_bytes(), git(self.repo, 'show-ref'),
+                  (self.workspace / 'tracked.txt').read_bytes())
+        with patch.object(recovery, 'checkout_plan', side_effect=AssertionError('planned')):
+            status, retry = self.http('GET', path)
+        self.assertEqual(status, 200, retry)
+        self.assertNotEqual(retry['key'], preview['key'])
+        self.assertEqual({field: value for field, value in retry['request'].items() if field != 'recovery_branch'},
+                         {field: value for field, value in preview['request'].items() if field != 'recovery_branch'})
+        self.assertEqual((manifest.read_bytes(), git(self.repo, 'show-ref'),
+                          (self.workspace / 'tracked.txt').read_bytes()), before)
+        fresh = dict(retry['request'], resume_consent=retry['resume_consent'], resume_confirmed=True)
+        status, result = self.http('POST', '/v1/maintenance/checkout-recovery', fresh, key=retry['key'])
+        self.assertEqual((status, result['state']), (200, 'draining'), result)
+        self.assertEqual(self.service._get('workspace_recoveries', preview['key'])['state'], 'superseded')
+
 
 @unittest.skipUnless(native.SOURCE and native.PYTHON, 'Set Coconut Hermes paths for native integration checks.')
 class WorkspaceRecoveryTests(unittest.TestCase):

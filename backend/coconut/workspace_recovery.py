@@ -231,6 +231,19 @@ def dirty_state(path, *, read_only=False):
     return dirty
 
 
+def unchanged_held_checkout(receipt, manifest_bytes, *, read_only=False):
+    request = receipt['request']
+    if hashlib.sha256(manifest_bytes).hexdigest() != receipt['manifest_sha256']:
+        raise ValueError('The original manifest changed after authorization.')
+    checkout_state(request, initial=True, read_only=read_only)
+    if dirty_state(Path(request['path']), read_only=read_only) != receipt['dirty']:
+        raise ValueError('The original dirty edits changed after authorization.')
+    environment = dict(os.environ, GIT_OPTIONAL_LOCKS='0') if read_only else None
+    if subprocess.run(['git', '-C', request['repository'], 'show-ref', '--verify', '--quiet',
+                       'refs/heads/' + request['recovery_branch']], timeout=10, env=environment).returncode != 1:
+        raise ValueError('The held checkout may have partially created its recovery branch.')
+
+
 def reject_custom_git_commands(path, commits):
     result = subprocess.run(['git', '-C', str(path), 'config', '--get-regexp',
                              r'^merge\..*\.driver$'], capture_output=True, text=True, timeout=10)
@@ -374,9 +387,21 @@ class WorkspaceRecovery:
             owner = execution_key(task)
             manifest = self.root / 'workspaces' / 'worktrees.json'
             try:
+                pending = self._pending_workspace_recovery()
+                if pending and pending['state'] != 'held':
+                    raise ValueError('Recovery is pending. Check its receipt before requesting another.')
                 if manifest.is_symlink():
                     raise ValueError('The saved workspace registry is unsafe.')
-                bindings = json.loads(manifest.read_text())
+                manifest_bytes = manifest.read_bytes()
+                if pending:
+                    if ('merge_commit' not in pending or pending['request']['task_id'] != task_id
+                            or pending['device_id'] != device):
+                        raise ValueError('Inspect the held recovery receipt before requesting another checkout.')
+                    try:
+                        unchanged_held_checkout(pending, manifest_bytes, read_only=True)
+                    except ValueError as error:
+                        raise ValueError('The held checkout is no longer original; inspect its held recovery receipt before retrying.') from error
+                bindings = json.loads(manifest_bytes)
                 if not isinstance(bindings, dict) or any(not isinstance(value, dict) for value in bindings.values()):
                     raise ValueError('The original checkout registry is ambiguous.')
                 matches = [(identity, binding) for identity, binding in bindings.items()
@@ -408,6 +433,9 @@ class WorkspaceRecovery:
                                attached_head=checkout_git(path, 'rev-parse', 'HEAD', env=environment).strip(),
                                recovery_branch='wt/recovered-' + key,
                                message='Continue the original Work in its recovered checkout. Check existing approvals before any delivery.')
+                if pending and any(request[field] != pending['request'][field]
+                                   for field in request if field != 'recovery_branch'):
+                    raise ValueError('The held checkout incident changed; inspect its held recovery receipt before retrying.')
                 scope = self._checkout_scope(request)
                 validate_binding(dict(binding, branch=attached[0]))
                 checkout_state(request, initial=True, read_only=True)
@@ -502,14 +530,7 @@ class WorkspaceRecovery:
                     manifest_bytes = manifest.read_bytes()
                     current = json.loads(manifest_bytes)
                     if held_checkout:
-                        if hashlib.sha256(manifest_bytes).hexdigest() != pending['manifest_sha256']:
-                            raise ValueError('The original manifest changed after authorization.')
-                        checkout_state(pending['request'], initial=True)
-                        if dirty_state(Path(data['path'])) != pending['dirty']:
-                            raise ValueError('The original dirty edits changed after authorization.')
-                        if subprocess.run(['git', '-C', data['repository'], 'show-ref', '--verify', '--quiet',
-                                           'refs/heads/' + pending['request']['recovery_branch']], timeout=10).returncode != 1:
-                            raise ValueError('The held checkout may have partially created its recovery branch.')
+                        unchanged_held_checkout(pending, manifest_bytes)
                     identity = data['expected_owner'] + '-' + hashlib.sha256(data['repository'].encode()).hexdigest()[:16]
                     binding = current.get(identity)
                     if not isinstance(binding, dict) or any(binding.get(field) != value for field, value in (
