@@ -606,7 +606,8 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
             directory.mkdir(mode=0o700, exist_ok=True)
             # The name comes from the content. When a removal fails, the next pass finds the same archive
             # and writes no second copy.
-            key = hashlib.sha256(json.dumps([str(record['path']), plan['head'], plan['changes'],
+            # The branch is in the key, so a reused archive always names the current branch.
+            key = hashlib.sha256(json.dumps([str(record['path']), plan['branch'], plan['head'], plan['changes'],
                                              plan['marks']]).encode()).hexdigest()[:16]
             archive = directory / (record['path'].name + '-' + key + '.tar.gz')
             temporary = directory / ('.' + archive.name + '.tmp')
