@@ -400,6 +400,13 @@ def _native_state():
     return config, model_id, provider, base_url
 
 
+def _xai_efforts(model_id):
+    """Return the efforts that Hermes sends to xAI for this model. Grok 4.6 accepts xhigh, and older Grok tops out at high."""
+    from agent.model_metadata import is_grok_46_family
+    from agent.reasoning_effort import XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS
+    return list(XAI_GROK46_EFFORTS if is_grok_46_family(model_id) else XAI_LEGACY_EFFORTS)
+
+
 def _native_rows(config, model, provider, base_url, refresh=False):
     from hermes_cli.model_switch_providers import list_authenticated_providers
     return list_authenticated_providers(
@@ -465,10 +472,17 @@ def _catalog(config, model, provider, base_url, rows):
             if not _supported_route(config, slug, model_id, url):
                 continue
             seen.add((slug, model_id))
-            supported = list(codex_supported_efforts(model_id)) if slug == 'openai-codex' else list(efforts)
+            if slug == 'openai-codex':
+                supported = list(codex_supported_efforts(model_id))
+            elif slug == 'xai-oauth':
+                supported = _xai_efforts(model_id)
+            else:
+                supported = list(efforts)
+            default_effort = _effort(resolve_reasoning_config(per_model_config, model_id))
             items.append({'id': model_id, 'name': model_id, 'provider': slug, 'base_url': url,
                           'reasoning_efforts': supported,
-                          'default_reasoning_effort': _effort(resolve_reasoning_config(per_model_config, model_id)),
+                          # A saved effort that the route cannot send leaves the model's own default.
+                          'default_reasoning_effort': default_effort if default_effort in supported else None,
                           'configured': True, 'source': row.get('source', 'hermes')})
     configured = any(item['id'] == model and item['provider'] == provider for item in items)
     supported_default = _supported_route(config, provider, model, default_url)

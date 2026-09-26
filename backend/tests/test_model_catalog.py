@@ -323,12 +323,17 @@ with open(os.devnull, 'w') as quiet, contextlib.redirect_stdout(quiet), contextl
         (self.home / 'config.yaml').write_text('model:\n  default: gpt-6-astra\n  provider: openai-codex\n')
         result = self.run_native("config, model, provider, url = m._native_state()\nresult = m._catalog(config, model, provider, url, ["
                                  "{'slug': provider, 'models': [model], 'source': 'hermes'}, "
-                                 "{'slug': 'xai-oauth', 'models': ['grok-4.7'], 'source': 'hermes'}, "
+                                 "{'slug': 'xai-oauth', 'models': ['grok-4.7', 'grok-4.6'], 'source': 'hermes'}, "
                                  "{'slug': 'unsupported-provider', 'models': ['other'], 'source': 'hermes'}])")
         grok = [m for m in result['models'] if m['id'] == 'grok-4.7']
         self.assertEqual([m['provider'] for m in grok], ['xai-oauth'])
         self.assertEqual([m['base_url'] for m in grok], ['https://api.x.ai/v1'])
         self.assertNotIn('other', [m['id'] for m in result['models']])
+        # Coconut offers exactly the efforts that Hermes sends on the xAI route.
+        expected = self.run_native("from agent.reasoning_effort import XAI_GROK46_EFFORTS as a, XAI_LEGACY_EFFORTS as b\nresult = [list(a), list(b)]")
+        efforts = {m['id']: m['reasoning_efforts'] for m in result['models'] if m['provider'] == 'xai-oauth'}
+        self.assertEqual(efforts, {'grok-4.6': expected[0], 'grok-4.7': expected[1]})
+        self.assertNotIn('none', efforts['grok-4.7'])
 
     def test_active_profile_reads_its_own_native_config(self):
         profile = self.home / 'profiles/work'
