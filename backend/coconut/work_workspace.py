@@ -659,7 +659,13 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
                 # Remove the deepest first. Removing a parent first would delete a worktree inside it without Git.
                 for record in sorted(again, key=lambda r: len(r['path'].parts), reverse=True):
                     force = ('--force',) if record['path'] in written else ()
-                    git(repository, 'worktree', 'remove', *force, str(record['path']), timeout=CHECKOUT_SECONDS)
+                    try:
+                        git(repository, 'worktree', 'remove', *force, str(record['path']), timeout=CHECKOUT_SECONDS)
+                    except GIT_ERRORS as error:
+                        # A forced removal can stop part way and still drop the Git record. Name what is left.
+                        saved = f" Its changes are in {written[record['path']][1]}." if record['path'] in written else ''
+                        left = f" Files remain in {record['path']}." if record['path'].exists() else ''
+                        raise ValueError(f"Git did not remove nested worktree {record['path']}: {error}.{left}{saved}") from None
             finally:
                 if written:
                     # One pass can write several archives. Keep the folder within its limit, but keep this pass's

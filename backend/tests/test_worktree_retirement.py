@@ -1078,6 +1078,8 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch('coconut.work_workspace.git', side_effect=refuse):
             self.assertEqual(self.retire(), [])
             self.assertEqual(self.retire(), [])
+            with self.assertRaisesRegex(ValueError, 'Files remain in .*Its changes are in'):
+                work_workspace.remove_nested(self.workspaces, path.resolve(), self.repo)
         self.assertEqual(len(self.nested_archives()), 1)
         self.assertTrue((inner / 'draft.txt').is_file())
 
