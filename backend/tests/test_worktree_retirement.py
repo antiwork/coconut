@@ -507,6 +507,7 @@ class WorktreeRetirementTests(unittest.TestCase):
             threading.Thread(target=watch_registry_lock, daemon=True).start()
         with patch('coconut.work_workspace.write_archive', side_effect=archive), \
                 patch('coconut.worktree_retirement.SERVICE_WAIT_SECONDS', .5), \
+                patch('coconut.worktree_retirement.BUSY_RETRIES', 0), \
                 self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
             try:
                 self.assertEqual(self.retire(), [])
@@ -516,6 +517,117 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(blocked, [])
         self.assertTrue(path.is_dir())
         self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_worktree_that_meets_a_busy_service_is_tried_again_in_the_same_pass(self):
+        outcome, identity, path, _ = self.outcome()
+        real = work_workspace.retire
+        calls = []
+
+        def busy_once(root, name, finished, **options):
+            calls.append(name)
+            if len(calls) == 1:
+                raise retirement.ServiceBusy(retirement.BUSY_MESSAGE)
+            return real(root, name, finished, **options)
+        with patch('coconut.work_workspace.retire', side_effect=busy_once), \
+                patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0):
+            self.assertEqual(self.retire(), [identity])
+        self.assertEqual(calls, [identity, identity])
+        self.assertIn('retired', self.registry()[identity])
+
+    def test_a_real_busy_check_is_retried(self):
+        outcome, identity, path, _ = self.outcome()
+        finished, answers = self.service._finished_outcomes, []
+
+        def busy_first(current, *, timeout=-1, only=None):
+            # The first check for this outcome finds the service busy.
+            if only is not None and not answers:
+                answers.append(None)
+                return None
+            return finished(current, timeout=timeout, only=only)
+        with patch.object(self.service, '_finished_outcomes', side_effect=busy_first), \
+                patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0):
+            self.assertEqual(self.retire(), [identity])
+
+    def test_a_stop_during_the_busy_pause_ends_the_pass_and_names_the_worktree(self):
+        outcome, identity, path, _ = self.outcome()
+        stopping = self.service.stopping
+
+        def busy_then_stop(*arguments, **options):
+            # The service starts to stop while retirement waits to try again.
+            threading.Timer(0.2, stopping.set).start()
+            raise retirement.ServiceBusy(retirement.BUSY_MESSAGE)
+        started = time.monotonic()
+        with patch('coconut.work_workspace.retire', side_effect=busy_then_stop) as attempt, \
+                patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 30), \
+                self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            try:
+                self.assertEqual(self.retire(), [])
+            finally:
+                stopping.clear()
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(attempt.call_count, 1)
+        self.assertTrue(any(identity in line and 'Coconut is stopping or restarting' in line for line in logs.output))
+
+    def test_a_busy_check_under_the_registry_lock_is_retried_with_one_archive(self):
+        outcome, identity, path, _ = self.outcome()
+        (path / 'draft.txt').write_text('keep\n')
+        finished, answers = self.service._finished_outcomes, []
+
+        def busy_under_lock(current, *, timeout=-1, only=None):
+            # The check under the registry lock, after the archive write, finds the service busy once.
+            if only is not None and timeout == retirement.LOCKED_WAIT_SECONDS and not answers:
+                answers.append(None)
+                return None
+            return finished(current, timeout=timeout, only=only)
+        with patch.object(self.service, '_finished_outcomes', side_effect=busy_under_lock), \
+                patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0):
+            self.assertEqual(self.retire(), [identity])
+        self.assertEqual(answers, [None])
+        archive = self.workspaces / 'archive'
+        self.assertEqual(sorted(p.name for p in archive.iterdir() if p.is_file()), [identity + '.tar.gz'])
+
+    def test_a_pending_restart_skips_the_busy_pause(self):
+        outcome, identity, path, _ = self.outcome()
+
+        def busy_then_restart(*arguments, **options):
+            self.service.restart_pending = True
+            raise retirement.ServiceBusy(retirement.BUSY_MESSAGE)
+        started = time.monotonic()
+        try:
+            with patch('coconut.work_workspace.retire', side_effect=busy_then_restart), \
+                    patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 30):
+                self.assertEqual(self.retire(), [])
+        finally:
+            self.service.restart_pending = False
+        self.assertLess(time.monotonic() - started, 10)
+
+    def test_a_restart_during_the_busy_pause_ends_it(self):
+        threading.Timer(0.3, lambda: setattr(self.service, 'restart_pending', True)).start()
+        started = time.monotonic()
+        try:
+            with patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 30):
+                self.assertTrue(self.service._busy_pause())
+        finally:
+            self.service.restart_pending = False
+        self.assertLess(time.monotonic() - started, 5)
+        with patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0.2):
+            self.assertFalse(self.service._busy_pause())
+
+    def test_a_busy_first_check_runs_the_pass_again_soon(self):
+        self.outcome()
+        with patch.object(self.service, '_finished_outcomes', return_value=None):
+            self.service._next_worktree_retirement = 0
+            self.assertEqual(self.service.retire_finished_worktrees(1000), [])
+        self.assertEqual(self.service._next_worktree_retirement, 1000 + retirement.BUSY_RETRY_SECONDS)
+
+    def test_a_service_that_stays_busy_is_logged_after_the_last_retry(self):
+        outcome, identity, path, _ = self.outcome()
+        with patch('coconut.work_workspace.retire', side_effect=retirement.ServiceBusy(retirement.BUSY_MESSAGE)) as attempt, \
+                patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0), \
+                self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        self.assertEqual(attempt.call_count, retirement.BUSY_RETRIES + 1)
+        self.assertEqual(sum('service was busy' in line for line in logs.output), 1)
 
     def test_a_refused_removal_keeps_its_archive_and_waits_a_day(self):
         outcome, identity, path, _ = self.outcome()
