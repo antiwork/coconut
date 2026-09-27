@@ -566,7 +566,7 @@ class WorktreeRetirementTests(unittest.TestCase):
                 stopping.clear()
         self.assertLess(time.monotonic() - started, 10)
         self.assertEqual(attempt.call_count, 1)
-        self.assertTrue(any(identity in line and 'service was busy' in line for line in logs.output))
+        self.assertTrue(any(identity in line and 'Coconut is stopping' in line for line in logs.output))
 
     def test_a_busy_check_under_the_registry_lock_is_retried_with_one_archive(self):
         outcome, identity, path, _ = self.outcome()

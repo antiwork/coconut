@@ -152,8 +152,10 @@ class WorktreeRetirement:
         pending = [(identity, outcome) for identity, outcome in bindings.items() if outcome in finished]
 
         def dropped(items):
+            # A stop or a restart ended the pass. The next pass after the restart tries again.
             for identity, _ in items:
-                logging.getLogger(__name__).warning('Coconut did not retire worktree %s: %s', identity, BUSY_MESSAGE)
+                logging.getLogger(__name__).warning('Coconut did not retire worktree %s: The service was busy, and '
+                                                    'Coconut is stopping. The next pass tries again.', identity)
         for attempt in range(BUSY_RETRIES + 1):
             if attempt and not pending:
                 break
