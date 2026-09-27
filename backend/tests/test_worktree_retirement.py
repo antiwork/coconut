@@ -601,6 +601,25 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.service.restart_pending = False
         self.assertLess(time.monotonic() - started, 10)
 
+    def test_a_restart_during_the_busy_pause_ends_it(self):
+        threading.Timer(0.3, lambda: setattr(self.service, 'restart_pending', True)).start()
+        started = time.monotonic()
+        try:
+            with patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 30):
+                self.assertTrue(self.service._busy_pause())
+        finally:
+            self.service.restart_pending = False
+        self.assertLess(time.monotonic() - started, 5)
+        with patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0.2):
+            self.assertFalse(self.service._busy_pause())
+
+    def test_a_busy_first_check_runs_the_pass_again_soon(self):
+        self.outcome()
+        with patch.object(self.service, '_finished_outcomes', return_value=None):
+            self.service._next_worktree_retirement = 0
+            self.assertEqual(self.service.retire_finished_worktrees(1000), [])
+        self.assertEqual(self.service._next_worktree_retirement, 1000 + retirement.BUSY_RETRY_SECONDS)
+
     def test_a_service_that_stays_busy_is_logged_after_the_last_retry(self):
         outcome, identity, path, _ = self.outcome()
         with patch('coconut.work_workspace.retire', side_effect=retirement.ServiceBusy(retirement.BUSY_MESSAGE)) as attempt, \

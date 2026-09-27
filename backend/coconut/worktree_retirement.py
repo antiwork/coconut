@@ -122,6 +122,18 @@ class WorktreeRetirement:
                 stopped.extend(ended)
         return stopped
 
+    def _busy_pause(self):
+        """Wait BUSY_RETRY_SECONDS. Return True at once when the service stops or a restart is pending."""
+        deadline = time.monotonic() + BUSY_RETRY_SECONDS
+        while not self.restart_pending:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return False
+            # A restart request does not set stopping, so check it every second.
+            if self.stopping.wait(min(1, left)):
+                return True
+        return True
+
     def retire_finished_worktrees(self, current=None):
         """Run at most once an hour. Git and file work run outside the service lock."""
         current = time.time() if current is None else current
@@ -137,6 +149,8 @@ class WorktreeRetirement:
         work_workspace.sweep_temporary(root)
         finished = self._finished_outcomes(current, timeout=SERVICE_WAIT_SECONDS)
         if finished is None:
+            # The service was busy. Run the pass again soon instead of in an hour.
+            self._next_worktree_retirement = current + BUSY_RETRY_SECONDS
             return []
         # The registry changes by atomic rename, so this read needs no lock. Retirement checks again under the lock.
         saved = json.loads(manifest.read_text()) if manifest.exists() else {}
@@ -159,7 +173,7 @@ class WorktreeRetirement:
         for attempt in range(BUSY_RETRIES + 1):
             if attempt and not pending:
                 break
-            if attempt and (self.restart_pending or self.stopping.wait(BUSY_RETRY_SECONDS) or self.restart_pending):
+            if attempt and self._busy_pause():
                 dropped(pending)
                 break
             busy = []
