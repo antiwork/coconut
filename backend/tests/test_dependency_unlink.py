@@ -45,19 +45,26 @@ class DependencyUnlinkTests(unittest.TestCase):
             original['status'] = 'waiting'
             self.service._put('tasks', original)
         self.requests = []
-        snapshots = [dict(external_id=t['id'], id=t['_native_outcome_id'], status=status)
-                     for t, status in ((parent, 'review'), (child, 'todo'))]
+        self.hidden_snapshots = set()
+        self.snapshot_rows = [dict(external_id=t['id'], id=t['_native_outcome_id'], status=status)
+                              for t, status in ((parent, 'review'), (child, 'todo'))]
 
         def call(request):
             self.assertFalse(self.service.lock._is_owned(), 'adapter called with service lock held')
             if request['op'] == 'snapshot':
-                return {'tasks': copy.deepcopy(snapshots)}
+                rows = copy.deepcopy(self.snapshot_rows)
+                known = {row['external_id'] for row in rows}
+                for task_id in request.get('external_ids') or []:
+                    if task_id in known or task_id in self.hidden_snapshots:
+                        continue
+                    rows.append(dict(external_id=task_id, id='observed', status='done'))
+                return {'tasks': rows}
             if request['op'] == 'unlink_receipt':
                 return {'receipt': None}
             self.assertTrue(self.service._dependency_unlinking)
             self.requests.append(request)
             return dict(status='unlinked', request_id=request['request_id'], parent_id=request['parent_id'], child_id=request['child_id'])
-        self.service.kanban = Mock(tasks={t['external_id']: t for t in snapshots}, call=Mock(side_effect=call))
+        self.service.kanban = Mock(tasks={t['external_id']: t for t in self.snapshot_rows}, call=Mock(side_effect=call))
         self.arguments = dict(parent_id=parent['_native_outcome_id'], child_id=child['_native_outcome_id'],
                               reason='The build resource was released; appearance review remains pending.')
         return child, parent, source
@@ -183,6 +190,106 @@ class DependencyUnlinkTests(unittest.TestCase):
         with self.assertRaisesRegex(ServiceError, 'graph operation'):
             self.unlink(source)
         self.assertEqual(self.requests, [])
+
+    def test_finished_and_failed_tasks_do_not_keep_stale_receipts_that_block_unlink(self):
+        child, parent, source = self.setup_edge()
+        other = dict(child, id=str(uuid4()), status='completed', _native_outcome_id='t_44444444')
+        other['_execution_session_id'] = other['id']
+        self.service._put('tasks', other)
+        self.service._put('native_receipts', dict(
+            id='stale-read', task_id=other['id'], state='executing', action={'name': 'read_file'}))
+        self.assertEqual(self.unlink(source)['status'], 'unlinked')
+        failed = dict(other, id=str(uuid4()), status='failed', _native_outcome_id='t_55555555')
+        failed['_execution_session_id'] = failed['id']
+        self.service._put('tasks', failed)
+        self.service._put('native_receipts', dict(
+            id='stale-terminal', task_id=failed['id'], state='executing', action={'name': 'terminal'},
+            _process_ended_at='2026-09-26T23:00:00Z'))
+        self.assertEqual(self.unlink(source)['status'], 'unlinked')
+        self.service.running[failed['id']] = SimpleNamespace(is_alive=lambda: True)
+        with self.assertRaisesRegex(ServiceError, 'owner work'):
+            self.unlink(source)
+        self.service.running.pop(failed['id'])
+        self.snapshot_rows.append(dict(
+            external_id=failed['id'], id='t_55555555', status='running', current_run_id='9', worker_pid='42'))
+        self.service._put('native_receipts', dict(
+            id='live-read', task_id=failed['id'], state='executing', action={'name': 'read_file'}))
+        with self.assertRaisesRegex(ServiceError, 'owner work'):
+            self.unlink(source)
+        self.snapshot_rows[:] = [row for row in self.snapshot_rows if row['external_id'] != failed['id']]
+        self.service._put('native_receipts', dict(
+            id='live-read', task_id=failed['id'], state='completed', action={'name': 'read_file'}))
+        open_command = dict(failed, id=str(uuid4()), status='failed', _native_outcome_id='t_77777777')
+        open_command['_execution_session_id'] = open_command['id']
+        self.service._put('tasks', open_command)
+        self.service._put('native_receipts', dict(
+            id='open-terminal', task_id=open_command['id'], state='executing', action={'name': 'terminal'}))
+        with self.assertRaisesRegex(ServiceError, 'owner work'):
+            self.unlink(source)
+        self.service._put('native_receipts', dict(
+            id='open-terminal', task_id=open_command['id'], state='completed', action={'name': 'terminal'},
+            _process_ended_at='2026-09-26T23:00:00Z'))
+        hidden = dict(failed, id=str(uuid4()), status='completed', _native_outcome_id='t_88888888')
+        hidden['_execution_session_id'] = hidden['id']
+        self.service._put('tasks', hidden)
+        self.hidden_snapshots.add(hidden['id'])
+        self.service._put('native_receipts', dict(
+            id='hidden-read', task_id=hidden['id'], state='executing', action={'name': 'read_file'}))
+        with self.assertRaisesRegex(ServiceError, 'owner work'):
+            self.unlink(source)
+        self.service._put('native_receipts', dict(
+            id='hidden-read', task_id=hidden['id'], state='completed', action={'name': 'read_file'}))
+        working = dict(failed, id=str(uuid4()), status='working', _native_outcome_id='t_66666666')
+        working['_execution_session_id'] = working['id']
+        self.service._put('tasks', working)
+        self.service._put('native_receipts', dict(
+            id='live-read', task_id=working['id'], state='executing', action={'name': 'read_file'}))
+        with self.assertRaisesRegex(ServiceError, 'owner work'):
+            self.unlink(source)
+        self.service._put('tasks', working | {'status': 'completed'})
+        self.service._put('native_receipts', dict(
+            id='stale-link', task_id=working['id'], state='executing', action={'name': 'kanban_link'}))
+        with self.assertRaisesRegex(ServiceError, 'graph operation'):
+            self.unlink(source)
+        self.assertEqual(len(self.requests), 2)
+
+    def test_unlink_receipt_scan_ignores_unrelated_finished_tasks(self):
+        child, parent, source = self.setup_edge()
+        related = dict(child, id=str(uuid4()), status='completed', _native_outcome_id='t_44444444')
+        related['_execution_session_id'] = related['id']
+        self.service._put('tasks', related)
+        self.service._put('native_receipts', dict(
+            id='related-read', task_id=related['id'], state='executing', action={'name': 'read_file'}))
+        parent_peer = dict(parent, id=str(uuid4()), status='failed', _native_outcome_id='t_aaaaaaaa')
+        parent_peer['_execution_session_id'] = parent['_execution_session_id']
+        self.service._put('tasks', parent_peer)
+        self.service._put('native_receipts', dict(
+            id='parent-peer-read', task_id=parent_peer['id'], state='executing', action={'name': 'read_file'}))
+        foreign = self.write('/v1/bots', {'name': 'Foreign'})
+        unrelated = dict(child, id=str(uuid4()), bot_id=foreign['id'], session_id=foreign['session_id'],
+                         status='failed', _native_outcome_id='t_99999999')
+        unrelated['_execution_session_id'] = unrelated['id']
+        self.service._put('tasks', unrelated)
+        self.service._put('native_receipts', dict(
+            id='unrelated-read', task_id=unrelated['id'], state='executing', action={'name': 'read_file'}))
+        queried = []
+        original = self.service._native_task_receipts
+
+        def spy(task_id, **kwargs):
+            queried.append(task_id)
+            return original(task_id, **kwargs)
+
+        with patch.object(self.service, '_native_task_receipts', side_effect=spy):
+            self.assertEqual(self.unlink(source)['status'], 'unlinked')
+        self.assertIn(related['id'], queried)
+        self.assertIn(parent_peer['id'], queried)
+        self.assertNotIn(unrelated['id'], queried)
+        requested = [task_id for call in self.service.kanban.call.call_args_list
+                     if call.args and call.args[0].get('op') == 'snapshot'
+                     for task_id in call.args[0].get('external_ids') or []]
+        self.assertIn(related['id'], requested)
+        self.assertIn(parent_peer['id'], requested)
+        self.assertNotIn(unrelated['id'], requested)
 
     def test_adapter_errors_reach_caller_and_release_all_fences(self):
         child, parent, source = self.setup_edge()
