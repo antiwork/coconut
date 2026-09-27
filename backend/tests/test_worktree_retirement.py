@@ -566,7 +566,7 @@ class WorktreeRetirementTests(unittest.TestCase):
                 stopping.clear()
         self.assertLess(time.monotonic() - started, 10)
         self.assertEqual(attempt.call_count, 1)
-        self.assertTrue(any(identity in line and 'Coconut is stopping' in line for line in logs.output))
+        self.assertTrue(any(identity in line and 'Coconut is stopping or restarting' in line for line in logs.output))
 
     def test_a_busy_check_under_the_registry_lock_is_retried_with_one_archive(self):
         outcome, identity, path, _ = self.outcome()
@@ -585,6 +585,21 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(answers, [None])
         archive = self.workspaces / 'archive'
         self.assertEqual(sorted(p.name for p in archive.iterdir() if p.is_file()), [identity + '.tar.gz'])
+
+    def test_a_pending_restart_skips_the_busy_pause(self):
+        outcome, identity, path, _ = self.outcome()
+
+        def busy_then_restart(*arguments, **options):
+            self.service.restart_pending = True
+            raise retirement.ServiceBusy(retirement.BUSY_MESSAGE)
+        started = time.monotonic()
+        try:
+            with patch('coconut.work_workspace.retire', side_effect=busy_then_restart), \
+                    patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 30):
+                self.assertEqual(self.retire(), [])
+        finally:
+            self.service.restart_pending = False
+        self.assertLess(time.monotonic() - started, 10)
 
     def test_a_service_that_stays_busy_is_logged_after_the_last_retry(self):
         outcome, identity, path, _ = self.outcome()
