@@ -253,6 +253,44 @@ class DependencyUnlinkTests(unittest.TestCase):
             self.unlink(source)
         self.assertEqual(len(self.requests), 2)
 
+    def test_unlink_receipt_scan_ignores_unrelated_finished_tasks(self):
+        child, parent, source = self.setup_edge()
+        related = dict(child, id=str(uuid4()), status='completed', _native_outcome_id='t_44444444')
+        related['_execution_session_id'] = related['id']
+        self.service._put('tasks', related)
+        self.service._put('native_receipts', dict(
+            id='related-read', task_id=related['id'], state='executing', action={'name': 'read_file'}))
+        parent_peer = dict(parent, id=str(uuid4()), status='failed', _native_outcome_id='t_aaaaaaaa')
+        parent_peer['_execution_session_id'] = parent['_execution_session_id']
+        self.service._put('tasks', parent_peer)
+        self.service._put('native_receipts', dict(
+            id='parent-peer-read', task_id=parent_peer['id'], state='executing', action={'name': 'read_file'}))
+        foreign = self.write('/v1/bots', {'name': 'Foreign'})
+        unrelated = dict(child, id=str(uuid4()), bot_id=foreign['id'], session_id=foreign['session_id'],
+                         status='failed', _native_outcome_id='t_99999999')
+        unrelated['_execution_session_id'] = unrelated['id']
+        self.service._put('tasks', unrelated)
+        self.service._put('native_receipts', dict(
+            id='unrelated-read', task_id=unrelated['id'], state='executing', action={'name': 'read_file'}))
+        queried = []
+        original = self.service._native_task_receipts
+
+        def spy(task_id, **kwargs):
+            queried.append(task_id)
+            return original(task_id, **kwargs)
+
+        with patch.object(self.service, '_native_task_receipts', side_effect=spy):
+            self.assertEqual(self.unlink(source)['status'], 'unlinked')
+        self.assertIn(related['id'], queried)
+        self.assertIn(parent_peer['id'], queried)
+        self.assertNotIn(unrelated['id'], queried)
+        requested = [task_id for call in self.service.kanban.call.call_args_list
+                     if call.args and call.args[0].get('op') == 'snapshot'
+                     for task_id in call.args[0].get('external_ids') or []]
+        self.assertIn(related['id'], requested)
+        self.assertIn(parent_peer['id'], requested)
+        self.assertNotIn(unrelated['id'], requested)
+
     def test_adapter_errors_reach_caller_and_release_all_fences(self):
         child, parent, source = self.setup_edge()
         call = self.service.kanban.call.side_effect

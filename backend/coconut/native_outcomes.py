@@ -148,6 +148,14 @@ class NativeOutcomes:
         import re
         from .service import ServiceError, digest, encoded, require_text
         from .work_capacity import execution_key
+
+        def native_identity(task):
+            return task.get('_native_outcome_id') or (task.get('_kanban_claim') or {}).get('native_id')
+
+        def guard_inspects(task, parent, child):
+            return (execution_key(task) in (execution_key(parent), execution_key(child))
+                    or task['bot_id'] == child['bot_id'])
+
         if set(payload) != {'parent_id', 'child_id', 'reason'}:
             raise ServiceError(400, 'Supply only parent_id, child_id, and reason.')
         parent_id, child_id = (payload[key] for key in ('parent_id', 'child_id'))
@@ -164,12 +172,20 @@ class NativeOutcomes:
             # need that lock to finish spawn bookkeeping.
             with self.lock:
                 tasks = self._all('tasks')
-                identities = [t['id'] for t in tasks if
-                    (t.get('_native_outcome_id') or (t.get('_kanban_claim') or {}).get('native_id')) in (parent_id, child_id)]
-                # Done cards fall out of the default snapshot. Request finished tasks that
-                # still have receipts so a returned quiet card is observed, not assumed.
-                observed = [t['id'] for t in tasks if t['status'] in ('completed', 'failed')
-                            and self._native_task_receipts(t['id'], state='executing')]
+                identities = [t['id'] for t in tasks if native_identity(t) in (parent_id, child_id)]
+                owners = {identity: [t for t in tasks if native_identity(t) == identity]
+                          for identity in (parent_id, child_id)}
+                parent_owner = owners[parent_id][0] if len(owners[parent_id]) == 1 else None
+                child_owner = owners[child_id][0] if len(owners[child_id]) == 1 else None
+                # Done cards fall out of the default snapshot. Request only finished
+                # tasks the later guard inspects, so unrelated history is not queried
+                # under this lock or added to the snapshot.
+                observed = []
+                if parent_owner and child_owner:
+                    observed = [t['id'] for t in tasks
+                                if t['status'] in ('completed', 'failed')
+                                and guard_inspects(t, parent_owner, child_owner)
+                                and self._native_task_receipts(t['id'], state='executing')]
             snapshots = {t['external_id']: t for t in self.kanban.call(
                 {'op': 'snapshot', 'external_ids': list(dict.fromkeys(identities + observed))})['tasks']}
             def authorize():
@@ -226,8 +242,7 @@ class NativeOutcomes:
                     raise ServiceError(409, 'The child’s existing decision must be answered before unlinking.')
                 # Parent appearance/decision state is deliberately not interpreted
                 # as permission for the child, or changed by this operation.
-                guarded = {t['id']: t for t in tasks if execution_key(t) in
-                           (execution_key(child), execution_key(parent)) or t['bot_id'] == child['bot_id']}
+                guarded = {t['id']: t for t in tasks if guard_inspects(t, parent, child)}
                 for task in guarded.values():
                     if task['id'] == source_id and task['id'] not in (parent['id'], child['id']):
                         continue
