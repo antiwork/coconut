@@ -921,12 +921,15 @@ def free_rebuildable(root, identity, finished):
     if path.is_symlink() or not (path / '.git').is_file():
         return []
     path = path.resolve()
-    if Path(git(path, 'rev-parse', '--show-toplevel')).resolve() != path:
+    repository = Path(before['repository']).resolve()
+    # validate_binding makes the same check. Another repository can own a worktree at this path now.
+    if (Path(git(path, 'rev-parse', '--show-toplevel')).resolve() != path or path == repository
+            or Path(git(path, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve() != repository / '.git'):
         return []
 
     def keep(saved):
         # A folder can hold a worktree of the repository, or the saved path of another outcome.
-        inner = {record['path'] for record in registered(before['repository'])}
+        inner = {record['path'] for record in registered(repository)}
         return inner | {Path(binding['path']).resolve() for other, binding in saved.items()
                         if other != identity and isinstance(binding, dict) and isinstance(binding.get('path'), str)}
     names = rebuildable_folders(path, keep(json.loads(manifest.read_text())))

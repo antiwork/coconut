@@ -361,6 +361,23 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertTrue((path / 'tmp/cache/big.bin').exists())
         self.assertFalse((path / 'node_modules').exists())
 
+    def test_a_worktree_of_another_repository_keeps_its_build_folders(self):
+        identity, path = self.refused_with_build_folders()
+        other = self.root / 'other'
+        other.mkdir()
+        git(other, 'init', '-q')
+        (other / 'readme.txt').write_text('other\n')
+        git(other, 'add', '.')
+        self.commit(other, 'Other')
+        # The saved path now holds a worktree of another repository.
+        git(self.repo, 'worktree', 'remove', '--force', str(path))
+        git(other, 'worktree', 'add', '-q', '-b', 'moved', str(path))
+        (path / '.gitignore').write_text('/tmp\n')
+        (path / 'tmp').mkdir()
+        (path / 'tmp/data.bin').write_bytes(b'x')
+        self.assertEqual(self.retire(), [])
+        self.assertTrue((path / 'tmp/data.bin').exists())
+
     def test_a_used_or_resumed_worktree_keeps_its_build_folders(self):
         identity, path = self.refused_with_build_folders()
         with patch('coconut.work_workspace.in_use', return_value=True):
