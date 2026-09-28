@@ -1023,7 +1023,7 @@ class NativeOutcomes:
             self._put('tasks', owner)
             receipt = dict(task_id=owner['id'], native_task_id=identity, status='queued')
             self._put('deliveries', dict(id=key, source_task_id=source_id, target_bot_id=owner['bot_id'],
-                text=text, receipt=receipt, created_at=now()))
+                text=text, receipt=receipt, turn_id=owner['_native_turn_id'], created_at=now()))
             self._event('task.updated', self._public(owner), owner['bot_id'], owner['id'])
             self._refresh_bot(owner['bot_id'])
             return receipt

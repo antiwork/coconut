@@ -36,7 +36,10 @@ class NativeRoutines:
         for row in rows:
             delivery = json.loads(row[0])
             expected = dict(task_id=task['id'], native_task_id=task['_native_outcome_id'], status='queued')
+            # Old deliveries without an input binding require a new explicit
+            # continuation. Recovery metadata alone cannot authorize a new turn.
             if (delivery.get('receipt') != expected or delivery.get('target_bot_id') != task['bot_id']
+                    or delivery.get('turn_id') != task['_native_turn_id']
                     or delivery.get('created_at', '') <= failed_at):
                 continue
             source = self.db.execute('SELECT data FROM tasks WHERE id=?', (delivery.get('source_task_id'),)).fetchone()
