@@ -626,6 +626,22 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertEqual(git(self.repo, 'branch', '--list', 'wt/*-detached*'), '')
 
+    def test_a_checkout_with_one_deleted_file_is_adopted(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'obsolete.txt').unlink()
+        real = work_workspace.git
+
+        def stopped(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                raise KeyboardInterrupt()
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=stopped), self.assertRaises(KeyboardInterrupt):
+            self.retire()
+        # The bot deleted one file before the stop. The checkout is whole, and the resume adopts it.
+        acquire(self.workspaces, outcome, str(self.repo))
+        self.assertNotIn('retired', self.registry()[identity])
+
     def test_a_partly_removed_checkout_is_not_adopted(self):
         outcome, identity, path, task = self.outcome()
         self.pull_request(task, 'merged')
@@ -633,7 +649,8 @@ class WorktreeRetirementTests(unittest.TestCase):
 
         def partial(where, *arguments, **options):
             if arguments[:2] == ('worktree', 'remove'):
-                (path / 'tracked.txt').unlink()
+                for name in ('tracked.txt', 'logo.bin'):
+                    (path / name).unlink()
                 raise KeyboardInterrupt()
             return real(where, *arguments, **options)
         with patch.object(work_workspace, 'git', side_effect=partial), self.assertRaises(KeyboardInterrupt):

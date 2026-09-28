@@ -1545,8 +1545,9 @@ def adopt_intact_checkout(binding, path, repository):
         if current != binding['branch']:
             return False
         retired = binding['retired']
-        if git(path, 'ls-files', '--deleted'):
-            # A partial removal deletes tracked files. This is not the whole checkout.
+        deleted, tracked = git(path, 'ls-files', '--deleted').splitlines(), git(path, 'ls-files').splitlines()
+        if deleted and len(deleted) * 2 >= len(tracked):
+            # A partial removal deletes many tracked files, half or more. A bot can delete a few, so a few do not count.
             return False
         if git(path, 'rev-parse', 'HEAD') == retired.get('head'):
             return True
