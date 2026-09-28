@@ -489,7 +489,7 @@ def runtime_paths(root, record):
         'hermes', 'hermes-rollback-' + identity, 'hermes-failed-' + identity))
 
 
-def prune_rollbacks(root, keep):
+def prune_rollbacks(root, record):
     """Keep only the rollback copy of the latest runtime update. Remove older copies that finished updates left.
 
     Each copy holds a complete Hermes runtime of about a gigabyte. Only the latest one can serve a rollback,
@@ -497,6 +497,7 @@ def prune_rollbacks(root, keep):
     """
     # Cleanup only reclaims space. It must not turn a finished update into a failed one.
     with contextlib.suppress(OSError, DeployError):
+        keep = runtime_paths(root, record)[1]
         for old in (root / '.runtime').glob('hermes-rollback-*'):
             if old != keep and old.is_dir() and not old.is_symlink():
                 shutil.rmtree(safe_path(old, root), ignore_errors=True)
@@ -624,6 +625,34 @@ def reconcile(root, operations):
     record['phase'] = 'rolled_back'
     write_json(journal, record)
     remove_journal(root, record)
+
+
+def recover(directory, *, home=None, operations=None):
+    """Finish or roll back a pending update from its journal. Install no package. Return True when a journal was pending.
+
+    The automatic updater runs this before a slow step, such as the Hermes candidate checks. A failed update can
+    leave the service stopped, and receive() recovers only as its first step.
+    """
+    os.umask(0o077)
+    root = destination(directory, Path(home or Path.home()).resolve())
+    deployment = safe_path(root / '.runtime/deploy', root)
+    journal = safe_path(deployment / 'update.json', root)
+    if read_marker(root) is None or not journal.exists():
+        return False
+    descriptor = os.open(deployment / 'deploy.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'a') as lock, contextlib.ExitStack() as leases:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise DeployError('Another Coconut deployment is already running.') from None
+        try:
+            pending_runtime = journal.exists() and json.loads(journal.read_text()).get('runtime_change')
+        except (ValueError, TypeError, AttributeError, OSError):
+            raise DeployError('The deployment journal is invalid. No files were changed.') from None
+        if pending_runtime:
+            leases.enter_context(runtime_update_lease(root))
+        reconcile(root, operations or Operations())
+    return True
 
 
 def receive(directory, address, stream, *, home=None, operations=None, update_runtime=False):
@@ -769,7 +798,7 @@ def receive(directory, address, stream, *, home=None, operations=None, update_ru
             write_json(root / MARKER_PATH, updated)
             remove_journal(root, record)
             if runtime_change:
-                prune_rollbacks(root, runtime_paths(root, record)[1])
+                prune_rollbacks(root, record)
             return {'version': 1, 'installation_id': marker['installation_id'], 'package_id': package.package_id, 'mode': mode, 'address': address, 'health': health, 'updated': original is not None}
         except BaseException as error:
             if not applied:
@@ -790,13 +819,18 @@ def main():
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), interrupt)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['receive'])
+    parser.add_argument('command', choices=['receive', 'recover'], help='recover replays a pending update journal and installs no package.')
     parser.add_argument('--directory', default='Coconut')
-    parser.add_argument('--address', required=True)
+    parser.add_argument('--address')
     parser.add_argument('--update-runtime', action='store_true', help='Install the package Hermes pin and retain the previous runtime for rollback.')
     args = parser.parse_args()
+    if args.command == 'receive' and not args.address:
+        parser.error('receive needs --address.')
     try:
-        result = receive(args.directory, args.address, sys.stdin.buffer, update_runtime=args.update_runtime)
+        if args.command == 'recover':
+            result = {'recovered': recover(args.directory)}
+        else:
+            result = receive(args.directory, args.address, sys.stdin.buffer, update_runtime=args.update_runtime)
     except (DeployError, KeyboardInterrupt) as error:
         if isinstance(error, KeyboardInterrupt):
             error = DeployError('The deployment was interrupted. Check host status before retrying.')

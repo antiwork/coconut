@@ -119,6 +119,17 @@ class RuntimeDeploymentTests(unittest.TestCase):
         self.assert_old_runtime()
         self.assertFalse((self.root / '.runtime/deploy/update.json').exists())
 
+    def test_recover_replays_a_pending_journal_and_installs_no_package(self):
+        self.assertFalse(deploy.recover('Coconut', home=self.home, operations=RuntimeOperations(mode='managed')))
+        with self.assertRaises(deploy.DeployError):
+            self.receive(self.files, RuntimeOperations(mode='managed', fail='prepare', fail_stop_after=1), update_runtime=True)
+        operations = RuntimeOperations(mode='managed')
+        self.assertTrue(deploy.recover('Coconut', home=self.home, operations=operations))
+        # The automatic updater runs this before the Hermes candidate checks. The new pin stays uninstalled.
+        self.assert_old_runtime()
+        self.assertFalse((self.root / '.runtime/deploy/update.json').exists())
+        self.assertNotIn('prepare', [call[0] for call in operations.calls])
+
     def test_runtime_backup_symlink_does_not_redirect_rollback(self):
         with self.assertRaises(deploy.DeployError):
             self.receive(self.files, RuntimeOperations(mode='managed', fail='prepare', fail_stop_after=1), update_runtime=True)

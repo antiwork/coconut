@@ -252,7 +252,7 @@ class AutomaticUpdateTests(unittest.TestCase):
                     patch.object(update.socket, 'create_connection', return_value=contextlib.nullcontext()):
                 self.assertTrue(update.service_supervised(live))
 
-    def gate_case(self, *, checks_pass, cached=None, install=None, installed='old', output=None):
+    def gate_case(self, *, checks_pass, cached=None, install=None, installed='old', output=None, run_tree=None):
         """Run check_hermes_candidate for a new pin. Return the run commands and the saved state."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -271,10 +271,10 @@ class AutomaticUpdateTests(unittest.TestCase):
             output = output or 'COCONUT_HERMES_CHECKS=' + json.dumps(report) + '\n'
             calls = []
 
-            def run_tree(command, *, cwd=None, timeout):
+            def fake_tree(command, *, cwd=None, timeout):
                 calls.append(command)
                 return subprocess.CompletedProcess(command, 0 if checks_pass else 1, output, '')
-            checks = SimpleNamespace(run_tree=run_tree)
+            checks = SimpleNamespace(run_tree=run_tree or fake_tree)
             # setUp patches the gate for other tests. These tests call the real function.
             real = REAL_GATE
             with patch.object(update, 'run', side_effect=install if install else command), \
@@ -286,7 +286,8 @@ class AutomaticUpdateTests(unittest.TestCase):
                     raised = error
             receipt = json.loads((root / 'hermes-checks.json').read_text()) if (root / 'hermes-checks.json').exists() else None
             return dict(commands=commands, script_calls=len(calls), state=state, raised=raised, receipt=receipt,
-                        candidate_left=(source / '.runtime/hermes').exists())
+                        candidate_left=(source / '.runtime/hermes').exists(),
+                        scratch_left=list((source / '.runtime').glob('candidate-checks-*')))
 
     def test_a_new_hermes_pin_is_checked_before_the_live_install(self):
         # The folder already has the new pin, so only the cleanup after the checks can remove it.
@@ -313,20 +314,27 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertIn('unable to access github.com', result['receipt']['output'])
         self.assertEqual(result['script_calls'], 0)
 
-    def test_a_refused_pin_still_lets_the_installer_recover_a_pending_journal(self):
+    def test_a_pending_journal_is_recovered_before_the_candidate_checks(self):
         with tempfile.TemporaryDirectory() as directory:
-            live = Path(directory).resolve()
+            home = Path(directory).resolve()
+            source, live = home / 'source', home / 'Coconut'
             (live / '.runtime/deploy').mkdir(parents=True)
-            package = live / 'package.tar.gz'
-            package.write_bytes(b'package')
-            arguments = ['python', 'deploy.py', 'receive', '--address', 'x', '--update-runtime']
-            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(stdout='', stderr='')) as run:
-                update.recover_without_runtime(live, package, arguments)
+            with patch.object(update.Path, 'home', return_value=home), patch.object(update, 'run', return_value='') as run:
+                update.recover_journal(source, live)
                 run.assert_not_called()
                 (live / '.runtime/deploy/update.json').write_text('{}')
-                update.recover_without_runtime(live, package, arguments)
-            # Without --update-runtime the installer recovers the journal and refuses the pin change.
-            self.assertEqual(run.call_args.args[0], ['python', 'deploy.py', 'receive', '--address', 'x'])
+                update.recover_journal(source, live)
+            # The recover command replays the journal and installs no package, so the refused pin cannot arrive.
+            self.assertEqual(run.call_args.args[0][1:], [str(source / 'scripts/deploy.py'), 'recover', '--directory', 'Coconut'])
+
+    def test_a_timed_out_check_leaves_no_scratch_folder(self):
+        def run_tree(command, *, cwd=None, timeout):
+            # The outer timeout kills the check script before its own cleanup runs.
+            (Path(cwd) / '.runtime/candidate-checks-left').mkdir(parents=True)
+            raise subprocess.TimeoutExpired(command, timeout, '', '')
+        result = self.gate_case(checks_pass=False, installed='new', run_tree=run_tree)
+        self.assertIn('native upgrade checks failed', str(result['raised']))
+        self.assertEqual(result['scratch_left'], [])
 
     def test_a_passed_hermes_pin_is_not_checked_again(self):
         result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha2', passed=True))
@@ -426,6 +434,39 @@ class CandidateCheckScriptTests(unittest.TestCase):
         self.assertFalse(self.checks.passed('receipt', done('')))
         self.assertTrue(self.checks.passed('pass', done('PASS: native routine.\n')))
         self.assertFalse(self.checks.passed('pass', done('PASS: native routine.\n', 1)))
+
+    def test_each_check_runs_in_a_scratch_root_that_links_the_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout, live = Path(directory).resolve() / 'checkout', Path(directory).resolve() / 'live'
+            (checkout / '.runtime/hermes/source/.git').mkdir(parents=True)
+            (checkout / '.runtime/hermes/venv/bin').mkdir(parents=True)
+            (checkout / '.runtime/hermes/venv/bin/python').touch()
+            (checkout / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit='new')))
+            for name in ('backend', 'scripts'):
+                (checkout / name).mkdir()
+            seen = []
+
+            def run_tree(command, *, env, timeout, cwd=None):
+                root = Path(command[3])
+                # The programs read the root and the checkout from their arguments, and import from these paths.
+                seen.append(dict(program=command[2], code=command[4], env=env['PYTHONPATH'], links={
+                    name: (root / name).resolve() for name in ('.runtime/hermes/source', '.runtime/hermes/venv', 'backend', 'scripts')},
+                    folders=all((root / name).is_dir() for name in ('.runtime/checks', '.runtime/host'))))
+                return subprocess.CompletedProcess(command, 0, 'PASS: ok\n', '')
+            programs = [('one', 'program-one', 'pass'), ('two', 'program-two', 'pass')]
+            with patch.object(self.checks, 'checks', return_value=programs), patch.object(self.checks, 'run_tree', run_tree), \
+                    patch.object(self.checks.host, 'load_credentials') as credentials:
+                report = self.checks.run_checks(checkout, live)
+            credentials.assert_called_once_with(live / '.runtime/host')
+            self.assertEqual((report['revision'], report['passed']), ('new', True))
+            self.assertEqual([item['program'] for item in seen], ['program-one', 'program-two'])
+            self.assertEqual(seen[0]['code'], str(checkout))
+            self.assertEqual(seen[0]['env'], f"{checkout / 'backend'}{os.pathsep}{checkout / '.runtime/hermes/source'}")
+            self.assertEqual(seen[0]['links'], {'.runtime/hermes/source': checkout / '.runtime/hermes/source',
+                                                '.runtime/hermes/venv': checkout / '.runtime/hermes/venv',
+                                                'backend': checkout / 'backend', 'scripts': checkout / 'scripts'})
+            self.assertTrue(seen[0]['folders'])
+            self.assertEqual(list((checkout / '.runtime').glob('candidate-checks-*')), [])
 
     def test_a_timeout_does_not_wait_forever_for_a_process_that_keeps_the_pipes(self):
         # The grandchild starts in its own session and keeps stdout open after the check is stopped.

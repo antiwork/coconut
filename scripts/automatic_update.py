@@ -352,26 +352,25 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
             passed = result.returncode == 0 and len(reports) == 1 and json.loads(reports[0]).get('passed') is True
     finally:
         save(receipt, dict(revision=revision, passed=passed, checked_at=time.time(), output=output))
-        # The live install builds its own runtime. Free the space of this copy.
+        # The live install builds its own runtime. Free the space of this copy, and of a scratch folder that a
+        # timeout left: the timeout kills the check script before it can remove its own folder.
         shutil.rmtree(candidate, ignore_errors=True)
+        for scratch in (source / '.runtime').glob('candidate-checks-*'):
+            shutil.rmtree(scratch, ignore_errors=True)
     state['hermes_checks'] = dict(revision=revision, sha=sha, passed=passed)
     save(state_path, state)
     if not passed:
         raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}.')
 
 
-def recover_without_runtime(live, package, arguments):
-    """Let the installer finish a failed update from its journal, without the new Hermes pin.
+def recover_journal(source, live):
+    """Let the installer finish or roll back a pending update. It installs no package.
 
-    deploy.py receive recovers a pending journal first. Without --update-runtime it then refuses the pin change,
-    so this call restores the service and installs nothing that the gate refused.
+    A failed update can leave the service stopped. deploy.py receive recovers the journal first, but the Hermes
+    candidate checks run before it and can take more than an hour, so this recovery runs before them.
     """
-    if not (live / '.runtime/deploy/update.json').exists():
-        return
-    with package.open('rb') as stream:
-        result = subprocess.run([a for a in arguments if a != '--update-runtime'], stdin=stream, capture_output=True,
-                                text=True, timeout=3600)
-    print('Recovery without the new Hermes pin: ' + (result.stdout[-1000:] or result.stderr[-1000:]), file=sys.stderr)
+    if (live / '.runtime/deploy/update.json').exists():
+        run([sys.executable, str(source / 'scripts/deploy.py'), 'recover', '--directory', str(live.relative_to(Path.home()))])
 
 
 def update(config, state_path):
@@ -439,11 +438,8 @@ def update(config, state_path):
     try:
         if not matches:
             if '--update-runtime' in arguments:
-                try:
-                    check_hermes_candidate(source, live, validated.revision, sha, state, state_path)
-                except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
-                    recover_without_runtime(live, package, arguments)
-                    raise
+                recover_journal(source, live)
+                check_hermes_candidate(source, live, validated.revision, sha, state, state_path)
             with package.open('rb') as stream:
                 output = run(arguments, stdin=stream)
             save(state_path.parent / 'deployment-result.json', dict(source_sha=sha, output=output))
