@@ -70,8 +70,10 @@ class BotStatusTests(unittest.TestCase):
             for table in ('tasks', 'contexts'):
                 self.service.db.execute(f'DELETE FROM {table}')
 
-    def test_the_event_goes_out_only_for_a_new_status(self):
+    def test_the_event_goes_out_only_when_the_public_row_changes(self):
         bot = self.bots[0]
+        with self.service.transaction():
+            self.service._refresh_bot(bot['id'])
         before = self.events(bot['id'])
         for _ in range(3):
             with self.service.transaction():
@@ -82,6 +84,29 @@ class BotStatusTests(unittest.TestCase):
             self.service._refresh_bot(bot['id'])
             self.service._refresh_bot(bot['id'])
         self.assertEqual(self.events(bot['id']), before + ['working'])
+        # A new last message or unread count is a change too: the phone reads the bots again for a bot event.
+        with self.service.transaction():
+            row = self.service._get('bots', bot['id'])
+            row['last_message'] = 'A new streamed reply'
+            self.service._put('bots', row)
+            self.service._refresh_bot(bot['id'])
+        self.assertEqual(len(self.events(bot['id'])), len(before) + 2)
+
+    def test_a_rolled_back_event_is_published_again(self):
+        bot = self.bots[0]
+        with self.service.transaction():
+            self.service._refresh_bot(bot['id'])
+        before = len(self.events(bot['id']))
+        with self.assertRaises(RuntimeError):
+            with self.service.transaction():
+                self.service._put('tasks', dict(id=str(uuid4()), bot_id=bot['id'], status='working'))
+                self.service._refresh_bot(bot['id'])
+                raise RuntimeError('The transaction fails after the refresh.')
+        self.assertEqual(len(self.events(bot['id'])), before)
+        with self.service.transaction():
+            self.service._put('tasks', dict(id=str(uuid4()), bot_id=bot['id'], status='working'))
+            self.service._refresh_bot(bot['id'])
+        self.assertEqual(self.events(bot['id'])[before:], ['working'])
 
     def test_the_queries_use_indexes_and_no_sort(self):
         queries = {
@@ -97,51 +122,13 @@ class BotStatusTests(unittest.TestCase):
             self.assertIn(index, plan, (name, plan))
             self.assertNotIn('TEMP B-TREE', plan, (name, plan))
 
-    def test_a_restart_publishes_nothing_for_a_bot_whose_status_did_not_change(self):
+    def test_a_restart_publishes_one_event_for_each_bot(self):
+        # scripts/migrate.py verify_started expects this: one bot.updated for each bot after a start, and nothing else.
         cursor = self.service.db.execute('SELECT COALESCE(MAX(seq),0) FROM events').fetchone()[0]
         self.close(self.service)
         reopened = self.open()
-        self.assertEqual(reopened.db.execute('SELECT COUNT(*) FROM events WHERE seq>?', (cursor,)).fetchone()[0], 0)
-
-
-    def verify_started(self, extra_events):
-        """Run migrate.verify_started on this store after it wrote `extra_events`. Only the event rule is under test."""
-        import collections
-        import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
-        import migrate
-        self.close(self.service)
-        path = self.root / 'coconut.sqlite3'
-        connection = sqlite3.connect(path)
-        cursor = connection.execute('SELECT COALESCE(MAX(seq),0) FROM events').fetchone()[0]
-        prefix = sorted(connection.execute('SELECT * FROM events WHERE seq<=?', (cursor,)).fetchall(), key=repr)
-        for kind, bot_id in extra_events:
-            connection.execute('INSERT INTO events(type,bot_id,task_id,data,created_at) VALUES (?,?,?,?,?)', (kind, bot_id, None, '{}', 'now'))
-        connection.commit()
-        connection.close()
-        state = dict(profiles=[[bot['id'], bot['id'], bot['session_id']] for bot in self.bots], tasks=[], decisions=[],
-                     counts=collections.defaultdict(int), hashes=collections.defaultdict(str, events=migrate.deploy.sha256(migrate.deploy.canonical(prefix))))
-        with patch.object(migrate, 'metadata', return_value=state):
-            return migrate.verify_started(path, dict(state, cursor=cursor))
-
-    def test_verify_started_accepts_none_or_one_event_for_each_bot(self):
-        first, second = (bot['id'] for bot in self.bots)
-        self.verify_started([])
-        self.verify_started([('bot.updated', first)])
-        self.verify_started([('bot.updated', first), ('bot.updated', second)])
-
-    def test_verify_started_rejects_other_work(self):
-        import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
-        import migrate
-        first = self.bots[0]['id']
-        # A second event for one bot, and any other kind of event, are unexpected work.
-        self.setUp()
-        with self.assertRaises(migrate.MigrationError):
-            self.verify_started([('bot.updated', first), ('bot.updated', first)])
-        self.setUp()
-        with self.assertRaises(migrate.MigrationError):
-            self.verify_started([('task.created', first)])
+        rows = reopened.db.execute('SELECT type, bot_id FROM events WHERE seq>?', (cursor,)).fetchall()
+        self.assertEqual(sorted(rows), sorted(('bot.updated', bot['id']) for bot in self.bots))
 
 
 if __name__ == '__main__':

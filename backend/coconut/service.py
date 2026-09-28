@@ -293,6 +293,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self.changed.notify_all()
             except BaseException:
                 self._profile_pending = {}
+                # A rollback removes the bot events of this transaction. Forget what they said.
+                self.__dict__.pop('_published_bots', None)
                 self.db.execute('ROLLBACK')
                 raise
             pending, self._profile_pending = self._profile_pending, {}
@@ -672,10 +674,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
 
     def _refresh_bot(self, bot_id: str):
-        """Set the status of a bot from its tasks and contexts, and publish it when it changes.
+        """Set the status of a bot from its tasks and contexts, and publish the bot when its public row changed.
 
-        Two indexed queries read the states. The event goes out only for a new status, because the sync response
-        builds the bots from their stored rows, and no other field changes here.
+        Two indexed queries read the states. The event goes out only when the public row differs from the one that
+        this service published last. The phone replays message events by themselves, and a bot event tells it to
+        read the bots again, so a new last message or unread count still publishes. A rolled back transaction clears
+        the record, and a restart starts without it, so the first refresh of each bot publishes.
         """
         bot = self._get('bots', bot_id)
         states = {row[0] for row in self.db.execute(
@@ -689,11 +693,16 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         answering = self.db.execute("SELECT 1 FROM contexts WHERE json_extract(data,'$.status')='working' "
                                     "AND json_extract(data,'$.bot_id')=? LIMIT 1", (bot_id,)).fetchone()
         status = 'working' if answering else next((s for s in ('needs_you', 'working', 'scheduled', 'failed') if s in states), 'idle')
-        if bot.get('status') == status:
+        if bot.get('status') != status:
+            bot['status'] = status
+            self._put('bots', bot)
+        public = self._public(bot)
+        fingerprint = encoded(public)
+        published = self.__dict__.setdefault('_published_bots', {})
+        if published.get(bot_id) == fingerprint:
             return
-        bot['status'] = status
-        self._put('bots', bot)
-        self._event('bot.updated', self._public(bot), bot_id)
+        self._event('bot.updated', public, bot_id)
+        published[bot_id] = fingerprint
 
     @staticmethod
     def _public(obj: dict) -> dict:
