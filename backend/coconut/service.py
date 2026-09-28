@@ -169,6 +169,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS workspace_recoveries (id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS native_receipts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS artifact_content (id TEXT PRIMARY KEY, content BLOB NOT NULL);
         CREATE INDEX IF NOT EXISTS native_receipts_executing ON native_receipts
             (json_extract(data, '$.task_id'), json_extract(data, '$.turn_id'))
             WHERE json_extract(data, '$.state')='executing';
@@ -236,6 +237,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._migrate_silent_responses()
                 self._migrate_pr_review_sources()
                 self._migrate_native_routine_prompts()
+                self._move_artifact_content()
                 if not getattr(self, '_workspace_recovery_hold', False):
                     self._recover()
         except BaseException:
@@ -2517,10 +2519,58 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             raise ServiceError(413, 'Attachments must contain between 1 byte and 4 MB.')
         artifact_id = uid()
         # Store uploaded bytes in SQLite with the request, avoiding orphan files on retries.
-        artifact = dict(id=artifact_id, bot_id=bot['id'], task_id=None, title=filename, kind='file', status='attached', preview=f'{len(content):,} bytes', url=None, created_at=now(), _attachment=True, _content_base64=base64.b64encode(content).decode())
+        artifact = dict(id=artifact_id, bot_id=bot['id'], task_id=None, title=filename, kind='file', status='attached', preview=f'{len(content):,} bytes', url=None, created_at=now(), _attachment=True)
         self._put('artifacts', artifact)
+        self.store_artifact_content(artifact_id, content)
         self._event('artifact.created', self._public(artifact), bot['id'])
         return self._public(artifact)
+
+    def store_artifact_content(self, artifact_id: str, content: bytes):
+        """Keep the bytes of an attachment or a preview in their own table. The artifact rows stay small.
+
+        Every pass that reads a whole table decodes the rows, and the bytes made up 48 of the 51 MB of the artifacts.
+        """
+        self.db.execute('INSERT OR REPLACE INTO artifact_content(id, content) VALUES (?, ?)', (artifact_id, content))
+
+    def artifact_bytes(self, artifact: dict) -> bytes | None:
+        """Return the stored bytes of an artifact, or None when it has none. A row from before the move keeps them inline."""
+        row = self.db.execute('SELECT content FROM artifact_content WHERE id=?', (artifact['id'],)).fetchone()
+        if row:
+            return bytes(row[0])
+        try:
+            return base64.b64decode(artifact['_content_base64']) if artifact.get('_content_base64') else None
+        except ValueError:
+            # A damaged value is not the same as no bytes. Say so, so that no turn goes on without the attachment.
+            raise ServiceError(409, f'The stored bytes of the attachment {artifact["title"]} are damaged.') from None
+
+    def turn_attachment_content(self, artifact_id: str) -> dict:
+        """Return the content of an attachment for a turn: its bytes as base64, or the reason that it has none.
+
+        A damaged inline value must not stop the turn, and a decision context that fails while it assembles its
+        attachments would retry without end. The turn gets the reason in place of the preview, so the bot knows.
+        """
+        artifact = self._get('artifacts', artifact_id)
+        try:
+            content = self.artifact_bytes(artifact)
+        except ServiceError as error:
+            return {'content_base64': None, 'preview': str(error)}
+        return {'content_base64': base64.b64encode(content).decode() if content is not None else None}
+
+    def _move_artifact_content(self):
+        """Move the inline bytes of older artifacts into artifact_content. Run at every start; it finds nothing after the first."""
+        # Read the ids first and one value at a time, so the peak memory is one attachment, not all of them.
+        # The caller holds the startup transaction.
+        ids = [row[0] for row in self.db.execute("SELECT id FROM artifacts WHERE json_type(data,'$._content_base64')='text'")]
+        for artifact_id in ids:
+            encoded = self.db.execute("SELECT json_extract(data,'$._content_base64') FROM artifacts WHERE id=?", (artifact_id,)).fetchone()[0]
+            try:
+                content = base64.b64decode(encoded)
+            except ValueError:
+                # One damaged value must not stop the service. Its row keeps the inline value, and only its download fails.
+                logging.getLogger(__name__).warning('Coconut left the inline bytes of artifact %s: they are not valid base64.', artifact_id)
+                continue
+            self.store_artifact_content(artifact_id, content)
+            self.db.execute("UPDATE artifacts SET data=json_remove(data,'$._content_base64') WHERE id=?", (artifact_id,))
 
     def artifact_content(self, artifact_id: str) -> tuple[bytes, str]:
         with self.lock:
@@ -2528,8 +2578,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             bot = self._get('bots', artifact['bot_id'])
             if bot.get('_deleted'):
                 raise ServiceError(404, 'This artifact was removed.')
-            if '_content_base64' in artifact:
-                return base64.b64decode(artifact['_content_base64']), artifact['title']
+            stored = self.artifact_bytes(artifact)
+            if stored is not None:
+                return stored, artifact['title']
             path = self.files / artifact_id
             if path.is_symlink() or not path.is_file():
                 raise ServiceError(404, 'The artifact file is unavailable on the Mac.')
@@ -3255,7 +3306,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         provider_task['_work_status_only'] = task.get('_work_status_only', False)
                     provider_task.update(view.decision_chat_input(task))
                     provider_task.update(view._bot_deletion_input(task))
-                    provider_task['attachments'] = [view._public(view._get('artifacts', a)) | {'content_base64': view._get('artifacts', a).get('_content_base64')} for a in task['_turn_attachment_ids']]
+                    provider_task['attachments'] = [view._public(view._get('artifacts', a)) | {'content_base64': None} | view.turn_attachment_content(a) for a in task['_turn_attachment_ids']]
                     provider_task['_available_bots'] = [{'id': b['id'], 'name': b['name'], 'role': b['role']} for b in view._all('bots') if b['id'] != bot['id'] and not b['archived'] and not b.get('_deleted')]
                     if task.get('_is_return') and task.get('source_task_id'):
                         rows = view.db.execute(
@@ -3860,7 +3911,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     if context.get('_recovery_attempt'):
                         provider_task['_context_recovery'] = context['_context_recovery']
                     provider_task['pending_decision'] = self._public(decision) | {'action': decision.get('_action')}
-                    provider_task['attachments'] = [self._public(self._get('artifacts', a)) | {'content_base64': self._get('artifacts', a).get('_content_base64')} for a in context.get('_attachment_ids', task.get('_turn_attachment_ids', []))]
+                    provider_task['attachments'] = [self._public(self._get('artifacts', a)) | {'content_base64': None} | self.turn_attachment_content(a) for a in context.get('_attachment_ids', task.get('_turn_attachment_ids', []))]
                 chunks = []
                 context_failure = {}
                 def emit(kind, payload):
