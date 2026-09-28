@@ -216,6 +216,9 @@ class DatabaseMaintenance:
     def _prune_contexts(self):
         """Shorten the question and drop the recovery text of the contexts that ended for a settled decision.
 
+        The recovery count goes with the text: `_start_context` reads the text whenever the count is set, and a copy of
+        an ended context keeps both fields, so the two must never part.
+
         A recovery reads `question`, `_context_recovery`, and `_recovery_unknown_tools` of a context only for a
         pending decision (WorkRecovery._queue_context_recoveries and DecisionFreshness._refresh_recovery_records).
         Every pass that reads the whole table decodes this text. The rows stay, with their status and links.
@@ -233,7 +236,7 @@ class DatabaseMaintenance:
                 if not ids:
                     break
                 self.db.execute(
-                    "UPDATE contexts SET data=json_set(json_remove(data,'$._context_recovery','$._recovery_unknown_tools'),"
+                    "UPDATE contexts SET data=json_set(json_remove(data,'$._context_recovery','$._recovery_unknown_tools','$._recovery_attempt'),"
                     "'$.question',substr(COALESCE(json_extract(data,'$.question'),''),1,?)) "
                     "WHERE id IN (SELECT value FROM json_each(?))", (CONTEXT_QUESTION_CHARACTERS, json.dumps(ids)))
                 cache = self._shared_cache()

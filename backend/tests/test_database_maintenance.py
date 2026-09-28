@@ -46,7 +46,7 @@ class ContextRetentionTests(ServiceCase):
 
     def context(self, decision_id, status, **fields):
         row = dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=str(uuid4()), decision_id=decision_id, status=status,
-                   question=self.LONG, _context_recovery='r' * 3000, _recovery_unknown_tools=[{'x': 'y' * 3000}],
+                   question=self.LONG, _context_recovery='r' * 3000, _recovery_unknown_tools=[{'x': 'y' * 3000}], _recovery_attempt=1,
                    _decision_revision=1, _conversation_epoch='epoch', error_code='decision_refresh_incomplete', **fields)
         with self.service.transaction():
             self.service._put('contexts', row)
@@ -69,6 +69,8 @@ class ContextRetentionTests(ServiceCase):
             row = self.stored(identity)
             self.assertNotIn('_context_recovery', row)
             self.assertNotIn('_recovery_unknown_tools', row)
+            # The count goes with the text. Some code reads the text when the count is set.
+            self.assertNotIn('_recovery_attempt', row)
             self.assertEqual(len(row['question']), database_maintenance.CONTEXT_QUESTION_CHARACTERS)
             self.assertEqual((row['decision_id'], row['_decision_revision'], row['error_code']), (settled, 1, 'decision_refresh_incomplete'))
         # A second pass finds nothing.
