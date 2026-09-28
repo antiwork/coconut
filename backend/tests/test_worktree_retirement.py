@@ -330,6 +330,49 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(os.readlink(path / 'links' / 'escaping'), '../../../outside')
         self.assertEqual(os.readlink(path / 'links' / 'inside'), '../tracked.txt')
 
+    def refused_with_build_folders(self):
+        """Return a worktree that retirement refuses, with build folders and files that are not rebuildable."""
+        _, identity, path, _ = self.outcome()
+        (path / 'draft.txt').write_text('keep\n')
+        for name in ('tmp/cache/big.bin', 'node_modules/pkg/index.js', 'build/fixture.db'):
+            (path / name).parent.mkdir(parents=True, exist_ok=True)
+            (path / name).write_bytes(b'x' * 1024)
+        git(path, 'checkout', '-q', '-b', 'other-branch')
+        return identity, path
+
+    def test_a_refused_idle_worktree_loses_only_its_build_folders(self):
+        identity, path = self.refused_with_build_folders()
+        self.assertEqual(self.retire(), [])
+        self.assertNotIn('retired', self.registry()[identity])
+        # A build creates tmp and node_modules again. Other ignored and untracked files stay.
+        self.assertFalse((path / 'tmp').exists())
+        self.assertFalse((path / 'node_modules').exists())
+        self.assertEqual((path / 'build/fixture.db').stat().st_size, 1024)
+        self.assertEqual((path / 'draft.txt').read_text(), 'keep\n')
+        self.assertEqual(git(path, 'branch', '--show-current'), 'other-branch')
+
+    def test_a_build_folder_that_holds_a_worktree_stays(self):
+        identity, path = self.refused_with_build_folders()
+        # coconut_workspace tells a bot to test another commit in a worktree under tmp.
+        git(path, 'worktree', 'add', '-q', '-b', 'probe', str(path / 'tmp/probe'))
+        (path / 'tmp/probe/work.txt').write_text('uncommitted\n')
+        self.assertEqual(self.retire(), [])
+        self.assertEqual((path / 'tmp/probe/work.txt').read_text(), 'uncommitted\n')
+        self.assertTrue((path / 'tmp/cache/big.bin').exists())
+        self.assertFalse((path / 'node_modules').exists())
+
+    def test_a_used_or_resumed_worktree_keeps_its_build_folders(self):
+        identity, path = self.refused_with_build_folders()
+        with patch('coconut.work_workspace.in_use', return_value=True):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue((path / 'tmp/cache/big.bin').exists())
+        answers = iter([True, True, False])
+        with patch('coconut.work_workspace.retire', return_value=None), \
+                patch.object(self.service, '_finished_outcomes', side_effect=lambda *a, **k: (
+                    {self.registry()[identity]['outcome']} if next(answers, False) else set())):
+            self.retire()
+        self.assertTrue((path / 'node_modules/pkg/index.js').exists())
+
     def test_large_ignored_files_keep_the_worktree(self):
         _, identity, path, _ = self.outcome()
         (path / 'build').mkdir()

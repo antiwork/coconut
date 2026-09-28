@@ -890,6 +890,61 @@ def retire(root, identity, finished, *, orphan_age=None):
         temporary.unlink(missing_ok=True)
 
 
+def rebuildable_folders(path, keep):
+    """Return the ignored folders of the worktree that a build creates again. Skip a folder that holds a path in `keep`."""
+    listing = git_output(path, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z')
+    names = []
+    for entry in (os.fsdecode(name) for name in listing.split(b'\0') if name):
+        # Git lists an ignored folder with a slash, and a link to a folder without one. Never follow a link.
+        folder = path / entry.rstrip('/')
+        if (entry.endswith('/') and rebuildable(entry) and not folder.is_symlink()
+                and folder.resolve().parent.is_relative_to(path)
+                and not any(inner == folder or folder in inner.parents for inner in keep)):
+            names.append(entry.rstrip('/'))
+    return sorted(names)
+
+
+def free_rebuildable(root, identity, finished):
+    """Delete the rebuildable folders of an idle worktree that retirement refused. Return the deleted names.
+
+    retire() does not archive these folders, because an install or a build creates them again. A worktree that
+    retirement refuses, for example for a nested repository or a branch switch, can keep gigabytes of them for days.
+    Coconut deletes only the folders that Git ignores and that `rebuildable` names. It keeps a folder that holds a
+    worktree, because retirement archives the changes of a nested worktree first. `finished` is the check of retire().
+    """
+    root = Path(root)
+    manifest = root / 'worktrees.json'
+    before = json.loads(manifest.read_text()).get(identity)
+    if not before or before.get('retired') or not isinstance(before.get('path'), str):
+        return []
+    path = Path(before['path'])
+    if path.is_symlink() or not (path / '.git').is_file():
+        return []
+    path = path.resolve()
+    if Path(git(path, 'rev-parse', '--show-toplevel')).resolve() != path:
+        return []
+
+    def keep(saved):
+        # A folder can hold a worktree of the repository, or the saved path of another outcome.
+        inner = {record['path'] for record in registered(before['repository'])}
+        return inner | {Path(binding['path']).resolve() for other, binding in saved.items()
+                        if other != identity and isinstance(binding, dict) and isinstance(binding.get('path'), str)}
+    names = rebuildable_folders(path, keep(json.loads(manifest.read_text())))
+    if not names or not finished(True) or in_use(path):
+        return []
+    with (root / '.workspace.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        # acquire() and restore() take this lock, so no outcome can claim the worktree during the deletion.
+        saved = json.loads(manifest.read_text())
+        if saved.get(identity) != before or rebuildable_folders(path, keep(saved)) != names:
+            raise ValueError('The worktree changed while Coconut freed its rebuildable folders.')
+        if not finished(False):
+            return []
+        for name in names:
+            shutil.rmtree(path / name)
+    return names
+
+
 def removal_stopped(manifest, saved, binding, path, repository, current, archive, error):
     """Decide from the path what a failed or interrupted `git worktree remove` did. Hold the registry lock."""
     if not os.path.lexists(path):
