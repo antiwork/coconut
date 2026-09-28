@@ -176,6 +176,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         CREATE INDEX IF NOT EXISTS tasks_bot_session ON tasks (json_extract(data,'$.bot_id'), json_extract(data,'$.session_id'));
         CREATE INDEX IF NOT EXISTS deliveries_source ON deliveries (json_extract(data,'$.source_task_id'));
         CREATE INDEX IF NOT EXISTS tasks_status ON tasks (json_extract(data,'$.status'));
+        CREATE INDEX IF NOT EXISTS tasks_bot_status ON tasks (json_extract(data,'$.bot_id'), json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS contexts_status ON contexts (json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS decisions_status ON decisions (json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS tasks_assignment ON tasks (json_extract(data, '$._assignment_task_id'));
@@ -670,13 +671,26 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
 
     def _refresh_bot(self, bot_id: str):
+        """Set the status of a bot from its tasks and contexts, and publish it when it changes.
+
+        Two indexed queries read the states. The event goes out only for a new status, because the sync response
+        builds the bots from their stored rows, and no other field changes here.
+        """
         bot = self._get('bots', bot_id)
-        tasks = [t for t in self._all('tasks') if t['bot_id'] == bot_id]
-        states = {t['status'] for t in tasks if t['status'] in ('working', 'needs_you', 'scheduled')}
-        if tasks and tasks[-1]['status'] == 'failed':
+        states = {row[0] for row in self.db.execute(
+            "SELECT DISTINCT json_extract(data,'$.status') FROM tasks WHERE json_extract(data,'$.bot_id')=? "
+            "AND json_extract(data,'$.status') IN ('working','needs_you','scheduled')", (bot_id,))}
+        # The latest task of the bot decides whether a failure still shows.
+        latest = self.db.execute("SELECT json_extract(data,'$.status') FROM tasks WHERE json_extract(data,'$.bot_id')=? "
+                                 'ORDER BY rowid DESC LIMIT 1', (bot_id,)).fetchone()
+        if latest and latest[0] == 'failed':
             states.add('failed')
-        answering = any(c['bot_id'] == bot_id and c['status'] == 'working' for c in self._all('contexts'))
-        bot['status'] = 'working' if answering else next((s for s in ('needs_you', 'working', 'scheduled', 'failed') if s in states), 'idle')
+        answering = self.db.execute("SELECT 1 FROM contexts WHERE json_extract(data,'$.status')='working' "
+                                    "AND json_extract(data,'$.bot_id')=? LIMIT 1", (bot_id,)).fetchone()
+        status = 'working' if answering else next((s for s in ('needs_you', 'working', 'scheduled', 'failed') if s in states), 'idle')
+        if bot.get('status') == status:
+            return
+        bot['status'] = status
         self._put('bots', bot)
         self._event('bot.updated', self._public(bot), bot_id)
 
