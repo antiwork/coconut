@@ -199,6 +199,50 @@ class AutomaticUpdateTests(unittest.TestCase):
             self.assertNotIn('failed_deploy', saved)
             self.assertEqual(saved['source_sha'], 'second')
 
+    def test_a_failed_health_check_after_install_backs_off(self):
+        class DeployError(Exception):
+            pass
+
+        def refuse(*args):
+            raise DeployError('The service did not pass its local TLS health check.')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, live = root / 'source', root / 'live'
+            source.mkdir(); live.mkdir()
+            (live / '.runtime/host').mkdir(parents=True)
+            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:8443')))
+            (live / 'app.py').write_text('current')
+            hashes = {'app.py': hashlib.sha256(b'current').hexdigest()}
+            (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=hashes)))
+            (live / '.runtime/hermes').mkdir()
+            (live / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit='runtime')))
+            state_path = root / 'state.json'
+            update.save(state_path, {})
+
+            def command(args, **kwargs):
+                if args[:3] == ['git', 'remote', 'get-url']: return 'https://github.com/owner/repo.git'
+                if args[:2] == ['git', 'status']: return ''
+                if args[:2] == ['git', 'rev-parse']: return 'installed'
+                if args[:2] == ['git', 'ls-files']: return 'app.py'
+                return ''
+
+            def package(path):
+                path.write_bytes(b'package')
+                return dict(package_id='package')
+            packaging = SimpleNamespace(package=package, source_files=lambda: {'app.py': b'current'})
+            installer = SimpleNamespace(validate_package=lambda stream: SimpleNamespace(hashes=hashes, revision='runtime'),
+                                        Operations=lambda: SimpleNamespace(health=refuse), DeployError=DeployError)
+            config = dict(repository='owner/repo', source=str(source), live=str(live))
+            with patch.object(update, 'run', side_effect=command), \
+                    patch.object(update, 'module', side_effect=[packaging, installer]), \
+                    patch.object(update, 'reviewed_merge'), patch.object(update, 'ios_hash', return_value='ios'), \
+                    patch.object(update.time, 'time', return_value=1000), patch.object(update.Path, 'home', return_value=root):
+                with self.assertRaises(DeployError):
+                    update.update(config, state_path)
+            saved = json.loads(state_path.read_text())
+            self.assertEqual(saved['failed_deploy']['source_sha'], 'installed')
+            self.assertNotIn('source_sha', saved)
+
     def test_a_starting_service_counts_as_running(self):
         # During startup migrations the service does not listen yet. Its launchd job still has a process.
         with tempfile.TemporaryDirectory() as directory:

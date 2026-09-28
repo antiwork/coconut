@@ -379,7 +379,7 @@ def update(config, state_path):
                 hashlib.sha256((live / name).read_bytes()).hexdigest() != digest
                 for name, digest in validated.hashes.items()):
             raise RuntimeError('The installed files do not match the merged commit.')
-    except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError):
+    except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError, getattr(expected, 'DeployError', RuntimeError)):
         # A failed install or check restores the previous source or leaves the next pass to install again. Each
         # install stops and restarts the service, so back off for this commit: 10 minutes, then double up to
         # 6 hours. A new merged commit deploys at once.
