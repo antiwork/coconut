@@ -41,17 +41,7 @@ MARKER_PATH = Path('.coconut-install.json')
 HEALTH_WAIT_SECONDS = 300
 # A probe whose failure is expected, such as the check for an already restored service, waits only this long.
 PROBE_WAIT_SECONDS = 60
-# The launch agent that runs the installed service. scripts/host.py installs it.
-SERVICE_LABEL = 'local.coconut.agent'
 
-
-def service_process():
-    """Return True when the service's launchd job has a running process."""
-    try:
-        listing = subprocess.run(['launchctl', 'list', SERVICE_LABEL], capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return listing.returncode == 0 and re.search(r'"PID" = [0-9]+;', listing.stdout) is not None
 
 
 class DeployError(Exception):
@@ -385,17 +375,8 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
         return self._health(root, address, HEALTH_WAIT_SECONDS)
 
     def probe(self, root, address):
-        """Check health briefly, for a check whose failure is expected.
-
-        A service that still runs its startup migrations does not answer yet. When its launchd job has a process,
-        wait the rest of the startup deadline instead of treating it as down.
-        """
-        try:
-            return self._health(root, address, PROBE_WAIT_SECONDS)
-        except DeployError:
-            if not service_process():
-                raise
-            return self._health(root, address, HEALTH_WAIT_SECONDS - PROBE_WAIT_SECONDS)
+        """Check health briefly, for a check whose failure is expected. This keeps the earlier 60-second wait."""
+        return self._health(root, address, PROBE_WAIT_SECONDS)
 
     def _health(self, root, address, seconds):
         cert = safe_path(root / '.runtime/host/server.crt', root)
@@ -793,19 +774,12 @@ def main():
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), interrupt)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['receive', 'recover'])
+    parser.add_argument('command', choices=['receive'])
     parser.add_argument('--directory', default='Coconut')
     parser.add_argument('--address', required=True)
     parser.add_argument('--update-runtime', action='store_true', help='Install the package Hermes pin and retain the previous runtime for rollback.')
     args = parser.parse_args()
     try:
-        if args.command == 'recover':
-            # Finish an interrupted or failed update from its journal. Install nothing new.
-            os.umask(0o077)
-            root = destination(args.directory, Path.home().resolve())
-            reconcile(root, Operations())
-            print('COCONUT_DEPLOY_RESULT=' + json.dumps({'ok': True, 'recovered': True}))
-            return
         result = receive(args.directory, args.address, sys.stdin.buffer, update_runtime=args.update_runtime)
     except (DeployError, KeyboardInterrupt) as error:
         if isinstance(error, KeyboardInterrupt):

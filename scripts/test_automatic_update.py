@@ -162,16 +162,6 @@ class AutomaticUpdateTests(unittest.TestCase):
                 path.write_bytes(b'package')
                 return dict(package_id='package')
 
-            def attempt_without_run_patch(now):
-                packaging = SimpleNamespace(package=package, source_files=lambda: {'app.py': b'current'})
-                installer = SimpleNamespace(validate_package=lambda stream: SimpleNamespace(hashes=hashes, revision='runtime'),
-                                            Operations=lambda: SimpleNamespace(health=lambda *args: None))
-                config = dict(repository='owner/repo', source=str(source), live=str(live))
-                with patch.object(update, 'module', side_effect=[packaging, installer]), \
-                        patch.object(update, 'reviewed_merge'), patch.object(update, 'ios_hash', return_value='ios'), \
-                        patch.object(update.time, 'time', return_value=now), patch.object(update.Path, 'home', return_value=root):
-                    update.update(config, state_path)
-
             def attempt(now):
                 packaging = SimpleNamespace(package=package, source_files=lambda: {'app.py': b'current'})
                 installer = SimpleNamespace(validate_package=lambda stream: SimpleNamespace(hashes=hashes, revision='runtime'),
@@ -187,30 +177,15 @@ class AutomaticUpdateTests(unittest.TestCase):
                 attempt(1000)
             failed = json.loads(state_path.read_text())['failed_deploy']
             self.assertEqual((failed['source_sha'], failed['attempts'], failed['retry_at']), ('first', 1, 1000 + update.FAILED_DEPLOY_SECONDS))
-            # The same commit waits while the service answers, so the service does not restart again.
-            with patch.object(update, 'service_answers', return_value=True):
-                attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
+            # The same commit waits, so the service does not restart again.
+            attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
             self.assertEqual(received, ['first'])
-            # A stopped service gets only the recovery step, not a second install of the failed commit.
-            recovered = []
-            real = command
-
-            def recovering(args, **kwargs):
-                if 'recover' in args:
-                    recovered.append(args)
-                    return 'COCONUT_DEPLOY_RESULT={"ok":true,"recovered":true}'
-                return real(args, **kwargs)
-            with patch.object(update, 'service_answers', return_value=False), \
-                    patch.object(update, 'run', side_effect=recovering):
-                attempt_without_run_patch(1000 + update.FAILED_DEPLOY_SECONDS - 1)
-            self.assertEqual(received, ['first'])
-            self.assertEqual(len(recovered), 1)
-            # After the wait ends, the same commit is tried again.
-            retry_at = json.loads(state_path.read_text())['failed_deploy']['retry_at']
-            self.assertEqual(retry_at, 1000 + update.FAILED_DEPLOY_SECONDS)
-            with patch.object(update, 'service_answers', return_value=True), self.assertRaises(RuntimeError):
-                attempt(retry_at)
-            self.assertEqual(json.loads(state_path.read_text())['failed_deploy']['attempts'], 2)
+            # After the wait ends, the same commit is tried again, and a second failure doubles the wait.
+            with self.assertRaises(RuntimeError):
+                attempt(1000 + update.FAILED_DEPLOY_SECONDS)
+            failed = json.loads(state_path.read_text())['failed_deploy']
+            self.assertEqual((failed['attempts'], failed['retry_at']), (2, 1000 + 3 * update.FAILED_DEPLOY_SECONDS))
+            retry_at = failed['retry_at']
             # A new merged commit deploys at once, and success clears the backoff.
             head[0], outcome[0] = 'second', 'ok'
             attempt(retry_at + 1)
@@ -262,15 +237,6 @@ class AutomaticUpdateTests(unittest.TestCase):
             saved = json.loads(state_path.read_text())
             self.assertEqual(saved['failed_deploy']['source_sha'], 'installed')
             self.assertNotIn('source_sha', saved)
-
-    def test_a_starting_service_counts_as_running(self):
-        # During startup migrations the service does not listen yet. Its launchd job still has a process.
-        with tempfile.TemporaryDirectory() as directory:
-            live = Path(directory)
-            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout='{\n\t"PID" = 4242;\n};')):
-                self.assertTrue(update.service_answers(live))
-            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=113, stdout='')):
-                self.assertFalse(update.service_answers(live))
 
     def test_completed_archive_receipt_survives_interruption(self):
         with tempfile.TemporaryDirectory() as directory:

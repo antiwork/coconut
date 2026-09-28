@@ -7,18 +7,16 @@ import json
 import os
 from pathlib import Path
 import re
-import socket
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
-from urllib.parse import urlsplit
 
 
 # After a failed install of a commit, the updater waits this long before it tries the same commit again.
 FAILED_DEPLOY_SECONDS = 10 * 60
-FAILED_DEPLOY_MAX_SECONDS = 6 * 60 * 60
+FAILED_DEPLOY_MAX_SECONDS = 60 * 60
 
 
 def run(args, *, cwd=None, stdin=None, pass_fds=()):
@@ -283,29 +281,6 @@ def release_ios(config, state, state_path):
     save(state_path, state)
 
 
-# The launch agent that runs the installed service. scripts/host.py installs it.
-SERVICE_LABEL = 'local.coconut.agent'
-
-
-def service_answers(live):
-    """Return True when the installed service runs or accepts a local connection.
-
-    During startup migrations the service does not listen yet, so a running launchd job also counts.
-    """
-    try:
-        listing = subprocess.run(['launchctl', 'list', SERVICE_LABEL], capture_output=True, text=True, timeout=10)
-        if listing.returncode == 0 and re.search(r'"PID" = [0-9]+;', listing.stdout):
-            return True
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    try:
-        port = urlsplit(json.loads((live / '.runtime/host/connection.json').read_text())['address']).port or 443
-        with socket.create_connection(('127.0.0.1', port), timeout=3):
-            return True
-    except (OSError, ValueError, KeyError, TypeError):
-        return False
-
-
 def update(config, state_path):
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
     processed_build = state.get('pending_ios', {}).get('build')
@@ -329,11 +304,7 @@ def update(config, state_path):
     failed = state.get('failed_deploy') or {}
     if failed.get('source_sha') == sha and time.time() < failed.get('retry_at', 0):
         # Each failed attempt stops and restarts the service. Wait before the next install of the same commit.
-        # A service that is down gets only the recovery step, which starts the previous source from the journal.
-        if not service_answers(live):
-            address = json.loads((live / '.runtime/host/connection.json').read_text())['address']
-            run([sys.executable, str(source / 'scripts/deploy.py'), 'recover',
-                 '--directory', str(live.relative_to(Path.home())), '--address', address])
+        # launchd keeps the restored service running meanwhile, and the next install runs recovery first.
         return
     reviewed_merge(repository, sha)
     run(['git', 'checkout', '--detach', sha], cwd=source)
@@ -386,7 +357,7 @@ def update(config, state_path):
     except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError, getattr(expected, 'DeployError', RuntimeError)):
         # A failed install or check restores the previous source or leaves the next pass to install again. Each
         # install stops and restarts the service, so back off for this commit: 10 minutes, then double up to
-        # 6 hours. A new merged commit deploys at once.
+        # 1 hour. A new merged commit deploys at once.
         attempts = failed.get('attempts', 0) + 1 if failed.get('source_sha') == sha else 1
         state['failed_deploy'] = dict(source_sha=sha, attempts=attempts,
                                       retry_at=time.time() + min(FAILED_DEPLOY_MAX_SECONDS, FAILED_DEPLOY_SECONDS * 2 ** (attempts - 1)))
