@@ -91,12 +91,27 @@ class DraftFreshnessTests(unittest.TestCase):
     def test_refresh_cannot_rewrite_draft(self):
         decision = self.draft()
         context = self.refresh()
-        with self.assertRaises(ServiceError):
-            self.service.refresh_decision(context['id'], dict(status='revise', evidence='New facts.',
-                revision=dict(title='Send a different message?', options=[])))
+        for revision in ({}, dict(title='Send a different message?', options=[]),
+                         dict(draft=dict(decision['draft'], body='Send different content.')),
+                         dict(risk_level='high'), dict(uncertainty=3)):
+            with self.subTest(revision=revision), self.assertRaises(ServiceError):
+                self.service.refresh_decision(context['id'], dict(status='revise', evidence='New facts.',
+                    revision=revision))
         saved = self.service._get('decisions', decision['id'])
         self.assertEqual(saved['draft'], decision['draft'])
         self.assertEqual(saved['revision'], decision['revision'])
+
+    def test_partial_risk_change_cannot_borrow_existing_assessment(self):
+        decision = self.draft()
+        decision.update(risk_level='low', risk='Only the meeting time changes.')
+        self.service._put('decisions', decision)
+        context = self.refresh()
+        for revision in (dict(risk_level='high'), dict(risk='The project could stop.')):
+            with self.subTest(revision=revision), self.assertRaisesRegex(ServiceError, 'together'):
+                self.service.refresh_decision(context['id'], dict(status='revise', evidence='New facts.', revision=revision))
+        saved = self.service._get('decisions', decision['id'])
+        for field in ('risk_level', 'risk', 'revision', 'draft_hash', 'status'):
+            self.assertEqual(saved[field], decision[field])
 
     def test_assessment_revision_preserves_edited_draft_and_requires_current_approval(self):
         decision = self.draft()

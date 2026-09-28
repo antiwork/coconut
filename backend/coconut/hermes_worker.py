@@ -1141,8 +1141,16 @@ def run_turn(request, emit, request_receipt):
             allowed.add(SUGGEST_SCHEMA['name'])
         if operation == 'context' and request['task'].get('_decision_refresh'):
             from decision_freshness import REFRESH_SCHEMA
+            revision_schema = QUESTION_SCHEMA['parameters']
+            if request['task'].get('pending_decision', {}).get('action_type') == 'draft_message':
+                revision_schema = {'type': 'object', 'additionalProperties': False, 'minProperties': 1,
+                    'description': 'Update risk_level and risk together, or uncertainty, or all three. Omitted fields are preserved. Never change draft content.',
+                    'allOf': [{'if': {'required': [key]}, 'then': {'required': [other]}}
+                              for key, other in (('risk_level', 'risk'), ('risk', 'risk_level'))],
+                    'properties': {key: QUESTION_SCHEMA['parameters']['properties'][key]
+                                   for key in ('risk_level', 'risk', 'uncertainty')}}
             refresh_schema = dict(REFRESH_SCHEMA, parameters=dict(REFRESH_SCHEMA['parameters'],
-                properties=dict(REFRESH_SCHEMA['parameters']['properties'], revision=QUESTION_SCHEMA['parameters'])))
+                properties=dict(REFRESH_SCHEMA['parameters']['properties'], revision=revision_schema)))
             registry.register(name=REFRESH_SCHEMA['name'], toolset='coconut', schema=refresh_schema,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('decision_response', arguments)))
             allowed.add(REFRESH_SCHEMA['name'])
