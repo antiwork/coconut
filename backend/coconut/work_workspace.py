@@ -378,6 +378,10 @@ def shared(executable, pid=None, *, unknown=False):
     return executable.startswith(SHARED_EXECUTABLE_PREFIXES) or name in SHARED_EXECUTABLE_NAMES
 
 
+# Without the outcome marker, Coconut still keeps these programs: a person starts them, and they hold a session.
+UNMARKED_KEEP_NAMES = ('tmux', 'screen', 'zellij', 'mosh-server', 'ssh-agent', 'gpg-agent', 'sshd', 'login', 'emacs', 'vim', 'nvim')
+
+
 def environment_names(pid, mark):
     """Return True when the environment of the process contains the `NAME=value` item `mark`."""
     with contextlib.suppress(OSError):
@@ -471,7 +475,7 @@ def stop_orphans(found, outcome, age, *, marked=True):
     When the system does not show the environment of a process, for example a macOS platform binary, Coconut does not stop it.
     It never stops a shared app or system daemon that `shared` names, such as OrbStack.
     A process that does not end after SIGTERM gets SIGKILL.
-    With marked=False, the environment check does not apply. `found` must then hold only processes in the worktree of
+    With marked=False, the environment check does not apply, and only the programs in UNMARKED_KEEP_NAMES stay. `found` must then hold only processes in the worktree of
     an outcome whose pull requests merged or closed, so that an old orphan there, such as a dev server that a bot
     started without the variable, cannot belong to other work.
     """
@@ -487,7 +491,8 @@ def stop_orphans(found, outcome, age, *, marked=True):
             answers[pid] = shared(table[pid][2], pid, unknown=True)
         return answers[pid]
     stopped = {pid for pid in found if pid in table and pid != os.getpid() and table[pid][0] == 1
-               and table[pid][1] >= age and not is_shared(pid) and (not marked or environment_names(pid, mark))}
+               and table[pid][1] >= age and not is_shared(pid)
+               and (environment_names(pid, mark) if marked else table[pid][2].rsplit('/', 1)[-1] not in UNMARKED_KEEP_NAMES)}
     while stopped:
         # The parent proves who owns a child process. macOS also hides the environment of a child shell.
         # A shared service stays even as a child. A system program that the orphan started, such as a WebKit
@@ -1053,6 +1058,10 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False):
     before = json.loads(manifest.read_text()).get(identity)
     if not before or before.get('retired'):
         return False
+    failed = (before.get('retire_failed') or {}).get('at')
+    if failed and datetime.now(timezone.utc) - datetime.fromisoformat(failed.replace('Z', '+00:00')) < RETRY_AFTER:
+        # A refused removal waits a day, as in retire. The retry would archive the same files again.
+        return False
     path, repository = Path(before['path']), Path(before['repository']).resolve()
     present = os.path.lexists(path)
     head, branch, archive, temporary = None, before['branch'], None, None
@@ -1124,9 +1133,11 @@ def finish_discard(root, identity, before, finished, present, path, repository, 
                 git(repository, 'worktree', 'remove', '--force', str(path), timeout=CHECKOUT_SECONDS)
             except GIT_ERRORS as error:
                 if os.path.lexists(path) and (path / '.git').is_file():
-                    # The checkout still holds the work, so the next attempt archives it again.
+                    # The checkout still holds the work. Keep no archive, and wait a day before the next attempt.
                     if archive:
                         archive.unlink(missing_ok=True)
+                    binding['retire_failed'] = dict(at=stamp(datetime.now(timezone.utc)), error=str(error)[:1000], archive=None)
+                    save_bindings(manifest, saved)
                     raise
                 if os.path.lexists(path):
                     # Git deleted part of the checkout. Name the archive, and send turns to the scratch workspace.
@@ -1226,6 +1237,7 @@ def sweep_temporary(root):
         for temporary in folder.glob('.*.tar.gz.tmp'):
             temporary.unlink(missing_ok=True)
     # free_rebuildable moves build folders here before it deletes them. A stop can leave some.
+    empty_scratch_trash(root)
     trash = Path(root) / TRASH
     if trash.is_dir() and not trash.is_symlink():
         try:
@@ -1466,10 +1478,18 @@ def reapply_discard(path, archive, head):
                 git_output(path, 'apply', '--index', '--binary', '--whitespace=nowarn', '-', data=staged)
             if unstaged:
                 apply_unstaged(path, unstaged)
+            links = []
             for name, member in members.items():
                 target = name[len(UNTRACKED):]
-                if name.startswith(UNTRACKED) and member.isfile() and not os.path.lexists(path / target):
+                if not name.startswith(UNTRACKED) or os.path.lexists(path / target):
+                    continue
+                if member.issym():
+                    links.append((target, member.linkname))
+                elif member.isfile():
                     tar.extract(member.replace(name=target, deep=False), path, filter='data')
+            # Create links last, so that no archived file is written through a link.
+            for target, linkname in links:
+                place_link(path, target, linkname)
     except RESTORE_ERRORS as error:
         with contextlib.suppress(*GIT_ERRORS):
             git(path, 'reset', '-q', '--hard', 'HEAD')
@@ -1603,8 +1623,8 @@ def restore(binding, checked, *, retry_duplicates=False):
             if holder:
                 # Git allows a branch in one worktree only, and another worktree, often the main one, holds it.
                 # A new branch at the saved commit keeps the outcome working, and the old branch stays where it is.
-                binding['branch'] = 'wt/' + Path(binding['path']).name
-                git(repository, 'branch', '--force', binding['branch'], retired.get('head') or 'HEAD')
+                held_branch, binding['branch'] = binding['branch'], 'wt/' + Path(binding['path']).name
+                git(repository, 'branch', '--force', binding['branch'], retired.get('head') or held_branch)
             with contextlib.suppress(*GIT_ERRORS):
                 git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
             with contextlib.suppress(FileNotFoundError, OSError):

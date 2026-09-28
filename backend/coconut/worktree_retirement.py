@@ -281,11 +281,13 @@ class WorktreeRetirement:
             # A failed orphan check must not stop retirement.
             logging.getLogger(__name__).warning('Coconut could not stop the orphans of idle outcomes: %s', error)
         # A merged pull request ends its work, so its worktree goes without the checks that protect resumable work.
-        done, open_pull_requests = self._done_outcomes(finished) or ({}, set())
+        classified = self._done_outcomes(finished)
+        # A busy service lock leaves the open pull requests unknown. Then no long idle discard runs in this pass.
+        done, open_pull_requests = classified or ({}, set())
         # An outcome idle this long loses a worktree that retirement refuses, and the files of its scratch workspace.
         # An open pull request keeps its work until the disk is low.
         stale = set(finished) if low_disk else {outcome for outcome in finished if ages.get(outcome, 0) >= DISCARD_IDLE_SECONDS
-                                                and outcome not in open_pull_requests}
+                                                and outcome not in open_pull_requests} if classified is not None else set()
         try:
             self._clear_idle_scratch(root, set(done) | stale, current, saved)
         except (ValueError, OSError, subprocess.TimeoutExpired, sqlite3.Error) as error:

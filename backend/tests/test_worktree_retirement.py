@@ -290,6 +290,61 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(work_workspace.preferred(self.workspaces, outcome), self.workspaces / outcome)
         self.assertIn('restore_failed', self.registry()[identity]['retired'])
 
+    def test_a_busy_service_lock_skips_the_long_idle_discard(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'open')
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60), \
+                patch.object(self.service, '_done_outcomes', return_value=None):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+
+    def test_an_unmarked_stop_keeps_interactive_session_programs(self):
+        table = {10: (1, 10 ** 6, '/usr/bin/tmux'), 11: (1, 10 ** 6, '/usr/local/bin/node'), 12: (1, 10 ** 6, '/opt/tmux/bin/tmux')}
+        with patch.object(work_workspace, 'process_table', return_value=table), \
+                patch.object(work_workspace, 'shared', return_value=False), \
+                patch.object(work_workspace, 'stop', side_effect=lambda pids, sig, seconds: set()) as stop:
+            work_workspace.stop_orphans({10, 11, 12}, 'outcome', 1, marked=False)
+        stopped = set().union(*(call.args[0] for call in stop.call_args_list))
+        self.assertEqual(stopped, {11})
+
+    def test_a_resumed_discard_gets_its_links_back(self):
+        outcome, identity, path, _ = self.outcome()
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        (path / 'target.txt').write_text('target\n')
+        git(path, 'add', 'target.txt')
+        self.commit(path, 'Target')
+        (path / 'local.link').symlink_to('target.txt')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            self.assertEqual(self.retire(), [identity])
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual(os.readlink(restored / 'local.link'), 'target.txt')
+
+    def test_a_refused_discard_removal_waits_a_day(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
+        real = work_workspace.git
+        attempts = []
+
+        def refuse(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                attempts.append(1)
+                raise ValueError('Git refused the removal.')
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=refuse):
+            self.retire()
+            self.retire()
+        self.assertEqual(len(attempts), 1)
+        self.assertIn('retire_failed', self.registry()[identity])
+
+    def test_the_scratch_trash_is_emptied_by_the_sweep(self):
+        left = self.workspaces / work_workspace.SCRATCH_TRASH / 'stopped-1'
+        left.mkdir(parents=True)
+        (left / 'big.bin').write_bytes(b'x')
+        work_workspace.sweep_temporary(self.workspaces)
+        self.assertFalse(left.exists())
+
     def test_a_second_discard_keeps_the_first_archive(self):
         outcome, identity, path, task = self.outcome()
         self.pull_request(task, 'merged')
@@ -310,7 +365,7 @@ class WorktreeRetirementTests(unittest.TestCase):
         stale.parent.mkdir(parents=True, exist_ok=True)
         stale.write_bytes(b'old retire archive')
         saved = self.registry()
-        saved[identity]['retire_failed'] = dict(at=RECENT, error='Git refused', archive=str(stale))
+        saved[identity]['retire_failed'] = dict(at=OLD, error='Git refused', archive=str(stale))
         save_bindings(self.workspaces / 'worktrees.json', saved)
         self.assertEqual(self.retire(), [identity])
         self.assertFalse(stale.exists())
