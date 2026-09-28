@@ -786,7 +786,8 @@ def retire(root, identity, finished, *, orphan_age=None):
     Coconut calls it with wait=True before it takes the registry lock, and with wait=False under that lock.
     With `orphan_age`, Coconut first stops the orphaned processes of the outcome that are older than that many seconds.
     The Git, lsof, and archive work runs before the registry lock. Under the lock, Coconut only
-    repeats the Git checks that do not wait for other processes.
+    repeats the Git checks that do not wait for other processes. When a bot renamed the branch, Coconut first takes
+    the registry lock alone to save the new name. It calls no `finished` check in that block.
     """
     root = Path(root)
     manifest = root / 'worktrees.json'
