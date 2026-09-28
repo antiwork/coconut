@@ -484,9 +484,22 @@ class WorktreeRetirementTests(unittest.TestCase):
         clone.mkdir()
         git(clone, 'init', '-q')
         (clone / 'work.txt').write_text('uncommitted\n')
+        # A bare clone has no .git entry.
+        (path / '.cache').mkdir()
+        git(path / '.cache', 'init', '-q', '--bare', 'mirror')
         self.assertEqual(self.retire(), [])
         self.assertEqual((clone / 'work.txt').read_text(), 'uncommitted\n')
+        self.assertTrue((path / '.cache/mirror/HEAD').is_file())
         self.assertFalse((path / 'node_modules').exists())
+
+    def test_a_linked_trash_moves_nothing(self):
+        identity, path = self.refused_with_build_folders()
+        outside = self.root / 'outside-trash'
+        outside.mkdir()
+        (self.workspaces / work_workspace.TRASH).symlink_to(outside, target_is_directory=True)
+        self.assertEqual(self.retire(), [])
+        self.assertTrue((path / 'tmp/cache/big.bin').exists())
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_a_failed_deletion_is_logged_and_not_counted(self):
         identity, path = self.refused_with_build_folders()

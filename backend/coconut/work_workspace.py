@@ -917,7 +917,8 @@ def holds_repository(folder):
         raise error
     try:
         for directory, folders, files in os.walk(folder, onerror=unreadable):
-            if '.git' in folders or '.git' in files:
+            # A bare clone or a mirror has no .git entry. It holds HEAD, objects, and refs at its top.
+            if '.git' in folders or '.git' in files or ('HEAD' in files and {'objects', 'refs'} <= set(folders)):
                 return True
     except OSError:
         return True
@@ -977,6 +978,9 @@ def free_rebuildable(root, identity, finished):
         # A large folder takes minutes to delete, and acquire() waits for this lock. Under the lock, only move each
         # folder out of the worktree. Delete it after the lock. sweep_temporary deletes what a stop left.
         trash = root / TRASH
+        if trash.is_symlink():
+            # sweep_temporary does not follow a link, so it would never empty the target.
+            raise ValueError(f'{trash} is a link. Coconut does not move build folders through it.')
         trash.mkdir(mode=0o700, exist_ok=True)
         moved, deleted = [], []
         for index, name in enumerate(names):
