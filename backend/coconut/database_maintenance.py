@@ -1,6 +1,7 @@
-"""Bound the event log and the native receipt journal, and give their free pages back to the file system.
+"""Bound the event log, the native receipt journal, and the recovery text of contexts, and give free pages back.
 
-Both tables grow with every turn. Maintenance deletes old rows in batches. Each batch is one short transaction,
+The event log and the journal grow with every turn, and a context keeps its recovery text after it ends.
+Maintenance deletes old rows and shortens old text in batches. Each batch is one short transaction,
 so a phone request or a tool call waits for at most one batch.
 """
 from __future__ import annotations
@@ -43,6 +44,10 @@ FINISHED = ('completed', 'failed', 'cancelled')
 # Lookups read these receipts by content at any age: NativeOutcomes adopts a native task by the idempotency key
 # of its kanban_create receipt, and WorkProgress links a manual routine run by its cronjob_manage receipt.
 KEPT_ACTIONS = ('kanban_create', 'cronjob_manage')
+# A context that ended keeps its question and its recovery text for a pending decision, because a recovery reads them.
+# For a settled decision nothing reads them, and they made up 58 of the 67 MB of the contexts of a live store.
+# The question keeps this many characters, to name the context.
+CONTEXT_QUESTION_CHARACTERS = 200
 BATCH_ROWS = 1000
 # A pause between batches lets waiting requests take the service lock.
 BATCH_PAUSE_SECONDS = 0.05
@@ -73,12 +78,13 @@ class DatabaseMaintenance:
         if current < getattr(self, '_next_database_maintenance', 0):
             return {}
         self._next_database_maintenance = current + DATABASE_RETRY_SECONDS
-        result = dict(events=self._prune_events(current), receipts=self._prune_receipts(current))
+        result = dict(events=self._prune_events(current), receipts=self._prune_receipts(current),
+                      contexts=self._prune_contexts())
         result['vacuum'] = self._release_free_pages()
         logs = self.root / 'logs'
         result['rotated'] = [name for fd, name in ((1, 'service.log'), (2, 'error.log')) if rotate_log(fd, logs / name)]
         self._next_database_maintenance = current + DATABASE_MAINTENANCE_SECONDS
-        if result['events'] or result['receipts'] or result['vacuum']:
+        if result['events'] or result['receipts'] or result['contexts'] or result['vacuum']:
             logging.getLogger(__name__).warning('coconut.database_maintenance %s', json.dumps(result))
         return result
 
@@ -206,6 +212,38 @@ class DatabaseMaintenance:
                      json.dumps(sorted(excluded - {None})))).rowcount
             self.stopping.wait(BATCH_PAUSE_SECONDS)
         return deleted
+
+    def _prune_contexts(self):
+        """Shorten the question and drop the recovery text of the contexts that ended for a settled decision.
+
+        A recovery reads `question`, `_context_recovery`, and `_recovery_unknown_tools` of a context only for a
+        pending decision (WorkRecovery._queue_context_recoveries and DecisionFreshness._refresh_recovery_records).
+        Every pass that reads the whole table decodes this text. The rows stay, with their status and links.
+        """
+        shortened = 0
+        while not self._maintenance_stopped():
+            with self.transaction():
+                ids = [row[0] for row in self.db.execute(
+                    "SELECT id FROM contexts WHERE json_extract(data,'$.status') IN ('completed','failed','cancelled') "
+                    "AND (json_type(data,'$._context_recovery') IS NOT NULL OR json_type(data,'$._recovery_unknown_tools') IS NOT NULL "
+                    "OR length(COALESCE(json_extract(data,'$.question'),'')) > ?) "
+                    "AND COALESCE(json_extract(data,'$.decision_id'),'') NOT IN "
+                    "(SELECT id FROM decisions WHERE json_extract(data,'$.status')='pending') LIMIT ?",
+                    (CONTEXT_QUESTION_CHARACTERS, BATCH_ROWS))]
+                if not ids:
+                    break
+                self.db.execute(
+                    "UPDATE contexts SET data=json_set(json_remove(data,'$._context_recovery','$._recovery_unknown_tools'),"
+                    "'$.question',substr(COALESCE(json_extract(data,'$.question'),''),1,?)) "
+                    "WHERE id IN (SELECT value FROM json_each(?))", (CONTEXT_QUESTION_CHARACTERS, json.dumps(ids)))
+                cache = self._shared_cache()
+                if cache is not None:
+                    cache.pop('contexts', None)
+                shortened += len(ids)
+            if len(ids) < BATCH_ROWS:
+                break
+            self.stopping.wait(BATCH_PAUSE_SECONDS)
+        return shortened
 
     def _release_free_pages(self):
         """Give free pages back to the file system in short steps.
