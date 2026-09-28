@@ -81,6 +81,7 @@ jobs:
           export COCONUT_HERMES_ROOT="$PWD/.runtime/hermes-source"
           export COCONUT_HERMES_PYTHON="$COCONUT_HERMES_ROOT/.venv/bin/python"
           export PYTHONPATH=backend
+          "$COCONUT_HERMES_PYTHON" -c 'import jsonschema' # Required: this CI regression suite must not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_draft_refresh_schema.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_turn_timings.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_live_messages.py
