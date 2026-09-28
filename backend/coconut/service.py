@@ -3662,16 +3662,21 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             if message != before:
                 self._put('messages', message)
                 changed = True
+        # Index the messages once. A scan of every message for each delivery grew with both tables at every start.
+        exchanges = {(m.get('task_id'), m.get('sender_bot_id')) for m in messages if m['kind'] == 'bot_exchange'}
+        texts = {}
+        for m in messages:
+            if m['kind'] == 'text':
+                texts.setdefault(m.get('task_id'), []).append(m)
         for delivery in self._all('deliveries'):
             task = tasks.get(delivery['receipt'].get('task_id'))
             source = tasks.get(delivery['source_task_id'])
             if not task or not source:
                 continue
-            if any(m.get('task_id') == task['id'] and m['kind'] == 'bot_exchange'
-                   and m.get('sender_bot_id') == source['bot_id'] for m in messages):
+            if (task['id'], source['bot_id']) in exchanges:
                 continue
-            result = next((m for m in reversed(messages) if m.get('task_id') == source.get('_result_task_id', source['id'])
-                           and m['kind'] == 'text' and m.get('sender_bot_id') == source['bot_id']
+            result = next((m for m in reversed(texts.get(source.get('_result_task_id', source['id']), []))
+                           if m['kind'] == 'text' and m.get('sender_bot_id') == source['bot_id']
                            and m['text'] == delivery['text'] and not m.get('_direct_reply_message_id')
                            and not m.get('_hidden') and not m.get('_deleted')), None)
             if result:
@@ -3687,6 +3692,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                            decision_id=None, artifact_id=None)
             self._put('messages', message)
             messages.append(message)
+            exchanges.add((message['task_id'], message['sender_bot_id']))
             changed = True
         if changed:
             self._event('transcript.updated', {})

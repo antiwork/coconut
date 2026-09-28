@@ -37,6 +37,12 @@ MAX_FILE_BYTES = 4 * 1024 * 1024
 MAX_FILES = 4096
 REQUIRED_FILES = {'backend/coconut/__init__.py', 'backend/coconut/__main__.py', 'scripts/host.py', 'scripts/hermes.py'}
 MARKER_PATH = Path('.coconut-install.json')
+# The service answers its health check after startup finishes.
+HEALTH_WAIT_SECONDS = 300
+# A probe whose failure is expected, such as the check for an already restored service, waits only this long.
+# This is the earlier wait. With the faster start migrations, a restored service answers well within it.
+PROBE_WAIT_SECONDS = 60
+
 
 
 class DeployError(Exception):
@@ -367,6 +373,13 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
         self.command([self.python(root), str(root / 'scripts/host.py'), 'install-service', '--address', address], root, 'Login service installation', timeout=60)
 
     def health(self, root, address):
+        return self._health(root, address, HEALTH_WAIT_SECONDS)
+
+    def probe(self, root, address):
+        """Check health briefly, for a check whose failure is expected. This keeps the earlier 60-second wait."""
+        return self._health(root, address, PROBE_WAIT_SECONDS)
+
+    def _health(self, root, address, seconds):
         cert = safe_path(root / '.runtime/host/server.crt', root)
         try:
             context = load_host(root).trusted_certificate_context(cafile=str(cert))
@@ -374,8 +387,9 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
         except (OSError, ValueError, ssl.SSLError):
             raise DeployError('The saved certificate cannot validate the service.') from None
         parsed = urlsplit(address)
-        # Startup migrations can exceed a minute on an active host.
-        deadline = time.monotonic() + 180
+        # Startup migrations can take minutes on an active host with a large database. A deadline that is
+        # too short fails a healthy update, rolls it back, and restarts the service again.
+        deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             connection = http.client.HTTPConnection(parsed.hostname, parsed.port or 443, timeout=2)
             raw = None
@@ -551,7 +565,8 @@ def reconcile(root, operations):
                 (root / name).exists() for name in set(record['new_files']) - set(old['files'])) and operations.inspect(root) == record['service_state']:
         try:
             if record['service_state']['mode'] != 'stopped':
-                operations.health(root, old['address'])
+                # This probe usually fails on a stopped service, so it must not wait the full startup deadline.
+                operations.probe(root, old['address'])
             else:
                 operations.assert_stopped(root)
         except DeployError:

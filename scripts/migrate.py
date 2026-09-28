@@ -370,7 +370,8 @@ if sys.argv[2] == 'receive':
 os.execv(command[0], command)
 """
     result = remote.ssh(config, ['python3', '-c', program, config['directory'], operation, migration_id,
-                                 package_id, snapshot_hash], input_file=input_file, timeout=120, allow_failure=True)
+                                 package_id, snapshot_hash], input_file=input_file, timeout=deploy.HEALTH_WAIT_SECONDS + 180,
+                        allow_failure=True)
     lines = [line.split('=', 1)[1] for line in result.stdout.decode(errors='replace').splitlines()
              if line.startswith('COCONUT_MIGRATE_RESULT=')]
     if result.returncode or len(lines) != 1:

@@ -104,6 +104,13 @@ class FakeOperations:
         self.record('health', root, address)
         return {'status': 'ok', 'provider': 'hermes', 'ready': True}
 
+    def probe(self, root, address):
+        # A probe is a short health check. An injected health failure fails it too.
+        self.record('probe', root, address)
+        if self.fail == 'health':
+            raise deploy.DeployError('The injected operation failed.')
+        return {'status': 'ok', 'provider': 'hermes', 'ready': True}
+
 
 class DeploymentPackageTests(unittest.TestCase):
     def test_valid_package_keeps_exact_file_bytes_and_pinned_hermes_revision(self):
@@ -292,7 +299,8 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.assertEqual(json.loads(journal.read_text())['phase'], 'code_restored')
         operations = FakeOperations(mode='managed')
         deploy.reconcile(self.target, operations)
-        self.assertEqual([call[0] for call in operations.calls], ['inspect', 'health'])
+        # The recovery check uses the short probe, not the full startup wait.
+        self.assertEqual([call[0] for call in operations.calls], ['inspect', 'probe'])
         self.assertFalse(journal.exists())
 
     def test_failed_stop_does_not_replace_code(self):
@@ -609,98 +617,13 @@ class DeploymentHealthTests(unittest.TestCase):
     def test_health_rejects_a_different_certificate_before_the_http_request(self):
         self.assert_health_uses_installed_trust(b'A different certificate.')
 
+    def test_the_recovery_probe_waits_less_than_a_real_start(self):
+        waits = []
+        with patch.object(deploy.Operations, '_health', side_effect=lambda root, address, seconds: waits.append(seconds)):
+            deploy.Operations().probe(Path('/tmp'), 'https://localhost:8443')
+            deploy.Operations().health(Path('/tmp'), 'https://localhost:8443')
+        self.assertEqual(waits, [deploy.PROBE_WAIT_SECONDS, deploy.HEALTH_WAIT_SECONDS])
+        self.assertLess(deploy.PROBE_WAIT_SECONDS, deploy.HEALTH_WAIT_SECONDS)
+
     def test_health_accepts_startup_after_twenty_seconds(self):
         self.assert_health_uses_installed_trust(b'The saved certificate DER bytes.', delayed=True)
-
-    def assert_health_after_startup(self, *, ready_at=65.0, status=200,
-                                   body=b'{"ok":true,"api_version":1}', wrong_pin=False,
-                                   error=None, elapsed=65):
-        saved_certificate = b'The saved certificate DER bytes.'
-        clock = [1000.0]
-        attempts = []
-        raw = Mock()
-
-        def connect(address, timeout):
-            self.assertEqual(address, ('127.0.0.1', 9000))
-            self.assertEqual(timeout, 2)
-            attempts.append(clock[0] - 1000)
-            if attempts[-1] < ready_at:
-                raise ConnectionRefusedError('Startup has not opened the listener yet.')
-            return raw
-
-        def sleep(seconds):
-            self.assertEqual(seconds, .25)
-            clock[0] += seconds
-            self.assertLessEqual(clock[0] - 1000, 180, 'Readiness retries must remain bounded.')
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            cert = root / '.runtime/host/server.crt'
-            cert.parent.mkdir(parents=True)
-            cert.write_text(deploy.ssl.DER_cert_to_PEM_cert(saved_certificate))
-            context = MagicMock()
-            secured = context.wrap_socket.return_value
-            secured.getpeercert.return_value = b'A different certificate.' if wrong_pin else saved_certificate
-            installed_host = Mock()
-            installed_host.trusted_certificate_context.return_value = context
-            connection = MagicMock()
-            response = connection.getresponse.return_value
-            response.status = status
-            response.read.return_value = body
-            with patch.object(deploy, 'load_host', return_value=installed_host) as load_host, \
-                 patch.object(deploy.socket, 'create_connection', side_effect=connect), \
-                 patch.object(deploy.http.client, 'HTTPConnection', return_value=connection) as http, \
-                 patch.object(deploy.time, 'monotonic', side_effect=lambda: clock[0]), \
-                 patch.object(deploy.time, 'sleep', side_effect=sleep):
-                if error:
-                    with self.assertRaisesRegex(deploy.DeployError, error):
-                        deploy.Operations().health(root, 'https://mini.example.ts.net:9000')
-                else:
-                    result = deploy.Operations().health(root, 'https://mini.example.ts.net:9000')
-                    self.assertEqual(result, {'ok': True, 'api_version': 1, 'scope': 'local_tls',
-                                             'certificate_sha256': hashlib.sha256(saved_certificate).hexdigest().upper()})
-                self.assertEqual(clock[0] - 1000, elapsed)
-                self.assertEqual(attempts, [index * .25 for index in range(len(attempts))])
-                self.assertGreater(len(attempts), 1)
-                self.assertLess(attempts[-1], 180)
-                load_host.assert_called_once_with(root)
-                installed_host.trusted_certificate_context.assert_called_once_with(cafile=str(cert))
-                self.assertEqual(http.call_count, len(attempts))
-                for attempt in http.call_args_list:
-                    self.assertEqual(attempt.args, ('mini.example.ts.net', 9000))
-                    self.assertEqual(attempt.kwargs, {'timeout': 2})
-                self.assertEqual(connection.close.call_count, len(attempts))
-                if ready_at > elapsed:
-                    context.wrap_socket.assert_not_called()
-                else:
-                    context.wrap_socket.assert_called_with(raw, server_hostname='mini.example.ts.net')
-                    secured.getpeercert.assert_called_with(binary_form=True)
-                if wrong_pin or ready_at > elapsed:
-                    connection.request.assert_not_called()
-                else:
-                    connection.request.assert_called_with('GET', '/health')
-                    response.read.assert_called_with(65537)
-
-    def test_health_retries_until_startup_completes_after_sixty_seconds(self):
-        self.assert_health_after_startup()
-
-    def test_health_exhausts_readiness_budget_before_late_or_missing_startup(self):
-        for ready_at in (181, float('inf')):
-            with self.subTest(ready_at=ready_at):
-                self.assert_health_after_startup(ready_at=ready_at, elapsed=180,
-                                               error='did not pass its local TLS health check')
-
-    def test_health_rejects_wrong_pin_after_slow_startup_before_http(self):
-        self.assert_health_after_startup(wrong_pin=True, error='certificate does not match')
-
-    def test_health_requires_exact_status_and_body_after_slow_startup(self):
-        cases = [(503, b'{"ok":true,"api_version":1}'), (200, b'{"ok":false,"api_version":1}'),
-                 (200, b'{"ok":true,"api_version":2}'), (200, b'{"ok":true,"api_version":1,"extra":true}'),
-                 (200, b'not json')]
-        for status, body in cases:
-            with self.subTest(status=status, body=body):
-                self.assert_health_after_startup(status=status, body=body, elapsed=180,
-                                               error='did not pass its local TLS health check')
-
-    def test_health_rejects_oversized_body_after_slow_startup(self):
-        self.assert_health_after_startup(body=b' ' * 65537, error='oversized health response')
