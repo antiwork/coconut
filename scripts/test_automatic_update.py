@@ -329,7 +329,10 @@ class PostmergeRegressionTests(unittest.TestCase):
                 if not repaired:
                     with self.assertRaises((ValueError, RuntimeError)):
                         update.update(config, state_path)
-                    self.assertFalse(state_path.exists())
+                    # A failed check records only its backoff, never an installed commit.
+                    saved = json.loads(state_path.read_text()) if state_path.exists() else {}
+                    self.assertNotIn('source_sha', saved)
+                    self.assertEqual(saved.get('failed_deploy', {}).get('source_sha'), 'sha')
                     return
                 update.update(config, state_path)
                 update.update(config, state_path)
