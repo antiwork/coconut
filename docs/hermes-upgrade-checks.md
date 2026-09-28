@@ -21,7 +21,15 @@ The latter two tests use model credentials already configured on the Mac.
 The script test checks native output, silence, failure, cancellation, and completion without model access.
 All four use disposable profiles. They do not use the user's bot conversations as fixtures.
 
-To test a candidate before installation, execute each script's `PROGRAM` with the candidate Python.
+The automatic updater runs these checks itself before it installs a new Hermes pin from `main`.
+It installs the pinned revision in its own checkout with `scripts/hermes.py install`, then runs
+`scripts/hermes_candidate_checks.py --checkout <that checkout> --live <installed folder>`.
+The live install starts only when every check passes. The updater saves the report in `hermes-checks.json` next
+to its state, keeps a pass for that revision, and removes its copy of the runtime after the checks.
+A failure stops the install and uses the updater's backoff. A Coconut bot cannot run these checks inside its own
+Hermes worker, so a pin PR can merge on CI, Greptile, and review, and this gate protects the installation.
+
+To test a candidate by hand, execute each script's `PROGRAM` with the candidate Python.
 For the routine and relay programs, provide the runtime root and the candidate Coconut checkout as arguments.
 For each entry in `test_native_profiles.PROGRAMS`, provide a root containing the candidate backend and `.runtime/hermes`.
 Run the candidate contract first. Load model credentials privately when a check requires them.

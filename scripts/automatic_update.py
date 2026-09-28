@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -19,6 +20,8 @@ from urllib.parse import urlsplit
 # After a failed install of a commit, the updater waits this long before it tries the same commit again.
 FAILED_DEPLOY_SECONDS = 10 * 60
 FAILED_DEPLOY_MAX_SECONDS = 60 * 60
+# The native upgrade checks of a new Hermes pin, together, finish well within this time.
+HERMES_CHECKS_SECONDS = 45 * 60
 
 
 def run(args, *, cwd=None, stdin=None, pass_fds=()):
@@ -307,6 +310,45 @@ def service_supervised(live):
         return False
 
 
+def check_hermes_candidate(source, live, revision, state, state_path):
+    """Run the native upgrade checks on a new Hermes pin before the live install. Raise when a check fails.
+
+    The checks need model access, so CI cannot run them, and a bot cannot run them inside its Hermes worker.
+    This updater runs outside Hermes. It installs the pin in its own checkout, runs
+    scripts/hermes_candidate_checks.py, and saves the report in hermes-checks.json for Coconut Care.
+    A pass is kept for its revision, so a later install of the same pin does not repeat the checks.
+    """
+    if (state.get('hermes_checks') or {}).get('revision') == revision and state['hermes_checks'].get('passed'):
+        return
+    candidate = source / '.runtime/hermes'
+    receipt = state_path.parent / 'hermes-checks.json'
+    try:
+        installed = json.loads((candidate / 'install.json').read_text()).get('commit')
+    except (OSError, ValueError, AttributeError):
+        installed = None
+    if candidate.exists() and installed != revision:
+        # hermes.py refuses a folder with another commit. This folder is the updater's own copy, not the live one.
+        shutil.rmtree(candidate)
+    passed, output = False, ''
+    try:
+        run([sys.executable, str(source / 'scripts/hermes.py'), 'install', '--revision', revision], cwd=source)
+        result = subprocess.run([sys.executable, str(source / 'scripts/hermes_candidate_checks.py'),
+                                 '--checkout', str(source), '--live', str(live)],
+                                cwd=source, capture_output=True, text=True, timeout=HERMES_CHECKS_SECONDS)
+        output = result.stdout[-20000:] + result.stderr[-5000:]
+        reports = [json.loads(line.split('=', 1)[1]) for line in result.stdout.splitlines()
+                   if line.startswith('COCONUT_HERMES_CHECKS=')]
+        passed = result.returncode == 0 and len(reports) == 1 and reports[0].get('passed') is True
+    finally:
+        save(receipt, dict(revision=revision, passed=passed, checked_at=time.time(), output=output))
+        # The live install builds its own runtime. Free the space of this copy.
+        shutil.rmtree(candidate, ignore_errors=True)
+    state['hermes_checks'] = dict(revision=revision, passed=passed)
+    save(state_path, state)
+    if not passed:
+        raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}.')
+
+
 def update(config, state_path):
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
     processed_build = state.get('pending_ios', {}).get('build')
@@ -371,6 +413,8 @@ def update(config, state_path):
             arguments.append('--update-runtime')
     try:
         if not matches:
+            if '--update-runtime' in arguments:
+                check_hermes_candidate(source, live, validated.revision, state, state_path)
             with package.open('rb') as stream:
                 output = run(arguments, stdin=stream)
             save(state_path.parent / 'deployment-result.json', dict(source_sha=sha, output=output))

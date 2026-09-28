@@ -13,9 +13,16 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('automatic_update', Path(__file__).with_name('automatic_update.py'))
 update = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(update)
+REAL_GATE = update.check_hermes_candidate
 
 
 class AutomaticUpdateTests(unittest.TestCase):
+    def setUp(self):
+        # The Hermes candidate gate installs a runtime and runs model checks. Tests of other steps pass it.
+        gate = patch.object(update, 'check_hermes_candidate')
+        gate.start()
+        self.addCleanup(gate.stop)
+
     def test_only_successful_merged_commit_passes(self):
         pull = dict(merged_at='today', merge_commit_sha='abc', number=3, base=dict(ref='main'))
         record = dict(state='MERGED', mergeCommit=dict(oid='abc'), statusCheckRollup=[dict(conclusion='SUCCESS')])
@@ -241,6 +248,58 @@ class AutomaticUpdateTests(unittest.TestCase):
                     patch.object(update.socket, 'create_connection', return_value=contextlib.nullcontext()):
                 self.assertTrue(update.service_supervised(live))
 
+    def gate_case(self, *, checks_pass, cached=False):
+        """Run check_hermes_candidate for a new pin. Return the run commands and the saved state."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, live = root / 'source', root / 'live'
+            (source / '.runtime/hermes').mkdir(parents=True)
+            (source / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit='old')))
+            live.mkdir()
+            state_path = root / 'state.json'
+            state = dict(hermes_checks=dict(revision='new', passed=True)) if cached else {}
+            commands = []
+
+            def command(args, **kwargs):
+                commands.append(args)
+                return ''
+            report = dict(revision='new', passed=checks_pass, checks=[])
+            checks = SimpleNamespace(returncode=0 if checks_pass else 1, stderr='',
+                                     stdout='COCONUT_HERMES_CHECKS=' + json.dumps(report) + '\n')
+            # setUp patches the gate for other tests. These tests call the real function.
+            real = REAL_GATE
+            with patch.object(update, 'run', side_effect=command), \
+                    patch.object(update.subprocess, 'run', return_value=checks) as script:
+                try:
+                    real(source, live, 'new', state, state_path)
+                    raised = None
+                except RuntimeError as error:
+                    raised = error
+            receipt = json.loads((root / 'hermes-checks.json').read_text()) if (root / 'hermes-checks.json').exists() else None
+            return dict(commands=commands, script_calls=script.call_count, state=state, raised=raised, receipt=receipt,
+                        candidate_left=(source / '.runtime/hermes').exists())
+
+    def test_a_new_hermes_pin_is_checked_before_the_live_install(self):
+        result = self.gate_case(checks_pass=True)
+        self.assertIsNone(result['raised'])
+        self.assertEqual(result['commands'][0][-3:], ['install', '--revision', 'new'])
+        self.assertEqual(result['script_calls'], 1)
+        self.assertEqual(result['state']['hermes_checks'], dict(revision='new', passed=True))
+        self.assertTrue(result['receipt']['passed'])
+        # The updater's copy of the runtime is removed after the checks, to keep disk space free.
+        self.assertFalse(result['candidate_left'])
+
+    def test_a_failed_hermes_check_stops_the_install(self):
+        result = self.gate_case(checks_pass=False)
+        self.assertIn('native upgrade checks failed', str(result['raised']))
+        self.assertEqual(result['state']['hermes_checks'], dict(revision='new', passed=False))
+        self.assertFalse(result['receipt']['passed'])
+
+    def test_a_passed_hermes_pin_is_not_checked_again(self):
+        result = self.gate_case(checks_pass=True, cached=True)
+        self.assertIsNone(result['raised'])
+        self.assertEqual((result['commands'], result['script_calls']), ([], 0))
+
     def test_a_failed_health_check_after_install_backs_off(self):
         class DeployError(Exception):
             pass
@@ -304,6 +363,12 @@ class AutomaticUpdateTests(unittest.TestCase):
 
 
 class PostmergeRegressionTests(unittest.TestCase):
+    def setUp(self):
+        # The Hermes candidate gate installs a runtime and runs model checks. Tests of other steps pass it.
+        gate = patch.object(update, 'check_hermes_candidate')
+        gate.start()
+        self.addCleanup(gate.stop)
+
     """Real updater entry points; external operations use only temporary fixtures."""
 
     def ci(self, checks, *, total=None, statuses=None, merge_sha='abc'):
