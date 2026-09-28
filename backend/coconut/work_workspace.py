@@ -1046,7 +1046,28 @@ def removal_stopped(manifest, saved, binding, path, repository, current, archive
     raise ValueError(message) from error
 
 
-def discard(root, identity, finished, *, orphan_age=None, merged=False, urgent=False):
+def discard(root, identity, finished, **options):
+    """Remove the worktree of an idle outcome. Return True when removed. See discard_run for the rules.
+
+    Any failure removes what the attempt made before it failed: the branch for a detached HEAD and the temporary archive.
+    A retry starts from the registry, and it makes its own.
+    """
+    state = {}
+    try:
+        return discard_run(root, identity, finished, state, **options)
+    except BaseException:
+        if state.get('made_branch'):
+            saved = json.loads((Path(root) / 'worktrees.json').read_text()).get(identity) or {}
+            if saved.get('branch') != state['made_branch'] or not saved.get('retired'):
+                with contextlib.suppress(*GIT_ERRORS):
+                    git(state['repository'], 'branch', '-D', state['made_branch'])
+        raise
+    finally:
+        if state.get('temporary'):
+            state['temporary'].unlink(missing_ok=True)
+
+
+def discard_run(root, identity, finished, state, *, orphan_age=None, merged=False, urgent=False):
     """Remove the worktree of an idle outcome. Return True when removed.
 
     Coconut calls this when the pull requests of the outcome all merged or closed, when the checkout is gone, and when
@@ -1071,7 +1092,8 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False, urgent=F
         return False
     path, repository = Path(before['path']), Path(before['repository']).resolve()
     present = os.path.lexists(path)
-    head, branch, archive, temporary, made_branch = None, before['branch'], None, None, False
+    head, branch, archive, temporary = None, before['branch'], None, None
+    state['repository'] = repository
     if not present and (before.get('retire_failed') or {}).get('archive'):
         # The checkout is gone, and an earlier retirement archived its files. That archive is the only copy.
         # Its own record names the commit, so a resume can put the files back.
@@ -1098,7 +1120,13 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False, urgent=F
         release(path, before['outcome'], orphan_age, marked=not merged)
         head = git(path, 'rev-parse', 'HEAD')
         branch = git(path, 'branch', '--show-current')
-        if not branch:
+        in_progress = any(Path(p).exists() for p in git(
+            path, 'rev-parse', '--path-format=absolute', *(a for n in IN_PROGRESS for a in ('--git-path', n))).splitlines())
+        if not branch and in_progress:
+            # A rebase or a bisect detaches the HEAD, and the saved branch is the one that it works on. Keep that
+            # branch. The ref for the HEAD keeps the commit that the operation had reached.
+            branch = before['branch']
+        elif not branch:
             # A detached HEAD names no branch. A branch at that commit keeps the work reachable, and the resume checks it out.
             base = 'wt/' + path.name + '-detached'
             branch, number = base, 0
@@ -1107,7 +1135,7 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False, urgent=F
                 number += 1
                 branch = f'{base}-{number}'
             git(repository, 'branch', branch, head)
-            made_branch = True
+            state['made_branch'] = branch
         staged, unstaged, names = changes(path)
         # Keep the untracked files that an archive can hold. Git lists a nested repository as a folder, and it goes.
         files = [name for name in names if not name.endswith('/')
@@ -1136,26 +1164,14 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False, urgent=F
                 # An earlier discard of the same worktree kept other work. Do not write over it.
                 archive = directory / (identity + '-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ') + '.tar.gz')
             temporary = directory / ('.' + archive.name + '.tmp')
+            state['temporary'] = temporary
             write_archive(temporary, dict(branch=branch, head=head, outcome=before['outcome'],
                 repository=before['repository'], path=before['path'], at=stamp(datetime.now(timezone.utc))),
                 path, dict(zip(PATCHES, (staged, unstaged))), entries)
-    try:
-        # The scan of the open files runs before the registry lock, as in retire. A turn of an idle outcome does not start.
-        if present and in_use(path):
-            raise ValueError('A process uses the worktree.')
-        return finish_discard(root, identity, before, finished, present, path, repository, branch, head, temporary, archive)
-    except BaseException:
-        if made_branch:
-            # The discard did not go through, so the branch for the detached HEAD has no use. A retry makes its own.
-            saved = json.loads(manifest.read_text()).get(identity) or {}
-            if saved.get('branch') != branch or not saved.get('retired'):
-                with contextlib.suppress(*GIT_ERRORS):
-                    git(repository, 'branch', '-D', branch)
-        raise
-    finally:
-        # A refused removal keeps no archive, so a repeated failure does not fill the folder.
-        if temporary:
-            temporary.unlink(missing_ok=True)
+    # The scan of the open files runs before the registry lock, as in retire. A turn of an idle outcome does not start.
+    if present and in_use(path):
+        raise ValueError('A process uses the worktree.')
+    return finish_discard(root, identity, before, finished, present, path, repository, branch, head, temporary, archive)
 
 
 def finish_discard(root, identity, before, finished, present, path, repository, branch, head, temporary, archive):
@@ -1249,6 +1265,9 @@ def move_scratch(folder, *, keep=True):
     if folder.is_symlink() or not folder.is_dir():
         return None
     trash = folder.parent / SCRATCH_TRASH
+    if trash.is_symlink():
+        # empty_scratch_trash does not follow a link, so it would never delete what moved there.
+        raise OSError(f'{trash} is a link. Coconut does not move scratch folders through it.')
     trash.mkdir(mode=0o700, exist_ok=True)
     target = trash / f'{folder.name}-{time.time_ns()}'
     os.rename(folder, target)

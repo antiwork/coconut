@@ -642,6 +642,46 @@ class WorktreeRetirementTests(unittest.TestCase):
         acquire(self.workspaces, outcome, str(self.repo))
         self.assertNotIn('retired', self.registry()[identity])
 
+    def test_a_failed_archive_write_leaves_no_branch_and_no_temporary_file(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        git(path, 'checkout', '-q', '--detach')
+        (path / 'draft.txt').write_text('keep\n')
+        real = work_workspace.write_archive
+
+        def full_disk(temporary, *arguments, **options):
+            Path(temporary).write_bytes(b'half an archive')
+            raise OSError(28, 'No space left on device')
+        with patch.object(work_workspace, 'write_archive', side_effect=full_disk):
+            self.retire()
+        self.assertEqual(git(self.repo, 'branch', '--list', 'wt/*-detached*'), '')
+        self.assertEqual(list((self.workspaces / 'archive' / 'done').glob('.*.tmp')), [])
+
+    def test_a_discard_during_a_rebase_keeps_the_saved_branch(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        saved_branch = self.registry()[identity]['branch']
+        # Git names a rebase in progress with a folder, and HEAD is detached while it runs.
+        git(path, 'checkout', '-q', '--detach')
+        marker = Path(git(path, 'rev-parse', '--path-format=absolute', '--git-path', 'rebase-merge'))
+        marker.mkdir(parents=True)
+        self.assertEqual(self.retire(), [identity])
+        self.assertEqual(self.registry()[identity]['branch'], saved_branch)
+        self.assertEqual(git(self.repo, 'branch', '--list', 'wt/*-detached*'), '')
+
+    def test_a_linked_scratch_trash_moves_nothing(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        scratch = self.workspaces / outcome
+        scratch.mkdir()
+        (scratch / 'notes.txt').write_text('scratch\n')
+        elsewhere = self.root / 'elsewhere'
+        elsewhere.mkdir()
+        (self.workspaces / work_workspace.SCRATCH_TRASH).symlink_to(elsewhere, target_is_directory=True)
+        self.retire()
+        self.assertTrue((scratch / 'notes.txt').exists())
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
     def test_a_partly_removed_checkout_is_not_adopted(self):
         outcome, identity, path, task = self.outcome()
         self.pull_request(task, 'merged')
