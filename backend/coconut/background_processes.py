@@ -69,28 +69,32 @@ def subscription(record):
 class BackgroundProcesses:
     def _migrate_process_deliveries(self):
         # NativeExecution registers and consumes new receipts when their results arrive. This pass repairs older
-        # receipts once. It parses the whole receipt journal, so a setting records that it ran.
+        # receipts once, and a setting records that it ran. The service start must pass the deploy health check,
+        # so the pass reads only the receipts that it can change and the process reads that can mark them.
         if self._setting('process_deliveries_migrated'):
             return
-        records = self._all('native_receipts')
+        # A subscription without a delivery is a pending completion, so the index finds every receipt to change.
+        changes = [record for record in self._pending_completion_receipts()
+                   if subscription(record) and not record.get('_process_delivery')]
+        reads = [json.loads(row[0]) for row in self.db.execute(
+            "SELECT data FROM native_receipts WHERE json_extract(data, '$.state')='completed' "
+            "AND json_extract(data, '$.action.name') IN ('process', 'process_manage') ORDER BY rowid")] if changes else []
         tasks = {task['id']: task for task in self._all('tasks')}
         maintenance = {c['id'] for c in self._all('contexts') if c.get('_decision_refresh')}
         observed = set()
-        for record in records:
+        for record in reads:
             value = result_value(record)
             if (record.get('turn_id') not in maintenance and record['state'] == 'completed' and record['action']['name'] in ('process', 'process_manage')
                     and isinstance(value, dict) and value.get('status') in ('exited', 'killed')
                     and tasks[record['task_id']]['status'] in ('completed', 'waiting')):
                 identity = value.get('session_id') or record['action']['arguments'].get('session_id')
                 observed.add((tasks[record['task_id']]['bot_id'], identity))
-        for record in records:
-            identity = subscription(record)
-            if identity and not record.get('_process_delivery'):
-                # A completed model tool call already delivered this result to a finished turn.
-                if (tasks[record['task_id']]['bot_id'], identity) in observed:
-                    record['_process_delivery'] = 'consumed'
-                record['_process_registered'] = True
-                self._put('native_receipts', record)
+        for record in changes:
+            # A completed model tool call already delivered this result to a finished turn.
+            if (tasks[record['task_id']]['bot_id'], subscription(record)) in observed:
+                record['_process_delivery'] = 'consumed'
+            record['_process_registered'] = True
+            self._put('native_receipts', record)
         self.db.execute("INSERT INTO settings VALUES ('process_deliveries_migrated','true')")
 
     def _background_pending(self, task_id, *, finishing_task_id=None, excluding_task_ids=()):
