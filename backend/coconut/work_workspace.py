@@ -1103,7 +1103,11 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False):
                                                 'archive limit.', path)
             files = []
         entries = sorted((UNTRACKED + name, name) for name in files)
-        # The patches stay whatever their size: they are always smaller than the checkout that they replace.
+        if len(staged) + len(unstaged) > PATCH_LIMIT_BYTES:
+            # base85 patches of large binaries can be larger than the files, and the archive is written before the removal.
+            logging.getLogger(__name__).warning('Coconut discards the staged and unstaged changes of %s. They are larger '
+                                                'than the archive limit.', path)
+            staged = unstaged = b''
         if staged or unstaged or entries:
             directory = root / 'archive' / 'done'
             directory.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -1116,6 +1120,9 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False):
                 repository=before['repository'], path=before['path'], at=stamp(datetime.now(timezone.utc))),
                 path, dict(zip(PATCHES, (staged, unstaged))), entries)
     try:
+        # The scan of the open files runs before the registry lock, as in retire. A turn of an idle outcome does not start.
+        if present and in_use(path):
+            raise ValueError('A process uses the worktree.')
         return finish_discard(root, identity, before, finished, present, path, repository, branch, head, temporary, archive)
     finally:
         # A refused removal keeps no archive, so a repeated failure does not fill the folder.
@@ -1135,14 +1142,19 @@ def finish_discard(root, identity, before, finished, present, path, repository, 
         # A dispatch marks its task active before its worker takes this lock. Check the tasks with a short wait.
         if not finished(False):
             raise ValueError('The outcome resumed during retirement.')
+        # The binding names the archive before the removal, as in retire, so a stop cannot leave an archive that no
+        # binding names.
+        retired = dict(at=stamp(datetime.now(timezone.utc)), done=True, head=head, archive=str(archive) if archive else None)
+        binding.pop('retire_failed', None)
+        binding['branch'], binding['retired'] = branch, retired
         if present:
-            if in_use(path):
-                raise ValueError('A process uses the worktree.')
             # A detached HEAD, a rebase in progress, or a nested worktree can hold commits that no branch holds.
             # A ref keeps each HEAD, so the removal loses no commit.
             keep_heads(repository, identity, [path, *(r['path'] for r in nested(path.resolve(), registered(repository)))])
             if temporary:
                 temporary.replace(archive)
+                sync_directory(archive.parent)
+            save_bindings(manifest, saved)
             try:
                 # The removal deletes the files of nested worktrees too. The prune then drops their Git records.
                 git(repository, 'worktree', 'remove', '--force', str(path), timeout=CHECKOUT_SECONDS)
@@ -1151,6 +1163,8 @@ def finish_discard(root, identity, before, finished, present, path, repository, 
                     # The checkout still holds the work. Keep no archive, and wait a day before the next attempt.
                     if archive:
                         archive.unlink(missing_ok=True)
+                    binding.pop('retired')
+                    binding['branch'] = before['branch']
                     binding['retire_failed'] = dict(at=stamp(datetime.now(timezone.utc)), error=str(error)[:1000], archive=None)
                     save_bindings(manifest, saved)
                     raise
@@ -1158,21 +1172,14 @@ def finish_discard(root, identity, before, finished, present, path, repository, 
                     # Git deleted part of the checkout. Name the archive, and send turns to the scratch workspace.
                     message = (f'Git stopped while it removed {path}, and part of the checkout remains. '
                                f'The archive {archive} holds its changes. Inspect the path.')
-                    binding['branch'] = branch
-                    binding['retired'] = dict(at=stamp(datetime.now(timezone.utc)), done=True, head=head,
-                                              archive=str(archive) if archive else None,
-                                              restore_failed=dict(at=stamp(datetime.now(timezone.utc)), error=message))
+                    binding['retired'] = dict(retired, restore_failed=dict(at=stamp(datetime.now(timezone.utc)), error=message))
                     save_bindings(manifest, saved)
                     raise ValueError(message) from error
                 # Git deleted the whole checkout before it stopped. The prune below drops its record.
         with contextlib.suppress(*GIT_ERRORS):
             git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
-        binding.pop('retire_failed', None)
         # An earlier failed removal kept a retire archive for this binding. Keep the one that this binding names now.
         drop_other_archives(root / 'archive', identity, archive if archive and archive.parent == root / 'archive' else None, saved)
-        binding['branch'] = branch
-        binding['retired'] = dict(at=stamp(datetime.now(timezone.utc)), done=True, head=head,
-                                  archive=str(archive) if archive else None)
         save_bindings(manifest, saved)
     logging.getLogger(__name__).warning('Coconut discarded worktree %s of outcome %s. The branch %s keeps the commits. '
                                         'The archive %s keeps the changes.', identity, before['outcome'], branch, archive)

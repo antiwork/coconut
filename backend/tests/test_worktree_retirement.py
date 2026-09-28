@@ -447,6 +447,55 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.retire()
         self.assertTrue((scratch / 'notes.txt').exists())
 
+    def test_the_open_file_scan_runs_before_the_registry_lock(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
+        seen = []
+
+        def scan(where):
+            # A second open of the lock file conflicts with the lock of this process only while it is held.
+            with (self.workspaces / '.workspace.lock').open('a') as probe:
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    seen.append('free')
+                    fcntl.flock(probe, fcntl.LOCK_UN)
+                except BlockingIOError:
+                    seen.append('held')
+            return False
+        with patch.object(work_workspace, 'in_use', side_effect=scan):
+            self.assertEqual(self.retire(), [identity])
+        self.assertTrue(seen and set(seen) == {'free'}, seen)
+
+    def test_the_binding_names_the_archive_before_the_removal(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
+        real = work_workspace.git
+        seen = []
+
+        def watch(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                retired = self.registry()[identity].get('retired')
+                seen.append(retired and Path(retired['archive']).exists())
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=watch):
+            self.assertEqual(self.retire(), [identity])
+        # A stop during the removal leaves a binding that names an archive that exists.
+        self.assertEqual(seen, [True])
+
+    def test_patches_over_the_limit_are_dropped_with_a_warning(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'tracked.txt').write_text('one\ntwo\n' + 'x' * 4096)
+        (path / 'draft.txt').write_text('keep\n')
+        with patch.object(work_workspace, 'PATCH_LIMIT_BYTES', 100), self.assertLogs('coconut.work_workspace', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [identity])
+        self.assertTrue(any('staged and unstaged changes' in line for line in logs.output))
+        with tarfile.open(self.registry()[identity]['retired']['archive']) as tar:
+            self.assertEqual(tar.extractfile('unstaged.patch').read(), b'')
+            self.assertIn('untracked/draft.txt', tar.getnames())
+
     def test_a_second_discard_keeps_the_first_archive(self):
         outcome, identity, path, task = self.outcome()
         self.pull_request(task, 'merged')
