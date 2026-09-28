@@ -252,7 +252,8 @@ class AutomaticUpdateTests(unittest.TestCase):
                     patch.object(update.socket, 'create_connection', return_value=contextlib.nullcontext()):
                 self.assertTrue(update.service_supervised(live))
 
-    def gate_case(self, *, checks_pass, cached=None, install=None, installed='old', output=None, run_tree=None):
+    def gate_case(self, *, checks_pass, cached=None, install=None, installed='old', output=None, run_tree=None,
+                  free=update.HERMES_CANDIDATE_FREE_BYTES):
         """Run check_hermes_candidate for a new pin. Return the run commands and the saved state."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -278,7 +279,8 @@ class AutomaticUpdateTests(unittest.TestCase):
             # setUp patches the gate for other tests. These tests call the real function.
             real = REAL_GATE
             with patch.object(update, 'run', side_effect=install if install else command), \
-                    patch.object(update, 'module', return_value=checks):
+                    patch.object(update, 'module', return_value=checks), \
+                    patch.object(update.shutil, 'disk_usage', return_value=SimpleNamespace(free=free)):
                 try:
                     real(source, live, 'new', 'sha2', state, state_path)
                     raised = None
@@ -335,6 +337,14 @@ class AutomaticUpdateTests(unittest.TestCase):
         result = self.gate_case(checks_pass=False, installed='new', run_tree=run_tree)
         self.assertIn('native upgrade checks failed', str(result['raised']))
         self.assertEqual(result['scratch_left'], [])
+
+    def test_a_full_disk_stops_the_candidate_install(self):
+        result = self.gate_case(checks_pass=True, free=update.HERMES_CANDIDATE_FREE_BYTES - 1)
+        self.assertIn('GiB of free disk space', str(result['raised']))
+        self.assertIn('Nothing was installed', result['receipt']['output'])
+        self.assertEqual((result['commands'], result['script_calls']), ([], 0))
+        # The pass is not saved as a failed check, so the next pass with enough space runs the checks.
+        self.assertNotIn('hermes_checks', result['state'])
 
     def test_a_passed_hermes_pin_is_not_checked_again(self):
         result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha2', passed=True))

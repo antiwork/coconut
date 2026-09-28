@@ -24,6 +24,9 @@ FAILED_DEPLOY_MAX_SECONDS = 60 * 60
 # The native upgrade checks of a new Hermes pin run 6 programs of at most 10 minutes each
 # (hermes_candidate_checks.CHECK_SECONDS). This budget covers all of them.
 HERMES_CHECKS_SECONDS = 80 * 60
+# The candidate install peaks at about 2.6 GB, and the live install then adds a runtime of about 1.3 GB.
+# A full disk stops the service's database writes, so the gate installs nothing below this free space.
+HERMES_CANDIDATE_FREE_BYTES = 8 * 1024 ** 3
 
 
 def run(args, *, cwd=None, stdin=None, pass_fds=()):
@@ -325,6 +328,12 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         return
     candidate = source / '.runtime/hermes'
     receipt = state_path.parent / 'hermes-checks.json'
+    free = shutil.disk_usage(source).free
+    if free < HERMES_CANDIDATE_FREE_BYTES:
+        output = (f'The candidate install needs {HERMES_CANDIDATE_FREE_BYTES // 1024 ** 3} GiB of free disk space, and '
+                  f'{free / 1024 ** 3:.1f} GiB is free. Nothing was installed. The next pass after the backoff checks again.')
+        save(receipt, dict(revision=revision, passed=False, checked_at=time.time(), output=output))
+        raise RuntimeError(output)
     try:
         installed = json.loads((candidate / 'install.json').read_text()).get('commit')
     except (OSError, ValueError, AttributeError):

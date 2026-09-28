@@ -22,10 +22,11 @@ The script test checks native output, silence, failure, cancellation, and comple
 All four use disposable profiles. They do not use the user's bot conversations as fixtures.
 
 The automatic updater runs these checks itself before it installs a new Hermes pin from `main`.
-It installs the pinned revision in its own checkout with `scripts/hermes.py install`, then runs
-`scripts/hermes_candidate_checks.py --checkout <that checkout> --live <installed folder>`.
+First it recovers a pending update journal with `scripts/deploy.py recover`, which installs no package.
+It needs 8 GiB of free disk space. Then it installs the pinned revision in its own checkout with
+`scripts/hermes.py install`, and runs `scripts/hermes_candidate_checks.py --checkout <that checkout> --live <installed folder>`.
 The live install starts only when every check passes. The updater saves the report in `hermes-checks.json` next
-to its state, keeps a pass for that revision, and removes its copy of the runtime after the checks.
+to its state, keeps a pass for that revision and source commit, and removes its copy of the runtime after the checks.
 A failure stops the install and uses the updater's backoff. A Coconut bot cannot run these checks inside its own
 Hermes worker, so a pin PR can merge on CI, Greptile, and review, and this gate protects the installation.
 
