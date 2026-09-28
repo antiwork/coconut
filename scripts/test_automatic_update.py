@@ -4,7 +4,9 @@ import contextlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
+import time
 import hashlib
 from types import SimpleNamespace
 import unittest
@@ -250,23 +252,23 @@ class AutomaticUpdateTests(unittest.TestCase):
                     patch.object(update.socket, 'create_connection', return_value=contextlib.nullcontext()):
                 self.assertTrue(update.service_supervised(live))
 
-    def gate_case(self, *, checks_pass, cached=False, install=None):
+    def gate_case(self, *, checks_pass, cached=None, install=None, installed='old', output=None):
         """Run check_hermes_candidate for a new pin. Return the run commands and the saved state."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             source, live = root / 'source', root / 'live'
             (source / '.runtime/hermes').mkdir(parents=True)
-            (source / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit='old')))
+            (source / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit=installed)))
             live.mkdir()
             state_path = root / 'state.json'
-            state = dict(hermes_checks=dict(revision='new', passed=True)) if cached else {}
+            state = dict(hermes_checks=cached) if cached else {}
             commands = []
 
             def command(args, **kwargs):
                 commands.append(args)
                 return ''
             report = dict(revision='new', passed=checks_pass, checks=[])
-            output = 'COCONUT_HERMES_CHECKS=' + json.dumps(report) + '\n'
+            output = output or 'COCONUT_HERMES_CHECKS=' + json.dumps(report) + '\n'
             calls = []
 
             def run_tree(command, *, cwd=None, timeout):
@@ -278,7 +280,7 @@ class AutomaticUpdateTests(unittest.TestCase):
             with patch.object(update, 'run', side_effect=install if install else command), \
                     patch.object(update, 'module', return_value=checks):
                 try:
-                    real(source, live, 'new', state, state_path)
+                    real(source, live, 'new', 'sha2', state, state_path)
                     raised = None
                 except RuntimeError as error:
                     raised = error
@@ -287,11 +289,12 @@ class AutomaticUpdateTests(unittest.TestCase):
                         candidate_left=(source / '.runtime/hermes').exists())
 
     def test_a_new_hermes_pin_is_checked_before_the_live_install(self):
-        result = self.gate_case(checks_pass=True)
+        # The folder already has the new pin, so only the cleanup after the checks can remove it.
+        result = self.gate_case(checks_pass=True, installed='new')
         self.assertIsNone(result['raised'])
         self.assertEqual(result['commands'][0][-3:], ['install', '--revision', 'new'])
         self.assertEqual(result['script_calls'], 1)
-        self.assertEqual(result['state']['hermes_checks'], dict(revision='new', passed=True))
+        self.assertEqual(result['state']['hermes_checks'], dict(revision='new', sha='sha2', passed=True))
         self.assertTrue(result['receipt']['passed'])
         # The updater's copy of the runtime is removed after the checks, to keep disk space free.
         self.assertFalse(result['candidate_left'])
@@ -299,7 +302,7 @@ class AutomaticUpdateTests(unittest.TestCase):
     def test_a_failed_hermes_check_stops_the_install(self):
         result = self.gate_case(checks_pass=False)
         self.assertIn('native upgrade checks failed', str(result['raised']))
-        self.assertEqual(result['state']['hermes_checks'], dict(revision='new', passed=False))
+        self.assertEqual(result['state']['hermes_checks'], dict(revision='new', sha='sha2', passed=False))
         self.assertFalse(result['receipt']['passed'])
 
     def test_a_failed_candidate_install_says_so_in_the_receipt(self):
@@ -326,9 +329,20 @@ class AutomaticUpdateTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0], ['python', 'deploy.py', 'receive', '--address', 'x'])
 
     def test_a_passed_hermes_pin_is_not_checked_again(self):
-        result = self.gate_case(checks_pass=True, cached=True)
+        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha2', passed=True))
         self.assertIsNone(result['raised'])
         self.assertEqual((result['commands'], result['script_calls']), ([], 0))
+
+    def test_a_new_source_commit_checks_the_same_pin_again(self):
+        # The checks run the Coconut code of the checkout too, so a pass for another commit does not count.
+        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha1', passed=True))
+        self.assertEqual(result['script_calls'], 1)
+        self.assertEqual(result['state']['hermes_checks'], dict(revision='new', sha='sha2', passed=True))
+
+    def test_a_malformed_check_report_fails_the_gate(self):
+        result = self.gate_case(checks_pass=True, installed='new', output='COCONUT_HERMES_CHECKS={"revision": "new", "pas\n')
+        self.assertIn('native upgrade checks failed', str(result['raised']))
+        self.assertFalse(result['receipt']['passed'])
 
     def test_a_failed_health_check_after_install_backs_off(self):
         class DeployError(Exception):
@@ -412,6 +426,17 @@ class CandidateCheckScriptTests(unittest.TestCase):
         self.assertFalse(self.checks.passed('receipt', done('')))
         self.assertTrue(self.checks.passed('pass', done('PASS: native routine.\n')))
         self.assertFalse(self.checks.passed('pass', done('PASS: native routine.\n', 1)))
+
+    def test_a_timeout_does_not_wait_forever_for_a_process_that_keeps_the_pipes(self):
+        # The grandchild starts in its own session and keeps stdout open after the check is stopped.
+        program = ('import os, subprocess, sys, time; subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"], '
+                   'start_new_session=True); print("started", flush=True); time.sleep(30)')
+        started = time.monotonic()
+        with patch.object(self.checks, 'DRAIN_SECONDS', 1), patch.object(self.checks, 'descendants', return_value=[]):
+            with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                self.checks.run_tree([sys.executable, '-c', program], timeout=1)
+        self.assertLess(time.monotonic() - started, 8)
+        self.assertIn('started', raised.exception.stdout)
 
     def test_a_timeout_stops_every_process_below_the_check(self):
         with patch.object(self.checks, 'descendants', return_value=[11, 12]), \

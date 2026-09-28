@@ -1,5 +1,6 @@
 """Apply reviewed main commits with the installed deployment and TestFlight tools."""
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import importlib.util
@@ -311,15 +312,16 @@ def service_supervised(live):
         return False
 
 
-def check_hermes_candidate(source, live, revision, state, state_path):
+def check_hermes_candidate(source, live, revision, sha, state, state_path):
     """Run the native upgrade checks on a new Hermes pin before the live install. Raise when a check fails.
 
     The checks need model access, so CI cannot run them, and a bot cannot run them inside its Hermes worker.
     This updater runs outside Hermes. It installs the pin in its own checkout, runs
     scripts/hermes_candidate_checks.py, and saves the report in hermes-checks.json for Coconut Care.
-    A pass is kept for its revision, so a later install of the same pin does not repeat the checks.
+    The checks also run the Coconut code of the checkout. A pass is kept for its revision and source commit,
+    so only a retry of the same install skips the checks.
     """
-    if (state.get('hermes_checks') or {}).get('revision') == revision and state['hermes_checks'].get('passed'):
+    if state.get('hermes_checks') == dict(revision=revision, sha=sha, passed=True):
         return
     candidate = source / '.runtime/hermes'
     receipt = state_path.parent / 'hermes-checks.json'
@@ -345,14 +347,14 @@ def check_hermes_candidate(source, live, revision, state, state_path):
         except subprocess.TimeoutExpired as error:
             result = subprocess.CompletedProcess(command, 1, error.stdout or '', (error.stderr or '') + '\nThe checks timed out.')
         output = result.stdout[-20000:] + result.stderr[-5000:]
-        reports = [json.loads(line.split('=', 1)[1]) for line in result.stdout.splitlines()
-                   if line.startswith('COCONUT_HERMES_CHECKS=')]
-        passed = result.returncode == 0 and len(reports) == 1 and reports[0].get('passed') is True
+        reports = [line.split('=', 1)[1] for line in result.stdout.splitlines() if line.startswith('COCONUT_HERMES_CHECKS=')]
+        with contextlib.suppress(ValueError, AttributeError):
+            passed = result.returncode == 0 and len(reports) == 1 and json.loads(reports[0]).get('passed') is True
     finally:
         save(receipt, dict(revision=revision, passed=passed, checked_at=time.time(), output=output))
         # The live install builds its own runtime. Free the space of this copy.
         shutil.rmtree(candidate, ignore_errors=True)
-    state['hermes_checks'] = dict(revision=revision, passed=passed)
+    state['hermes_checks'] = dict(revision=revision, sha=sha, passed=passed)
     save(state_path, state)
     if not passed:
         raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}.')
@@ -438,8 +440,8 @@ def update(config, state_path):
         if not matches:
             if '--update-runtime' in arguments:
                 try:
-                    check_hermes_candidate(source, live, validated.revision, state, state_path)
-                except RuntimeError:
+                    check_hermes_candidate(source, live, validated.revision, sha, state, state_path)
+                except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
                     recover_without_runtime(live, package, arguments)
                     raise
             with package.open('rb') as stream:

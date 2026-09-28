@@ -26,6 +26,8 @@ import host  # noqa: E402
 
 # Each check may run model turns. The slowest one takes a few minutes on the Mac mini.
 CHECK_SECONDS = 600
+# After a timeout, read the remaining output for this long. A process that is still alive can keep the pipes open.
+DRAIN_SECONDS = 30
 
 
 def checks():
@@ -68,9 +70,21 @@ def run_tree(command, *, env=None, cwd=None, timeout):
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         stop_tree(process.pid)
-        stdout, stderr = process.communicate()
+        try:
+            stdout, stderr = process.communicate(timeout=DRAIN_SECONDS)
+        except subprocess.TimeoutExpired as late:
+            # A process that started after the listing can keep the pipes open. Stop reading them.
+            stdout, stderr = text(late.stdout), text(late.stderr)
+            process.stdout.close()
+            process.stderr.close()
+            process.wait()
         raise subprocess.TimeoutExpired(command, timeout, stdout, stderr) from None
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def text(output):
+    """Return partial output as text. A communicate timeout gives bytes even in text mode."""
+    return output.decode(errors='replace') if isinstance(output, bytes) else output or ''
 
 
 def passed(kind, result):
