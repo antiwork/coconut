@@ -38,15 +38,36 @@ def checks():
             + [(f'profiles-{index + 1}', program, 'pass') for index, program in enumerate(PROGRAMS)])
 
 
-def run_group(command, *, env, timeout):
-    """Run a command in its own process group. On a timeout, stop the whole group, so no check keeps running."""
-    process = subprocess.Popen(command, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               start_new_session=True)
+def descendants(pid):
+    """Return the IDs of every process below `pid`. Hermes workers start their own sessions, so a group kill misses them."""
+    listing = subprocess.run(['ps', '-A', '-o', 'pid=,ppid='], capture_output=True, text=True, timeout=30).stdout
+    children = {}
+    for line in listing.splitlines():
+        with contextlib.suppress(ValueError):
+            child, parent = map(int, line.split())
+            children.setdefault(parent, []).append(child)
+    found, pending = [], [pid]
+    while pending:
+        for child in children.get(pending.pop(), []):
+            found.append(child)
+            pending.append(child)
+    return found
+
+
+def stop_tree(pid):
+    """Stop a process and every process below it."""
+    for identity in [*descendants(pid), pid]:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(identity, signal.SIGKILL)
+
+
+def run_tree(command, *, env=None, cwd=None, timeout):
+    """Run a command. On a timeout, stop it and every process it started, so no check keeps running."""
+    process = subprocess.Popen(command, env=env, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
+        stop_tree(process.pid)
         stdout, stderr = process.communicate()
         raise subprocess.TimeoutExpired(command, timeout, stdout, stderr) from None
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
@@ -80,7 +101,7 @@ def run_checks(checkout: Path, live: Path) -> dict:
         env = dict(os.environ, PYTHONPATH=os.pathsep.join((str(checkout / 'backend'), str(source))))
         for name, program, kind in checks():
             try:
-                result = run_group([str(python), '-c', program, str(root), str(checkout)], env=env, timeout=CHECK_SECONDS)
+                result = run_tree([str(python), '-c', program, str(root), str(checkout)], env=env, timeout=CHECK_SECONDS)
                 ok = passed(kind, result)
                 tail = dict(out=result.stdout[-1500:], err=result.stderr[-1500:])
             except subprocess.TimeoutExpired:

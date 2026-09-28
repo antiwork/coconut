@@ -250,7 +250,7 @@ class AutomaticUpdateTests(unittest.TestCase):
                     patch.object(update.socket, 'create_connection', return_value=contextlib.nullcontext()):
                 self.assertTrue(update.service_supervised(live))
 
-    def gate_case(self, *, checks_pass, cached=False):
+    def gate_case(self, *, checks_pass, cached=False, install=None):
         """Run check_hermes_candidate for a new pin. Return the run commands and the saved state."""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -267,19 +267,23 @@ class AutomaticUpdateTests(unittest.TestCase):
                 return ''
             report = dict(revision='new', passed=checks_pass, checks=[])
             output = 'COCONUT_HERMES_CHECKS=' + json.dumps(report) + '\n'
-            checks = SimpleNamespace(pid=4242, returncode=0 if checks_pass else 1,
-                                     communicate=lambda timeout=None: (output, ''))
+            calls = []
+
+            def run_tree(command, *, cwd=None, timeout):
+                calls.append(command)
+                return subprocess.CompletedProcess(command, 0 if checks_pass else 1, output, '')
+            checks = SimpleNamespace(run_tree=run_tree)
             # setUp patches the gate for other tests. These tests call the real function.
             real = REAL_GATE
-            with patch.object(update, 'run', side_effect=command), \
-                    patch.object(update.subprocess, 'Popen', return_value=checks) as script:
+            with patch.object(update, 'run', side_effect=install if install else command), \
+                    patch.object(update, 'module', return_value=checks):
                 try:
                     real(source, live, 'new', state, state_path)
                     raised = None
                 except RuntimeError as error:
                     raised = error
             receipt = json.loads((root / 'hermes-checks.json').read_text()) if (root / 'hermes-checks.json').exists() else None
-            return dict(commands=commands, script_calls=script.call_count, state=state, raised=raised, receipt=receipt,
+            return dict(commands=commands, script_calls=len(calls), state=state, raised=raised, receipt=receipt,
                         candidate_left=(source / '.runtime/hermes').exists())
 
     def test_a_new_hermes_pin_is_checked_before_the_live_install(self):
@@ -297,6 +301,29 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertIn('native upgrade checks failed', str(result['raised']))
         self.assertEqual(result['state']['hermes_checks'], dict(revision='new', passed=False))
         self.assertFalse(result['receipt']['passed'])
+
+    def test_a_failed_candidate_install_says_so_in_the_receipt(self):
+        def install(args, **kwargs):
+            raise RuntimeError('fatal: unable to access github.com')
+        result = self.gate_case(checks_pass=True, install=install)
+        self.assertIn('install failed before any check ran', str(result['raised']))
+        self.assertIn('unable to access github.com', result['receipt']['output'])
+        self.assertEqual(result['script_calls'], 0)
+
+    def test_a_refused_pin_still_lets_the_installer_recover_a_pending_journal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            live = Path(directory).resolve()
+            (live / '.runtime/deploy').mkdir(parents=True)
+            package = live / 'package.tar.gz'
+            package.write_bytes(b'package')
+            arguments = ['python', 'deploy.py', 'receive', '--address', 'x', '--update-runtime']
+            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(stdout='', stderr='')) as run:
+                update.recover_without_runtime(live, package, arguments)
+                run.assert_not_called()
+                (live / '.runtime/deploy/update.json').write_text('{}')
+                update.recover_without_runtime(live, package, arguments)
+            # Without --update-runtime the installer recovers the journal and refuses the pin change.
+            self.assertEqual(run.call_args.args[0], ['python', 'deploy.py', 'receive', '--address', 'x'])
 
     def test_a_passed_hermes_pin_is_not_checked_again(self):
         result = self.gate_case(checks_pass=True, cached=True)
@@ -363,6 +390,34 @@ class AutomaticUpdateTests(unittest.TestCase):
             self.assertEqual(state['ios_build'], 162)
 
 
+
+
+class CandidateCheckScriptTests(unittest.TestCase):
+    """The gate's check script. It needs the Mac mini to run, so these tests pin its contracts."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location('candidate_checks_test', Path(__file__).with_name('hermes_candidate_checks.py'))
+        self.checks = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.checks)
+
+    def test_it_runs_the_programs_of_all_four_documented_checks(self):
+        names = [name for name, program, kind in self.checks.checks()]
+        self.assertEqual(names, ['routines', 'script-routines', 'relay', 'profiles-1', 'profiles-2', 'profiles-3'])
+        self.assertTrue(all(isinstance(program, str) and program for _, program, _ in self.checks.checks()))
+
+    def test_it_reads_each_result_marker(self):
+        done = lambda out, code=0: SimpleNamespace(returncode=code, stdout=out)
+        self.assertTrue(self.checks.passed('receipt', done('COCONUT_CREATION_RESULT={"passed": true}\n')))
+        self.assertFalse(self.checks.passed('receipt', done('COCONUT_CREATION_RESULT={"passed": false}\n')))
+        self.assertFalse(self.checks.passed('receipt', done('')))
+        self.assertTrue(self.checks.passed('pass', done('PASS: native routine.\n')))
+        self.assertFalse(self.checks.passed('pass', done('PASS: native routine.\n', 1)))
+
+    def test_a_timeout_stops_every_process_below_the_check(self):
+        with patch.object(self.checks, 'descendants', return_value=[11, 12]), \
+                patch.object(self.checks.os, 'kill') as kill:
+            self.checks.stop_tree(10)
+        self.assertEqual([call.args[0] for call in kill.call_args_list], [11, 12, 10])
 
 
 class PostmergeRegressionTests(unittest.TestCase):

@@ -1,6 +1,5 @@
 """Apply reviewed main commits with the installed deployment and TestFlight tools."""
 import argparse
-import contextlib
 import fcntl
 import hashlib
 import importlib.util
@@ -9,7 +8,6 @@ import os
 from pathlib import Path
 import re
 import shutil
-import signal
 import socket
 import subprocess
 import sys
@@ -334,18 +332,18 @@ def check_hermes_candidate(source, live, revision, state, state_path):
         shutil.rmtree(candidate)
     passed, output = False, ''
     try:
-        run([sys.executable, str(source / 'scripts/hermes.py'), 'install', '--revision', revision], cwd=source)
-        command = [sys.executable, str(source / 'scripts/hermes_candidate_checks.py'), '--checkout', str(source), '--live', str(live)]
-        # The checks start Hermes workers. Run them in their own process group, so a timeout stops all of them.
-        process = subprocess.Popen(command, cwd=source, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   start_new_session=True)
         try:
-            stdout, stderr = process.communicate(timeout=HERMES_CHECKS_SECONDS)
-        except subprocess.TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
-            stdout, stderr = process.communicate()
-        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+            run([sys.executable, str(source / 'scripts/hermes.py'), 'install', '--revision', revision], cwd=source)
+        except (RuntimeError, subprocess.TimeoutExpired) as error:
+            output = 'The candidate install failed before any check ran: ' + str(error)[-5000:]
+            raise RuntimeError(output) from None
+        checks = module(source, 'hermes_candidate_checks')
+        command = [sys.executable, str(source / 'scripts/hermes_candidate_checks.py'), '--checkout', str(source), '--live', str(live)]
+        try:
+            # The checks start Hermes workers. A timeout stops the checks and every process below them.
+            result = checks.run_tree(command, cwd=source, timeout=HERMES_CHECKS_SECONDS)
+        except subprocess.TimeoutExpired as error:
+            result = subprocess.CompletedProcess(command, 1, error.stdout or '', (error.stderr or '') + '\nThe checks timed out.')
         output = result.stdout[-20000:] + result.stderr[-5000:]
         reports = [json.loads(line.split('=', 1)[1]) for line in result.stdout.splitlines()
                    if line.startswith('COCONUT_HERMES_CHECKS=')]
@@ -358,6 +356,20 @@ def check_hermes_candidate(source, live, revision, state, state_path):
     save(state_path, state)
     if not passed:
         raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}.')
+
+
+def recover_without_runtime(live, package, arguments):
+    """Let the installer finish a failed update from its journal, without the new Hermes pin.
+
+    deploy.py receive recovers a pending journal first. Without --update-runtime it then refuses the pin change,
+    so this call restores the service and installs nothing that the gate refused.
+    """
+    if not (live / '.runtime/deploy/update.json').exists():
+        return
+    with package.open('rb') as stream:
+        result = subprocess.run([a for a in arguments if a != '--update-runtime'], stdin=stream, capture_output=True,
+                                text=True, timeout=3600)
+    print('Recovery without the new Hermes pin: ' + (result.stdout[-1000:] or result.stderr[-1000:]), file=sys.stderr)
 
 
 def update(config, state_path):
@@ -425,7 +437,11 @@ def update(config, state_path):
     try:
         if not matches:
             if '--update-runtime' in arguments:
-                check_hermes_candidate(source, live, validated.revision, state, state_path)
+                try:
+                    check_hermes_candidate(source, live, validated.revision, state, state_path)
+                except RuntimeError:
+                    recover_without_runtime(live, package, arguments)
+                    raise
             with package.open('rb') as stream:
                 output = run(arguments, stdin=stream)
             save(state_path.parent / 'deployment-result.json', dict(source_sha=sha, output=output))
