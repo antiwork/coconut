@@ -349,6 +349,7 @@ class NativeOutcomes:
     def _linked_owner_report_coordinator(self, owner, item, peer, reporter, peers, tasks):
         """Authenticate a completed activity report without transferring PR ownership."""
         if (item['kind'] != 'work' or item['task_id'] != owner['id']
+                or owner.get('source_task_id') not in tasks
                 or peer['kind'] != 'pr' or peer.get('work_outcome_id') != item['id']
                 or peer['task_id'] != owner['id'] or peer.get('_review_task_id') != owner['id']
                 or peer['bot_id'] != owner['bot_id'] or not peer.get('url')
@@ -575,6 +576,10 @@ class NativeOutcomes:
                                       if value[0]['status'] in self.ACTIVE or not quiet(value[0])
                                       or (value[0]['status'] == 'completed' and self._unfinished_work(value[0]))}
                     if report_coordinator:
+                        requester_chain = self._work_chain(source, tasks, records, include_continuations=True)
+                        for identity in (*callers, owner['id']):
+                            requester_chain.pop(identity, None)
+                        linked.update(requester_chain)
                         # Unlike the original requester, this coordinator and its
                         # callbacks must finish too. Do not exempt the caller.
                         linked.update(self._work_chain(report_coordinator, tasks, records, include_continuations=True))

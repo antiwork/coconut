@@ -864,11 +864,13 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.service.db.execute('DELETE FROM native_receipts WHERE id=?', ('unknown-report-tool',))
         self.assertEqual(self.resume(source)['task_id'], owner['id'])
 
-    def test_linked_owner_report_guards_reporter_and_coordinator_siblings(self):
+    def test_linked_owner_report_guards_reporter_coordinator_and_requester_siblings(self):
         owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
-        for root in (reporter, coordinator):
+        for root in (reporter, coordinator, source):
             sibling = dict(root, id='sibling', _execution_session_id='sibling', _assignment_task_id=root['id'],
                            _kanban_claim={'native_id': 't_sibling'}, status='completed')
+            sibling.pop('_work_todos', None)
+            sibling.pop('_waiting_on', None)
             self.service._put('tasks', sibling)
             self.service.kanban.tasks[sibling['id']] = dict(id='t_sibling', status='running', current_run_id=4)
             self.assert_linked_report_blocked_without_mutation(source)
