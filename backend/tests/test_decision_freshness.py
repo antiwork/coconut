@@ -827,8 +827,6 @@ class DecisionFreshnessTests(unittest.TestCase):
         task = self.service._get('tasks', self.task['id'])
         task['status'] = 'waiting'
         self.service._put('tasks', task)
-        # The store predates the migration.
-        self.service.db.execute("DELETE FROM settings WHERE key='process_deliveries_migrated'")
         self.service._migrate_process_deliveries()
         self.assertFalse(self.service._get('native_receipts', original['id']).get('_process_delivery'))
         self.service.provider.process_completions = lambda bot, processes: self.fail('The saved result must not be fetched again.')

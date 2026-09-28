@@ -103,6 +103,31 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.service._next_worktree_retirement = 0
         return self.service.retire_finished_worktrees()
 
+    def test_a_branch_renamed_in_the_last_turn_still_retires(self):
+        outcome, identity, path, _ = self.outcome()
+        (path / 'draft.txt').write_text('keep\n')
+        # coconut_workspace asks bots to rename the branch, and a bot often does that just before it pushes.
+        git(path, 'branch', '-m', 'gianfranco/published-name')
+        self.assertEqual(self.retire(), [identity])
+        binding = self.registry()[identity]
+        self.assertEqual(binding['branch'], 'gianfranco/published-name')
+        self.assertIn('retired', binding)
+        restored = acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(git(restored['path'], 'branch', '--show-current'), 'gianfranco/published-name')
+        self.assertEqual((Path(restored['path']) / 'draft.txt').read_text(), 'keep\n')
+
+    def test_a_branch_switch_or_detached_checkout_is_not_retired(self):
+        # Only a rename keeps the work item. Retirement must refuse a switch before it archives or removes files.
+        for name, change in (('branch switch', lambda path: git(path, 'checkout', '-q', '-b', 'other-branch')),
+                             ('detached checkout', lambda path: git(path, 'checkout', '-q', '--detach'))):
+            with self.subTest(name):
+                _, identity, path, _ = self.outcome()
+                (path / 'draft.txt').write_text('keep\n')
+                change(path)
+                self.assertEqual(self.retire(), [])
+                self.assertNotIn('retired', self.registry()[identity])
+                self.assertEqual((path / 'draft.txt').read_text(), 'keep\n')
+
     def test_finished_idle_worktree_is_archived_removed_and_restored_with_its_changes(self):
         outcome, identity, path, _ = self.outcome()
         (path / 'committed.txt').write_text('in a commit\n')

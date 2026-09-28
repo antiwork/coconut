@@ -236,7 +236,7 @@ class FreePageTests(unittest.TestCase):
 
 
 class StartupReadTests(unittest.TestCase):
-    def test_startup_reads_no_whole_receipt_journal_and_migrates_process_deliveries_once(self):
+    def test_startup_reads_no_whole_receipt_journal(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         provider = FixtureProvider(temp.name)
@@ -244,24 +244,20 @@ class StartupReadTests(unittest.TestCase):
         provider.native_settings = lambda operation, bots, **options: None
         service = Service(temp.name, provider, start_workers=False)
         bot = service.mutate('POST', '/v1/bots', {'name': 'Desk'}, str(uuid4()), 'phone')
-        task = dict(id=str(uuid4()), bot_id=bot['id'], status='completed')
-        receipt = dict(id=str(uuid4()), task_id=task['id'], state='completed', action={'name': 'terminal', 'arguments': {}},
-                       result=json.dumps({'session_id': 'proc', 'notify_on_complete': True}))
+        task = service.mutate('POST', f"/v1/bots/{bot['id']}/messages", {'text': 'Ask Dev'}, str(uuid4()), 'phone')
+        relay = dict(id=str(uuid4()), task_id=task['id'], state='executing', action={'name': 'message_agent', 'arguments': {}})
         with service.transaction():
-            service._put('tasks', task)
-            service._put('native_receipts', receipt)
-            # The store predates the migration.
-            service.db.execute("DELETE FROM settings WHERE key='process_deliveries_migrated'")
-        for expected in (dict(receipt, _process_registered=True), receipt):
-            service.close()
-            with patch.object(Service, '_all', side_effect=Service._all, autospec=True) as reads:
-                service = Service(temp.name, provider, start_workers=False)
-            self.assertNotIn('native_receipts', [call.args[1] for call in reads.call_args_list])
-            self.assertEqual(service._get('native_receipts', receipt['id']), expected)
-            # A later start must not repair this receipt again: runtime code registers new receipts.
-            with service.transaction():
-                service._put('native_receipts', receipt)
+            service._put('tasks', dict(service._get('tasks', task['id']), status='working'))
+            service._put('native_receipts', relay)
         service.close()
+        recovered = []
+        provider.native_settings = lambda operation, bots, **options: recovered.append(options.get('call_id'))
+        with patch.object(Service, '_all', side_effect=Service._all, autospec=True) as reads:
+            service = Service(temp.name, provider, start_workers=False)
+        self.addCleanup(service.close)
+        self.assertNotIn('native_receipts', [call.args[1] for call in reads.call_args_list])
+        # Relay recovery still finds the executing relay of a working task.
+        self.assertIn(relay['id'], recovered)
 
 
 class LogRotationTests(unittest.TestCase):

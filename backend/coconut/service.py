@@ -3662,19 +3662,20 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             if message != before:
                 self._put('messages', message)
                 changed = True
-        # Every start runs this pass. Group the messages by task once, not once for each delivery.
-        by_task = {}
-        for message in messages:
-            by_task.setdefault(message.get('task_id'), []).append(message)
+        # Index the messages once. A scan of every message for each delivery grew with both tables at every start.
+        exchanges = {(m.get('task_id'), m.get('sender_bot_id')) for m in messages if m['kind'] == 'bot_exchange'}
+        texts = {}
+        for m in messages:
+            if m['kind'] == 'text':
+                texts.setdefault(m.get('task_id'), []).append(m)
         for delivery in self._all('deliveries'):
             task = tasks.get(delivery['receipt'].get('task_id'))
             source = tasks.get(delivery['source_task_id'])
             if not task or not source:
                 continue
-            if any(m['kind'] == 'bot_exchange' and m.get('sender_bot_id') == source['bot_id']
-                   for m in by_task.get(task['id'], ())):
+            if (task['id'], source['bot_id']) in exchanges:
                 continue
-            result = next((m for m in reversed(by_task.get(source.get('_result_task_id', source['id']), []))
+            result = next((m for m in reversed(texts.get(source.get('_result_task_id', source['id']), []))
                            if m['kind'] == 'text' and m.get('sender_bot_id') == source['bot_id']
                            and m['text'] == delivery['text'] and not m.get('_direct_reply_message_id')
                            and not m.get('_hidden') and not m.get('_deleted')), None)
@@ -3690,7 +3691,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                            text=delivery['text'], created_at=delivery['created_at'], streaming=False,
                            decision_id=None, artifact_id=None)
             self._put('messages', message)
-            by_task.setdefault(message['task_id'], []).append(message)
+            messages.append(message)
+            exchanges.add((message['task_id'], message['sender_bot_id']))
             changed = True
         if changed:
             self._event('transcript.updated', {})

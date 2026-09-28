@@ -104,6 +104,13 @@ class FakeOperations:
         self.record('health', root, address)
         return {'status': 'ok', 'provider': 'hermes', 'ready': True}
 
+    def probe(self, root, address):
+        # A probe is a short health check. An injected health failure fails it too.
+        self.record('probe', root, address)
+        if self.fail == 'health':
+            raise deploy.DeployError('The injected operation failed.')
+        return {'status': 'ok', 'provider': 'hermes', 'ready': True}
+
 
 class DeploymentPackageTests(unittest.TestCase):
     def test_valid_package_keeps_exact_file_bytes_and_pinned_hermes_revision(self):
@@ -292,7 +299,8 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.assertEqual(json.loads(journal.read_text())['phase'], 'code_restored')
         operations = FakeOperations(mode='managed')
         deploy.reconcile(self.target, operations)
-        self.assertEqual([call[0] for call in operations.calls], ['inspect', 'health'])
+        # The recovery check uses the short probe, not the full startup wait.
+        self.assertEqual([call[0] for call in operations.calls], ['inspect', 'probe'])
         self.assertFalse(journal.exists())
 
     def test_failed_stop_does_not_replace_code(self):
@@ -608,6 +616,14 @@ class DeploymentHealthTests(unittest.TestCase):
 
     def test_health_rejects_a_different_certificate_before_the_http_request(self):
         self.assert_health_uses_installed_trust(b'A different certificate.')
+
+    def test_the_recovery_probe_waits_less_than_a_real_start(self):
+        waits = []
+        with patch.object(deploy.Operations, '_health', side_effect=lambda root, address, seconds: waits.append(seconds)):
+            deploy.Operations().probe(Path('/tmp'), 'https://localhost:8443')
+            deploy.Operations().health(Path('/tmp'), 'https://localhost:8443')
+        self.assertEqual(waits, [deploy.PROBE_WAIT_SECONDS, deploy.HEALTH_WAIT_SECONDS])
+        self.assertLess(deploy.PROBE_WAIT_SECONDS, deploy.HEALTH_WAIT_SECONDS)
 
     def test_health_accepts_startup_after_twenty_seconds(self):
         self.assert_health_uses_installed_trust(b'The saved certificate DER bytes.', delayed=True)

@@ -1,4 +1,6 @@
 import importlib.util
+import os
+import contextlib
 import json
 from pathlib import Path
 import subprocess
@@ -130,6 +132,159 @@ class AutomaticUpdateTests(unittest.TestCase):
             self.assertEqual(saved['pending_ios']['source_sha'], 'corrected')
             release.assert_called_once()
 
+    def test_a_failed_deploy_backs_off_for_the_same_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, live = root / 'source', root / 'live'
+            source.mkdir(); live.mkdir()
+            (live / '.runtime/host').mkdir(parents=True)
+            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:8443')))
+            (live / 'app.py').write_text('current')
+            hashes = {'app.py': hashlib.sha256(b'current').hexdigest()}
+            (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=hashes)))
+            state_path = root / 'state.json'
+            update.save(state_path, {})
+            head, received, outcome = ['first'], [], ['fail']
+
+            def command(args, **kwargs):
+                if args[:3] == ['git', 'remote', 'get-url']: return 'https://github.com/owner/repo.git'
+                if args[:2] == ['git', 'status']: return ''
+                if args[:2] == ['git', 'rev-parse']: return head[0]
+                if args[:2] == ['git', 'ls-files']: return 'app.py'
+                if 'receive' in args:
+                    received.append(head[0])
+                    if outcome[0] == 'fail':
+                        raise RuntimeError('COCONUT_DEPLOY_RESULT={"ok": false, "error": "The service did not pass its local TLS health check."}')
+                    (live / '.runtime/hermes').mkdir(exist_ok=True)
+                    (live / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit='runtime')))
+                    return 'COCONUT_DEPLOY_RESULT={"ok":true}'
+                return ''
+
+            def package(path):
+                path.write_bytes(b'package')
+                return dict(package_id='package')
+
+            def attempt(now):
+                packaging = SimpleNamespace(package=package, source_files=lambda: {'app.py': b'current'})
+                installer = SimpleNamespace(validate_package=lambda stream: SimpleNamespace(hashes=hashes, revision='runtime'),
+                                            Operations=lambda: SimpleNamespace(health=lambda *args: None))
+                config = dict(repository='owner/repo', source=str(source), live=str(live))
+                with patch.object(update, 'run', side_effect=command), \
+                        patch.object(update, 'module', side_effect=[packaging, installer]), \
+                        patch.object(update, 'reviewed_merge'), patch.object(update, 'ios_hash', return_value='ios'), \
+                        patch.object(update.time, 'time', return_value=now), patch.object(update.Path, 'home', return_value=root):
+                    update.update(config, state_path)
+
+            with self.assertRaises(RuntimeError):
+                attempt(1000)
+            failed = json.loads(state_path.read_text())['failed_deploy']
+            self.assertEqual((failed['source_sha'], failed['attempts'], failed['retry_at']), ('first', 1, 1000 + update.FAILED_DEPLOY_SECONDS))
+            # The same commit waits while launchd supervises the service, so the service does not restart again.
+            with patch.object(update, 'service_supervised', return_value=True):
+                attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
+            self.assertEqual(received, ['first'])
+            # Without a loaded launch agent nothing restarts the service, so the installer runs at once to recover.
+            with patch.object(update, 'service_supervised', return_value=False), self.assertRaises(RuntimeError):
+                attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
+            self.assertEqual(received, ['first', 'first'])
+            # A third failure doubles the wait again.
+            failed = json.loads(state_path.read_text())['failed_deploy']
+            self.assertEqual((failed['attempts'], failed['retry_at']), (2, 1000 + 3 * update.FAILED_DEPLOY_SECONDS - 1))
+            retry_at = failed['retry_at']
+            # A new merged commit deploys at once, and success clears the backoff.
+            head[0], outcome[0] = 'second', 'ok'
+            attempt(retry_at + 1)
+            self.assertEqual(received, ['first', 'first', 'second'])
+            saved = json.loads(state_path.read_text())
+            self.assertNotIn('failed_deploy', saved)
+            self.assertEqual(saved['source_sha'], 'second')
+
+    def test_a_backoff_does_not_stall_a_pending_testflight_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, live = root / 'source', root / 'live'
+            source.mkdir(); live.mkdir()
+            state_path = root / 'state.json'
+            update.save(state_path, dict(failed_deploy=dict(source_sha='bad', attempts=1, retry_at=2000),
+                                         pending_ios=dict(hash='ios', source_sha='good')))
+
+            def command(args, **kwargs):
+                if args[:3] == ['git', 'remote', 'get-url']: return 'https://github.com/owner/repo.git'
+                if args[:2] == ['git', 'status']: return ''
+                if args[:2] == ['git', 'rev-parse']: return 'bad'
+                return ''
+            config = dict(repository='owner/repo', source=str(source), live=str(live), release_helper='helper')
+            with patch.object(update, 'run', side_effect=command), patch.object(update, 'release_ios') as release, \
+                    patch.object(update, 'service_supervised', return_value=True), \
+                    patch.object(update.time, 'time', return_value=1000):
+                update.update(config, state_path)
+            release.assert_called_once()
+
+    def test_the_supervision_check_reads_the_host_launch_agent(self):
+        spec = importlib.util.spec_from_file_location('automatic_test_host', Path(__file__).with_name('host.py'))
+        host = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(host)
+        self.assertEqual(update.SERVICE_LABEL, host.LABEL)
+        with tempfile.TemporaryDirectory() as directory:
+            live = Path(directory)
+            (live / '.runtime/host').mkdir(parents=True)
+            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:1')))
+            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as listing:
+                self.assertTrue(update.service_supervised(live))
+            self.assertEqual(listing.call_args.args[0], ['launchctl', 'print', f'gui/{os.getuid()}/{host.LABEL}'])
+            # Without a loaded agent and without an answering port, nothing keeps the service running.
+            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=113)), \
+                    patch.object(update.socket, 'create_connection', side_effect=OSError):
+                self.assertFalse(update.service_supervised(live))
+            # A service in manual mode answers on its port without the agent.
+            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=113)), \
+                    patch.object(update.socket, 'create_connection', return_value=contextlib.nullcontext()):
+                self.assertTrue(update.service_supervised(live))
+
+    def test_a_failed_health_check_after_install_backs_off(self):
+        class DeployError(Exception):
+            pass
+
+        def refuse(*args):
+            raise DeployError('The service did not pass its local TLS health check.')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, live = root / 'source', root / 'live'
+            source.mkdir(); live.mkdir()
+            (live / '.runtime/host').mkdir(parents=True)
+            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:8443')))
+            (live / 'app.py').write_text('current')
+            hashes = {'app.py': hashlib.sha256(b'current').hexdigest()}
+            (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=hashes)))
+            (live / '.runtime/hermes').mkdir()
+            (live / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit='runtime')))
+            state_path = root / 'state.json'
+            update.save(state_path, {})
+
+            def command(args, **kwargs):
+                if args[:3] == ['git', 'remote', 'get-url']: return 'https://github.com/owner/repo.git'
+                if args[:2] == ['git', 'status']: return ''
+                if args[:2] == ['git', 'rev-parse']: return 'installed'
+                if args[:2] == ['git', 'ls-files']: return 'app.py'
+                return ''
+
+            def package(path):
+                path.write_bytes(b'package')
+                return dict(package_id='package')
+            packaging = SimpleNamespace(package=package, source_files=lambda: {'app.py': b'current'})
+            installer = SimpleNamespace(validate_package=lambda stream: SimpleNamespace(hashes=hashes, revision='runtime'),
+                                        Operations=lambda: SimpleNamespace(health=refuse), DeployError=DeployError)
+            config = dict(repository='owner/repo', source=str(source), live=str(live))
+            with patch.object(update, 'run', side_effect=command), \
+                    patch.object(update, 'module', side_effect=[packaging, installer]), \
+                    patch.object(update, 'reviewed_merge'), patch.object(update, 'ios_hash', return_value='ios'), \
+                    patch.object(update.time, 'time', return_value=1000), patch.object(update.Path, 'home', return_value=root):
+                with self.assertRaises(DeployError):
+                    update.update(config, state_path)
+            saved = json.loads(state_path.read_text())
+            self.assertEqual(saved['failed_deploy']['source_sha'], 'installed')
+            self.assertNotIn('source_sha', saved)
+
     def test_completed_archive_receipt_survives_interruption(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'source'
@@ -251,7 +406,10 @@ class PostmergeRegressionTests(unittest.TestCase):
                 if not repaired:
                     with self.assertRaises((ValueError, RuntimeError)):
                         update.update(config, state_path)
-                    self.assertFalse(state_path.exists())
+                    # A failed check records only its backoff, never an installed commit.
+                    saved = json.loads(state_path.read_text()) if state_path.exists() else {}
+                    self.assertNotIn('source_sha', saved)
+                    self.assertEqual(saved.get('failed_deploy', {}).get('source_sha'), 'sha')
                     return
                 update.update(config, state_path)
                 update.update(config, state_path)
