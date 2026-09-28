@@ -299,12 +299,15 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 yield
                 self.db.execute('COMMIT')
                 self.__dict__.pop('_published_in_transaction', None)
+                for bot_id in self.__dict__.pop('_forget_bots_on_commit', set()):
+                    self.__dict__.get('_published_bots', {}).pop(bot_id, None)
                 self.changed.notify_all()
             except BaseException:
                 self._profile_pending = {}
                 # A rollback removes the bot events of this transaction. Forget what only they said.
                 for bot_id in self.__dict__.pop('_published_in_transaction', set()):
                     self.__dict__.get('_published_bots', {}).pop(bot_id, None)
+                self.__dict__.pop('_forget_bots_on_commit', None)
                 self.db.execute('ROLLBACK')
                 raise
             pending, self._profile_pending = self._profile_pending, {}
@@ -1220,8 +1223,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             bot.update(_deleted=True, archived=True, _delete_task_ids=cancelled)
             self._put('bots', bot)
             self._event('bot.deleted', {'id': bot['id']} | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
-            # A deleted bot publishes no more rows, so its record has no use.
-            self.__dict__.get('_published_bots', {}).pop(bot['id'], None)
+            # A deleted bot publishes no more rows, so its record has no use. Forget it when the transaction commits.
+            self.__dict__.setdefault('_forget_bots_on_commit', set()).add(bot['id'])
             for task_id in affected:
                 task = self._get('tasks', task_id)
                 owner_id = task.get('_reply_to_task_id')

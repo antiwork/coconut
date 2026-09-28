@@ -121,6 +121,21 @@ class BotStatusTests(unittest.TestCase):
         self.assertEqual(after_patch, before + 1)
         self.assertEqual(len(self.events(bot['id'])), after_patch)
 
+    def test_a_deleted_bot_is_forgotten_at_the_commit_and_a_rollback_keeps_the_record(self):
+        bot = self.bots[0]
+        with self.service.transaction():
+            self.service._refresh_bot(bot['id'])
+        published = self.service.__dict__['_published_bots']
+        self.assertIn(bot['id'], published)
+        with self.assertRaises(RuntimeError):
+            with self.service.transaction():
+                self.service._delete_bot(self.service._get('bots', bot['id']), [])
+                raise RuntimeError('The deletion rolls back.')
+        self.assertIn(bot['id'], self.service.__dict__['_published_bots'])
+        with self.service.transaction():
+            self.service._delete_bot(self.service._get('bots', bot['id']), [])
+        self.assertNotIn(bot['id'], self.service.__dict__['_published_bots'])
+
     def test_a_rolled_back_event_is_published_again(self):
         bot = self.bots[0]
         with self.service.transaction():
