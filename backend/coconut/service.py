@@ -2498,9 +2498,18 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             # A damaged value is not the same as no bytes. Say so, so that no turn goes on without the attachment.
             raise ServiceError(409, f'The stored bytes of the attachment {artifact["title"]} are damaged.') from None
 
-    def artifact_base64(self, artifact_id: str) -> str | None:
-        content = self.artifact_bytes(self._get('artifacts', artifact_id))
-        return base64.b64encode(content).decode() if content is not None else None
+    def turn_attachment_content(self, artifact_id: str) -> dict:
+        """Return the content of an attachment for a turn: its bytes as base64, or the reason that it has none.
+
+        A damaged inline value must not stop the turn, and a decision context that fails while it assembles its
+        attachments would retry without end. The turn gets the reason in place of the preview, so the bot knows.
+        """
+        artifact = self._get('artifacts', artifact_id)
+        try:
+            content = self.artifact_bytes(artifact)
+        except ServiceError as error:
+            return {'content_base64': None, 'preview': str(error)}
+        return {'content_base64': base64.b64encode(content).decode() if content is not None else None}
 
     def _move_artifact_content(self):
         """Move the inline bytes of older artifacts into artifact_content. Run at every start; it finds nothing after the first."""
@@ -3252,7 +3261,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         provider_task['_work_status_only'] = task.get('_work_status_only', False)
                     provider_task.update(view.decision_chat_input(task))
                     provider_task.update(view._bot_deletion_input(task))
-                    provider_task['attachments'] = [view._public(view._get('artifacts', a)) | {'content_base64': view.artifact_base64(a)} for a in task['_turn_attachment_ids']]
+                    provider_task['attachments'] = [view._public(view._get('artifacts', a)) | {'content_base64': None} | view.turn_attachment_content(a) for a in task['_turn_attachment_ids']]
                     provider_task['_available_bots'] = [{'id': b['id'], 'name': b['name'], 'role': b['role']} for b in view._all('bots') if b['id'] != bot['id'] and not b['archived'] and not b.get('_deleted')]
                     if task.get('_is_return') and task.get('source_task_id'):
                         rows = view.db.execute(
@@ -3857,7 +3866,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     if context.get('_recovery_attempt'):
                         provider_task['_context_recovery'] = context['_context_recovery']
                     provider_task['pending_decision'] = self._public(decision) | {'action': decision.get('_action')}
-                    provider_task['attachments'] = [self._public(self._get('artifacts', a)) | {'content_base64': self.artifact_base64(a)} for a in context.get('_attachment_ids', task.get('_turn_attachment_ids', []))]
+                    provider_task['attachments'] = [self._public(self._get('artifacts', a)) | {'content_base64': None} | self.turn_attachment_content(a) for a in context.get('_attachment_ids', task.get('_turn_attachment_ids', []))]
                 chunks = []
                 context_failure = {}
                 def emit(kind, payload):

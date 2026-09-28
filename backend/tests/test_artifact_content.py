@@ -38,7 +38,7 @@ class ArtifactContentTests(unittest.TestCase):
         row = self.service.db.execute('SELECT data FROM artifacts WHERE id=?', (artifact['id'],)).fetchone()
         self.assertNotIn('_content_base64', json.loads(row[0]))
         self.assertEqual(self.service.artifact_content(artifact['id']), (b'attached bytes', 'note.txt'))
-        self.assertEqual(base64.b64decode(self.service.artifact_base64(artifact['id'])), b'attached bytes')
+        self.assertEqual(base64.b64decode(self.service.turn_attachment_content(artifact['id'])['content_base64']), b'attached bytes')
 
     def test_an_older_row_moves_its_bytes_at_the_next_start(self):
         artifact = self.upload()
@@ -68,11 +68,14 @@ class ArtifactContentTests(unittest.TestCase):
             reopened = self.open()
         self.assertTrue(any('not valid base64' in line for line in logs.output))
         self.assertEqual(reopened._get('artifacts', artifact['id'])['_content_base64'], 'not valid base64 ###')
-        # The start goes on. A turn that attaches the artifact, and a download, fail with a clear message.
-        for read in (reopened.artifact_base64, reopened.artifact_content):
-            with self.assertRaisesRegex(ServiceError, 'are damaged') as raised:
-                read(artifact['id'])
-            self.assertEqual(raised.exception.status, 409)
+        # The start goes on. A download fails with a clear message.
+        with self.assertRaisesRegex(ServiceError, 'are damaged') as raised:
+            reopened.artifact_content(artifact['id'])
+        self.assertEqual(raised.exception.status, 409)
+        # A turn goes on too, and the bot reads why this attachment has no content, in place of its preview.
+        given = reopened.turn_attachment_content(artifact['id'])
+        self.assertIsNone(given['content_base64'])
+        self.assertIn('are damaged', given['preview'])
 
     def test_an_artifact_without_bytes_falls_back_to_its_file(self):
         content = b'a file on the Mac'
