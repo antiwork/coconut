@@ -40,7 +40,7 @@ SCRATCH_NAME = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 DONE_PR_STATES = ('merged', 'closed')
 PR_URL = re.compile(r'https://github\.com/([^/]+/[^/]+)/pull/\d+')
 # An origin remote in https or ssh form, with or without .git.
-REMOTE_NAME = re.compile(r'github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$')
+REMOTE_NAME = re.compile(r'^(?:https://(?:[^@/]+@)?|ssh://git@|git@)github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$')
 # These artifact fields name the tasks that a pull request belongs to.
 PR_TASK_FIELDS = ('task_id', '_work_origin_task_id', '_review_task_id', '_activity_task_id')
 # Before the registry lock, retirement waits this long for the service lock. Under the registry lock, it waits only LOCKED_WAIT_SECONDS.
@@ -65,7 +65,7 @@ def repository_name(repository, cache):
     if repository not in cache:
         cache[repository] = None
         with contextlib.suppress(*work_workspace.GIT_ERRORS, TypeError):
-            match = REMOTE_NAME.search(work_workspace.git(repository, 'remote', 'get-url', 'origin'))
+            match = REMOTE_NAME.match(work_workspace.git(repository, 'remote', 'get-url', 'origin'))
             cache[repository] = match.group(1).lower() if match else None
     return cache[repository]
 
@@ -163,7 +163,7 @@ class WorktreeRetirement:
     def _done_outcomes(self, finished):
         """Map each finished outcome whose pull requests all merged or closed to their repositories (owner/name).
 
-        Return None when the lock is busy.
+        Also return the finished outcomes with an open pull request. Return None when the lock is busy.
         """
         if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
             return None
@@ -178,7 +178,8 @@ class WorktreeRetirement:
                     match = PR_URL.match(str(artifact.get('url') or ''))
                     if match:
                         repositories.setdefault(outcome, set()).add(match.group(1).lower())
-            return {outcome: repositories.get(outcome, set()) for outcome, found in states.items() if found <= set(DONE_PR_STATES)}
+            done = {outcome: repositories.get(outcome, set()) for outcome, found in states.items() if found <= set(DONE_PR_STATES)}
+            return done, set(states) - set(done)
         finally:
             self.lock.release()
 
@@ -214,17 +215,22 @@ class WorktreeRetirement:
             if holders.get(str(folder)) or self.stopping.is_set() or self.restart_pending:
                 continue
             name = folder.name
-            if name in known:
-                # A turn can start after the first check. Check the outcome again just before the deletion.
-                again = self._finished_outcomes(time.time(), timeout=SERVICE_WAIT_SECONDS, only=name, idle=0)
+            if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
+                continue
+            try:
+                # A turn starts under this lock. Check the outcome again, and move the folder before the lock goes.
+                again = self._finished_outcomes(time.time(), only=name, idle=0) if name in known else {name}
                 if not again or name not in again:
                     continue
-            try:
-                work_workspace.clear_scratch(folder, keep=name in known)
+                work_workspace.move_scratch(folder, keep=name in known)
             except OSError as error:
                 logging.getLogger(__name__).warning('Coconut could not clear scratch workspace %s: %s', folder, error)
                 continue
+            finally:
+                self.lock.release()
             cleared.append(name)
+        # The deletion runs without the lock.
+        work_workspace.empty_scratch_trash(root)
         if cleared:
             logging.getLogger(__name__).warning('Coconut cleared %s idle scratch workspaces.', len(cleared))
             # A bot can create a worktree of another repository in a scratch workspace. Drop the records of the deleted ones.
@@ -275,9 +281,11 @@ class WorktreeRetirement:
             # A failed orphan check must not stop retirement.
             logging.getLogger(__name__).warning('Coconut could not stop the orphans of idle outcomes: %s', error)
         # A merged pull request ends its work, so its worktree goes without the checks that protect resumable work.
-        done = self._done_outcomes(finished) or {}
+        done, open_pull_requests = self._done_outcomes(finished) or ({}, set())
         # An outcome idle this long loses a worktree that retirement refuses, and the files of its scratch workspace.
-        stale = set(finished) if low_disk else {outcome for outcome in finished if ages.get(outcome, 0) >= DISCARD_IDLE_SECONDS}
+        # An open pull request keeps its work until the disk is low.
+        stale = set(finished) if low_disk else {outcome for outcome in finished if ages.get(outcome, 0) >= DISCARD_IDLE_SECONDS
+                                                and outcome not in open_pull_requests}
         try:
             self._clear_idle_scratch(root, set(done) | stale, current, saved)
         except (ValueError, OSError, subprocess.TimeoutExpired, sqlite3.Error) as error:

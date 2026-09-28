@@ -179,7 +179,8 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
             self.assertEqual(self.retire(), [identity])
         self.assertFalse(path.exists())
-        self.assertEqual(git(self.repo, 'rev-parse', f'refs/coconut/discarded/{identity}/{head}'), head)
+        refs = git(self.repo, 'for-each-ref', '--format=%(refname) %(objectname)', f'refs/coconut/discarded/{identity}/')
+        self.assertTrue(refs.endswith(f'-{head} {head}'))
 
     def test_a_merged_pull_request_of_another_repository_keeps_the_worktree(self):
         _, identity, path, task = self.outcome()
@@ -239,12 +240,45 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertIn('Inspect the path', retired['restore_failed']['error'])
         self.assertEqual(work_workspace.preferred(self.workspaces, outcome), self.workspaces / outcome)
 
-    def test_old_discarded_refs_go(self):
+    def test_discarded_refs_go_30_days_after_the_discard(self):
         head = git(self.repo, 'rev-parse', 'HEAD')
-        git(self.repo, 'update-ref', f'refs/coconut/discarded/x/{head}', head)
-        with patch.object(work_workspace, 'NESTED_ARCHIVE_DAYS', -1):
-            work_workspace.prune_discarded_refs(self.repo)
-        self.assertEqual(git(self.repo, 'for-each-ref', 'refs/coconut/discarded/'), '')
+        old, new = int(time.time()) - 31 * 86400, int(time.time())
+        for moment in (old, new):
+            git(self.repo, 'update-ref', f'refs/coconut/discarded/x/{moment}-{head}', head)
+        work_workspace.prune_discarded_refs(self.repo)
+        # The commit date does not count. The discard time in the name does.
+        self.assertEqual(git(self.repo, 'for-each-ref', '--format=%(refname)', 'refs/coconut/discarded/'),
+                         f'refs/coconut/discarded/x/{new}-{head}')
+
+    def test_an_open_pull_request_keeps_a_long_idle_refused_worktree(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'open')
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+
+    def test_a_resumed_discard_gets_its_changes_back(self):
+        outcome, identity, path, _ = self.outcome()
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        (path / 'tracked.txt').write_text('one\nstaged\n')
+        git(path, 'add', 'tracked.txt')
+        (path / 'logo.bin').write_bytes(b'unstaged')
+        (path / 'draft.txt').write_text('untracked\n')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            self.assertEqual(self.retire(), [identity])
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual(git(restored, 'diff', '--cached', '--name-only'), 'tracked.txt')
+        self.assertEqual((restored / 'logo.bin').read_bytes(), b'unstaged')
+        self.assertEqual((restored / 'draft.txt').read_text(), 'untracked\n')
+
+    def test_the_origin_must_be_on_github(self):
+        cache = {}
+        git(self.repo, 'remote', 'set-url', 'origin', 'git@notgithub.com:antiwork/coconut.git')
+        self.assertIsNone(retirement.repository_name(str(self.repo), cache))
+        for url in ('https://github.com/Antiwork/Coconut.git', 'git@github.com:antiwork/coconut', 'ssh://git@github.com/antiwork/coconut.git'):
+            git(self.repo, 'remote', 'set-url', 'origin', url)
+            self.assertEqual(retirement.repository_name(str(self.repo), {}), 'antiwork/coconut')
 
     def test_a_failed_restore_of_a_discarded_branch_sends_turns_to_the_scratch_workspace(self):
         outcome, identity, path, task = self.outcome()

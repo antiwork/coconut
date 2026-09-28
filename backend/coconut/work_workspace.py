@@ -926,7 +926,7 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False):
 
     Coconut calls this when the pull requests of the outcome all merged or closed, when the checkout is gone, and when
     retirement cannot archive an idle worktree exactly (see worktree_retirement.DISCARD_IDLE_SECONDS). The branch keeps
-    the commits, and refs/coconut/discarded/<identity>/<commit> keeps each HEAD, also a detached one. The archive in archive/done/ keeps the staged and unstaged patches, and the untracked files when they
+    the commits, and refs/coconut/discarded/<identity>/<time>-<commit> keeps each HEAD, also a detached one. The archive in archive/done/ keeps the staged and unstaged patches, and the untracked files when they
     fit in UNTRACKED_LIMIT_BYTES. Ignored files, such as build output and logs, and nested worktrees go without an
     archive. A branch switch does not keep the worktree. An old orphaned process in the worktree stops, even when its
     environment does not name the outcome. A locked worktree and another process keep the worktree.
@@ -1039,42 +1039,57 @@ def finish_discard(root, identity, before, finished, present, path, repository, 
 
 
 def prune_discarded_refs(repository):
-    """Delete the refs of discarded HEADs whose commit is older than NESTED_ARCHIVE_DAYS, as for the archives."""
+    """Delete the refs of HEADs discarded more than NESTED_ARCHIVE_DAYS ago, as for the archives."""
     oldest = time.time() - NESTED_ARCHIVE_DAYS * 86400
-    listing = git(repository, 'for-each-ref', '--format=%(refname) %(committerdate:unix)', 'refs/coconut/discarded/')
-    for line in listing.splitlines():
-        name, _, moment = line.rpartition(' ')
-        if name and moment.isdigit() and int(moment) < oldest:
+    for name in git(repository, 'for-each-ref', '--format=%(refname)', 'refs/coconut/discarded/').splitlines():
+        moment = name.rsplit('/', 1)[-1].split('-', 1)[0]
+        if moment.isdigit() and int(moment) < oldest:
             git(repository, 'update-ref', '-d', name)
 
 
 def keep_heads(repository, identity, paths):
-    """Point refs/coconut/discarded/<identity>/<commit> at the HEAD of each checkout, before Coconut removes them.
+    """Point refs/coconut/discarded/<identity>/<time>-<commit> at the HEAD of each checkout, before Coconut removes them.
 
-    The commit names the ref, so a later discard of the same worktree adds a ref and replaces none.
+    The time and the commit name the ref, so a later discard adds a ref and replaces none, and the prune can
+    count the retention from the discard, not from the commit.
     """
+    moment = int(time.time())
     for path in paths:
         with contextlib.suppress(*GIT_ERRORS):
             head = git(path, 'rev-parse', '--verify', 'HEAD')
-            git(repository, 'update-ref', f'refs/coconut/discarded/{identity}/{head}', head)
+            git(repository, 'update-ref', f'refs/coconut/discarded/{identity}/{moment}-{head}', head)
 
 
-def clear_scratch(folder, *, keep=True):
-    """Delete the files of a scratch workspace. With keep, the folder stays, empty, for a later turn to use.
+SCRATCH_TRASH = '.scratch-trash'
 
-    Coconut never follows a link. The caller checks that the outcome is idle and that no process uses the folder.
+
+def move_scratch(folder, *, keep=True):
+    """Move a scratch workspace to workspaces/.scratch-trash and return its new path. With keep, leave an empty folder.
+
+    A rename is fast, so the caller can hold the service lock, and no turn can start in the folder meanwhile.
+    empty_scratch_trash deletes the files later. Coconut never follows a link.
     """
     folder = Path(folder)
     if folder.is_symlink() or not folder.is_dir():
-        return
-    if not keep:
-        shutil.rmtree(folder)
-        return
-    for child in folder.iterdir():
-        if child.is_dir() and not child.is_symlink():
-            shutil.rmtree(child)
-        else:
-            child.unlink()
+        return None
+    trash = folder.parent / SCRATCH_TRASH
+    trash.mkdir(mode=0o700, exist_ok=True)
+    target = trash / f'{folder.name}-{time.time_ns()}'
+    os.rename(folder, target)
+    if keep:
+        folder.mkdir(mode=0o700)
+    return target
+
+
+def empty_scratch_trash(root):
+    """Delete the scratch workspaces that move_scratch moved, also those that a stop left."""
+    trash = Path(root) / SCRATCH_TRASH
+    if trash.is_dir() and not trash.is_symlink():
+        for item in trash.iterdir():
+            try:
+                shutil.rmtree(item) if item.is_dir() and not item.is_symlink() else item.unlink()
+            except OSError as error:
+                logging.getLogger(__name__).warning('Coconut could not delete %s: %s', item, error)
 
 
 def drop_other_archives(directory, identity, keep, saved):
@@ -1297,6 +1312,34 @@ def apply_unstaged(path, unstaged):
                    '--pathspec-from-file=-', '--pathspec-file-nul', data=b'\0'.join(added) + b'\0')
 
 
+def reapply_discard(path, archive, head):
+    """Put the changes of a discard archive back into a new checkout of its branch. Keep the archive.
+
+    The patches fit only the commit that they were made on. When the branch moved, or a patch does not apply, the
+    checkout stays clean, and a person can recover the work from the archive.
+    """
+    try:
+        if git(path, 'rev-parse', 'HEAD') != head:
+            raise ValueError('the branch moved after the discard')
+        with tarfile.open(archive) as tar:
+            members = {member.name: member for member in tar.getmembers()}
+            staged, unstaged = (tar.extractfile(members[name]).read() if name in members else b'' for name in PATCHES)
+            if staged:
+                git_output(path, 'apply', '--index', '--binary', '--whitespace=nowarn', '-', data=staged)
+            if unstaged:
+                apply_unstaged(path, unstaged)
+            for name, member in members.items():
+                target = name[len(UNTRACKED):]
+                if name.startswith(UNTRACKED) and member.isfile() and not os.path.lexists(path / target):
+                    tar.extract(member.replace(name=target, deep=False), path, filter='data')
+    except RESTORE_ERRORS as error:
+        with contextlib.suppress(*GIT_ERRORS):
+            git(path, 'reset', '-q', '--hard', 'HEAD')
+            git(path, 'clean', '-q', '-fd')
+        logging.getLogger(__name__).warning('Coconut did not put the changes of %s back into %s: %s. The archive keeps '
+                                            'them.', archive, path, error)
+
+
 def unpack(binding, checked, *, retry_failure=None):
     retired = binding['retired']
     path, archive, repository = Path(binding['path']), Path(retired['archive']), Path(binding['repository'])
@@ -1431,6 +1474,8 @@ def restore(binding, checked, *, retry_duplicates=False):
             message = f'Coconut could not check out {binding["branch"]} again: {error}'
             binding['retired'] = dict(retired, restore_failed=dict(at=stamp(datetime.now(timezone.utc)), error=message[:1000]))
             raise ValueError(message) from None
+        if retired.get('archive') and Path(retired['archive']).is_file():
+            reapply_discard(path, Path(retired['archive']), retired.get('head'))
         binding.pop('retired')
         validate_binding(binding)
         return

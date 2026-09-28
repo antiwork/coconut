@@ -127,18 +127,21 @@ Retirement keeps work only while it can resume. Coconut discards the worktree of
 
 - All pull requests of the outcome merged or closed, and one of them is in the repository of the worktree.
 - The checkout is already gone.
-- Retirement refuses the worktree, and the outcome is idle for 2 days (`DISCARD_IDLE_SECONDS`), for example after a
-  branch switch, a nested repository, or ignored files larger than the archive limit.
+- Retirement refuses the worktree, and the outcome is idle for 2 days (`DISCARD_IDLE_SECONDS`) with no open pull
+  request, for example after a branch switch, a nested repository, or ignored files larger than the archive limit.
 - Retirement refuses the worktree, and the disk has less than 20 GiB free (`LOW_DISK_BYTES`). The pass then runs
   every 10 minutes.
 
 A discard keeps the branch, a ref `refs/coconut/discarded/<identity>/<commit>` for each HEAD, also a detached one, and an archive in `workspaces/archive/done/` with the patches and the untracked files that
 fit in 200 MB. Ignored files and nested worktrees go without an archive. Only a locked worktree, or a process that is
-not an old orphan, keeps the worktree. A later turn gets a new checkout of the saved branch. The archives follow the
+not an old orphan, keeps the worktree. A later turn gets a new checkout of the saved branch. When the branch did not move, Coconut puts the archived patches
+and untracked files back. Otherwise the archive keeps them for a person. The archives follow the
 30-day and 2 GiB rules of the nested archives.
 
-The same pass deletes the files in the scratch workspace (`workspaces/<outcome>`) of such an outcome. The folder stays,
-empty, because a later turn uses it as its working directory. A scratch folder that no task names goes after 2 days
+The same pass deletes the files in the scratch workspace (`workspaces/<outcome>`) of such an outcome. Under the service
+lock, it checks the outcome again and moves the folder to `workspaces/.scratch-trash`, so no turn can start in it
+meanwhile. The deletion runs after the lock. The folder stays, empty, because a later turn uses it as its working
+directory. A scratch folder that no task names goes after 2 days
 without changes. A bot's own workspace and a folder that a process uses stay.
 
 Before it retires any worktree, each hourly run also stops the old orphans of every idle outcome. It checks the
