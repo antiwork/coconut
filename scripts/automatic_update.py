@@ -333,11 +333,11 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
     A failure stops the checks for that revision and code for HERMES_FAILED_RETRY_SECONDS.
     """
     receipt = state_path.parent / 'hermes-checks.json'
-    code = checked_code(source, sha)
+    tree = checked_code(source, sha)
     saved = state.get('hermes_checks') if isinstance(state.get('hermes_checks'), dict) else {}
     # The checks run backend and scripts of the checkout. A result counts for the pin and that code only, so a fix of
     # the Coconut code runs the checks again at once, and a commit elsewhere, such as the iOS app, reuses the result.
-    if saved.get('revision') == revision and saved.get('code') == code:
+    if saved.get('revision') == revision and saved.get('code') == tree:
         if saved.get('passed') is True:
             return
         checked_at = saved.get('checked_at')
@@ -396,7 +396,7 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
     if inconclusive:
         raise RuntimeError(f'The native upgrade checks for Hermes {revision[:12]} did not finish: they timed out, or their '
                            f'setup failed. Read {receipt}. The next pass after the backoff runs them again.')
-    state['hermes_checks'] = dict(revision=revision, sha=sha, code=code, passed=passed, checked_at=time.time())
+    state['hermes_checks'] = dict(revision=revision, sha=sha, code=tree, passed=passed, checked_at=time.time())
     save(state_path, state)
     if not passed:
         raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}.')

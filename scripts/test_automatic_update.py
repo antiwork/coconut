@@ -20,7 +20,7 @@ REAL_GATE = update.check_hermes_candidate
 
 def saved_result(result):
     """Return the saved gate result without its time."""
-    return {key: value for key, value in result['state']['hermes_checks'].items() if key not in ('checked_at', 'code')}
+    return {key: value for key, value in result['state']['hermes_checks'].items() if key != 'checked_at'}
 
 
 class AutomaticUpdateTests(unittest.TestCase):
@@ -362,7 +362,7 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertIsNone(result['raised'])
         self.assertEqual(result['commands'][0][-3:], ['install', '--revision', 'new'])
         self.assertEqual(result['script_calls'], 1)
-        self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', passed=True))
+        self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', code='sha2', passed=True))
         self.assertTrue(result['receipt']['passed'])
         # The updater's copy of the runtime is removed after the checks, to keep disk space free.
         self.assertFalse(result['candidate_left'])
@@ -370,7 +370,7 @@ class AutomaticUpdateTests(unittest.TestCase):
     def test_a_failed_hermes_check_stops_the_install(self):
         result = self.gate_case(checks_pass=False)
         self.assertIn('native upgrade checks failed', str(result['raised']))
-        self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', passed=False))
+        self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', code='sha2', passed=False))
         self.assertFalse(result['receipt']['passed'])
 
     def test_a_failed_candidate_install_says_so_in_the_receipt(self):
@@ -445,6 +445,14 @@ class AutomaticUpdateTests(unittest.TestCase):
                        dict(failed, revision='other'), dict(failed, code='other-tree')):
             self.assertEqual(self.gate_case(checks_pass=True, cached=cached)['script_calls'], 1)
 
+    def test_a_saved_result_is_reused_by_the_next_pass(self):
+        # Run the gate twice with the state that the first run saved. The second run must not run the checks again.
+        first = self.gate_case(checks_pass=False)
+        self.assertEqual(first['script_calls'], 1)
+        second = self.gate_case(checks_pass=False, cached=first['state']['hermes_checks'])
+        self.assertIn('failed for Hermes new', str(second['raised']))
+        self.assertEqual(second['script_calls'], 0)
+
     def test_the_checked_code_is_the_tree_of_backend_and_scripts(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)
@@ -498,7 +506,7 @@ class AutomaticUpdateTests(unittest.TestCase):
         # The checks run the Coconut code of the checkout too, so a pass for another commit does not count.
         result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha1', code='sha1', passed=True))
         self.assertEqual(result['script_calls'], 1)
-        self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', passed=True))
+        self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', code='sha2', passed=True))
 
     def test_a_malformed_check_report_fails_the_gate(self):
         result = self.gate_case(checks_pass=True, installed='new', result_text='{"passed": tr')
