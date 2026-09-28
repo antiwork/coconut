@@ -761,6 +761,22 @@ class BoundedRunTests(unittest.TestCase):
         self.assertIn('started', output)
         self.assertLess(time.monotonic() - started, 10)
 
+    def test_an_interrupt_of_the_wait_stops_the_child(self):
+        real_wait = subprocess.Popen.wait
+        interrupted = []
+
+        def wait(process, timeout=None):
+            if not interrupted:
+                interrupted.append(process)
+                raise KeyboardInterrupt()
+            return real_wait(process, timeout)
+        with patch.object(subprocess.Popen, 'wait', wait), self.assertRaises(KeyboardInterrupt):
+            update.run_bounded([sys.executable, '-c', 'import time; time.sleep(60)'], cwd=None, timeout=30)
+        process = interrupted[0]
+        # The child is gone: the group kill ran in the finally block.
+        self.assertIsNotNone(process.poll())
+        self.assertLess(process.returncode, 0)
+
     def test_a_process_in_its_own_session_cannot_block_the_updater(self):
         # A Hermes worker starts its own session and can keep the output open. The output is a file, not a pipe.
         program = ('import subprocess, sys; subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], '

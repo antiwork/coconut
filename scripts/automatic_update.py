@@ -532,9 +532,11 @@ def run_bounded(command, *, cwd, timeout, env=None):
             code = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             code = None
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(process.pid, signal.SIGKILL)
-        process.wait()
+        finally:
+            # An interrupt of the wait must stop the child too, or the next run meets it still at work.
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
         output.seek(0)
         return code, output.read()[-20000:].decode(errors='replace')
 
