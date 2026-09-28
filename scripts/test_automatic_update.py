@@ -304,7 +304,7 @@ class AutomaticUpdateTests(unittest.TestCase):
                 self.assertTrue(update.service_supervised(live))
 
     def gate_case(self, *, checks_pass, cached=None, install=None, installed='old', result_text=None, checks=None,
-                  free=update.HERMES_CANDIDATE_FREE_BYTES, keys=None, problem=False):
+                  free=update.HERMES_CANDIDATE_FREE_BYTES, keys=None, problem=False, mode=0o600, link=False, state=None):
         """Run check_hermes_candidate for a new pin. Return the run commands and the saved state."""
         keys = {'ANTHROPIC_API_KEY': 'k'} if keys is None else keys
         with tempfile.TemporaryDirectory() as directory:
@@ -318,9 +318,13 @@ class AutomaticUpdateTests(unittest.TestCase):
             (live / '.runtime/host').mkdir(parents=True)
             if keys:
                 (live / '.runtime/host/credentials.json').write_text(json.dumps(keys))
-                (live / '.runtime/host/credentials.json').chmod(0o600)
+                (live / '.runtime/host/credentials.json').chmod(mode)
+                if link:
+                    (live / '.runtime/host/real.json').write_text(json.dumps(keys))
+                    (live / '.runtime/host/credentials.json').unlink()
+                    (live / '.runtime/host/credentials.json').symlink_to(live / '.runtime/host/real.json')
             state_path = root / 'state.json'
-            state = dict(hermes_checks=cached) if cached else {}
+            state = state if state is not None else (dict(hermes_checks=cached) if cached else {})
             commands, calls = [], []
 
             def record(args, **kwargs):
@@ -443,6 +447,41 @@ class AutomaticUpdateTests(unittest.TestCase):
     def test_only_a_model_key_in_a_private_file_lets_the_gate_start(self):
         result = self.gate_case(checks_pass=True, keys={'OTHER_KEY': 'x'})
         self.assertIn('no model keys', result['receipt']['output'])
+
+    def test_a_shared_or_linked_credential_file_stops_the_gate_before_the_install(self):
+        for options in (dict(mode=0o644), dict(link=True)):
+            result = self.gate_case(checks_pass=True, **options)
+            self.assertIn('cannot start', str(result['raised']))
+            self.assertEqual((result['commands'], result['script_calls']), ([], 0))
+            self.assertEqual(result['receipt']['verdict'], 'inconclusive')
+        self.assertIn('private', self.gate_case(checks_pass=True, mode=0o644)['receipt']['output'])
+
+    def test_early_exits_write_an_inconclusive_verdict(self):
+        for options in (dict(keys={'OTHER': 'x'}), dict(free=1), dict(install=lambda command, **kwargs: (_ for _ in ()).throw(RuntimeError('no network')))):
+            self.assertEqual(self.gate_case(checks_pass=True, **options)['receipt']['verdict'], 'inconclusive', options)
+
+    def test_a_run_where_every_program_passed_but_the_script_failed_is_inconclusive(self):
+        text = json.dumps(dict(passed=False, hermes_sha='new', credentials=['KEY'], scratch_removed=False,
+                               checks=dict(relay=dict(passed=True), profiles=dict(passed=True))))
+        result = self.gate_case(checks_pass=False, result_text=text)
+        self.assertIn('did not finish', str(result['raised']))
+        self.assertNotIn('hermes_checks', result['state'])
+        self.assertEqual(result['receipt']['verdict'], 'inconclusive')
+
+    def test_an_inconclusive_run_waits_longer_each_time(self):
+        state = {}
+        waits = []
+        for attempt in range(1, 6):
+            before = time.time()
+            result = self.gate_case(checks_pass=False, checks=lambda command, **kwargs: (None, 'log'), cached=None, state=state)
+            entry = state['hermes_inconclusive']
+            waits.append(round(entry['retry_at'] - before))
+            self.assertEqual(entry['attempts'], attempt)
+            # Until the wait passes, the next pass stops at once, and installs nothing.
+            again = self.gate_case(checks_pass=False, state=state)
+            self.assertEqual((again['commands'], again['script_calls']), ([], 0))
+            entry['retry_at'] = 0
+        self.assertEqual([wait // 3600 for wait in waits], [1, 2, 4, 8, 16])
 
     def test_the_check_script_gets_the_candidate_runtime_and_the_live_credentials(self):
         result = self.gate_case(checks_pass=True)

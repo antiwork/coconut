@@ -34,8 +34,9 @@ HERMES_CANDIDATE_FREE_BYTES = 8 * 1024 ** 3
 HERMES_FAILED_RETRY_SECONDS = 24 * 60 * 60
 # hermes.py install runs uv and three check programs, up to 75 minutes of program time, plus the downloads.
 HERMES_INSTALL_SECONDS = 90 * 60
-# scripts/hermes.py install writes these folders of .runtime, and the checks write inside hermes. The gate removes only these.
-HERMES_GATE_FOLDERS = ('hermes', 'cache', 'tmp', 'tools')
+# scripts/hermes.py install writes these folders of .runtime, and the checks write inside hermes. The gate removes only
+# these. It keeps tools, which holds the verified uv binary, so a retry does not download it again.
+HERMES_GATE_FOLDERS = ('hermes', 'cache', 'tmp')
 
 
 def run(args, *, cwd=None, stdin=None, pass_fds=()):
@@ -348,16 +349,20 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
                 and time.time() - checked_at < HERMES_FAILED_RETRY_SECONDS):
             raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}. '
                                'They run again after 24 hours, or at once for a new pin or a change of backend or scripts.')
+    if (state.get('hermes_inconclusive') or {}).get('revision') == revision and (state['hermes_inconclusive'].get('code') == tree):
+        if time.time() < state['hermes_inconclusive'].get('retry_at', 0):
+            raise RuntimeError(f'The native upgrade checks for Hermes {revision[:12]} did not finish before. '
+                               f'They run again after the wait. Read {receipt}.')
     problem = gate_problem(source, live)
     if problem:
         # The install costs up to an hour and 2.6 GB. Check what the checks need first, and say what is missing.
-        save(receipt, dict(revision=revision, passed=False, checked_at=time.time(), output=problem))
+        write_receipt(receipt, revision, 'inconclusive', problem)
         raise RuntimeError(f'The native upgrade checks for Hermes {revision[:12]} cannot start: {problem}')
     free = shutil.disk_usage(source).free
     if free < HERMES_CANDIDATE_FREE_BYTES:
         output = (f'The candidate install needs {HERMES_CANDIDATE_FREE_BYTES // 1024 ** 3} GiB of free disk space, and '
                   f'{free / 1024 ** 3:.1f} GiB is free. Nothing was installed. The next pass after the backoff checks again.')
-        save(receipt, dict(revision=revision, passed=False, checked_at=time.time(), output=output))
+        write_receipt(receipt, revision, 'inconclusive', output)
         raise RuntimeError(output)
     passed, output, recorded, inconclusive = False, '', False, False
     # scripts/check_hermes_candidate.py writes its own result here. The gate writes one when the script wrote none.
@@ -385,37 +390,56 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
             passed = code == 0 and result.get('passed') is True and result.get('hermes_sha') == revision
             recorded = True
         # Only a complete result with model keys and a failed check is a verdict on the pin. A missing or broken
-        # result, missing keys, and a setup error are inconclusive, like a timeout.
-        if not passed and not (isinstance(result, dict) and result.get('checks') and result.get('credentials')
-                               and not result.get('error') and result.get('hermes_sha') == revision):
+        # result, missing keys, a setup error, and a run in which every program passed but the script still failed,
+        # for example at its cleanup, are inconclusive, like a timeout.
+        checks = result.get('checks') if isinstance(result, dict) else None
+        if not passed and not (isinstance(checks, dict) and checks and result.get('credentials') and not result.get('error')
+                               and result.get('hermes_sha') == revision
+                               and not all(isinstance(entry, dict) and entry.get('passed') for entry in checks.values())):
             inconclusive = True
     except BaseException as error:
         # The receipt is what Coconut Care reads. Name an unexpected error there too.
         output = output or f'The gate stopped: {type(error).__name__}: {str(error)[-5000:]}'
+        inconclusive = True
         raise
     finally:
-        if not recorded:
-            save(receipt, dict(revision=revision, passed=False, checked_at=time.time(), output=output[-20000:]))
+        verdict = 'passed' if passed else 'inconclusive' if inconclusive else 'failed'
+        if recorded:
+            # The receipt states the verdict itself, so a reader can tell a failed pin from checks that could not run.
+            with contextlib.suppress(OSError, ValueError, AttributeError):
+                save(receipt, dict(json.loads(receipt.read_text()), verdict=verdict))
+        else:
+            write_receipt(receipt, revision, verdict, output[-20000:])
         # The live install builds its own runtime. Free the candidate and the install caches.
         clear_gate_folders(source)
-    verdict = 'passed' if passed else 'inconclusive' if inconclusive else 'failed'
-    with contextlib.suppress(OSError, ValueError, AttributeError):
-        # The receipt states the verdict itself, so a reader can tell a failed pin from checks that could not run.
-        written = json.loads(receipt.read_text())
-        save(receipt, dict(written, verdict=verdict))
     if inconclusive:
+        previous = state.get('hermes_inconclusive') or {}
+        attempts = previous.get('attempts', 0) + 1 if previous.get('revision') == revision and previous.get('code') == tree else 1
+        # Each retry installs and checks again, for hours. Wait longer after each inconclusive run, up to a day.
+        state['hermes_inconclusive'] = dict(revision=revision, code=tree, attempts=attempts,
+                                            retry_at=time.time() + min(HERMES_FAILED_RETRY_SECONDS, 3600 * 2 ** (attempts - 1)))
+        save(state_path, state)
         raise RuntimeError(f'The native upgrade checks for Hermes {revision[:12]} did not finish: they timed out, or their '
-                           f'setup failed. Read {receipt}. The next pass after the backoff runs them again.')
+                           f'setup failed. Read {receipt}. They run again after a wait of up to a day.')
+    state.pop('hermes_inconclusive', None)
     state['hermes_checks'] = dict(revision=revision, sha=sha, code=tree, passed=passed, checked_at=time.time())
     save(state_path, state)
     if not passed:
         raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}.')
 
 
+def write_receipt(receipt, revision, verdict, output):
+    """Write the receipt for a gate run in which the check script wrote none."""
+    save(receipt, dict(revision=revision, passed=False, verdict=verdict, checked_at=time.time(), output=output))
+
+
 def gate_problem(source, live):
     """Return what stops the candidate checks before they start, or None. The checks need model keys and clean code."""
+    file = live / '.runtime/host/credentials.json'
     try:
-        keys = json.loads((live / '.runtime/host/credentials.json').read_text())
+        if file.is_symlink():
+            return 'The model credential file .runtime/host/credentials.json must not be a link.'
+        keys = json.loads(file.read_text())
     except (OSError, ValueError):
         keys = None
     model_keys = module(source, 'host').MODEL_KEYS
