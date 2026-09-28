@@ -6,7 +6,68 @@ from uuid import UUID, uuid5
 
 
 class NativeRoutines:
+    def _routine_continuation_input(self, task, job, owner):
+        # The immutable native outcome is checked in the worker. Here require
+        # the exact later delivery from the authenticated continuation route.
+        if (task.get('status') not in ('queued', 'working', 'completed')
+                or not task.get('_native_outcome_id') or not task.get('_native_turn_id')
+                or task.get('_self_recovery', {}).get('previous_task_id') != task['id']):
+            return {}
+        triggered, failed_at = False, None
+        for kind, raw, stamp in self.db.execute(
+                'SELECT type,data,created_at FROM events WHERE task_id=? AND bot_id=? ORDER BY seq',
+                (task['id'], task['bot_id'])):
+            data = json.loads(raw)
+            if kind == 'routine.triggered':
+                if triggered or data != dict(routine_id=task['routine_id'], task_id=task['id']):
+                    return {}
+                triggered = True
+                failed_at = stamp
+            if kind == 'task.updated' and triggered:
+                status = data.get('status')
+                if status == 'cancelled':
+                    return {}
+                if status == 'failed':
+                    failed_at = stamp
+        if not triggered or not failed_at:
+            return {}
+        rows = self.db.execute("SELECT data FROM deliveries WHERE json_extract(data,'$.receipt.task_id')=? ORDER BY rowid DESC",
+                               (task['id'],))
+        for row in rows:
+            delivery = json.loads(row[0])
+            expected = dict(task_id=task['id'], native_task_id=task['_native_outcome_id'], status='queued')
+            if (delivery.get('receipt') != expected or delivery.get('target_bot_id') != task['bot_id']
+                    or delivery.get('created_at', '') <= failed_at):
+                continue
+            source = self.db.execute('SELECT data FROM tasks WHERE id=?', (delivery.get('source_task_id'),)).fetchone()
+            if not source:
+                continue
+            source = json.loads(source[0])
+            if source['bot_id'] not in (task['bot_id'], task.get('source_bot_id')):
+                continue
+            if not any(m.get('sender_bot_id') == source['bot_id'] and m.get('text') == delivery.get('text')
+                       for m in task.get('_bot_messages', [])):
+                continue
+            return dict(job_id=job['id'], owner=owner,
+                        continuation=dict(task_id=task['id'], turn_id=task['_native_turn_id'],
+                                          native_task_id=task['_native_outcome_id'], delivery_id=delivery['id']))
+        return {}
+
     def native_routine_completion_input(self, task):
+        completion = self._native_routine_completion_input(task)
+        job = task.get('_native_job') or {}
+        owner = (job.get('fire_claim') or {}).get('by')
+        if (not owner or not job.get('id') or not task.get('_native_job_finished')
+                or task.get('routine_id') != str(uuid5(UUID(task['bot_id']), 'cron:' + job['id']))):
+            return completion
+        continuation = self._routine_continuation_input(task, job, owner)
+        if not continuation:
+            return completion
+        if task.get('_native_job_completion_receipt') == dict(job_id=job['id'], owner=owner, success=False):
+            completion = dict(job_id=job['id'], owner=owner, success=False, native_confirmed=True)
+        return dict(continuation, completion=completion)
+
+    def _native_routine_completion_input(self, task):
         job = task.get('_native_job') or {}
         owner = (job.get('fire_claim') or {}).get('by')
         if (not owner or not job.get('id') or not task.get('_native_job_finished')

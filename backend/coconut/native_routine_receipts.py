@@ -92,12 +92,30 @@ def completed(home, identity, owner, jobs, provenance=None):
         return False
 
 
+def continued_failure(home, identity, owner, jobs, provenance):
+    """Validate a closed occurrence without reacquiring or refiring its claim."""
+    expected = dict(job_id=identity, owner=owner, success=False)
+    with locked(home, identity):
+        with jobs._fire_job_lock(identity) as acquired:
+            if not acquired:
+                return False
+            job = jobs.get_job(identity) or {}
+            confirmed = (provenance == dict(expected, native_confirmed=True)
+                         or read(home, completion_id(identity, owner)) == expected
+                         or job.get('_coconut_completion') == expected)
+            # Never retain native locks while a tool waits for a service receipt:
+            # the scheduler can hold the service lock while claiming the next fire.
+            return confirmed and not job.get('fire_claim')
+
+
 def finish(home, identity, jobs, *, owner, success, output='', failure=None):
     with locked(home, identity):
         def confirmed(job):
-            if job.get('_coconut_completion') == dict(job_id=identity, owner=owner, success=True):
-                # Keep proof for this occurrence before another native fire can replace it.
-                save(home, completion_id(identity, owner), dict(job_id=identity, owner=owner, success=True))
+            outcome = job.get('_coconut_completion')
+            if outcome in (dict(job_id=identity, owner=owner, success=True),
+                           dict(job_id=identity, owner=owner, success=False)):
+                # Keep the exact result before another native fire can replace it.
+                save(home, completion_id(identity, owner), outcome)
             return True
 
         def complete(all_jobs, index, job):
@@ -130,7 +148,8 @@ def completion_receipts(home):
             value = json.loads(path.read_text())
             if (isinstance(value, dict) and isinstance(value.get('job_id'), str)
                     and isinstance(value.get('owner'), str)
-                    and value == dict(job_id=value['job_id'], owner=value['owner'], success=True)
+                    and isinstance(value.get('success'), bool)
+                    and value == dict(job_id=value['job_id'], owner=value['owner'], success=value['success'])
                     and path.stem == completion_id(value['job_id'], value['owner'])):
                 result[path.stem] = value
                 # Bound each provider transfer, not the lifetime of saved proof.

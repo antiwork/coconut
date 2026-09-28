@@ -63,11 +63,23 @@ class NativeBridge:
                         from cron import jobs
                         from hermes_constants import get_hermes_home
                         if __package__:
-                            from .native_routine_receipts import completed
+                            from .native_routine_receipts import completed, continued_failure
                         else:
-                            from native_routine_receipts import completed
-                        owns_claim = completed(get_hermes_home(), job['id'], job['fire_claim']['by'], jobs,
-                                               self.request['task'].get('_native_job_completion'))
+                            from native_routine_receipts import completed, continued_failure
+                        task = self.request['task']
+                        provenance = task.get('_native_job_completion') or {}
+                        completion = provenance.get('completion', provenance)
+                        owns_claim = completed(get_hermes_home(), job['id'], job['fire_claim']['by'], jobs, completion)
+                        continuation = provenance.get('continuation') or {}
+                        if (not owns_claim and provenance == dict(job_id=job['id'], owner=job['fire_claim']['by'],
+                                completion=completion, continuation=continuation)
+                                and all(isinstance(continuation.get(key), str) and continuation[key]
+                                        for key in ('delivery_id', 'task_id', 'turn_id', 'native_task_id'))
+                                and continuation.get('task_id') == task['id']
+                                and continuation.get('turn_id') == task.get('_native_turn_id')
+                                and continuation.get('native_task_id') == task.get('_native_outcome_id')):
+                            owns_claim = continued_failure(
+                                get_hermes_home(), job['id'], job['fire_claim']['by'], jobs, completion)
                     except Exception as error:
                         raise TurnPaused('The routine completion could not be confirmed.') from error
                 if not owns_claim:
