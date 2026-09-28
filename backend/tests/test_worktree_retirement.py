@@ -363,6 +363,40 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertFalse((path / '.cache').exists())
         self.assertFalse((path / 'tmp').exists())
 
+    def test_a_folder_that_cannot_move_does_not_keep_the_others(self):
+        identity, path = self.refused_with_build_folders()
+        rename = os.rename
+
+        def refuse_node_modules(source, target):
+            if Path(source).name == 'node_modules':
+                raise PermissionError('Operation not permitted')
+            return rename(source, target)
+        with patch('coconut.work_workspace.os.rename', side_effect=refuse_node_modules):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue((path / 'node_modules/pkg/index.js').exists())
+        self.assertFalse((path / 'tmp').exists())
+        # The moved folder is deleted after the lock, and nothing stays in the trash.
+        self.assertEqual(list((self.workspaces / work_workspace.TRASH).iterdir()), [])
+
+    def test_a_link_named_like_a_build_folder_is_not_followed(self):
+        identity, path = self.refused_with_build_folders()
+        outside = self.root / 'outside-cache'
+        outside.mkdir()
+        (outside / 'keep.bin').write_bytes(b'x')
+        shutil.rmtree(path / 'node_modules')
+        (path / 'node_modules').symlink_to(outside, target_is_directory=True)
+        self.assertEqual(self.retire(), [])
+        self.assertTrue((outside / 'keep.bin').exists())
+        self.assertTrue((path / 'node_modules').is_symlink())
+        self.assertFalse((path / 'tmp').exists())
+
+    def test_the_sweep_empties_a_trash_that_a_stop_left(self):
+        left = self.workspaces / work_workspace.TRASH / 'stopped'
+        left.mkdir(parents=True)
+        (left / 'big.bin').write_bytes(b'x')
+        work_workspace.sweep_temporary(self.workspaces)
+        self.assertFalse(left.exists())
+
     def test_a_build_folder_that_holds_a_worktree_stays(self):
         identity, path = self.refused_with_build_folders()
         # coconut_workspace tells a bot to test another commit in a worktree under tmp.

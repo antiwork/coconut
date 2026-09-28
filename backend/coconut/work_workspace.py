@@ -1,5 +1,6 @@
 """Keep one native Hermes worktree per outcome and repository."""
 import contextlib
+import errno
 from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
@@ -103,6 +104,8 @@ def save_bindings(manifest, saved):
 UNTRACKED, IGNORED = 'untracked/', 'ignored/'
 PATCHES = ('staged.patch', 'unstaged.patch')
 IN_PROGRESS = ('MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'rebase-merge', 'rebase-apply')
+# free_rebuildable moves build folders into this folder of the registry, and then deletes them.
+TRASH = 'build-trash'
 # Coconut does not archive these ignored folders. An install or a build creates them again.
 REBUILDABLE_NAMES = ('node_modules', '.cache')
 REBUILDABLE_PATHS = ('tmp', 'log', 'public/packs', 'public/packs-test', 'coverage')
@@ -953,16 +956,32 @@ def free_rebuildable(root, identity, finished):
             raise ValueError('The worktree changed while Coconut freed its rebuildable folders.')
         if not finished(False):
             return []
-        deleted = []
-        for name in names:
+        # A large folder takes minutes to delete, and acquire() waits for this lock. Under the lock, only move each
+        # folder out of the worktree. Delete it after the lock. sweep_temporary deletes what a stop left.
+        trash = root / TRASH
+        trash.mkdir(mode=0o700, exist_ok=True)
+        moved, deleted = [], []
+        for index, name in enumerate(names):
+            target = trash / f'{identity}-{time.time_ns()}-{index}'
             try:
-                shutil.rmtree(path / name)
+                try:
+                    os.rename(path / name, target)
+                except OSError as error:
+                    if error.errno != errno.EXDEV:
+                        raise
+                    # The trash is on another disk. Delete the folder in place, under the lock.
+                    shutil.rmtree(path / name)
+                    deleted.append(name)
+                else:
+                    moved.append((name, target))
             except OSError as error:
                 # One folder that Coconut cannot delete must not keep the others.
                 logging.getLogger(__name__).warning('Coconut could not delete build folder %s of %s: %s', name, path, error)
-                continue
-            deleted.append(name)
-    return deleted
+    for name, target in moved:
+        # The folder is out of the worktree now. A failed deletion leaves it in the trash for the next sweep.
+        shutil.rmtree(target, ignore_errors=True)
+        deleted.append(name)
+    return sorted(deleted)
 
 
 def removal_stopped(manifest, saved, binding, path, repository, current, archive, error):
@@ -1010,6 +1029,8 @@ def sweep_temporary(root):
     for folder in (Path(root) / 'archive', Path(root) / 'archive' / 'nested'):
         for temporary in folder.glob('.*.tar.gz.tmp'):
             temporary.unlink(missing_ok=True)
+    # free_rebuildable moves build folders here before it deletes them. A stop can leave some.
+    shutil.rmtree(Path(root) / TRASH, ignore_errors=True)
     trim_nested_archives(root)
 
 
