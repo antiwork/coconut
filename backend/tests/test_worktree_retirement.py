@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import copy
+import errno
 import fcntl
 import hashlib
 import io
@@ -674,6 +675,203 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(os.readlink(path / 'absolute'), '/etc/hosts')
         self.assertEqual(os.readlink(path / 'links' / 'escaping'), '../../../outside')
         self.assertEqual(os.readlink(path / 'links' / 'inside'), '../tracked.txt')
+
+    def refused_with_build_folders(self):
+        """Return a worktree that retirement refuses, with build folders and files that are not rebuildable."""
+        _, identity, path, _ = self.outcome()
+        (path / 'draft.txt').write_text('keep\n')
+        for name in ('tmp/cache/big.bin', 'node_modules/pkg/index.js', 'build/fixture.db'):
+            (path / name).parent.mkdir(parents=True, exist_ok=True)
+            (path / name).write_bytes(b'x' * 1024)
+        git(path, 'checkout', '-q', '-b', 'other-branch')
+        return identity, path
+
+    def test_a_refused_idle_worktree_loses_only_its_build_folders(self):
+        identity, path = self.refused_with_build_folders()
+        self.assertEqual(self.retire(), [])
+        self.assertNotIn('retired', self.registry()[identity])
+        # A build creates tmp and node_modules again. Other ignored and untracked files stay.
+        self.assertFalse((path / 'tmp').exists())
+        self.assertFalse((path / 'node_modules').exists())
+        self.assertEqual((path / 'build/fixture.db').stat().st_size, 1024)
+        self.assertEqual((path / 'draft.txt').read_text(), 'keep\n')
+        self.assertEqual(git(path, 'branch', '--show-current'), 'other-branch')
+
+    def test_a_folder_that_git_lists_with_its_children_is_deleted_once(self):
+        identity, path = self.refused_with_build_folders()
+        # Git lists .cache/ and .cache/pkg/ when only the folder's own .gitignore ignores its files.
+        (path / '.cache/pkg').mkdir(parents=True)
+        (path / '.cache/pkg/data.bin').write_bytes(b'x')
+        (path / '.cache/.gitignore').write_text('*\n')
+        listing = work_workspace.git_output(path, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z')
+        self.assertIn(b'.cache/pkg/\0', listing)
+        self.assertEqual(self.retire(), [])
+        self.assertFalse((path / '.cache').exists())
+        self.assertFalse((path / 'tmp').exists())
+
+    def test_a_folder_that_cannot_move_does_not_keep_the_others(self):
+        identity, path = self.refused_with_build_folders()
+        rename = os.rename
+
+        def refuse_node_modules(source, target):
+            if Path(source).name == 'node_modules':
+                raise PermissionError('Operation not permitted')
+            return rename(source, target)
+        with patch('coconut.work_workspace.os.rename', side_effect=refuse_node_modules):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue((path / 'node_modules/pkg/index.js').exists())
+        self.assertFalse((path / 'tmp').exists())
+        # The moved folder is deleted after the lock, and nothing stays in the trash.
+        self.assertEqual(list((self.workspaces / work_workspace.TRASH).iterdir()), [])
+
+    def test_a_folder_on_another_disk_stays_and_is_logged(self):
+        identity, path = self.refused_with_build_folders()
+
+        def other_disk(source, target):
+            raise OSError(errno.EXDEV, 'Cross-device link')
+        with patch('coconut.work_workspace.os.rename', side_effect=other_disk), \
+                self.assertLogs('coconut.work_workspace', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        # A deletion in place would hold the registry lock for minutes.
+        self.assertTrue((path / 'tmp/cache/big.bin').exists())
+        self.assertTrue(any('another disk' in line for line in logs.output))
+
+    def test_an_unreadable_build_folder_stays(self):
+        identity, path = self.refused_with_build_folders()
+        hidden = path / 'tmp/probe'
+        (hidden / 'clone/.git').mkdir(parents=True)
+        hidden.chmod(0)
+        self.addCleanup(hidden.chmod, 0o700)
+        self.assertEqual(self.retire(), [])
+        hidden.chmod(0o700)
+        self.assertTrue((hidden / 'clone/.git').is_dir())
+        self.assertFalse((path / 'node_modules').exists())
+
+    def test_a_link_named_like_a_build_folder_is_not_followed(self):
+        identity, path = self.refused_with_build_folders()
+        outside = self.root / 'outside-cache'
+        outside.mkdir()
+        (outside / 'keep.bin').write_bytes(b'x')
+        shutil.rmtree(path / 'node_modules')
+        (path / 'node_modules').symlink_to(outside, target_is_directory=True)
+        self.assertEqual(self.retire(), [])
+        self.assertTrue((outside / 'keep.bin').exists())
+        self.assertTrue((path / 'node_modules').is_symlink())
+        self.assertFalse((path / 'tmp').exists())
+
+    def test_the_sweep_empties_a_trash_that_a_stop_left(self):
+        left = self.workspaces / work_workspace.TRASH / 'stopped'
+        left.mkdir(parents=True)
+        (left / 'big.bin').write_bytes(b'x')
+        work_workspace.sweep_temporary(self.workspaces)
+        self.assertFalse(left.exists())
+
+    def test_a_build_folder_that_holds_a_worktree_stays(self):
+        identity, path = self.refused_with_build_folders()
+        # coconut_workspace tells a bot to test another commit in a worktree under tmp.
+        git(path, 'worktree', 'add', '-q', '-b', 'probe', str(path / 'tmp/probe'))
+        (path / 'tmp/probe/work.txt').write_text('uncommitted\n')
+        self.assertEqual(self.retire(), [])
+        self.assertEqual((path / 'tmp/probe/work.txt').read_text(), 'uncommitted\n')
+        self.assertTrue((path / 'tmp/cache/big.bin').exists())
+        self.assertFalse((path / 'node_modules').exists())
+
+    def test_a_worktree_of_another_repository_keeps_its_build_folders(self):
+        identity, path = self.refused_with_build_folders()
+        other = self.root / 'other'
+        other.mkdir()
+        git(other, 'init', '-q')
+        (other / 'readme.txt').write_text('other\n')
+        git(other, 'add', '.')
+        self.commit(other, 'Other')
+        # The saved path now holds a worktree of another repository.
+        git(self.repo, 'worktree', 'remove', '--force', str(path))
+        git(other, 'worktree', 'add', '-q', '-b', 'moved', str(path))
+        (path / '.gitignore').write_text('/tmp\n')
+        (path / 'tmp').mkdir()
+        (path / 'tmp/data.bin').write_bytes(b'x')
+        self.assertEqual(self.retire(), [])
+        self.assertTrue((path / 'tmp/data.bin').exists())
+
+    def test_a_locked_worktree_keeps_its_build_folders(self):
+        identity, path = self.refused_with_build_folders()
+        git(self.repo, 'worktree', 'lock', str(path))
+        with self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        # retire() already reports the lock. The build-folder step stays silent.
+        self.assertFalse(any('build folders' in line for line in logs.output))
+        self.assertTrue((path / 'tmp/cache/big.bin').exists())
+        self.assertTrue((path / 'node_modules/pkg/index.js').exists())
+
+    def test_a_stop_during_retirement_skips_the_build_folders(self):
+        identity, path = self.refused_with_build_folders()
+
+        def refuse(*args, **kwargs):
+            self.service.restart_pending = True
+            raise ValueError('The saved worktree changed branches.')
+        with patch('coconut.work_workspace.retire', side_effect=refuse):
+            self.retire()
+        self.service.restart_pending = False
+        self.assertTrue((path / 'tmp/cache/big.bin').exists())
+
+    def test_a_busy_service_skips_the_build_folders(self):
+        identity, path = self.refused_with_build_folders()
+        with patch('coconut.work_workspace.retire', side_effect=retirement.ServiceBusy(retirement.BUSY_MESSAGE)), \
+                patch.object(retirement, 'BUSY_RETRY_SECONDS', 0), \
+                patch('coconut.work_workspace.free_rebuildable') as free:
+            self.retire()
+        free.assert_not_called()
+        self.assertTrue((path / 'tmp/cache/big.bin').exists())
+
+    def test_a_build_folder_that_holds_another_repository_stays(self):
+        identity, path = self.refused_with_build_folders()
+        clone = path / 'tmp/clone'
+        clone.mkdir()
+        git(clone, 'init', '-q')
+        (clone / 'work.txt').write_text('uncommitted\n')
+        # A bare clone has no .git entry.
+        (path / '.cache').mkdir()
+        git(path / '.cache', 'init', '-q', '--bare', 'mirror')
+        self.assertEqual(self.retire(), [])
+        self.assertEqual((clone / 'work.txt').read_text(), 'uncommitted\n')
+        self.assertTrue((path / '.cache/mirror/HEAD').is_file())
+        self.assertFalse((path / 'node_modules').exists())
+
+    def test_a_linked_trash_moves_nothing(self):
+        identity, path = self.refused_with_build_folders()
+        outside = self.root / 'outside-trash'
+        outside.mkdir()
+        (self.workspaces / work_workspace.TRASH).symlink_to(outside, target_is_directory=True)
+        self.assertEqual(self.retire(), [])
+        self.assertTrue((path / 'tmp/cache/big.bin').exists())
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_a_failed_deletion_is_logged_and_not_counted(self):
+        identity, path = self.refused_with_build_folders()
+        rmtree = shutil.rmtree
+
+        def fail_in_trash(target, *args, **kwargs):
+            # The folders move out of the worktree, and then their deletion in the trash fails.
+            if work_workspace.TRASH in str(target):
+                raise PermissionError('Operation not permitted')
+            return rmtree(target, *args, **kwargs)
+        with patch('coconut.work_workspace.shutil.rmtree', side_effect=fail_in_trash), \
+                self.assertLogs('coconut.work_workspace', 'WARNING') as logs:
+            freed = work_workspace.free_rebuildable(self.workspaces, identity, lambda wait: True)
+        self.assertEqual(len(freed), 0)
+        self.assertTrue(any('could not delete build folder' in line for line in logs.output))
+
+    def test_a_used_or_resumed_worktree_keeps_its_build_folders(self):
+        identity, path = self.refused_with_build_folders()
+        with patch('coconut.work_workspace.in_use', return_value=True):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue((path / 'tmp/cache/big.bin').exists())
+        answers = iter([True, True, False])
+        with patch('coconut.work_workspace.retire', return_value=None), \
+                patch.object(self.service, '_finished_outcomes', side_effect=lambda *a, **k: (
+                    {self.registry()[identity]['outcome']} if next(answers, False) else set())):
+            self.retire()
+        self.assertTrue((path / 'node_modules/pkg/index.js').exists())
 
     def test_large_ignored_files_keep_the_worktree(self):
         _, identity, path, _ = self.outcome()

@@ -1,5 +1,6 @@
 """Keep one native Hermes worktree per outcome and repository."""
 import contextlib
+import errno
 from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
@@ -103,6 +104,8 @@ def save_bindings(manifest, saved):
 UNTRACKED, IGNORED = 'untracked/', 'ignored/'
 PATCHES = ('staged.patch', 'unstaged.patch')
 IN_PROGRESS = ('MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'rebase-merge', 'rebase-apply')
+# free_rebuildable moves build folders into this folder of the registry, and then deletes them.
+TRASH = 'build-trash'
 # Coconut does not archive these ignored folders. An install or a build creates them again.
 REBUILDABLE_NAMES = ('node_modules', '.cache')
 REBUILDABLE_PATHS = ('tmp', 'log', 'public/packs', 'public/packs-test', 'coverage')
@@ -893,6 +896,118 @@ def retire(root, identity, finished, *, orphan_age=None):
         temporary.unlink(missing_ok=True)
 
 
+def rebuildable_folders(path, keep):
+    """Return the ignored folders of the worktree that a build creates again. Skip a folder that holds a path in `keep`."""
+    listing = git_output(path, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z')
+    names = []
+    for entry in (os.fsdecode(name) for name in listing.split(b'\0') if name):
+        # Git lists an ignored folder with a slash, and a link to a folder without one. Never follow a link.
+        folder = path / entry.rstrip('/')
+        if (entry.endswith('/') and rebuildable(entry) and not folder.is_symlink()
+                and folder.resolve().parent.is_relative_to(path)
+                and not any(inner == folder or folder in inner.parents for inner in keep)):
+            names.append(entry.rstrip('/'))
+    # Git can list a folder and its children when the folder's own .gitignore ignores everything. Keep the top one.
+    return sorted(name for name in names if not any(name.startswith(other + '/') for other in names))
+
+
+def holds_repository(folder):
+    """Return True when the folder holds a Git repository or worktree, for example a clone that a bot made in tmp.
+
+    A folder that Coconut cannot read counts as one, because a repository can be inside it.
+    """
+    def unreadable(error):
+        raise error
+    try:
+        for directory, folders, files in os.walk(folder, onerror=unreadable):
+            # A bare clone or a mirror has no .git entry. It holds HEAD, objects, and refs at its top.
+            if '.git' in folders or '.git' in files or ('HEAD' in files and {'objects', 'refs'} <= set(folders)):
+                return True
+    except OSError:
+        return True
+    return False
+
+
+def free_rebuildable(root, identity, finished):
+    """Delete the rebuildable folders of an idle worktree that retirement refused. Return the deleted names.
+
+    retire() does not archive these folders, because an install or a build creates them again. A worktree that
+    retirement refuses, for example for a nested repository or a branch switch, can keep gigabytes of them for days.
+    Coconut deletes only the folders that Git ignores and that `rebuildable` names. It keeps a folder that holds a
+    worktree, because retirement archives the changes of a nested worktree first. `finished` is the check of retire().
+    """
+    root = Path(root)
+    manifest = root / 'worktrees.json'
+    before = json.loads(manifest.read_text()).get(identity)
+    if not before or before.get('retired') or not isinstance(before.get('path'), str):
+        return []
+    path = Path(before['path'])
+    if path.is_symlink() or not (path / '.git').is_file():
+        return []
+    path = path.resolve()
+    repository = Path(before['repository']).resolve()
+    # validate_binding makes the same check. Another repository can own a worktree at this path now.
+    if (Path(git(path, 'rev-parse', '--show-toplevel')).resolve() != path or path == repository
+            or Path(git(path, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve() != repository / '.git'):
+        return []
+
+    def keep(saved):
+        # A folder can hold a worktree of the repository, or the saved path of another outcome.
+        records = registered(repository)
+        record = next((r for r in records if r['path'] == path), None)
+        if not record or record['locked']:
+            # check_git refuses these too. A person locks a worktree so that nothing changes it.
+            return None
+        inner = {r['path'] for r in records}
+        return inner | {Path(binding['path']).resolve() for other, binding in saved.items()
+                        if other != identity and isinstance(binding, dict) and isinstance(binding.get('path'), str)}
+    protected = keep(json.loads(manifest.read_text()))
+    if protected is None:
+        return []
+    # A nested clone or a worktree of another repository can hold uncommitted work, and no archive keeps it.
+    # The walk runs before the lock, because a large folder takes a while. The outcome is idle, so no turn adds one.
+    names = [name for name in rebuildable_folders(path, protected) if not holds_repository(path / name)]
+    if not names or not finished(True) or in_use(path):
+        return []
+    with (root / '.workspace.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        # acquire() and restore() take this lock, so no outcome can claim the worktree during the deletion.
+        saved = json.loads(manifest.read_text())
+        protected = keep(saved)
+        if saved.get(identity) != before or protected is None or not set(names) <= set(rebuildable_folders(path, protected)):
+            raise ValueError('The worktree changed while Coconut freed its rebuildable folders.')
+        if not finished(False):
+            return []
+        # A large folder takes minutes to delete, and acquire() waits for this lock. Under the lock, only move each
+        # folder out of the worktree. Delete it after the lock. sweep_temporary deletes what a stop left.
+        trash = root / TRASH
+        if trash.is_symlink():
+            # sweep_temporary does not follow a link, so it would never empty the target.
+            raise ValueError(f'{trash} is a link. Coconut does not move build folders through it.')
+        trash.mkdir(mode=0o700, exist_ok=True)
+        moved, deleted = [], []
+        for index, name in enumerate(names):
+            target = trash / f'{identity}-{time.time_ns()}-{index}'
+            try:
+                os.rename(path / name, target)
+            except OSError as error:
+                # One folder that Coconut cannot move must not keep the others. A folder on another disk than the
+                # trash stays, because a deletion in place would hold the lock for minutes.
+                reason = 'It is on another disk than ' + str(trash) if error.errno == errno.EXDEV else str(error)
+                logging.getLogger(__name__).warning('Coconut could not delete build folder %s of %s: %s', name, path, reason)
+            else:
+                moved.append((name, target))
+    for name, target in moved:
+        try:
+            shutil.rmtree(target)
+        except OSError as error:
+            # The folder is out of the worktree now. The next sweep tries again.
+            logging.getLogger(__name__).warning('Coconut could not delete build folder %s of %s from %s: %s', name, path, target, error)
+            continue
+        deleted.append(name)
+    return sorted(deleted)
+
+
 def removal_stopped(manifest, saved, binding, path, repository, current, archive, error):
     """Decide from the path what a failed or interrupted `git worktree remove` did. Hold the registry lock."""
     if not os.path.lexists(path):
@@ -1110,6 +1225,13 @@ def sweep_temporary(root):
     for folder in (Path(root) / 'archive', Path(root) / 'archive' / 'nested', Path(root) / 'archive' / 'done'):
         for temporary in folder.glob('.*.tar.gz.tmp'):
             temporary.unlink(missing_ok=True)
+    # free_rebuildable moves build folders here before it deletes them. A stop can leave some.
+    trash = Path(root) / TRASH
+    if trash.is_dir() and not trash.is_symlink():
+        try:
+            shutil.rmtree(trash)
+        except OSError as error:
+            logging.getLogger(__name__).warning('Coconut could not empty %s: %s', trash, error)
     trim_nested_archives(root)
     # A binding names its discard archive, and a person needs it to recover the work. Only the age rule removes it.
     named = named_discard_archives(root)
