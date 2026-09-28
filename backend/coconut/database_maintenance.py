@@ -219,6 +219,9 @@ class DatabaseMaintenance:
         The recovery count goes with the text: `_start_context` reads the text whenever the count is set, and a copy of
         an ended context keeps both fields, so the two must never part.
 
+        A dismissed proposal stays as it is too: it returns to pending when a person restores it (DecisionInbox), with
+        the same revision, and a recovery then reads its contexts.
+
         A recovery reads `question`, `_context_recovery`, and `_recovery_unknown_tools` of a context only for a
         pending decision (WorkRecovery._queue_context_recoveries and DecisionFreshness._refresh_recovery_records).
         Every pass that reads the whole table decodes this text. The rows stay, with their status and links.
@@ -231,7 +234,7 @@ class DatabaseMaintenance:
                     "AND (json_type(data,'$._context_recovery') IS NOT NULL OR json_type(data,'$._recovery_unknown_tools') IS NOT NULL "
                     "OR length(COALESCE(json_extract(data,'$.question'),'')) > ?) "
                     "AND COALESCE(json_extract(data,'$.decision_id'),'') NOT IN "
-                    "(SELECT id FROM decisions WHERE json_extract(data,'$.status')='pending') LIMIT ?",
+                    "(SELECT id FROM decisions WHERE json_extract(data,'$.status') IN ('pending','dismissed')) LIMIT ?",
                     (CONTEXT_QUESTION_CHARACTERS, BATCH_ROWS))]
                 if not ids:
                     break

@@ -76,10 +76,13 @@ class ContextRetentionTests(ServiceCase):
         # A second pass finds nothing.
         self.assertEqual(self.service._prune_contexts(), 0)
 
-    def test_a_pending_decision_and_a_live_context_keep_their_text(self):
+    def test_a_pending_or_dismissed_decision_and_a_live_context_keep_their_text(self):
         pending = self.decision('pending')
+        # A dismissed proposal returns to pending when a person restores it, with the same revision.
+        dismissed = self.decision('dismissed')
         settled = self.decision('approved')
-        keep = [self.context(pending, 'failed'), self.context(settled, 'working'), self.context(settled, 'queued')]
+        keep = [self.context(pending, 'failed'), self.context(dismissed, 'failed'),
+                self.context(settled, 'working'), self.context(settled, 'queued')]
         self.assertEqual(self.service._prune_contexts(), 0)
         for identity in keep:
             row = self.stored(identity)
