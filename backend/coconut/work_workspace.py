@@ -1111,7 +1111,23 @@ def sweep_temporary(root):
         for temporary in folder.glob('.*.tar.gz.tmp'):
             temporary.unlink(missing_ok=True)
     trim_nested_archives(root)
-    trim_nested_archives(root, folder='done')
+    # A binding names its discard archive, and a person needs it to recover the work. Only the age rule removes it.
+    named = named_discard_archives(root)
+    trim_nested_archives(root, folder='done', keep=named)
+    for archive in named:
+        with contextlib.suppress(FileNotFoundError):
+            if archive.stat().st_mtime < time.time() - NESTED_ARCHIVE_DAYS * 86400:
+                archive.unlink()
+
+
+def named_discard_archives(root):
+    """Return the discard archives that a binding still names, for a worktree that has not resumed."""
+    try:
+        saved = json.loads((Path(root) / 'worktrees.json').read_text())
+    except (OSError, ValueError):
+        return set()
+    return {Path(b['retired']['archive']) for b in saved.values() if isinstance(b, dict)
+            and isinstance(b.get('retired'), dict) and b['retired'].get('done') and b['retired'].get('archive')}
 
 
 def trim_nested_archives(root, keep=(), *, folder='nested'):
@@ -1459,6 +1475,14 @@ def restore(binding, checked, *, retry_duplicates=False):
             if path.is_symlink() or occupied(path):
                 raise ValueError(f'The path {path} of the discarded work is not empty. Ask the operator to inspect it.')
             git(repository, 'rev-parse', '--verify', 'refs/heads/' + binding['branch'])
+            with contextlib.suppress(*GIT_ERRORS):
+                git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
+            holder = next((r['path'] for r in registered(repository) if r['branch'] == 'refs/heads/' + binding['branch']), None)
+            if holder:
+                # Git allows a branch in one worktree only, and another worktree, often the main one, holds it.
+                # A new branch at the saved commit keeps the outcome working, and the old branch stays where it is.
+                binding['branch'] = 'wt/' + Path(binding['path']).name
+                git(repository, 'branch', '--force', binding['branch'], retired.get('head') or 'HEAD')
             with contextlib.suppress(*GIT_ERRORS):
                 git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
             with contextlib.suppress(FileNotFoundError, OSError):

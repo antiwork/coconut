@@ -381,6 +381,36 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertFalse(unknown_old.exists())
         self.assertTrue(unknown_new.exists())
 
+    def test_a_named_discard_archive_survives_the_size_limit_but_not_the_age_limit(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
+        self.assertEqual(self.retire(), [identity])
+        archive = Path(self.registry()[identity]['retired']['archive'])
+        with patch.object(work_workspace, 'NESTED_ARCHIVE_LIMIT_BYTES', 0):
+            os.utime(archive, (time.time() - 3 * 86400,) * 2)
+            work_workspace.sweep_temporary(self.workspaces)
+        self.assertTrue(archive.exists())
+        os.utime(archive, (time.time() - (work_workspace.NESTED_ARCHIVE_DAYS + 1) * 86400,) * 2)
+        work_workspace.sweep_temporary(self.workspaces)
+        self.assertFalse(archive.exists())
+
+    def test_a_discarded_branch_that_another_worktree_holds_gets_a_new_branch_on_resume(self):
+        outcome, identity, path, _ = self.outcome()
+        # The bot leaves the worktree on main, which the main checkout holds too.
+        main = git(self.repo, 'branch', '--show-current')
+        git(path, 'checkout', '-q', '--detach')
+        git(path, 'checkout', '-q', '-B', 'temp-holder')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            git(path, 'checkout', '-q', '-b', 'other-branch')
+            self.assertEqual(self.retire(), [identity])
+        saved = self.registry()
+        saved[identity]['branch'] = main
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertTrue(restored.is_dir())
+        self.assertNotEqual(git(restored, 'branch', '--show-current'), main)
+
     def test_the_sweep_trims_old_discard_archives(self):
         done = self.workspaces / 'archive' / 'done'
         done.mkdir(parents=True)
