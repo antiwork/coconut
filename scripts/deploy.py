@@ -635,6 +635,20 @@ def reconcile(root, operations):
     remove_journal(root, record)
 
 
+def check_runtime_receipt(root, marker):
+    """Refuse runtime data that another installation left. Return the receipt path and whether it exists."""
+    runtime_receipt = safe_path(root / '.runtime/deploy/runtime.json', root)
+    runtime_present = runtime_receipt.is_file()
+    if runtime_present:
+        try:
+            value = json.loads(runtime_receipt.read_text(), object_pairs_hook=unique_object)
+            if value != {'version': 1, 'installation_id': marker['installation_id']} or type(value['version']) is not int:
+                raise ValueError()
+        except (ValueError, TypeError, KeyError, OSError):
+            raise DeployError('The installed runtime receipt is invalid. Coconut kept its files unchanged.') from None
+    return runtime_receipt, runtime_present
+
+
 def recover(directory, *, home=None, operations=None):
     """Finish or roll back a pending update from its journal. Install no package. Return True when a journal was pending.
 
@@ -645,8 +659,11 @@ def recover(directory, *, home=None, operations=None):
     root = destination(directory, Path(home or Path.home()).resolve())
     deployment = safe_path(root / '.runtime/deploy', root)
     journal = safe_path(deployment / 'update.json', root)
-    if read_marker(root) is None or not journal.exists():
+    marker = read_marker(root)
+    if marker is None or not journal.exists():
         return False
+    # receive() makes this check before it recovers a journal. The journal can move runtime folders.
+    check_runtime_receipt(root, marker)
     descriptor = os.open(deployment / 'deploy.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, 'a') as lock, contextlib.ExitStack() as leases:
         try:
@@ -670,15 +687,7 @@ def receive(directory, address, stream, *, home=None, operations=None, update_ru
     address = normalized_address(address)
     package = validate_package(stream)
     marker = read_marker(root)
-    runtime_receipt = safe_path(root / '.runtime/deploy/runtime.json', root)
-    runtime_present = runtime_receipt.is_file()
-    if runtime_present:
-        try:
-            value = json.loads(runtime_receipt.read_text(), object_pairs_hook=unique_object)
-            if value != {'version': 1, 'installation_id': marker['installation_id']} or type(value['version']) is not int:
-                raise ValueError()
-        except (ValueError, TypeError, KeyError, OSError):
-            raise DeployError('The installed runtime receipt is invalid. Coconut kept its files unchanged.') from None
+    runtime_receipt, runtime_present = check_runtime_receipt(root, marker)
     operations = operations or Operations()
     operations.preflight(root, address, package)
     if marker and normalized_address(marker['address']) != address:

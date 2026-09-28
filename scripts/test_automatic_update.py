@@ -148,6 +148,50 @@ class AutomaticUpdateTests(unittest.TestCase):
             self.assertEqual(saved['pending_ios']['source_sha'], 'corrected')
             release.assert_called_once()
 
+    def test_a_source_only_deploy_does_not_run_the_hermes_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, live = root / 'source', root / 'live'
+            source.mkdir(); live.mkdir()
+            (live / '.runtime/host').mkdir(parents=True)
+            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:8443')))
+            # The installed runtime already has the pin of the package.
+            (live / '.runtime/hermes').mkdir()
+            (live / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit='runtime')))
+            (live / 'app.py').write_text('current')
+            hashes = {'app.py': hashlib.sha256(b'current').hexdigest()}
+            (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=dict(hashes, old='x'))))
+            state_path = root / 'state.json'
+            update.save(state_path, {})
+            received = []
+
+            def command(args, **kwargs):
+                if args[:3] == ['git', 'remote', 'get-url']: return 'https://github.com/owner/repo.git'
+                if args[:2] == ['git', 'status']: return ''
+                if args[:2] == ['git', 'rev-parse']: return 'next'
+                if args[:2] == ['git', 'ls-files']: return 'app.py'
+                if 'receive' in args:
+                    received.append(args)
+                    (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=hashes)))
+                    return 'COCONUT_DEPLOY_RESULT={"ok":true}'
+                return ''
+
+            def package(path):
+                path.write_bytes(b'package')
+                return dict(package_id='package')
+            packaging = SimpleNamespace(package=package, source_files=lambda: {'app.py': b'current'})
+            installer = SimpleNamespace(validate_package=lambda stream: SimpleNamespace(hashes=hashes, revision='runtime'),
+                                        Operations=lambda: SimpleNamespace(health=lambda *args: None))
+            config = dict(repository='owner/repo', source=str(source), live=str(live))
+            with patch.object(update, 'run', side_effect=command), patch.object(update, 'module', side_effect=[packaging, installer]), \
+                    patch.object(update, 'reviewed_merge'), patch.object(update, 'ios_hash', return_value='ios'), \
+                    patch.object(update.Path, 'home', return_value=root):
+                update.update(config, state_path)
+            self.assertEqual(len(received), 1)
+            self.assertNotIn('--update-runtime', received[0])
+            # The gate installs a runtime and runs model checks. A deploy that keeps the pin skips it.
+            self.gate.assert_not_called()
+
     def test_a_failed_deploy_backs_off_for_the_same_commit(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
