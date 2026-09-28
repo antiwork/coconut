@@ -961,6 +961,24 @@ class NativeWorkContinuationTests(unittest.TestCase):
     def test_linked_owner_native_report_waits_for_care_and_does_not_exempt_coordinator_caller(self):
         self.test_linked_owner_report_waits_for_care_and_does_not_exempt_coordinator_caller(direct_native=True)
 
+    def test_linked_owner_report_accepts_quiet_failed_requester_siblings_but_guards_live_signals(self):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
+        for index, root in enumerate((source, source)):
+            sibling = dict(root, id=f'failed-sibling-{index}', _execution_session_id=f'failed-sibling-{index}',
+                           _assignment_task_id=root['id'], status='failed',
+                           _native_outcome_id=None, _kanban_claim={'native_id': f't_failed_{index}'})
+            sibling.pop('_work_todos', None)
+            sibling.pop('_waiting_on', None)
+            self.service._put('tasks', sibling)
+            card = dict(id=f't_failed_{index}', status='done')
+            self.service.kanban.tasks[sibling['id']] = dict(card, status='running', current_run_id=9)
+            self.assert_linked_report_blocked_without_mutation(source)
+            self.service.kanban.tasks[sibling['id']] = card
+            self.service._put('tasks', dict(sibling, _return_pending={'text': 'Not delivered'}))
+            self.assert_linked_report_blocked_without_mutation(source)
+            self.service._put('tasks', dict(sibling, status='cancelled' if index == 1 else 'failed'))
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
     def test_linked_owner_report_waits_for_care_and_does_not_exempt_coordinator_caller(self, direct_native=False):
         owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
         care = self.write('/v1/bots', {'name': 'Care'})
