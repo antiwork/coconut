@@ -62,6 +62,31 @@ Coconut sets that variable for each board that it opens. Thus the disposable boa
 The script finds the marker and stops before it runs a check. Do not remove the marker to continue.
 Queue the command with a service that runs outside the worker. Then read the result file.
 
+### Automatic updates
+
+The automatic updater runs the candidate checks itself before it installs a new Hermes pin from `main`:
+
+1. It recovers a pending update journal with `scripts/deploy.py recover`, which installs no package.
+2. It needs 8 GiB of free disk space, model keys in `.runtime/host/credentials.json` of the installed service (run
+   `scripts/host.py save-model-access` to write them; a key in the environment alone does not count, and the checks do
+   not inherit one), and unchanged files in `backend` and `scripts`. It checks these before the install, and it saves what is missing in `hermes-checks.json`.
+3. It installs the pinned revision in its own checkout with `scripts/hermes.py install`.
+4. It runs `scripts/check_hermes_candidate.py` against that runtime, with the model keys of the installed service.
+   The result goes to `hermes-checks.json` next to the updater state.
+5. It removes the folders that it wrote in `.runtime`.
+
+The receipt has a `verdict`: `passed`, `failed` (the checks ran and a check failed), or `inconclusive` (a timeout,
+missing model keys, changed code, or a setup error).
+
+The live install starts only when the result passes for the pinned revision. The updater keeps each result for that
+revision, the Git trees of `backend` and `scripts` (the code that the checks run), and a digest of the model keys. After a failure, it runs the
+checks again after 24 hours, and at once for a new pin, for example a revert, for a change of that code, or for
+a corrected model key.
+An inconclusive run waits 1, 2, 4, 8, and 16 hours, and then a day, before the next run for the same pin and code,
+because each run installs the candidate and runs the checks again. A timeout, missing model keys, or a setup error of the checks is not a failure: the updater stops the
+leftover check processes, and it runs the checks again after its normal backoff. A Coconut bot cannot run these checks inside its own Hermes worker,
+so a pin pull request can merge on CI, Greptile, and review, and this gate protects the installation.
+
 After installation, repeat the installed contract and native checks to catch invalid paths or retained state.
 
 Cache successful checks for unchanged hashes. Run them again after a source change, runtime change, or new failure.

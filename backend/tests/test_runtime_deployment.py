@@ -1,9 +1,15 @@
 """Keep runtime updates and rollback inside the managed deployment transaction."""
+import contextlib
+import io
 import json
+import os
+import sys
 import tempfile
+import time
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+from uuid import uuid4
 
 from test_deploy_tools import deploy, archive, package_files, FakeOperations
 
@@ -69,6 +75,49 @@ class RuntimeDeploymentTests(unittest.TestCase):
         self.assertFalse((self.root / '.runtime/deploy/update.json').exists())
         self.assertEqual((self.root / '.runtime/host/coconut.sqlite3').read_bytes(), b'Unchanged chat data')
 
+    def test_an_upgrade_removes_the_rollback_copies_of_earlier_updates(self):
+        earlier = self.root / f'.runtime/hermes-rollback-{uuid4()}'
+        earlier.mkdir()
+        (earlier / 'install.json').write_text(json.dumps({'commit': 'b' * 40}))
+        # A person can save a copy under the same prefix. Only a deployment UUID marks a copy of an update.
+        manual = self.root / '.runtime/hermes-rollback-known-good'
+        manual.mkdir()
+        failed = [self.root / f'.runtime/hermes-failed-{uuid4()}' for _ in range(2)]
+        for path in failed:
+            path.mkdir()
+        self.receive(self.files, update_runtime=True)
+        # Each failed attempt leaves a runtime copy. A successful update removes them.
+        self.assertFalse(any(path.exists() for path in failed))
+        saved = [path for path in (self.root / '.runtime').glob('hermes-rollback-*') if path != manual]
+        # Only the copy of this update can serve a rollback. A manual copy stays.
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(json.loads((saved[0] / 'install.json').read_text())['commit'], OLD)
+        self.assertFalse(earlier.exists())
+        self.assertTrue(manual.exists())
+
+    def test_a_new_runtime_update_keeps_only_the_newest_failed_copy(self):
+        failed = [self.root / f'.runtime/hermes-failed-{uuid4()}' for _ in range(3)]
+        for path in failed:
+            # A rollback creates each copy by rename, which sets its change time. The last one here is the newest.
+            path.mkdir()
+            time.sleep(0.02)
+        stale = self.root / f'.runtime/hermes-rollback-{uuid4()}'
+        stale.mkdir()
+        with self.assertRaises(deploy.DeployError):
+            self.receive(self.files, RuntimeOperations(mode='managed', fail='prepare'), update_runtime=True)
+        # The attempt failed, so the newest failed copy of an earlier attempt stays for inspection. No journal
+        # was pending, so the older copies served no rollback.
+        left = sorted(path.name for path in (self.root / '.runtime').glob('hermes-failed-*'))
+        self.assertIn(failed[-1].name, left)
+        self.assertFalse(failed[0].exists() or failed[1].exists() or stale.exists())
+        self.assert_old_runtime()
+
+    def test_an_update_that_keeps_the_pin_keeps_its_rollback_copy(self):
+        kept = self.root / f'.runtime/hermes-rollback-{uuid4()}'
+        kept.mkdir()
+        self.receive(package_files(**{'README.md': b'# Coconut, changed\n'}), update_runtime=True)
+        self.assertTrue(kept.exists())
+
     def test_install_failure_restores_source_runtime_and_native_state(self):
         with self.assertRaises(deploy.DeployError):
             self.receive(self.files, RuntimeOperations(mode='managed', fail='prepare'), update_runtime=True)
@@ -104,6 +153,34 @@ class RuntimeDeploymentTests(unittest.TestCase):
         deploy.reconcile(self.root, RuntimeOperations(mode='managed'))
         self.assert_old_runtime()
         self.assertFalse((self.root / '.runtime/deploy/update.json').exists())
+
+    def test_recover_replays_a_pending_journal_and_installs_no_package(self):
+        self.assertFalse(deploy.recover('Coconut', home=self.home, operations=RuntimeOperations(mode='managed')))
+        with self.assertRaises(deploy.DeployError):
+            self.receive(self.files, RuntimeOperations(mode='managed', fail='prepare', fail_stop_after=1), update_runtime=True)
+        operations = RuntimeOperations(mode='managed')
+        self.assertTrue(deploy.recover('Coconut', home=self.home, operations=operations))
+        # The automatic updater runs this before the Hermes candidate checks. The new pin stays uninstalled.
+        self.assert_old_runtime()
+        self.assertFalse((self.root / '.runtime/deploy/update.json').exists())
+        self.assertNotIn('prepare', [call[0] for call in operations.calls])
+
+    def test_the_recover_command_needs_no_address(self):
+        # The automatic updater runs `deploy.py recover --directory <folder>` without --address.
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['deploy.py', 'recover', '--directory', 'Coconut']), \
+                patch.object(deploy, 'recover', return_value=False) as recover, contextlib.redirect_stdout(output):
+            deploy.main()
+        recover.assert_called_once_with('Coconut')
+        self.assertEqual(output.getvalue().strip(), 'COCONUT_DEPLOY_RESULT=' + json.dumps({'ok': True, 'recovered': False}))
+
+    def test_recover_refuses_runtime_data_of_another_installation(self):
+        with self.assertRaises(deploy.DeployError):
+            self.receive(self.files, RuntimeOperations(mode='managed', fail='prepare', fail_stop_after=1), update_runtime=True)
+        (self.root / '.runtime/deploy/runtime.json').write_text(json.dumps({'version': 1, 'installation_id': 'other'}))
+        with self.assertRaisesRegex(deploy.DeployError, 'runtime receipt is invalid'):
+            deploy.recover('Coconut', home=self.home, operations=RuntimeOperations(mode='managed'))
+        self.assertTrue((self.root / '.runtime/deploy/update.json').is_file())
 
     def test_runtime_backup_symlink_does_not_redirect_rollback(self):
         with self.assertRaises(deploy.DeployError):

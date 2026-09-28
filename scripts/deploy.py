@@ -489,6 +489,35 @@ def runtime_paths(root, record):
         'hermes', 'hermes-rollback-' + identity, 'hermes-failed-' + identity))
 
 
+def prune_runtime_copies(root, keep=(), *, newest_failed=False):
+    """Remove the runtime copies that finished updates left. Keep the paths in `keep`.
+
+    An update keeps the previous runtime as hermes-rollback-<id>, and a rollback keeps the new one as hermes-failed-<id>.
+    Each copy holds a complete Hermes runtime of about a gigabyte, and each attempt has a new id, so repeated
+    failures would fill the disk. A finished update has no journal, so its copies serve no rollback. With
+    `newest_failed`, the newest failed copy stays for inspection. A manual copy with another name stays.
+    """
+    # Cleanup only reclaims space. It must not turn an update into a failed one.
+    with contextlib.suppress(OSError, DeployError):
+        copies = [path for path in (root / '.runtime').glob('hermes-*')
+                  if runtime_copy_name(path.name) and path.is_dir() and not path.is_symlink()]
+        failed = sorted((path for path in copies if path.name.startswith('hermes-failed-')),
+                        key=lambda path: max(path.stat().st_mtime, path.stat().st_ctime))
+        keep = {*keep, *failed[-1:]} if newest_failed else set(keep)
+        for old in copies:
+            if old not in keep:
+                shutil.rmtree(safe_path(old, root), ignore_errors=True)
+
+
+def runtime_copy_name(name):
+    """Return True for a name that runtime_paths gives a runtime copy. Another name is a manual copy."""
+    for prefix in ('hermes-rollback-', 'hermes-failed-'):
+        if name.startswith(prefix):
+            with contextlib.suppress(ValueError):
+                return name == prefix + str(UUID(name.removeprefix(prefix)))
+    return False
+
+
 def move_terminal_state(source, target, root):
     # Keep the authoritative native terminal registry and its lock together.
     for name in ('terminal', 'terminal.lock'):
@@ -613,13 +642,8 @@ def reconcile(root, operations):
     remove_journal(root, record)
 
 
-def receive(directory, address, stream, *, home=None, operations=None, update_runtime=False):
-    os.umask(0o077)
-    home = Path(home or Path.home()).resolve()
-    root = destination(directory, home)
-    address = normalized_address(address)
-    package = validate_package(stream)
-    marker = read_marker(root)
+def check_runtime_receipt(root, marker):
+    """Refuse runtime data that another installation left. Return the receipt path and whether it exists."""
     runtime_receipt = safe_path(root / '.runtime/deploy/runtime.json', root)
     runtime_present = runtime_receipt.is_file()
     if runtime_present:
@@ -629,6 +653,48 @@ def receive(directory, address, stream, *, home=None, operations=None, update_ru
                 raise ValueError()
         except (ValueError, TypeError, KeyError, OSError):
             raise DeployError('The installed runtime receipt is invalid. Coconut kept its files unchanged.') from None
+    return runtime_receipt, runtime_present
+
+
+def recover(directory, *, home=None, operations=None):
+    """Finish or roll back a pending update from its journal. Install no package. Return True when a journal was pending.
+
+    The automatic updater runs this before a slow step, such as the Hermes candidate checks. A failed update can
+    leave the service stopped, and receive() recovers only as its first step.
+    """
+    os.umask(0o077)
+    root = destination(directory, Path(home or Path.home()).resolve())
+    deployment = safe_path(root / '.runtime/deploy', root)
+    journal = safe_path(deployment / 'update.json', root)
+    marker = read_marker(root)
+    if marker is None or not journal.exists():
+        return False
+    # receive() makes this check before it recovers a journal. The journal can move runtime folders.
+    check_runtime_receipt(root, marker)
+    descriptor = os.open(deployment / 'deploy.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'a') as lock, contextlib.ExitStack() as leases:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise DeployError('Another Coconut deployment is already running.') from None
+        try:
+            pending_runtime = journal.exists() and json.loads(journal.read_text()).get('runtime_change')
+        except (ValueError, TypeError, AttributeError, OSError):
+            raise DeployError('The deployment journal is invalid. No files were changed.') from None
+        if pending_runtime:
+            leases.enter_context(runtime_update_lease(root))
+        reconcile(root, operations or Operations())
+    return True
+
+
+def receive(directory, address, stream, *, home=None, operations=None, update_runtime=False):
+    os.umask(0o077)
+    home = Path(home or Path.home()).resolve()
+    root = destination(directory, home)
+    address = normalized_address(address)
+    package = validate_package(stream)
+    marker = read_marker(root)
+    runtime_receipt, runtime_present = check_runtime_receipt(root, marker)
     operations = operations or Operations()
     operations.preflight(root, address, package)
     if marker and normalized_address(marker['address']) != address:
@@ -686,6 +752,10 @@ def receive(directory, address, stream, *, home=None, operations=None, update_ru
                     runtime_change = {'previous': previous_revision, 'candidate': package.revision}
             except (ValueError, KeyError, OSError):
                 raise DeployError('The Hermes installation receipt is invalid.') from None
+        if runtime_change and not journal.exists():
+            # A new runtime replaces the current one. No journal is pending, so no copy serves a rollback.
+            # Free their space before the new runtime. An update that keeps the pin keeps its rollback copy.
+            prune_runtime_copies(root, newest_failed=True)
         staging = Path(tempfile.mkdtemp(prefix='stage-', dir=deployment))
         backup = Path(tempfile.mkdtemp(prefix='rollback-', dir=deployment))
         old_names = set(marker['files'])
@@ -755,6 +825,9 @@ def receive(directory, address, stream, *, home=None, operations=None, update_ru
             write_json(runtime_receipt, {'version': 1, 'installation_id': marker['installation_id']})
             write_json(root / MARKER_PATH, updated)
             remove_journal(root, record)
+            if runtime_change:
+                with contextlib.suppress(OSError, DeployError):
+                    prune_runtime_copies(root, {runtime_paths(root, record)[1]})
             return {'version': 1, 'installation_id': marker['installation_id'], 'package_id': package.package_id, 'mode': mode, 'address': address, 'health': health, 'updated': original is not None}
         except BaseException as error:
             if not applied:
@@ -775,13 +848,18 @@ def main():
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), interrupt)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['receive'])
+    parser.add_argument('command', choices=['receive', 'recover'], help='recover replays a pending update journal and installs no package.')
     parser.add_argument('--directory', default='Coconut')
-    parser.add_argument('--address', required=True)
+    parser.add_argument('--address')
     parser.add_argument('--update-runtime', action='store_true', help='Install the package Hermes pin and retain the previous runtime for rollback.')
     args = parser.parse_args()
+    if args.command == 'receive' and not args.address:
+        parser.error('receive needs --address.')
     try:
-        result = receive(args.directory, args.address, sys.stdin.buffer, update_runtime=args.update_runtime)
+        if args.command == 'recover':
+            result = {'recovered': recover(args.directory)}
+        else:
+            result = receive(args.directory, args.address, sys.stdin.buffer, update_runtime=args.update_runtime)
     except (DeployError, KeyboardInterrupt) as error:
         if isinstance(error, KeyboardInterrupt):
             error = DeployError('The deployment was interrupted. Check host status before retrying.')
