@@ -1,6 +1,6 @@
 """Run the native upgrade checks against a candidate Hermes runtime before it is installed.
 
-docs/hermes-upgrade-checks.md names four checks that need the Mac mini and its model access. CI cannot run them,
+docs/hermes-upgrade-checks.md names four checks that need the Mac mini, and some need its model access. CI cannot run them,
 and a Coconut bot cannot run them from inside its own Hermes worker. The automatic updater runs this script
 outside Hermes, against the runtime that `scripts/hermes.py install` put in its own checkout.
 
@@ -10,9 +10,11 @@ when every check passes.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -31,8 +33,23 @@ def checks():
     from test_native_profiles import PROGRAMS
     from test_native_relay import PROGRAM as RELAY
     from test_native_routines import PROGRAM as ROUTINES
-    return ([('routines', ROUTINES, 'receipt'), ('relay', RELAY, 'receipt')]
+    from test_script_routines import PROGRAM as SCRIPTS
+    return ([('routines', ROUTINES, 'receipt'), ('script-routines', SCRIPTS, 'receipt'), ('relay', RELAY, 'receipt')]
             + [(f'profiles-{index + 1}', program, 'pass') for index, program in enumerate(PROGRAMS)])
+
+
+def run_group(command, *, env, timeout):
+    """Run a command in its own process group. On a timeout, stop the whole group, so no check keeps running."""
+    process = subprocess.Popen(command, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               start_new_session=True)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(command, timeout, stdout, stderr) from None
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def passed(kind, result):
@@ -63,8 +80,7 @@ def run_checks(checkout: Path, live: Path) -> dict:
         env = dict(os.environ, PYTHONPATH=os.pathsep.join((str(checkout / 'backend'), str(source))))
         for name, program, kind in checks():
             try:
-                result = subprocess.run([str(python), '-c', program, str(root), str(checkout)], env=env,
-                                        text=True, capture_output=True, timeout=CHECK_SECONDS)
+                result = run_group([str(python), '-c', program, str(root), str(checkout)], env=env, timeout=CHECK_SECONDS)
                 ok = passed(kind, result)
                 tail = dict(out=result.stdout[-1500:], err=result.stderr[-1500:])
             except subprocess.TimeoutExpired:

@@ -495,9 +495,11 @@ def prune_rollbacks(root, keep):
     Each copy holds a complete Hermes runtime of about a gigabyte. Only the latest one can serve a rollback,
     because an update journal names its own copy, and a finished update has no journal. A manual copy stays.
     """
-    for old in (root / '.runtime').glob('hermes-rollback-*'):
-        if old != keep and old.is_dir() and not old.is_symlink():
-            shutil.rmtree(safe_path(old, root))
+    # Cleanup only reclaims space. It must not turn a finished update into a failed one.
+    with contextlib.suppress(OSError, DeployError):
+        for old in (root / '.runtime').glob('hermes-rollback-*'):
+            if old != keep and old.is_dir() and not old.is_symlink():
+                shutil.rmtree(safe_path(old, root), ignore_errors=True)
 
 
 def move_terminal_state(source, target, root):

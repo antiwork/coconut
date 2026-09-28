@@ -1,5 +1,6 @@
 """Apply reviewed main commits with the installed deployment and TestFlight tools."""
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import importlib.util
@@ -8,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -20,8 +22,9 @@ from urllib.parse import urlsplit
 # After a failed install of a commit, the updater waits this long before it tries the same commit again.
 FAILED_DEPLOY_SECONDS = 10 * 60
 FAILED_DEPLOY_MAX_SECONDS = 60 * 60
-# The native upgrade checks of a new Hermes pin, together, finish well within this time.
-HERMES_CHECKS_SECONDS = 45 * 60
+# The native upgrade checks of a new Hermes pin run 6 programs of at most 10 minutes each
+# (hermes_candidate_checks.CHECK_SECONDS). This budget covers all of them.
+HERMES_CHECKS_SECONDS = 80 * 60
 
 
 def run(args, *, cwd=None, stdin=None, pass_fds=()):
@@ -332,9 +335,17 @@ def check_hermes_candidate(source, live, revision, state, state_path):
     passed, output = False, ''
     try:
         run([sys.executable, str(source / 'scripts/hermes.py'), 'install', '--revision', revision], cwd=source)
-        result = subprocess.run([sys.executable, str(source / 'scripts/hermes_candidate_checks.py'),
-                                 '--checkout', str(source), '--live', str(live)],
-                                cwd=source, capture_output=True, text=True, timeout=HERMES_CHECKS_SECONDS)
+        command = [sys.executable, str(source / 'scripts/hermes_candidate_checks.py'), '--checkout', str(source), '--live', str(live)]
+        # The checks start Hermes workers. Run them in their own process group, so a timeout stops all of them.
+        process = subprocess.Popen(command, cwd=source, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   start_new_session=True)
+        try:
+            stdout, stderr = process.communicate(timeout=HERMES_CHECKS_SECONDS)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            stdout, stderr = process.communicate()
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         output = result.stdout[-20000:] + result.stderr[-5000:]
         reports = [json.loads(line.split('=', 1)[1]) for line in result.stdout.splitlines()
                    if line.startswith('COCONUT_HERMES_CHECKS=')]

@@ -20,7 +20,7 @@ class AutomaticUpdateTests(unittest.TestCase):
     def setUp(self):
         # The Hermes candidate gate installs a runtime and runs model checks. Tests of other steps pass it.
         gate = patch.object(update, 'check_hermes_candidate')
-        gate.start()
+        self.gate = gate.start()
         self.addCleanup(gate.stop)
 
     def test_only_successful_merged_commit_passes(self):
@@ -135,6 +135,8 @@ class AutomaticUpdateTests(unittest.TestCase):
                 update.update(config, state_path)
             self.assertEqual(len(received), 1)
             self.assertIn('--update-runtime', received[0])
+            # A runtime update runs the Hermes candidate gate before the live install.
+            self.gate.assert_called_once()
             saved = json.loads(state_path.read_text())
             self.assertEqual(saved['pending_ios']['source_sha'], 'corrected')
             release.assert_called_once()
@@ -264,12 +266,13 @@ class AutomaticUpdateTests(unittest.TestCase):
                 commands.append(args)
                 return ''
             report = dict(revision='new', passed=checks_pass, checks=[])
-            checks = SimpleNamespace(returncode=0 if checks_pass else 1, stderr='',
-                                     stdout='COCONUT_HERMES_CHECKS=' + json.dumps(report) + '\n')
+            output = 'COCONUT_HERMES_CHECKS=' + json.dumps(report) + '\n'
+            checks = SimpleNamespace(pid=4242, returncode=0 if checks_pass else 1,
+                                     communicate=lambda timeout=None: (output, ''))
             # setUp patches the gate for other tests. These tests call the real function.
             real = REAL_GATE
             with patch.object(update, 'run', side_effect=command), \
-                    patch.object(update.subprocess, 'run', return_value=checks) as script:
+                    patch.object(update.subprocess, 'Popen', return_value=checks) as script:
                 try:
                     real(source, live, 'new', state, state_path)
                     raised = None
@@ -363,13 +366,13 @@ class AutomaticUpdateTests(unittest.TestCase):
 
 
 class PostmergeRegressionTests(unittest.TestCase):
+    """Real updater entry points; external operations use only temporary fixtures."""
+
     def setUp(self):
         # The Hermes candidate gate installs a runtime and runs model checks. Tests of other steps pass it.
         gate = patch.object(update, 'check_hermes_candidate')
-        gate.start()
+        self.gate = gate.start()
         self.addCleanup(gate.stop)
-
-    """Real updater entry points; external operations use only temporary fixtures."""
 
     def ci(self, checks, *, total=None, statuses=None, merge_sha='abc'):
         values = [
