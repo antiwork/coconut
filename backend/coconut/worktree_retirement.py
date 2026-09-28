@@ -197,9 +197,17 @@ class WorktreeRetirement:
             bots = {bot['id'] for bot in self._all('bots')}
         finally:
             self.lock.release()
+        # A tracked worktree that lies inside a scratch workspace is not scratch. Keep its folder.
+        tracked = set()
+        for binding in saved.values():
+            if isinstance(binding, dict) and isinstance(binding.get('path'), str):
+                with contextlib.suppress(OSError):
+                    tracked.add(Path(binding['path']).resolve())
         candidates = []
         for folder in root.iterdir():
             name = folder.name
+            if any(place == folder.resolve() or folder.resolve() in place.parents for place in tracked):
+                continue
             if (not SCRATCH_NAME.fullmatch(name) or name in bots or folder.is_symlink() or not folder.is_dir()
                     or (name in known and name not in eligible)):
                 continue
@@ -281,7 +289,12 @@ class WorktreeRetirement:
             # A failed orphan check must not stop retirement.
             logging.getLogger(__name__).warning('Coconut could not stop the orphans of idle outcomes: %s', error)
         # A merged pull request ends its work, so its worktree goes without the checks that protect resumable work.
-        classified = self._done_outcomes(finished)
+        try:
+            classified = self._done_outcomes(finished)
+        except (ValueError, OSError, KeyError, sqlite3.Error) as error:
+            # A failed read leaves the pull requests unknown. Then no long idle discard runs in this pass.
+            logging.getLogger(__name__).warning('Coconut could not read the pull requests of idle outcomes: %s', error)
+            classified = None
         # A busy service lock leaves the open pull requests unknown. Then no long idle discard runs in this pass.
         done, open_pull_requests = classified or ({}, set())
         # An outcome idle this long loses a worktree that retirement refuses, and the files of its scratch workspace.
@@ -360,6 +373,11 @@ class WorktreeRetirement:
                             retired.append(identity)
                             continue
                     except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.TimeoutExpired, sqlite3.Error) as error:
+                        if isinstance(error, ServiceBusy):
+                            # Retry in this pass, as for the first attempt.
+                            if attempt < BUSY_RETRIES:
+                                busy.append((identity, outcome))
+                                continue
                         refusal = f'{refusal}; the discard also failed: {error}' if refusal else error
                 if refusal:
                     # sqlite3.Error covers a database that shutdown closed while this thread ran.

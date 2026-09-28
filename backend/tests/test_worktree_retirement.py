@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import shlex
 import subprocess
 import sys
@@ -400,6 +401,51 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.retire()
         self.assertTrue((nested / 'draft.txt').exists())
         self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_failed_branch_creation_keeps_the_saved_branch_name(self):
+        outcome, identity, path, _ = self.outcome()
+        saved_branch = self.registry()[identity]['branch']
+        main = git(self.repo, 'branch', '--show-current')
+        git(path, 'checkout', '-q', '--detach')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            self.assertEqual(self.retire(), [identity])
+        saved = self.registry()
+        saved[identity]['branch'] = main
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        real = work_workspace.git
+
+        def refuse(where, *arguments, **options):
+            if arguments[:1] == ('branch',) and len(arguments) == 3:
+                raise ValueError('Git could not create the branch.')
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=refuse), self.assertRaises(ValueError):
+            acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(self.registry()[identity]['branch'], main)
+        self.assertIn('restore_failed', self.registry()[identity]['retired'])
+
+    def test_a_failed_pull_request_read_does_not_stop_the_pass(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        with patch.object(self.service, '_done_outcomes', side_effect=sqlite3.OperationalError('closed')):
+            # The pass goes on. The merged outcome gets the ordinary retirement, with the full archive.
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
+        self.assertFalse(self.registry()[identity]['retired'].get('done'))
+
+    def test_a_scratch_folder_that_holds_a_tracked_worktree_stays(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        scratch = self.workspaces / outcome
+        scratch.mkdir(exist_ok=True)
+        (scratch / 'notes.txt').write_text('keep\n')
+        other, other_identity, other_path, _ = self.outcome(status='working', updated_at=RECENT)
+        inner = scratch / 'adopted'
+        git(self.repo, 'worktree', 'move', str(other_path), str(inner))
+        saved = self.registry()
+        saved[other_identity]['path'] = str(inner)
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        self.retire()
+        self.assertTrue((scratch / 'notes.txt').exists())
 
     def test_a_second_discard_keeps_the_first_archive(self):
         outcome, identity, path, task = self.outcome()

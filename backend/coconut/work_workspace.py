@@ -1643,10 +1643,12 @@ def restore(binding, checked, *, retry_duplicates=False):
                 # Never move a branch that exists: it can hold commits that no other ref holds.
                 while subprocess.run(['git', '-C', str(repository), 'rev-parse', '--verify', '--quiet',
                                       'refs/heads/' + (base if not number else f'{base}-{number}')],
-                                     capture_output=True).returncode == 0:
+                                     capture_output=True, timeout=60).returncode == 0:
                     number += 1
-                binding['branch'] = base if not number else f'{base}-{number}'
-                git(repository, 'branch', binding['branch'], start)
+                name = base if not number else f'{base}-{number}'
+                git(repository, 'branch', name, start)
+                # The binding names the new branch only after Git created it, so a failure keeps the saved name.
+                binding['branch'] = name
             with contextlib.suppress(*GIT_ERRORS):
                 git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
             with contextlib.suppress(FileNotFoundError, OSError):
