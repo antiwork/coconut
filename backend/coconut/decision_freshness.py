@@ -469,8 +469,11 @@ class DecisionFreshness:
                     from .decision_inbox import CARD_TEXT_LIMITS, decision_risk
                     if not revision or set(revision) - {'risk_level', 'risk', 'uncertainty'}:
                         raise ServiceError(400, 'A draft check can change only its risk and uncertainty.')
-                    assessment = decision_risk(revision)
-                    uncertainty = revision.get('uncertainty', '')
+                    if ('risk_level' in revision) != ('risk' in revision):
+                        raise ServiceError(400, 'Revise risk_level and risk together.')
+                    # Like a current result, revise confirms unchanged assessment fields too.
+                    assessment = decision_risk(dict(decision, **revision))
+                    uncertainty = revision.get('uncertainty', decision.get('uncertainty', ''))
                     if not isinstance(uncertainty, str) or len(uncertainty) > CARD_TEXT_LIMITS['uncertainty']:
                         raise ServiceError(400, f"Shorten the uncertainty to at most {CARD_TEXT_LIMITS['uncertainty']} characters.")
                     decision.pop('evidence', None)
