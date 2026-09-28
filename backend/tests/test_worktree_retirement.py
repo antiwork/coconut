@@ -682,26 +682,27 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertTrue((scratch / 'notes.txt').exists())
         self.assertEqual(list(elsewhere.iterdir()), [])
 
-    def test_a_partly_removed_checkout_is_removed_and_restored_from_the_archive(self):
-        outcome, identity, path, task = self.outcome()
-        self.pull_request(task, 'merged')
-        (path / 'draft.txt').write_text('keep\n')
-        real = work_workspace.git
+    def test_a_checkout_that_changed_after_the_record_is_not_removed_and_a_partial_one_needs_a_person(self):
+        for name, damage in (('new edit', lambda path: (path / 'later.txt').write_text('an edit after the record\n')),
+                             ('partial removal', lambda path: [(path / f).unlink() for f in ('tracked.txt', 'logo.bin')])):
+            with self.subTest(name):
+                outcome, identity, path, task = self.outcome()
+                self.pull_request(task, 'merged')
+                (path / 'draft.txt').write_text('keep\n')
+                real = work_workspace.git
 
-        def partial(where, *arguments, **options):
-            if arguments[:2] == ('worktree', 'remove'):
-                # Git deleted most tracked files and stopped. The archive was written before.
-                for name in ('tracked.txt', 'logo.bin', 'obsolete.txt'):
-                    (path / name).unlink()
-                raise KeyboardInterrupt()
-            return real(where, *arguments, **options)
-        with patch.object(work_workspace, 'git', side_effect=partial), self.assertRaises(KeyboardInterrupt):
-            self.retire()
-        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
-        # A new checkout of the branch has every tracked file, and the archive put the untracked file back.
-        self.assertEqual((restored / 'tracked.txt').read_text(), 'one\ntwo\n')
-        self.assertEqual((restored / 'draft.txt').read_text(), 'keep\n')
-        self.assertNotIn('retired', self.registry()[identity])
+                def stopped(where, *arguments, **options):
+                    if arguments[:2] == ('worktree', 'remove'):
+                        damage(path)
+                        raise KeyboardInterrupt()
+                    return real(where, *arguments, **options)
+                with patch.object(work_workspace, 'git', side_effect=stopped), self.assertRaises(KeyboardInterrupt):
+                    self.retire()
+                # The checkout is not the one that the archive holds. The resume leaves it alone, and asks for a look.
+                with self.assertRaisesRegex(ValueError, 'not empty'):
+                    acquire(self.workspaces, outcome, str(self.repo))
+                self.assertTrue((path / 'draft.txt').exists())
+                self.assertIn('restore_failed', self.registry()[identity]['retired'])
 
     def test_scratch_files_of_an_outcome_without_a_binding_wait_for_the_long_idle_rule(self):
         outcome = str(uuid4())

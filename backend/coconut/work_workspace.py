@@ -1137,6 +1137,8 @@ def discard_run(root, identity, finished, state, *, orphan_age=None, merged=Fals
             git(repository, 'branch', branch, head)
             state['made_branch'] = branch
         staged, unstaged, names = changes(path)
+        # The record names what the archive holds. A leftover checkout that no longer matches it is not removed.
+        state['changes'] = changes_digest(staged, unstaged, names)
         # Keep the untracked files that an archive can hold. Git lists a nested repository as a folder, and it goes.
         files = [name for name in names if not name.endswith('/')
                  and ((path / name).is_symlink() or stat.S_ISREG(os.lstat(path / name).st_mode))]
@@ -1171,10 +1173,11 @@ def discard_run(root, identity, finished, state, *, orphan_age=None, merged=Fals
     # The scan of the open files runs before the registry lock, as in retire. A turn of an idle outcome does not start.
     if present and in_use(path):
         raise ValueError('A process uses the worktree.')
-    return finish_discard(root, identity, before, finished, present, path, repository, branch, head, temporary, archive)
+    return finish_discard(root, identity, before, finished, present, path, repository, branch, head, temporary, archive,
+                          state.get('changes'))
 
 
-def finish_discard(root, identity, before, finished, present, path, repository, branch, head, temporary, archive):
+def finish_discard(root, identity, before, finished, present, path, repository, branch, head, temporary, archive, digest=None):
     """Remove the checkout of discard under the registry lock, and keep its archive only after the removal checks."""
     manifest = root / 'worktrees.json'
     with (root / '.workspace.lock').open('a') as lock:
@@ -1188,7 +1191,8 @@ def finish_discard(root, identity, before, finished, present, path, repository, 
             raise ValueError('The outcome resumed during retirement.')
         # The binding names the archive before the removal, as in retire, so a stop cannot leave an archive that no
         # binding names.
-        retired = dict(at=stamp(datetime.now(timezone.utc)), done=True, head=head, archive=str(archive) if archive else None)
+        retired = dict(at=stamp(datetime.now(timezone.utc)), done=True, head=head, archive=str(archive) if archive else None,
+                       changes=digest)
         binding.pop('retire_failed', None)
         binding['branch'], binding['retired'] = branch, retired
         if present:
@@ -1549,10 +1553,11 @@ def leftover_checkout(binding, path, repository):
     """Say what the restore of a discarded binding does with a linked worktree that it finds at the path.
 
     'adopt': a restore failed to put the archived changes back, and left a clean checkout on the saved branch.
-    'remove': a stop between the record and the removal of the discard left the checkout. The archive was written
-    before the removal started, so the restore finishes the removal, and then it restores as usual: a new checkout of the
-    saved branch, and the archived changes on it. This does not depend on how much of the checkout is left.
-    None: no linked worktree of this repository is there.
+    'remove': a stop between the record and the removal of the discard left the checkout, and it still holds what the
+    archive holds (the digest in the record). The restore finishes the removal, and then it restores as usual: a new
+    checkout of the saved branch, and the archived changes on it. A checkout that changed since, by a new edit or by
+    a removal that stopped half way, is not removed: the path is not empty, and a person looks at it.
+    None: no linked worktree of this repository is there, or it needs a person.
     """
     if path.is_symlink() or not path.is_dir() or not (path / '.git').is_file():
         return None
@@ -1562,7 +1567,10 @@ def leftover_checkout(binding, path, repository):
         if (binding['retired'].get('restore_failed') and git(path, 'branch', '--show-current') == binding['branch']
                 and git(path, 'status', '--porcelain') == ''):
             return 'adopt'
-        return None if binding['retired'].get('restore_failed') else 'remove'
+        if binding['retired'].get('restore_failed'):
+            return None
+        wanted = binding['retired'].get('changes')
+        return 'remove' if wanted and changes_digest(*changes(path)) == wanted else None
     except GIT_ERRORS:
         return None
 
