@@ -1,6 +1,9 @@
 """Keep runtime updates and rollback inside the managed deployment transaction."""
+import contextlib
+import io
 import json
 import os
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -161,6 +164,15 @@ class RuntimeDeploymentTests(unittest.TestCase):
         self.assert_old_runtime()
         self.assertFalse((self.root / '.runtime/deploy/update.json').exists())
         self.assertNotIn('prepare', [call[0] for call in operations.calls])
+
+    def test_the_recover_command_needs_no_address(self):
+        # The automatic updater runs `deploy.py recover --directory <folder>` without --address.
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['deploy.py', 'recover', '--directory', 'Coconut']), \
+                patch.object(deploy, 'recover', return_value=False) as recover, contextlib.redirect_stdout(output):
+            deploy.main()
+        recover.assert_called_once_with('Coconut')
+        self.assertEqual(output.getvalue().strip(), 'COCONUT_DEPLOY_RESULT=' + json.dumps({'ok': True, 'recovered': False}))
 
     def test_recover_refuses_runtime_data_of_another_installation(self):
         with self.assertRaises(deploy.DeployError):

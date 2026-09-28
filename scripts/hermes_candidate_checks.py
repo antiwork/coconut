@@ -35,8 +35,8 @@ def checks():
     from test_native_profiles import PROGRAMS
     from test_native_relay import PROGRAM as RELAY
     from test_native_routines import PROGRAM as ROUTINES
-    from test_script_routines import PROGRAM as SCRIPTS
-    return ([('routines', ROUTINES, 'receipt'), ('script-routines', SCRIPTS, 'receipt'), ('relay', RELAY, 'receipt')]
+    from test_script_routines import PROGRAM as SCRIPT_ROUTINES
+    return ([('routines', ROUTINES, 'receipt'), ('script-routines', SCRIPT_ROUTINES, 'receipt'), ('relay', RELAY, 'receipt')]
             + [(f'profiles-{index + 1}', program, 'pass') for index, program in enumerate(PROGRAMS)])
 
 
@@ -77,11 +77,13 @@ def run_tree(command, *, env=None, cwd=None, timeout):
         try:
             stdout, stderr = process.communicate(timeout=DRAIN_SECONDS)
         except subprocess.TimeoutExpired as late:
-            # A process that started after the listing can keep the pipes open. Stop reading them.
+            # A process that started after the listing can keep the pipes open. Stop it, then stop reading them.
+            stop_tree(process.pid)
             stdout, stderr = text(late.stdout), text(late.stderr)
             process.stdout.close()
             process.stderr.close()
-            process.wait()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=DRAIN_SECONDS)
         raise subprocess.TimeoutExpired(command, timeout, stdout, stderr) from None
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
