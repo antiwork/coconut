@@ -52,12 +52,6 @@ class WorkWorkspaceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'missing'):
             preferred(self.saved, first)
 
-    def test_the_workspace_tool_tells_bots_to_rename_the_branch(self):
-        from coconut.work_workspace import SCHEMA
-        # A branch switch stops the work item, and a rename keeps it. The tool must say so to every bot.
-        self.assertIn('git branch -m', SCHEMA['description'])
-        self.assertIn('git switch', SCHEMA['description'])
-
     def test_a_retired_native_worktree_returns_with_its_changes(self):
         outcome = str(uuid4())
         original = acquire(self.saved, outcome, str(self.repo))
@@ -215,6 +209,14 @@ class RecoveryWorkspaceTests(unittest.TestCase):
         self.assertNotEqual(continued['id'], original['id'])
         self.assertEqual(continued['_execution_session_id'], original['_execution_session_id'])
 
+
+class WorkspaceToolTextTests(unittest.TestCase):
+    # This guard needs no Git repository or Hermes runtime, so it runs in every test job.
+    def test_the_workspace_tool_tells_bots_to_rename_the_branch(self):
+        from coconut.work_workspace import SCHEMA
+        # A branch switch stops the work item, and a rename keeps it. The tool must say so to every bot.
+        self.assertIn('git branch -m', SCHEMA['description'])
+        self.assertIn('git switch', SCHEMA['description'])
 
 if __name__ == '__main__':
     unittest.main()
