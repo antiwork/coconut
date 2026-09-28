@@ -801,6 +801,63 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.service._put('tasks', coordinator)
         self.assertEqual(self.resume(source)['task_id'], owner['id'])
 
+    def linked_report_other_caller(self, bot_id):
+        caller = self.write(f'/v1/bots/{bot_id}/messages', {'text': 'Continue the retained owner'})
+        caller = self.service._get('tasks', caller['id'])
+        caller.update(status='working', _execution_session_id=caller['id'])
+        self.service._put('tasks', caller)
+        return caller
+
+    def test_linked_owner_native_report_guards_original_requester_when_another_task_calls(self):
+        self.test_linked_owner_report_guards_original_requester_when_another_task_calls(direct_native=True)
+
+    def test_linked_owner_report_guards_original_requester_when_another_task_calls(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
+        callers = [self.linked_report_other_caller(bot_id) for bot_id in (owner['bot_id'], source['bot_id'])]
+        self.assertEqual(source['status'], 'working')
+        for caller in callers:
+            with self.subTest(caller_bot=caller['bot_id']):
+                self.assertNotEqual(caller['id'], source['id'])
+                self.assert_linked_report_blocked_without_mutation(caller)
+        # A completed requester with a still-running native claim also competes.
+        quiet_source = dict(source, status='completed', _waiting_on=[],
+                            _kanban_claim={'native_id': 't_original_requester'})
+        self.service._put('tasks', quiet_source)
+        self.service.kanban.tasks[source['id']] = dict(id='t_original_requester', status='running', current_run_id=17)
+        for caller in callers:
+            self.assert_linked_report_blocked_without_mutation(caller)
+        self.service.kanban.tasks[source['id']] = dict(id='t_original_requester', status='done')
+        self.assertEqual(self.resume(callers[0])['task_id'], owner['id'])
+
+    def test_linked_owner_native_report_guards_completed_pending_native_replies(self):
+        self.test_linked_owner_report_guards_completed_pending_native_replies(direct_native=True)
+
+    def test_linked_owner_report_guards_completed_pending_native_replies(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
+        # A different authenticated invocation keeps the original requester in
+        # the checked chain. Every task is completed and every native card done.
+        caller = self.linked_report_other_caller(owner['bot_id'])
+        source = dict(source, status='completed', _waiting_on=[],
+                      _kanban_claim={'native_id': 't_original_requester'})
+        self.service._put('tasks', source)
+        self.service.kanban.tasks[source['id']] = dict(id='t_original_requester', status='done')
+        guarded = {t['id']: t for t in (source, reporter, coordinator, callback)}
+        for index, root in enumerate((source, reporter, coordinator, callback)):
+            sibling = dict(root, id=f'reply-sibling-{index}', _execution_session_id=f'reply-sibling-{index}',
+                           _assignment_task_id=root['id'], _kanban_claim={'native_id': f't_reply_sibling_{index}'})
+            sibling.pop('_native_outcome_id', None)
+            self.service._put('tasks', sibling)
+            self.service.kanban.tasks[sibling['id']] = dict(id=f't_reply_sibling_{index}', status='done')
+            guarded[sibling['id']] = sibling
+        for task in guarded.values():
+            with self.subTest(task=task['id']):
+                self.assertEqual(task['status'], 'completed')
+                self.assertEqual(self.service.kanban.tasks[task['id']]['status'], 'done')
+                self.service._put('tasks', dict(task, _native_reply_pending={'text': 'Result still awaiting delivery'}))
+                self.assert_linked_report_blocked_without_mutation(caller)
+                self.service._put('tasks', task)
+        self.assertEqual(self.resume(caller)['task_id'], owner['id'])
+
     def test_linked_owner_report_reads_deliveries_once_per_request(self):
         owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
         for index in range(4):

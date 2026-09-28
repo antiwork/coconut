@@ -602,8 +602,11 @@ class NativeOutcomes:
                                       or (value[0]['status'] == 'completed' and self._unfinished_work(value[0]))}
                     if report_coordinator:
                         requester_chain = self._work_chain(source, tasks, records, include_continuations=True)
-                        for identity in (*callers, owner['id']):
-                            requester_chain.pop(identity, None)
+                        requester_chain.pop(owner['id'], None)
+                        # The original requester can still be active when another
+                        # task invokes continuation. Only its own call is exempt.
+                        if caller and caller['id'] in callers:
+                            requester_chain.pop(caller['id'], None)
                         linked.update({key: value for key, value in requester_chain.items()
                                        if value[0]['status'] not in ('failed', 'cancelled')
                                        or value[0].get('_native_reply_pending') or not quiet(value[0])})
@@ -632,6 +635,7 @@ class NativeOutcomes:
                             and not (passive_report or linked_report))
                         or any((t['status'] != 'completed' and t['id'] != foreground)
                                or t.get('_waiting_on') or t.get('_return_pending')
+                               or (linked_report and t.get('_native_reply_pending'))
                                or self._task_paused(t) or self._get('exchanges', t['exchange_id']).get('cancelled')
                                or self._background_pending(t['id']) or self._unfinished_work(t)
                                or (t['id'] != foreground and self.running.get(t['id']) and self.running[t['id']].is_alive())
