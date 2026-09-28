@@ -2495,8 +2495,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         try:
             return base64.b64decode(artifact['_content_base64']) if artifact.get('_content_base64') else None
         except ValueError:
-            # A damaged inline value is not content. The download then falls back to the artifact file.
-            return None
+            # A damaged value is not the same as no bytes. Say so, so that no turn goes on without the attachment.
+            raise ServiceError(409, f'The stored bytes of the attachment {artifact["title"]} are damaged.') from None
 
     def artifact_base64(self, artifact_id: str) -> str | None:
         content = self.artifact_bytes(self._get('artifacts', artifact_id))

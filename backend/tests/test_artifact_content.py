@@ -68,11 +68,11 @@ class ArtifactContentTests(unittest.TestCase):
             reopened = self.open()
         self.assertTrue(any('not valid base64' in line for line in logs.output))
         self.assertEqual(reopened._get('artifacts', artifact['id'])['_content_base64'], 'not valid base64 ###')
-        # A turn that attaches the artifact, and a download, do not fail on the damaged value.
-        self.assertIsNone(reopened.artifact_base64(artifact['id']))
-        with self.assertRaises(ServiceError) as raised:
-            reopened.artifact_content(artifact['id'])
-        self.assertEqual(raised.exception.status, 404)
+        # The start goes on. A turn that attaches the artifact, and a download, fail with a clear message.
+        for read in (reopened.artifact_base64, reopened.artifact_content):
+            with self.assertRaisesRegex(ServiceError, 'are damaged') as raised:
+                read(artifact['id'])
+            self.assertEqual(raised.exception.status, 409)
 
     def test_an_artifact_without_bytes_falls_back_to_its_file(self):
         content = b'a file on the Mac'
