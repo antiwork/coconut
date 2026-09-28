@@ -39,6 +39,76 @@ class ServiceCase(unittest.TestCase):
         return [row[0] for row in self.service.db.execute('SELECT seq FROM events ORDER BY seq')]
 
 
+class ContextRetentionTests(ServiceCase):
+    """An ended context of a settled decision loses its recovery text. A pending decision keeps it for a recovery."""
+
+    LONG = 'q' * 5000
+
+    def context(self, decision_id, status, **fields):
+        row = dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=str(uuid4()), decision_id=decision_id, status=status,
+                   question=self.LONG, _context_recovery='r' * 3000, _recovery_unknown_tools=[{'x': 'y' * 3000}], _recovery_attempt=1,
+                   _decision_revision=1, _conversation_epoch='epoch', error_code='decision_refresh_incomplete', **fields)
+        with self.service.transaction():
+            self.service._put('contexts', row)
+        return row['id']
+
+    def decision(self, status, **fields):
+        row = dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=str(uuid4()), status=status, revision=1, **fields)
+        with self.service.transaction():
+            self.service._put('decisions', row)
+        return row['id']
+
+    def stored(self, identity):
+        return json.loads(self.service.db.execute('SELECT data FROM contexts WHERE id=?', (identity,)).fetchone()[0])
+
+    def test_an_ended_context_of_a_settled_decision_loses_its_text_and_keeps_its_links(self):
+        settled = self.decision('approved')
+        ended = {status: self.context(settled, status) for status in ('completed', 'failed', 'cancelled')}
+        self.assertEqual(self.service._prune_contexts(), 3)
+        for identity in ended.values():
+            row = self.stored(identity)
+            self.assertNotIn('_context_recovery', row)
+            self.assertNotIn('_recovery_unknown_tools', row)
+            # The count goes with the text. Some code reads the text when the count is set.
+            self.assertNotIn('_recovery_attempt', row)
+            self.assertEqual(len(row['question']), database_maintenance.CONTEXT_QUESTION_CHARACTERS)
+            self.assertEqual((row['decision_id'], row['_decision_revision'], row['error_code']), (settled, 1, 'decision_refresh_incomplete'))
+        # A second pass finds nothing.
+        self.assertEqual(self.service._prune_contexts(), 0)
+
+    def test_a_pending_or_dismissed_decision_and_a_live_context_keep_their_text(self):
+        pending = self.decision('pending')
+        # A dismissed proposal returns to pending when a person restores it inside its Undo window.
+        dismissed = self.decision('dismissed', inbox_undo_until='2026-09-28T12:00:10+00:00')
+        settled = self.decision('approved')
+        keep = [self.context(pending, 'failed'), self.context(dismissed, 'failed'),
+                self.context(settled, 'working'), self.context(settled, 'queued')]
+        self.assertEqual(self.service._prune_contexts(), 0)
+        for identity in keep:
+            row = self.stored(identity)
+            self.assertEqual((len(row['question']), row['_context_recovery'][0]), (5000, 'r'))
+
+    def test_a_dismissed_proposal_after_its_undo_window_loses_its_text(self):
+        # finish_inbox_swipes clears the mark when the window ends, and then no restore is possible.
+        dismissed = self.decision('dismissed', inbox_undo_until=None)
+        identity = self.context(dismissed, 'failed')
+        self.assertEqual(self.service._prune_contexts(), 1)
+        self.assertNotIn('_context_recovery', self.stored(identity))
+
+    def test_the_batches_cover_every_row(self):
+        settled = self.decision('approved')
+        ids = [self.context(settled, 'failed') for _ in range(7)]
+        with patch.object(database_maintenance, 'BATCH_ROWS', 3), patch.object(self.service.stopping, 'wait'):
+            self.assertEqual(self.service._prune_contexts(), 7)
+        self.assertTrue(all('_context_recovery' not in self.stored(identity) for identity in ids))
+
+    def test_the_pass_reports_the_contexts_in_the_hourly_maintenance(self):
+        settled = self.decision('approved')
+        self.context(settled, 'failed')
+        result = self.service.maintain_database(NOW)
+        self.assertEqual(result['contexts'], 1)
+
+
 class EventRetentionTests(ServiceCase):
     def setUp(self):
         super().setUp()
