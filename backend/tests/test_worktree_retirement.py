@@ -682,23 +682,26 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertTrue((scratch / 'notes.txt').exists())
         self.assertEqual(list(elsewhere.iterdir()), [])
 
-    def test_a_partly_removed_checkout_is_not_adopted(self):
+    def test_a_partly_removed_checkout_is_removed_and_restored_from_the_archive(self):
         outcome, identity, path, task = self.outcome()
         self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
         real = work_workspace.git
 
         def partial(where, *arguments, **options):
             if arguments[:2] == ('worktree', 'remove'):
-                for name in ('tracked.txt', 'logo.bin'):
+                # Git deleted most tracked files and stopped. The archive was written before.
+                for name in ('tracked.txt', 'logo.bin', 'obsolete.txt'):
                     (path / name).unlink()
                 raise KeyboardInterrupt()
             return real(where, *arguments, **options)
         with patch.object(work_workspace, 'git', side_effect=partial), self.assertRaises(KeyboardInterrupt):
             self.retire()
-        # A tracked file is gone, so this is not the whole checkout. The resume asks for a look and does not adopt it.
-        with self.assertRaises(ValueError):
-            acquire(self.workspaces, outcome, str(self.repo))
-        self.assertIn('restore_failed', self.registry()[identity]['retired'])
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        # A new checkout of the branch has every tracked file, and the archive put the untracked file back.
+        self.assertEqual((restored / 'tracked.txt').read_text(), 'one\ntwo\n')
+        self.assertEqual((restored / 'draft.txt').read_text(), 'keep\n')
+        self.assertNotIn('retired', self.registry()[identity])
 
     def test_scratch_files_of_an_outcome_without_a_binding_wait_for_the_long_idle_rule(self):
         outcome = str(uuid4())

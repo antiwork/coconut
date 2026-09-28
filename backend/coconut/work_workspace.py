@@ -1545,34 +1545,26 @@ def apply_unstaged(path, unstaged):
                    '--pathspec-from-file=-', '--pathspec-file-nul', data=b'\0'.join(added) + b'\0')
 
 
-def adopt_intact_checkout(binding, path, repository):
-    """Return True when the path holds the linked worktree of the repository that the restore may adopt.
+def leftover_checkout(binding, path, repository):
+    """Say what the restore of a discarded binding does with a linked worktree that it finds at the path.
 
-    That is the checkout on the saved branch at the saved HEAD, which a stop between the record and the removal leaves.
-    It is also a clean checkout on the saved branch after a restore that failed to put the archived changes back.
+    'adopt': a restore failed to put the archived changes back, and left a clean checkout on the saved branch.
+    'remove': a stop between the record and the removal of the discard left the checkout. The archive was written
+    before the removal started, so the restore finishes the removal, and then it restores as usual: a new checkout of the
+    saved branch, and the archived changes on it. This does not depend on how much of the checkout is left.
+    None: no linked worktree of this repository is there.
     """
     if path.is_symlink() or not path.is_dir() or not (path / '.git').is_file():
-        return False
+        return None
     try:
         if Path(git(path, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve() != repository.resolve() / '.git':
-            return False
-        current = git(path, 'branch', '--show-current')
-        if not current and git(path, 'rev-parse', 'HEAD') == binding['retired'].get('head'):
-            # A discard of a detached HEAD saved a branch at that commit. Attach the checkout to it.
-            git(path, 'checkout', '-q', binding['branch'])
-            current = binding['branch']
-        if current != binding['branch']:
-            return False
-        retired = binding['retired']
-        deleted, tracked = git(path, 'ls-files', '--deleted').splitlines(), git(path, 'ls-files').splitlines()
-        if deleted and len(deleted) * 2 >= len(tracked):
-            # A partial removal deletes many tracked files, half or more. A bot can delete a few, so a few do not count.
-            return False
-        if git(path, 'rev-parse', 'HEAD') == retired.get('head'):
-            return True
-        return bool(retired.get('restore_failed')) and git(path, 'status', '--porcelain') == ''
+            return None
+        if (binding['retired'].get('restore_failed') and git(path, 'branch', '--show-current') == binding['branch']
+                and git(path, 'status', '--porcelain') == ''):
+            return 'adopt'
+        return None if binding['retired'].get('restore_failed') else 'remove'
     except GIT_ERRORS:
-        return False
+        return None
 
 
 class ReapplyFailed(ValueError):
@@ -1734,11 +1726,14 @@ def restore(binding, checked, *, retry_duplicates=False):
         # discard kept only the branch. The merged work gets a new checkout of it. archive/done/ keeps the patches.
         path, repository = Path(binding['path']), Path(binding['repository'])
         try:
-            if adopt_intact_checkout(binding, path, repository):
-                # A stop between the record and the removal left the checkout. It holds the work, so it is the restore.
+            leftover = leftover_checkout(binding, path, repository)
+            if leftover == 'adopt':
                 binding.pop('retired')
                 validate_binding(binding)
                 return
+            if leftover == 'remove':
+                # The archive holds what the checkout held. Finish the removal that the stop interrupted.
+                git(repository, 'worktree', 'remove', '--force', str(path), timeout=CHECKOUT_SECONDS)
             if path.is_symlink() or occupied(path):
                 raise ValueError(f'The path {path} of the discarded work is not empty. Ask the operator to inspect it.')
             git(repository, 'rev-parse', '--verify', 'refs/heads/' + binding['branch'])
