@@ -1,9 +1,11 @@
 """Retire the worktrees of idle outcomes. An archive keeps their uncommitted changes.
 
-A turn restores a retired worktree before it starts, so an idle outcome that resumes gets its files back."""
+A turn restores a retired worktree before it starts, so an idle outcome that resumes gets its files back.
+An idle outcome whose pull requests all merged or closed loses its worktree instead (work_workspace.discard)."""
 from datetime import datetime
 import json
 import logging
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -22,6 +24,10 @@ ACTIVE_STATUSES = ('queued', 'working', 'scheduled', 'waiting')
 # These native states mean that no worker runs or claims the outcome soon. Another state keeps the worktree.
 NATIVE_IDLE_STATUSES = ('done', 'archived', 'blocked', 'triage', 'review', 'todo', 'scheduled')
 RETIREMENT_INTERVAL_SECONDS = 60 * 60
+# A pull request in one of these states holds no more work for its outcome.
+DONE_PR_STATES = ('merged', 'closed')
+# These artifact fields name the tasks that a pull request belongs to.
+PR_TASK_FIELDS = ('task_id', '_work_origin_task_id', '_review_task_id', '_activity_task_id')
 # Before the registry lock, retirement waits this long for the service lock. Under the registry lock, it waits only LOCKED_WAIT_SECONDS.
 SERVICE_WAIT_SECONDS = 5
 # The service usually holds its lock for milliseconds. A short wait under the registry lock lets retirement finish on
@@ -122,6 +128,22 @@ class WorktreeRetirement:
                 stopped.extend(ended)
         return stopped
 
+    def _done_outcomes(self, finished):
+        """Return the finished outcomes that have a pull request, all of them merged or closed. None when the lock is busy."""
+        if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
+            return None
+        try:
+            keys = {task['id']: execution_key(task) for task in self._all('tasks')}
+            states = {}
+            for artifact in self._all('artifacts'):
+                if artifact.get('kind') != 'pr':
+                    continue
+                for outcome in {keys.get(artifact.get(field)) for field in PR_TASK_FIELDS} & set(finished):
+                    states.setdefault(outcome, set()).add(artifact.get('pr_state'))
+            return {outcome for outcome, found in states.items() if found <= set(DONE_PR_STATES)}
+        finally:
+            self.lock.release()
+
     def _busy_pause(self):
         """Wait BUSY_RETRY_SECONDS. Return True at once when the service stops or a restart is pending."""
         deadline = time.monotonic() + BUSY_RETRY_SECONDS
@@ -164,6 +186,11 @@ class WorktreeRetirement:
         bindings = {k: v['outcome'] for k, v in saved.items() if not v.get('retired')}
         retired = []
         pending = [(identity, outcome) for identity, outcome in bindings.items() if outcome in finished]
+        # A merged pull request ends its work, so its worktree goes without the checks that protect resumable work.
+        # A checkout that is already gone has nothing to archive, so its binding closes the same way.
+        done = self._done_outcomes(finished) or set()
+        gone = {identity for identity, _ in pending
+                if isinstance(saved[identity].get('path'), str) and not os.path.lexists(saved[identity]['path'])}
 
         def dropped(items):
             # A stop or a restart ended the pass. The next pass after the restart tries again.
@@ -194,7 +221,8 @@ class WorktreeRetirement:
                     return outcome in result
                 try:
                     # A service restart leaves the processes of earlier turns to launchd. They keep the worktree in use.
-                    if work_workspace.retire(root, identity, still_finished, orphan_age=ORPHAN_AGE_SECONDS):
+                    action = work_workspace.discard if outcome in done or identity in gone else work_workspace.retire
+                    if action(root, identity, still_finished, orphan_age=ORPHAN_AGE_SECONDS):
                         retired.append(identity)
                 except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.TimeoutExpired, sqlite3.Error) as error:
                     if isinstance(error, ServiceBusy) and attempt < BUSY_RETRIES:

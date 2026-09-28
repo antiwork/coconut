@@ -103,6 +103,73 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.service._next_worktree_retirement = 0
         return self.service.retire_finished_worktrees()
 
+    def pull_request(self, task, state):
+        with self.service.transaction():
+            self.service._put('artifacts', dict(id=str(uuid4()), kind='pr', bot_id=self.bot['id'], task_id=task['id'],
+                                                url='https://github.com/antiwork/coconut/pull/' + str(len(self.service._all('artifacts')) + 1),
+                                                pr_state=state, created_at=OLD))
+
+    def test_a_merged_outcome_loses_its_worktree_without_the_resumable_work_checks(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        # Each of these would keep the worktree of resumable work.
+        git(path, 'checkout', '-q', '-b', 'published-branch')
+        (path / 'committed.txt').write_text('in the pull request\n')
+        git(path, 'add', 'committed.txt')
+        self.commit(path, 'Work')
+        (path / 'tracked.txt').write_text('one\nstaged\n')
+        git(path, 'add', 'tracked.txt')
+        (path / 'logo.bin').write_bytes(b'unstaged')
+        (path / 'notes.txt').write_text('untracked\n')
+        (path / 'build').mkdir()
+        (path / 'build' / 'output.log').write_bytes(b'x' * 64)
+        inner = path / '.worktrees' / 'subagent'
+        git(path, 'worktree', 'add', '-q', '-b', 'subagent-branch', str(inner))
+        (inner / 'tracked.txt').write_text('nested change\n')
+        with patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 10):
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
+        self.assertFalse(inner.exists())
+        self.assertNotIn(str(inner), git(self.repo, 'worktree', 'list', '--porcelain'))
+        binding = self.registry()[identity]
+        self.assertEqual((binding['branch'], binding['retired']['done']), ('published-branch', True))
+        # The branches keep their commits. The archive keeps only the staged and unstaged patches.
+        self.assertEqual(git(self.repo, 'show', 'published-branch:committed.txt'), 'in the pull request')
+        with tarfile.open(binding['retired']['archive']) as tar:
+            self.assertEqual(sorted(tar.getnames()), ['retirement.json', 'staged.patch', 'unstaged.patch'])
+            self.assertIn(b'+staged', tar.extractfile('staged.patch').read())
+        # A later turn of the outcome gets a new checkout of the saved branch.
+        restored = acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(git(restored['path'], 'branch', '--show-current'), 'published-branch')
+        self.assertEqual((Path(restored['path']) / 'committed.txt').read_text(), 'in the pull request\n')
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_an_open_pull_request_keeps_the_worktree_of_its_outcome(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        self.pull_request(task, 'open')
+        git(path, 'checkout', '-q', '-b', 'other-branch')
+        self.assertEqual(self.retire(), [])
+        self.assertTrue(path.is_dir())
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_missing_checkout_closes_its_binding_instead_of_failing_every_hour(self):
+        outcome, identity, path, _ = self.outcome()
+        shutil.rmtree(path)
+        with self.assertNoLogs('coconut.worktree_retirement', 'WARNING'):
+            self.assertEqual(self.retire(), [identity])
+        self.assertTrue(self.registry()[identity]['retired']['done'])
+        self.assertEqual(self.retire(), [])
+        restored = acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(git(restored['path'], 'branch', '--show-current'), 'wt/' + identity)
+
+    def test_an_active_outcome_with_a_merged_pull_request_keeps_its_worktree(self):
+        _, identity, path, task = self.outcome(status='working')
+        self.pull_request(task, 'merged')
+        self.assertEqual(self.retire(), [])
+        self.assertTrue(path.is_dir())
+        self.assertNotIn('retired', self.registry()[identity])
+
     def test_a_branch_renamed_in_the_last_turn_still_retires(self):
         outcome, identity, path, _ = self.outcome()
         (path / 'draft.txt').write_text('keep\n')
@@ -1016,6 +1083,22 @@ class WorktreeRetirementTests(unittest.TestCase):
         for identity, path in ((foreign, foreign_path), (locked, locked_path)):
             self.assertTrue(path.is_dir())
             self.assertNotIn('retired', self.registry()[identity])
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_an_old_orphan_without_the_outcome_variable_stops_when_the_pull_request_merged(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        # A dev server that a bot started in its own shell has no COCONUT_WORKSPACE_OUTCOME.
+        pid = self.orphan(path)
+        self.holders.stop()
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.assertEqual(self.retire(), [identity])
+        for _ in range(50):
+            if not self.alive(pid):
+                break
+            time.sleep(0.1)
+        self.assertFalse(self.alive(pid))
+        self.assertFalse(path.exists())
 
     @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
     def test_an_orphan_and_its_child_process_are_both_stopped(self):

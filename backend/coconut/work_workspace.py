@@ -459,7 +459,7 @@ def stop(pids, sig, seconds):
     return remaining
 
 
-def stop_orphans(found, outcome, age):
+def stop_orphans(found, outcome, age, *, marked=True):
     """Stop the old orphaned processes of the outcome in `found`, and their child processes. Return their IDs.
 
     An orphan is a process that launchd (PID 1) adopted after its parent ended. launchd also starts apps and agents.
@@ -468,6 +468,9 @@ def stop_orphans(found, outcome, age):
     When the system does not show the environment of a process, for example a macOS platform binary, Coconut does not stop it.
     It never stops a shared app or system daemon that `shared` names, such as OrbStack.
     A process that does not end after SIGTERM gets SIGKILL.
+    With marked=False, the environment check does not apply. `found` must then hold only processes in the worktree of
+    an outcome whose pull requests merged or closed, so that an old orphan there, such as a dev server that a bot
+    started without the variable, cannot belong to other work.
     """
     if not found:
         return set()
@@ -481,7 +484,7 @@ def stop_orphans(found, outcome, age):
             answers[pid] = shared(table[pid][2], pid, unknown=True)
         return answers[pid]
     stopped = {pid for pid in found if pid in table and pid != os.getpid() and table[pid][0] == 1
-               and table[pid][1] >= age and not is_shared(pid) and environment_names(pid, mark)}
+               and table[pid][1] >= age and not is_shared(pid) and (not marked or environment_names(pid, mark))}
     while stopped:
         # The parent proves who owns a child process. macOS also hides the environment of a child shell.
         # A shared service stays even as a child. A system program that the orphan started, such as a WebKit
@@ -682,11 +685,11 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
             temporary.unlink(missing_ok=True)
 
 
-def release(path, outcome, orphan_age):
+def release(path, outcome, orphan_age, *, marked=True):
     """Stop the old orphaned processes of the outcome in the path. Refuse the path if another process uses it."""
     held = holders(path, detail=True)
     if held and orphan_age is not None:
-        stopped = stop_orphans(set(held), outcome, orphan_age)
+        stopped = stop_orphans(set(held), outcome, orphan_age, marked=marked)
         if stopped:
             logging.getLogger(__name__).warning('Coconut stopped orphaned processes %s in worktree %s.', sorted(stopped), path)
         held = {pid: cwd_only for pid, cwd_only in held.items() if pid not in stopped}
@@ -918,6 +921,76 @@ def removal_stopped(manifest, saved, binding, path, repository, current, archive
     raise ValueError(message) from error
 
 
+def discard(root, identity, finished, *, orphan_age=None):
+    """Remove the worktree of a finished outcome whose pull requests all merged or closed. Return True when removed.
+
+    The pull request holds the work, and the branch keeps its commits. So Coconut keeps only the staged and unstaged
+    patches, in archive/done/. It does not keep untracked or ignored files, such as build output and logs, and it
+    removes nested worktrees without their files. A branch switch does not keep the worktree. An old orphaned process
+    in the worktree stops, even when its environment does not name the outcome. Another process keeps the worktree.
+    A missing checkout only loses its Git record. A later turn of the outcome gets a new checkout of the saved branch.
+    `finished(wait)` is the check of retire.
+    """
+    root = Path(root)
+    manifest = root / 'worktrees.json'
+    before = json.loads(manifest.read_text()).get(identity)
+    if not before or before.get('retired'):
+        return False
+    path, repository = Path(before['path']), Path(before['repository']).resolve()
+    present = os.path.lexists(path)
+    head, branch, archive = None, before['branch'], None
+    if present:
+        if path.is_symlink() or not (path / '.git').is_file():
+            raise ValueError('The saved workspace is no longer a linked worktree.')
+        if Path(git(path, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve() != repository / '.git':
+            raise ValueError('The saved worktree belongs to another repository.')
+        records = registered(repository)
+        if any(r['locked'] for r in records if r['path'] == path.resolve() or path.resolve() in r['path'].parents):
+            raise ValueError('The worktree is locked.')
+        if not finished(True):
+            raise ValueError('The outcome resumed during retirement.')
+        release(path, before['outcome'], orphan_age, marked=False)
+        head = git(path, 'rev-parse', 'HEAD')
+        branch = git(path, 'branch', '--show-current') or before['branch']
+        staged, unstaged, _ = changes(path)
+        if staged or unstaged:
+            if len(staged) + len(unstaged) > PATCH_LIMIT_BYTES:
+                raise ValueError('The changes in the worktree are larger than the archive limit.')
+            directory = root / 'archive' / 'done'
+            directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+            archive = directory / (identity + '.tar.gz')
+            temporary = directory / ('.' + archive.name + '.tmp')
+            try:
+                write_archive(temporary, dict(branch=branch, head=head, outcome=before['outcome'],
+                    repository=before['repository'], path=before['path'], at=stamp(datetime.now(timezone.utc))),
+                    path, dict(zip(PATCHES, (staged, unstaged))), [])
+                temporary.replace(archive)
+            finally:
+                temporary.unlink(missing_ok=True)
+    with (root / '.workspace.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        saved = json.loads(manifest.read_text())
+        binding = saved.get(identity)
+        if binding != before:
+            raise ValueError('The workspace binding changed during retirement.')
+        # A dispatch marks its task active before its worker takes this lock. Check the tasks with a short wait.
+        if not finished(False):
+            raise ValueError('The outcome resumed during retirement.')
+        if present:
+            if in_use(path):
+                raise ValueError('A process uses the worktree.')
+            # The removal deletes the files of nested worktrees too. The prune then drops their Git records.
+            git(repository, 'worktree', 'remove', '--force', str(path), timeout=CHECKOUT_SECONDS)
+        with contextlib.suppress(*GIT_ERRORS):
+            git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
+        binding.pop('retire_failed', None)
+        binding['branch'] = branch
+        binding['retired'] = dict(at=stamp(datetime.now(timezone.utc)), done=True, head=head,
+                                  archive=str(archive) if archive else None)
+        save_bindings(manifest, saved)
+    return True
+
+
 def drop_other_archives(directory, identity, keep, saved):
     """Keep one archive for each worktree. Never delete an archive that a binding names."""
     named = {(b.get(key) or {}).get('archive') for b in saved.values() for key in ('retired', 'retire_failed')}
@@ -1089,7 +1162,7 @@ def compare_checkouts(bindings):
         with contextlib.suppress(*RESTORE_ERRORS):
             retired = binding['retired']
             path = Path(binding['path'])
-            if retired.get('restore_failed') or not occupied(path):
+            if retired.get('restore_failed') or retired.get('done') or not occupied(path):
                 continue
             key = json.dumps(binding, sort_keys=True)
             # An error in the comparison refuses the checkout.
@@ -1248,6 +1321,20 @@ def restore(binding, checked, *, retry_duplicates=False):
     All other failures retain the operator fence.
     """
     retired = binding['retired']
+    if retired.get('done'):
+        # discard kept only the branch. The merged work gets a new checkout of it. archive/done/ keeps the patches.
+        path, repository = Path(binding['path']), Path(binding['repository'])
+        if path.is_symlink() or occupied(path):
+            raise ValueError(f'The path {path} of the merged work is not empty. Ask the operator to inspect it.')
+        git(repository, 'rev-parse', '--verify', 'refs/heads/' + binding['branch'])
+        with contextlib.suppress(*GIT_ERRORS):
+            git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
+        with contextlib.suppress(FileNotFoundError, OSError):
+            path.rmdir()
+        git(repository, 'worktree', 'add', '-q', str(path), binding['branch'], timeout=CHECKOUT_SECONDS)
+        binding.pop('retired')
+        validate_binding(binding)
+        return
     archive = retired['archive']
     failure = retired.get('restore_failed')
     retry = (retry_duplicates and isinstance(failure, dict) and not failure.get('intent_retry_failed')
