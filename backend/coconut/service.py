@@ -105,6 +105,14 @@ from .decision_freshness import DecisionFreshness
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
+# The statements of Service._refresh_bot. Each needs an index and no sort. A test reads the plan of each one.
+BOT_TASK_STATES = ("SELECT DISTINCT json_extract(data,'$.status') FROM tasks WHERE json_extract(data,'$.bot_id')=? "
+                   "AND json_extract(data,'$.status') IN ('working','needs_you','scheduled')")
+BOT_LATEST_TASK = "SELECT json_extract(data,'$.status') FROM tasks WHERE json_extract(data,'$.bot_id')=? ORDER BY rowid DESC LIMIT 1"
+BOT_WORKING_CONTEXT = ("SELECT 1 FROM contexts WHERE json_extract(data,'$.status')='working' "
+                       "AND json_extract(data,'$.bot_id')=? LIMIT 1")
+
+
 class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
@@ -176,6 +184,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         CREATE INDEX IF NOT EXISTS tasks_bot_session ON tasks (json_extract(data,'$.bot_id'), json_extract(data,'$.session_id'));
         CREATE INDEX IF NOT EXISTS deliveries_source ON deliveries (json_extract(data,'$.source_task_id'));
         CREATE INDEX IF NOT EXISTS tasks_status ON tasks (json_extract(data,'$.status'));
+        CREATE INDEX IF NOT EXISTS tasks_bot_status ON tasks (json_extract(data,'$.bot_id'), json_extract(data,'$.status'));
+        CREATE INDEX IF NOT EXISTS tasks_bot ON tasks (json_extract(data,'$.bot_id'));
         CREATE INDEX IF NOT EXISTS contexts_status ON contexts (json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS decisions_status ON decisions (json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS tasks_assignment ON tasks (json_extract(data, '$._assignment_task_id'));
@@ -288,9 +298,16 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             try:
                 yield
                 self.db.execute('COMMIT')
+                self.__dict__.pop('_published_in_transaction', None)
+                for bot_id in self.__dict__.pop('_forget_bots_on_commit', set()):
+                    self.__dict__.get('_published_bots', {}).pop(bot_id, None)
                 self.changed.notify_all()
             except BaseException:
                 self._profile_pending = {}
+                # A rollback removes the bot events of this transaction. Forget what only they said.
+                for bot_id in self.__dict__.pop('_published_in_transaction', set()):
+                    self.__dict__.get('_published_bots', {}).pop(bot_id, None)
+                self.__dict__.pop('_forget_bots_on_commit', None)
                 self.db.execute('ROLLBACK')
                 raise
             pending, self._profile_pending = self._profile_pending, {}
@@ -670,15 +687,39 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
 
     def _refresh_bot(self, bot_id: str):
+        """Set the status of a bot from its tasks and contexts, and publish the bot when its public row changed.
+
+        Two indexed queries read the states. The event goes out only when the public row differs from the one that
+        this service published last. The phone replays message events by themselves, and a bot event tells it to
+        read the bots again, so a new last message or unread count still publishes. A rolled back transaction clears
+        the record, and a restart starts without it, so the first refresh of each bot publishes.
+
+        The sync response sends every bot with any change, so a suppressed event is safe while each write to the public
+        row of a bot comes with another event: a message, a task, a read mark, or this event. Keep that pairing.
+        """
         bot = self._get('bots', bot_id)
-        tasks = [t for t in self._all('tasks') if t['bot_id'] == bot_id]
-        states = {t['status'] for t in tasks if t['status'] in ('working', 'needs_you', 'scheduled')}
-        if tasks and tasks[-1]['status'] == 'failed':
+        states = {row[0] for row in self.db.execute(BOT_TASK_STATES, (bot_id,))}
+        # The latest task of the bot decides whether a failure still shows.
+        latest = self.db.execute(BOT_LATEST_TASK, (bot_id,)).fetchone()
+        if latest and latest[0] == 'failed':
             states.add('failed')
-        answering = any(c['bot_id'] == bot_id and c['status'] == 'working' for c in self._all('contexts'))
-        bot['status'] = 'working' if answering else next((s for s in ('needs_you', 'working', 'scheduled', 'failed') if s in states), 'idle')
-        self._put('bots', bot)
-        self._event('bot.updated', self._public(bot), bot_id)
+        answering = self.db.execute(BOT_WORKING_CONTEXT, (bot_id,)).fetchone()
+        status = 'working' if answering else next((s for s in ('needs_you', 'working', 'scheduled', 'failed') if s in states), 'idle')
+        if bot.get('status') != status:
+            bot['status'] = status
+            self._put('bots', bot)
+        public = self._public(bot)
+        fingerprint = encoded(public)
+        published = self.__dict__.setdefault('_published_bots', {})
+        if published.get(bot_id) == fingerprint:
+            return
+        self._event('bot.updated', public, bot_id)
+        self._note_published(bot_id, fingerprint)
+
+    def _note_published(self, bot_id: str, fingerprint: str):
+        """Record the public row that a bot event carried, and which transaction wrote it."""
+        self.__dict__.setdefault('_published_bots', {})[bot_id] = fingerprint
+        self.__dict__.setdefault('_published_in_transaction', set()).add(bot_id)
 
     @staticmethod
     def _public(obj: dict) -> dict:
@@ -1182,6 +1223,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             bot.update(_deleted=True, archived=True, _delete_task_ids=cancelled)
             self._put('bots', bot)
             self._event('bot.deleted', {'id': bot['id']} | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
+            # A deleted bot publishes no more rows, so its record has no use. Forget it when the transaction commits.
+            self.__dict__.setdefault('_forget_bots_on_commit', set()).add(bot['id'])
             for task_id in affected:
                 task = self._get('tasks', task_id)
                 owner_id = task.get('_reply_to_task_id')
@@ -1312,7 +1355,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         bot[field] = data[field]
                 self._sync_profile(bot)
                 self._put('bots', bot)
-                self._event('bot.updated', bot, bot['id'])
+                # Publish the public row, as _refresh_bot does, so that the record and the event agree by construction.
+                self._event('bot.updated', self._public(bot), bot['id'])
+                self._note_published(bot['id'], encoded(self._public(bot)))
                 self._event('settings.updated', {'bot_id': bot['id']}, bot['id'])
                 return self._bot_view(bot, self._request_model_catalog)
             if len(parts) == 3 and method == 'DELETE':
