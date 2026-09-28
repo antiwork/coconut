@@ -97,6 +97,7 @@ from .service_restart import ServiceRestart
 from .workspace_recovery import WorkspaceRecovery
 from .worktree_retirement import WorktreeRetirement
 from .session_maintenance import SessionMaintenance
+from .database_maintenance import DatabaseMaintenance
 from .tracked_work import TrackedWork
 from .work_model import WorkModel
 from .work_recovery import WorkRecovery
@@ -104,7 +105,7 @@ from .decision_freshness import DecisionFreshness
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
-class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance):
+class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -139,6 +140,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.changed = threading.Condition(self.lock)
         self.db = sqlite3.connect(self.root / 'coconut.sqlite3', check_same_thread=False, isolation_level=None)
         os.chmod(self.root / 'coconut.sqlite3', 0o600)
+        # This takes effect only in a new store. An older store changes mode in DatabaseMaintenance.
+        self.db.execute('PRAGMA auto_vacuum=INCREMENTAL')
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('PRAGMA synchronous=FULL')
         for table in self.TABLES:

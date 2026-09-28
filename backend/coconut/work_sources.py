@@ -218,6 +218,10 @@ class WorkSources:
             self.maintain_native_sessions()
         except Exception:
             logging.getLogger(__name__).exception('Could not maintain native sessions.')
+        try:
+            self.maintain_database()
+        except Exception:
+            logging.getLogger(__name__).exception('Could not maintain the Coconut database.')
 
     def audit_work_sources(self):
         path = self.root / 'work-sources.json'

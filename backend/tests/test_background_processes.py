@@ -67,6 +67,8 @@ class BackgroundProcessTests(unittest.TestCase):
             written.append((table, row['id']))
             return put(table, row)
         with self.service.transaction(), patch.object(self.service, '_put', side_effect=counted):
+            # The store predates the migration.
+            self.service.db.execute("DELETE FROM settings WHERE key='process_deliveries_migrated'")
             self.service._migrate_process_deliveries()
         # The receipt that the live path registered stays as it is. The unregistered one is registered.
         self.assertEqual(written, [('native_receipts', fresh['id'])])
@@ -453,6 +455,8 @@ class BackgroundProcessTests(unittest.TestCase):
             self.service._put('native_receipts', dict(id=str(uuid4()), task_id=task_id, state='completed',
                 action={'name': 'process_manage', 'arguments': {'action': 'poll', 'session_id': 'proc_test'}},
                 result=json.dumps({'status': 'exited', 'session_id': 'proc_test'})))
+            # The store predates the migration.
+            self.service.db.execute("DELETE FROM settings WHERE key='process_deliveries_migrated'")
             self.service._migrate_process_deliveries()
         self.assertEqual(self.service._get('native_receipts', record['id'])['_process_delivery'], 'consumed')
 
@@ -462,6 +466,8 @@ class BackgroundProcessTests(unittest.TestCase):
             self.service._put('native_receipts', dict(id=str(uuid4()), task_id=task_id, state='completed',
                 action={'name': 'process_manage', 'arguments': {'action': 'poll', 'session_id': 'proc_test'}},
                 result=json.dumps({'status': 'exited', 'session_id': 'proc_test'})))
+            # The store predates the migration.
+            self.service.db.execute("DELETE FROM settings WHERE key='process_deliveries_migrated'")
             self.service._migrate_process_deliveries()
         self.provider.results['proc_test'] = 'Completed'
         self.service._drain_process_completions()
