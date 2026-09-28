@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import copy
+import errno
 import fcntl
 import hashlib
 import io
@@ -377,6 +378,18 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertFalse((path / 'tmp').exists())
         # The moved folder is deleted after the lock, and nothing stays in the trash.
         self.assertEqual(list((self.workspaces / work_workspace.TRASH).iterdir()), [])
+
+    def test_a_folder_on_another_disk_is_deleted_in_place(self):
+        identity, path = self.refused_with_build_folders()
+
+        def other_disk(source, target):
+            raise OSError(errno.EXDEV, 'Cross-device link')
+        with patch('coconut.work_workspace.os.rename', side_effect=other_disk), \
+                self.assertLogs('coconut.work_workspace', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        self.assertFalse((path / 'tmp').exists())
+        self.assertFalse((path / 'node_modules').exists())
+        self.assertTrue(any('another disk' in line for line in logs.output))
 
     def test_a_link_named_like_a_build_folder_is_not_followed(self):
         identity, path = self.refused_with_build_folders()

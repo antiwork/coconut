@@ -969,7 +969,9 @@ def free_rebuildable(root, identity, finished):
                 except OSError as error:
                     if error.errno != errno.EXDEV:
                         raise
-                    # The trash is on another disk. Delete the folder in place, under the lock.
+                    # The trash is on another disk. Delete the folder in place, under the lock, and say why a turn can wait.
+                    logging.getLogger(__name__).warning('Build folder %s of %s is on another disk than %s. Coconut deletes it '
+                                                        'under the registry lock, so a new turn can wait.', name, path, trash)
                     shutil.rmtree(path / name)
                     deleted.append(name)
                 else:
