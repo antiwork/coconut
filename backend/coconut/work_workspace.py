@@ -1070,7 +1070,11 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False):
     head, branch, archive, temporary = None, before['branch'], None, None
     if not present and (before.get('retire_failed') or {}).get('archive'):
         # The checkout is gone, and an earlier retirement archived its files. That archive is the only copy.
+        # Its own record names the commit, so a resume can put the files back.
         archive = Path(before['retire_failed']['archive'])
+        with contextlib.suppress(OSError, KeyError, ValueError, tarfile.TarError):
+            with tarfile.open(archive) as tar:
+                head = json.loads(tar.extractfile('retirement.json').read()).get('head')
     if present:
         if path.is_symlink() or not (path / '.git').is_file():
             raise ValueError('The saved workspace is no longer a linked worktree.')
@@ -1079,6 +1083,11 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False):
         records = registered(repository)
         if any(r['locked'] for r in records if r['path'] == path.resolve() or path.resolve() in r['path'].parents):
             raise ValueError('The worktree is locked.')
+        # A worktree that Coconut tracks for another outcome is not a leftover of this one, and no archive keeps its files.
+        tracked = {Path(other['path']).resolve() for name, other in json.loads(manifest.read_text()).items()
+                   if name != identity and isinstance(other, dict) and isinstance(other.get('path'), str)}
+        if any(path.resolve() in other.parents for other in tracked):
+            raise ValueError('The worktree contains a worktree of another outcome.')
         if not finished(True):
             raise ValueError('The outcome resumed during retirement.')
         # Only merged or closed work proves that an unmarked old orphan in the worktree is a leftover.

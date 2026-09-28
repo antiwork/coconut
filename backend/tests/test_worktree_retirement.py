@@ -354,10 +354,17 @@ class WorktreeRetirementTests(unittest.TestCase):
         saved = self.registry()
         saved[identity]['retire_failed'] = dict(at=OLD, error='Git refused', archive=str(kept))
         save_bindings(self.workspaces / 'worktrees.json', saved)
+        head = git(path, 'rev-parse', 'HEAD')
+        with tarfile.open(kept, 'w:gz') as tar:
+            data = json.dumps(dict(head=head)).encode()
+            info = tarfile.TarInfo('retirement.json')
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
         git(self.repo, 'worktree', 'remove', '--force', str(path))
         self.assertEqual(self.retire(), [identity])
         self.assertTrue(kept.exists())
-        self.assertEqual(self.registry()[identity]['retired']['archive'], str(kept))
+        retired = self.registry()[identity]['retired']
+        self.assertEqual((retired['archive'], retired['head']), (str(kept), head))
 
     def test_a_new_branch_never_moves_an_existing_branch(self):
         outcome, identity, path, _ = self.outcome()
@@ -377,6 +384,22 @@ class WorktreeRetirementTests(unittest.TestCase):
         acquire(self.workspaces, outcome, str(self.repo))
         self.assertEqual(git(self.repo, 'rev-parse', original), tip)
         self.assertNotEqual(self.registry()[identity]['branch'], original)
+
+    def test_a_worktree_that_holds_the_tracked_worktree_of_another_outcome_is_not_discarded(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        # The other outcome is active, so its own retirement does not run.
+        other, other_identity, other_path, _ = self.outcome(status='working', updated_at=RECENT)
+        nested = path / '.worktrees' / 'adopted'
+        nested.parent.mkdir(exist_ok=True)
+        git(self.repo, 'worktree', 'move', str(other_path), str(nested))
+        saved = self.registry()
+        saved[other_identity]['path'] = str(nested)
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        (nested / 'draft.txt').write_text('other outcome work\n')
+        self.retire()
+        self.assertTrue((nested / 'draft.txt').exists())
+        self.assertNotIn('retired', self.registry()[identity])
 
     def test_a_second_discard_keeps_the_first_archive(self):
         outcome, identity, path, task = self.outcome()
