@@ -499,8 +499,16 @@ def prune_rollbacks(root, record):
     with contextlib.suppress(OSError, DeployError):
         keep = runtime_paths(root, record)[1]
         for old in (root / '.runtime').glob('hermes-rollback-*'):
-            if old != keep and old.is_dir() and not old.is_symlink():
+            if old != keep and old.is_dir() and not old.is_symlink() and rollback_name(old.name):
                 shutil.rmtree(safe_path(old, root), ignore_errors=True)
+
+
+def rollback_name(name):
+    """Return True for a name that runtime_paths gives a rollback copy. Another name is a manual copy."""
+    try:
+        return name == 'hermes-rollback-' + str(UUID(name.removeprefix('hermes-rollback-')))
+    except ValueError:
+        return False
 
 
 def move_terminal_state(source, target, root):

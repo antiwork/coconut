@@ -27,6 +27,9 @@ HERMES_CHECKS_SECONDS = 80 * 60
 # The candidate install peaks at about 2.6 GB, and the live install then adds a runtime of about 1.3 GB.
 # A full disk stops the service's database writes, so the gate installs nothing below this free space.
 HERMES_CANDIDATE_FREE_BYTES = 8 * 1024 ** 3
+# A failed check run costs up to 80 minutes and model calls, and a repeat at the same commit usually fails the same way.
+# The gate repeats the checks for the same pin and commit only after this wait. A new commit runs them at once.
+HERMES_FAILED_RETRY_SECONDS = 24 * 60 * 60
 
 
 def run(args, *, cwd=None, stdin=None, pass_fds=()):
@@ -321,13 +324,19 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
     The checks need model access, so CI cannot run them, and a bot cannot run them inside its Hermes worker.
     This updater runs outside Hermes. It installs the pin in its own checkout, runs
     scripts/hermes_candidate_checks.py, and saves the report in hermes-checks.json for Coconut Care.
-    The checks also run the Coconut code of the checkout. A pass is kept for its revision and source commit,
-    so only a retry of the same install skips the checks.
+    The checks also run the Coconut code of the checkout. A result is kept for its revision and source commit:
+    a pass lets a retry of the same install skip the checks, and a failure stops it for HERMES_FAILED_RETRY_SECONDS.
     """
-    if state.get('hermes_checks') == dict(revision=revision, sha=sha, passed=True):
-        return
     candidate = source / '.runtime/hermes'
     receipt = state_path.parent / 'hermes-checks.json'
+    saved = state.get('hermes_checks') if isinstance(state.get('hermes_checks'), dict) else {}
+    if saved.get('revision') == revision and saved.get('sha') == sha:
+        if saved.get('passed') is True:
+            return
+        checked_at = saved.get('checked_at')
+        if isinstance(checked_at, (int, float)) and time.time() - checked_at < HERMES_FAILED_RETRY_SECONDS:
+            raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]} at this commit. Read {receipt}. '
+                               'A new commit on main runs them again at once.')
     free = shutil.disk_usage(source).free
     if free < HERMES_CANDIDATE_FREE_BYTES:
         output = (f'The candidate install needs {HERMES_CANDIDATE_FREE_BYTES // 1024 ** 3} GiB of free disk space, and '
@@ -361,12 +370,11 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
             passed = result.returncode == 0 and len(reports) == 1 and json.loads(reports[0]).get('passed') is True
     finally:
         save(receipt, dict(revision=revision, passed=passed, checked_at=time.time(), output=output))
-        # The live install builds its own runtime. Free the space of this copy, and of a scratch folder that a
-        # timeout left: the timeout kills the check script before it can remove its own folder.
-        shutil.rmtree(candidate, ignore_errors=True)
-        for scratch in (source / '.runtime').glob('candidate-checks-*'):
-            shutil.rmtree(scratch, ignore_errors=True)
-    state['hermes_checks'] = dict(revision=revision, sha=sha, passed=passed)
+        # The live install builds its own runtime. Only the gate uses .runtime in this checkout: the candidate,
+        # the install caches, and a scratch folder that a timeout left, because the timeout kills the check script
+        # before it can remove its own folder. Free all of it.
+        shutil.rmtree(source / '.runtime', ignore_errors=True)
+    state['hermes_checks'] = dict(revision=revision, sha=sha, passed=passed, checked_at=time.time())
     save(state_path, state)
     if not passed:
         raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}.')

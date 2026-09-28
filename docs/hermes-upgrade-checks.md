@@ -26,8 +26,9 @@ First it recovers a pending update journal with `scripts/deploy.py recover`, whi
 It needs 8 GiB of free disk space. Then it installs the pinned revision in its own checkout with
 `scripts/hermes.py install`, and runs `scripts/hermes_candidate_checks.py --checkout <that checkout> --live <installed folder>`.
 The live install starts only when every check passes. The updater saves the report in `hermes-checks.json` next
-to its state, keeps a pass for that revision and source commit, and removes its copy of the runtime after the checks.
-A failure stops the install and uses the updater's backoff. A Coconut bot cannot run these checks inside its own
+to its state, keeps the result for that revision and source commit, and removes its `.runtime` folder after the checks.
+A failure stops the install. The updater runs the checks for the same pin and commit again after 24 hours,
+and at once for a new commit on `main`. A Coconut bot cannot run these checks inside its own
 Hermes worker, so a pin PR can merge on CI, Greptile, and review, and this gate protects the installation.
 
 To test a candidate by hand, execute each script's `PROGRAM` with the candidate Python.

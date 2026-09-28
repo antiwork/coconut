@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+from uuid import uuid4
 
 from test_deploy_tools import deploy, archive, package_files, FakeOperations
 
@@ -70,13 +71,14 @@ class RuntimeDeploymentTests(unittest.TestCase):
         self.assertEqual((self.root / '.runtime/host/coconut.sqlite3').read_bytes(), b'Unchanged chat data')
 
     def test_an_upgrade_removes_the_rollback_copies_of_earlier_updates(self):
-        earlier = self.root / '.runtime/hermes-rollback-earlier-update'
+        earlier = self.root / f'.runtime/hermes-rollback-{uuid4()}'
         earlier.mkdir()
         (earlier / 'install.json').write_text(json.dumps({'commit': 'b' * 40}))
-        manual = self.root / '.runtime/hermes-before-manual-change'
+        # A person can save a copy under the same prefix. Only a deployment UUID marks a copy of an update.
+        manual = self.root / '.runtime/hermes-rollback-known-good'
         manual.mkdir()
         self.receive(self.files, update_runtime=True)
-        saved = list((self.root / '.runtime').glob('hermes-rollback-*'))
+        saved = [path for path in (self.root / '.runtime').glob('hermes-rollback-*') if path != manual]
         # Only the copy of this update can serve a rollback. A manual copy stays.
         self.assertEqual(len(saved), 1)
         self.assertEqual(json.loads((saved[0] / 'install.json').read_text())['commit'], OLD)
