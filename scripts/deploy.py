@@ -374,8 +374,8 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
         except (OSError, ValueError, ssl.SSLError):
             raise DeployError('The saved certificate cannot validate the service.') from None
         parsed = urlsplit(address)
-        # Startup migrations can exceed 20 seconds on an active host.
-        deadline = time.monotonic() + 60
+        # Startup migrations can exceed a minute on an active host.
+        deadline = time.monotonic() + 180
         while time.monotonic() < deadline:
             connection = http.client.HTTPConnection(parsed.hostname, parsed.port or 443, timeout=2)
             raw = None
