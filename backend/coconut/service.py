@@ -690,6 +690,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         this service published last. The phone replays message events by themselves, and a bot event tells it to
         read the bots again, so a new last message or unread count still publishes. A rolled back transaction clears
         the record, and a restart starts without it, so the first refresh of each bot publishes.
+
+        The sync response sends every bot with any change, so a suppressed event is safe while each write to the public
+        row of a bot comes with another event: a message, a task, a read mark, or this event. Keep that pairing.
         """
         bot = self._get('bots', bot_id)
         states = {row[0] for row in self.db.execute(BOT_TASK_STATES, (bot_id,))}
@@ -1217,6 +1220,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             bot.update(_deleted=True, archived=True, _delete_task_ids=cancelled)
             self._put('bots', bot)
             self._event('bot.deleted', {'id': bot['id']} | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
+            # A deleted bot publishes no more rows, so its record has no use.
+            self.__dict__.get('_published_bots', {}).pop(bot['id'], None)
             for task_id in affected:
                 task = self._get('tasks', task_id)
                 owner_id = task.get('_reply_to_task_id')
