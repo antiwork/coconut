@@ -58,6 +58,8 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.repo = self.root / 'repo'
         self.repo.mkdir()
         git(self.repo, 'init')
+        # A merged pull request counts only for the repository that its URL names.
+        git(self.repo, 'remote', 'add', 'origin', 'git@github.com:antiwork/coconut.git')
         (self.repo / '.gitignore').write_text('build/\n.env\nnode_modules/\n/tmp\n')
         (self.repo / 'tracked.txt').write_text('one\ntwo\n')
         (self.repo / 'logo.bin').write_bytes(bytes(range(256)))
@@ -177,7 +179,42 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
             self.assertEqual(self.retire(), [identity])
         self.assertFalse(path.exists())
-        self.assertEqual(git(self.repo, 'rev-parse', f'refs/coconut/discarded/{identity}/0'), head)
+        self.assertEqual(git(self.repo, 'rev-parse', f'refs/coconut/discarded/{identity}/{head}'), head)
+
+    def test_a_merged_pull_request_of_another_repository_keeps_the_worktree(self):
+        _, identity, path, task = self.outcome()
+        with self.service.transaction():
+            self.service._put('artifacts', dict(id=str(uuid4()), kind='pr', bot_id=self.bot['id'], task_id=task['id'],
+                                                url='https://github.com/antiwork/gumroad/pull/1', pr_state='merged', created_at=OLD))
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+
+    def test_a_refused_removal_keeps_no_discard_archive(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
+        real = work_workspace.git
+
+        def refuse(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                raise ValueError('Git refused the removal.')
+            return real(where, *arguments, **options)
+        for _ in range(2):
+            with patch.object(work_workspace, 'git', side_effect=refuse):
+                self.assertEqual(self.retire(), [])
+        # The checkout still holds the work, so no archive stays, and a repeated failure adds none.
+        self.assertEqual(list((self.workspaces / 'archive' / 'done').glob('*.tar.gz')), [])
+        self.assertTrue((path / 'draft.txt').exists())
+
+    def test_a_failed_restore_of_a_discarded_branch_sends_turns_to_the_scratch_workspace(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        branch = self.registry()[identity]['branch']
+        self.assertEqual(self.retire(), [identity])
+        git(self.repo, 'branch', '-D', branch)
+        self.assertEqual(work_workspace.preferred(self.workspaces, outcome), self.workspaces / outcome)
+        self.assertIn('restore_failed', self.registry()[identity]['retired'])
 
     def test_a_second_discard_keeps_the_first_archive(self):
         outcome, identity, path, task = self.outcome()

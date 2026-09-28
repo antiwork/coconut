@@ -38,6 +38,9 @@ LOW_DISK_INTERVAL_SECONDS = 10 * 60
 SCRATCH_NAME = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t_[0-9a-f]{8}')
 # A pull request in one of these states holds no more work for its outcome.
 DONE_PR_STATES = ('merged', 'closed')
+PR_URL = re.compile(r'https://github\.com/([^/]+/[^/]+)/pull/\d+')
+# An origin remote in https or ssh form, with or without .git.
+REMOTE_NAME = re.compile(r'github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$')
 # These artifact fields name the tasks that a pull request belongs to.
 PR_TASK_FIELDS = ('task_id', '_work_origin_task_id', '_review_task_id', '_activity_task_id')
 # Before the registry lock, retirement waits this long for the service lock. Under the registry lock, it waits only LOCKED_WAIT_SECONDS.
@@ -51,6 +54,16 @@ LOCKED_WAIT_SECONDS = 0.25
 BUSY_RETRY_SECONDS = 30
 BUSY_RETRIES = 1
 BUSY_MESSAGE = 'The service was busy. Coconut tries again in an hour.'
+
+
+def repository_name(repository, cache):
+    """Return owner/name of the origin remote of a repository, in lower case, or None. Cache it for one pass."""
+    if repository not in cache:
+        cache[repository] = None
+        with contextlib.suppress(*work_workspace.GIT_ERRORS, TypeError):
+            match = REMOTE_NAME.search(work_workspace.git(repository, 'remote', 'get-url', 'origin'))
+            cache[repository] = match.group(1).lower() if match else None
+    return cache[repository]
 
 
 class ServiceBusy(ValueError):
@@ -144,18 +157,24 @@ class WorktreeRetirement:
         return stopped
 
     def _done_outcomes(self, finished):
-        """Return the finished outcomes that have a pull request, all of them merged or closed. None when the lock is busy."""
+        """Map each finished outcome whose pull requests all merged or closed to their repositories (owner/name).
+
+        Return None when the lock is busy.
+        """
         if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
             return None
         try:
             keys = {task['id']: execution_key(task) for task in self._all('tasks')}
-            states = {}
+            states, repositories = {}, {}
             for artifact in self._all('artifacts'):
                 if artifact.get('kind') != 'pr':
                     continue
                 for outcome in {keys.get(artifact.get(field)) for field in PR_TASK_FIELDS} & set(finished):
                     states.setdefault(outcome, set()).add(artifact.get('pr_state'))
-            return {outcome for outcome, found in states.items() if found <= set(DONE_PR_STATES)}
+                    match = PR_URL.match(str(artifact.get('url') or ''))
+                    if match:
+                        repositories.setdefault(outcome, set()).add(match.group(1).lower())
+            return {outcome: repositories.get(outcome, set()) for outcome, found in states.items() if found <= set(DONE_PR_STATES)}
         finally:
             self.lock.release()
 
@@ -252,11 +271,11 @@ class WorktreeRetirement:
             # A failed orphan check must not stop retirement.
             logging.getLogger(__name__).warning('Coconut could not stop the orphans of idle outcomes: %s', error)
         # A merged pull request ends its work, so its worktree goes without the checks that protect resumable work.
-        done = self._done_outcomes(finished) or set()
+        done = self._done_outcomes(finished) or {}
         # An outcome idle this long loses a worktree that retirement refuses, and the files of its scratch workspace.
         stale = set(finished) if low_disk else {outcome for outcome in finished if ages.get(outcome, 0) >= DISCARD_IDLE_SECONDS}
         try:
-            self._clear_idle_scratch(root, done | stale, current, saved)
+            self._clear_idle_scratch(root, set(done) | stale, current, saved)
         except (ValueError, OSError, subprocess.TimeoutExpired, sqlite3.Error) as error:
             logging.getLogger(__name__).warning('Coconut could not clear idle scratch workspaces: %s', error)
         if not saved:
@@ -264,6 +283,7 @@ class WorktreeRetirement:
         bindings = {k: v['outcome'] for k, v in saved.items() if not v.get('retired')}
         retired = []
         pending = [(identity, outcome) for identity, outcome in bindings.items() if outcome in finished]
+        names = {}
         # A checkout that is already gone has nothing to archive, so its binding closes through discard.
         gone = {identity for identity, _ in pending
                 if isinstance(saved[identity].get('path'), str) and not os.path.lexists(saved[identity]['path'])}
@@ -295,10 +315,13 @@ class WorktreeRetirement:
                     if result is None:
                         raise ServiceBusy(BUSY_MESSAGE)
                     return outcome in result
-                action = work_workspace.discard if outcome in done or identity in gone else work_workspace.retire
+                # A merged pull request ends the work only in its own repository. An outcome can work in several.
+                merged = outcome in done and repository_name(saved[identity].get('repository'), names) in done[outcome]
+                action = work_workspace.discard if merged or identity in gone else work_workspace.retire
+                options = dict(merged=merged) if action is work_workspace.discard else {}
                 try:
                     # A service restart leaves the processes of earlier turns to launchd. They keep the worktree in use.
-                    if action(root, identity, still_finished, orphan_age=ORPHAN_AGE_SECONDS):
+                    if action(root, identity, still_finished, orphan_age=ORPHAN_AGE_SECONDS, **options):
                         retired.append(identity)
                         continue
                     refusal = None
