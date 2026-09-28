@@ -612,6 +612,51 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(git(restored, 'branch', '--show-current'), branch)
         self.assertEqual(git(restored, 'rev-parse', 'HEAD'), head)
 
+    def test_a_refused_detached_discard_leaves_no_branch_behind(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        git(path, 'checkout', '-q', '--detach')
+        real = work_workspace.git
+
+        def refuse(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                raise ValueError('Git refused the removal.')
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=refuse):
+            self.retire()
+        self.assertEqual(git(self.repo, 'branch', '--list', 'wt/*-detached*'), '')
+
+    def test_a_partly_removed_checkout_is_not_adopted(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        real = work_workspace.git
+
+        def partial(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                (path / 'tracked.txt').unlink()
+                raise KeyboardInterrupt()
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=partial), self.assertRaises(KeyboardInterrupt):
+            self.retire()
+        # A tracked file is gone, so this is not the whole checkout. The resume asks for a look and does not adopt it.
+        with self.assertRaises(ValueError):
+            acquire(self.workspaces, outcome, str(self.repo))
+        self.assertIn('restore_failed', self.registry()[identity]['retired'])
+
+    def test_scratch_files_of_an_outcome_without_a_binding_wait_for_the_long_idle_rule(self):
+        outcome = str(uuid4())
+        task = dict(id=str(uuid4()), bot_id=self.bot['id'], _execution_session_id=outcome, title='Scratch', status='completed',
+                    summary='', created_at=OLD, updated_at=(datetime.now(timezone.utc) - timedelta(hours=7)).isoformat().replace('+00:00', 'Z'))
+        with self.service.transaction():
+            self.service._put('tasks', task)
+            self.service._put('artifacts', dict(id=str(uuid4()), kind='pr', bot_id=self.bot['id'], task_id=task['id'],
+                                                url='https://github.com/antiwork/coconut/pull/9', pr_state='merged', created_at=OLD))
+        scratch = self.workspaces / outcome
+        scratch.mkdir()
+        (scratch / 'notes.txt').write_text('unfinished work in a repository that no binding names\n')
+        self.retire()
+        self.assertTrue((scratch / 'notes.txt').exists())
+
     def test_a_discard_keeps_a_small_ignored_file_and_puts_it_back(self):
         outcome, identity, path, task = self.outcome()
         self.pull_request(task, 'merged')

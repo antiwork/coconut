@@ -306,9 +306,11 @@ class WorktreeRetirement:
         names = {}
         # A merged pull request ends the work only in its own repository. An outcome that also works in another
         # repository keeps the scratch files, which can hold a clone of it.
-        scratch_done = {outcome for outcome, merged_in in done.items()
-                        if all(repository_name(b.get('repository'), names) in merged_in
-                               for b in saved.values() if isinstance(b, dict) and b.get('outcome') == outcome)}
+        def in_own_repositories(outcome, merged_in):
+            bindings = [b for b in saved.values() if isinstance(b, dict) and b.get('outcome') == outcome]
+            # Without a binding, no repository is known, so a merged pull request does not end this scratch work early.
+            return bool(bindings) and all(repository_name(b.get('repository'), names) in merged_in for b in bindings)
+        scratch_done = {outcome for outcome, merged_in in done.items() if in_own_repositories(outcome, merged_in)}
         try:
             self._clear_idle_scratch(root, scratch_done | stale, current, saved)
         except (ValueError, OSError, subprocess.TimeoutExpired, sqlite3.Error) as error:

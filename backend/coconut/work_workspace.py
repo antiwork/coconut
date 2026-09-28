@@ -1071,7 +1071,7 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False, urgent=F
         return False
     path, repository = Path(before['path']), Path(before['repository']).resolve()
     present = os.path.lexists(path)
-    head, branch, archive, temporary = None, before['branch'], None, None
+    head, branch, archive, temporary, made_branch = None, before['branch'], None, None, False
     if not present and (before.get('retire_failed') or {}).get('archive'):
         # The checkout is gone, and an earlier retirement archived its files. That archive is the only copy.
         # Its own record names the commit, so a resume can put the files back.
@@ -1107,6 +1107,7 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False, urgent=F
                 number += 1
                 branch = f'{base}-{number}'
             git(repository, 'branch', branch, head)
+            made_branch = True
         staged, unstaged, names = changes(path)
         # Keep the untracked files that an archive can hold. Git lists a nested repository as a folder, and it goes.
         files = [name for name in names if not name.endswith('/')
@@ -1143,6 +1144,14 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False, urgent=F
         if present and in_use(path):
             raise ValueError('A process uses the worktree.')
         return finish_discard(root, identity, before, finished, present, path, repository, branch, head, temporary, archive)
+    except BaseException:
+        if made_branch:
+            # The discard did not go through, so the branch for the detached HEAD has no use. A retry makes its own.
+            saved = json.loads(manifest.read_text()).get(identity) or {}
+            if saved.get('branch') != branch or not saved.get('retired'):
+                with contextlib.suppress(*GIT_ERRORS):
+                    git(repository, 'branch', '-D', branch)
+        raise
     finally:
         # A refused removal keeps no archive, so a repeated failure does not fill the folder.
         if temporary:
@@ -1536,6 +1545,9 @@ def adopt_intact_checkout(binding, path, repository):
         if current != binding['branch']:
             return False
         retired = binding['retired']
+        if git(path, 'ls-files', '--deleted'):
+            # A partial removal deletes tracked files. This is not the whole checkout.
+            return False
         if git(path, 'rev-parse', 'HEAD') == retired.get('head'):
             return True
         return bool(retired.get('restore_failed')) and git(path, 'status', '--porcelain') == ''
