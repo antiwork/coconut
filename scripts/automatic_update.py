@@ -401,6 +401,9 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         # The receipt is what Coconut Care reads. Name an unexpected error there too.
         output = output or f'The gate stopped: {type(error).__name__}: {str(error)[-5000:]}'
         inconclusive = True
+        if isinstance(error, Exception):
+            # A failed install or a crash is inconclusive too, and each retry downloads the toolchain again.
+            arm_inconclusive_wait(state, state_path, revision, tree)
         raise
     finally:
         verdict = 'passed' if passed else 'inconclusive' if inconclusive else 'failed'
@@ -413,12 +416,7 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         # The live install builds its own runtime. Free the candidate and the install caches.
         clear_gate_folders(source)
     if inconclusive:
-        previous = state.get('hermes_inconclusive') or {}
-        attempts = previous.get('attempts', 0) + 1 if previous.get('revision') == revision and previous.get('code') == tree else 1
-        # Each retry installs and checks again, for hours. Wait longer after each inconclusive run, up to a day.
-        state['hermes_inconclusive'] = dict(revision=revision, code=tree, attempts=attempts,
-                                            retry_at=time.time() + min(HERMES_FAILED_RETRY_SECONDS, 3600 * 2 ** (attempts - 1)))
-        save(state_path, state)
+        arm_inconclusive_wait(state, state_path, revision, tree)
         raise RuntimeError(f'The native upgrade checks for Hermes {revision[:12]} did not finish: they timed out, or their '
                            f'setup failed. Read {receipt}. They run again after a wait of up to a day.')
     state.pop('hermes_inconclusive', None)
@@ -426,6 +424,16 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
     save(state_path, state)
     if not passed:
         raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}.')
+
+
+def arm_inconclusive_wait(state, state_path, revision, tree):
+    """Record an inconclusive run, and how long the next run for the same pin and code waits."""
+    previous = state.get('hermes_inconclusive') or {}
+    attempts = previous.get('attempts', 0) + 1 if previous.get('revision') == revision and previous.get('code') == tree else 1
+    # Each retry installs and checks again, for hours. Wait longer after each inconclusive run, up to a day.
+    state['hermes_inconclusive'] = dict(revision=revision, code=tree, attempts=attempts,
+                                        retry_at=time.time() + min(HERMES_FAILED_RETRY_SECONDS, 3600 * 2 ** (attempts - 1)))
+    save(state_path, state)
 
 
 def write_receipt(receipt, revision, verdict, output):

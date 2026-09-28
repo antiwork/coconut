@@ -448,6 +448,17 @@ class AutomaticUpdateTests(unittest.TestCase):
         result = self.gate_case(checks_pass=True, keys={'OTHER_KEY': 'x'})
         self.assertIn('no model keys', result['receipt']['output'])
 
+    def test_a_failed_install_arms_the_wait_too(self):
+        def install(command, **kwargs):
+            raise RuntimeError('no network')
+        state = {}
+        result = self.gate_case(checks_pass=True, install=install, state=state)
+        self.assertIn('install failed', str(result['raised']))
+        self.assertEqual(state['hermes_inconclusive']['attempts'], 1)
+        self.assertGreater(state['hermes_inconclusive']['retry_at'], time.time() + 3000)
+        again = self.gate_case(checks_pass=True, install=install, state=state)
+        self.assertEqual((again['commands'], again['script_calls']), ([], 0))
+
     def test_a_shared_or_linked_credential_file_stops_the_gate_before_the_install(self):
         for options in (dict(mode=0o644), dict(link=True)):
             result = self.gate_case(checks_pass=True, **options)
