@@ -403,6 +403,9 @@ class NativeOutcomes:
                 continue
             if any(m.get('sender_bot_id') == reporter['bot_id'] and m.get('result_status') == 'completed'
                    and not m.get('progress_only') and m.get('text') == delivery['text']
+                   and (not direct_native or (m.get('_returning') is True
+                        and m.get('_return_source_task_id') == reporter['id']
+                        and m.get('_return_delivery_id') == delivery['id']))
                    for delivery in delivered(reporter, callback) for m in callback.get('_bot_messages', [])):
                 return coordinator
         return None

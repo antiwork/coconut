@@ -961,6 +961,42 @@ class NativeWorkContinuationTests(unittest.TestCase):
     def test_linked_owner_native_report_waits_for_care_and_does_not_exempt_coordinator_caller(self):
         self.test_linked_owner_report_waits_for_care_and_does_not_exempt_coordinator_caller(direct_native=True)
 
+    def test_linked_owner_native_report_cannot_borrow_another_reporters_return(self):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(True)
+        self.service._put('tasks', dict(coordinator, status='working'))
+        sent = self.linked_report_message(coordinator, owner['bot_id'], 'Another status report')
+        other = self.service._get('tasks', sent['task_id'])
+        other.update(status='working', _execution_session_id=other['id'],
+                     _kanban_claim={'native_id': 't_other_report', 'input': 'other-report'})
+        self.service._put('tasks', other)
+        text = coordinator['_bot_messages'][0]['text']
+        self.linked_report_message(other, coordinator['bot_id'], text)
+        # The second reporter has stopped before its result is delivered. Its
+        # earlier ordinary message has the same bot and text as the first result.
+        self.service._put('tasks', dict(other, status='completed'))
+        self.service.kanban.tasks[other['id']] = dict(id='t_other_report', status='done')
+        current = self.service._get('tasks', coordinator['id'])
+        self.service._put('tasks', dict(current, status='completed', _waiting_on=[]))
+        self.service._put('artifacts', dict(pr, _activity_task_id=other['id']))
+        self.assert_linked_report_blocked_without_mutation(source)
+
+    def test_linked_owner_native_report_requires_exact_stored_return_identity(self):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(True)
+        message = coordinator['_bot_messages'][0]
+        for field, wrong in (('_return_source_task_id', 'another-reporter'),
+                             ('_return_delivery_id', 'another-delivery'), ('_returning', False)):
+            for value in (wrong, None):
+                with self.subTest(field=field, value=value):
+                    changed = dict(message)
+                    if value is None:
+                        changed.pop(field, None)
+                    else:
+                        changed[field] = value
+                    self.service._put('tasks', dict(coordinator, _bot_messages=[changed]))
+                    self.assert_linked_report_blocked_without_mutation(source)
+        self.service._put('tasks', coordinator)
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
     def test_linked_owner_report_accepts_quiet_failed_requester_siblings_but_guards_live_signals(self):
         owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
         for index, root in enumerate((source, source)):
