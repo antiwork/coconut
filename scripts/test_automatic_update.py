@@ -162,6 +162,16 @@ class AutomaticUpdateTests(unittest.TestCase):
                 path.write_bytes(b'package')
                 return dict(package_id='package')
 
+            def attempt_without_run_patch(now):
+                packaging = SimpleNamespace(package=package, source_files=lambda: {'app.py': b'current'})
+                installer = SimpleNamespace(validate_package=lambda stream: SimpleNamespace(hashes=hashes, revision='runtime'),
+                                            Operations=lambda: SimpleNamespace(health=lambda *args: None))
+                config = dict(repository='owner/repo', source=str(source), live=str(live))
+                with patch.object(update, 'module', side_effect=[packaging, installer]), \
+                        patch.object(update, 'reviewed_merge'), patch.object(update, 'ios_hash', return_value='ios'), \
+                        patch.object(update.time, 'time', return_value=now), patch.object(update.Path, 'home', return_value=root):
+                    update.update(config, state_path)
+
             def attempt(now):
                 packaging = SimpleNamespace(package=package, source_files=lambda: {'app.py': b'current'})
                 installer = SimpleNamespace(validate_package=lambda stream: SimpleNamespace(hashes=hashes, revision='runtime'),
@@ -181,20 +191,30 @@ class AutomaticUpdateTests(unittest.TestCase):
             with patch.object(update, 'service_answers', return_value=True):
                 attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
             self.assertEqual(received, ['first'])
-            # A stopped service does not wait: the installer recovers it.
-            with patch.object(update, 'service_answers', return_value=False), self.assertRaises(RuntimeError):
-                attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
-            self.assertEqual(received, ['first', 'first'])
-            # The second failure doubled the wait. After it ends, the same commit is tried again.
+            # A stopped service gets only the recovery step, not a second install of the failed commit.
+            recovered = []
+            real = command
+
+            def recovering(args, **kwargs):
+                if 'recover' in args:
+                    recovered.append(args)
+                    return 'COCONUT_DEPLOY_RESULT={"ok":true,"recovered":true}'
+                return real(args, **kwargs)
+            with patch.object(update, 'service_answers', return_value=False), \
+                    patch.object(update, 'run', side_effect=recovering):
+                attempt_without_run_patch(1000 + update.FAILED_DEPLOY_SECONDS - 1)
+            self.assertEqual(received, ['first'])
+            self.assertEqual(len(recovered), 1)
+            # After the wait ends, the same commit is tried again.
             retry_at = json.loads(state_path.read_text())['failed_deploy']['retry_at']
-            self.assertEqual(retry_at, 1000 + update.FAILED_DEPLOY_SECONDS - 1 + 2 * update.FAILED_DEPLOY_SECONDS)
+            self.assertEqual(retry_at, 1000 + update.FAILED_DEPLOY_SECONDS)
             with patch.object(update, 'service_answers', return_value=True), self.assertRaises(RuntimeError):
                 attempt(retry_at)
-            self.assertEqual(json.loads(state_path.read_text())['failed_deploy']['attempts'], 3)
+            self.assertEqual(json.loads(state_path.read_text())['failed_deploy']['attempts'], 2)
             # A new merged commit deploys at once, and success clears the backoff.
             head[0], outcome[0] = 'second', 'ok'
             attempt(retry_at + 1)
-            self.assertEqual(received, ['first', 'first', 'first', 'second'])
+            self.assertEqual(received, ['first', 'first', 'second'])
             saved = json.loads(state_path.read_text())
             self.assertNotIn('failed_deploy', saved)
             self.assertEqual(saved['source_sha'], 'second')

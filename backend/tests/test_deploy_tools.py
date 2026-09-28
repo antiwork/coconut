@@ -620,5 +620,24 @@ class DeploymentHealthTests(unittest.TestCase):
         self.assertEqual(waits, [deploy.PROBE_WAIT_SECONDS, deploy.HEALTH_WAIT_SECONDS])
         self.assertLess(deploy.PROBE_WAIT_SECONDS, deploy.HEALTH_WAIT_SECONDS)
 
+    def test_a_starting_service_gets_the_full_wait_in_the_probe(self):
+        waits = []
+
+        def slow_start(root, address, seconds):
+            waits.append(seconds)
+            if len(waits) == 1:
+                raise deploy.DeployError('The service did not pass its local TLS health check.')
+            return {'ok': True}
+        with patch.object(deploy.Operations, '_health', side_effect=slow_start), \
+                patch.object(deploy, 'service_process', return_value=True):
+            self.assertEqual(deploy.Operations().probe(Path('/tmp'), 'https://localhost:8443'), {'ok': True})
+        self.assertEqual(waits, [deploy.PROBE_WAIT_SECONDS, deploy.HEALTH_WAIT_SECONDS - deploy.PROBE_WAIT_SECONDS])
+        # A service without a process fails after the short wait.
+        waits.clear()
+        with patch.object(deploy.Operations, '_health', side_effect=slow_start), \
+                patch.object(deploy, 'service_process', return_value=False), self.assertRaises(deploy.DeployError):
+            deploy.Operations().probe(Path('/tmp'), 'https://localhost:8443')
+        self.assertEqual(waits, [deploy.PROBE_WAIT_SECONDS])
+
     def test_health_accepts_startup_after_twenty_seconds(self):
         self.assert_health_uses_installed_trust(b'The saved certificate DER bytes.', delayed=True)

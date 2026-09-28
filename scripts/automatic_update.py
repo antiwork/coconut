@@ -327,9 +327,13 @@ def update(config, state_path):
     run(['git', 'fetch', 'origin', 'main'], cwd=source)
     sha = run(['git', 'rev-parse', 'origin/main'], cwd=source)
     failed = state.get('failed_deploy') or {}
-    if failed.get('source_sha') == sha and time.time() < failed.get('retry_at', 0) and service_answers(live):
-        # Each failed attempt stops and restarts the service. Wait before the next attempt for the same commit.
-        # A stopped service does not wait: the installer's recovery step starts the previous source again.
+    if failed.get('source_sha') == sha and time.time() < failed.get('retry_at', 0):
+        # Each failed attempt stops and restarts the service. Wait before the next install of the same commit.
+        # A service that is down gets only the recovery step, which starts the previous source from the journal.
+        if not service_answers(live):
+            address = json.loads((live / '.runtime/host/connection.json').read_text())['address']
+            run([sys.executable, str(source / 'scripts/deploy.py'), 'recover',
+                 '--directory', str(live.relative_to(Path.home())), '--address', address])
         return
     reviewed_merge(repository, sha)
     run(['git', 'checkout', '--detach', sha], cwd=source)
@@ -390,6 +394,8 @@ def update(config, state_path):
         raise
     state.pop('failed_deploy', None)
     state.update(source_sha=sha, package_id=metadata['package_id'])
+    # Save the install now, so a later iOS step that fails cannot leave an old backoff in place.
+    save(state_path, state)
     fingerprint = ios_hash(source)
     if config.get('release_helper') and not state.get('pending_ios', {}).get('build'):
         if fingerprint in (state.get('ios_hash'), state.get('rejected_ios_hash')):
