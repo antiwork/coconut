@@ -1,5 +1,6 @@
 """Keep runtime updates and rollback inside the managed deployment transaction."""
 import json
+import os
 import tempfile
 from pathlib import Path
 import unittest
@@ -77,13 +78,34 @@ class RuntimeDeploymentTests(unittest.TestCase):
         # A person can save a copy under the same prefix. Only a deployment UUID marks a copy of an update.
         manual = self.root / '.runtime/hermes-rollback-known-good'
         manual.mkdir()
+        failed = [self.root / f'.runtime/hermes-failed-{uuid4()}' for _ in range(2)]
+        for path in failed:
+            path.mkdir()
         self.receive(self.files, update_runtime=True)
+        # Each failed attempt leaves a runtime copy. A successful update removes them.
+        self.assertFalse(any(path.exists() for path in failed))
         saved = [path for path in (self.root / '.runtime').glob('hermes-rollback-*') if path != manual]
         # Only the copy of this update can serve a rollback. A manual copy stays.
         self.assertEqual(len(saved), 1)
         self.assertEqual(json.loads((saved[0] / 'install.json').read_text())['commit'], OLD)
         self.assertFalse(earlier.exists())
         self.assertTrue(manual.exists())
+
+    def test_a_new_runtime_update_keeps_only_the_newest_failed_copy(self):
+        failed = [self.root / f'.runtime/hermes-failed-{uuid4()}' for _ in range(3)]
+        for index, path in enumerate(failed):
+            path.mkdir()
+            os.utime(path, (1000 + index, 1000 + index))
+        stale = self.root / f'.runtime/hermes-rollback-{uuid4()}'
+        stale.mkdir()
+        with self.assertRaises(deploy.DeployError):
+            self.receive(self.files, RuntimeOperations(mode='managed', fail='prepare'), update_runtime=True)
+        # The attempt failed, so the newest failed copy of an earlier attempt stays for inspection. No journal
+        # was pending, so the older copies served no rollback.
+        left = sorted(path.name for path in (self.root / '.runtime').glob('hermes-failed-*'))
+        self.assertIn(failed[-1].name, left)
+        self.assertFalse(failed[0].exists() or failed[1].exists() or stale.exists())
+        self.assert_old_runtime()
 
     def test_install_failure_restores_source_runtime_and_native_state(self):
         with self.assertRaises(deploy.DeployError):

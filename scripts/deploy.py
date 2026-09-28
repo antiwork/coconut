@@ -489,26 +489,33 @@ def runtime_paths(root, record):
         'hermes', 'hermes-rollback-' + identity, 'hermes-failed-' + identity))
 
 
-def prune_rollbacks(root, record):
-    """Keep only the rollback copy of the latest runtime update. Remove older copies that finished updates left.
+def prune_runtime_copies(root, keep=(), *, newest_failed=False):
+    """Remove the runtime copies that finished updates left. Keep the paths in `keep`.
 
-    Each copy holds a complete Hermes runtime of about a gigabyte. Only the latest one can serve a rollback,
-    because an update journal names its own copy, and a finished update has no journal. A manual copy stays.
+    An update keeps the previous runtime as hermes-rollback-<id>, and a rollback keeps the new one as hermes-failed-<id>.
+    Each copy holds a complete Hermes runtime of about a gigabyte, and each attempt has a new id, so repeated
+    failures would fill the disk. A finished update has no journal, so its copies serve no rollback. With
+    `newest_failed`, the newest failed copy stays for inspection. A manual copy with another name stays.
     """
-    # Cleanup only reclaims space. It must not turn a finished update into a failed one.
+    # Cleanup only reclaims space. It must not turn an update into a failed one.
     with contextlib.suppress(OSError, DeployError):
-        keep = runtime_paths(root, record)[1]
-        for old in (root / '.runtime').glob('hermes-rollback-*'):
-            if old != keep and old.is_dir() and not old.is_symlink() and rollback_name(old.name):
+        copies = [path for path in (root / '.runtime').glob('hermes-*')
+                  if runtime_copy_name(path.name) and path.is_dir() and not path.is_symlink()]
+        failed = sorted((path for path in copies if path.name.startswith('hermes-failed-')),
+                        key=lambda path: max(path.stat().st_mtime, path.stat().st_ctime))
+        keep = {*keep, *failed[-1:]} if newest_failed else set(keep)
+        for old in copies:
+            if old not in keep:
                 shutil.rmtree(safe_path(old, root), ignore_errors=True)
 
 
-def rollback_name(name):
-    """Return True for a name that runtime_paths gives a rollback copy. Another name is a manual copy."""
-    try:
-        return name == 'hermes-rollback-' + str(UUID(name.removeprefix('hermes-rollback-')))
-    except ValueError:
-        return False
+def runtime_copy_name(name):
+    """Return True for a name that runtime_paths gives a runtime copy. Another name is a manual copy."""
+    for prefix in ('hermes-rollback-', 'hermes-failed-'):
+        if name.startswith(prefix):
+            with contextlib.suppress(ValueError):
+                return name == prefix + str(UUID(name.removeprefix(prefix)))
+    return False
 
 
 def move_terminal_state(source, target, root):
@@ -720,6 +727,9 @@ def receive(directory, address, stream, *, home=None, operations=None, update_ru
         marker = marker or {'version': 1, 'installation_id': str(uuid4()), 'files': {}, 'package_id': '', 'state': 'pending', 'address': address}
         write_json(root / MARKER_PATH, marker)
         reconcile(root, operations)
+        if update_runtime and not journal.exists():
+            # No journal is pending, so no copy serves a rollback. Free their space before the new runtime.
+            prune_runtime_copies(root, newest_failed=True)
         marker = read_marker(root)
         initial_install = not marker['files'] or not runtime_present or bool(marker.get('initial_install_pending'))
         if initial_install and not marker.get('initial_install_pending'):
@@ -815,7 +825,8 @@ def receive(directory, address, stream, *, home=None, operations=None, update_ru
             write_json(root / MARKER_PATH, updated)
             remove_journal(root, record)
             if runtime_change:
-                prune_rollbacks(root, record)
+                with contextlib.suppress(OSError, DeployError):
+                    prune_runtime_copies(root, {runtime_paths(root, record)[1]})
             return {'version': 1, 'installation_id': marker['installation_id'], 'package_id': package.package_id, 'mode': mode, 'address': address, 'health': health, 'updated': original is not None}
         except BaseException as error:
             if not applied:

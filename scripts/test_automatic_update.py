@@ -333,7 +333,7 @@ class AutomaticUpdateTests(unittest.TestCase):
                 try:
                     real(source, live, 'new', 'sha2', state, state_path)
                     raised = None
-                except RuntimeError as error:
+                except (RuntimeError, OSError) as error:
                     raised = error
             receipt = json.loads((root / 'hermes-checks.json').read_text()) if (root / 'hermes-checks.json').exists() else None
             return dict(commands=commands, script_calls=len(calls), state=state, raised=raised, receipt=receipt,
@@ -421,6 +421,14 @@ class AutomaticUpdateTests(unittest.TestCase):
         result = self.gate_case(checks_pass=True, free=update.HERMES_CANDIDATE_FREE_BYTES - 1)
         self.assertIn('GiB of free disk space', str(result['raised']))
         self.assertFalse(result['runtime_left'])
+
+    def test_an_unexpected_gate_error_is_named_in_the_receipt(self):
+        def broken(*args, **kwargs):
+            raise OSError('The check script cannot run.')
+        result = self.gate_case(checks_pass=True, run_tree=broken)
+        self.assertIsInstance(result['raised'], OSError)
+        self.assertIn('OSError: The check script cannot run.', result['receipt']['output'])
+        self.assertFalse(result['receipt']['passed'])
 
     def test_a_passed_hermes_pin_is_not_checked_again(self):
         result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha2', passed=True))

@@ -107,11 +107,17 @@ def passed(kind, result):
 def run_checks(checkout: Path, live: Path) -> dict:
     source = checkout / '.runtime/hermes/source'
     python = checkout / '.runtime/hermes/venv/bin/python'
+    missing = 'The candidate runtime is missing. Run scripts/hermes.py install in this checkout first.'
     if not python.is_file() or not (source / '.git').exists():
-        raise SystemExit('The candidate runtime is missing. Run scripts/hermes.py install in this checkout first.')
+        raise SystemExit(missing)
+    try:
+        # hermes.py writes the receipt last. A stopped install leaves the other folders without it.
+        revision = json.loads((checkout / '.runtime/hermes/install.json').read_text())['commit']
+    except (OSError, ValueError, KeyError, TypeError):
+        raise SystemExit(missing) from None
     # Model checks use the credentials of the installed service. Read them in memory only.
     host.load_credentials(live / '.runtime/host')
-    report = dict(revision=json.loads((checkout / '.runtime/hermes/install.json').read_text())['commit'], checks=[])
+    report = dict(revision=revision, checks=[])
     with tempfile.TemporaryDirectory(prefix='candidate-checks-', dir=checkout / '.runtime') as directory:
         root = Path(directory)
         for folder in ('.runtime/hermes', '.runtime/checks', '.runtime/host'):

@@ -363,6 +363,10 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         reports = [line.split('=', 1)[1] for line in result.stdout.splitlines() if line.startswith('COCONUT_HERMES_CHECKS=')]
         with contextlib.suppress(ValueError, AttributeError):
             passed = result.returncode == 0 and len(reports) == 1 and json.loads(reports[0]).get('passed') is True
+    except BaseException as error:
+        # The receipt is what Coconut Care reads. Name an unexpected error there too.
+        output = output or f'The gate stopped: {type(error).__name__}: {str(error)[-5000:]}'
+        raise
     finally:
         save(receipt, dict(revision=revision, passed=passed, checked_at=time.time(), output=output))
         # The live install builds its own runtime. Only the gate uses .runtime in this checkout: the candidate,
