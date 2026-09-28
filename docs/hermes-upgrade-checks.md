@@ -78,8 +78,9 @@ The receipt has a `verdict`: `passed`, `failed` (the checks ran and a check fail
 missing model keys, changed code, or a setup error).
 
 The live install starts only when the result passes for the pinned revision. The updater keeps each result for that
-revision and the Git trees of `backend` and `scripts`, the code that the checks run. After a failure, it runs the
-checks again after 24 hours, and at once for a new pin, for example a revert, or for a change of that code.
+revision, the Git trees of `backend` and `scripts` (the code that the checks run), and a digest of the model keys. After a failure, it runs the
+checks again after 24 hours, and at once for a new pin, for example a revert, for a change of that code, or for
+a corrected model key.
 An inconclusive run waits 1, 2, 4, 8, and 16 hours, and then a day, before the next run for the same pin and code,
 because each run installs the candidate and runs the checks again. A timeout, missing model keys, or a setup error of the checks is not a failure: the updater stops the
 leftover check processes, and it runs the checks again after its normal backoff. A Coconut bot cannot run these checks inside its own Hermes worker,

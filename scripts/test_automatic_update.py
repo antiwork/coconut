@@ -17,6 +17,9 @@ update = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(update)
 REAL_GATE = update.check_hermes_candidate
 REAL_PROBLEM = update.gate_problem
+# gate_case has no Git checkout, so the commit stands for the code. The model keys are part of the key.
+DEFAULT_KEYS = {'ANTHROPIC_API_KEY': 'k'}
+TREE = 'sha2 ' + hashlib.sha256(json.dumps(DEFAULT_KEYS, sort_keys=True).encode()).hexdigest()[:16]
 
 
 def saved_result(result):
@@ -365,7 +368,9 @@ class AutomaticUpdateTests(unittest.TestCase):
             return dict(commands=commands, script_calls=len(calls), calls=calls, state=state, raised=raised, receipt=receipt,
                         candidate_left=(source / '.runtime/hermes').exists(),
                         runtime_left=any((source / '.runtime' / name).exists() for name in update.HERMES_GATE_FOLDERS),
-                        other_left=(source / '.runtime/ssh/key').exists(), stopped=stopped, runtime=source / '.runtime/hermes')
+                        other_left=(source / '.runtime/ssh/key').exists(), stopped=stopped, runtime=source / '.runtime/hermes',
+                        partial_left=list((source / '.runtime/tools').glob('uv-download-*')),
+                        tools_kept=(source / '.runtime/tools/uv-1-target').exists())
 
     def test_a_new_hermes_pin_is_checked_before_the_live_install(self):
         # The folder already has the new pin, so only the cleanup after the checks can remove it.
@@ -373,7 +378,7 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertIsNone(result['raised'])
         self.assertEqual(result['commands'][0][-3:], ['install', '--revision', 'new'])
         self.assertEqual(result['script_calls'], 1)
-        self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', code='sha2', passed=True))
+        self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', code=TREE, passed=True))
         self.assertTrue(result['receipt']['passed'])
         # The updater's copy of the runtime is removed after the checks, to keep disk space free.
         self.assertFalse(result['candidate_left'])
@@ -381,7 +386,7 @@ class AutomaticUpdateTests(unittest.TestCase):
     def test_a_failed_hermes_check_stops_the_install(self):
         result = self.gate_case(checks_pass=False)
         self.assertIn('native upgrade checks failed', str(result['raised']))
-        self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', code='sha2', passed=False))
+        self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', code=TREE, passed=False))
         self.assertFalse(result['receipt']['passed'])
 
     def test_a_failed_candidate_install_says_so_in_the_receipt(self):
@@ -434,7 +439,7 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertEqual(result['commands'], [])
 
     def test_a_cached_pass_still_frees_the_folders_of_a_killed_run(self):
-        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha2', code='sha2', passed=True))
+        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha2', code=TREE, passed=True))
         self.assertIsNone(result['raised'])
         self.assertFalse(result['runtime_left'])
 
@@ -494,6 +499,34 @@ class AutomaticUpdateTests(unittest.TestCase):
             entry['retry_at'] = 0
         self.assertEqual([wait // 3600 for wait in waits], [1, 2, 4, 8, 16])
 
+    def test_a_corrected_model_key_runs_the_checks_again(self):
+        first = self.gate_case(checks_pass=False, keys={'ANTHROPIC_API_KEY': 'old'})
+        self.assertIn('failed for', str(first['raised']))
+        saved = first['state']['hermes_checks']
+        # The same pin and code, with the same key: the failure holds. With a new key, the checks run.
+        held = self.gate_case(checks_pass=True, cached=saved, keys={'ANTHROPIC_API_KEY': 'old'})
+        self.assertEqual(held['script_calls'], 0)
+        rerun = self.gate_case(checks_pass=True, cached=saved, keys={'ANTHROPIC_API_KEY': 'new'})
+        self.assertEqual(rerun['script_calls'], 1)
+
+    def test_a_pass_that_the_gate_did_not_accept_is_not_a_pass_in_the_receipt(self):
+        text = json.dumps(dict(passed=True, hermes_sha='other', credentials=['KEY'], checks=dict(relay=dict(passed=True))))
+        result = self.gate_case(checks_pass=True, result_text=text)
+        self.assertEqual((result['receipt']['verdict'], result['receipt']['passed']), ('inconclusive', False))
+        self.assertTrue(result['receipt']['gate_note'])
+
+    def test_a_killed_download_leaves_nothing_in_tools(self):
+        def install(command, **kwargs):
+            partial = Path(command[1]).parents[1] / '.runtime/tools/uv-download-abc'
+            partial.mkdir(parents=True)
+            (partial / 'uv.tar.gz').write_bytes(b'half')
+            (partial.parent / 'uv-1-target').mkdir()
+            raise RuntimeError('killed')
+        result = self.gate_case(checks_pass=True, install=install)
+        self.assertIsNotNone(result['raised'])
+        self.assertFalse(result['partial_left'])
+        self.assertTrue(result['tools_kept'])
+
     def test_the_check_script_gets_the_candidate_runtime_and_the_live_credentials(self):
         result = self.gate_case(checks_pass=True)
         command = result['calls'][0]
@@ -517,13 +550,13 @@ class AutomaticUpdateTests(unittest.TestCase):
 
     def test_a_failed_pin_is_not_checked_again_for_a_day_with_the_same_code(self):
         # gate_case has no Git checkout, so the commit stands for the code.
-        failed = dict(revision='new', sha='sha2', code='sha2', passed=False, checked_at=time.time() - 60)
+        failed = dict(revision='new', sha='sha2', code=TREE, passed=False, checked_at=time.time() - 60)
         result = self.gate_case(checks_pass=True, cached=failed)
         self.assertIn('failed for Hermes new', str(result['raised']))
         self.assertEqual((result['commands'], result['script_calls']), ([], 0))
         # A day later, a new pin, or a change of the checked code runs the checks again.
         for cached in (dict(failed, checked_at=time.time() - update.HERMES_FAILED_RETRY_SECONDS - 1),
-                       dict(failed, revision='other'), dict(failed, code='other-tree')):
+                       dict(failed, revision='other'), dict(failed, code='other-tree 0123')):
             self.assertEqual(self.gate_case(checks_pass=True, cached=cached)['script_calls'], 1)
 
     def test_a_saved_result_is_reused_by_the_next_pass(self):
@@ -586,15 +619,15 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertFalse(result['receipt']['passed'])
 
     def test_a_passed_hermes_pin_is_not_checked_again(self):
-        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha2', code='sha2', passed=True))
+        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha2', code=TREE, passed=True))
         self.assertIsNone(result['raised'])
         self.assertEqual((result['commands'], result['script_calls']), ([], 0))
 
     def test_a_new_source_commit_checks_the_same_pin_again(self):
         # The checks run the Coconut code of the checkout too, so a pass for another commit does not count.
-        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha1', code='sha1', passed=True))
+        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha1', code='sha1 other', passed=True))
         self.assertEqual(result['script_calls'], 1)
-        self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', code='sha2', passed=True))
+        self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', code=TREE, passed=True))
 
     def test_a_malformed_check_report_fails_the_gate(self):
         result = self.gate_case(checks_pass=True, installed='new', result_text='{"passed": tr')

@@ -337,7 +337,8 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
     receipt = state_path.parent / 'hermes-checks.json'
     # A run that was killed outside Python leaves its folders. Free them before any early return.
     clear_gate_folders(source)
-    tree = checked_code(source, sha)
+    # A result counts for the pin, the checked code, and the model keys, so a corrected key runs the checks again.
+    tree = f'{checked_code(source, sha)} {credentials_digest(live)}'
     saved = state.get('hermes_checks') if isinstance(state.get('hermes_checks'), dict) else {}
     # The checks run backend and scripts of the checkout. A result counts for the pin and that code only, so a fix of
     # the Coconut code runs the checks again at once, and a commit elsewhere, such as the iOS app, reuses the result.
@@ -405,8 +406,11 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         verdict = 'passed' if passed else 'inconclusive' if inconclusive else 'failed'
         if recorded:
             # The receipt states the verdict itself, so a reader can tell a failed pin from checks that could not run.
+            # Its passed value follows the verdict: a pass that the gate did not accept is not a pass. The gate's own
+            # reason stays beside the script's result.
             with contextlib.suppress(OSError, ValueError, AttributeError):
-                save(receipt, dict(json.loads(receipt.read_text()), verdict=verdict))
+                save(receipt, dict(json.loads(receipt.read_text()), verdict=verdict, passed=verdict == 'passed',
+                                   gate_note=gate_note(verdict, output)))
         else:
             write_receipt(receipt, revision, verdict, output[-20000:])
         # The live install builds its own runtime. Free the candidate and the install caches.
@@ -432,9 +436,27 @@ def arm_inconclusive_wait(state, state_path, revision, tree):
     save(state_path, state)
 
 
+def gate_note(verdict, output):
+    """Say why the gate did not accept the result, for a reader of the receipt."""
+    if verdict == 'passed':
+        return None
+    if 'ran longer than' in output:
+        return output[output.rindex('The checks ran longer than'):][:300] if 'The checks ran longer than' in output else 'A step timed out.'
+    return 'The result is incomplete, has no model keys, names another Hermes commit, or reports a setup error.' if verdict == 'inconclusive' else 'A check failed.'
+
+
 def write_receipt(receipt, revision, verdict, output):
     """Write the receipt for a gate run in which the check script wrote none."""
     save(receipt, dict(revision=revision, passed=False, verdict=verdict, checked_at=time.time(), output=output))
+
+
+def credentials_digest(live):
+    """Return a digest of the model keys of the installed service. It names the keys and their values, never shows them."""
+    try:
+        keys = json.loads((live / '.runtime/host/credentials.json').read_text())
+    except (OSError, ValueError):
+        return 'no-keys'
+    return hashlib.sha256(json.dumps(keys, sort_keys=True).encode()).hexdigest()[:16] if isinstance(keys, dict) else 'no-keys'
 
 
 def gate_problem(source, live):
@@ -477,6 +499,9 @@ def clear_gate_folders(source):
             module(source, 'check_hermes_candidate').stop_leftovers(candidate)
     for name in HERMES_GATE_FOLDERS:
         shutil.rmtree(source / '.runtime' / name, ignore_errors=True)
+    # A killed download leaves its temporary folder in tools. The finished uv folder appears by one rename, so it stays.
+    for partial in (source / '.runtime/tools').glob('uv-download-*'):
+        shutil.rmtree(partial, ignore_errors=True)
 
 
 def run_bounded(command, *, cwd, timeout):
