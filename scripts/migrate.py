@@ -120,7 +120,10 @@ def verify_started(path, expected):
             raise MigrationError('The original event history changed after startup.')
         bot_ids = {row[0] for row in expected['profiles']}
         extra = connection.execute('SELECT type,bot_id,task_id FROM events WHERE seq>?', (expected['cursor'],)).fetchall()
-        if len(extra) != len(bot_ids) or any(kind != 'bot.updated' or bot not in bot_ids or task is not None for kind, bot, task in extra):
+        # Startup refreshes the status of each bot. It publishes an event only for a bot whose status changed,
+        # and a migrated store has no running work, so it changes none or few. Any other event is unexpected work.
+        if (len({bot for _, bot, _ in extra}) != len(extra)
+                or any(kind != 'bot.updated' or bot not in bot_ids or task is not None for kind, bot, task in extra)):
             raise MigrationError('The destination performed unexpected work after startup.')
     return observed
 
