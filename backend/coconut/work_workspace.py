@@ -119,6 +119,8 @@ PATCH_LIMIT_BYTES = 200 * 1024 * 1024
 # together are larger than NESTED_ARCHIVE_LIMIT_BYTES.
 NESTED_ARCHIVE_DAYS = 30
 NESTED_ARCHIVE_LIMIT_BYTES = 2 * 1024 ** 3
+# The discard archives that a binding still names, together, stay within this limit.
+DISCARD_ARCHIVE_LIMIT_BYTES = 4 * 1024 ** 3
 # The size limit never deletes an archive younger than this, so a person has time to recover the work.
 NESTED_ARCHIVE_KEEP_SECONDS = 24 * 60 * 60
 # After Git refuses to remove a worktree, Coconut waits this long before the next attempt.
@@ -1044,7 +1046,7 @@ def removal_stopped(manifest, saved, binding, path, repository, current, archive
     raise ValueError(message) from error
 
 
-def discard(root, identity, finished, *, orphan_age=None, merged=False):
+def discard(root, identity, finished, *, orphan_age=None, merged=False, urgent=False):
     """Remove the worktree of an idle outcome. Return True when removed.
 
     Coconut calls this when the pull requests of the outcome all merged or closed, when the checkout is gone, and when
@@ -1062,8 +1064,10 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False):
     if not before or before.get('retired'):
         return False
     failed = (before.get('retire_failed') or {}).get('at')
-    if failed and datetime.now(timezone.utc) - datetime.fromisoformat(failed.replace('Z', '+00:00')) < RETRY_AFTER:
+    if (failed and not urgent
+            and datetime.now(timezone.utc) - datetime.fromisoformat(failed.replace('Z', '+00:00')) < RETRY_AFTER):
         # A refused removal waits a day, as in retire. The retry would archive the same files again.
+        # A low disk does not wait: the disk stops every turn.
         return False
     path, repository = Path(before['path']), Path(before['repository']).resolve()
     present = os.path.lexists(path)
@@ -1086,7 +1090,7 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False):
         # A worktree that Coconut tracks for another outcome is not a leftover of this one, and no archive keeps its files.
         tracked = {Path(other['path']).resolve() for name, other in json.loads(manifest.read_text()).items()
                    if name != identity and isinstance(other, dict) and isinstance(other.get('path'), str)}
-        if any(path.resolve() in other.parents for other in tracked):
+        if any(path.resolve() in other.parents and other.exists() for other in tracked):
             raise ValueError('The worktree contains a worktree of another outcome.')
         if not finished(True):
             raise ValueError('The outcome resumed during retirement.')
@@ -1270,10 +1274,24 @@ def sweep_temporary(root):
     # A binding names its discard archive, and a person needs it to recover the work. Only the age rule removes it.
     named = named_discard_archives(root)
     trim_nested_archives(root, folder='done', keep=named)
+    kept = []
     for archive in named:
         with contextlib.suppress(FileNotFoundError):
-            if archive.stat().st_mtime < time.time() - NESTED_ARCHIVE_DAYS * 86400:
+            status = archive.stat()
+            if status.st_mtime < time.time() - NESTED_ARCHIVE_DAYS * 86400:
                 archive.unlink()
+            else:
+                kept.append((status.st_mtime, status.st_size, archive))
+    # A binding names a discard archive, and a person needs it to recover the work, so it gets a larger limit than an
+    # unnamed archive. It is still a limit: the oldest go first when the named archives together exceed it.
+    total = sum(size for _, size, _ in kept)
+    for moment, size, archive in sorted(kept):
+        if total <= DISCARD_ARCHIVE_LIMIT_BYTES:
+            break
+        archive.unlink(missing_ok=True)
+        logging.getLogger(__name__).warning('Coconut deleted archive %s to keep the named archives within %s bytes.',
+                                            archive, DISCARD_ARCHIVE_LIMIT_BYTES)
+        total -= size
 
 
 def named_discard_archives(root):
@@ -1484,6 +1502,30 @@ def apply_unstaged(path, unstaged):
                    '--pathspec-from-file=-', '--pathspec-file-nul', data=b'\0'.join(added) + b'\0')
 
 
+def adopt_intact_checkout(binding, path, repository):
+    """Return True when the path holds the linked worktree of the repository that the restore may adopt.
+
+    That is the checkout on the saved branch at the saved HEAD, which a stop between the record and the removal leaves.
+    It is also a clean checkout on the saved branch after a restore that failed to put the archived changes back.
+    """
+    if path.is_symlink() or not path.is_dir() or not (path / '.git').is_file():
+        return False
+    try:
+        if (Path(git(path, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve() != repository.resolve() / '.git'
+                or git(path, 'branch', '--show-current') != binding['branch']):
+            return False
+        retired = binding['retired']
+        if git(path, 'rev-parse', 'HEAD') == retired.get('head'):
+            return True
+        return bool(retired.get('restore_failed')) and git(path, 'status', '--porcelain') == ''
+    except GIT_ERRORS:
+        return False
+
+
+class ReapplyFailed(ValueError):
+    """The archived changes of a discard did not go back into the new checkout."""
+
+
 def reapply_discard(path, archive, head):
     """Put the changes of a discard archive back into a new checkout of its branch. Keep the archive.
 
@@ -1518,6 +1560,8 @@ def reapply_discard(path, archive, head):
             git(path, 'clean', '-q', '-fd')
         logging.getLogger(__name__).warning('Coconut did not put the changes of %s back into %s: %s. The archive keeps '
                                             'them.', archive, path, error)
+        raise ReapplyFailed(f'Coconut could not put the archived changes back: {error}. The archive {archive} keeps them, '
+                            'and the checkout is clean.') from None
 
 
 def unpack(binding, checked, *, retry_failure=None):
@@ -1636,6 +1680,11 @@ def restore(binding, checked, *, retry_duplicates=False):
         # discard kept only the branch. The merged work gets a new checkout of it. archive/done/ keeps the patches.
         path, repository = Path(binding['path']), Path(binding['repository'])
         try:
+            if adopt_intact_checkout(binding, path, repository):
+                # A stop between the record and the removal left the checkout. It holds the work, so it is the restore.
+                binding.pop('retired')
+                validate_binding(binding)
+                return
             if path.is_symlink() or occupied(path):
                 raise ValueError(f'The path {path} of the discarded work is not empty. Ask the operator to inspect it.')
             git(repository, 'rev-parse', '--verify', 'refs/heads/' + binding['branch'])
@@ -1660,19 +1709,23 @@ def restore(binding, checked, *, retry_duplicates=False):
                 git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
             with contextlib.suppress(FileNotFoundError, OSError):
                 path.rmdir()
+            # The Git calls above take time. Do not remove someone else's files if the path filled meanwhile.
+            if path.is_symlink() or occupied(path):
+                raise ValueError(f'The path {path} of the discarded work is not empty. Ask the operator to inspect it.')
             try:
                 git(repository, 'worktree', 'add', '-q', str(path), binding['branch'], timeout=CHECKOUT_SECONDS)
             except BaseException:
                 # An interrupted add can leave a registered partial checkout. Remove it, so the next turn tries again.
                 discard_checkout(repository, path)
                 raise
+            if retired.get('archive') and Path(retired['archive']).is_file():
+                reapply_discard(path, Path(retired['archive']), retired.get('head'))
         except RESTORE_ERRORS as error:
-            # The mark sends the turn to the scratch workspace (see chosen). The next restore tries again.
-            message = f'Coconut could not check out {binding["branch"]} again: {error}'
+            # The mark sends the turn to the scratch workspace (see chosen), and the bot reads the message from
+            # coconut_workspace. A clean checkout stays, and the next restore adopts it.
+            message = str(error) if isinstance(error, ReapplyFailed) else f'Coconut could not check out {binding["branch"]} again: {error}'
             binding['retired'] = dict(retired, restore_failed=dict(at=stamp(datetime.now(timezone.utc)), error=message[:1000]))
             raise ValueError(message) from None
-        if retired.get('archive') and Path(retired['archive']).is_file():
-            reapply_discard(path, Path(retired['archive']), retired.get('head'))
         binding.pop('retired')
         validate_binding(binding)
         return

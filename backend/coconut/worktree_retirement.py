@@ -202,7 +202,9 @@ class WorktreeRetirement:
         for binding in saved.values():
             if isinstance(binding, dict) and isinstance(binding.get('path'), str):
                 with contextlib.suppress(OSError):
-                    tracked.add(Path(binding['path']).resolve())
+                    # A binding of a checkout that is gone holds no files.
+                    if Path(binding['path']).exists():
+                        tracked.add(Path(binding['path']).resolve())
         candidates = []
         for folder in root.iterdir():
             name = folder.name
@@ -301,8 +303,14 @@ class WorktreeRetirement:
         # An open pull request keeps its work until the disk is low.
         stale = set(finished) if low_disk else {outcome for outcome in finished if ages.get(outcome, 0) >= DISCARD_IDLE_SECONDS
                                                 and outcome not in open_pull_requests} if classified is not None else set()
+        names = {}
+        # A merged pull request ends the work only in its own repository. An outcome that also works in another
+        # repository keeps the scratch files, which can hold a clone of it.
+        scratch_done = {outcome for outcome, merged_in in done.items()
+                        if all(repository_name(b.get('repository'), names) in merged_in
+                               for b in saved.values() if isinstance(b, dict) and b.get('outcome') == outcome)}
         try:
-            self._clear_idle_scratch(root, set(done) | stale, current, saved)
+            self._clear_idle_scratch(root, scratch_done | stale, current, saved)
         except (ValueError, OSError, subprocess.TimeoutExpired, sqlite3.Error) as error:
             logging.getLogger(__name__).warning('Coconut could not clear idle scratch workspaces: %s', error)
         if not saved:
@@ -313,7 +321,6 @@ class WorktreeRetirement:
         bindings = {k: v['outcome'] for k, v in saved.items() if not v.get('retired')}
         retired = []
         pending = [(identity, outcome) for identity, outcome in bindings.items() if outcome in finished]
-        names = {}
         # A checkout that is already gone has nothing to archive, so its binding closes through discard.
         gone = {identity for identity, _ in pending
                 if isinstance(saved[identity].get('path'), str) and not os.path.lexists(saved[identity]['path'])}
@@ -348,7 +355,7 @@ class WorktreeRetirement:
                 # A merged pull request ends the work only in its own repository. An outcome can work in several.
                 merged = outcome in done and repository_name(saved[identity].get('repository'), names) in done[outcome]
                 action = work_workspace.discard if merged or identity in gone else work_workspace.retire
-                options = dict(merged=merged) if action is work_workspace.discard else {}
+                options = dict(merged=merged, urgent=low_disk) if action is work_workspace.discard else {}
                 try:
                     # A service restart leaves the processes of earlier turns to launchd. They keep the worktree in use.
                     if action(root, identity, still_finished, orphan_age=ORPHAN_AGE_SECONDS, **options):
@@ -367,7 +374,7 @@ class WorktreeRetirement:
                     # Retirement could not archive the worktree exactly, and the outcome is idle for long, or the disk is
                     # low. Discard it: the branch and an archive of the patches and small untracked files stay.
                     try:
-                        if work_workspace.discard(root, identity, still_finished, orphan_age=ORPHAN_AGE_SECONDS):
+                        if work_workspace.discard(root, identity, still_finished, orphan_age=ORPHAN_AGE_SECONDS, urgent=low_disk):
                             logging.getLogger(__name__).warning('Retirement refused worktree %s of a long idle outcome: %s',
                                                                 identity, refusal or 'it waits a day after a failure')
                             retired.append(identity)
