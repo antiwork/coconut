@@ -68,25 +68,33 @@ def subscription(record):
 
 class BackgroundProcesses:
     def _migrate_process_deliveries(self):
-        records = self._all('native_receipts')
+        # This runs at every start. Read only the receipts that the two loops below can use, and write only the
+        # receipts that change, so the start stays short on a large database.
+        def receipts(where):
+            return [json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM native_receipts WHERE json_extract(data, '$.state')='completed' AND " + where + ' ORDER BY rowid')]
         tasks = {task['id']: task for task in self._all('tasks')}
         maintenance = {c['id'] for c in self._all('contexts') if c.get('_decision_refresh')}
         observed = set()
-        for record in records:
+        for record in receipts("json_extract(data, '$.action.name') IN ('process', 'process_manage')"):
             value = result_value(record)
-            if (record.get('turn_id') not in maintenance and record['state'] == 'completed' and record['action']['name'] in ('process', 'process_manage')
-                    and isinstance(value, dict) and value.get('status') in ('exited', 'killed')
+            if (record.get('turn_id') not in maintenance and isinstance(value, dict) and value.get('status') in ('exited', 'killed')
                     and tasks[record['task_id']]['status'] in ('completed', 'waiting')):
                 identity = value.get('session_id') or record['action']['arguments'].get('session_id')
                 observed.add((tasks[record['task_id']]['bot_id'], identity))
-        for record in records:
+        # subscription() needs a terminal result with notify_on_complete or a delegate_task result.
+        for record in receipts("(json_extract(data, '$._process_delivery') IS NULL OR json_extract(data, '$._process_delivery') IN ('', 0)) "
+                               "AND (json_extract(data, '$.action.name')='delegate_task' OR (json_extract(data, '$.action.name')='terminal' "
+                               "AND instr(json_extract(data, '$.result'), 'notify_on_complete') > 0))"):
             identity = subscription(record)
             if identity and not record.get('_process_delivery'):
+                before = dict(record)
                 # A completed model tool call already delivered this result to a finished turn.
                 if (tasks[record['task_id']]['bot_id'], identity) in observed:
                     record['_process_delivery'] = 'consumed'
                 record['_process_registered'] = True
-                self._put('native_receipts', record)
+                if record != before:
+                    self._put('native_receipts', record)
 
     def _background_pending(self, task_id, *, finishing_task_id=None, excluding_task_ids=()):
         with self.lock:

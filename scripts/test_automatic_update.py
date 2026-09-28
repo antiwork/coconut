@@ -130,6 +130,67 @@ class AutomaticUpdateTests(unittest.TestCase):
             self.assertEqual(saved['pending_ios']['source_sha'], 'corrected')
             release.assert_called_once()
 
+    def test_a_failed_deploy_backs_off_for_the_same_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, live = root / 'source', root / 'live'
+            source.mkdir(); live.mkdir()
+            (live / '.runtime/host').mkdir(parents=True)
+            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:8443')))
+            (live / 'app.py').write_text('current')
+            hashes = {'app.py': hashlib.sha256(b'current').hexdigest()}
+            (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=hashes)))
+            state_path = root / 'state.json'
+            update.save(state_path, {})
+            head, received, outcome = ['first'], [], ['fail']
+
+            def command(args, **kwargs):
+                if args[:3] == ['git', 'remote', 'get-url']: return 'https://github.com/owner/repo.git'
+                if args[:2] == ['git', 'status']: return ''
+                if args[:2] == ['git', 'rev-parse']: return head[0]
+                if args[:2] == ['git', 'ls-files']: return 'app.py'
+                if 'receive' in args:
+                    received.append(head[0])
+                    if outcome[0] == 'fail':
+                        raise RuntimeError('COCONUT_DEPLOY_RESULT={"ok": false, "error": "The service did not pass its local TLS health check."}')
+                    (live / '.runtime/hermes').mkdir(exist_ok=True)
+                    (live / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit='runtime')))
+                    return 'COCONUT_DEPLOY_RESULT={"ok":true}'
+                return ''
+
+            def package(path):
+                path.write_bytes(b'package')
+                return dict(package_id='package')
+
+            def attempt(now):
+                packaging = SimpleNamespace(package=package, source_files=lambda: {'app.py': b'current'})
+                installer = SimpleNamespace(validate_package=lambda stream: SimpleNamespace(hashes=hashes, revision='runtime'),
+                                            Operations=lambda: SimpleNamespace(health=lambda *args: None))
+                config = dict(repository='owner/repo', source=str(source), live=str(live))
+                with patch.object(update, 'run', side_effect=command), \
+                        patch.object(update, 'module', side_effect=[packaging, installer]), \
+                        patch.object(update, 'reviewed_merge'), patch.object(update, 'ios_hash', return_value='ios'), \
+                        patch.object(update.time, 'time', return_value=now), patch.object(update.Path, 'home', return_value=root):
+                    update.update(config, state_path)
+
+            with self.assertRaises(RuntimeError):
+                attempt(1000)
+            failed = json.loads(state_path.read_text())['failed_deploy']
+            self.assertEqual((failed['source_sha'], failed['attempts'], failed['retry_at']), ('first', 1, 1000 + update.FAILED_DEPLOY_SECONDS))
+            # The same commit waits, so the service does not restart again.
+            attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
+            self.assertEqual(received, ['first'])
+            with self.assertRaises(RuntimeError):
+                attempt(1000 + update.FAILED_DEPLOY_SECONDS)
+            self.assertEqual(json.loads(state_path.read_text())['failed_deploy']['attempts'], 2)
+            # A new merged commit deploys at once, and success clears the backoff.
+            head[0], outcome[0] = 'second', 'ok'
+            attempt(1001 + update.FAILED_DEPLOY_SECONDS)
+            self.assertEqual(received, ['first', 'first', 'second'])
+            saved = json.loads(state_path.read_text())
+            self.assertNotIn('failed_deploy', saved)
+            self.assertEqual(saved['source_sha'], 'second')
+
     def test_completed_archive_receipt_survives_interruption(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'source'

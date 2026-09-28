@@ -10,7 +10,13 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
+
+
+# After a failed install of a commit, the updater waits this long before it tries the same commit again.
+FAILED_DEPLOY_SECONDS = 10 * 60
+FAILED_DEPLOY_MAX_SECONDS = 6 * 60 * 60
 
 
 def run(args, *, cwd=None, stdin=None, pass_fds=()):
@@ -295,6 +301,10 @@ def update(config, state_path):
         raise ValueError('The automatic checkout has local changes.')
     run(['git', 'fetch', 'origin', 'main'], cwd=source)
     sha = run(['git', 'rev-parse', 'origin/main'], cwd=source)
+    failed = state.get('failed_deploy') or {}
+    if failed.get('source_sha') == sha and time.time() < failed.get('retry_at', 0):
+        # Each failed attempt stops and restarts the service. Wait before the next attempt for the same commit.
+        return
     reviewed_merge(repository, sha)
     run(['git', 'checkout', '--detach', sha], cwd=source)
     packaging = module(source, 'remote')
@@ -325,12 +335,21 @@ def update(config, state_path):
                      '--directory', str(live.relative_to(Path.home())), '--address', address]
         if runtime.get('commit') != validated.revision:
             arguments.append('--update-runtime')
-        with package.open('rb') as stream:
-            output = run(arguments, stdin=stream)
-        save(state_path.parent / 'deployment-result.json', dict(source_sha=sha, output=output))
-        result = [json.loads(line.split('=', 1)[1]) for line in output.splitlines() if line.startswith('COCONUT_DEPLOY_RESULT=')]
-        if len(result) != 1 or not result[0].get('ok'):
-            raise RuntimeError('The installer did not confirm a successful deployment.')
+        try:
+            with package.open('rb') as stream:
+                output = run(arguments, stdin=stream)
+            save(state_path.parent / 'deployment-result.json', dict(source_sha=sha, output=output))
+            result = [json.loads(line.split('=', 1)[1]) for line in output.splitlines() if line.startswith('COCONUT_DEPLOY_RESULT=')]
+            if len(result) != 1 or not result[0].get('ok'):
+                raise RuntimeError('The installer did not confirm a successful deployment.')
+        except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError):
+            # A failed install restores the previous source and restarts the service. Back off for this commit:
+            # 10 minutes, then double up to 6 hours. A new merged commit deploys at once.
+            attempts = failed.get('attempts', 0) + 1 if failed.get('source_sha') == sha else 1
+            state['failed_deploy'] = dict(source_sha=sha, attempts=attempts,
+                                          retry_at=time.time() + min(FAILED_DEPLOY_MAX_SECONDS, FAILED_DEPLOY_SECONDS * 2 ** (attempts - 1)))
+            save(state_path, state)
+            raise
     address = json.loads((live / '.runtime/host/connection.json').read_text())['address']
     expected.Operations().health(live, address)
     marker = json.loads(marker_path.read_text())
@@ -341,6 +360,7 @@ def update(config, state_path):
             hashlib.sha256((live / name).read_bytes()).hexdigest() != digest
             for name, digest in validated.hashes.items()):
         raise RuntimeError('The installed files do not match the merged commit.')
+    state.pop('failed_deploy', None)
     state.update(source_sha=sha, package_id=metadata['package_id'])
     fingerprint = ios_hash(source)
     if config.get('release_helper') and not state.get('pending_ios', {}).get('build'):

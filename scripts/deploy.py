@@ -37,6 +37,8 @@ MAX_FILE_BYTES = 4 * 1024 * 1024
 MAX_FILES = 4096
 REQUIRED_FILES = {'backend/coconut/__init__.py', 'backend/coconut/__main__.py', 'scripts/host.py', 'scripts/hermes.py'}
 MARKER_PATH = Path('.coconut-install.json')
+# The service answers its health check after startup finishes.
+HEALTH_WAIT_SECONDS = 300
 
 
 class DeployError(Exception):
@@ -374,8 +376,9 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
         except (OSError, ValueError, ssl.SSLError):
             raise DeployError('The saved certificate cannot validate the service.') from None
         parsed = urlsplit(address)
-        # Startup migrations can exceed 20 seconds on an active host.
-        deadline = time.monotonic() + 60
+        # Startup migrations can take minutes on an active host with a large database. A deadline that is
+        # too short fails a healthy update, rolls it back, and restarts the service again.
+        deadline = time.monotonic() + HEALTH_WAIT_SECONDS
         while time.monotonic() < deadline:
             connection = http.client.HTTPConnection(parsed.hostname, parsed.port or 443, timeout=2)
             raw = None
