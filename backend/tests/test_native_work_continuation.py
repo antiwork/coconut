@@ -976,6 +976,8 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.service.kanban.tasks[sibling['id']] = card
             self.service._put('tasks', dict(sibling, _return_pending={'text': 'Not delivered'}))
             self.assert_linked_report_blocked_without_mutation(source)
+            self.service._put('tasks', dict(sibling, _native_reply_pending={'text': 'Native result not delivered'}))
+            self.assert_linked_report_blocked_without_mutation(source)
             self.service._put('tasks', dict(sibling, status='cancelled' if index == 1 else 'failed'))
         self.assertEqual(self.resume(source)['task_id'], owner['id'])
 

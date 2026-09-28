@@ -598,7 +598,8 @@ class NativeOutcomes:
                         for identity in (*callers, owner['id']):
                             requester_chain.pop(identity, None)
                         linked.update({key: value for key, value in requester_chain.items()
-                                       if value[0]['status'] not in ('failed', 'cancelled') or not quiet(value[0])})
+                                       if value[0]['status'] not in ('failed', 'cancelled')
+                                       or value[0].get('_native_reply_pending') or not quiet(value[0])})
                         # Unlike the original requester, this coordinator and its
                         # callbacks must finish too. Do not exempt the caller.
                         linked.update(self._work_chain(report_coordinator, tasks, records, include_continuations=True))
