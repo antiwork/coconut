@@ -130,6 +130,17 @@ Such orphans, for example an Android emulator or a test script left by a crashed
 CPU, and memory for days. This step also runs for an outcome that has only a scratch workspace. Before it stops the
 orphans of an outcome, it checks again that the outcome is idle, because a turn can start during the `lsof` scan.
 A failed check is logged, and retirement continues.
+
+When retirement refuses the worktree of an idle outcome, for example for a nested repository or a branch switch,
+Coconut deletes the rebuildable folders of that worktree. These are the folders that the archive leaves out, and a build
+creates them again. Coconut deletes only folders that Git ignores, never follows a link, and keeps a folder that holds a
+worktree, another repository, a folder that it cannot read, or the saved path of another outcome. The worktree must belong to the saved repository, the outcome must
+still be idle, and no process may use the worktree. Coconut checks the binding and the folders again under
+`workspaces/.workspace.lock`. Under that lock, it moves the folders to `workspaces/build-trash`, and it deletes
+them after the lock, so a new turn does not wait for a long deletion. A folder on another disk than the registry stays,
+and the log says so. The next pass empties a trash that a stop left.
+The worktree must be registered and not locked. The other files and the branch stay.
+
 Coconut never stops a shared service that a turn started, such as OrbStack, Docker Desktop, CoreSimulator,
 `launchd_sim`, or the `adb` server, because every outcome uses it. `SHARED_APP_BUNDLES`,
 `SHARED_EXECUTABLE_PREFIXES`, `SHARED_EXECUTABLE_NAMES`, and `ADB_SERVER_ARGUMENTS` in `work_workspace.py` name
