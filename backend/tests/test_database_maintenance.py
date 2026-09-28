@@ -261,6 +261,28 @@ class StartupReadTests(unittest.TestCase):
         # Relay recovery still finds the executing relay of a working task.
         self.assertIn(relay['id'], recovered)
 
+    def test_the_process_delivery_migration_runs_once(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        service = Service(temp.name, FixtureProvider(temp.name), start_workers=False)
+        bot = service.mutate('POST', '/v1/bots', {'name': 'Desk'}, str(uuid4()), 'phone')
+        task = dict(id=str(uuid4()), bot_id=bot['id'], status='completed')
+        receipt = dict(id=str(uuid4()), task_id=task['id'], state='completed', action={'name': 'terminal', 'arguments': {}},
+                       result=json.dumps({'session_id': 'proc', 'notify_on_complete': True}))
+        with service.transaction():
+            service._put('tasks', task)
+            service._put('native_receipts', receipt)
+        service.close()
+        statements = []
+        service = Service(temp.name, FixtureProvider(temp.name), start_workers=False)
+        self.addCleanup(service.close)
+        # The first start ran the migration. Runtime code registers new receipts, so a later start reads none.
+        self.assertEqual(service._get('native_receipts', receipt['id']), receipt)
+        service.db.set_trace_callback(statements.append)
+        service._migrate_process_deliveries()
+        service.db.set_trace_callback(None)
+        self.assertFalse([s for s in statements if 'native_receipts' in s])
+
 
 class LogRotationTests(unittest.TestCase):
     def setUp(self):

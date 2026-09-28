@@ -44,6 +44,19 @@ reclaim and dependency promotion, before claiming ready tasks. Native scheduling
 releases those retries without starting a worker or recording a false spawn
 failure. Startup loads native bindings before accepting task replies.
 
+## Failed routine continuations
+
+An authenticated `coconut_continue_work` delivery records the exact input it authorizes.
+A failed routine can use that input without changing the original native failure or firing the routine again.
+While this continuation is queued or working, scheduled and manual runs reuse or wait for it, including gaps between tools.
+Individual tools retain their native reservation fence without holding native locks across service calls.
+
+A later input, including one created by `_native_retry`, cannot reuse that delivery.
+A saved delivery from before input binding was added does not authorize a failed routine continuation.
+The owner or requesting bot must send a new explicit `coconut_continue_work` message through the supported route.
+Replaying the old message returns its saved receipt and does not authorize another input.
+No migration changes the historical delivery or the failed occurrence.
+
 ## Workspaces
 
 `coconut_workspace` calls the native Hermes workspace resolver.

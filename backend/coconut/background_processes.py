@@ -68,8 +68,11 @@ def subscription(record):
 
 class BackgroundProcesses:
     def _migrate_process_deliveries(self):
-        # This runs at every start. Read only the receipts that the two loops below can use, and write only the
-        # receipts that change, so the start stays short on a large database.
+        # NativeExecution registers and consumes new receipts when their results arrive (commit ee99eba), so this
+        # repair of older receipts needs one run. A setting records it, because each run scans the receipt journal.
+        if self._setting('process_deliveries_migrated'):
+            return
+        # Read only the receipts that the two loops below can use, and write only the receipts that change.
         def receipts(where):
             return [json.loads(row[0]) for row in self.db.execute(
                 "SELECT data FROM native_receipts WHERE json_extract(data, '$.state')='completed' AND " + where + ' ORDER BY rowid')]
@@ -95,6 +98,7 @@ class BackgroundProcesses:
                 record['_process_registered'] = True
                 if record != before:
                     self._put('native_receipts', record)
+        self.db.execute("INSERT INTO settings VALUES ('process_deliveries_migrated','true')")
 
     def _background_pending(self, task_id, *, finishing_task_id=None, excluding_task_ids=()):
         with self.lock:

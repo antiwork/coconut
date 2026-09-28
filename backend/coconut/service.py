@@ -1454,9 +1454,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
     def _active_routine_task(self, routine_id: str) -> dict | None:
         tasks = self._all('tasks')
-        # A closed native occurrence no longer owns the next scheduled intake.
+        # A closed occurrence releases intake unless its exact authorized
+        # continuation is queued/running, including gaps between tool fences.
         related = {task['id'] for task in tasks if task.get('routine_id') == routine_id
-                   and not task.get('_native_job_finished')}
+                   and (not task.get('_native_job_finished') or (
+                       task['status'] in ('queued', 'working')
+                       and self.native_routine_completion_input(task).get('continuation')))}
         while True:
             expanded = related | {task['id'] for task in tasks if task.get('source_task_id') in related}
             if expanded == related:

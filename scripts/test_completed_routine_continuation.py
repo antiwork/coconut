@@ -93,6 +93,10 @@ def check(source, python):
             task = dict(id=execution_id, bot_id=bot['id'], title='Read the requested file.',
                         _native_job=job, _native_job_finished=finished, _conversation_epoch=str(uuid4()),
                         _native_job_completion=provenance)
+            if provenance and provenance.get('continuation'):
+                continuation = provenance['continuation']
+                task.update(id=continuation['task_id'], _native_turn_id=continuation['turn_id'],
+                            _native_outcome_id=continuation['native_task_id'])
             original = copy.deepcopy(task)
             events = []
             def emit(kind, payload):
@@ -109,6 +113,8 @@ def check(source, python):
                 assert any(kind == 'completed' for kind, _ in events), events
             else:
                 assert not any(kind in ('native_call', 'native_result', 'completed') for kind, _ in events), events
+                failures = [value for kind, value in events if kind == 'failed']
+                assert len(failures) == 1 and failures[0]['error_code'] == 'native_turn_failed', events
         try:
             routine = native('routine_create', request_key='probe', changes=dict(name='Continuation probe',
                 prompt='Read the requested file.', cron='every 1h', enabled=True))
@@ -158,8 +164,36 @@ def check(source, python):
             assert later['fire_claim']['by'] != owner
             run(job, True, True, provenance)
             assert receipt.exists(), 'Validated legacy completion proof was not persisted'
+            with service.transaction():
+                failed_task = service.claim_native_routine(routine)
+                failed_owner = service._get('tasks', failed_task['id'])
+                failed_owner.update(status='working', _native_outcome_id='t_failed_probe',
+                    _execution_session_id=failed_owner['id'],
+                    _conversation_epoch=service._setting('conversation_epoch'))
+                service._put('tasks', failed_owner)
+            service.emit(failed_owner['id'], 'failed', {'summary': 'Original occurrence failed.'})
             assert native('routine_finish', native_id=identity, owner=later['fire_claim']['by'], success=False)['ok']
             run(later, True, False)
+            # The admission route uses a native-board snapshot fixture. The cron
+            # store, service receipts, provider and Hermes worker are real.
+            from unittest.mock import Mock
+            with service.transaction():
+                failed_owner = service._get('tasks', failed_owner['id'])
+                failed_owner['_native_job_finished'] = True
+                service._put('tasks', failed_owner)
+                requester = service._send(bot, {'text': 'Continue the failed check.', 'mode': 'queue'}, human_authored=False)
+                requester = service._get('tasks', requester['id'])
+                requester['status'] = 'working'
+                service._put('tasks', requester)
+            service.kanban = Mock(tasks={failed_owner['id']: dict(id='t_failed_probe', status='blocked')})
+            try:
+                service.emit(requester['id'], 'work_continue', dict(task_id='t_failed_probe', message='Finish the existing check.'))
+                failed_proof = service.native_routine_completion_input(service._get('tasks', failed_owner['id']))
+                before_failure_recovery = jobs_path.read_bytes()
+                run(later, True, True, failed_proof)
+                assert jobs_path.read_bytes() == before_failure_recovery, 'Continuation refired or rewrote the failed occurrence'
+            finally:
+                service.kanban = None
             run(job, True, True)
             forged = copy.deepcopy(job)
             forged['fire_claim']['by'] = 'lost-owner'
@@ -202,6 +236,7 @@ def check(source, python):
             run(later, True, False, durable)
             print(json.dumps(dict(passed=True, completion_retention=True, inflight_preserved=True, active_fenced=True, completed_continuation=True,
                 legacy_completed_continuation=True, later_occurrence_preserved=True, failed_and_lost_rejected=True,
+                failed_continuation=True, unexplained_pause_failed=True,
                 execution_provenance_preserved=True, tool_results=len(tool_results))))
         finally:
             service.close()
