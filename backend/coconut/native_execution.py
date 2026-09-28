@@ -49,9 +49,10 @@ class NativeExecution:
     def recover_native_relays(self):
         if not hasattr(self.provider, 'native_settings'):
             return
-        for record in self._all('native_receipts'):
-            if record['state'] != 'executing' or record['action']['name'] != 'message_agent':
-                continue
+        # Startup runs this in its transaction. Select the few executing relays, not the whole receipt journal.
+        for record in [json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM native_receipts WHERE json_extract(data, '$.state')='executing' "
+                "AND json_extract(data, '$.action.name')='message_agent' ORDER BY rowid")]:
             task = self._get('tasks', record['task_id'])
             if task['status'] != 'working':
                 continue

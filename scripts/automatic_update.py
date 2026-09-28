@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -21,8 +22,7 @@ from urllib.parse import urlsplit
 # After a failed install of a commit, the updater waits this long before it tries the same commit again.
 FAILED_DEPLOY_SECONDS = 10 * 60
 FAILED_DEPLOY_MAX_SECONDS = 60 * 60
-# The native upgrade checks of a new Hermes pin run 6 programs of at most 10 minutes each
-# (hermes_candidate_checks.CHECK_SECONDS). This budget covers all of them.
+# scripts/check_hermes_candidate.py bounds each of its programs. This budget covers all of them.
 HERMES_CHECKS_SECONDS = 80 * 60
 # The candidate install peaks at about 2.6 GB, and the live install then adds a runtime of about 1.3 GB.
 # A full disk stops the service's database writes, so the gate installs nothing below this free space.
@@ -32,7 +32,7 @@ HERMES_CANDIDATE_FREE_BYTES = 8 * 1024 ** 3
 # for example a revert, runs them at once.
 HERMES_FAILED_RETRY_SECONDS = 24 * 60 * 60
 HERMES_INSTALL_SECONDS = 60 * 60
-# scripts/hermes.py install writes these folders of .runtime. The gate removes only these and its scratch folders.
+# scripts/hermes.py install writes these folders of .runtime, and the checks write inside hermes. The gate removes only these.
 HERMES_GATE_FOLDERS = ('hermes', 'cache', 'tmp', 'tools')
 
 
@@ -327,7 +327,7 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
 
     The checks need model access, so CI cannot run them, and a bot cannot run them inside its Hermes worker.
     This updater runs outside Hermes. It installs the pin in its own checkout, runs
-    scripts/hermes_candidate_checks.py, and saves the report in hermes-checks.json for Coconut Care.
+    scripts/check_hermes_candidate.py, and keeps its result in hermes-checks.json for Coconut Care.
     The checks also run the Coconut code of the checkout, so a pass counts only for its revision and source commit.
     A failure stops the checks for that revision for HERMES_FAILED_RETRY_SECONDS, at any commit.
     """
@@ -350,37 +350,33 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
                   f'{free / 1024 ** 3:.1f} GiB is free. Nothing was installed. The next pass after the backoff checks again.')
         save(receipt, dict(revision=revision, passed=False, checked_at=time.time(), output=output))
         raise RuntimeError(output)
-    passed, output = False, ''
+    passed, output, recorded = False, '', False
+    # scripts/check_hermes_candidate.py writes its own result here. The gate writes one when the script wrote none.
+    receipt.unlink(missing_ok=True)
     try:
-        checks = module(source, 'hermes_candidate_checks')
-        try:
-            # run_tree also stops the uv and git processes below the install, so a stalled download cannot hold
-            # the updater and its lock after the timeout.
-            install = checks.run_tree([sys.executable, str(source / 'scripts/hermes.py'), 'install', '--revision', revision],
-                                      cwd=source, timeout=HERMES_INSTALL_SECONDS)
-            if install.returncode:
-                raise RuntimeError(install.stderr[-2000:] or install.stdout[-2000:] or 'The install failed.')
-        except (RuntimeError, subprocess.TimeoutExpired) as error:
-            output = 'The candidate install failed before any check ran: ' + str(error)[-5000:]
-            raise RuntimeError(output) from None
-        command = [sys.executable, str(source / 'scripts/hermes_candidate_checks.py'), '--checkout', str(source), '--live', str(live)]
-        try:
-            # The checks start Hermes workers. A timeout stops the checks and every process below them.
-            result = checks.run_tree(command, cwd=source, timeout=HERMES_CHECKS_SECONDS)
-        except subprocess.TimeoutExpired as error:
-            result = subprocess.CompletedProcess(command, 1, error.stdout or '', (error.stderr or '') + '\nThe checks timed out.')
-        output = result.stdout[-20000:] + result.stderr[-5000:]
-        reports = [line.split('=', 1)[1] for line in result.stdout.splitlines() if line.startswith('COCONUT_HERMES_CHECKS=')]
-        with contextlib.suppress(ValueError, AttributeError):
-            passed = result.returncode == 0 and len(reports) == 1 and json.loads(reports[0]).get('passed') is True
+        code, text = run_bounded([sys.executable, str(source / 'scripts/hermes.py'), 'install', '--revision', revision],
+                                 cwd=source, timeout=HERMES_INSTALL_SECONDS)
+        if code != 0:
+            output = 'The candidate install failed before any check ran: ' + (
+                text if code is not None else f'It ran longer than {HERMES_INSTALL_SECONDS} seconds.')
+            raise RuntimeError(output)
+        code, output = run_bounded([sys.executable, str(source / 'scripts/check_hermes_candidate.py'),
+                                    '--runtime', str(source / '.runtime/hermes'), '--host-data', str(live / '.runtime/host'),
+                                    '--output', str(receipt)], cwd=source, timeout=HERMES_CHECKS_SECONDS)
+        if code is None:
+            output += f'\nThe checks ran longer than {HERMES_CHECKS_SECONDS} seconds.'
+        with contextlib.suppress(OSError, ValueError, AttributeError):
+            result = json.loads(receipt.read_text())
+            passed = code == 0 and result.get('passed') is True and result.get('hermes_sha') == revision
+            recorded = True
     except BaseException as error:
         # The receipt is what Coconut Care reads. Name an unexpected error there too.
         output = output or f'The gate stopped: {type(error).__name__}: {str(error)[-5000:]}'
         raise
     finally:
-        save(receipt, dict(revision=revision, passed=passed, checked_at=time.time(), output=output))
-        # The live install builds its own runtime. Free the candidate, the install caches, and a scratch folder
-        # that a timeout left, because the timeout kills the check script before it can remove its own folder.
+        if not recorded:
+            save(receipt, dict(revision=revision, passed=False, checked_at=time.time(), output=output[-20000:]))
+        # The live install builds its own runtime. Free the candidate and the install caches.
         clear_gate_folders(source)
     state['hermes_checks'] = dict(revision=revision, sha=sha, passed=passed, checked_at=time.time())
     save(state_path, state)
@@ -390,11 +386,28 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
 
 def clear_gate_folders(source):
     """Remove what the Hermes gate wrote in .runtime of the updater checkout. Other data there stays."""
-    runtime = source / '.runtime'
     for name in HERMES_GATE_FOLDERS:
-        shutil.rmtree(runtime / name, ignore_errors=True)
-    for scratch in runtime.glob('candidate-checks-*'):
-        shutil.rmtree(scratch, ignore_errors=True)
+        shutil.rmtree(source / '.runtime' / name, ignore_errors=True)
+
+
+def run_bounded(command, *, cwd, timeout):
+    """Run a command in its own session. Return its exit code, or None after a timeout, and its output.
+
+    The output goes to a file, not a pipe, so a process that outlives the command cannot block the updater.
+    After the command, Coconut stops its whole process group, for example uv and git below an install.
+    """
+    with tempfile.TemporaryFile() as output:
+        process = subprocess.Popen(command, cwd=cwd, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                                   start_new_session=True)
+        try:
+            code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            code = None
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        output.seek(0)
+        return code, output.read()[-20000:].decode(errors='replace')
 
 
 def recover_journal(source, live):

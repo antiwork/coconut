@@ -4,6 +4,7 @@ import hashlib
 import json
 from contextlib import contextmanager
 from pathlib import Path
+from uuid import uuid4
 
 
 def receipt_path(home, identity):
@@ -35,6 +36,10 @@ def locked(home, identity):
 
 def claim(home, identity, jobs, manual=False):
     with locked(home, identity):
+        # A continuation releases the native lock before calling the service,
+        # but its durable reservation must exclude both scheduled and manual fire.
+        if read(home, continuation_id(identity)):
+            return {'job': None}
         previous = read(home, identity)
         job = jobs.get_job(identity)
         if previous.get('phase') == 'claimed':
@@ -58,6 +63,8 @@ def claim(home, identity, jobs, manual=False):
 
 
 def issue(home, job):
+    if read(home, continuation_id(job['id'])):
+        return 'A continued occurrence reserves this routine. Wait for its tools or inspect its interrupted tool receipts.'
     receipt = read(home, job['id'])
     if receipt.get('phase') in ('claiming', 'dispatching'):
         return 'The dispatch result is unknown. Inspect the last run in Hermes.'
@@ -92,12 +99,51 @@ def completed(home, identity, owner, jobs, provenance=None):
         return False
 
 
+def continuation_id(identity):
+    return 'continuing-' + hashlib.sha256(identity.encode()).hexdigest()
+
+
+@contextmanager
+def continued_failure(home, identity, owner, jobs, provenance, continuation):
+    """Reserve a closed occurrence until this exact tool scope has unwound."""
+    expected = dict(job_id=identity, owner=owner, success=False)
+    reservation = dict(completion=expected, continuation=continuation)
+    token = str(uuid4())
+    admitted = False
+    key = continuation_id(identity)
+    with locked(home, identity):
+        with jobs._fire_job_lock(identity) as acquired:
+            if acquired:
+                job = jobs.get_job(identity) or {}
+                confirmed = (provenance == dict(expected, native_confirmed=True)
+                             or read(home, completion_id(identity, owner)) == expected
+                             or job.get('_coconut_completion') == expected)
+                pending = read(home, key)
+                if (confirmed and not job.get('fire_claim')
+                        and all(value == reservation for value in pending.values())):
+                    save(home, key, dict(pending, **{token: reservation}))
+                    admitted = True
+    # Never retain native or receipt locks across a service receipt. A process
+    # death leaves the reservation fenced rather than guessing that tools stopped.
+    try:
+        yield admitted
+    finally:
+        if admitted:
+            with locked(home, identity):
+                pending = read(home, key)
+                if pending.get(token) == reservation:
+                    del pending[token]
+                    save(home, key, pending)
+
+
 def finish(home, identity, jobs, *, owner, success, output='', failure=None):
     with locked(home, identity):
         def confirmed(job):
-            if job.get('_coconut_completion') == dict(job_id=identity, owner=owner, success=True):
-                # Keep proof for this occurrence before another native fire can replace it.
-                save(home, completion_id(identity, owner), dict(job_id=identity, owner=owner, success=True))
+            outcome = job.get('_coconut_completion')
+            if outcome in (dict(job_id=identity, owner=owner, success=True),
+                           dict(job_id=identity, owner=owner, success=False)):
+                # Keep the exact result before another native fire can replace it.
+                save(home, completion_id(identity, owner), outcome)
             return True
 
         def complete(all_jobs, index, job):
@@ -130,7 +176,8 @@ def completion_receipts(home):
             value = json.loads(path.read_text())
             if (isinstance(value, dict) and isinstance(value.get('job_id'), str)
                     and isinstance(value.get('owner'), str)
-                    and value == dict(job_id=value['job_id'], owner=value['owner'], success=True)
+                    and isinstance(value.get('success'), bool)
+                    and value == dict(job_id=value['job_id'], owner=value['owner'], success=value['success'])
                     and path.stem == completion_id(value['job_id'], value['owner'])):
                 result[path.stem] = value
                 # Bound each provider transfer, not the lifetime of saved proof.

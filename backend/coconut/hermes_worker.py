@@ -1445,7 +1445,11 @@ def run_turn(request, emit, request_receipt):
         if scope.unconfirmed:
             emit('failed', {'summary': 'Coconut must confirm the last tool result before this work continues.'})
             return 1
-        return 0
+        if (bridge is not None and bridge.paused.is_set()) or scope.cancelled.is_set():
+            return 0
+        emit('failed', {'summary': 'Hermes stopped before confirming this reply. The execution claim or tool result could not be confirmed.',
+                        'error_code': 'native_turn_failed'})
+        return 1
     except Exception:
         # Model libraries can include request bodies or keys in exception strings.
         summary = 'Coconut could not prepare this conversation.' if agent is None else 'Hermes could not finish this reply.'
