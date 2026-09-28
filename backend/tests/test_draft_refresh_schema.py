@@ -13,8 +13,12 @@ import test_provider as workers
 from coconut.service import Service, ServiceError
 
 
-@unittest.skipUnless(importlib.util.find_spec('jsonschema'), 'Requires the Hermes jsonschema dependency')
 class DraftRefreshSchemaTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if importlib.util.find_spec('jsonschema') is None:
+            raise ModuleNotFoundError('Run draft refresh schema tests with the pinned Hermes jsonschema dependency.')
+
     service: Service
     temp: TemporaryDirectory
     setUp = drafts.DraftFreshnessTests.setUp
