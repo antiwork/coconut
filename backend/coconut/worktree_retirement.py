@@ -203,6 +203,12 @@ class WorktreeRetirement:
                         continue
                     # sqlite3.Error covers a database that shutdown closed while this thread ran.
                     logging.getLogger(__name__).warning('Coconut did not retire worktree %s: %s', identity, error)
+                    if isinstance(error, ServiceBusy):
+                        # The same busy lock would stop the next step. The next pass tries both.
+                        continue
+                # A retirement can run for minutes. A stop or a restart that arrived meanwhile ends the pass first.
+                if self.stopping.is_set() or self.restart_pending:
+                    continue
                 # The worktree stays. Free the disk space of its build folders, so a refused worktree does not fill the disk.
                 try:
                     freed = work_workspace.free_rebuildable(root, identity, still_finished)

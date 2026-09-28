@@ -390,6 +390,24 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(self.retire(), [])
         self.assertTrue((path / 'tmp/data.bin').exists())
 
+    def test_a_locked_worktree_keeps_its_build_folders(self):
+        identity, path = self.refused_with_build_folders()
+        git(self.repo, 'worktree', 'lock', str(path))
+        self.assertEqual(self.retire(), [])
+        self.assertTrue((path / 'tmp/cache/big.bin').exists())
+        self.assertTrue((path / 'node_modules/pkg/index.js').exists())
+
+    def test_a_stop_during_retirement_skips_the_build_folders(self):
+        identity, path = self.refused_with_build_folders()
+
+        def refuse(*args, **kwargs):
+            self.service.restart_pending = True
+            raise ValueError('The saved worktree changed branches.')
+        with patch('coconut.work_workspace.retire', side_effect=refuse):
+            self.retire()
+        self.service.restart_pending = False
+        self.assertTrue((path / 'tmp/cache/big.bin').exists())
+
     def test_a_used_or_resumed_worktree_keeps_its_build_folders(self):
         identity, path = self.refused_with_build_folders()
         with patch('coconut.work_workspace.in_use', return_value=True):

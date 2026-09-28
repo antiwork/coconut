@@ -930,7 +930,12 @@ def free_rebuildable(root, identity, finished):
 
     def keep(saved):
         # A folder can hold a worktree of the repository, or the saved path of another outcome.
-        inner = {record['path'] for record in registered(repository)}
+        records = registered(repository)
+        record = next((r for r in records if r['path'] == path), None)
+        if not record or record['locked']:
+            # check_git refuses these too. A person locks a worktree so that nothing changes it.
+            raise ValueError('Git does not register the worktree, or the worktree is locked.')
+        inner = {r['path'] for r in records}
         return inner | {Path(binding['path']).resolve() for other, binding in saved.items()
                         if other != identity and isinstance(binding, dict) and isinstance(binding.get('path'), str)}
     names = rebuildable_folders(path, keep(json.loads(manifest.read_text())))
