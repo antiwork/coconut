@@ -2,9 +2,11 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -20,7 +22,7 @@ LAYOUT = r'''
 import json, os, sys, tempfile
 from pathlib import Path
 root, code = map(Path, sys.argv[1:3])
-runtime = Path(os.environ['EXPECTED_RUNTIME'])
+runtime = root.parent.parent
 sys.path.insert(0, BACKEND)
 from coconut.model_catalog import HermesModelCatalog, _contained
 assert root.parent == runtime / 'checks'
@@ -28,7 +30,7 @@ assert (root / '.runtime/hermes/source').resolve() == runtime / 'source'
 assert (root / 'backend').resolve() == code / 'backend' and (root / 'scripts').resolve() == code / 'scripts'
 assert Path(tempfile.gettempdir()).resolve().is_relative_to(runtime)
 assert Path(os.environ['HERMES_HOME']).resolve().is_relative_to(runtime)
-assert 'ANTHROPIC_API_KEY' not in os.environ and 'HERMES_KANBAN_DB' not in os.environ
+assert not {'ANTHROPIC_API_KEY', 'HERMES_KANBAN_DB', 'GITHUB_TOKEN'} & set(os.environ)
 with tempfile.TemporaryDirectory() as data:
     catalog = HermesModelCatalog(data, python=root / '.runtime/hermes/venv/bin/python', source=root / '.runtime/hermes/source')
     _contained(catalog.root, catalog.source.parent)
@@ -39,7 +41,7 @@ print('COCONUT_CREATION_RESULT=' + json.dumps(dict(check='layout', passed=True))
 
 MODEL = r'''
 import os
-assert os.environ['ANTHROPIC_API_KEY'] == SECRET
+assert os.environ['ANTHROPIC_API_KEY'] == SECRET and 'GITHUB_TOKEN' not in os.environ
 print('The key is ' + os.environ['ANTHROPIC_API_KEY'])
 print('PASS: model credentials reached the check.')
 '''.replace('SECRET', repr(SECRET))
@@ -79,7 +81,7 @@ class CandidateCheckTests(unittest.TestCase):
         (self.host / 'credentials.json').chmod(0o600)
         environment = {key: value for key, value in os.environ.items()
                        if key not in check.host.MODEL_KEYS and key not in check.FENCE_KEYS}
-        environment.update(EXPECTED_RUNTIME=str(self.runtime), HERMES_KANBAN_DB=str(base / 'live/kanban.db'))
+        environment.update(HERMES_KANBAN_DB=str(base / 'live/kanban.db'), GITHUB_TOKEN='unrelated-token')
         environment_patch = patch.dict(os.environ, environment, clear=True)
         environment_patch.start()
         self.addCleanup(environment_patch.stop)
@@ -153,10 +155,16 @@ class CandidateCheckTests(unittest.TestCase):
         self.assertEqual(result['error'], 'The candidate Hermes source has local changes: run_agent.py')
 
     def test_failed_contract_skips_the_native_checks(self):
-        _, result = self.run_candidate([('contracts', False, [('contract', 'raise SystemExit(3)', 'exit', 60)]),
+        marker = self.runtime / 'kanban-ran'
+        kanban = f'from pathlib import Path\nPath({str(marker)!r}).write_text("ran")'
+        _, result = self.run_candidate([('contracts', False, [('contract', 'raise SystemExit(3)', 'exit', 60),
+                                                              ('kanban', kanban, 'exit', 60)]),
                                         ('relay', True, [('relay', 'print("PASS: ran")', 'pass', 60)])])
         self.assertFalse(result['passed'])
+        self.assertEqual(result['checks']['contracts']['status'], 'failed')
+        self.assertEqual([entry['label'] for entry in result['checks']['contracts']['programs']], ['contract'])
         self.assertEqual(result['checks']['contracts']['programs'][0]['returncode'], 3)
+        self.assertFalse(marker.exists())
         self.assertEqual(result['checks']['relay'], dict(passed=False, status='skipped', programs=[]))
 
     def test_report_must_pass_and_timeout_fails_the_check(self):
@@ -168,6 +176,55 @@ class CandidateCheckTests(unittest.TestCase):
         self.assertEqual(result['checks']['routines']['programs'][0]['report'], {'passed': False})
         self.assertTrue(result['checks']['relay']['programs'][0]['timed_out'])
         self.assertTrue(result['checks']['contracts']['passed'])
+
+    @unittest.skipUnless(shutil.which('lsof'), 'The cleanup finds leftover processes with lsof.')
+    def test_timed_out_check_stops_a_worker_in_another_session(self):
+        pid_file = self.runtime / 'worker.pid'
+        program = f'''
+import subprocess, sys, time
+from pathlib import Path
+root = Path(sys.argv[1])
+worker = subprocess.Popen([sys.executable, '-c', 'import sys, time; handle = open(sys.argv[1], "w"); time.sleep(120)',
+                           str(root / 'tmp/state')], start_new_session=True)
+Path({str(pid_file)!r}).write_text(str(worker.pid))
+while not (root / 'tmp/state').exists():
+    time.sleep(.05)
+time.sleep(60)
+'''
+        _, result = self.run_candidate([('contracts', False, [('contract', 'pass', 'exit', 60)]),
+                                        ('relay', True, [('relay', program, 'pass', 3)])])
+        entry = result['checks']['relay']['programs'][0]
+        worker = int(pid_file.read_text())
+        self.assertTrue(entry['timed_out'])
+        self.assertEqual(entry['stopped_processes'], [worker])
+        self.assertTrue(result['scratch_removed'])
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                os.kill(worker, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(.1)
+        else:
+            self.fail('The detached worker survived the check.')
+
+    def test_untracked_hermes_file_is_refused(self):
+        (self.runtime / 'source/extra_module.py').write_text('')
+        _, result = self.run_candidate([('contracts', False, [('layout', 'print("PASS: ran")', 'pass', 60)])])
+        self.assertEqual(result['error'], 'The candidate Hermes source has local changes: extra_module.py')
+
+    def test_custom_output_keeps_the_mode_of_its_folder(self):
+        shared = self.runtime.parent / 'shared'
+        shared.mkdir(mode=0o755)
+        shared.chmod(0o755)
+        def plan(root, code, python, texts):
+            return [('contracts', False, [('contract', [str(python), '-c', 'pass'], 'exit', 60)])]
+        with patch.object(check, 'plan', plan):
+            path, result = check.check_candidate(self.runtime, self.host, code=self.code, texts={},
+                                                 output=shared / 'result.json')
+        self.assertTrue(result['passed'])
+        self.assertEqual(shared.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_plan_runs_every_upgrade_program_unchanged(self):
         texts = check.programs()

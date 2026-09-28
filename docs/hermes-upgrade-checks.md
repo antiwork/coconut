@@ -35,7 +35,7 @@ The script finds `venv/bin/python` or `source/.venv/bin/python`. Use `--python` 
 The script does these steps:
 
 1. It records the Coconut commit, the Coconut tree, and the Hermes commit.
-2. It stops if `backend` or `scripts` has uncommitted or untracked files, or if the Hermes checkout has local changes.
+2. It stops if `backend` or `scripts` has uncommitted or untracked files, or if the Hermes checkout has changed or untracked files.
 3. It builds the root layout that the programs expect in a temporary folder below `checks` in the candidate folder.
 4. It runs the candidate contract, the concurrency check, and the Kanban check from `scripts/hermes.py check`.
 5. It runs the routine, script routine, relay, and profile programs without changes.
@@ -44,9 +44,11 @@ The script does these steps:
 
 The native profile of the checks stays in `terminal` in the candidate folder, because the model catalog keeps it beside the Hermes source.
 Every temporary folder stays inside the candidate folder. The installed runtime and the user's bots stay untouched.
+The checks inherit only the path, the home folder, the locale, and the TLS and proxy settings.
 The script loads model keys with `host.load_credentials`. Only the relay and profile checks receive them.
 The result names the loaded keys. The result and the logs never contain their values.
-If a contract check fails, the script skips the native checks.
+After each program, the script stops each process that still uses the temporary folder. Hermes workers run in their own session, so the process group does not include them.
+If a contract program fails, the script stops. It does not start the other programs.
 
 The result has a `passed` value and one entry for each check: `contracts`, `routines`, `script_routines`, `relay`, and `profiles`.
 Each entry lists its programs with the exit code, the time, the result report, and the path of the full log.

@@ -26,6 +26,9 @@ import host
 FENCE_KEYS = ("HERMES_DELEGATED_CHILD_CONTEXT", "HERMES_KANBAN_TASK")
 EXECUTED_PATHS = ("backend/", "scripts/")
 RESULT_PREFIX = "COCONUT_CREATION_RESULT="
+# The checks inherit only these variables, plus the model keys for the model-backed checks.
+INHERITED_ENV = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "SSL_CERT_FILE",
+                 "SSL_CERT_DIR", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "https_proxy", "http_proxy", "no_proxy")
 TAIL_CHARACTERS = 1500
 FENCED_MESSAGE = ("This process descends from a native Kanban worker, and Hermes keeps its Kanban boards read-only. "
                   "The checks create disposable boards. Run this script from a process outside the worker, "
@@ -61,7 +64,8 @@ def identity(code: Path, source: Path) -> dict:
     return dict(source_sha=git(code, "rev-parse", "HEAD"), source_tree=git(code, "rev-parse", "HEAD^{tree}"),
                 source_changes=changes, hermes_sha=git(source, "rev-parse", "HEAD"),
                 hermes_repository=git(source, "remote", "get-url", "origin"),
-                hermes_changes=sorted(filter(None, git(source, "diff", "--name-only", "HEAD", "--").splitlines())))
+                hermes_changes=sorted(set(filter(None, (git(source, "diff", "--name-only", "HEAD", "--") + "\n"
+                    + git(source, "ls-files", "--others", "--exclude-standard")).splitlines()))))
 
 
 def identity_problem(value: dict) -> str | None:
@@ -107,6 +111,7 @@ def candidate_root(runtime: Path, python: Path, code: Path):
         (root / "scripts").symlink_to(code / "scripts")
         yield root
     finally:
+        stop_leftovers(root)
         # rmtree removes the links and does not follow them.
         shutil.rmtree(root, ignore_errors=True)
 
@@ -141,8 +146,8 @@ def plan(root: Path, code: Path, python: Path, texts: dict) -> list:
 
 def child_env(root: Path, code: Path, model: bool) -> dict:
     # Only the model-backed checks receive model credentials.
-    env = {key: value for key, value in os.environ.items()
-           if not key.startswith(("HERMES_", "COCONUT_HERMES_")) and (model or key not in host.MODEL_KEYS)}
+    names = INHERITED_ENV + (host.MODEL_KEYS if model else ())
+    env = {key: os.environ[key] for key in names if key in os.environ}
     env.update(PYTHONPATH=os.pathsep.join((str(code / "backend"), str(root / ".runtime/hermes/source"))),
                HERMES_HOME=str(root / ".runtime/hermes/check-home"), TMPDIR=str(root / "tmp"),
                PYTHONPYCACHEPREFIX=str(root / "tmp/pycache"), PYTHONUNBUFFERED="1")
@@ -155,23 +160,45 @@ def redact(text: str, secrets: list[str]) -> str:
     return text
 
 
-def execute(arguments: list[str], env: dict, cwd: Path, timeout: float):
+def stop_leftovers(root: Path) -> list[int]:
+    """Stop processes that still use the scratch folder, such as Hermes workers in their own session."""
+    try:
+        listed = subprocess.run(["lsof", "-t", "+D", str(root)], text=True, capture_output=True, timeout=120).stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+    stopped = []
+    for pid in sorted({int(line) for line in listed.split() if line.isdigit()} - {os.getpid()}):
+        try:
+            os.kill(pid, signal.SIGKILL)
+            stopped.append(pid)
+        except (ProcessLookupError, PermissionError):
+            pass
+    return stopped
+
+
+def execute(arguments: list[str], env: dict, root: Path, timeout: float):
     started = time.monotonic()
-    process = subprocess.Popen(arguments, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, text=True, errors="replace", start_new_session=True)
-    timed_out = False
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        os.killpg(process.pid, signal.SIGKILL)
-        stdout, stderr = process.communicate()
-    try:
-        # Stop workers that outlive their check.
-        os.killpg(process.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
-    return process.returncode, timed_out, stdout, stderr, round(time.monotonic() - started, 2)
+    # Files, not pipes: a worker in its own session can keep a pipe open after its check stops.
+    with tempfile.TemporaryFile(dir=root) as stdout, tempfile.TemporaryFile(dir=root) as stderr:
+        process = subprocess.Popen(arguments, cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=stdout,
+                                   stderr=stderr, start_new_session=True)
+        timed_out = False
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        process.wait()
+        # Stop workers that outlive their check, also in another session.
+        leftovers = stop_leftovers(root)
+        output = []
+        for stream in (stdout, stderr):
+            stream.seek(0)
+            output.append(stream.read().decode(errors="replace"))
+    return process.returncode, timed_out, output[0], output[1], round(time.monotonic() - started, 2), leftovers
 
 
 def outcome(kind: str, returncode: int, stdout: str) -> tuple[bool, dict | None]:
@@ -193,7 +220,8 @@ def run_checks(root: Path, code: Path, python: Path, logs: Path, secrets: list[s
             continue
         entries = []
         for label, arguments, kind, timeout in steps:
-            returncode, timed_out, stdout, stderr, elapsed = execute(arguments, child_env(root, code, model), root, timeout)
+            returncode, timed_out, stdout, stderr, elapsed, leftovers = execute(
+                arguments, child_env(root, code, model), root, timeout)
             stdout, stderr = redact(stdout, secrets), redact(stderr, secrets)
             passed, report = outcome(kind, returncode, stdout)
             log = logs / (label + ".log")
@@ -201,12 +229,15 @@ def run_checks(root: Path, code: Path, python: Path, logs: Path, secrets: list[s
             log.chmod(0o600)
             entry = dict(label=label, passed=passed, returncode=returncode, timed_out=timed_out,
                          elapsed_seconds=elapsed, log=str(log), stdout_tail=stdout[-TAIL_CHARACTERS:],
-                         stderr_tail=stderr[-TAIL_CHARACTERS:])
+                         stderr_tail=stderr[-TAIL_CHARACTERS:], stopped_processes=leftovers)
             if kind == "report":
                 entry["report"] = report
             entries.append(entry)
             print(json.dumps(dict(check=check, label=label, passed=passed, elapsed_seconds=elapsed)), flush=True)
-        passed = all(entry["passed"] for entry in entries)
+            if check == "contracts" and not passed:
+                # Do not run native programs against a runtime that fails its contract.
+                break
+        passed = len(entries) == len(steps) and all(entry["passed"] for entry in entries)
         results[check] = dict(passed=passed, status="passed" if passed else "failed", programs=entries)
         if check == "contracts":
             contracts_passed = passed
@@ -214,7 +245,8 @@ def run_checks(root: Path, code: Path, python: Path, logs: Path, secrets: list[s
 
 
 def write_result(path: Path, value: dict) -> None:
-    private_directory(path.parent)
+    # Do not change the mode of a folder that the caller supplied.
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = path.with_name("." + path.name + ".tmp")
     temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
     temporary.chmod(0o600)
@@ -253,13 +285,13 @@ def check_candidate(runtime: Path, host_data: Path, *, python: Path | None = Non
     # The result names the loaded keys. It never holds their values.
     result["credentials"] = sorted(key for key in host.MODEL_KEYS if os.environ.get(key))
     secrets = [os.environ[key] for key in result["credentials"]]
-    logs = output.with_suffix(".logs")
-    if logs.is_dir() and not logs.is_symlink():
-        # A new run for the same commits replaces the earlier logs.
-        shutil.rmtree(logs)
-    private_directory(logs)
     root = None
     with runtime_lock(runtime):
+        logs = output.with_suffix(".logs")
+        if logs.is_dir() and not logs.is_symlink():
+            # A new run for the same commits replaces the earlier logs.
+            shutil.rmtree(logs)
+        private_directory(logs)
         try:
             with candidate_root(runtime, python, code) as root:
                 result["checks"] = run_checks(root, code, python, logs, secrets,
