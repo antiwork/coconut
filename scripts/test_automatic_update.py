@@ -318,6 +318,7 @@ class AutomaticUpdateTests(unittest.TestCase):
             (live / '.runtime/host').mkdir(parents=True)
             if keys:
                 (live / '.runtime/host/credentials.json').write_text(json.dumps(keys))
+                (live / '.runtime/host/credentials.json').chmod(0o600)
             state_path = root / 'state.json'
             state = dict(hermes_checks=cached) if cached else {}
             commands, calls = [], []
@@ -344,7 +345,7 @@ class AutomaticUpdateTests(unittest.TestCase):
                 return (checks or script)(command, cwd=cwd, timeout=timeout)
             # setUp patches the gate for other tests. These tests call the real function.
             stopped = []
-            leftovers = SimpleNamespace(stop_leftovers=lambda folder: stopped.append(folder))
+            leftovers = SimpleNamespace(stop_leftovers=lambda folder: stopped.append(folder), MODEL_KEYS=('ANTHROPIC_API_KEY',))
             with patch.object(update, 'run', side_effect=AssertionError('The gate runs its commands through run_bounded.')), \
                     patch.object(update, 'run_bounded', side_effect=bounded), \
                     patch.object(update, 'module', return_value=leftovers), \
@@ -432,6 +433,16 @@ class AutomaticUpdateTests(unittest.TestCase):
         result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha2', code='sha2', passed=True))
         self.assertIsNone(result['raised'])
         self.assertFalse(result['runtime_left'])
+
+    def test_the_receipt_states_its_verdict(self):
+        self.assertEqual(self.gate_case(checks_pass=True)['receipt']['verdict'], 'passed')
+        self.assertEqual(self.gate_case(checks_pass=False)['receipt']['verdict'], 'failed')
+        self.assertEqual(self.gate_case(checks_pass=False, checks=lambda command, **kwargs: (None, 'log'))['receipt']['verdict'],
+                         'inconclusive')
+
+    def test_only_a_model_key_in_a_private_file_lets_the_gate_start(self):
+        result = self.gate_case(checks_pass=True, keys={'OTHER_KEY': 'x'})
+        self.assertIn('no model keys', result['receipt']['output'])
 
     def test_the_check_script_gets_the_candidate_runtime_and_the_live_credentials(self):
         result = self.gate_case(checks_pass=True)

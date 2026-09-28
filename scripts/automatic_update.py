@@ -32,7 +32,8 @@ HERMES_CANDIDATE_FREE_BYTES = 8 * 1024 ** 3
 # The gate repeats the checks for a failed pin and code only after this wait. A new pin, for example a revert, or a
 # change of backend or scripts runs them at once.
 HERMES_FAILED_RETRY_SECONDS = 24 * 60 * 60
-HERMES_INSTALL_SECONDS = 60 * 60
+# hermes.py install runs uv and three check programs, up to 75 minutes of program time, plus the downloads.
+HERMES_INSTALL_SECONDS = 90 * 60
 # scripts/hermes.py install writes these folders of .runtime, and the checks write inside hermes. The gate removes only these.
 HERMES_GATE_FOLDERS = ('hermes', 'cache', 'tmp', 'tools')
 
@@ -397,6 +398,11 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
             save(receipt, dict(revision=revision, passed=False, checked_at=time.time(), output=output[-20000:]))
         # The live install builds its own runtime. Free the candidate and the install caches.
         clear_gate_folders(source)
+    verdict = 'passed' if passed else 'inconclusive' if inconclusive else 'failed'
+    with contextlib.suppress(OSError, ValueError, AttributeError):
+        # The receipt states the verdict itself, so a reader can tell a failed pin from checks that could not run.
+        written = json.loads(receipt.read_text())
+        save(receipt, dict(written, verdict=verdict))
     if inconclusive:
         raise RuntimeError(f'The native upgrade checks for Hermes {revision[:12]} did not finish: they timed out, or their '
                            f'setup failed. Read {receipt}. The next pass after the backoff runs them again.')
@@ -412,8 +418,11 @@ def gate_problem(source, live):
         keys = json.loads((live / '.runtime/host/credentials.json').read_text())
     except (OSError, ValueError):
         keys = None
-    if not isinstance(keys, dict) or not any(isinstance(value, str) and value for value in keys.values()):
+    model_keys = module(source, 'host').MODEL_KEYS
+    if not isinstance(keys, dict) or not any(isinstance(keys.get(name), str) and keys[name] for name in model_keys):
         return 'The installed service has no model keys in .runtime/host/credentials.json.'
+    if (live / '.runtime/host/credentials.json').stat().st_mode & 0o077:
+        return 'The model credential file .runtime/host/credentials.json must be private to this Mac account.'
     listing = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=all', '--', 'backend', 'scripts'],
                              cwd=source, capture_output=True, text=True, timeout=60)
     if listing.returncode == 0 and listing.stdout.strip():

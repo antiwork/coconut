@@ -74,6 +74,9 @@ The automatic updater runs the candidate checks itself before it installs a new 
    The result goes to `hermes-checks.json` next to the updater state.
 5. It removes the folders that it wrote in `.runtime`.
 
+The receipt has a `verdict`: `passed`, `failed` (the checks ran and a check failed), or `inconclusive` (a timeout,
+missing model keys, changed code, or a setup error).
+
 The live install starts only when the result passes for the pinned revision. The updater keeps each result for that
 revision and the Git trees of `backend` and `scripts`, the code that the checks run. After a failure, it runs the
 checks again after 24 hours, and at once for a new pin, for example a revert, or for a change of that code. A timeout, missing model keys, or a setup error of the checks is not a failure: the updater stops the
