@@ -546,14 +546,22 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(again, path)
         self.assertNotIn('retired', self.registry()[identity])
 
-    def test_a_low_disk_ignores_the_retry_delay_of_a_refused_removal(self):
+    def test_a_low_disk_shortens_the_retry_delay_of_a_refused_removal_to_an_hour(self):
         _, identity, path, task = self.outcome()
         self.pull_request(task, 'merged')
-        saved = self.registry()
-        saved[identity]['retire_failed'] = dict(at=RECENT, error='Git refused', archive=None)
-        save_bindings(self.workspaces / 'worktrees.json', saved)
+
+        def failed(hours):
+            moment = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat().replace('+00:00', 'Z')
+            saved = self.registry()
+            saved[identity]['retire_failed'] = dict(at=moment, error='Git refused', archive=None)
+            save_bindings(self.workspaces / 'worktrees.json', saved)
+        failed(0.1)
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            # A failure of six minutes ago waits, also on a low disk.
+            self.assertEqual(self.retire(), [])
+        failed(2)
+        # Two hours ago waits for a normal disk, and not for a low one.
         self.assertEqual(self.retire(), [])
-        self.assertTrue(path.exists())
         with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
             self.assertEqual(self.retire(), [identity])
 
@@ -580,6 +588,52 @@ class WorktreeRetirementTests(unittest.TestCase):
             work_workspace.sweep_temporary(self.workspaces)
         self.assertFalse(first[0].exists())
         self.assertTrue(second[0].exists())
+
+    def test_a_discarded_detached_head_gets_a_branch_and_an_interrupted_removal_is_adopted(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        git(path, 'checkout', '-q', '--detach')
+        (path / 'tracked.txt').write_text('detached work\n')
+        git(path, 'add', 'tracked.txt')
+        self.commit(path, 'Detached commit')
+        head = git(path, 'rev-parse', 'HEAD')
+        real = work_workspace.git
+
+        def stopped(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                raise KeyboardInterrupt()
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=stopped), self.assertRaises(KeyboardInterrupt):
+            self.retire()
+        branch = self.registry()[identity]['branch']
+        self.assertTrue(branch.endswith('-detached'))
+        self.assertEqual(git(self.repo, 'rev-parse', branch), head)
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual(git(restored, 'branch', '--show-current'), branch)
+        self.assertEqual(git(restored, 'rev-parse', 'HEAD'), head)
+
+    def test_a_discard_keeps_a_small_ignored_file_and_puts_it_back(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / '.env').write_text('SECRET=value\n')
+        (path / 'node_modules').mkdir()
+        (path / 'node_modules' / 'pkg.js').write_text('build output')
+        self.assertEqual(self.retire(), [identity])
+        with tarfile.open(self.registry()[identity]['retired']['archive']) as tar:
+            names = tar.getnames()
+        self.assertIn('ignored/.env', names)
+        self.assertFalse(any('node_modules' in name for name in names))
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual((restored / '.env').read_text(), 'SECRET=value\n')
+
+    def test_a_missing_archive_tells_the_bot(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
+        self.assertEqual(self.retire(), [identity])
+        Path(self.registry()[identity]['retired']['archive']).unlink()
+        with self.assertRaisesRegex(ValueError, 'is gone'):
+            acquire(self.workspaces, outcome, str(self.repo))
 
     def test_a_second_discard_keeps_the_first_archive(self):
         outcome, identity, path, task = self.outcome()

@@ -1064,10 +1064,10 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False, urgent=F
     if not before or before.get('retired'):
         return False
     failed = (before.get('retire_failed') or {}).get('at')
-    if (failed and not urgent
-            and datetime.now(timezone.utc) - datetime.fromisoformat(failed.replace('Z', '+00:00')) < RETRY_AFTER):
-        # A refused removal waits a day, as in retire. The retry would archive the same files again.
-        # A low disk does not wait: the disk stops every turn.
+    if failed and (datetime.now(timezone.utc) - datetime.fromisoformat(failed.replace('Z', '+00:00'))
+                   < (timedelta(hours=1) if urgent else RETRY_AFTER)):
+        # A refused removal waits a day, as in retire, because the retry writes the same archive again. A low disk
+        # waits an hour: the disk stops every turn.
         return False
     path, repository = Path(before['path']), Path(before['repository']).resolve()
     present = os.path.lexists(path)
@@ -1097,7 +1097,16 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False, urgent=F
         # Only merged or closed work proves that an unmarked old orphan in the worktree is a leftover.
         release(path, before['outcome'], orphan_age, marked=not merged)
         head = git(path, 'rev-parse', 'HEAD')
-        branch = git(path, 'branch', '--show-current') or before['branch']
+        branch = git(path, 'branch', '--show-current')
+        if not branch:
+            # A detached HEAD names no branch. A branch at that commit keeps the work reachable, and the resume checks it out.
+            base = 'wt/' + path.name + '-detached'
+            branch, number = base, 0
+            while subprocess.run(['git', '-C', str(repository), 'rev-parse', '--verify', '--quiet', 'refs/heads/' + branch],
+                                 capture_output=True, timeout=60).returncode == 0:
+                number += 1
+                branch = f'{base}-{number}'
+            git(repository, 'branch', branch, head)
         staged, unstaged, names = changes(path)
         # Keep the untracked files that an archive can hold. Git lists a nested repository as a folder, and it goes.
         files = [name for name in names if not name.endswith('/')
@@ -1107,6 +1116,12 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False, urgent=F
                                                 'archive limit.', path)
             files = []
         entries = sorted((UNTRACKED + name, name) for name in files)
+        try:
+            # Ignored files that are not build output can matter, for example .env. ignored_files skips the rebuildable
+            # folders and refuses more than IGNORED_LIMIT_BYTES. Then the ignored files go without an archive.
+            entries += sorted((IGNORED + name, name) for name in ignored_files(path))
+        except (ValueError, OSError) as error:
+            logging.getLogger(__name__).warning('Coconut discards the ignored files of %s: %s', path, error)
         if len(staged) + len(unstaged) > PATCH_LIMIT_BYTES:
             # base85 patches of large binaries can be larger than the files, and the archive is written before the removal.
             logging.getLogger(__name__).warning('Coconut discards the staged and unstaged changes of %s. They are larger '
@@ -1511,8 +1526,14 @@ def adopt_intact_checkout(binding, path, repository):
     if path.is_symlink() or not path.is_dir() or not (path / '.git').is_file():
         return False
     try:
-        if (Path(git(path, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve() != repository.resolve() / '.git'
-                or git(path, 'branch', '--show-current') != binding['branch']):
+        if Path(git(path, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve() != repository.resolve() / '.git':
+            return False
+        current = git(path, 'branch', '--show-current')
+        if not current and git(path, 'rev-parse', 'HEAD') == binding['retired'].get('head'):
+            # A discard of a detached HEAD saved a branch at that commit. Attach the checkout to it.
+            git(path, 'checkout', '-q', binding['branch'])
+            current = binding['branch']
+        if current != binding['branch']:
             return False
         retired = binding['retired']
         if git(path, 'rev-parse', 'HEAD') == retired.get('head'):
@@ -1544,8 +1565,9 @@ def reapply_discard(path, archive, head):
                 apply_unstaged(path, unstaged)
             links = []
             for name, member in members.items():
-                target = name[len(UNTRACKED):]
-                if not name.startswith(UNTRACKED) or os.path.lexists(path / target):
+                prefix = next((p for p in (UNTRACKED, IGNORED) if name.startswith(p)), None)
+                target = name[len(prefix):] if prefix else name
+                if not prefix or os.path.lexists(path / target):
                     continue
                 if member.issym():
                     links.append((target, member.linkname))
@@ -1718,7 +1740,9 @@ def restore(binding, checked, *, retry_duplicates=False):
                 # An interrupted add can leave a registered partial checkout. Remove it, so the next turn tries again.
                 discard_checkout(repository, path)
                 raise
-            if retired.get('archive') and Path(retired['archive']).is_file():
+            if retired.get('archive'):
+                if not Path(retired['archive']).is_file():
+                    raise ReapplyFailed(f'The archive {retired["archive"]} of the discarded changes is gone. The checkout is clean.')
                 reapply_discard(path, Path(retired['archive']), retired.get('head'))
         except RESTORE_ERRORS as error:
             # The mark sends the turn to the scratch workspace (see chosen), and the bot reads the message from

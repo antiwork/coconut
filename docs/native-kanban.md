@@ -132,11 +132,17 @@ Retirement keeps work only while it can resume. Coconut discards the worktree of
 - Retirement refuses the worktree, and the disk has less than 20 GiB free (`LOW_DISK_BYTES`). The pass then runs
   every 10 minutes.
 
-A discard keeps the branch, a ref `refs/coconut/discarded/<identity>/<time>-<commit>` for each HEAD, also a detached one, and an archive in `workspaces/archive/done/` with the patches and the untracked files that
-fit in 200 MB. Ignored files and nested worktrees go without an archive. Only a locked worktree, or a process that is
-not an old orphan, keeps the worktree. A later turn gets a new checkout of the saved branch. When the branch did not move, Coconut puts the archived patches
-and untracked files back. Otherwise the archive keeps them for a person. The archives follow the
-30-day and 2 GiB rules of the nested archives.
+A discard keeps the branch and a ref `refs/coconut/discarded/<identity>/<time>-<commit>` for each HEAD, nested ones
+too. A detached HEAD gets a branch `wt/<name>-detached` at its commit. The archive in `workspaces/archive/done/` holds the
+staged and unstaged patches (up to 200 MB), the untracked files (up to 200 MB), and the ignored files that are not build
+output (up to 200 MB), such as `.env`. Rebuildable folders and nested worktrees go without an archive. Only a locked
+worktree, a worktree of another outcome, or a process that is not an old orphan keeps the worktree.
+
+A later turn gets a new checkout of the saved branch, and Coconut puts the archived changes back. When the branch moved,
+a patch does not fit, or the archive is gone, the checkout stays clean, and `coconut_workspace` tells the bot which
+archive holds the changes. The refs go after 30 days. The archive goes after 30 days too. The archives that no binding
+names stay within 2 GiB together, the newer ones first, and the archives that a binding names within 4 GiB together, and
+this limit can delete a young one.
 
 The same pass deletes the files in the scratch workspace (`workspaces/<outcome>`) of such an outcome. Under the service
 lock, it checks the outcome again and moves the folder to `workspaces/.scratch-trash`, so no turn can start in it
