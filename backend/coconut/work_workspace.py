@@ -922,12 +922,14 @@ def removal_stopped(manifest, saved, binding, path, repository, current, archive
 
 
 def discard(root, identity, finished, *, orphan_age=None):
-    """Remove the worktree of a finished outcome whose pull requests all merged or closed. Return True when removed.
+    """Remove the worktree of an idle outcome. Return True when removed.
 
-    The pull request holds the work, and the branch keeps its commits. So Coconut keeps only the staged and unstaged
-    patches, in archive/done/. It does not keep untracked or ignored files, such as build output and logs, and it
-    removes nested worktrees without their files. A branch switch does not keep the worktree. An old orphaned process
-    in the worktree stops, even when its environment does not name the outcome. Another process keeps the worktree.
+    Coconut calls this when the pull requests of the outcome all merged or closed, when the checkout is gone, and when
+    retirement cannot archive an idle worktree exactly (see worktree_retirement.DISCARD_IDLE_SECONDS). The branch keeps
+    the commits. The archive in archive/done/ keeps the staged and unstaged patches, and the untracked files when they
+    fit in UNTRACKED_LIMIT_BYTES. Ignored files, such as build output and logs, and nested worktrees go without an
+    archive. A branch switch does not keep the worktree. An old orphaned process in the worktree stops, even when its
+    environment does not name the outcome. A locked worktree and another process keep the worktree.
     A missing checkout only loses its Git record. A later turn of the outcome gets a new checkout of the saved branch.
     `finished(wait)` is the check of retire.
     """
@@ -952,10 +954,17 @@ def discard(root, identity, finished, *, orphan_age=None):
         release(path, before['outcome'], orphan_age, marked=False)
         head = git(path, 'rev-parse', 'HEAD')
         branch = git(path, 'branch', '--show-current') or before['branch']
-        staged, unstaged, _ = changes(path)
-        if staged or unstaged:
-            if len(staged) + len(unstaged) > PATCH_LIMIT_BYTES:
-                raise ValueError('The changes in the worktree are larger than the archive limit.')
+        staged, unstaged, names = changes(path)
+        # Keep the untracked files that an archive can hold. Git lists a nested repository as a folder, and it goes.
+        files = [name for name in names if not name.endswith('/')
+                 and ((path / name).is_symlink() or stat.S_ISREG(os.lstat(path / name).st_mode))]
+        if sum(os.lstat(path / name).st_size for name in files) > UNTRACKED_LIMIT_BYTES:
+            logging.getLogger(__name__).warning('Coconut discards the untracked files of %s. They are larger than the '
+                                                'archive limit.', path)
+            files = []
+        entries = sorted((UNTRACKED + name, name) for name in files)
+        # The patches stay whatever their size: they are always smaller than the checkout that they replace.
+        if staged or unstaged or entries:
             directory = root / 'archive' / 'done'
             directory.mkdir(parents=True, mode=0o700, exist_ok=True)
             archive = directory / (identity + '.tar.gz')
@@ -963,7 +972,7 @@ def discard(root, identity, finished, *, orphan_age=None):
             try:
                 write_archive(temporary, dict(branch=branch, head=head, outcome=before['outcome'],
                     repository=before['repository'], path=before['path'], at=stamp(datetime.now(timezone.utc))),
-                    path, dict(zip(PATCHES, (staged, unstaged))), [])
+                    path, dict(zip(PATCHES, (staged, unstaged))), entries)
                 temporary.replace(archive)
             finally:
                 temporary.unlink(missing_ok=True)
@@ -991,6 +1000,24 @@ def discard(root, identity, finished, *, orphan_age=None):
     return True
 
 
+def clear_scratch(folder, *, keep=True):
+    """Delete the files of a scratch workspace. With keep, the folder stays, empty, for a later turn to use.
+
+    Coconut never follows a link. The caller checks that the outcome is idle and that no process uses the folder.
+    """
+    folder = Path(folder)
+    if folder.is_symlink() or not folder.is_dir():
+        return
+    if not keep:
+        shutil.rmtree(folder)
+        return
+    for child in folder.iterdir():
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
 def drop_other_archives(directory, identity, keep, saved):
     """Keep one archive for each worktree. Never delete an archive that a binding names."""
     named = {(b.get(key) or {}).get('archive') for b in saved.values() for key in ('retired', 'retire_failed')}
@@ -1000,24 +1027,26 @@ def drop_other_archives(directory, identity, keep, saved):
 
 
 def sweep_temporary(root):
-    """Delete archive files that an interrupted retirement did not finish, and old nested archives.
+    """Delete archive files that an interrupted retirement did not finish, and old nested and discard archives.
 
-    Run before any retirement starts. No binding names a nested archive, and Coconut never restores one.
-    It is kept NESTED_ARCHIVE_DAYS, within NESTED_ARCHIVE_LIMIT_BYTES, for a person to recover a subagent's work.
+    Run before any retirement starts. Coconut never restores a nested or a discard archive: a discarded worktree
+    comes back as a new checkout of its branch. Each is kept NESTED_ARCHIVE_DAYS, within NESTED_ARCHIVE_LIMIT_BYTES
+    for each folder, for a person to recover work.
     """
-    for folder in (Path(root) / 'archive', Path(root) / 'archive' / 'nested'):
+    for folder in (Path(root) / 'archive', Path(root) / 'archive' / 'nested', Path(root) / 'archive' / 'done'):
         for temporary in folder.glob('.*.tar.gz.tmp'):
             temporary.unlink(missing_ok=True)
     trim_nested_archives(root)
+    trim_nested_archives(root, folder='done')
 
 
-def trim_nested_archives(root, keep=()):
-    """Delete nested archives older than NESTED_ARCHIVE_DAYS, then the oldest over NESTED_ARCHIVE_LIMIT_BYTES.
+def trim_nested_archives(root, keep=(), *, folder='nested'):
+    """Delete the archives in archive/<folder> older than NESTED_ARCHIVE_DAYS, then the oldest over NESTED_ARCHIVE_LIMIT_BYTES.
 
     The archives in `keep` and those younger than NESTED_ARCHIVE_KEEP_SECONDS stay, and count toward the limit.
     """
     oldest, kept, total = time.time() - NESTED_ARCHIVE_DAYS * 86400, [], 0
-    for archive in (Path(root) / 'archive' / 'nested').glob('*.tar.gz'):
+    for archive in (Path(root) / 'archive' / folder).glob('*.tar.gz'):
         if archive in keep:
             with contextlib.suppress(FileNotFoundError):
                 total += archive.stat().st_size
@@ -1026,7 +1055,7 @@ def trim_nested_archives(root, keep=()):
             status = archive.stat()
             if status.st_mtime < oldest:
                 archive.unlink()
-                logging.getLogger(__name__).warning('Coconut deleted nested archive %s after %s days.', archive,
+                logging.getLogger(__name__).warning('Coconut deleted archive %s after %s days.', archive,
                                                     NESTED_ARCHIVE_DAYS)
             else:
                 kept.append((status.st_mtime, status.st_size, archive))
@@ -1036,7 +1065,7 @@ def trim_nested_archives(root, keep=()):
         if total <= NESTED_ARCHIVE_LIMIT_BYTES or moment >= young:
             break
         archive.unlink(missing_ok=True)
-        logging.getLogger(__name__).warning('Coconut deleted nested archive %s to keep the folder within %s bytes.',
+        logging.getLogger(__name__).warning('Coconut deleted archive %s to keep the folder within %s bytes.',
                                             archive, NESTED_ARCHIVE_LIMIT_BYTES)
         total -= size
 

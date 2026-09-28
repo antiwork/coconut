@@ -75,6 +75,10 @@ class WorktreeRetirementTests(unittest.TestCase):
                                           str(p): {} if detail else set() for p in paths}))
         self.holders.start()
         self.addCleanup(self.holders.stop)
+        # Most tests check retirement itself. The discard of long idle or low-disk worktrees has its own tests.
+        rules = patch.multiple(retirement, DISCARD_IDLE_SECONDS=10 ** 9, LOW_DISK_BYTES=0)
+        rules.start()
+        self.addCleanup(rules.stop)
 
     def commit(self, path, message):
         git(path, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '-m', message)
@@ -133,16 +137,94 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertNotIn(str(inner), git(self.repo, 'worktree', 'list', '--porcelain'))
         binding = self.registry()[identity]
         self.assertEqual((binding['branch'], binding['retired']['done']), ('published-branch', True))
-        # The branches keep their commits. The archive keeps only the staged and unstaged patches.
+        # The branches keep their commits. The archive keeps the patches and the small untracked files.
         self.assertEqual(git(self.repo, 'show', 'published-branch:committed.txt'), 'in the pull request')
         with tarfile.open(binding['retired']['archive']) as tar:
-            self.assertEqual(sorted(tar.getnames()), ['retirement.json', 'staged.patch', 'unstaged.patch'])
+            self.assertEqual(sorted(tar.getnames()), ['retirement.json', 'staged.patch', 'unstaged.patch', 'untracked/notes.txt'])
             self.assertIn(b'+staged', tar.extractfile('staged.patch').read())
         # A later turn of the outcome gets a new checkout of the saved branch.
         restored = acquire(self.workspaces, outcome, str(self.repo))
         self.assertEqual(git(restored['path'], 'branch', '--show-current'), 'published-branch')
         self.assertEqual((Path(restored['path']) / 'committed.txt').read_text(), 'in the pull request\n')
         self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_long_idle_worktree_that_retirement_refuses_is_discarded(self):
+        outcome, identity, path, _ = self.outcome()
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        (path / 'draft.txt').write_text('keep\n')
+        (path / 'tmp').mkdir()
+        (path / 'tmp' / 'cache.bin').write_bytes(b'x' * 64)
+        # The outcome is idle for 3 days. Retirement refuses the branch switch, and the discard follows.
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60), \
+                self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
+        self.assertTrue(any('discarded worktree' in line and 'changed branches' in line for line in logs.output))
+        binding = self.registry()[identity]
+        self.assertEqual((binding['branch'], binding['retired']['done']), ('switched-branch', True))
+        with tarfile.open(binding['retired']['archive']) as tar:
+            self.assertIn('untracked/draft.txt', tar.getnames())
+        restored = acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(git(restored['path'], 'branch', '--show-current'), 'switched-branch')
+
+    def test_a_refused_worktree_of_a_recently_idle_outcome_stays(self):
+        recent = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat().replace('+00:00', 'Z')
+        _, identity, path, _ = self.outcome(updated_at=recent)
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 2 * 24 * 60 * 60):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_low_disk_discards_a_refused_idle_worktree_at_once(self):
+        recent = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat().replace('+00:00', 'Z')
+        _, identity, path, _ = self.outcome(updated_at=recent)
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
+        # A low disk also runs the pass more often.
+        self.assertLessEqual(self.service._next_worktree_retirement - time.time(), retirement.LOW_DISK_INTERVAL_SECONDS)
+
+    def test_a_locked_worktree_stays_even_when_long_idle(self):
+        _, identity, path, _ = self.outcome()
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        git(self.repo, 'worktree', 'lock', str(path))
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+
+    def test_idle_scratch_workspaces_lose_their_files_and_unknown_old_ones_go(self):
+        idle, _, _, task = self.outcome()
+        self.pull_request(task, 'merged')
+        active, _, _, _ = self.outcome(status='working', updated_at=RECENT)
+        folders = {name: self.workspaces / name for name in (idle, active, self.bot['id'])}
+        for folder in folders.values():
+            (folder / 'clone' / '.git').mkdir(parents=True)
+            (folder / 'report.md').write_text('evidence')
+        unknown_old, unknown_new = self.workspaces / str(uuid4()), self.workspaces / str(uuid4())
+        for folder in (unknown_old, unknown_new):
+            (folder / 'build').mkdir(parents=True)
+        os.utime(unknown_old, (time.time() - 3 * 24 * 60 * 60,) * 2)
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            self.retire()
+        # The done outcome keeps an empty folder for a later turn. The active outcome and the bot keep their files.
+        self.assertEqual(list(folders[idle].iterdir()), [])
+        self.assertTrue((folders[active] / 'report.md').exists())
+        self.assertTrue((folders[self.bot['id']] / 'report.md').exists())
+        self.assertFalse(unknown_old.exists())
+        self.assertTrue(unknown_new.exists())
+
+    def test_the_sweep_trims_old_discard_archives(self):
+        done = self.workspaces / 'archive' / 'done'
+        done.mkdir(parents=True)
+        old, new = done / 'old.tar.gz', done / 'new.tar.gz'
+        for archive in (old, new):
+            archive.write_bytes(b'x')
+        os.utime(old, (time.time() - (work_workspace.NESTED_ARCHIVE_DAYS + 1) * 86400,) * 2)
+        work_workspace.sweep_temporary(self.workspaces)
+        self.assertFalse(old.exists())
+        self.assertTrue(new.exists())
 
     def test_an_open_pull_request_keeps_the_worktree_of_its_outcome(self):
         _, identity, path, task = self.outcome()
@@ -550,11 +632,11 @@ class WorktreeRetirementTests(unittest.TestCase):
         _, identity, path, _ = self.outcome()
         entered, held = threading.Event(), threading.Event()
         finished = self.service._finished_outcomes
-        def watched(current, *, timeout=-1, only=None):
+        def watched(current, *, timeout=-1, only=None, **options):
             # The final check under the registry lock runs with a short timeout.
             if only is not None and timeout != retirement.SERVICE_WAIT_SECONDS:
                 entered.set()
-            return finished(current, timeout=timeout, only=only)
+            return finished(current, timeout=timeout, only=only, **options)
         original = work_workspace.check_worktree
         def check(*arguments, **options):
             result = original(*arguments, **options)
@@ -630,12 +712,12 @@ class WorktreeRetirementTests(unittest.TestCase):
         outcome, identity, path, _ = self.outcome()
         finished, answers = self.service._finished_outcomes, []
 
-        def busy_first(current, *, timeout=-1, only=None):
+        def busy_first(current, *, timeout=-1, only=None, **options):
             # The first check for this outcome finds the service busy.
             if only is not None and not answers:
                 answers.append(None)
                 return None
-            return finished(current, timeout=timeout, only=only)
+            return finished(current, timeout=timeout, only=only, **options)
         with patch.object(self.service, '_finished_outcomes', side_effect=busy_first), \
                 patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0):
             self.assertEqual(self.retire(), [identity])
@@ -665,12 +747,12 @@ class WorktreeRetirementTests(unittest.TestCase):
         (path / 'draft.txt').write_text('keep\n')
         finished, answers = self.service._finished_outcomes, []
 
-        def busy_under_lock(current, *, timeout=-1, only=None):
+        def busy_under_lock(current, *, timeout=-1, only=None, **options):
             # The check under the registry lock, after the archive write, finds the service busy once.
             if only is not None and timeout == retirement.LOCKED_WAIT_SECONDS and not answers:
                 answers.append(None)
                 return None
-            return finished(current, timeout=timeout, only=only)
+            return finished(current, timeout=timeout, only=only, **options)
         with patch.object(self.service, '_finished_outcomes', side_effect=busy_under_lock), \
                 patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0):
             self.assertEqual(self.retire(), [identity])
