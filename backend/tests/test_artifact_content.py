@@ -7,7 +7,7 @@ import unittest
 from uuid import uuid4
 
 from coconut.providers import FixtureProvider
-from coconut.service import Service
+from coconut.service import Service, ServiceError, digest
 
 
 class ArtifactContentTests(unittest.TestCase):
@@ -57,10 +57,18 @@ class ArtifactContentTests(unittest.TestCase):
         self.assertEqual(reopened.artifact_content(artifact['id'])[0], b'attached bytes')
 
     def test_an_artifact_without_bytes_falls_back_to_its_file(self):
+        content = b'a file on the Mac'
+        (self.service.files).mkdir(parents=True, exist_ok=True)
+        (self.service.files / 'plain').write_bytes(content)
         with self.service.transaction():
-            self.service._put('artifacts', dict(id='plain', bot_id=self.bot['id'], task_id=None, title='x', kind='file',
-                                                status='ready', preview='', url=None, created_at='2026-01-01T00:00:00Z'))
+            self.service._put('artifacts', dict(id='plain', bot_id=self.bot['id'], task_id=None, title='report.txt', kind='file',
+                                                status='ready', preview='', url=None, created_at='2026-01-01T00:00:00Z',
+                                                _content_hash=digest(content)))
         self.assertIsNone(self.service.artifact_bytes(self.service._get('artifacts', 'plain')))
+        self.assertEqual(self.service.artifact_content('plain'), (content, 'report.txt'))
+        (self.service.files / 'plain').write_bytes(b'changed')
+        with self.assertRaises(ServiceError):
+            self.service.artifact_content('plain')
 
 
 if __name__ == '__main__':
