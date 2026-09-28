@@ -427,6 +427,8 @@ class BackgroundProcessTests(unittest.TestCase):
     def test_migration_preserves_prior_observed_output(self):
         task_id = self.start()
         with self.service.transaction():
+            # The store predates the migration.
+            self.service.db.execute("DELETE FROM settings WHERE key='process_deliveries_migrated'")
             record = self.service._all('native_receipts')[0]
             record.pop('_process_registered')
             self.service._put('native_receipts', record)
@@ -439,6 +441,8 @@ class BackgroundProcessTests(unittest.TestCase):
     def test_finished_model_poll_suppresses_duplicate_notification_after_upgrade(self):
         task_id = self.start()
         with self.service.transaction():
+            # The store predates the migration.
+            self.service.db.execute("DELETE FROM settings WHERE key='process_deliveries_migrated'")
             self.service._put('native_receipts', dict(id=str(uuid4()), task_id=task_id, state='completed',
                 action={'name': 'process_manage', 'arguments': {'action': 'poll', 'session_id': 'proc_test'}},
                 result=json.dumps({'status': 'exited', 'session_id': 'proc_test'})))

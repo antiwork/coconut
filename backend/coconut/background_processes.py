@@ -68,6 +68,10 @@ def subscription(record):
 
 class BackgroundProcesses:
     def _migrate_process_deliveries(self):
+        # NativeExecution registers and consumes new receipts when their results arrive. This pass repairs older
+        # receipts once. It parses the whole receipt journal, so a setting records that it ran.
+        if self._setting('process_deliveries_migrated'):
+            return
         records = self._all('native_receipts')
         tasks = {task['id']: task for task in self._all('tasks')}
         maintenance = {c['id'] for c in self._all('contexts') if c.get('_decision_refresh')}
@@ -87,6 +91,7 @@ class BackgroundProcesses:
                     record['_process_delivery'] = 'consumed'
                 record['_process_registered'] = True
                 self._put('native_receipts', record)
+        self.db.execute("INSERT INTO settings VALUES ('process_deliveries_migrated','true')")
 
     def _background_pending(self, task_id, *, finishing_task_id=None, excluding_task_ids=()):
         with self.lock:
