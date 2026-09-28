@@ -300,7 +300,7 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertTrue(path.exists())
 
     def test_an_unmarked_stop_keeps_interactive_session_programs(self):
-        table = {10: (1, 10 ** 6, '/usr/bin/tmux'), 11: (1, 10 ** 6, '/usr/local/bin/node'), 12: (1, 10 ** 6, '/opt/tmux/bin/tmux')}
+        table = {10: (1, 10 ** 6, '/usr/bin/tmux'), 11: (1, 10 ** 6, '/usr/local/bin/node'), 12: (1, 10 ** 6, '/opt/homebrew/bin/watchman')}
         with patch.object(work_workspace, 'process_table', return_value=table), \
                 patch.object(work_workspace, 'shared', return_value=False), \
                 patch.object(work_workspace, 'stop', side_effect=lambda pids, sig, seconds: set()) as stop:
@@ -344,6 +344,39 @@ class WorktreeRetirementTests(unittest.TestCase):
         (left / 'big.bin').write_bytes(b'x')
         work_workspace.sweep_temporary(self.workspaces)
         self.assertFalse(left.exists())
+
+    def test_a_gone_checkout_keeps_the_archive_of_an_earlier_failed_retirement(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        kept = self.workspaces / 'archive' / (identity + '.tar.gz')
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        kept.write_bytes(b'only copy')
+        saved = self.registry()
+        saved[identity]['retire_failed'] = dict(at=OLD, error='Git refused', archive=str(kept))
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        git(self.repo, 'worktree', 'remove', '--force', str(path))
+        self.assertEqual(self.retire(), [identity])
+        self.assertTrue(kept.exists())
+        self.assertEqual(self.registry()[identity]['retired']['archive'], str(kept))
+
+    def test_a_new_branch_never_moves_an_existing_branch(self):
+        outcome, identity, path, _ = self.outcome()
+        original = git(path, 'branch', '--show-current')
+        (path / 'tracked.txt').write_text('one\ntwo\nthree\n')
+        git(path, 'add', 'tracked.txt')
+        self.commit(path, 'Work on the wt branch')
+        tip = git(path, 'rev-parse', 'HEAD')
+        main = git(self.repo, 'branch', '--show-current')
+        git(path, 'checkout', '-q', '--detach')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            self.assertEqual(self.retire(), [identity])
+        saved = self.registry()
+        # The saved branch is held by the main checkout, so the resume needs another name.
+        saved[identity]['branch'] = main
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(git(self.repo, 'rev-parse', original), tip)
+        self.assertNotEqual(self.registry()[identity]['branch'], original)
 
     def test_a_second_discard_keeps_the_first_archive(self):
         outcome, identity, path, task = self.outcome()

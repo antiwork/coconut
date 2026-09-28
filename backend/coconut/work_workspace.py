@@ -379,7 +379,10 @@ def shared(executable, pid=None, *, unknown=False):
 
 
 # Without the outcome marker, Coconut still keeps these programs: a person starts them, and they hold a session.
-UNMARKED_KEEP_NAMES = ('tmux', 'screen', 'zellij', 'mosh-server', 'ssh-agent', 'gpg-agent', 'sshd', 'login', 'emacs', 'vim', 'nvim')
+UNMARKED_KEEP_NAMES = ('tmux', 'screen', 'zellij', 'mosh-server', 'ssh-agent', 'gpg-agent', 'sshd', 'login', 'emacs', 'vim', 'nvim',
+                       # Machine-wide daemons and language servers watch or index folders. Other projects use them too.
+                       'watchman', 'fseventsd', 'mds', 'mds_stores', 'mdworker', 'bird', 'cloudd', 'Dropbox', 'tsserver',
+                       'gopls', 'rust-analyzer', 'sourcekit-lsp', 'pyright', 'pylsp', 'ruby-lsp', 'solargraph')
 
 
 def environment_names(pid, mark):
@@ -1065,6 +1068,9 @@ def discard(root, identity, finished, *, orphan_age=None, merged=False):
     path, repository = Path(before['path']), Path(before['repository']).resolve()
     present = os.path.lexists(path)
     head, branch, archive, temporary = None, before['branch'], None, None
+    if not present and (before.get('retire_failed') or {}).get('archive'):
+        # The checkout is gone, and an earlier retirement archived its files. That archive is the only copy.
+        archive = Path(before['retire_failed']['archive'])
     if present:
         if path.is_symlink() or not (path / '.git').is_file():
             raise ValueError('The saved workspace is no longer a linked worktree.')
@@ -1153,8 +1159,8 @@ def finish_discard(root, identity, before, finished, present, path, repository, 
         with contextlib.suppress(*GIT_ERRORS):
             git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
         binding.pop('retire_failed', None)
-        # An earlier failed removal kept a retire archive for this binding. Nothing names it now.
-        drop_other_archives(root / 'archive', identity, None, saved)
+        # An earlier failed removal kept a retire archive for this binding. Keep the one that this binding names now.
+        drop_other_archives(root / 'archive', identity, archive if archive and archive.parent == root / 'archive' else None, saved)
         binding['branch'] = branch
         binding['retired'] = dict(at=stamp(datetime.now(timezone.utc)), done=True, head=head,
                                   archive=str(archive) if archive else None)
@@ -1623,8 +1629,15 @@ def restore(binding, checked, *, retry_duplicates=False):
             if holder:
                 # Git allows a branch in one worktree only, and another worktree, often the main one, holds it.
                 # A new branch at the saved commit keeps the outcome working, and the old branch stays where it is.
-                held_branch, binding['branch'] = binding['branch'], 'wt/' + Path(binding['path']).name
-                git(repository, 'branch', '--force', binding['branch'], retired.get('head') or held_branch)
+                start = retired.get('head') or binding['branch']
+                base, number = 'wt/' + Path(binding['path']).name, 0
+                # Never move a branch that exists: it can hold commits that no other ref holds.
+                while subprocess.run(['git', '-C', str(repository), 'rev-parse', '--verify', '--quiet',
+                                      'refs/heads/' + (base if not number else f'{base}-{number}')],
+                                     capture_output=True).returncode == 0:
+                    number += 1
+                binding['branch'] = base if not number else f'{base}-{number}'
+                git(repository, 'branch', binding['branch'], start)
             with contextlib.suppress(*GIT_ERRORS):
                 git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
             with contextlib.suppress(FileNotFoundError, OSError):
