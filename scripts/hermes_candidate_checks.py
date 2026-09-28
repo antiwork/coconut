@@ -57,8 +57,12 @@ def descendants(pid):
 
 
 def stop_tree(pid):
-    """Stop a process and every process below it."""
-    for identity in [*descendants(pid), pid]:
+    """Stop a process and every process below it. A failed process listing still stops the process itself."""
+    try:
+        found = descendants(pid)
+    except (OSError, subprocess.SubprocessError):
+        found = []
+    for identity in [*found, pid]:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.kill(identity, signal.SIGKILL)
 
@@ -93,7 +97,11 @@ def passed(kind, result):
     if kind == 'pass':
         return 'PASS:' in result.stdout
     receipts = [line.split('=', 1)[1] for line in result.stdout.splitlines() if line.startswith('COCONUT_CREATION_RESULT=')]
-    return len(receipts) == 1 and json.loads(receipts[0]).get('passed') is True
+    try:
+        return len(receipts) == 1 and json.loads(receipts[0]).get('passed') is True
+    except (ValueError, AttributeError):
+        # A broken marker line fails this check only. The other checks still run.
+        return False
 
 
 def run_checks(checkout: Path, live: Path) -> dict:

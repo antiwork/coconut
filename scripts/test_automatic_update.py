@@ -372,6 +372,12 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertIsNone(result['raised'])
         self.assertFalse(result['runtime_left'])
 
+    def test_a_stopped_run_frees_its_folder_before_the_space_check(self):
+        # gate_case leaves a candidate folder, as a run that was stopped part way does.
+        result = self.gate_case(checks_pass=True, free=update.HERMES_CANDIDATE_FREE_BYTES - 1)
+        self.assertIn('GiB of free disk space', str(result['raised']))
+        self.assertFalse(result['runtime_left'])
+
     def test_a_passed_hermes_pin_is_not_checked_again(self):
         result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha2', passed=True))
         self.assertIsNone(result['raised'])
@@ -470,6 +476,8 @@ class CandidateCheckScriptTests(unittest.TestCase):
         self.assertFalse(self.checks.passed('receipt', done('')))
         self.assertTrue(self.checks.passed('pass', done('PASS: native routine.\n')))
         self.assertFalse(self.checks.passed('pass', done('PASS: native routine.\n', 1)))
+        for broken in ('COCONUT_CREATION_RESULT={"passed": tr\n', 'COCONUT_CREATION_RESULT=[true]\n'):
+            self.assertFalse(self.checks.passed('receipt', done(broken)))
 
     def test_each_check_runs_in_a_scratch_root_that_links_the_candidate(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -520,6 +528,11 @@ class CandidateCheckScriptTests(unittest.TestCase):
                 patch.object(self.checks.os, 'kill') as kill:
             self.checks.stop_tree(10)
         self.assertEqual([call.args[0] for call in kill.call_args_list], [11, 12, 10])
+        # A failed listing still stops the check itself.
+        with patch.object(self.checks, 'descendants', side_effect=subprocess.TimeoutExpired('ps', 30)), \
+                patch.object(self.checks.os, 'kill') as kill:
+            self.checks.stop_tree(10)
+        self.assertEqual([call.args[0] for call in kill.call_args_list], [10])
 
 
 class PostmergeRegressionTests(unittest.TestCase):

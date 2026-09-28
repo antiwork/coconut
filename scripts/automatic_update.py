@@ -327,7 +327,6 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
     The checks also run the Coconut code of the checkout. A result is kept for its revision and source commit:
     a pass lets a retry of the same install skip the checks, and a failure stops it for HERMES_FAILED_RETRY_SECONDS.
     """
-    candidate = source / '.runtime/hermes'
     receipt = state_path.parent / 'hermes-checks.json'
     saved = state.get('hermes_checks') if isinstance(state.get('hermes_checks'), dict) else {}
     if saved.get('revision') == revision and saved.get('sha') == sha:
@@ -337,19 +336,15 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         if isinstance(checked_at, (int, float)) and time.time() - checked_at < HERMES_FAILED_RETRY_SECONDS:
             raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]} at this commit. Read {receipt}. '
                                'A new commit on main runs them again at once.')
+    # Only the gate uses .runtime in this checkout, and each run removes it at the end. A run that was stopped
+    # part way left it. Free that space before the space check. hermes.py also refuses a folder with another commit.
+    shutil.rmtree(source / '.runtime', ignore_errors=True)
     free = shutil.disk_usage(source).free
     if free < HERMES_CANDIDATE_FREE_BYTES:
         output = (f'The candidate install needs {HERMES_CANDIDATE_FREE_BYTES // 1024 ** 3} GiB of free disk space, and '
                   f'{free / 1024 ** 3:.1f} GiB is free. Nothing was installed. The next pass after the backoff checks again.')
         save(receipt, dict(revision=revision, passed=False, checked_at=time.time(), output=output))
         raise RuntimeError(output)
-    try:
-        installed = json.loads((candidate / 'install.json').read_text()).get('commit')
-    except (OSError, ValueError, AttributeError):
-        installed = None
-    if candidate.exists() and installed != revision:
-        # hermes.py refuses a folder with another commit. This folder is the updater's own copy, not the live one.
-        shutil.rmtree(candidate)
     passed, output = False, ''
     try:
         try:
