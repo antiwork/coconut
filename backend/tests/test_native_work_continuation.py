@@ -980,6 +980,22 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.service._put('artifacts', dict(pr, _activity_task_id=other['id']))
         self.assert_linked_report_blocked_without_mutation(source)
 
+    def test_linked_owner_report_rejects_unproven_native_return_after_transcript_migration(self):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(True)
+        fields = ('_returning', '_return_source_task_id', '_return_delivery_id')
+        old = dict(coordinator, _bot_messages=[{k: v for k, v in message.items() if k not in fields}
+                                               for message in coordinator['_bot_messages']])
+        self.service._put('tasks', old)
+        self.assert_linked_report_blocked_without_mutation(source)
+        # Transcript audience is presentation metadata, also assigned to ordinary
+        # assistant output; migration must not turn it into return authority.
+        message = self.service._message(reporter['bot_id'], old['_bot_messages'][0]['text'], task_id=reporter['id'])
+        self.assertEqual(message['exchange_recipient_bot_ids'], [coordinator['bot_id']])
+        self.service._migrate_bot_exchanges()
+        self.assert_linked_report_blocked_without_mutation(source)
+        self.service._put('tasks', coordinator)
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
     def test_linked_owner_native_report_requires_exact_stored_return_identity(self):
         owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(True)
         message = coordinator['_bot_messages'][0]

@@ -401,6 +401,10 @@ class NativeOutcomes:
                         ('bot_id', 'session_id', 'thread_id', 'conversation_bot_id', 'exchange_id')))
             if not (direct_native or returned_callback):
                 continue
+            # Old direct-native messages have no per-report return identity.
+            # Keep them blocked: text/audience (also rebuilt by transcript migration)
+            # cannot distinguish two same-bot reports. Legacy callbacks above do
+            # retain source_task_id and remain eligible without new message fields.
             if any(m.get('sender_bot_id') == reporter['bot_id'] and m.get('result_status') == 'completed'
                    and not m.get('progress_only') and m.get('text') == delivery['text']
                    and (not direct_native or (m.get('_returning') is True
