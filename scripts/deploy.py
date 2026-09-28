@@ -489,6 +489,17 @@ def runtime_paths(root, record):
         'hermes', 'hermes-rollback-' + identity, 'hermes-failed-' + identity))
 
 
+def prune_rollbacks(root, keep):
+    """Keep only the rollback copy of the latest runtime update. Remove older copies that finished updates left.
+
+    Each copy holds a complete Hermes runtime of about a gigabyte. Only the latest one can serve a rollback,
+    because an update journal names its own copy, and a finished update has no journal. A manual copy stays.
+    """
+    for old in (root / '.runtime').glob('hermes-rollback-*'):
+        if old != keep and old.is_dir() and not old.is_symlink():
+            shutil.rmtree(safe_path(old, root))
+
+
 def move_terminal_state(source, target, root):
     # Keep the authoritative native terminal registry and its lock together.
     for name in ('terminal', 'terminal.lock'):
@@ -755,6 +766,8 @@ def receive(directory, address, stream, *, home=None, operations=None, update_ru
             write_json(runtime_receipt, {'version': 1, 'installation_id': marker['installation_id']})
             write_json(root / MARKER_PATH, updated)
             remove_journal(root, record)
+            if runtime_change:
+                prune_rollbacks(root, runtime_paths(root, record)[1])
             return {'version': 1, 'installation_id': marker['installation_id'], 'package_id': package.package_id, 'mode': mode, 'address': address, 'health': health, 'updated': original is not None}
         except BaseException as error:
             if not applied:

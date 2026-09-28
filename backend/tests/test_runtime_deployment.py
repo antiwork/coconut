@@ -69,6 +69,20 @@ class RuntimeDeploymentTests(unittest.TestCase):
         self.assertFalse((self.root / '.runtime/deploy/update.json').exists())
         self.assertEqual((self.root / '.runtime/host/coconut.sqlite3').read_bytes(), b'Unchanged chat data')
 
+    def test_an_upgrade_removes_the_rollback_copies_of_earlier_updates(self):
+        earlier = self.root / '.runtime/hermes-rollback-earlier-update'
+        earlier.mkdir()
+        (earlier / 'install.json').write_text(json.dumps({'commit': 'b' * 40}))
+        manual = self.root / '.runtime/hermes-before-manual-change'
+        manual.mkdir()
+        self.receive(self.files, update_runtime=True)
+        saved = list((self.root / '.runtime').glob('hermes-rollback-*'))
+        # Only the copy of this update can serve a rollback. A manual copy stays.
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(json.loads((saved[0] / 'install.json').read_text())['commit'], OLD)
+        self.assertFalse(earlier.exists())
+        self.assertTrue(manual.exists())
+
     def test_install_failure_restores_source_runtime_and_native_state(self):
         with self.assertRaises(deploy.DeployError):
             self.receive(self.files, RuntimeOperations(mode='managed', fail='prepare'), update_runtime=True)
