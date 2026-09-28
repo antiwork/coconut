@@ -338,8 +338,11 @@ class AutomaticUpdateTests(unittest.TestCase):
                 calls.append(command)
                 return (checks or script)(command, cwd=cwd, timeout=timeout)
             # setUp patches the gate for other tests. These tests call the real function.
+            stopped = []
+            leftovers = SimpleNamespace(stop_leftovers=lambda folder: stopped.append(folder))
             with patch.object(update, 'run', side_effect=AssertionError('The gate runs its commands through run_bounded.')), \
                     patch.object(update, 'run_bounded', side_effect=bounded), \
+                    patch.object(update, 'module', return_value=leftovers), \
                     patch.object(update.shutil, 'disk_usage', return_value=SimpleNamespace(free=free)):
                 try:
                     REAL_GATE(source, live, 'new', 'sha2', state, state_path)
@@ -350,7 +353,7 @@ class AutomaticUpdateTests(unittest.TestCase):
             return dict(commands=commands, script_calls=len(calls), calls=calls, state=state, raised=raised, receipt=receipt,
                         candidate_left=(source / '.runtime/hermes').exists(),
                         runtime_left=any((source / '.runtime' / name).exists() for name in update.HERMES_GATE_FOLDERS),
-                        other_left=(source / '.runtime/ssh/key').exists())
+                        other_left=(source / '.runtime/ssh/key').exists(), stopped=stopped, runtime=source / '.runtime/hermes')
 
     def test_a_new_hermes_pin_is_checked_before_the_live_install(self):
         # The folder already has the new pin, so only the cleanup after the checks can remove it.
@@ -393,10 +396,14 @@ class AutomaticUpdateTests(unittest.TestCase):
     def test_a_timed_out_check_fails_and_names_the_timeout(self):
         # The timeout stops the check script before it writes its result, so the gate writes one.
         result = self.gate_case(checks_pass=True, installed='new', checks=lambda command, **kwargs: (None, 'partial log'))
-        self.assertIn('native upgrade checks failed', str(result['raised']))
+        self.assertIn('timed out', str(result['raised']))
         self.assertIn('partial log', result['receipt']['output'])
         self.assertIn('ran longer than', result['receipt']['output'])
         self.assertFalse(result['receipt']['passed'])
+        # A timeout is inconclusive, so it does not keep the pin as failed for a day.
+        self.assertNotIn('hermes_checks', result['state'])
+        # The leftover check programs stop before the gate removes the candidate runtime.
+        self.assertEqual(result['stopped'], [result['runtime']])
 
     def test_the_check_script_gets_the_candidate_runtime_and_the_live_credentials(self):
         result = self.gate_case(checks_pass=True)

@@ -22,8 +22,9 @@ from urllib.parse import urlsplit
 # After a failed install of a commit, the updater waits this long before it tries the same commit again.
 FAILED_DEPLOY_SECONDS = 10 * 60
 FAILED_DEPLOY_MAX_SECONDS = 60 * 60
-# scripts/check_hermes_candidate.py bounds each of its programs. This budget covers all of them.
-HERMES_CHECKS_SECONDS = 80 * 60
+# scripts/check_hermes_candidate.py bounds each of its programs at 75 minutes in total, and adds lsof and git calls.
+# A timeout is inconclusive: the gate backs off, but it does not keep the pin as failed.
+HERMES_CHECKS_SECONDS = 2 * 60 * 60
 # The candidate install peaks at about 2.6 GB, and the live install then adds a runtime of about 1.3 GB.
 # A full disk stops the service's database writes, so the gate installs nothing below this free space.
 HERMES_CANDIDATE_FREE_BYTES = 8 * 1024 ** 3
@@ -350,7 +351,7 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
                   f'{free / 1024 ** 3:.1f} GiB is free. Nothing was installed. The next pass after the backoff checks again.')
         save(receipt, dict(revision=revision, passed=False, checked_at=time.time(), output=output))
         raise RuntimeError(output)
-    passed, output, recorded = False, '', False
+    passed, output, recorded, timed_out = False, '', False, False
     # scripts/check_hermes_candidate.py writes its own result here. The gate writes one when the script wrote none.
     receipt.unlink(missing_ok=True)
     try:
@@ -363,7 +364,12 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         code, output = run_bounded([sys.executable, str(source / 'scripts/check_hermes_candidate.py'),
                                     '--runtime', str(source / '.runtime/hermes'), '--host-data', str(live / '.runtime/host'),
                                     '--output', str(receipt)], cwd=source, timeout=HERMES_CHECKS_SECONDS)
+        # Each check program runs in its own session with the model keys. A timeout kills the check script before its
+        # own cleanup, so stop what still uses the candidate runtime.
+        with contextlib.suppress(Exception):
+            module(source, 'check_hermes_candidate').stop_leftovers(source / '.runtime/hermes')
         if code is None:
+            timed_out = True
             output += f'\nThe checks ran longer than {HERMES_CHECKS_SECONDS} seconds.'
         with contextlib.suppress(OSError, ValueError, AttributeError):
             result = json.loads(receipt.read_text())
@@ -378,6 +384,9 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
             save(receipt, dict(revision=revision, passed=False, checked_at=time.time(), output=output[-20000:]))
         # The live install builds its own runtime. Free the candidate and the install caches.
         clear_gate_folders(source)
+    if timed_out:
+        raise RuntimeError(f'The native upgrade checks for Hermes {revision[:12]} timed out. Read {receipt}. '
+                           'The next pass after the backoff runs them again.')
     state['hermes_checks'] = dict(revision=revision, sha=sha, passed=passed, checked_at=time.time())
     save(state_path, state)
     if not passed:
