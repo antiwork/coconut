@@ -2492,7 +2492,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         row = self.db.execute('SELECT content FROM artifact_content WHERE id=?', (artifact['id'],)).fetchone()
         if row:
             return bytes(row[0])
-        return base64.b64decode(artifact['_content_base64']) if artifact.get('_content_base64') else None
+        try:
+            return base64.b64decode(artifact['_content_base64']) if artifact.get('_content_base64') else None
+        except ValueError:
+            # A damaged inline value is not content. The download then falls back to the artifact file.
+            return None
 
     def artifact_base64(self, artifact_id: str) -> str | None:
         content = self.artifact_bytes(self._get('artifacts', artifact_id))
