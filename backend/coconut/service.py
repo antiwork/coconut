@@ -105,6 +105,14 @@ from .decision_freshness import DecisionFreshness
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
+# The statements of Service._refresh_bot. Each needs an index and no sort. A test reads the plan of each one.
+BOT_TASK_STATES = ("SELECT DISTINCT json_extract(data,'$.status') FROM tasks WHERE json_extract(data,'$.bot_id')=? "
+                   "AND json_extract(data,'$.status') IN ('working','needs_you','scheduled')")
+BOT_LATEST_TASK = "SELECT json_extract(data,'$.status') FROM tasks WHERE json_extract(data,'$.bot_id')=? ORDER BY rowid DESC LIMIT 1"
+BOT_WORKING_CONTEXT = ("SELECT 1 FROM contexts WHERE json_extract(data,'$.status')='working' "
+                       "AND json_extract(data,'$.bot_id')=? LIMIT 1")
+
+
 class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
@@ -684,16 +692,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         the record, and a restart starts without it, so the first refresh of each bot publishes.
         """
         bot = self._get('bots', bot_id)
-        states = {row[0] for row in self.db.execute(
-            "SELECT DISTINCT json_extract(data,'$.status') FROM tasks WHERE json_extract(data,'$.bot_id')=? "
-            "AND json_extract(data,'$.status') IN ('working','needs_you','scheduled')", (bot_id,))}
+        states = {row[0] for row in self.db.execute(BOT_TASK_STATES, (bot_id,))}
         # The latest task of the bot decides whether a failure still shows.
-        latest = self.db.execute("SELECT json_extract(data,'$.status') FROM tasks WHERE json_extract(data,'$.bot_id')=? "
-                                 'ORDER BY rowid DESC LIMIT 1', (bot_id,)).fetchone()
+        latest = self.db.execute(BOT_LATEST_TASK, (bot_id,)).fetchone()
         if latest and latest[0] == 'failed':
             states.add('failed')
-        answering = self.db.execute("SELECT 1 FROM contexts WHERE json_extract(data,'$.status')='working' "
-                                    "AND json_extract(data,'$.bot_id')=? LIMIT 1", (bot_id,)).fetchone()
+        answering = self.db.execute(BOT_WORKING_CONTEXT, (bot_id,)).fetchone()
         status = 'working' if answering else next((s for s in ('needs_you', 'working', 'scheduled', 'failed') if s in states), 'idle')
         if bot.get('status') != status:
             bot['status'] = status
@@ -1343,8 +1347,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         bot[field] = data[field]
                 self._sync_profile(bot)
                 self._put('bots', bot)
-                self._event('bot.updated', bot, bot['id'])
-                # The next refresh publishes only what this event did not say.
+                # Publish the public row, as _refresh_bot does, so that the record and the event agree by construction.
+                self._event('bot.updated', self._public(bot), bot['id'])
                 self._note_published(bot['id'], encoded(self._public(bot)))
                 self._event('settings.updated', {'bot_id': bot['id']}, bot['id'])
                 return self._bot_view(bot, self._request_model_catalog)

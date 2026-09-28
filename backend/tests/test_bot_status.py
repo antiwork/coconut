@@ -138,14 +138,10 @@ class BotStatusTests(unittest.TestCase):
         self.assertEqual(self.events(bot['id'])[before:], ['working'])
 
     def test_the_queries_use_indexes_and_no_sort(self):
-        queries = {
-            'states': ("SELECT DISTINCT json_extract(data,'$.status') FROM tasks WHERE json_extract(data,'$.bot_id')=? "
-                       "AND json_extract(data,'$.status') IN ('working','needs_you','scheduled')", 'tasks_bot_status'),
-            'latest': ("SELECT json_extract(data,'$.status') FROM tasks WHERE json_extract(data,'$.bot_id')=? "
-                       'ORDER BY rowid DESC LIMIT 1', 'tasks_bot'),
-            'answering': ("SELECT 1 FROM contexts WHERE json_extract(data,'$.status')='working' "
-                          "AND json_extract(data,'$.bot_id')=? LIMIT 1", 'contexts_status'),
-        }
+        from coconut import service
+        # The statements that _refresh_bot runs, not copies of them.
+        queries = {'states': (service.BOT_TASK_STATES, 'tasks_bot_status'), 'latest': (service.BOT_LATEST_TASK, 'tasks_bot'),
+                   'answering': (service.BOT_WORKING_CONTEXT, 'contexts_status')}
         for name, (statement, index) in queries.items():
             plan = ' | '.join(row[3] for row in self.service.db.execute('EXPLAIN QUERY PLAN ' + statement, ('x',)))
             self.assertIn(index, plan, (name, plan))
