@@ -132,7 +132,7 @@ Retirement keeps work only while it can resume. Coconut discards the worktree of
 - Retirement refuses the worktree, and the disk has less than 20 GiB free (`LOW_DISK_BYTES`). The pass then runs
   every 10 minutes.
 
-A discard keeps the branch, and an archive in `workspaces/archive/done/` with the patches and the untracked files that
+A discard keeps the branch, a ref `refs/coconut/discarded/<identity>/<n>` for each HEAD, also a detached one, and an archive in `workspaces/archive/done/` with the patches and the untracked files that
 fit in 200 MB. Ignored files and nested worktrees go without an archive. Only a locked worktree, or a process that is
 not an old orphan, keeps the worktree. A later turn gets a new checkout of the saved branch. The archives follow the
 30-day and 2 GiB rules of the nested archives.

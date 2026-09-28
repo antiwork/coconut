@@ -926,7 +926,7 @@ def discard(root, identity, finished, *, orphan_age=None):
 
     Coconut calls this when the pull requests of the outcome all merged or closed, when the checkout is gone, and when
     retirement cannot archive an idle worktree exactly (see worktree_retirement.DISCARD_IDLE_SECONDS). The branch keeps
-    the commits. The archive in archive/done/ keeps the staged and unstaged patches, and the untracked files when they
+    the commits, and refs/coconut/discarded/<identity>/ keeps each HEAD, also a detached one. The archive in archive/done/ keeps the staged and unstaged patches, and the untracked files when they
     fit in UNTRACKED_LIMIT_BYTES. Ignored files, such as build output and logs, and nested worktrees go without an
     archive. A branch switch does not keep the worktree. An old orphaned process in the worktree stops, even when its
     environment does not name the outcome. A locked worktree and another process keep the worktree.
@@ -968,6 +968,9 @@ def discard(root, identity, finished, *, orphan_age=None):
             directory = root / 'archive' / 'done'
             directory.mkdir(parents=True, mode=0o700, exist_ok=True)
             archive = directory / (identity + '.tar.gz')
+            if archive.exists():
+                # An earlier discard of the same worktree kept other work. Do not write over it.
+                archive = directory / (identity + '-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ') + '.tar.gz')
             temporary = directory / ('.' + archive.name + '.tmp')
             try:
                 write_archive(temporary, dict(branch=branch, head=head, outcome=before['outcome'],
@@ -988,16 +991,29 @@ def discard(root, identity, finished, *, orphan_age=None):
         if present:
             if in_use(path):
                 raise ValueError('A process uses the worktree.')
+            # A detached HEAD, a rebase in progress, or a nested worktree can hold commits that no branch holds.
+            # A ref keeps each HEAD, so the removal loses no commit.
+            keep_heads(repository, identity, [path, *(r['path'] for r in nested(path.resolve(), registered(repository)))])
             # The removal deletes the files of nested worktrees too. The prune then drops their Git records.
             git(repository, 'worktree', 'remove', '--force', str(path), timeout=CHECKOUT_SECONDS)
         with contextlib.suppress(*GIT_ERRORS):
             git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
         binding.pop('retire_failed', None)
+        # An earlier failed removal kept a retire archive for this binding. Nothing names it now.
+        drop_other_archives(root / 'archive', identity, None, saved)
         binding['branch'] = branch
         binding['retired'] = dict(at=stamp(datetime.now(timezone.utc)), done=True, head=head,
                                   archive=str(archive) if archive else None)
         save_bindings(manifest, saved)
     return True
+
+
+def keep_heads(repository, identity, paths):
+    """Point refs/coconut/discarded/<identity>/<n> at the HEAD of each checkout, before Coconut removes them."""
+    for index, path in enumerate(paths):
+        with contextlib.suppress(*GIT_ERRORS):
+            head = git(path, 'rev-parse', '--verify', 'HEAD')
+            git(repository, 'update-ref', f'refs/coconut/discarded/{identity}/{index}', head)
 
 
 def clear_scratch(folder, *, keep=True):
@@ -1360,7 +1376,14 @@ def restore(binding, checked, *, retry_duplicates=False):
             git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
         with contextlib.suppress(FileNotFoundError, OSError):
             path.rmdir()
-        git(repository, 'worktree', 'add', '-q', str(path), binding['branch'], timeout=CHECKOUT_SECONDS)
+        try:
+            git(repository, 'worktree', 'add', '-q', str(path), binding['branch'], timeout=CHECKOUT_SECONDS)
+        except BaseException as error:
+            # An interrupted add can leave a registered partial checkout. Remove it, so the next turn tries again.
+            discard_checkout(repository, path)
+            if isinstance(error, RESTORE_ERRORS):
+                raise ValueError(f'Coconut could not check out {binding["branch"]} again: {error}') from None
+            raise
         binding.pop('retired')
         validate_binding(binding)
         return
