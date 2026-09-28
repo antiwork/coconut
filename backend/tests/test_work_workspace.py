@@ -211,12 +211,13 @@ class RecoveryWorkspaceTests(unittest.TestCase):
 
 
 class WorkspaceToolTextTests(unittest.TestCase):
-    # This guard needs no Git repository or Hermes runtime, so it runs in every test job.
+    # This guard needs no Git repository or Hermes runtime. The contracts job runs it too.
     def test_the_workspace_tool_tells_bots_to_rename_the_branch(self):
         from coconut.work_workspace import SCHEMA
         # A branch switch stops the work item, and a rename keeps it. The tool must say so to every bot.
         self.assertIn('git branch -m', SCHEMA['description'])
         self.assertIn('git switch', SCHEMA['description'])
+        self.assertIn('without a branch', SCHEMA['description'])
 
 if __name__ == '__main__':
     unittest.main()

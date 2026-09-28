@@ -797,7 +797,18 @@ def retire(root, identity, finished, *, orphan_age=None):
     failed = (before.get('retire_failed') or {}).get('at')
     if failed and datetime.now(timezone.utc) - datetime.fromisoformat(failed.replace('Z', '+00:00')) < RETRY_AFTER:
         return None
-    path = validate_binding(dict(before)).resolve()
+    checked = dict(before)
+    path = validate_binding(checked, allow_rename=True).resolve()
+    if checked['branch'] != before['branch']:
+        # A bot renamed the branch in its last turn, as coconut_workspace asks. Save the new name first,
+        # so the checks below and the archive use it.
+        with (root / '.workspace.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            saved = json.loads(manifest.read_text())
+            if saved.get(identity) != before:
+                raise ValueError('The workspace binding changed during retirement.')
+            saved[identity] = before = dict(before, branch=checked['branch'], _head_log=checked['_head_log'])
+            save_bindings(manifest, saved)
     repository = Path(before['repository'])
     check_git(path, before, repository, allow_nested=True)
     if nested(path, registered(repository)):
@@ -1331,8 +1342,9 @@ SCHEMA = {'name': 'coconut_workspace', 'description':
     'When continuing earlier changes, pass their existing_worktree to retain their branch and files. '
     'Use the returned path as cwd for all commands. Use OrbStack for isolated test services when needed. '
     'To name a PR branch, rename the worktree branch with git branch -m <name>. Do not create or switch branches '
-    'in the worktree with git checkout -b, git checkout <branch>, or git switch: Coconut then stops this work item '
-    'until a person recovers the checkout. '
+    'in the worktree with git checkout -b, git checkout <branch>, or git switch, and do not check out a commit '
+    'without a branch: Coconut then stops this work item until a person recovers the checkout. To test another '
+    'commit, add a separate worktree for it. '
     'This routine setup does not require a decision card. It does not push, merge, or deploy.',
     'parameters': {'type': 'object', 'properties': {
         'repository': {'type': 'string'}, 'existing_worktree': {'type': 'string'}}, 'required': ['repository']}}
