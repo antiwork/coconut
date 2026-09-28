@@ -281,6 +281,18 @@ def release_ios(config, state, state_path):
     save(state_path, state)
 
 
+# The launch agent that runs the installed service. scripts/host.py installs it.
+SERVICE_LABEL = 'local.coconut.agent'
+
+
+def service_supervised():
+    """Return True when launchd has the service's launch agent loaded, so launchd restarts the service."""
+    try:
+        return subprocess.run(['launchctl', 'list', SERVICE_LABEL], capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+
+
 def update(config, state_path):
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
     processed_build = state.get('pending_ios', {}).get('build')
@@ -302,9 +314,10 @@ def update(config, state_path):
     run(['git', 'fetch', 'origin', 'main'], cwd=source)
     sha = run(['git', 'rev-parse', 'origin/main'], cwd=source)
     failed = state.get('failed_deploy') or {}
-    if failed.get('source_sha') == sha and time.time() < failed.get('retry_at', 0):
+    if failed.get('source_sha') == sha and time.time() < failed.get('retry_at', 0) and service_supervised():
         # Each failed attempt stops and restarts the service. Wait before the next install of the same commit.
-        # launchd keeps the restored service running meanwhile, and the next install runs recovery first.
+        # launchd keeps the restored service running meanwhile. When a failed rollback left the launch agent
+        # unloaded, nothing restarts the service, so the install runs now: it recovers from the journal first.
         # A TestFlight archive uses its own checkout, so it does not wait for the backoff.
         if state.get('pending_ios') and not processed_build and config.get('release_helper'):
             try:

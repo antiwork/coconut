@@ -177,14 +177,17 @@ class AutomaticUpdateTests(unittest.TestCase):
                 attempt(1000)
             failed = json.loads(state_path.read_text())['failed_deploy']
             self.assertEqual((failed['source_sha'], failed['attempts'], failed['retry_at']), ('first', 1, 1000 + update.FAILED_DEPLOY_SECONDS))
-            # The same commit waits, so the service does not restart again.
-            attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
+            # The same commit waits while launchd supervises the service, so the service does not restart again.
+            with patch.object(update, 'service_supervised', return_value=True):
+                attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
             self.assertEqual(received, ['first'])
-            # After the wait ends, the same commit is tried again, and a second failure doubles the wait.
-            with self.assertRaises(RuntimeError):
-                attempt(1000 + update.FAILED_DEPLOY_SECONDS)
+            # Without a loaded launch agent nothing restarts the service, so the installer runs at once to recover.
+            with patch.object(update, 'service_supervised', return_value=False), self.assertRaises(RuntimeError):
+                attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
+            self.assertEqual(received, ['first', 'first'])
+            # A third failure doubles the wait again.
             failed = json.loads(state_path.read_text())['failed_deploy']
-            self.assertEqual((failed['attempts'], failed['retry_at']), (2, 1000 + 3 * update.FAILED_DEPLOY_SECONDS))
+            self.assertEqual((failed['attempts'], failed['retry_at']), (2, 1000 + 3 * update.FAILED_DEPLOY_SECONDS - 1))
             retry_at = failed['retry_at']
             # A new merged commit deploys at once, and success clears the backoff.
             head[0], outcome[0] = 'second', 'ok'
@@ -210,6 +213,7 @@ class AutomaticUpdateTests(unittest.TestCase):
                 return ''
             config = dict(repository='owner/repo', source=str(source), live=str(live), release_helper='helper')
             with patch.object(update, 'run', side_effect=command), patch.object(update, 'release_ios') as release, \
+                    patch.object(update, 'service_supervised', return_value=True), \
                     patch.object(update.time, 'time', return_value=1000):
                 update.update(config, state_path)
             release.assert_called_once()
