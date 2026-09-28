@@ -116,6 +116,18 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(git(restored['path'], 'branch', '--show-current'), 'gianfranco/published-name')
         self.assertEqual((Path(restored['path']) / 'draft.txt').read_text(), 'keep\n')
 
+    def test_a_branch_switch_or_detached_checkout_is_not_retired(self):
+        # Only a rename keeps the work item. Retirement must refuse a switch before it archives or removes files.
+        for change in (lambda path: git(path, 'checkout', '-q', '-b', 'other-branch'),
+                       lambda path: git(path, 'checkout', '-q', '--detach')):
+            with self.subTest(change=change):
+                _, identity, path, _ = self.outcome()
+                (path / 'draft.txt').write_text('keep\n')
+                change(path)
+                self.assertEqual(self.retire(), [])
+                self.assertNotIn('retired', self.registry()[identity])
+                self.assertEqual((path / 'draft.txt').read_text(), 'keep\n')
+
     def test_finished_idle_worktree_is_archived_removed_and_restored_with_its_changes(self):
         outcome, identity, path, _ = self.outcome()
         (path / 'committed.txt').write_text('in a commit\n')
