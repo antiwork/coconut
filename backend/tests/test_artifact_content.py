@@ -56,6 +56,19 @@ class ArtifactContentTests(unittest.TestCase):
         self.assertNotIn('_content_base64', row)
         self.assertEqual(reopened.artifact_content(artifact['id'])[0], b'attached bytes')
 
+    def test_a_damaged_inline_value_does_not_stop_the_start(self):
+        artifact = self.upload()
+        with self.service.transaction():
+            row = self.service._get('artifacts', artifact['id'])
+            row['_content_base64'] = 'not valid base64 ###'
+            self.service._put('artifacts', row)
+            self.service.db.execute('DELETE FROM artifact_content WHERE id=?', (artifact['id'],))
+        self.close(self.service)
+        with self.assertLogs('coconut.service', 'WARNING') as logs:
+            reopened = self.open()
+        self.assertTrue(any('not valid base64' in line for line in logs.output))
+        self.assertEqual(reopened._get('artifacts', artifact['id'])['_content_base64'], 'not valid base64 ###')
+
     def test_an_artifact_without_bytes_falls_back_to_its_file(self):
         content = b'a file on the Mac'
         (self.service.files).mkdir(parents=True, exist_ok=True)

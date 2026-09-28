@@ -2505,7 +2505,13 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         ids = [row[0] for row in self.db.execute("SELECT id FROM artifacts WHERE json_type(data,'$._content_base64')='text'")]
         for artifact_id in ids:
             encoded = self.db.execute("SELECT json_extract(data,'$._content_base64') FROM artifacts WHERE id=?", (artifact_id,)).fetchone()[0]
-            self.store_artifact_content(artifact_id, base64.b64decode(encoded))
+            try:
+                content = base64.b64decode(encoded)
+            except ValueError:
+                # One damaged value must not stop the service. Its row keeps the inline value, and only its download fails.
+                logging.getLogger(__name__).warning('Coconut left the inline bytes of artifact %s: they are not valid base64.', artifact_id)
+                continue
+            self.store_artifact_content(artifact_id, content)
             self.db.execute("UPDATE artifacts SET data=json_remove(data,'$._content_base64') WHERE id=?", (artifact_id,))
 
     def artifact_content(self, artifact_id: str) -> tuple[bytes, str]:
