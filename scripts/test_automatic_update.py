@@ -483,7 +483,12 @@ class AutomaticUpdateTests(unittest.TestCase):
 
     def test_a_malformed_check_report_fails_the_gate(self):
         result = self.gate_case(checks_pass=True, installed='new', result_text='{"passed": tr')
-        self.assertIn('native upgrade checks failed', str(result['raised']))
+        self.assertIn('did not finish', str(result['raised']))
+        self.assertNotIn('hermes_checks', result['state'])
+        # A script that exits before it writes a result is a setup problem too.
+        result = self.gate_case(checks_pass=True, checks=lambda command, **kwargs: (1, 'Traceback: import failed'))
+        self.assertIn('did not finish', str(result['raised']))
+        self.assertIn('import failed', result['receipt']['output'])
         self.assertFalse(result['receipt']['passed'])
 
     def test_a_failed_health_check_after_install_backs_off(self):

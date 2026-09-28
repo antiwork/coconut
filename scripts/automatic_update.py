@@ -371,13 +371,16 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         if code is None:
             inconclusive = True
             output += f'\nThe checks ran longer than {HERMES_CHECKS_SECONDS} seconds.'
+        result = {}
         with contextlib.suppress(OSError, ValueError, AttributeError):
             result = json.loads(receipt.read_text())
             passed = code == 0 and result.get('passed') is True and result.get('hermes_sha') == revision
             recorded = True
-            # A setup error or missing model keys says nothing about the pin. Treat it like a timeout.
-            if not passed and (result.get('error') or not result.get('credentials') or not result.get('checks')):
-                inconclusive = True
+        # Only a complete result with model keys and a failed check is a verdict on the pin. A missing or broken
+        # result, missing keys, and a setup error are inconclusive, like a timeout.
+        if not passed and not (isinstance(result, dict) and result.get('checks') and result.get('credentials')
+                               and not result.get('error')):
+            inconclusive = True
     except BaseException as error:
         # The receipt is what Coconut Care reads. Name an unexpected error there too.
         output = output or f'The gate stopped: {type(error).__name__}: {str(error)[-5000:]}'
