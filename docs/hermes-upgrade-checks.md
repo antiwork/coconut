@@ -21,11 +21,45 @@ The latter two tests use model credentials already configured on the Mac.
 The script test checks native output, silence, failure, cancellation, and completion without model access.
 All four use disposable profiles. They do not use the user's bot conversations as fixtures.
 
-To test a candidate before installation, execute each script's `PROGRAM` with the candidate Python.
-For the routine and relay programs, provide the runtime root and the candidate Coconut checkout as arguments.
-For each entry in `test_native_profiles.PROGRAMS`, provide a root containing the candidate backend and `.runtime/hermes`.
-Run the candidate contract first. Load model credentials privately when a check requires them.
-Read each result and require its passing assertions. Keep evidence for both source and Hermes commit hashes.
+## Candidate checks
+
+Before you install a candidate runtime, run all four checks against it with one command:
+
+```sh
+python3 scripts/check_hermes_candidate.py --runtime /path/to/candidate --host-data ~/Coconut/.runtime/host
+```
+
+Run the command from the candidate Coconut checkout. The candidate folder holds the Hermes checkout in `source`.
+The script finds `venv/bin/python` or `source/.venv/bin/python`. Use `--python` for another interpreter.
+
+The script does these steps:
+
+1. It records the Coconut commit, the Coconut tree, and the Hermes commit.
+2. It stops if `backend` or `scripts` has uncommitted or untracked files, or if the Hermes checkout has local changes.
+3. It builds the root layout that the programs expect in a temporary folder below `checks` in the candidate folder.
+4. It runs the candidate contract, the concurrency check, and the Kanban check from `scripts/hermes.py check`.
+5. It runs the routine, script routine, relay, and profile programs without changes.
+6. It removes the temporary folder and checks that neither source changed.
+7. It writes one JSON result. The default path is `checks/results/<source_sha>-<hermes_sha>.json` in the candidate folder.
+
+The native profile of the checks stays in `terminal` in the candidate folder, because the model catalog keeps it beside the Hermes source.
+Every temporary folder stays inside the candidate folder. The installed runtime and the user's bots stay untouched.
+The script loads model keys with `host.load_credentials`. Only the relay and profile checks receive them.
+The result names the loaded keys. The result and the logs never contain their values.
+If a contract check fails, the script skips the native checks.
+
+The result has a `passed` value and one entry for each check: `contracts`, `routines`, `script_routines`, `relay`, and `profiles`.
+Each entry lists its programs with the exit code, the time, the result report, and the path of the full log.
+The exit code is 0 only when every check passes.
+
+### Native workers
+
+Do not run the candidate checks from a native Kanban worker or from a process that the worker starts.
+Hermes marks those processes with `HERMES_DELEGATED_CHILD_CONTEXT`. It then opens every board that `HERMES_KANBAN_DB` names as read-only.
+Coconut sets that variable for each board that it opens. Thus the disposable boards of the checks cannot initialize.
+The script finds the marker and stops before it runs a check. Do not remove the marker to continue.
+Queue the command with a service that runs outside the worker. Then read the result file.
+
 After installation, repeat the installed contract and native checks to catch invalid paths or retained state.
 
 Cache successful checks for unchanged hashes. Run them again after a source change, runtime change, or new failure.

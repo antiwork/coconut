@@ -46,6 +46,8 @@ jobs:
           done
       - name: Check automatic deployment and releases
         run: python -m unittest discover -s scripts -p test_automatic_update.py
+      - name: Check the candidate Hermes runner
+        run: python -m unittest discover -s scripts -p test_check_hermes_candidate.py
       - name: Check stale decision retirement
         env:
           PYTHONPATH: backend
