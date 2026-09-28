@@ -7,11 +7,13 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
+from urllib.parse import urlsplit
 
 
 # After a failed install of a commit, the updater waits this long before it tries the same commit again.
@@ -281,6 +283,16 @@ def release_ios(config, state, state_path):
     save(state_path, state)
 
 
+def service_answers(live):
+    """Return True when the installed service accepts a local connection."""
+    try:
+        port = urlsplit(json.loads((live / '.runtime/host/connection.json').read_text())['address']).port or 443
+        with socket.create_connection(('127.0.0.1', port), timeout=3):
+            return True
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def update(config, state_path):
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
     processed_build = state.get('pending_ios', {}).get('build')
@@ -302,8 +314,9 @@ def update(config, state_path):
     run(['git', 'fetch', 'origin', 'main'], cwd=source)
     sha = run(['git', 'rev-parse', 'origin/main'], cwd=source)
     failed = state.get('failed_deploy') or {}
-    if failed.get('source_sha') == sha and time.time() < failed.get('retry_at', 0):
+    if failed.get('source_sha') == sha and time.time() < failed.get('retry_at', 0) and service_answers(live):
         # Each failed attempt stops and restarts the service. Wait before the next attempt for the same commit.
+        # A stopped service does not wait: the installer's recovery step starts the previous source again.
         return
     reviewed_merge(repository, sha)
     run(['git', 'checkout', '--detach', sha], cwd=source)

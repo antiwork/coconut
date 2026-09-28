@@ -177,16 +177,21 @@ class AutomaticUpdateTests(unittest.TestCase):
                 attempt(1000)
             failed = json.loads(state_path.read_text())['failed_deploy']
             self.assertEqual((failed['source_sha'], failed['attempts'], failed['retry_at']), ('first', 1, 1000 + update.FAILED_DEPLOY_SECONDS))
-            # The same commit waits, so the service does not restart again.
-            attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
+            # The same commit waits while the service answers, so the service does not restart again.
+            with patch.object(update, 'service_answers', return_value=True):
+                attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
             self.assertEqual(received, ['first'])
+            # A stopped service does not wait: the installer recovers it.
+            with patch.object(update, 'service_answers', return_value=False), self.assertRaises(RuntimeError):
+                attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
+            self.assertEqual(received, ['first', 'first'])
             with self.assertRaises(RuntimeError):
                 attempt(1000 + update.FAILED_DEPLOY_SECONDS)
-            self.assertEqual(json.loads(state_path.read_text())['failed_deploy']['attempts'], 2)
+            self.assertEqual(json.loads(state_path.read_text())['failed_deploy']['attempts'], 3)
             # A new merged commit deploys at once, and success clears the backoff.
             head[0], outcome[0] = 'second', 'ok'
             attempt(1001 + update.FAILED_DEPLOY_SECONDS)
-            self.assertEqual(received, ['first', 'first', 'second'])
+            self.assertEqual(received, ['first', 'first', 'first', 'second'])
             saved = json.loads(state_path.read_text())
             self.assertNotIn('failed_deploy', saved)
             self.assertEqual(saved['source_sha'], 'second')
