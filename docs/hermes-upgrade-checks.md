@@ -75,7 +75,7 @@ The automatic updater runs the candidate checks itself before it installs a new 
 
 The live install starts only when the result passes for the pinned revision. The updater keeps a pass for that
 revision and source commit. After a failure, it runs the checks for that pin again after 24 hours, at any commit,
-and at once for a new pin, for example a revert. A timeout of the checks is not a failure: the updater stops the
+and at once for a new pin, for example a revert. A timeout, missing model keys, or a setup error of the checks is not a failure: the updater stops the
 leftover check processes, and it runs the checks again after its normal backoff. A Coconut bot cannot run these checks inside its own Hermes worker,
 so a pin pull request can merge on CI, Greptile, and review, and this gate protects the installation.
 

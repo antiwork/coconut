@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 FAILED_DEPLOY_SECONDS = 10 * 60
 FAILED_DEPLOY_MAX_SECONDS = 60 * 60
 # scripts/check_hermes_candidate.py bounds each of its programs at 75 minutes in total, and adds lsof and git calls.
-# A timeout is inconclusive: the gate backs off, but it does not keep the pin as failed.
+# A timeout or a setup error is inconclusive: the gate backs off, but it does not keep the pin as failed.
 HERMES_CHECKS_SECONDS = 2 * 60 * 60
 # The candidate install peaks at about 2.6 GB, and the live install then adds a runtime of about 1.3 GB.
 # A full disk stops the service's database writes, so the gate installs nothing below this free space.
@@ -351,7 +351,7 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
                   f'{free / 1024 ** 3:.1f} GiB is free. Nothing was installed. The next pass after the backoff checks again.')
         save(receipt, dict(revision=revision, passed=False, checked_at=time.time(), output=output))
         raise RuntimeError(output)
-    passed, output, recorded, timed_out = False, '', False, False
+    passed, output, recorded, inconclusive = False, '', False, False
     # scripts/check_hermes_candidate.py writes its own result here. The gate writes one when the script wrote none.
     receipt.unlink(missing_ok=True)
     try:
@@ -369,12 +369,15 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         with contextlib.suppress(Exception):
             module(source, 'check_hermes_candidate').stop_leftovers(source / '.runtime/hermes')
         if code is None:
-            timed_out = True
+            inconclusive = True
             output += f'\nThe checks ran longer than {HERMES_CHECKS_SECONDS} seconds.'
         with contextlib.suppress(OSError, ValueError, AttributeError):
             result = json.loads(receipt.read_text())
             passed = code == 0 and result.get('passed') is True and result.get('hermes_sha') == revision
             recorded = True
+            # A setup error or missing model keys says nothing about the pin. Treat it like a timeout.
+            if not passed and (result.get('error') or not result.get('credentials') or not result.get('checks')):
+                inconclusive = True
     except BaseException as error:
         # The receipt is what Coconut Care reads. Name an unexpected error there too.
         output = output or f'The gate stopped: {type(error).__name__}: {str(error)[-5000:]}'
@@ -384,9 +387,9 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
             save(receipt, dict(revision=revision, passed=False, checked_at=time.time(), output=output[-20000:]))
         # The live install builds its own runtime. Free the candidate and the install caches.
         clear_gate_folders(source)
-    if timed_out:
-        raise RuntimeError(f'The native upgrade checks for Hermes {revision[:12]} timed out. Read {receipt}. '
-                           'The next pass after the backoff runs them again.')
+    if inconclusive:
+        raise RuntimeError(f'The native upgrade checks for Hermes {revision[:12]} did not finish: they timed out, or their '
+                           f'setup failed. Read {receipt}. The next pass after the backoff runs them again.')
     state['hermes_checks'] = dict(revision=revision, sha=sha, passed=passed, checked_at=time.time())
     save(state_path, state)
     if not passed:

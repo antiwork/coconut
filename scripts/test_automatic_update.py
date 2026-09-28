@@ -325,7 +325,8 @@ class AutomaticUpdateTests(unittest.TestCase):
             def script(command, *, cwd, timeout):
                 # scripts/check_hermes_candidate.py writes its result to the --output path.
                 output = Path(command[command.index('--output') + 1])
-                output.write_text(result_text or json.dumps(dict(passed=checks_pass, hermes_sha='new')))
+                output.write_text(result_text or json.dumps(dict(passed=checks_pass, hermes_sha='new', credentials=['KEY'],
+                                                                 checks=dict(relay=dict(passed=checks_pass)))))
                 return (0 if checks_pass else 1), 'check log'
 
             def bounded(command, *, cwd, timeout):
@@ -396,7 +397,7 @@ class AutomaticUpdateTests(unittest.TestCase):
     def test_a_timed_out_check_fails_and_names_the_timeout(self):
         # The timeout stops the check script before it writes its result, so the gate writes one.
         result = self.gate_case(checks_pass=True, installed='new', checks=lambda command, **kwargs: (None, 'partial log'))
-        self.assertIn('timed out', str(result['raised']))
+        self.assertIn('did not finish', str(result['raised']))
         self.assertIn('partial log', result['receipt']['output'])
         self.assertIn('ran longer than', result['receipt']['output'])
         self.assertFalse(result['receipt']['passed'])
@@ -404,6 +405,13 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertNotIn('hermes_checks', result['state'])
         # The leftover check programs stop before the gate removes the candidate runtime.
         self.assertEqual(result['stopped'], [result['runtime']])
+
+    def test_a_setup_failure_does_not_keep_the_pin_as_failed(self):
+        for result_text in (json.dumps(dict(passed=False, hermes_sha='new', credentials=[], checks=dict(relay=dict(passed=False)))),
+                            json.dumps(dict(passed=False, hermes_sha='new', credentials=['KEY'], error='The source changed.'))):
+            result = self.gate_case(checks_pass=False, result_text=result_text)
+            self.assertIn('did not finish', str(result['raised']))
+            self.assertNotIn('hermes_checks', result['state'])
 
     def test_the_check_script_gets_the_candidate_runtime_and_the_live_credentials(self):
         result = self.gate_case(checks_pass=True)
@@ -413,7 +421,8 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertTrue(command[command.index('--host-data') + 1].endswith('live/.runtime/host'))
 
     def test_a_result_for_another_hermes_commit_fails_the_gate(self):
-        result = self.gate_case(checks_pass=True, result_text=json.dumps(dict(passed=True, hermes_sha='other')))
+        result = self.gate_case(checks_pass=True, result_text=json.dumps(dict(passed=True, hermes_sha='other', credentials=['KEY'],
+                                                                              checks=dict(relay=dict(passed=True)))))
         self.assertIn('native upgrade checks failed', str(result['raised']))
 
     def test_a_full_disk_stops_the_candidate_install(self):
