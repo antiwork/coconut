@@ -7,11 +7,13 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
+from urllib.parse import urlsplit
 
 
 # After a failed install of a commit, the updater waits this long before it tries the same commit again.
@@ -285,12 +287,24 @@ def release_ios(config, state, state_path):
 SERVICE_LABEL = 'local.coconut.agent'
 
 
-def service_supervised():
-    """Return True when launchd has the service's launch agent loaded, so launchd restarts the service."""
+def service_supervised(live):
+    """Return True when the service keeps running without the updater.
+
+    launchd restarts it when its launch agent is loaded in the user's GUI domain, as scripts/host.py installs it.
+    A service in manual mode runs without the agent, so an answering port also counts.
+    """
     try:
-        return subprocess.run(['launchctl', 'list', SERVICE_LABEL], capture_output=True, timeout=10).returncode == 0
+        if subprocess.run(['launchctl', 'print', f'gui/{os.getuid()}/{SERVICE_LABEL}'],
+                          capture_output=True, timeout=10).returncode == 0:
+            return True
     except (OSError, subprocess.TimeoutExpired):
         return True
+    try:
+        port = urlsplit(json.loads((live / '.runtime/host/connection.json').read_text())['address']).port or 443
+        with socket.create_connection(('127.0.0.1', port), timeout=3):
+            return True
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def update(config, state_path):
@@ -314,7 +328,7 @@ def update(config, state_path):
     run(['git', 'fetch', 'origin', 'main'], cwd=source)
     sha = run(['git', 'rev-parse', 'origin/main'], cwd=source)
     failed = state.get('failed_deploy') or {}
-    if failed.get('source_sha') == sha and time.time() < failed.get('retry_at', 0) and service_supervised():
+    if failed.get('source_sha') == sha and time.time() < failed.get('retry_at', 0) and service_supervised(live):
         # Each failed attempt stops and restarts the service. Wait before the next install of the same commit.
         # launchd keeps the restored service running meanwhile. When a failed rollback left the launch agent
         # unloaded, nothing restarts the service, so the install runs now: it recovers from the journal first.

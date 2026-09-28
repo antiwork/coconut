@@ -1,4 +1,6 @@
 import importlib.util
+import os
+import contextlib
 import json
 from pathlib import Path
 import subprocess
@@ -223,11 +225,21 @@ class AutomaticUpdateTests(unittest.TestCase):
         host = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(host)
         self.assertEqual(update.SERVICE_LABEL, host.LABEL)
-        with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as listing:
-            self.assertTrue(update.service_supervised())
-        self.assertEqual(listing.call_args.args[0], ['launchctl', 'list', host.LABEL])
-        with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=113)):
-            self.assertFalse(update.service_supervised())
+        with tempfile.TemporaryDirectory() as directory:
+            live = Path(directory)
+            (live / '.runtime/host').mkdir(parents=True)
+            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:1')))
+            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as listing:
+                self.assertTrue(update.service_supervised(live))
+            self.assertEqual(listing.call_args.args[0], ['launchctl', 'print', f'gui/{os.getuid()}/{host.LABEL}'])
+            # Without a loaded agent and without an answering port, nothing keeps the service running.
+            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=113)), \
+                    patch.object(update.socket, 'create_connection', side_effect=OSError):
+                self.assertFalse(update.service_supervised(live))
+            # A service in manual mode answers on its port without the agent.
+            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=113)), \
+                    patch.object(update.socket, 'create_connection', return_value=contextlib.nullcontext()):
+                self.assertTrue(update.service_supervised(live))
 
     def test_a_failed_health_check_after_install_backs_off(self):
         class DeployError(Exception):
