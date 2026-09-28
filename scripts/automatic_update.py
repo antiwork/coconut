@@ -333,6 +333,8 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
     A failure stops the checks for that revision and code for HERMES_FAILED_RETRY_SECONDS.
     """
     receipt = state_path.parent / 'hermes-checks.json'
+    # A run that was killed outside Python leaves its folders. Free them before any early return.
+    clear_gate_folders(source)
     tree = checked_code(source, sha)
     saved = state.get('hermes_checks') if isinstance(state.get('hermes_checks'), dict) else {}
     # The checks run backend and scripts of the checkout. A result counts for the pin and that code only, so a fix of
@@ -345,9 +347,11 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
                 and time.time() - checked_at < HERMES_FAILED_RETRY_SECONDS):
             raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}. '
                                'They run again after 24 hours, or at once for a new pin or a change of backend or scripts.')
-    # Each run removes its folders at the end. A run that was stopped part way left them. Free that space before
-    # the space check. hermes.py also refuses a runtime folder with another commit.
-    clear_gate_folders(source)
+    problem = gate_problem(source, live)
+    if problem:
+        # The install costs up to an hour and 2.6 GB. Check what the checks need first, and say what is missing.
+        save(receipt, dict(revision=revision, passed=False, checked_at=time.time(), output=problem))
+        raise RuntimeError(f'The native upgrade checks for Hermes {revision[:12]} cannot start: {problem}')
     free = shutil.disk_usage(source).free
     if free < HERMES_CANDIDATE_FREE_BYTES:
         output = (f'The candidate install needs {HERMES_CANDIDATE_FREE_BYTES // 1024 ** 3} GiB of free disk space, and '
@@ -400,6 +404,21 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
     save(state_path, state)
     if not passed:
         raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}.')
+
+
+def gate_problem(source, live):
+    """Return what stops the candidate checks before they start, or None. The checks need model keys and clean code."""
+    try:
+        keys = json.loads((live / '.runtime/host/credentials.json').read_text())
+    except (OSError, ValueError):
+        keys = None
+    if not isinstance(keys, dict) or not any(isinstance(value, str) and value for value in keys.values()):
+        return 'The installed service has no model keys in .runtime/host/credentials.json.'
+    listing = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=all', '--', 'backend', 'scripts'],
+                             cwd=source, capture_output=True, text=True, timeout=60)
+    if listing.returncode == 0 and listing.stdout.strip():
+        return 'The updater checkout has changed or untracked files in backend or scripts: ' + listing.stdout.strip()[:1000]
+    return None
 
 
 def checked_code(source, sha):

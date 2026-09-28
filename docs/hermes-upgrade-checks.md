@@ -67,7 +67,8 @@ Queue the command with a service that runs outside the worker. Then read the res
 The automatic updater runs the candidate checks itself before it installs a new Hermes pin from `main`:
 
 1. It recovers a pending update journal with `scripts/deploy.py recover`, which installs no package.
-2. It needs 8 GiB of free disk space.
+2. It needs 8 GiB of free disk space, model keys in the installed service, and unchanged files in `backend` and
+   `scripts`. It checks these before the install, and it saves what is missing in `hermes-checks.json`.
 3. It installs the pinned revision in its own checkout with `scripts/hermes.py install`.
 4. It runs `scripts/check_hermes_candidate.py` against that runtime, with the model keys of the installed service.
    The result goes to `hermes-checks.json` next to the updater state.

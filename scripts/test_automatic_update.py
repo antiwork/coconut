@@ -16,6 +16,7 @@ spec = importlib.util.spec_from_file_location('automatic_update', Path(__file__)
 update = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(update)
 REAL_GATE = update.check_hermes_candidate
+REAL_PROBLEM = update.gate_problem
 
 
 def saved_result(result):
@@ -303,8 +304,9 @@ class AutomaticUpdateTests(unittest.TestCase):
                 self.assertTrue(update.service_supervised(live))
 
     def gate_case(self, *, checks_pass, cached=None, install=None, installed='old', result_text=None, checks=None,
-                  free=update.HERMES_CANDIDATE_FREE_BYTES):
+                  free=update.HERMES_CANDIDATE_FREE_BYTES, keys=None, problem=False):
         """Run check_hermes_candidate for a new pin. Return the run commands and the saved state."""
+        keys = {'ANTHROPIC_API_KEY': 'k'} if keys is None else keys
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             source, live = root / 'source', root / 'live'
@@ -313,7 +315,9 @@ class AutomaticUpdateTests(unittest.TestCase):
             # Other project scripts keep private data in .runtime, for example remote.py its deploy key.
             (source / '.runtime/ssh').mkdir()
             (source / '.runtime/ssh/key').write_text('private')
-            live.mkdir()
+            (live / '.runtime/host').mkdir(parents=True)
+            if keys:
+                (live / '.runtime/host/credentials.json').write_text(json.dumps(keys))
             state_path = root / 'state.json'
             state = dict(hermes_checks=cached) if cached else {}
             commands, calls = [], []
@@ -344,6 +348,8 @@ class AutomaticUpdateTests(unittest.TestCase):
             with patch.object(update, 'run', side_effect=AssertionError('The gate runs its commands through run_bounded.')), \
                     patch.object(update, 'run_bounded', side_effect=bounded), \
                     patch.object(update, 'module', return_value=leftovers), \
+                    patch.object(update, 'gate_problem', side_effect=lambda source, live: (
+                        problem if isinstance(problem, str) else REAL_PROBLEM(source, live))), \
                     patch.object(update.shutil, 'disk_usage', return_value=SimpleNamespace(free=free)):
                 try:
                     REAL_GATE(source, live, 'new', 'sha2', state, state_path)
@@ -412,6 +418,20 @@ class AutomaticUpdateTests(unittest.TestCase):
             result = self.gate_case(checks_pass=False, result_text=result_text)
             self.assertIn('did not finish', str(result['raised']))
             self.assertNotIn('hermes_checks', result['state'])
+
+    def test_missing_keys_or_changed_code_stop_the_gate_before_the_install(self):
+        result = self.gate_case(checks_pass=True, keys={})
+        self.assertIn('cannot start', str(result['raised']))
+        self.assertIn('no model keys', result['receipt']['output'])
+        self.assertEqual((result['commands'], result['script_calls']), ([], 0))
+        result = self.gate_case(checks_pass=True, problem='The updater checkout has changed or untracked files in backend or scripts: ?? backend/x.py')
+        self.assertIn('cannot start', str(result['raised']))
+        self.assertEqual(result['commands'], [])
+
+    def test_a_cached_pass_still_frees_the_folders_of_a_killed_run(self):
+        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha2', code='sha2', passed=True))
+        self.assertIsNone(result['raised'])
+        self.assertFalse(result['runtime_left'])
 
     def test_the_check_script_gets_the_candidate_runtime_and_the_live_credentials(self):
         result = self.gate_case(checks_pass=True)
