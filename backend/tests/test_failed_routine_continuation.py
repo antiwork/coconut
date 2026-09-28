@@ -1,5 +1,7 @@
 """Failed occurrences require both native outcome and authenticated continuation."""
 import copy
+import json
+import threading
 from contextlib import contextmanager
 from types import SimpleNamespace
 import unittest
@@ -38,6 +40,76 @@ class FailedRoutineContinuationTests(unittest.TestCase):
         owner['_native_job_finished'] = True
         self.service._put('tasks', owner)
         return owner, source
+
+    def reconcile_before_continuation(self, after_native_finish):
+        from coconut.service import ServiceError
+        native = FailedClaimTests()
+        native.setUp()
+        self.addCleanup(native.doCleanups)
+        owner, source = self.occurrence(native.job)
+        owner['_native_job_finished'] = False
+        self.service._put('tasks', owner)
+        entered, release = threading.Event(), threading.Event()
+        errors, finishes = [], []
+
+        def settings(operation, bots, **arguments):
+            self.assertEqual(operation, 'routine_finish')
+            finishes.append(arguments)
+            def finish():
+                return receipts.finish(native.home, arguments['native_id'], native,
+                    owner=arguments['owner'], success=arguments['success'],
+                    output=arguments['output'], failure=arguments['failure'])
+            result = finish() if after_native_finish else None
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError('Continuation did not release reconciliation')
+            return result if after_native_finish else finish()
+
+        self.service.provider.native_settings = settings
+        self.service.refresh_native_routines = lambda: None
+        def tick():
+            try:
+                self.service.tick_native_routines()
+            except BaseException as error:
+                errors.append(error)
+        worker = threading.Thread(target=tick)
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(5))
+            with self.assertRaisesRegex(ServiceError, 'original routine occurrence'):
+                self.resume(source)
+            self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        finally:
+            release.set()
+            worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertFalse(self.service._native_cron_error)
+        closed = self.service._get('tasks', owner['id'])
+        self.assertTrue(closed['_native_job_finished'])
+        self.assertEqual(closed['status'], 'failed')
+        self.resume(source)
+        continued = self.service._get('tasks', owner['id'])
+        proof = self.service.native_routine_completion_input(continued)
+        bridge = NativeBridge({'task': dict(continued, _native_job_completion=proof)}, None, None)
+        self.assertEqual(native.run_tool(bridge), 'executed')
+        with self.service.transaction():
+            continued['status'] = 'working'
+            self.service._put('tasks', continued)
+        self.service.emit(owner['id'], 'completed', dict(summary='Recovery succeeded.'))
+        self.service._native_cron_next = 0
+        self.service.tick_native_routines()
+        self.assertEqual(len(finishes), 1)
+        self.assertFalse(finishes[0]['success'])
+        self.assertEqual(native.job['_coconut_completion'], dict(job_id='job', owner='owner', success=False))
+        self.assertEqual(native.job['repeat']['completed'], 1)
+        self.assertEqual(native.outputs, ['Original occurrence failed.'])
+
+    def test_continuation_waits_for_captured_failure_to_reach_native_finish(self):
+        self.reconcile_before_continuation(after_native_finish=False)
+
+    def test_continuation_waits_for_native_failure_to_commit_locally(self):
+        self.reconcile_before_continuation(after_native_finish=True)
 
     def test_authenticated_requester_retains_failed_outcome_and_execution(self):
         owner, source = self.occurrence()
@@ -219,6 +291,183 @@ class FailedClaimTests(unittest.TestCase):
             with receipts.receipt_path(self.home, 'job').with_suffix('.lock').open('a') as handle:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def reserve_during_service_claim(self, manual):
+        import fcntl
+        from coconut.providers import FixtureProvider
+        from coconut.service import Service, ServiceError
+        from uuid import uuid4
+        bridge = self.failed()
+        service = Service(self.home / 'service', FixtureProvider(self.home / 'service'), start_workers=False)
+        self.addCleanup(service.close)
+        bot = service.mutate('POST', '/v1/bots', {'name': 'Routine'}, str(uuid4()))
+        task = service.mutate('POST', '/v1/bots/' + bot['id'] + '/messages', {'text': 'Continue'}, str(uuid4()))
+        task = service._get('tasks', task['id'])
+        task.update(bridge.request['task'], id=task['id'], status='working', routine_id='routine')
+        task['_native_job_completion']['continuation']['task_id'] = task['id']
+        service._put('tasks', task)
+        bridge.request['task'] = task
+        routine = dict(id='routine', bot_id=bot['id'], name='Next occurrence', enabled=True,
+                       _native_id='job', next_run_at='2000-01-01T00:00:00Z')
+        service._put('routines', routine)
+        service.refresh_native_routines = lambda: None
+        service.provider.native_settings = lambda operation, bots, **kw: receipts.claim(
+            self.home, kw['native_id'], self, manual=kw['manual'])
+        claimed, dispatched, errors = [], [], []
+        def claim_job(identity, **kw):
+            with native_lock(identity):
+                claimed.append(kw)
+                self.job['fire_claim'] = {'by': 'next-owner'}
+                return copy.deepcopy(self.job)
+        def dispatch(identity):
+            dispatched.append(identity)
+            return True
+        @contextmanager
+        def native_lock(identity):
+            with (self.home / 'native-fire.lock').open('a') as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                yield True
+        tool_entered, attempt_done, tool_receipt, release = (threading.Event() for _ in range(4))
+        def tool():
+            try:
+                with bridge.claim():
+                    tool_entered.set()
+                    self.assertTrue(attempt_done.wait(5), 'Claim held the service lock waiting on this tool')
+                    # Exercise the actual service receipt while the reservation is held.
+                    result = service.emit(task['id'], 'native_call', dict(name='read_file', arguments={'path': 'proof'}))
+                    self.assertEqual(result['status'], 'recorded')
+                    tool_receipt.set()
+                    self.assertTrue(release.wait(5))
+            except BaseException as error:
+                errors.append(error)
+        def attempt():
+            try:
+                if manual == 'tool':
+                    result = service.emit(task['id'], 'native_call',
+                        dict(name='cronjob_manage', arguments=dict(action='run', job_id='job')))
+                    self.assertFalse(json.loads(result['routine_result'])['success'])
+                elif manual:
+                    with self.assertRaises(ServiceError):
+                        service.mutate('POST', '/v1/routines/routine/run', {}, str(uuid4()))
+                else:
+                    service.tick_native_routines()
+                    self.assertFalse(service._native_cron_error)
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                attempt_done.set()
+        modules = {'cron.jobs': self, 'hermes_constants': SimpleNamespace(get_hermes_home=lambda: self.home)}
+        with patch.dict('sys.modules', modules), patch.object(self, '_fire_job_lock', native_lock), \
+                patch.object(self, 'claim_job_for_fire', claim_job, create=True), \
+                patch.object(self, 'claim_dispatch', dispatch, create=True):
+            worker = threading.Thread(target=tool)
+            worker.start()
+            contender = None
+            try:
+                self.assertTrue(tool_entered.wait(5))
+                contender = threading.Thread(target=attempt)
+                contender.start()
+                self.assertTrue(attempt_done.wait(5))
+                self.assertTrue(tool_receipt.wait(5))
+                self.assertEqual(errors, [])
+                self.assertEqual(claimed, [])
+                self.assertEqual(dispatched, [])
+                self.assertEqual(len(service._all('tasks')), 1)
+            finally:
+                release.set()
+                attempt_done.set()
+                worker.join(5)
+                if contender:
+                    contender.join(5)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(receipts.read(self.home, receipts.continuation_id('job')), {})
+            # The next intake is now allowed; original failure proof stays immutable.
+            if manual:
+                queued = service.mutate('POST', '/v1/routines/routine/run', {}, str(uuid4()))
+                self.assertEqual(queued['status'], 'queued')
+            else:
+                service._native_cron_next = 0
+                service.tick_native_routines()
+                self.assertFalse(service._native_cron_error)
+            self.assertEqual(len(claimed), 1)
+            self.assertEqual(dispatched, ['job'])
+            self.assertEqual(len(service._all('tasks')), 2)
+            self.assertFalse(self.job['_coconut_completion']['success'])
+            with self.assertRaises(TurnPaused):
+                self.run_tool(bridge)
+
+    def test_scheduled_claim_cannot_dispatch_during_continuation_tool(self):
+        self.reserve_during_service_claim(manual=False)
+
+    def test_manual_claim_cannot_dispatch_during_continuation_tool(self):
+        self.reserve_during_service_claim(manual=True)
+
+    def test_manual_tool_cannot_dispatch_during_continuation_tool(self):
+        self.reserve_during_service_claim(manual='tool')
+
+    def test_parallel_scopes_release_only_their_exact_reservation(self):
+        bridge = self.failed()
+        modules = {'cron.jobs': self, 'hermes_constants': SimpleNamespace(get_hermes_home=lambda: self.home)}
+        key = receipts.continuation_id('job')
+        with patch.dict('sys.modules', modules), bridge.claim():
+            first = receipts.read(self.home, key)
+            self.assertEqual(len(first), 1)
+            with bridge.claim():
+                self.assertEqual(len(receipts.read(self.home, key)), 2)
+            self.assertEqual(receipts.read(self.home, key), first)
+            other = copy.deepcopy(bridge.request)
+            other['task']['_native_turn_id'] = 'another-input'
+            other['task']['_native_job_completion']['continuation']['turn_id'] = 'another-input'
+            with self.assertRaises(TurnPaused):
+                self.run_tool(NativeBridge(other, None, None))
+            self.assertEqual(receipts.read(self.home, key), first)
+        self.assertEqual(receipts.read(self.home, key), {})
+
+    def test_interrupted_scope_keeps_next_fire_fenced_across_processes(self):
+        import json
+        import os
+        import subprocess
+        import sys
+        bridge = self.failed()
+        code = """
+import json, os, sys
+from contextlib import nullcontext
+from types import SimpleNamespace
+from coconut.native_routine_receipts import continued_failure
+from coconut import profiles
+sys.modules['profiles'] = profiles
+home, proof = json.loads(sys.stdin.read())
+jobs = SimpleNamespace(_fire_job_lock=lambda identity: nullcontext(True), get_job=lambda identity: {})
+with continued_failure(home, 'job', 'owner', jobs,
+        dict(job_id='job', owner='owner', success=False, native_confirmed=True), proof) as admitted:
+    assert admitted
+    os._exit(0)
+"""
+        result = subprocess.run([sys.executable, '-c', code], input=json.dumps([
+            str(self.home), bridge.request['task']['_native_job_completion']['continuation']]),
+            text=True, capture_output=True, env=os.environ.copy(), timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        key = receipts.continuation_id('job')
+        interrupted = receipts.read(self.home, key)
+        self.assertEqual(len(interrupted), 1)
+        self.assertIn('interrupted tool receipts', receipts.issue(self.home, self.job))
+        # A restarted bridge can release only its own scope, not the lost one.
+        self.assertEqual(self.run_tool(bridge), 'executed')
+        self.assertEqual(receipts.read(self.home, key), interrupted)
+        for manual in (False, True):
+            self.assertIsNone(receipts.claim(self.home, 'job', self, manual=manual)['job'])
+        self.assertFalse(self.job['_coconut_completion']['success'])
+
+    def test_exception_releases_reservation_without_changing_failure(self):
+        bridge = self.failed()
+        before = copy.deepcopy(self.job)
+        modules = {'cron.jobs': self, 'hermes_constants': SimpleNamespace(get_hermes_home=lambda: self.home)}
+        with patch.dict('sys.modules', modules), self.assertRaisesRegex(RuntimeError, 'tool failed'):
+            with bridge.claim():
+                raise RuntimeError('tool failed')
+        self.assertEqual(receipts.read(self.home, receipts.continuation_id('job')), {})
+        self.assertEqual(self.job, before)
 
     def test_missing_continuation_input_and_foreign_completion_reject(self):
         bridge = self.failed()

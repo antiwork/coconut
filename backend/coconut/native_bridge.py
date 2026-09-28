@@ -78,8 +78,8 @@ class NativeBridge:
                                 and continuation.get('task_id') == task['id']
                                 and continuation.get('turn_id') == task.get('_native_turn_id')
                                 and continuation.get('native_task_id') == task.get('_native_outcome_id')):
-                            owns_claim = continued_failure(
-                                get_hermes_home(), job['id'], job['fire_claim']['by'], jobs, completion)
+                            owns_claim = fence.enter_context(continued_failure(
+                                get_hermes_home(), job['id'], job['fire_claim']['by'], jobs, completion, continuation))
                     except Exception as error:
                         raise TurnPaused('The routine completion could not be confirmed.') from error
                 if not owns_claim:

@@ -4,6 +4,7 @@ import hashlib
 import json
 from contextlib import contextmanager
 from pathlib import Path
+from uuid import uuid4
 
 
 def receipt_path(home, identity):
@@ -35,6 +36,10 @@ def locked(home, identity):
 
 def claim(home, identity, jobs, manual=False):
     with locked(home, identity):
+        # A continuation releases the native lock before calling the service,
+        # but its durable reservation must exclude both scheduled and manual fire.
+        if read(home, continuation_id(identity)):
+            return {'job': None}
         previous = read(home, identity)
         job = jobs.get_job(identity)
         if previous.get('phase') == 'claimed':
@@ -58,6 +63,8 @@ def claim(home, identity, jobs, manual=False):
 
 
 def issue(home, job):
+    if read(home, continuation_id(job['id'])):
+        return 'A continued occurrence reserves this routine. Wait for its tools or inspect its interrupted tool receipts.'
     receipt = read(home, job['id'])
     if receipt.get('phase') in ('claiming', 'dispatching'):
         return 'The dispatch result is unknown. Inspect the last run in Hermes.'
@@ -92,20 +99,41 @@ def completed(home, identity, owner, jobs, provenance=None):
         return False
 
 
-def continued_failure(home, identity, owner, jobs, provenance):
-    """Validate a closed occurrence without reacquiring or refiring its claim."""
+def continuation_id(identity):
+    return 'continuing-' + hashlib.sha256(identity.encode()).hexdigest()
+
+
+@contextmanager
+def continued_failure(home, identity, owner, jobs, provenance, continuation):
+    """Reserve a closed occurrence until this exact tool scope has unwound."""
     expected = dict(job_id=identity, owner=owner, success=False)
+    reservation = dict(completion=expected, continuation=continuation)
+    token = str(uuid4())
+    admitted = False
+    key = continuation_id(identity)
     with locked(home, identity):
         with jobs._fire_job_lock(identity) as acquired:
-            if not acquired:
-                return False
-            job = jobs.get_job(identity) or {}
-            confirmed = (provenance == dict(expected, native_confirmed=True)
-                         or read(home, completion_id(identity, owner)) == expected
-                         or job.get('_coconut_completion') == expected)
-            # Never retain native locks while a tool waits for a service receipt:
-            # the scheduler can hold the service lock while claiming the next fire.
-            return confirmed and not job.get('fire_claim')
+            if acquired:
+                job = jobs.get_job(identity) or {}
+                confirmed = (provenance == dict(expected, native_confirmed=True)
+                             or read(home, completion_id(identity, owner)) == expected
+                             or job.get('_coconut_completion') == expected)
+                pending = read(home, key)
+                if (confirmed and not job.get('fire_claim')
+                        and all(value == reservation for value in pending.values())):
+                    save(home, key, dict(pending, **{token: reservation}))
+                    admitted = True
+    # Never retain native or receipt locks across a service receipt. A process
+    # death leaves the reservation fenced rather than guessing that tools stopped.
+    try:
+        yield admitted
+    finally:
+        if admitted:
+            with locked(home, identity):
+                pending = read(home, key)
+                if pending.get(token) == reservation:
+                    del pending[token]
+                    save(home, key, pending)
 
 
 def finish(home, identity, jobs, *, owner, success, output='', failure=None):

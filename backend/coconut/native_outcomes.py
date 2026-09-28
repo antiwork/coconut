@@ -934,6 +934,8 @@ class NativeOutcomes:
             identity = native['id']
             if source['bot_id'] not in (owner['bot_id'], owner.get('source_bot_id')):
                 raise ServiceError(403, 'Only the owner or its requesting bot can continue this work.')
+            if owner.get('_native_job') and not owner.get('_native_job_finished'):
+                raise ServiceError(409, 'Wait for the original routine occurrence to finish reconciling with Hermes.')
             bot = self._get('bots', owner['bot_id'])
             if (self._task_paused(owner) or owner['session_id'] != bot['session_id']
                     or owner.get('_conversation_epoch') != self._setting('conversation_epoch')
