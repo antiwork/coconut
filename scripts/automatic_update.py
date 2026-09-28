@@ -490,7 +490,10 @@ def gate_problem(source, live):
         return 'The model credential file .runtime/host/credentials.json must be private to this Mac account.'
     listing = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=all', '--', 'backend', 'scripts'],
                              cwd=source, capture_output=True, text=True, timeout=60)
-    if listing.returncode == 0 and listing.stdout.strip():
+    if listing.returncode != 0:
+        # A broken Git checkout must not start a run that the checks would refuse after the install.
+        return 'Git could not read the updater checkout: ' + (listing.stderr.strip() or 'git status failed')[:500]
+    if listing.stdout.strip():
         return 'The updater checkout has changed or untracked files in backend or scripts: ' + listing.stdout.strip()[:1000]
     return None
 
@@ -525,7 +528,7 @@ def run_bounded(command, *, cwd, timeout, env=None):
     The output goes to a file, not a pipe, so a process that outlives the command cannot block the updater.
     After the command, Coconut stops its whole process group, for example uv and git below an install.
     """
-    with tempfile.TemporaryFile() as output:
+    with tempfile.TemporaryFile(dir=cwd) as output:
         process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                                    start_new_session=True)
         try:
@@ -537,8 +540,10 @@ def run_bounded(command, *, cwd, timeout, env=None):
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(process.pid, signal.SIGKILL)
             process.wait()
-        output.seek(0)
-        return code, output.read()[-20000:].decode(errors='replace')
+        # Read only the tail. A command that prints for hours must not fill the memory of the updater.
+        output.seek(0, os.SEEK_END)
+        output.seek(max(0, output.tell() - 20000))
+        return code, output.read().decode(errors='replace')
 
 
 def recover_journal(source, live):

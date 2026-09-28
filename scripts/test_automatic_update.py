@@ -315,6 +315,8 @@ class AutomaticUpdateTests(unittest.TestCase):
             root = Path(directory).resolve()
             source, live = root / 'source', root / 'live'
             (source / '.runtime/hermes').mkdir(parents=True)
+            # The gate reads Git for the state of backend and scripts. An empty checkout is clean.
+            subprocess.run(['git', 'init', '-q'], cwd=source, check=True)
             (source / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit=installed)))
             # Other project scripts keep private data in .runtime, for example remote.py its deploy key.
             (source / '.runtime/ssh').mkdir()
@@ -514,6 +516,17 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertFalse(receipt_existed)
         # A pass clears the marker.
         self.assertNotIn('hermes_inconclusive', state)
+
+    def test_a_broken_git_checkout_stops_the_gate_before_the_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, live = Path(directory) / 'source', Path(directory) / 'live'
+            (live / '.runtime/host').mkdir(parents=True)
+            (live / '.runtime/host/credentials.json').write_text(json.dumps({'ANTHROPIC_API_KEY': 'k'}))
+            (live / '.runtime/host/credentials.json').chmod(0o600)
+            source.mkdir()
+            with patch.object(update, 'module', return_value=SimpleNamespace(MODEL_KEYS=('ANTHROPIC_API_KEY',))):
+                # source is no Git checkout, so git status exits non-zero.
+                self.assertIn('Git could not read', REAL_PROBLEM(source, live))
 
     def test_a_shared_or_linked_credential_file_stops_the_gate_before_the_install(self):
         for options in (dict(mode=0o644), dict(link=True)):
@@ -760,6 +773,12 @@ class BoundedRunTests(unittest.TestCase):
         self.assertIsNone(code)
         self.assertIn('started', output)
         self.assertLess(time.monotonic() - started, 10)
+
+    def test_only_the_tail_of_a_long_output_comes_back(self):
+        program = 'import sys; sys.stdout.write("x" * 100000 + "END")'
+        code, output = update.run_bounded([sys.executable, '-c', program], cwd=None, timeout=30)
+        self.assertEqual(code, 0)
+        self.assertEqual((len(output), output[-3:]), (20000, 'END'))
 
     def test_an_interrupt_of_the_wait_stops_the_child(self):
         real_wait = subprocess.Popen.wait
