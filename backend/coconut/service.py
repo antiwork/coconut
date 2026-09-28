@@ -1655,7 +1655,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         elif native_return:
             # A dependency result resumes the native owner, including its claim and workspace.
             task = owner
-            task.setdefault('_bot_messages', []).append(bot_message)
+            task.setdefault('_bot_messages', []).append(dict(bot_message,
+                _return_source_task_id=source['id'], _return_delivery_id=delivery_id, _returning=returning))
             if not progress_only:
                 task['_waiting_on'] = [identity for identity in task.get('_waiting_on', []) if identity != dependency_id]
             native = self.kanban.tasks.get(task['id'], {})

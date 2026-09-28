@@ -708,6 +708,437 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.service._put('artifacts', pr)
         return owner, source, work, pr
 
+    def linked_report_message(self, source, target, text):
+        from uuid import uuid4
+        call = self.service.emit(source['id'], 'native_call', dict(name='message_agent',
+            arguments={'target': target, 'message': text}))
+        return self.service.emit(source['id'], 'native_bot_message', dict(native_call_id=call['id'],
+            native_envelope_id=uuid4().hex, target_bot_id=target, text=text))
+
+    def linked_owner_report(self, direct_native=False):
+        owner, source = self.scheduled_native()
+        self.service.kanban.tasks[owner['id']]['status'] = 'done'
+        work = dict(id='owner-work', task_id=owner['id'], bot_id=owner['bot_id'],
+                    kind='work', title='Original execution', status='waiting')
+        coordinator = self.write(f'/v1/bots/{self.desk["id"]}/messages', {'text': 'Check the existing PR'})
+        coordinator = self.service._get('tasks', coordinator['id'])
+        coordinator.update(status='working', _execution_session_id=coordinator['id'])
+        if direct_native:
+            # Bind before delegation: service._store_bot_message must use its
+            # real native_return route, rather than manufacture a callback.
+            coordinator.update(_native_outcome_id='t_coordinator',
+                               _kanban_claim={'native_id': 't_coordinator', 'input': coordinator['id']})
+            self.service.kanban.tasks[coordinator['id']] = dict(id='t_coordinator', status='running')
+        self.service._put('tasks', coordinator)
+        sent = self.linked_report_message(coordinator, owner['bot_id'], 'Report the existing PR status')
+        reporter = self.service._get('tasks', sent['task_id'])
+        reporter.update(status='working', _execution_session_id=reporter['id'],
+                        _kanban_claim={'native_id': 't_report', 'input': 'report'})
+        self.service._put('tasks', reporter)
+        self.service.emit(reporter['id'], 'completed', {'summary': 'The PR status is checked.'})
+        if direct_native:
+            self.service._put('tasks', dict(self.service._get('tasks', coordinator['id']), status='waiting'))
+        self.service._drain_returns()
+        callbacks = [t for t in self.service._all('tasks')
+                     if t.get('source_task_id') == reporter['id'] and t.get('_is_return')]
+        if direct_native:
+            self.assertEqual(callbacks, [])
+            callback = self.service._get('tasks', coordinator['id'])
+            self.assertFalse(callback.get('_is_return'))
+            self.assertEqual(callback['_waiting_on'], [])
+            self.assertEqual(callback['status'], 'queued')
+            self.assertEqual(callback['_bot_messages'][-1]['result_status'], 'completed')
+        else:
+            callback, = callbacks
+        for task, native_id in ((coordinator, 't_coordinator'), (reporter, 't_report'),
+                                (callback, 't_coordinator' if direct_native else 't_callback')):
+            task = self.service._get('tasks', task['id'])
+            task.update(status='completed', _waiting_on=[],
+                        _kanban_claim={'native_id': native_id, 'input': task['id']})
+            self.service._put('tasks', task)
+            self.service.kanban.tasks[task['id']] = dict(id=native_id, status='done')
+        reporter = self.service._get('tasks', reporter['id'])
+        coordinator = self.service._get('tasks', coordinator['id'])
+        callback = self.service._get('tasks', callback['id'])
+        pr = dict(id='owner-pr', task_id=owner['id'], bot_id=owner['bot_id'],
+                  kind='pr', title='Original PR', status='open', pr_state='open',
+                  url='https://github.com/example/project/pull/1', work_outcome_id=work['id'],
+                  _review_task_id=owner['id'], _activity_task_id=reporter['id'])
+        coordinator_pr = dict(pr, id='coordinator-pr', task_id=coordinator['id'], bot_id=coordinator['bot_id'],
+                              _review_task_id=coordinator['id'], _activity_task_id=callback['id'], url=pr['url'].upper())
+        for item in (work, pr, coordinator_pr):
+            self.service._put('artifacts', item)
+        return owner, source, work, pr, coordinator_pr, reporter, coordinator, callback
+
+    def test_linked_owner_native_completed_report_retains_work_and_review_ownership(self):
+        self.test_linked_owner_completed_report_retains_work_and_review_ownership(direct_native=True)
+
+    def test_linked_owner_completed_report_retains_work_and_review_ownership(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
+        self.assertNotEqual(owner['source_task_id'], coordinator['id'])
+        snapshots = copy.deepcopy(self.service.kanban.tasks)
+        receipt = self.resume(source)
+        self.assertEqual(receipt['task_id'], owner['id'])
+        continued = self.service._get('tasks', owner['id'])
+        self.assertEqual(continued['_work_context_id'], work['id'])
+        for key in ('_execution_session_id', '_kanban_claim', 'source_task_id', 'source_bot_id', '_reply_to_task_id'):
+            self.assertEqual(continued.get(key), owner.get(key))
+        for item in (pr, coordinator_pr):
+            self.assertEqual(self.service._get('artifacts', item['id']), item)
+        for task in (reporter, coordinator, callback):
+            self.assertEqual(self.service._get('tasks', task['id']), task)
+        self.assertEqual(self.service.kanban.tasks, snapshots)
+        self.assertEqual(self.resume(source), receipt)
+
+    def test_linked_owner_native_report_does_not_exempt_active_coordinator_caller(self):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(True)
+        self.assertEqual(coordinator['_waiting_on'], [])
+        self.service._put('tasks', dict(coordinator, status='working'))
+        card = self.service.kanban.tasks[coordinator['id']]
+        self.service.kanban.tasks[coordinator['id']] = dict(card, status='running', current_run_id=42)
+        self.assert_linked_report_blocked_without_mutation(coordinator)
+        self.service.kanban.tasks[coordinator['id']] = card
+        self.service._put('tasks', coordinator)
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
+    def linked_report_other_caller(self, bot_id):
+        caller = self.write(f'/v1/bots/{bot_id}/messages', {'text': 'Continue the retained owner'})
+        caller = self.service._get('tasks', caller['id'])
+        caller.update(status='working', _execution_session_id=caller['id'])
+        self.service._put('tasks', caller)
+        return caller
+
+    def test_linked_owner_native_report_guards_original_requester_when_another_task_calls(self):
+        self.test_linked_owner_report_guards_original_requester_when_another_task_calls(direct_native=True)
+
+    def test_linked_owner_report_guards_original_requester_when_another_task_calls(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
+        callers = [self.linked_report_other_caller(bot_id) for bot_id in (owner['bot_id'], source['bot_id'])]
+        self.assertEqual(source['status'], 'working')
+        for caller in callers:
+            with self.subTest(caller_bot=caller['bot_id']):
+                self.assertNotEqual(caller['id'], source['id'])
+                self.assert_linked_report_blocked_without_mutation(caller)
+        # A completed requester with a still-running native claim also competes.
+        quiet_source = dict(source, status='completed', _waiting_on=[],
+                            _kanban_claim={'native_id': 't_original_requester'})
+        self.service._put('tasks', quiet_source)
+        self.service.kanban.tasks[source['id']] = dict(id='t_original_requester', status='running', current_run_id=17)
+        for caller in callers:
+            self.assert_linked_report_blocked_without_mutation(caller)
+        self.service.kanban.tasks[source['id']] = dict(id='t_original_requester', status='done')
+        self.assertEqual(self.resume(callers[0])['task_id'], owner['id'])
+
+    def test_linked_owner_native_report_guards_completed_pending_native_replies(self):
+        self.test_linked_owner_report_guards_completed_pending_native_replies(direct_native=True)
+
+    def test_linked_owner_report_guards_completed_pending_native_replies(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
+        # A different authenticated invocation keeps the original requester in
+        # the checked chain. Every task is completed and every native card done.
+        caller = self.linked_report_other_caller(owner['bot_id'])
+        source = dict(source, status='completed', _waiting_on=[],
+                      _kanban_claim={'native_id': 't_original_requester'})
+        self.service._put('tasks', source)
+        self.service.kanban.tasks[source['id']] = dict(id='t_original_requester', status='done')
+        guarded = {t['id']: t for t in (source, reporter, coordinator, callback)}
+        for index, root in enumerate((source, reporter, coordinator, callback)):
+            sibling = dict(root, id=f'reply-sibling-{index}', _execution_session_id=f'reply-sibling-{index}',
+                           _assignment_task_id=root['id'], _kanban_claim={'native_id': f't_reply_sibling_{index}'})
+            sibling.pop('_native_outcome_id', None)
+            self.service._put('tasks', sibling)
+            self.service.kanban.tasks[sibling['id']] = dict(id=f't_reply_sibling_{index}', status='done')
+            guarded[sibling['id']] = sibling
+        for task in guarded.values():
+            with self.subTest(task=task['id']):
+                self.assertEqual(task['status'], 'completed')
+                self.assertEqual(self.service.kanban.tasks[task['id']]['status'], 'done')
+                self.service._put('tasks', dict(task, _native_reply_pending={'text': 'Result still awaiting delivery'}))
+                self.assert_linked_report_blocked_without_mutation(caller)
+                self.service._put('tasks', task)
+        self.assertEqual(self.resume(caller)['task_id'], owner['id'])
+
+    def test_linked_owner_report_reads_deliveries_once_per_request(self):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
+        for index in range(4):
+            self.service._put('artifacts', dict(pr, id=f'owner-pr-{index}'))
+        delivery = next(d for d in self.service._all('deliveries') if d['source_task_id'] == reporter['id'])
+        self.service._put('deliveries', dict(delivery, text='Not the saved result'))
+        with patch.object(self.service, '_all', wraps=self.service._all) as reads:
+            self.assert_linked_report_blocked_without_mutation(source)
+        self.assertEqual(sum(call.args == ('deliveries',) for call in reads.call_args_list), 1)
+        # A new request must read the repaired receipt, not reuse an earlier cache.
+        self.service._put('deliveries', delivery)
+        with patch.object(self.service, '_all', wraps=self.service._all) as reads:
+            self.assertEqual(self.resume(source)['task_id'], owner['id'])
+        self.assertEqual(sum(call.args == ('deliveries',) for call in reads.call_args_list), 1)
+
+    def test_linked_owner_report_delivery_read_is_lazy(self):
+        owner, source = self.scheduled_native()
+        with patch.object(self.service, '_all', wraps=self.service._all) as reads:
+            self.assertEqual(self.resume(source)['task_id'], owner['id'])
+        self.assertEqual(sum(call.args == ('deliveries',) for call in reads.call_args_list), 0)
+
+    def assert_linked_report_blocked_without_mutation(self, source):
+        before = list(self.service.db.iterdump())
+        snapshots = copy.deepcopy(self.service.kanban.tasks)
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(source)
+        self.assertEqual(list(self.service.db.iterdump()), before)
+        self.assertEqual(self.service.kanban.tasks, snapshots)
+
+    def test_linked_owner_native_report_requires_exact_work_url_and_owners(self):
+        self.test_linked_owner_report_requires_exact_work_url_and_owners(direct_native=True)
+
+    def test_linked_owner_report_requires_exact_work_url_and_owners(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
+        self.service._put('artifacts', dict(work, id='other-work', task_id=source['id'], bot_id=source['bot_id']))
+        cases = ((pr, {'task_id': reporter['id']}), (pr, {'bot_id': source['bot_id']}),
+                 (pr, {'_review_task_id': reporter['id']}), (pr, {'url': None}),
+                 (coordinator_pr, {'work_outcome_id': None}), (coordinator_pr, {'work_outcome_id': 'other-work'}),
+                 (coordinator_pr, {'url': 'https://github.com/example/project/pull/2'}),
+                 (coordinator_pr, {'task_id': source['id']}), (coordinator_pr, {'_review_task_id': source['id']}),
+                 (coordinator_pr, {'bot_id': owner['bot_id']}),
+                 (coordinator_pr, {'_activity_task_id': source['id'] if direct_native else coordinator['id']}))
+        for item, changes in cases:
+            with self.subTest(item=item['id'], changes=changes):
+                self.service._put('artifacts', dict(item, **changes))
+                self.assert_linked_report_blocked_without_mutation(source)
+                self.service._put('artifacts', item)
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
+    def test_linked_owner_native_report_requires_delegation_and_completed_return_provenance(self):
+        self.test_linked_owner_report_requires_delegation_and_completed_return_provenance(direct_native=True)
+
+    def test_linked_owner_report_requires_delegation_and_completed_return_provenance(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
+        cases = ((reporter, {'source_task_id': source['id']}), (reporter, {'source_bot_id': owner['bot_id']}),
+                 (reporter, {'_reply_to_task_id': source['id']}), (reporter, {'_assignment_task_id': owner['id']}),
+                 (reporter, {'_is_return': True}), (reporter, {'thread_id': source['thread_id']}),
+                 (reporter, {'exchange_id': source['exchange_id']}),
+                 (callback, {'_assignment_task_id': source['id']}), (callback, {'_is_return': direct_native}),
+                 (callback, {'_bot_messages': [dict(callback['_bot_messages'][0], text='Unrelated result')]}),
+                 (callback, {'_bot_messages': [dict(callback['_bot_messages'][0], sender_bot_id=source['bot_id'])]}),
+                 (callback, {'_bot_messages': []}),
+                 (callback, {'_bot_messages': [dict(callback['_bot_messages'][0], result_status='failed')]}),
+                 (callback, {'_bot_messages': [dict(callback['_bot_messages'][0], progress_only=True)]}))
+        if direct_native:
+            cases += ((coordinator, {'_native_outcome_id': None}),
+                      (coordinator, {'_native_outcome_id': 't_wrong'}),
+                      (coordinator, {'_kanban_claim': {'native_id': 't_wrong'}}))
+        else:
+            cases += ((callback, {'source_task_id': owner['id']}),
+                      (callback, {'source_bot_id': source['bot_id']}))
+        for task, changes in cases:
+            with self.subTest(task=task['id'], changes=changes):
+                self.service._put('tasks', dict(task, **changes))
+                self.assert_linked_report_blocked_without_mutation(source)
+                self.service._put('tasks', task)
+        deliveries = [d for d in self.service._all('deliveries')
+                      if d['source_task_id'] in (coordinator['id'], reporter['id'])]
+        self.assertEqual(len(deliveries), 2)
+        for delivery in deliveries:
+            changes = ({'_progress_only': True}, {'source_task_id': source['id']}, {'target_bot_id': 'other'},
+                       {'text': ''}, *({'receipt': dict(delivery['receipt'], **change)} for change in (
+                           {'task_id': source['id']}, {'target_bot_id': 'other'}, {'thread_id': 'other'}, {'status': 'rejected'})))
+            for change in changes:
+                with self.subTest(delivery=delivery['id'], change=change):
+                    self.service._put('deliveries', dict(delivery, **change))
+                    self.assert_linked_report_blocked_without_mutation(source)
+                    self.service._put('deliveries', delivery)
+            self.service.db.execute('DELETE FROM deliveries WHERE id=?', (delivery['id'],))
+            self.assert_linked_report_blocked_without_mutation(source)
+            self.service._put('deliveries', delivery)
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
+    def test_linked_owner_native_report_keeps_every_native_and_task_guard(self):
+        self.test_linked_owner_report_keeps_every_native_and_task_guard(direct_native=True)
+
+    def test_linked_owner_report_keeps_every_native_and_task_guard(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
+        for task in (reporter, coordinator, callback):
+            card = self.service.kanban.tasks[task['id']]
+            for changed in (None, dict(card, id='t_wrong'), dict(card, status='running'),
+                            dict(card, status='ready'), dict(card, status='review'), dict(card, status='blocked'),
+                            dict(card, current_run_id=123), dict(card, worker_pid=123)):
+                with self.subTest(task=task['id'], card=changed):
+                    self.service.kanban.tasks.pop(task['id'], None)
+                    if changed:
+                        self.service.kanban.tasks[task['id']] = changed
+                    self.assert_linked_report_blocked_without_mutation(source)
+                    self.service.kanban.tasks[task['id']] = card
+            changes = [dict(status=status) for status in ('working', 'queued', 'waiting', 'paused', 'failed', 'cancelled', 'needs_you')]
+            changes += [dict(_waiting_on=['unfinished-child']), dict(_return_pending={'text': 'Undelivered'})]
+            # Native outcomes use their card rather than the legacy todo list.
+            if not task.get('_native_outcome_id'):
+                changes.append(dict(_work_todos=fixtures.progress()))
+            for change in changes:
+                with self.subTest(task=task['id'], change=change):
+                    self.service._put('tasks', dict(task, **change))
+                    self.assert_linked_report_blocked_without_mutation(source)
+                    self.service._put('tasks', task)
+            with patch.dict(self.service.running, {task['id']: Mock(is_alive=lambda: True)}):
+                self.assert_linked_report_blocked_without_mutation(source)
+            with patch.object(self.service, '_background_pending', side_effect=lambda identity: identity == task['id']):
+                self.assert_linked_report_blocked_without_mutation(source)
+            self.service._put('decisions', dict(id='report-question', task_id=task['id'], status='pending'))
+            self.assert_linked_report_blocked_without_mutation(source)
+            self.service._put('decisions', dict(id='report-question', task_id=task['id'], status='rejected'))
+            self.service._put('contexts', dict(id='report-context', task_id=task['id'], bot_id=task['bot_id'], status='working'))
+            self.assert_linked_report_blocked_without_mutation(source)
+            self.service._put('contexts', dict(id='report-context', task_id=task['id'], bot_id=task['bot_id'], status='completed'))
+            for action in ('terminal', 'coconut_wait', 'message_agent', 'unknown_tool'):
+                self.service._put('native_receipts', dict(id='unknown-report-tool', task_id=task['id'], state='executing',
+                    turn_id=task.get('_native_turn_id'), action={'name': action, 'arguments': {}}))
+                self.assert_linked_report_blocked_without_mutation(source)
+            self.service.db.execute('DELETE FROM native_receipts WHERE id=?', ('unknown-report-tool',))
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
+    def test_linked_owner_native_report_guards_reporter_coordinator_and_requester_siblings(self):
+        self.test_linked_owner_report_guards_reporter_coordinator_and_requester_siblings(direct_native=True)
+
+    def test_linked_owner_report_guards_reporter_coordinator_and_requester_siblings(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
+        for root in (reporter, coordinator, source):
+            sibling = dict(root, id='sibling', _execution_session_id='sibling', _assignment_task_id=root['id'],
+                           _kanban_claim={'native_id': 't_sibling'}, status='completed')
+            sibling.pop('_work_todos', None)
+            sibling.pop('_waiting_on', None)
+            if sibling.get('_native_outcome_id'):
+                sibling['_native_outcome_id'] = 't_sibling'
+            self.service._put('tasks', sibling)
+            self.service.kanban.tasks[sibling['id']] = dict(id='t_sibling', status='running', current_run_id=4)
+            self.assert_linked_report_blocked_without_mutation(source)
+            self.service.kanban.tasks[sibling['id']] = dict(id='t_sibling', status='done')
+            self.service._put('tasks', dict(sibling, _return_pending={'text': 'Pending sibling return'}))
+            self.assert_linked_report_blocked_without_mutation(source)
+            self.service._put('tasks', sibling)
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
+    def test_linked_owner_native_report_waits_for_care_and_does_not_exempt_coordinator_caller(self):
+        self.test_linked_owner_report_waits_for_care_and_does_not_exempt_coordinator_caller(direct_native=True)
+
+    def test_linked_owner_native_report_cannot_borrow_another_reporters_return(self):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(True)
+        self.service._put('tasks', dict(coordinator, status='working'))
+        sent = self.linked_report_message(coordinator, owner['bot_id'], 'Another status report')
+        other = self.service._get('tasks', sent['task_id'])
+        other.update(status='working', _execution_session_id=other['id'],
+                     _kanban_claim={'native_id': 't_other_report', 'input': 'other-report'})
+        self.service._put('tasks', other)
+        text = coordinator['_bot_messages'][0]['text']
+        self.linked_report_message(other, coordinator['bot_id'], text)
+        # The second reporter has stopped before its result is delivered. Its
+        # earlier ordinary message has the same bot and text as the first result.
+        self.service._put('tasks', dict(other, status='completed'))
+        self.service.kanban.tasks[other['id']] = dict(id='t_other_report', status='done')
+        current = self.service._get('tasks', coordinator['id'])
+        self.service._put('tasks', dict(current, status='completed', _waiting_on=[]))
+        self.service._put('artifacts', dict(pr, _activity_task_id=other['id']))
+        self.assert_linked_report_blocked_without_mutation(source)
+
+    def test_linked_owner_report_rejects_unproven_native_return_after_transcript_migration(self):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(True)
+        fields = ('_returning', '_return_source_task_id', '_return_delivery_id')
+        old = dict(coordinator, _bot_messages=[{k: v for k, v in message.items() if k not in fields}
+                                               for message in coordinator['_bot_messages']])
+        self.service._put('tasks', old)
+        self.assert_linked_report_blocked_without_mutation(source)
+        # Transcript audience is presentation metadata, also assigned to ordinary
+        # assistant output; migration must not turn it into return authority.
+        message = self.service._message(reporter['bot_id'], old['_bot_messages'][0]['text'], task_id=reporter['id'])
+        self.assertEqual(message['exchange_recipient_bot_ids'], [coordinator['bot_id']])
+        self.service._migrate_bot_exchanges()
+        self.assert_linked_report_blocked_without_mutation(source)
+        self.service._put('tasks', coordinator)
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
+    def test_linked_owner_native_report_requires_exact_stored_return_identity(self):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(True)
+        message = coordinator['_bot_messages'][0]
+        for field, wrong in (('_return_source_task_id', 'another-reporter'),
+                             ('_return_delivery_id', 'another-delivery'), ('_returning', False)):
+            for value in (wrong, None):
+                with self.subTest(field=field, value=value):
+                    changed = dict(message)
+                    if value is None:
+                        changed.pop(field, None)
+                    else:
+                        changed[field] = value
+                    self.service._put('tasks', dict(coordinator, _bot_messages=[changed]))
+                    self.assert_linked_report_blocked_without_mutation(source)
+        self.service._put('tasks', coordinator)
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
+    def test_linked_owner_report_accepts_quiet_failed_requester_siblings_but_guards_live_signals(self):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
+        for index, root in enumerate((source, source)):
+            sibling = dict(root, id=f'failed-sibling-{index}', _execution_session_id=f'failed-sibling-{index}',
+                           _assignment_task_id=root['id'], status='failed',
+                           _native_outcome_id=None, _kanban_claim={'native_id': f't_failed_{index}'})
+            sibling.pop('_work_todos', None)
+            sibling.pop('_waiting_on', None)
+            self.service._put('tasks', sibling)
+            card = dict(id=f't_failed_{index}', status='done')
+            self.service.kanban.tasks[sibling['id']] = dict(card, status='running', current_run_id=9)
+            self.assert_linked_report_blocked_without_mutation(source)
+            self.service.kanban.tasks[sibling['id']] = card
+            self.service._put('tasks', dict(sibling, _return_pending={'text': 'Not delivered'}))
+            self.assert_linked_report_blocked_without_mutation(source)
+            self.service._put('tasks', dict(sibling, _native_reply_pending={'text': 'Native result not delivered'}))
+            self.assert_linked_report_blocked_without_mutation(source)
+            self.service._put('tasks', dict(sibling, status='cancelled' if index == 1 else 'failed'))
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
+    def test_linked_owner_report_waits_for_care_and_does_not_exempt_coordinator_caller(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
+        care = self.write('/v1/bots', {'name': 'Care'})
+        self.service._put('tasks', dict(callback, status='working'))
+        receipt = self.linked_report_message(callback, care['id'], 'Check the guard.')
+        child = self.service._get('tasks', receipt['task_id'])
+        child.update(status='working', _kanban_claim={'native_id': 't_care'})
+        self.service._put('tasks', child)
+        self.service.kanban.tasks[child['id']] = dict(id='t_care', status='running', current_run_id=7)
+        coordinator = self.service._get('tasks', coordinator['id'])
+        self.assertEqual(coordinator['_waiting_on'], [child['id']])
+        self.service._put('tasks', dict(callback, status='completed'))
+        self.service._put('tasks', dict(coordinator, status='waiting'))
+        self.assert_linked_report_blocked_without_mutation(source)
+        for caller in (coordinator, callback):
+            self.service._put('tasks', dict(caller, status='working'))
+            self.assert_linked_report_blocked_without_mutation(caller)
+            self.service._put('tasks', dict(caller, status='completed'))
+        self.service._put('tasks', dict(coordinator, status='completed', _waiting_on=[]))
+        self.assert_linked_report_blocked_without_mutation(source)
+        self.service._put('tasks', dict(child, status='completed'))
+        self.service.kanban.tasks[child['id']] = dict(id='t_care', status='done')
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
+    def test_linked_owner_native_report_preserves_human_pause_and_cancelled_exchange(self):
+        self.test_linked_owner_report_preserves_human_pause_and_cancelled_exchange(direct_native=True)
+
+    def test_linked_owner_report_preserves_human_pause_and_cancelled_exchange(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
+        exchange = self.service._get('exchanges', coordinator['exchange_id'])
+        self.service._put('exchanges', dict(exchange, cancelled=True))
+        self.assert_linked_report_blocked_without_mutation(source)
+        self.service._put('exchanges', exchange)
+        self.service._put('artifacts', dict(work, paused_by_decision_id='human-pause'))
+        self.service._put('decisions', dict(id='human-pause', task_id=coordinator['id'],
+                                          status='rejected', decided_by='human'))
+        before = list(self.service.db.iterdump())
+        with self.assertRaisesRegex(ServiceError, 'This work is paused, cancelled, or belongs to an earlier conversation'):
+            self.resume(source)
+        self.assertEqual(list(self.service.db.iterdump()), before)
+
+    def test_linked_owner_native_report_never_waives_review_task_guard(self):
+        self.test_linked_owner_report_never_waives_review_task_guard(direct_native=True)
+
+    def test_linked_owner_report_never_waives_review_task_guard(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
+        self.service._put('artifacts', dict(pr, _review_task_id=reporter['id'], _activity_task_id=owner['id']))
+        self.assert_linked_report_blocked_without_mutation(source)
+
     def audited_requester_pr(self, audited=True, report_to='coordinator'):
         """A requester's source audit delegates for its existing Work. A later coordinator task owns that Work."""
         owner, source = self.scheduled_native()
