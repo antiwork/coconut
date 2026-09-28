@@ -683,12 +683,22 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(list(elsewhere.iterdir()), [])
 
     def test_a_checkout_that_changed_after_the_record_is_not_removed_and_a_partial_one_needs_a_person(self):
-        for name, damage in (('new edit', lambda path: (path / 'later.txt').write_text('an edit after the record\n')),
-                             ('partial removal', lambda path: [(path / f).unlink() for f in ('tracked.txt', 'logo.bin')])):
+        def commit(path):
+            git(path, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'Later')
+
+        def remove_files(path):
+            for name in ('tracked.txt', 'logo.bin'):
+                (path / name).unlink()
+        damages = (('new file', lambda path: (path / 'later.txt').write_text('an edit after the record\n')),
+                   ('edit of an untracked file', lambda path: (path / 'draft.txt').write_text('changed after the record\n')),
+                   ('edit of an ignored file', lambda path: (path / '.env').write_text('CHANGED=1\n')),
+                   ('new commit', commit), ('partial removal', remove_files))
+        for name, damage in damages:
             with self.subTest(name):
                 outcome, identity, path, task = self.outcome()
                 self.pull_request(task, 'merged')
                 (path / 'draft.txt').write_text('keep\n')
+                (path / '.env').write_text('SECRET=value\n')
                 real = work_workspace.git
 
                 def stopped(where, *arguments, **options):
@@ -701,7 +711,6 @@ class WorktreeRetirementTests(unittest.TestCase):
                 # The checkout is not the one that the archive holds. The resume leaves it alone, and asks for a look.
                 with self.assertRaisesRegex(ValueError, 'not empty'):
                     acquire(self.workspaces, outcome, str(self.repo))
-                self.assertTrue((path / 'draft.txt').exists())
                 self.assertIn('restore_failed', self.registry()[identity]['retired'])
 
     def test_scratch_files_of_an_outcome_without_a_binding_wait_for_the_long_idle_rule(self):

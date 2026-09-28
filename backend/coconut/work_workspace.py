@@ -1136,28 +1136,9 @@ def discard_run(root, identity, finished, state, *, orphan_age=None, merged=Fals
                 branch = f'{base}-{number}'
             git(repository, 'branch', branch, head)
             state['made_branch'] = branch
-        staged, unstaged, names = changes(path)
+        head, staged, unstaged, entries = discard_snapshot(path)
         # The record names what the archive holds. A leftover checkout that no longer matches it is not removed.
-        state['changes'] = changes_digest(staged, unstaged, names)
-        # Keep the untracked files that an archive can hold. Git lists a nested repository as a folder, and it goes.
-        files = [name for name in names if not name.endswith('/')
-                 and ((path / name).is_symlink() or stat.S_ISREG(os.lstat(path / name).st_mode))]
-        if sum(os.lstat(path / name).st_size for name in files) > UNTRACKED_LIMIT_BYTES:
-            logging.getLogger(__name__).warning('Coconut discards the untracked files of %s. They are larger than the '
-                                                'archive limit.', path)
-            files = []
-        entries = sorted((UNTRACKED + name, name) for name in files)
-        try:
-            # Ignored files that are not build output can matter, for example .env. ignored_files skips the rebuildable
-            # folders and refuses more than IGNORED_LIMIT_BYTES. Then the ignored files go without an archive.
-            entries += sorted((IGNORED + name, name) for name in ignored_files(path))
-        except (ValueError, OSError) as error:
-            logging.getLogger(__name__).warning('Coconut discards the ignored files of %s: %s', path, error)
-        if len(staged) + len(unstaged) > PATCH_LIMIT_BYTES:
-            # base85 patches of large binaries can be larger than the files, and the archive is written before the removal.
-            logging.getLogger(__name__).warning('Coconut discards the staged and unstaged changes of %s. They are larger '
-                                                'than the archive limit.', path)
-            staged = unstaged = b''
+        state['changes'] = snapshot_digest(path, head, staged, unstaged, entries)
         if staged or unstaged or entries:
             directory = root / 'archive' / 'done'
             directory.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -1241,6 +1222,54 @@ def prune_discarded_refs(repository):
         moment = name.rsplit('/', 1)[-1].split('-', 1)[0]
         if moment.isdigit() and int(moment) < oldest:
             git(repository, 'update-ref', '-d', name)
+
+
+def discard_snapshot(path, *, quiet=False):
+    """Return HEAD, the staged and unstaged patches, and the (name in the archive, path) entries that a discard archives.
+
+    The limits apply here: untracked files and ignored files that are too large, and patches that are too large, stay out.
+    """
+    head = git(path, 'rev-parse', 'HEAD')
+    staged, unstaged, names = changes(path)
+    log = logging.getLogger(__name__)
+    # Git lists a nested repository as a folder, and it goes without an archive.
+    files = [name for name in names if not name.endswith('/')
+             and ((path / name).is_symlink() or stat.S_ISREG(os.lstat(path / name).st_mode))]
+    if sum(os.lstat(path / name).st_size for name in files) > UNTRACKED_LIMIT_BYTES:
+        if not quiet:
+            log.warning('Coconut discards the untracked files of %s. They are larger than the archive limit.', path)
+        files = []
+    entries = sorted((UNTRACKED + name, name) for name in files)
+    try:
+        # Ignored files that are not build output can matter, for example .env. ignored_files skips the rebuildable
+        # folders and refuses more than IGNORED_LIMIT_BYTES. Then the ignored files go without an archive.
+        entries += sorted((IGNORED + name, name) for name in ignored_files(path))
+    except (ValueError, OSError) as error:
+        if not quiet:
+            log.warning('Coconut discards the ignored files of %s: %s', path, error)
+    if len(staged) + len(unstaged) > PATCH_LIMIT_BYTES:
+        # base85 patches of large binaries can be larger than the files, and the archive is written before the removal.
+        if not quiet:
+            log.warning('Coconut discards the staged and unstaged changes of %s. They are larger than the archive limit.', path)
+        staged = unstaged = b''
+    return head, staged, unstaged, entries
+
+
+def snapshot_digest(path, head, staged, unstaged, entries):
+    """Return a digest of HEAD, the patches, and the names and contents of the archived files."""
+    value = hashlib.sha256()
+    for part in (head.encode(), staged, unstaged):
+        value.update(hashlib.sha256(part).digest())
+    for arcname, name in entries:
+        value.update(arcname.encode() + b'\0')
+        target = path / name
+        if target.is_symlink():
+            value.update(os.readlink(target).encode())
+            continue
+        with target.open('rb') as stream:
+            for chunk in iter(lambda: stream.read(1 << 20), b''):
+                value.update(chunk)
+    return value.hexdigest()
 
 
 def keep_heads(repository, identity, paths):
@@ -1554,7 +1583,7 @@ def leftover_checkout(binding, path, repository):
 
     'adopt': a restore failed to put the archived changes back, and left a clean checkout on the saved branch.
     'remove': a stop between the record and the removal of the discard left the checkout, and it still holds what the
-    archive holds (the digest in the record). The restore finishes the removal, and then it restores as usual: a new
+    archive holds: the same HEAD, patches, and archived files, by content (the digest in the record). The restore finishes the removal, and then it restores as usual: a new
     checkout of the saved branch, and the archived changes on it. A checkout that changed since, by a new edit or by
     a removal that stopped half way, is not removed: the path is not empty, and a person looks at it.
     None: no linked worktree of this repository is there, or it needs a person.
@@ -1570,7 +1599,7 @@ def leftover_checkout(binding, path, repository):
         if binding['retired'].get('restore_failed'):
             return None
         wanted = binding['retired'].get('changes')
-        return 'remove' if wanted and changes_digest(*changes(path)) == wanted else None
+        return 'remove' if wanted and snapshot_digest(path, *discard_snapshot(path, quiet=True)) == wanted else None
     except GIT_ERRORS:
         return None
 
