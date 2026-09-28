@@ -132,8 +132,10 @@ def run_checks(checkout: Path, live: Path) -> dict:
                 result = run_tree([str(python), '-c', program, str(root), str(checkout)], env=env, timeout=CHECK_SECONDS)
                 ok = passed(kind, result)
                 tail = dict(out=result.stdout[-1500:], err=result.stderr[-1500:])
-            except subprocess.TimeoutExpired:
-                ok, tail = False, dict(out='', err=f'The check ran longer than {CHECK_SECONDS} seconds.')
+            except subprocess.TimeoutExpired as error:
+                # The partial output shows where the check stopped.
+                ok, tail = False, dict(out=text(error.stdout)[-1500:],
+                                       err=text(error.stderr)[-1500:] + f'\nThe check ran longer than {CHECK_SECONDS} seconds.')
             report['checks'].append(dict(name=name, passed=ok, **tail))
             print(json.dumps(dict(name=name, passed=ok)), file=sys.stderr, flush=True)
     report['passed'] = bool(report['checks']) and all(check['passed'] for check in report['checks'])

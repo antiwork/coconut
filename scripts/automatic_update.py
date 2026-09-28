@@ -27,8 +27,9 @@ HERMES_CHECKS_SECONDS = 80 * 60
 # The candidate install peaks at about 2.6 GB, and the live install then adds a runtime of about 1.3 GB.
 # A full disk stops the service's database writes, so the gate installs nothing below this free space.
 HERMES_CANDIDATE_FREE_BYTES = 8 * 1024 ** 3
-# A failed check run costs up to 80 minutes and model calls, and a repeat at the same commit usually fails the same way.
-# The gate repeats the checks for the same pin and commit only after this wait. A new commit runs them at once.
+# A failed check run costs up to 80 minutes and model calls, and a repeat usually fails the same way, because a
+# merge on main rarely fixes a pin. The gate repeats the checks for a failed pin only after this wait. A new pin,
+# for example a revert, runs them at once.
 HERMES_FAILED_RETRY_SECONDS = 24 * 60 * 60
 HERMES_INSTALL_SECONDS = 60 * 60
 # scripts/hermes.py install writes these folders of .runtime. The gate removes only these and its scratch folders.
@@ -327,18 +328,19 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
     The checks need model access, so CI cannot run them, and a bot cannot run them inside its Hermes worker.
     This updater runs outside Hermes. It installs the pin in its own checkout, runs
     scripts/hermes_candidate_checks.py, and saves the report in hermes-checks.json for Coconut Care.
-    The checks also run the Coconut code of the checkout. A result is kept for its revision and source commit:
-    a pass lets a retry of the same install skip the checks, and a failure stops it for HERMES_FAILED_RETRY_SECONDS.
+    The checks also run the Coconut code of the checkout, so a pass counts only for its revision and source commit.
+    A failure stops the checks for that revision for HERMES_FAILED_RETRY_SECONDS, at any commit.
     """
     receipt = state_path.parent / 'hermes-checks.json'
     saved = state.get('hermes_checks') if isinstance(state.get('hermes_checks'), dict) else {}
-    if saved.get('revision') == revision and saved.get('sha') == sha:
-        if saved.get('passed') is True:
+    if saved.get('revision') == revision:
+        if saved.get('passed') is True and saved.get('sha') == sha:
             return
         checked_at = saved.get('checked_at')
-        if isinstance(checked_at, (int, float)) and time.time() - checked_at < HERMES_FAILED_RETRY_SECONDS:
-            raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]} at this commit. Read {receipt}. '
-                               'A new commit on main runs them again at once.')
+        if (saved.get('passed') is False and isinstance(checked_at, (int, float))
+                and time.time() - checked_at < HERMES_FAILED_RETRY_SECONDS):
+            raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}. '
+                               'They run again after 24 hours, or at once for a new pin.')
     # Each run removes its folders at the end. A run that was stopped part way left them. Free that space before
     # the space check. hermes.py also refuses a runtime folder with another commit.
     clear_gate_folders(source)

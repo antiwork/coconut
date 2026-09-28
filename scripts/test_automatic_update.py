@@ -407,13 +407,15 @@ class AutomaticUpdateTests(unittest.TestCase):
         # The pass is not saved as a failed check, so the next pass with enough space runs the checks.
         self.assertNotIn('hermes_checks', result['state'])
 
-    def test_a_failed_pin_is_not_checked_again_at_the_same_commit_for_a_day(self):
+    def test_a_failed_pin_is_not_checked_again_for_a_day(self):
         failed = dict(revision='new', sha='sha2', passed=False, checked_at=time.time() - 60)
-        result = self.gate_case(checks_pass=True, cached=failed)
-        self.assertIn('failed for Hermes new at this commit', str(result['raised']))
-        self.assertEqual((result['commands'], result['script_calls']), ([], 0))
-        # A day later, or at a new commit, the checks run again.
-        for cached in (dict(failed, checked_at=time.time() - update.HERMES_FAILED_RETRY_SECONDS - 1), dict(failed, sha='sha3')):
+        # A merge on main rarely fixes a pin, so a new commit does not repeat the checks either.
+        for cached in (failed, dict(failed, sha='sha1')):
+            result = self.gate_case(checks_pass=True, cached=cached)
+            self.assertIn('failed for Hermes new', str(result['raised']))
+            self.assertEqual((result['commands'], result['script_calls']), ([], 0))
+        # A day later, or for a new pin, the checks run again.
+        for cached in (dict(failed, checked_at=time.time() - update.HERMES_FAILED_RETRY_SECONDS - 1), dict(failed, revision='other')):
             self.assertEqual(self.gate_case(checks_pass=True, cached=cached)['script_calls'], 1)
 
     def test_the_gate_removes_its_runtime_folder_and_caches(self):
@@ -575,6 +577,25 @@ class CandidateCheckScriptTests(unittest.TestCase):
                                                 'backend': checkout / 'backend', 'scripts': checkout / 'scripts'})
             self.assertTrue(seen[0]['folders'])
             self.assertEqual(list((checkout / '.runtime').glob('candidate-checks-*')), [])
+
+    def test_a_timed_out_check_keeps_its_partial_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory).resolve() / 'checkout'
+            (checkout / '.runtime/hermes/source/.git').mkdir(parents=True)
+            (checkout / '.runtime/hermes/venv/bin').mkdir(parents=True)
+            (checkout / '.runtime/hermes/venv/bin/python').touch()
+            (checkout / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit='new')))
+
+            def stalled(command, **kwargs):
+                raise subprocess.TimeoutExpired(command, 600, 'waiting for the relay reply', b'worker log')
+            with patch.object(self.checks, 'checks', return_value=[('relay', 'program', 'receipt')]), \
+                    patch.object(self.checks, 'run_tree', stalled), patch.object(self.checks.host, 'load_credentials'):
+                report = self.checks.run_checks(checkout, Path(directory))
+        check = report['checks'][0]
+        self.assertFalse(check['passed'])
+        self.assertEqual(check['out'], 'waiting for the relay reply')
+        self.assertIn('worker log', check['err'])
+        self.assertIn('ran longer than', check['err'])
 
     def test_a_timeout_does_not_wait_forever_for_a_process_that_keeps_the_pipes(self):
         # The grandchild starts in its own session and keeps stdout open after the check is stopped.

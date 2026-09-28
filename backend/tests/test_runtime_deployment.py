@@ -2,6 +2,7 @@
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -93,9 +94,10 @@ class RuntimeDeploymentTests(unittest.TestCase):
 
     def test_a_new_runtime_update_keeps_only_the_newest_failed_copy(self):
         failed = [self.root / f'.runtime/hermes-failed-{uuid4()}' for _ in range(3)]
-        for index, path in enumerate(failed):
+        for path in failed:
+            # A rollback creates each copy by rename, which sets its change time. The last one here is the newest.
             path.mkdir()
-            os.utime(path, (1000 + index, 1000 + index))
+            time.sleep(0.02)
         stale = self.root / f'.runtime/hermes-rollback-{uuid4()}'
         stale.mkdir()
         with self.assertRaises(deploy.DeployError):
@@ -106,6 +108,12 @@ class RuntimeDeploymentTests(unittest.TestCase):
         self.assertIn(failed[-1].name, left)
         self.assertFalse(failed[0].exists() or failed[1].exists() or stale.exists())
         self.assert_old_runtime()
+
+    def test_an_update_that_keeps_the_pin_keeps_its_rollback_copy(self):
+        kept = self.root / f'.runtime/hermes-rollback-{uuid4()}'
+        kept.mkdir()
+        self.receive(package_files(**{'README.md': b'# Coconut, changed\n'}), update_runtime=True)
+        self.assertTrue(kept.exists())
 
     def test_install_failure_restores_source_runtime_and_native_state(self):
         with self.assertRaises(deploy.DeployError):

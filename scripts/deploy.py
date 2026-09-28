@@ -727,9 +727,6 @@ def receive(directory, address, stream, *, home=None, operations=None, update_ru
         marker = marker or {'version': 1, 'installation_id': str(uuid4()), 'files': {}, 'package_id': '', 'state': 'pending', 'address': address}
         write_json(root / MARKER_PATH, marker)
         reconcile(root, operations)
-        if update_runtime and not journal.exists():
-            # No journal is pending, so no copy serves a rollback. Free their space before the new runtime.
-            prune_runtime_copies(root, newest_failed=True)
         marker = read_marker(root)
         initial_install = not marker['files'] or not runtime_present or bool(marker.get('initial_install_pending'))
         if initial_install and not marker.get('initial_install_pending'):
@@ -755,6 +752,10 @@ def receive(directory, address, stream, *, home=None, operations=None, update_ru
                     runtime_change = {'previous': previous_revision, 'candidate': package.revision}
             except (ValueError, KeyError, OSError):
                 raise DeployError('The Hermes installation receipt is invalid.') from None
+        if runtime_change and not journal.exists():
+            # A new runtime replaces the current one. No journal is pending, so no copy serves a rollback.
+            # Free their space before the new runtime. An update that keeps the pin keeps its rollback copy.
+            prune_runtime_copies(root, newest_failed=True)
         staging = Path(tempfile.mkdtemp(prefix='stage-', dir=deployment))
         backup = Path(tempfile.mkdtemp(prefix='rollback-', dir=deployment))
         old_names = set(marker['files'])
