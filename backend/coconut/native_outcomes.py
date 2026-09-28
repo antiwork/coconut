@@ -148,6 +148,14 @@ class NativeOutcomes:
         import re
         from .service import ServiceError, digest, encoded, require_text
         from .work_capacity import execution_key
+
+        def native_identity(task):
+            return task.get('_native_outcome_id') or (task.get('_kanban_claim') or {}).get('native_id')
+
+        def guard_inspects(task, parent, child):
+            return (execution_key(task) in (execution_key(parent), execution_key(child))
+                    or task['bot_id'] == child['bot_id'])
+
         if set(payload) != {'parent_id', 'child_id', 'reason'}:
             raise ServiceError(400, 'Supply only parent_id, child_id, and reason.')
         parent_id, child_id = (payload[key] for key in ('parent_id', 'child_id'))
@@ -163,10 +171,23 @@ class NativeOutcomes:
             # Never query the adapter under self.lock: a preceding tick can
             # need that lock to finish spawn bookkeeping.
             with self.lock:
-                identities = [t['id'] for t in self._all('tasks') if
-                    (t.get('_native_outcome_id') or (t.get('_kanban_claim') or {}).get('native_id')) in (parent_id, child_id)]
+                tasks = self._all('tasks')
+                identities = [t['id'] for t in tasks if native_identity(t) in (parent_id, child_id)]
+                owners = {identity: [t for t in tasks if native_identity(t) == identity]
+                          for identity in (parent_id, child_id)}
+                parent_owner = owners[parent_id][0] if len(owners[parent_id]) == 1 else None
+                child_owner = owners[child_id][0] if len(owners[child_id]) == 1 else None
+                # Done cards fall out of the default snapshot. Request only finished
+                # tasks the later guard inspects, so unrelated history is not queried
+                # under this lock or added to the snapshot.
+                observed = []
+                if parent_owner and child_owner:
+                    observed = [t['id'] for t in tasks
+                                if t['status'] in ('completed', 'failed')
+                                and guard_inspects(t, parent_owner, child_owner)
+                                and self._native_task_receipts(t['id'], state='executing')]
             snapshots = {t['external_id']: t for t in self.kanban.call(
-                {'op': 'snapshot', 'external_ids': identities})['tasks']}
+                {'op': 'snapshot', 'external_ids': list(dict.fromkeys(identities + observed))})['tasks']}
             def authorize():
                 source = self._get('tasks', source_id)
                 if source['status'] != 'working' or self._task_paused(source):
@@ -221,14 +242,23 @@ class NativeOutcomes:
                     raise ServiceError(409, 'The child’s existing decision must be answered before unlinking.')
                 # Parent appearance/decision state is deliberately not interpreted
                 # as permission for the child, or changed by this operation.
-                guarded = {t['id']: t for t in tasks if execution_key(t) in
-                           (execution_key(child), execution_key(parent)) or t['bot_id'] == child['bot_id']}
+                guarded = {t['id']: t for t in tasks if guard_inspects(t, parent, child)}
                 for task in guarded.values():
                     if task['id'] == source_id and task['id'] not in (parent['id'], child['id']):
                         continue
                     worker = self.running.get(task['id'])
+                    receipts = self._native_task_receipts(task['id'], state='executing')
+                    card = snapshots.get(task['id'])
+                    # A missing card is not proof the run stopped. A returned quiet card is.
+                    # A live worker, native run, or local command that has not ended is still owner work.
+                    stale_receipts = (task['status'] in ('completed', 'failed')
+                                      and card is not None
+                                      and not (card.get('current_run_id') or card.get('worker_pid'))
+                                      and not any((r.get('action') or {}).get('name') in LOCAL_COMMAND_TOOLS
+                                                  and not r.get('_process_ended_at') for r in receipts))
                     if (task['status'] == 'working' or worker and worker.is_alive()
-                            or self._background_pending(task['id']) or self._native_task_receipts(task['id'], state='executing')
+                            or self._background_pending(task['id'])
+                            or (receipts and not stale_receipts)
                             or task.get('_return_pending')):
                         raise ServiceError(409, 'Wait for the existing owner work and tool results before unlinking.')
                 if any(c['task_id'] in guarded and c['status'] in ('queued', 'working') for c in self._all('contexts')):
@@ -316,6 +346,74 @@ class NativeOutcomes:
                     and card.get('current_run_id') == claim['run_id']
                     and (not card.get('worker_pid') or card['worker_pid'] == claim.get('pid')))
 
+    def _linked_owner_report_coordinator(self, owner, item, peer, reporter, peers, tasks, get_deliveries):
+        """Authenticate a completed activity report without transferring PR ownership."""
+        if (item['kind'] != 'work' or item['task_id'] != owner['id']
+                or owner.get('source_task_id') not in tasks
+                or peer['kind'] != 'pr' or peer.get('work_outcome_id') != item['id']
+                or peer['task_id'] != owner['id'] or peer.get('_review_task_id') != owner['id']
+                or peer['bot_id'] != owner['bot_id'] or not peer.get('url')
+                or reporter['bot_id'] != owner['bot_id'] or reporter['status'] != 'completed'
+                or reporter.get('_is_return') or reporter.get('_assignment_task_id') not in (None, reporter['id'])):
+            return None
+        coordinator = tasks.get(reporter.get('source_task_id'))
+        if (not coordinator or coordinator['id'] in (owner['id'], owner.get('source_task_id'))
+                or coordinator['bot_id'] != owner.get('source_bot_id')
+                or reporter.get('source_bot_id') != coordinator['bot_id']
+                or reporter.get('_reply_to_task_id') != coordinator['id']
+                or any(reporter.get(k) != coordinator.get(k) for k in
+                       ('thread_id', 'conversation_bot_id', 'exchange_id'))):
+            return None
+        deliveries = get_deliveries()
+
+        def delivered(sender, recipient):
+            return [d for d in deliveries if not d.get('_progress_only') and d.get('text')
+                    and d.get('source_task_id') == sender['id']
+                    and d.get('target_bot_id') == recipient['bot_id']
+                    and d.get('receipt', {}).get('task_id') == recipient['id']
+                    and d.get('receipt', {}).get('target_bot_id') == recipient['bot_id']
+                    and d.get('receipt', {}).get('thread_id') == recipient['thread_id']
+                    and d.get('receipt', {}).get('status') in ('queued', 'paused')]
+
+        if not delivered(coordinator, reporter):
+            return None
+        for other in peers:
+            callback = tasks.get(other.get('_activity_task_id'))
+            if (other['kind'] != 'pr' or other.get('work_outcome_id') != item['id']
+                    or other['task_id'] != coordinator['id'] or other.get('_review_task_id') != coordinator['id']
+                    or other['bot_id'] != coordinator['bot_id']
+                    or not other.get('url') or other['url'].lower() != peer['url'].lower()
+                    or not callback):
+                continue
+            # Native owners receive dependency results on themselves, not on a
+            # separate _is_return callback. Authenticate that route separately;
+            # the caller still guards the coordinator's full native/task chain.
+            direct_native = (callback['id'] == coordinator['id'] and coordinator.get('_native_outcome_id')
+                and not coordinator.get('_is_return')
+                and coordinator.get('_assignment_task_id') in (None, coordinator['id'])
+                and (coordinator.get('_kanban_claim') or {}).get('native_id') in
+                    (None, coordinator['_native_outcome_id']))
+            returned_callback = (callback.get('_is_return')
+                and callback.get('_assignment_task_id') == coordinator['id']
+                and callback.get('source_task_id') == reporter['id']
+                and callback.get('source_bot_id') == reporter['bot_id']
+                and all(callback.get(k) == coordinator.get(k) for k in
+                        ('bot_id', 'session_id', 'thread_id', 'conversation_bot_id', 'exchange_id')))
+            if not (direct_native or returned_callback):
+                continue
+            # Old direct-native messages have no per-report return identity.
+            # Keep them blocked: text/audience (also rebuilt by transcript migration)
+            # cannot distinguish two same-bot reports. Legacy callbacks above do
+            # retain source_task_id and remain eligible without new message fields.
+            if any(m.get('sender_bot_id') == reporter['bot_id'] and m.get('result_status') == 'completed'
+                   and not m.get('progress_only') and m.get('text') == delivery['text']
+                   and (not direct_native or (m.get('_returning') is True
+                        and m.get('_return_source_task_id') == reporter['id']
+                        and m.get('_return_delivery_id') == delivery['id']))
+                   for delivery in delivered(reporter, callback) for m in callback.get('_bot_messages', [])):
+                return coordinator
+        return None
+
     def _retain_native_work(self, owner, native, snapshot_missing=None, snapshots=None, caller=None):
         from .service import ServiceError, now
         from .work_capacity import execution_key
@@ -330,6 +428,13 @@ class NativeOutcomes:
         source = self._get('tasks', owner['source_task_id']) if owner.get('source_task_id') else None
         pending_decisions = {d['task_id'] for d in self._all('decisions') if d['status'] == 'pending'}
         open_contexts = {c['task_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
+        deliveries = None
+
+        def get_deliveries():
+            nonlocal deliveries
+            if deliveries is None:
+                deliveries = self._all('deliveries')
+            return deliveries
 
         def running_tool(task):
             # A tool call without a result blocks while its task can still run it. The process poller marks a local
@@ -423,7 +528,7 @@ class NativeOutcomes:
                     linked.pop(identity, None)
                 native_tasks = [t for t, _ in linked.values()
                                 if t.get('_native_outcome_id') or t.get('_kanban_claim')]
-                peer_chains.append((item, source, linked, native_tasks, True))
+                peer_chains.append((item, source, linked, native_tasks, True, False))
             for peer in peers:
                 if linked_parent and peer['id'] == linked_parent['id']:
                     # The coordinating Work may remain active while its delegated PR resumes.
@@ -462,6 +567,8 @@ class NativeOutcomes:
                         and peer.get('url') and item.get('url')
                         and peer['url'].lower() == item['url'].lower()
                         and (requester_activity or owner_report))
+                    report_coordinator = (self._linked_owner_report_coordinator(
+                        owner, item, peer, reporter, peers, tasks, get_deliveries) if field == '_activity_task_id' else None)
                     # A passive same-PR report belongs to the original
                     # requester, not to an independent writer. Keep all of
                     # that requester's other branches in the guard.
@@ -493,14 +600,28 @@ class NativeOutcomes:
                             linked = {key: value for key, value in linked.items()
                                       if value[0]['status'] in self.ACTIVE or not quiet(value[0])
                                       or (value[0]['status'] == 'completed' and self._unfinished_work(value[0]))}
+                    if report_coordinator:
+                        requester_chain = self._work_chain(source, tasks, records, include_continuations=True)
+                        requester_chain.pop(owner['id'], None)
+                        # The original requester can still be active when another
+                        # task invokes continuation. Only its own call is exempt.
+                        if caller and caller['id'] in callers:
+                            requester_chain.pop(caller['id'], None)
+                        linked.update({key: value for key, value in requester_chain.items()
+                                       if value[0]['status'] not in ('failed', 'cancelled')
+                                       or value[0].get('_native_reply_pending') or not quiet(value[0])})
+                        # Unlike the original requester, this coordinator and its
+                        # callbacks must finish too. Do not exempt the caller.
+                        linked.update(self._work_chain(report_coordinator, tasks, records, include_continuations=True))
+                        linked[report_coordinator['id']] = (report_coordinator, 0)
                     native_tasks = [t for t, _ in linked.values()
                                     if t.get('_native_outcome_id') or t.get('_kanban_claim')]
-                    peer_chains.append((peer, reporter, linked, native_tasks, passive_report))
-            missing = sorted({t['id'] for _, _, _, native_tasks, _ in peer_chains for t in native_tasks
+                    peer_chains.append((peer, reporter, linked, native_tasks, passive_report, bool(report_coordinator)))
+            missing = sorted({t['id'] for _, _, _, native_tasks, _, _ in peer_chains for t in native_tasks
                               if t['id'] not in snapshots})
             if missing and snapshot_missing:
                 snapshot_missing(missing)
-            for peer, reporter, linked, native_tasks, passive_report in peer_chains:
+            for peer, reporter, linked, native_tasks, passive_report, linked_report in peer_chains:
                 foreground = (caller['id'] if passive_report and caller and caller['id'] in linked
                     and any(self._requester_callback_foreground(caller, tasks.get(identity), tasks, snapshots)
                             for identity in callers) else None)
@@ -511,9 +632,10 @@ class NativeOutcomes:
                     for t in native_tasks if t['id'] != foreground)
                 if (native_pending or peer['kind'] != 'pr'
                         or ((peer['bot_id'] == owner['bot_id'] or reporter['bot_id'] == owner['bot_id'])
-                            and not passive_report)
+                            and not (passive_report or linked_report))
                         or any((t['status'] != 'completed' and t['id'] != foreground)
                                or t.get('_waiting_on') or t.get('_return_pending')
+                               or (linked_report and t.get('_native_reply_pending'))
                                or self._task_paused(t) or self._get('exchanges', t['exchange_id']).get('cancelled')
                                or self._background_pending(t['id']) or self._unfinished_work(t)
                                or (t['id'] != foreground and self.running.get(t['id']) and self.running[t['id']].is_alive())
