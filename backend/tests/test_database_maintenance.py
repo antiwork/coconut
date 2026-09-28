@@ -230,7 +230,9 @@ class FreePageTests(unittest.TestCase):
                           return_value=SimpleNamespace(free=database_maintenance.VACUUM_DISK_RESERVE_BYTES)):
             self.assertEqual(service._release_free_pages(), 0)
         self.assertEqual(self.pragma(service, 'auto_vacuum'), 0)
-        with self.assertLogs('coconut.database_maintenance', 'WARNING'):
+        room = SimpleNamespace(free=database_maintenance.VACUUM_DISK_RESERVE_BYTES + 2 * 1024 ** 3)
+        with patch.object(database_maintenance.shutil, 'disk_usage', return_value=room), \
+                self.assertLogs('coconut.database_maintenance', 'WARNING'):
             self.assertGreater(service._release_free_pages(), 0)
         self.assertEqual((self.pragma(service, 'auto_vacuum'), self.pragma(service, 'freelist_count')), (2, 0))
 
