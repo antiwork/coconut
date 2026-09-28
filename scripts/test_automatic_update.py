@@ -341,7 +341,11 @@ class AutomaticUpdateTests(unittest.TestCase):
                                                                  checks=dict(relay=dict(passed=checks_pass)))))
                 return (0 if checks_pass else 1), 'check log'
 
-            def bounded(command, *, cwd, timeout):
+            environments = []
+
+            def bounded(command, *, cwd, timeout, env=None):
+                if 'install' not in command:
+                    environments.append(env)
                 if 'install' in command:
                     try:
                         (install or record)(command, cwd=cwd)
@@ -362,14 +366,14 @@ class AutomaticUpdateTests(unittest.TestCase):
                 try:
                     REAL_GATE(source, live, 'new', 'sha2', state, state_path)
                     raised = None
-                except (RuntimeError, OSError) as error:
+                except (RuntimeError, OSError, SystemExit) as error:
                     raised = error
             receipt = json.loads((root / 'hermes-checks.json').read_text()) if (root / 'hermes-checks.json').exists() else None
             return dict(commands=commands, script_calls=len(calls), calls=calls, state=state, raised=raised, receipt=receipt,
                         candidate_left=(source / '.runtime/hermes').exists(),
                         runtime_left=any((source / '.runtime' / name).exists() for name in update.HERMES_GATE_FOLDERS),
                         other_left=(source / '.runtime/ssh/key').exists(), stopped=stopped, runtime=source / '.runtime/hermes',
-                        partial_left=list((source / '.runtime/tools').glob('uv-download-*')),
+                        environments=environments, partial_left=list((source / '.runtime/tools').glob('uv-download-*')),
                         tools_kept=(source / '.runtime/tools/uv-1-target').exists())
 
     def test_a_new_hermes_pin_is_checked_before_the_live_install(self):
@@ -462,6 +466,26 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertEqual(state['hermes_inconclusive']['attempts'], 1)
         self.assertGreater(state['hermes_inconclusive']['retry_at'], time.time() + 3000)
         again = self.gate_case(checks_pass=True, install=install, state=state)
+        self.assertEqual((again['commands'], again['script_calls']), ([], 0))
+
+    def test_the_checks_do_not_inherit_a_model_key_from_the_updater(self):
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'stale', 'HARMLESS': '1'}):
+            result = self.gate_case(checks_pass=True)
+        (environment,) = result['environments']
+        self.assertNotIn('ANTHROPIC_API_KEY', environment)
+        self.assertEqual(environment['HARMLESS'], '1')
+
+    def test_a_run_that_ends_outside_python_still_leaves_a_wait_and_a_receipt(self):
+        state = {}
+
+        def killed(command, **kwargs):
+            raise SystemExit('The updater was stopped.')
+        result = self.gate_case(checks_pass=True, checks=killed, state=state)
+        # SystemExit skips the ordinary handlers of Exception. The marker of the start still holds.
+        self.assertEqual(state['hermes_inconclusive']['attempts'], 1)
+        self.assertGreater(state['hermes_inconclusive']['retry_at'], time.time() + update.HERMES_CHECKS_SECONDS)
+        self.assertEqual(result['receipt']['verdict'], 'inconclusive')
+        again = self.gate_case(checks_pass=True, state=state)
         self.assertEqual((again['commands'], again['script_calls']), ([], 0))
 
     def test_a_shared_or_linked_credential_file_stops_the_gate_before_the_install(self):

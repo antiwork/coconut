@@ -366,8 +366,10 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         write_receipt(receipt, revision, 'inconclusive', output)
         raise RuntimeError(output)
     passed, output, recorded, inconclusive = False, '', False, False
-    # scripts/check_hermes_candidate.py writes its own result here. The gate writes one when the script wrote none.
-    receipt.unlink(missing_ok=True)
+    # A run that ends outside Python, for example at a restart, records nothing at its end. Arm the wait before the run,
+    # and let the run replace it. The receipt says that a run is in progress until then.
+    arm_inconclusive_wait(state, state_path, revision, tree, running=True)
+    write_receipt(receipt, revision, 'inconclusive', 'A gate run started and did not finish. It may still run.')
     try:
         code, text = run_bounded([sys.executable, str(source / 'scripts/hermes.py'), 'install', '--revision', revision],
                                  cwd=source, timeout=HERMES_INSTALL_SECONDS)
@@ -375,9 +377,15 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
             output = 'The candidate install failed before any check ran: ' + (
                 text if code is not None else f'It ran longer than {HERMES_INSTALL_SECONDS} seconds.')
             raise RuntimeError(output)
+        # The check script writes its own result. Drop the placeholder of the start, so a missing result shows.
+        receipt.unlink(missing_ok=True)
+        # The model keys come from the credentials file, which the cache key covers. A key in the environment of the
+        # updater would win over the file, so the checks do not inherit one.
+        model_keys = module(source, 'host').MODEL_KEYS
         code, output = run_bounded([sys.executable, str(source / 'scripts/check_hermes_candidate.py'),
                                     '--runtime', str(source / '.runtime/hermes'), '--host-data', str(live / '.runtime/host'),
-                                    '--output', str(receipt)], cwd=source, timeout=HERMES_CHECKS_SECONDS)
+                                    '--output', str(receipt)], cwd=source, timeout=HERMES_CHECKS_SECONDS,
+                                   env={key: value for key, value in os.environ.items() if key not in model_keys})
         if code is None:
             inconclusive = True
             output += f'\nThe checks ran longer than {HERMES_CHECKS_SECONDS} seconds.'
@@ -399,8 +407,8 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         output = output or f'The gate stopped: {type(error).__name__}: {str(error)[-5000:]}'
         inconclusive = True
         if isinstance(error, Exception):
-            # A failed install or a crash is inconclusive too, and each retry downloads the toolchain again.
-            arm_inconclusive_wait(state, state_path, revision, tree)
+            # The run ended, so its wait starts now.
+            arm_inconclusive_wait(state, state_path, revision, tree, finished=True)
         raise
     finally:
         verdict = 'passed' if passed else 'inconclusive' if inconclusive else 'failed'
@@ -416,7 +424,7 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         # The live install builds its own runtime. Free the candidate and the install caches.
         clear_gate_folders(source)
     if inconclusive:
-        arm_inconclusive_wait(state, state_path, revision, tree)
+        arm_inconclusive_wait(state, state_path, revision, tree, finished=True)
         raise RuntimeError(f'The native upgrade checks for Hermes {revision[:12]} did not finish: they timed out, or their '
                            f'setup failed. Read {receipt}. They run again after a wait of up to a day.')
     state.pop('hermes_inconclusive', None)
@@ -426,13 +434,19 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}.')
 
 
-def arm_inconclusive_wait(state, state_path, revision, tree):
-    """Record an inconclusive run, and how long the next run for the same pin and code waits."""
+def arm_inconclusive_wait(state, state_path, revision, tree, *, running=False, finished=False):
+    """Record an inconclusive run, and how long the next run for the same pin and code waits.
+
+    running: a run starts. Count it, and keep the next run away for the whole budget of this one plus its wait.
+    finished: the run ended inconclusive. Its wait starts now, and its count stays.
+    An exception ends the run too, so this is also the record of a failed install or a crash.
+    """
     previous = state.get('hermes_inconclusive') or {}
-    attempts = previous.get('attempts', 0) + 1 if previous.get('revision') == revision and previous.get('code') == tree else 1
-    # Each retry installs and checks again, for hours. Wait longer after each inconclusive run, up to a day.
-    state['hermes_inconclusive'] = dict(revision=revision, code=tree, attempts=attempts,
-                                        retry_at=time.time() + min(HERMES_FAILED_RETRY_SECONDS, 3600 * 2 ** (attempts - 1)))
+    same = previous.get('revision') == revision and previous.get('code') == tree
+    attempts = previous.get('attempts', 0) + (0 if finished and same else 1) if same else 1
+    wait = min(HERMES_FAILED_RETRY_SECONDS, 3600 * 2 ** (attempts - 1))
+    budget = HERMES_INSTALL_SECONDS + HERMES_CHECKS_SECONDS if running else 0
+    state['hermes_inconclusive'] = dict(revision=revision, code=tree, attempts=attempts, retry_at=time.time() + budget + wait)
     save(state_path, state)
 
 
@@ -504,14 +518,14 @@ def clear_gate_folders(source):
         shutil.rmtree(partial, ignore_errors=True)
 
 
-def run_bounded(command, *, cwd, timeout):
+def run_bounded(command, *, cwd, timeout, env=None):
     """Run a command in its own session. Return its exit code, or None after a timeout, and its output.
 
     The output goes to a file, not a pipe, so a process that outlives the command cannot block the updater.
     After the command, Coconut stops its whole process group, for example uv and git below an install.
     """
     with tempfile.TemporaryFile() as output:
-        process = subprocess.Popen(command, cwd=cwd, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+        process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                                    start_new_session=True)
         try:
             code = process.wait(timeout=timeout)
