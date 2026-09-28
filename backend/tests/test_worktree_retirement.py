@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import shlex
 import subprocess
 import sys
@@ -59,6 +60,8 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.repo = self.root / 'repo'
         self.repo.mkdir()
         git(self.repo, 'init')
+        # A merged pull request counts only for the repository that its URL names.
+        git(self.repo, 'remote', 'add', 'origin', 'git@github.com:antiwork/coconut.git')
         (self.repo / '.gitignore').write_text('build/\n.env\nnode_modules/\n/tmp\n')
         (self.repo / 'tracked.txt').write_text('one\ntwo\n')
         (self.repo / 'logo.bin').write_bytes(bytes(range(256)))
@@ -76,6 +79,10 @@ class WorktreeRetirementTests(unittest.TestCase):
                                           str(p): {} if detail else set() for p in paths}))
         self.holders.start()
         self.addCleanup(self.holders.stop)
+        # Most tests check retirement itself. The discard of long idle or low-disk worktrees has its own tests.
+        rules = patch.multiple(retirement, DISCARD_IDLE_SECONDS=10 ** 9, LOW_DISK_BYTES=0)
+        rules.start()
+        self.addCleanup(rules.stop)
 
     def commit(self, path, message):
         git(path, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '-m', message)
@@ -103,6 +110,804 @@ class WorktreeRetirementTests(unittest.TestCase):
     def retire(self):
         self.service._next_worktree_retirement = 0
         return self.service.retire_finished_worktrees()
+
+    def pull_request(self, task, state):
+        with self.service.transaction():
+            self.service._put('artifacts', dict(id=str(uuid4()), kind='pr', bot_id=self.bot['id'], task_id=task['id'],
+                                                url='https://github.com/antiwork/coconut/pull/' + str(len(self.service._all('artifacts')) + 1),
+                                                pr_state=state, created_at=OLD))
+
+    def test_a_merged_outcome_loses_its_worktree_without_the_resumable_work_checks(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        # Each of these would keep the worktree of resumable work.
+        git(path, 'checkout', '-q', '-b', 'published-branch')
+        (path / 'committed.txt').write_text('in the pull request\n')
+        git(path, 'add', 'committed.txt')
+        self.commit(path, 'Work')
+        (path / 'tracked.txt').write_text('one\nstaged\n')
+        git(path, 'add', 'tracked.txt')
+        (path / 'logo.bin').write_bytes(b'unstaged')
+        (path / 'notes.txt').write_text('untracked\n')
+        (path / 'build').mkdir()
+        (path / 'build' / 'output.log').write_bytes(b'x' * 64)
+        inner = path / '.worktrees' / 'subagent'
+        git(path, 'worktree', 'add', '-q', '-b', 'subagent-branch', str(inner))
+        (inner / 'tracked.txt').write_text('nested change\n')
+        with patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 10):
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
+        self.assertFalse(inner.exists())
+        self.assertNotIn(str(inner), git(self.repo, 'worktree', 'list', '--porcelain'))
+        binding = self.registry()[identity]
+        self.assertEqual((binding['branch'], binding['retired']['done']), ('published-branch', True))
+        # The branches keep their commits. The archive keeps the patches and the small untracked files.
+        self.assertEqual(git(self.repo, 'show', 'published-branch:committed.txt'), 'in the pull request')
+        with tarfile.open(binding['retired']['archive']) as tar:
+            self.assertEqual(sorted(tar.getnames()), ['retirement.json', 'staged.patch', 'unstaged.patch', 'untracked/notes.txt'])
+            self.assertIn(b'+staged', tar.extractfile('staged.patch').read())
+        # A later turn of the outcome gets a new checkout of the saved branch.
+        restored = acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(git(restored['path'], 'branch', '--show-current'), 'published-branch')
+        self.assertEqual((Path(restored['path']) / 'committed.txt').read_text(), 'in the pull request\n')
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_long_idle_worktree_that_retirement_refuses_is_discarded(self):
+        outcome, identity, path, _ = self.outcome()
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        (path / 'draft.txt').write_text('keep\n')
+        (path / 'tmp').mkdir()
+        (path / 'tmp' / 'cache.bin').write_bytes(b'x' * 64)
+        # The outcome is idle for 3 days. Retirement refuses the branch switch, and the discard follows.
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60), \
+                self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
+        self.assertTrue(any('refused worktree' in line and 'changed branches' in line for line in logs.output))
+        binding = self.registry()[identity]
+        self.assertEqual((binding['branch'], binding['retired']['done']), ('switched-branch', True))
+        with tarfile.open(binding['retired']['archive']) as tar:
+            self.assertIn('untracked/draft.txt', tar.getnames())
+        restored = acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(git(restored['path'], 'branch', '--show-current'), 'switched-branch')
+
+    def test_a_discard_keeps_the_commits_of_a_detached_head(self):
+        _, identity, path, _ = self.outcome()
+        git(path, 'checkout', '-q', '--detach')
+        (path / 'tracked.txt').write_text('detached work\n')
+        git(path, 'add', 'tracked.txt')
+        self.commit(path, 'Detached commit')
+        head = git(path, 'rev-parse', 'HEAD')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
+        refs = git(self.repo, 'for-each-ref', '--format=%(refname) %(objectname)', f'refs/coconut/discarded/{identity}/')
+        self.assertTrue(refs.endswith(f'-{head} {head}'))
+
+    def test_a_merged_pull_request_of_another_repository_keeps_the_worktree(self):
+        _, identity, path, task = self.outcome()
+        with self.service.transaction():
+            self.service._put('artifacts', dict(id=str(uuid4()), kind='pr', bot_id=self.bot['id'], task_id=task['id'],
+                                                url='https://github.com/antiwork/gumroad/pull/1', pr_state='merged', created_at=OLD))
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+
+    def test_a_refused_removal_keeps_no_discard_archive(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
+        real = work_workspace.git
+
+        def refuse(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                raise ValueError('Git refused the removal.')
+            return real(where, *arguments, **options)
+        for _ in range(2):
+            with patch.object(work_workspace, 'git', side_effect=refuse):
+                self.assertEqual(self.retire(), [])
+        # The checkout still holds the work, so no archive stays, and a repeated failure adds none.
+        self.assertEqual(list((self.workspaces / 'archive' / 'done').glob('*.tar.gz')), [])
+        self.assertTrue((path / 'draft.txt').exists())
+
+    def test_a_refused_removal_of_a_clean_checkout_is_logged(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        real = work_workspace.git
+
+        def refuse(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                raise ValueError('Git refused the removal.')
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=refuse), \
+                self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(any('Git refused the removal' in line for line in logs.output))
+
+    def test_a_partial_removal_names_the_archive_and_fences_the_path(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
+        real = work_workspace.git
+
+        def partial(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                (path / '.git').unlink()
+                raise subprocess.TimeoutExpired('git', 600)
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=partial):
+            self.assertEqual(self.retire(), [])
+        retired = self.registry()[identity]['retired']
+        self.assertTrue(Path(retired['archive']).exists())
+        self.assertIn('Inspect the path', retired['restore_failed']['error'])
+        self.assertEqual(work_workspace.preferred(self.workspaces, outcome), self.workspaces / outcome)
+
+    def test_discarded_refs_go_30_days_after_the_discard(self):
+        head = git(self.repo, 'rev-parse', 'HEAD')
+        old, new = int(time.time()) - 31 * 86400, int(time.time())
+        for moment in (old, new):
+            git(self.repo, 'update-ref', f'refs/coconut/discarded/x/{moment}-{head}', head)
+        work_workspace.prune_discarded_refs(self.repo)
+        # The commit date does not count. The discard time in the name does.
+        self.assertEqual(git(self.repo, 'for-each-ref', '--format=%(refname)', 'refs/coconut/discarded/'),
+                         f'refs/coconut/discarded/x/{new}-{head}')
+
+    def test_an_open_pull_request_keeps_a_long_idle_refused_worktree(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'open')
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+
+    def test_a_resumed_discard_gets_its_changes_back(self):
+        outcome, identity, path, _ = self.outcome()
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        (path / 'tracked.txt').write_text('one\nstaged\n')
+        git(path, 'add', 'tracked.txt')
+        (path / 'logo.bin').write_bytes(b'unstaged')
+        (path / 'draft.txt').write_text('untracked\n')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            self.assertEqual(self.retire(), [identity])
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual(git(restored, 'diff', '--cached', '--name-only'), 'tracked.txt')
+        self.assertEqual((restored / 'logo.bin').read_bytes(), b'unstaged')
+        self.assertEqual((restored / 'draft.txt').read_text(), 'untracked\n')
+
+    def test_the_origin_must_be_on_github(self):
+        cache = {}
+        git(self.repo, 'remote', 'set-url', 'origin', 'git@notgithub.com:antiwork/coconut.git')
+        self.assertIsNone(retirement.repository_name(str(self.repo), cache))
+        for url in ('https://github.com/Antiwork/Coconut.git', 'git@github.com:antiwork/coconut', 'ssh://git@github.com/antiwork/coconut.git'):
+            git(self.repo, 'remote', 'set-url', 'origin', url)
+            self.assertEqual(retirement.repository_name(str(self.repo), {}), 'antiwork/coconut')
+
+    def test_a_failed_restore_of_a_discarded_branch_sends_turns_to_the_scratch_workspace(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        branch = self.registry()[identity]['branch']
+        self.assertEqual(self.retire(), [identity])
+        git(self.repo, 'branch', '-D', branch)
+        self.assertEqual(work_workspace.preferred(self.workspaces, outcome), self.workspaces / outcome)
+        self.assertIn('restore_failed', self.registry()[identity]['retired'])
+
+    def test_a_busy_service_lock_skips_the_long_idle_discard(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'open')
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60), \
+                patch.object(self.service, '_done_outcomes', return_value=None):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+
+    def test_an_unmarked_stop_keeps_interactive_session_programs(self):
+        table = {10: (1, 10 ** 6, '/usr/bin/tmux'), 11: (1, 10 ** 6, '/usr/local/bin/node'), 12: (1, 10 ** 6, '/opt/homebrew/bin/watchman')}
+        with patch.object(work_workspace, 'process_table', return_value=table), \
+                patch.object(work_workspace, 'shared', return_value=False), \
+                patch.object(work_workspace, 'stop', side_effect=lambda pids, sig, seconds: set()) as stop:
+            work_workspace.stop_orphans({10, 11, 12}, 'outcome', 1, marked=False)
+        stopped = set().union(*(call.args[0] for call in stop.call_args_list))
+        self.assertEqual(stopped, {11})
+
+    def test_a_resumed_discard_gets_its_links_back(self):
+        outcome, identity, path, _ = self.outcome()
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        (path / 'target.txt').write_text('target\n')
+        git(path, 'add', 'target.txt')
+        self.commit(path, 'Target')
+        (path / 'local.link').symlink_to('target.txt')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            self.assertEqual(self.retire(), [identity])
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual(os.readlink(restored / 'local.link'), 'target.txt')
+
+    def test_a_refused_discard_removal_waits_a_day(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
+        real = work_workspace.git
+        attempts = []
+
+        def refuse(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                attempts.append(1)
+                raise ValueError('Git refused the removal.')
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=refuse):
+            self.retire()
+            self.retire()
+        self.assertEqual(len(attempts), 1)
+        self.assertIn('retire_failed', self.registry()[identity])
+
+    def test_the_scratch_trash_is_emptied_by_the_sweep(self):
+        left = self.workspaces / work_workspace.SCRATCH_TRASH / 'stopped-1'
+        left.mkdir(parents=True)
+        (left / 'big.bin').write_bytes(b'x')
+        work_workspace.sweep_temporary(self.workspaces)
+        self.assertFalse(left.exists())
+
+    def test_a_gone_checkout_keeps_the_archive_of_an_earlier_failed_retirement(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        kept = self.workspaces / 'archive' / (identity + '.tar.gz')
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        kept.write_bytes(b'only copy')
+        saved = self.registry()
+        saved[identity]['retire_failed'] = dict(at=OLD, error='Git refused', archive=str(kept))
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        head = git(path, 'rev-parse', 'HEAD')
+        with tarfile.open(kept, 'w:gz') as tar:
+            data = json.dumps(dict(head=head)).encode()
+            info = tarfile.TarInfo('retirement.json')
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        git(self.repo, 'worktree', 'remove', '--force', str(path))
+        self.assertEqual(self.retire(), [identity])
+        self.assertTrue(kept.exists())
+        retired = self.registry()[identity]['retired']
+        self.assertEqual((retired['archive'], retired['head']), (str(kept), head))
+
+    def test_a_new_branch_never_moves_an_existing_branch(self):
+        outcome, identity, path, _ = self.outcome()
+        original = git(path, 'branch', '--show-current')
+        (path / 'tracked.txt').write_text('one\ntwo\nthree\n')
+        git(path, 'add', 'tracked.txt')
+        self.commit(path, 'Work on the wt branch')
+        tip = git(path, 'rev-parse', 'HEAD')
+        main = git(self.repo, 'branch', '--show-current')
+        git(path, 'checkout', '-q', '--detach')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            self.assertEqual(self.retire(), [identity])
+        saved = self.registry()
+        # The saved branch is held by the main checkout, so the resume needs another name.
+        saved[identity]['branch'] = main
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(git(self.repo, 'rev-parse', original), tip)
+        self.assertNotEqual(self.registry()[identity]['branch'], original)
+
+    def test_a_worktree_that_holds_the_tracked_worktree_of_another_outcome_is_not_discarded(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        # The other outcome is active, so its own retirement does not run.
+        other, other_identity, other_path, _ = self.outcome(status='working', updated_at=RECENT)
+        nested = path / '.worktrees' / 'adopted'
+        nested.parent.mkdir(exist_ok=True)
+        git(self.repo, 'worktree', 'move', str(other_path), str(nested))
+        saved = self.registry()
+        saved[other_identity]['path'] = str(nested)
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        (nested / 'draft.txt').write_text('other outcome work\n')
+        self.retire()
+        self.assertTrue((nested / 'draft.txt').exists())
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_failed_branch_creation_keeps_the_saved_branch_name(self):
+        outcome, identity, path, _ = self.outcome()
+        saved_branch = self.registry()[identity]['branch']
+        main = git(self.repo, 'branch', '--show-current')
+        git(path, 'checkout', '-q', '--detach')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            self.assertEqual(self.retire(), [identity])
+        saved = self.registry()
+        saved[identity]['branch'] = main
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        real = work_workspace.git
+
+        def refuse(where, *arguments, **options):
+            if arguments[:1] == ('branch',) and len(arguments) == 3:
+                raise ValueError('Git could not create the branch.')
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=refuse), self.assertRaises(ValueError):
+            acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(self.registry()[identity]['branch'], main)
+        self.assertIn('restore_failed', self.registry()[identity]['retired'])
+
+    def test_a_failed_pull_request_read_does_not_stop_the_pass(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        with patch.object(self.service, '_done_outcomes', side_effect=sqlite3.OperationalError('closed')):
+            # The pass goes on. The merged outcome gets the ordinary retirement, with the full archive.
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
+        self.assertFalse(self.registry()[identity]['retired'].get('done'))
+
+    def test_a_scratch_folder_that_holds_a_tracked_worktree_stays(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        scratch = self.workspaces / outcome
+        scratch.mkdir(exist_ok=True)
+        (scratch / 'notes.txt').write_text('keep\n')
+        other, other_identity, other_path, _ = self.outcome(status='working', updated_at=RECENT)
+        inner = scratch / 'adopted'
+        git(self.repo, 'worktree', 'move', str(other_path), str(inner))
+        saved = self.registry()
+        saved[other_identity]['path'] = str(inner)
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        self.retire()
+        self.assertTrue((scratch / 'notes.txt').exists())
+
+    def test_the_open_file_scan_runs_before_the_registry_lock(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
+        seen = []
+
+        def scan(where):
+            # A second open of the lock file conflicts with the lock of this process only while it is held.
+            with (self.workspaces / '.workspace.lock').open('a') as probe:
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    seen.append('free')
+                    fcntl.flock(probe, fcntl.LOCK_UN)
+                except BlockingIOError:
+                    seen.append('held')
+            return False
+        with patch.object(work_workspace, 'in_use', side_effect=scan):
+            self.assertEqual(self.retire(), [identity])
+        self.assertTrue(seen and set(seen) == {'free'}, seen)
+
+    def test_the_binding_names_the_archive_before_the_removal(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
+        real = work_workspace.git
+        seen = []
+
+        def watch(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                retired = self.registry()[identity].get('retired')
+                seen.append(retired and Path(retired['archive']).exists())
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=watch):
+            self.assertEqual(self.retire(), [identity])
+        # A stop during the removal leaves a binding that names an archive that exists.
+        self.assertEqual(seen, [True])
+
+    def test_patches_over_the_limit_are_dropped_with_a_warning(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'tracked.txt').write_text('one\ntwo\n' + 'x' * 4096)
+        (path / 'draft.txt').write_text('keep\n')
+        with patch.object(work_workspace, 'PATCH_LIMIT_BYTES', 100), self.assertLogs('coconut.work_workspace', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [identity])
+        self.assertTrue(any('staged and unstaged changes' in line for line in logs.output))
+        with tarfile.open(self.registry()[identity]['retired']['archive']) as tar:
+            self.assertEqual(tar.extractfile('unstaged.patch').read(), b'')
+            self.assertIn('untracked/draft.txt', tar.getnames())
+
+    def test_a_stop_after_the_record_leaves_a_checkout_that_the_resume_adopts(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
+        real = work_workspace.git
+
+        def stopped(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                raise KeyboardInterrupt()
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=stopped), self.assertRaises(KeyboardInterrupt):
+            self.retire()
+        self.assertTrue(self.registry()[identity].get('retired'))
+        self.assertTrue((path / 'draft.txt').exists())
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual((restored / 'draft.txt').read_text(), 'keep\n')
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_scratch_files_stay_when_a_merged_pull_request_is_in_another_repository(self):
+        outcome, identity, path, task = self.outcome()
+        with self.service.transaction():
+            self.service._put('artifacts', dict(id=str(uuid4()), kind='pr', bot_id=self.bot['id'], task_id=task['id'],
+                                                url='https://github.com/antiwork/gumroad/pull/1', pr_state='merged', created_at=OLD))
+        scratch = self.workspaces / outcome
+        (scratch / 'clone').mkdir(parents=True)
+        (scratch / 'notes.txt').write_text('a clone of the other repository, with work\n')
+        self.retire()
+        self.assertTrue((scratch / 'notes.txt').exists())
+
+    def test_a_failed_reapply_tells_the_bot_and_leaves_a_clean_checkout(self):
+        outcome, identity, path, _ = self.outcome()
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        (path / 'tracked.txt').write_text('one\nstaged\n')
+        git(path, 'add', 'tracked.txt')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            self.assertEqual(self.retire(), [identity])
+        # The branch moved, so the patches no longer fit.
+        (self.repo / 'tracked.txt').write_text('one\ntwo\nthree\n')
+        git(self.repo, 'add', 'tracked.txt')
+        self.commit(self.repo, 'Move on')
+        git(self.repo, 'branch', '-f', 'switched-branch', git(self.repo, 'rev-parse', 'HEAD'))
+        with self.assertRaisesRegex(ValueError, 'archive .* keeps them'):
+            acquire(self.workspaces, outcome, str(self.repo))
+        self.assertIn('restore_failed', self.registry()[identity]['retired'])
+        self.assertEqual(git(path, 'status', '--porcelain'), '')
+        # The clean checkout is adopted at the next restore, and the outcome goes on.
+        again = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual(again, path)
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_low_disk_shortens_the_retry_delay_of_a_refused_removal_to_an_hour(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+
+        def failed(hours):
+            moment = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat().replace('+00:00', 'Z')
+            saved = self.registry()
+            saved[identity]['retire_failed'] = dict(at=moment, error='Git refused', archive=None)
+            save_bindings(self.workspaces / 'worktrees.json', saved)
+        failed(0.1)
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            # A failure of six minutes ago waits, also on a low disk.
+            self.assertEqual(self.retire(), [])
+        failed(2)
+        # Two hours ago waits for a normal disk, and not for a low one.
+        self.assertEqual(self.retire(), [])
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [identity])
+
+    def test_a_missing_nested_checkout_does_not_block_the_discard(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        other, other_identity, other_path, _ = self.outcome(status='working', updated_at=RECENT)
+        git(self.repo, 'worktree', 'remove', '--force', str(other_path))
+        saved = self.registry()
+        saved[other_identity]['path'] = str(path / '.worktrees' / 'gone')
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        self.assertEqual(self.retire(), [identity])
+
+    def test_the_named_discard_archives_stay_within_their_limit(self):
+        first, second = [], []
+        for bucket in (first, second):
+            _, identity, path, task = self.outcome()
+            self.pull_request(task, 'merged')
+            (path / 'draft.txt').write_text('x' * 2000)
+            self.assertEqual(self.retire(), [identity])
+            bucket.append(Path(self.registry()[identity]['retired']['archive']))
+        os.utime(first[0], (time.time() - 3600,) * 2)
+        with patch.object(work_workspace, 'DISCARD_ARCHIVE_LIMIT_BYTES', second[0].stat().st_size + 10):
+            work_workspace.sweep_temporary(self.workspaces)
+        self.assertFalse(first[0].exists())
+        self.assertTrue(second[0].exists())
+
+    def test_a_discarded_detached_head_gets_a_branch_and_an_interrupted_removal_is_adopted(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        git(path, 'checkout', '-q', '--detach')
+        (path / 'tracked.txt').write_text('detached work\n')
+        git(path, 'add', 'tracked.txt')
+        self.commit(path, 'Detached commit')
+        head = git(path, 'rev-parse', 'HEAD')
+        real = work_workspace.git
+
+        def stopped(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                raise KeyboardInterrupt()
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=stopped), self.assertRaises(KeyboardInterrupt):
+            self.retire()
+        branch = self.registry()[identity]['branch']
+        self.assertTrue(branch.endswith('-detached'))
+        self.assertEqual(git(self.repo, 'rev-parse', branch), head)
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual(git(restored, 'branch', '--show-current'), branch)
+        self.assertEqual(git(restored, 'rev-parse', 'HEAD'), head)
+
+    def test_a_refused_detached_discard_leaves_no_branch_behind(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        git(path, 'checkout', '-q', '--detach')
+        real = work_workspace.git
+
+        def refuse(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                raise ValueError('Git refused the removal.')
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=refuse):
+            self.retire()
+        self.assertEqual(git(self.repo, 'branch', '--list', 'wt/*-detached*'), '')
+
+    def test_a_checkout_with_one_deleted_file_is_adopted(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'obsolete.txt').unlink()
+        real = work_workspace.git
+
+        def stopped(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                raise KeyboardInterrupt()
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=stopped), self.assertRaises(KeyboardInterrupt):
+            self.retire()
+        # The bot deleted one file before the stop. The checkout is whole, and the resume adopts it.
+        acquire(self.workspaces, outcome, str(self.repo))
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_failed_archive_write_leaves_no_branch_and_no_temporary_file(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        git(path, 'checkout', '-q', '--detach')
+        (path / 'draft.txt').write_text('keep\n')
+        real = work_workspace.write_archive
+
+        def full_disk(temporary, *arguments, **options):
+            Path(temporary).write_bytes(b'half an archive')
+            raise OSError(28, 'No space left on device')
+        with patch.object(work_workspace, 'write_archive', side_effect=full_disk):
+            self.retire()
+        self.assertEqual(git(self.repo, 'branch', '--list', 'wt/*-detached*'), '')
+        self.assertEqual(list((self.workspaces / 'archive' / 'done').glob('.*.tmp')), [])
+
+    def test_a_discard_during_a_rebase_keeps_the_saved_branch(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        saved_branch = self.registry()[identity]['branch']
+        # Git names a rebase in progress with a folder, and HEAD is detached while it runs.
+        git(path, 'checkout', '-q', '--detach')
+        marker = Path(git(path, 'rev-parse', '--path-format=absolute', '--git-path', 'rebase-merge'))
+        marker.mkdir(parents=True)
+        self.assertEqual(self.retire(), [identity])
+        self.assertEqual(self.registry()[identity]['branch'], saved_branch)
+        self.assertEqual(git(self.repo, 'branch', '--list', 'wt/*-detached*'), '')
+
+    def test_a_linked_scratch_trash_moves_nothing(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        scratch = self.workspaces / outcome
+        scratch.mkdir()
+        (scratch / 'notes.txt').write_text('scratch\n')
+        elsewhere = self.root / 'elsewhere'
+        elsewhere.mkdir()
+        (self.workspaces / work_workspace.SCRATCH_TRASH).symlink_to(elsewhere, target_is_directory=True)
+        self.retire()
+        self.assertTrue((scratch / 'notes.txt').exists())
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
+    def test_a_checkout_that_changed_after_the_record_is_not_removed_and_a_partial_one_needs_a_person(self):
+        def commit(path):
+            git(path, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'Later')
+
+        def remove_files(path):
+            for name in ('tracked.txt', 'logo.bin'):
+                (path / name).unlink()
+        damages = (('new file', lambda path: (path / 'later.txt').write_text('an edit after the record\n')),
+                   ('edit of an untracked file', lambda path: (path / 'draft.txt').write_text('changed after the record\n')),
+                   ('edit of an ignored file', lambda path: (path / '.env').write_text('CHANGED=1\n')),
+                   ('new commit', commit), ('partial removal', remove_files))
+        for name, damage in damages:
+            with self.subTest(name):
+                outcome, identity, path, task = self.outcome()
+                self.pull_request(task, 'merged')
+                (path / 'draft.txt').write_text('keep\n')
+                (path / '.env').write_text('SECRET=value\n')
+                real = work_workspace.git
+
+                def stopped(where, *arguments, **options):
+                    if arguments[:2] == ('worktree', 'remove'):
+                        damage(path)
+                        raise KeyboardInterrupt()
+                    return real(where, *arguments, **options)
+                with patch.object(work_workspace, 'git', side_effect=stopped), self.assertRaises(KeyboardInterrupt):
+                    self.retire()
+                # The checkout is not the one that the archive holds. The resume leaves it alone, and asks for a look.
+                with self.assertRaisesRegex(ValueError, 'not empty'):
+                    acquire(self.workspaces, outcome, str(self.repo))
+                self.assertIn('restore_failed', self.registry()[identity]['retired'])
+
+    def test_scratch_files_of_an_outcome_without_a_binding_wait_for_the_long_idle_rule(self):
+        outcome = str(uuid4())
+        task = dict(id=str(uuid4()), bot_id=self.bot['id'], _execution_session_id=outcome, title='Scratch', status='completed',
+                    summary='', created_at=OLD, updated_at=(datetime.now(timezone.utc) - timedelta(hours=7)).isoformat().replace('+00:00', 'Z'))
+        with self.service.transaction():
+            self.service._put('tasks', task)
+            self.service._put('artifacts', dict(id=str(uuid4()), kind='pr', bot_id=self.bot['id'], task_id=task['id'],
+                                                url='https://github.com/antiwork/coconut/pull/9', pr_state='merged', created_at=OLD))
+        scratch = self.workspaces / outcome
+        scratch.mkdir()
+        (scratch / 'notes.txt').write_text('unfinished work in a repository that no binding names\n')
+        self.retire()
+        self.assertTrue((scratch / 'notes.txt').exists())
+
+    def test_a_discard_keeps_a_small_ignored_file_and_puts_it_back(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / '.env').write_text('SECRET=value\n')
+        (path / 'node_modules').mkdir()
+        (path / 'node_modules' / 'pkg.js').write_text('build output')
+        self.assertEqual(self.retire(), [identity])
+        with tarfile.open(self.registry()[identity]['retired']['archive']) as tar:
+            names = tar.getnames()
+        self.assertIn('ignored/.env', names)
+        self.assertFalse(any('node_modules' in name for name in names))
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual((restored / '.env').read_text(), 'SECRET=value\n')
+
+    def test_a_missing_archive_tells_the_bot(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
+        self.assertEqual(self.retire(), [identity])
+        Path(self.registry()[identity]['retired']['archive']).unlink()
+        with self.assertRaisesRegex(ValueError, 'is gone'):
+            acquire(self.workspaces, outcome, str(self.repo))
+
+    def test_a_second_discard_keeps_the_first_archive(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'first.txt').write_text('first\n')
+        self.assertEqual(self.retire(), [identity])
+        first = self.registry()[identity]['retired']['archive']
+        acquire(self.workspaces, outcome, str(self.repo))
+        (path / 'second.txt').write_text('second\n')
+        self.assertEqual(self.retire(), [identity])
+        second = self.registry()[identity]['retired']['archive']
+        self.assertNotEqual(first, second)
+        self.assertTrue(Path(first).exists() and Path(second).exists())
+
+    def test_a_discard_drops_the_archive_of_an_earlier_failed_removal(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        stale = self.workspaces / 'archive' / (identity + '.tar.gz')
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_bytes(b'old retire archive')
+        saved = self.registry()
+        saved[identity]['retire_failed'] = dict(at=OLD, error='Git refused', archive=str(stale))
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        self.assertEqual(self.retire(), [identity])
+        self.assertFalse(stale.exists())
+
+    def test_a_failed_checkout_of_a_discarded_branch_leaves_no_partial_checkout(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        self.assertEqual(self.retire(), [identity])
+        real = work_workspace.git
+
+        def interrupted(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'add'):
+                Path(arguments[-2]).mkdir(parents=True)
+                (Path(arguments[-2]) / 'partial.txt').write_text('partial')
+                raise subprocess.TimeoutExpired('git', 600)
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=interrupted), self.assertRaises(ValueError):
+            acquire(self.workspaces, outcome, str(self.repo))
+        self.assertFalse(path.exists())
+        # The next turn checks out the branch again.
+        restored = acquire(self.workspaces, outcome, str(self.repo))
+        self.assertTrue(Path(restored['path']).is_dir())
+
+    def test_a_refused_worktree_of_a_recently_idle_outcome_stays(self):
+        recent = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat().replace('+00:00', 'Z')
+        _, identity, path, _ = self.outcome(updated_at=recent)
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 2 * 24 * 60 * 60):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_low_disk_discards_a_refused_idle_worktree_at_once(self):
+        recent = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat().replace('+00:00', 'Z')
+        _, identity, path, _ = self.outcome(updated_at=recent)
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
+        # A low disk also runs the pass more often.
+        self.assertLessEqual(self.service._next_worktree_retirement - time.time(), retirement.LOW_DISK_INTERVAL_SECONDS)
+
+    def test_a_locked_worktree_stays_even_when_long_idle(self):
+        _, identity, path, _ = self.outcome()
+        git(path, 'checkout', '-q', '-b', 'switched-branch')
+        git(self.repo, 'worktree', 'lock', str(path))
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+
+    def test_idle_scratch_workspaces_lose_their_files_and_unknown_old_ones_go(self):
+        idle, _, _, task = self.outcome()
+        self.pull_request(task, 'merged')
+        active, _, _, _ = self.outcome(status='working', updated_at=RECENT)
+        folders = {name: self.workspaces / name for name in (idle, active, self.bot['id'])}
+        for folder in folders.values():
+            (folder / 'clone' / '.git').mkdir(parents=True)
+            (folder / 'report.md').write_text('evidence')
+        unknown_old, unknown_new = self.workspaces / str(uuid4()), self.workspaces / str(uuid4())
+        for folder in (unknown_old, unknown_new):
+            (folder / 'build').mkdir(parents=True)
+        os.utime(unknown_old, (time.time() - 3 * 24 * 60 * 60,) * 2)
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            self.retire()
+        # The done outcome keeps an empty folder for a later turn. The active outcome and the bot keep their files.
+        self.assertEqual(list(folders[idle].iterdir()), [])
+        self.assertTrue((folders[active] / 'report.md').exists())
+        self.assertTrue((folders[self.bot['id']] / 'report.md').exists())
+        self.assertFalse(unknown_old.exists())
+        self.assertTrue(unknown_new.exists())
+
+    def test_a_named_discard_archive_survives_the_size_limit_but_not_the_age_limit(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
+        self.assertEqual(self.retire(), [identity])
+        archive = Path(self.registry()[identity]['retired']['archive'])
+        with patch.object(work_workspace, 'NESTED_ARCHIVE_LIMIT_BYTES', 0):
+            os.utime(archive, (time.time() - 3 * 86400,) * 2)
+            work_workspace.sweep_temporary(self.workspaces)
+        self.assertTrue(archive.exists())
+        os.utime(archive, (time.time() - (work_workspace.NESTED_ARCHIVE_DAYS + 1) * 86400,) * 2)
+        work_workspace.sweep_temporary(self.workspaces)
+        self.assertFalse(archive.exists())
+
+    def test_a_discarded_branch_that_another_worktree_holds_gets_a_new_branch_on_resume(self):
+        outcome, identity, path, _ = self.outcome()
+        # The bot leaves the worktree on main, which the main checkout holds too.
+        main = git(self.repo, 'branch', '--show-current')
+        git(path, 'checkout', '-q', '--detach')
+        git(path, 'checkout', '-q', '-B', 'temp-holder')
+        with patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60):
+            git(path, 'checkout', '-q', '-b', 'other-branch')
+            self.assertEqual(self.retire(), [identity])
+        saved = self.registry()
+        saved[identity]['branch'] = main
+        save_bindings(self.workspaces / 'worktrees.json', saved)
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertTrue(restored.is_dir())
+        self.assertNotEqual(git(restored, 'branch', '--show-current'), main)
+
+    def test_the_sweep_trims_old_discard_archives(self):
+        done = self.workspaces / 'archive' / 'done'
+        done.mkdir(parents=True)
+        old, new = done / 'old.tar.gz', done / 'new.tar.gz'
+        for archive in (old, new):
+            archive.write_bytes(b'x')
+        os.utime(old, (time.time() - (work_workspace.NESTED_ARCHIVE_DAYS + 1) * 86400,) * 2)
+        work_workspace.sweep_temporary(self.workspaces)
+        self.assertFalse(old.exists())
+        self.assertTrue(new.exists())
+
+    def test_an_open_pull_request_keeps_the_worktree_of_its_outcome(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        self.pull_request(task, 'open')
+        git(path, 'checkout', '-q', '-b', 'other-branch')
+        self.assertEqual(self.retire(), [])
+        self.assertTrue(path.is_dir())
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_a_missing_checkout_closes_its_binding_instead_of_failing_every_hour(self):
+        outcome, identity, path, _ = self.outcome()
+        shutil.rmtree(path)
+        with self.assertNoLogs('coconut.worktree_retirement', 'WARNING'):
+            self.assertEqual(self.retire(), [identity])
+        self.assertTrue(self.registry()[identity]['retired']['done'])
+        self.assertEqual(self.retire(), [])
+        restored = acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(git(restored['path'], 'branch', '--show-current'), 'wt/' + identity)
+
+    def test_an_active_outcome_with_a_merged_pull_request_keeps_its_worktree(self):
+        _, identity, path, task = self.outcome(status='working')
+        self.pull_request(task, 'merged')
+        self.assertEqual(self.retire(), [])
+        self.assertTrue(path.is_dir())
+        self.assertNotIn('retired', self.registry()[identity])
 
     def test_a_branch_renamed_in_the_last_turn_still_retires(self):
         outcome, identity, path, _ = self.outcome()
@@ -681,11 +1486,11 @@ class WorktreeRetirementTests(unittest.TestCase):
         _, identity, path, _ = self.outcome()
         entered, held = threading.Event(), threading.Event()
         finished = self.service._finished_outcomes
-        def watched(current, *, timeout=-1, only=None):
+        def watched(current, *, timeout=-1, only=None, **options):
             # The final check under the registry lock runs with a short timeout.
             if only is not None and timeout != retirement.SERVICE_WAIT_SECONDS:
                 entered.set()
-            return finished(current, timeout=timeout, only=only)
+            return finished(current, timeout=timeout, only=only, **options)
         original = work_workspace.check_worktree
         def check(*arguments, **options):
             result = original(*arguments, **options)
@@ -761,12 +1566,12 @@ class WorktreeRetirementTests(unittest.TestCase):
         outcome, identity, path, _ = self.outcome()
         finished, answers = self.service._finished_outcomes, []
 
-        def busy_first(current, *, timeout=-1, only=None):
+        def busy_first(current, *, timeout=-1, only=None, **options):
             # The first check for this outcome finds the service busy.
             if only is not None and not answers:
                 answers.append(None)
                 return None
-            return finished(current, timeout=timeout, only=only)
+            return finished(current, timeout=timeout, only=only, **options)
         with patch.object(self.service, '_finished_outcomes', side_effect=busy_first), \
                 patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0):
             self.assertEqual(self.retire(), [identity])
@@ -796,12 +1601,12 @@ class WorktreeRetirementTests(unittest.TestCase):
         (path / 'draft.txt').write_text('keep\n')
         finished, answers = self.service._finished_outcomes, []
 
-        def busy_under_lock(current, *, timeout=-1, only=None):
+        def busy_under_lock(current, *, timeout=-1, only=None, **options):
             # The check under the registry lock, after the archive write, finds the service busy once.
             if only is not None and timeout == retirement.LOCKED_WAIT_SECONDS and not answers:
                 answers.append(None)
                 return None
-            return finished(current, timeout=timeout, only=only)
+            return finished(current, timeout=timeout, only=only, **options)
         with patch.object(self.service, '_finished_outcomes', side_effect=busy_under_lock), \
                 patch('coconut.worktree_retirement.BUSY_RETRY_SECONDS', 0):
             self.assertEqual(self.retire(), [identity])
@@ -1214,6 +2019,22 @@ class WorktreeRetirementTests(unittest.TestCase):
         for identity, path in ((foreign, foreign_path), (locked, locked_path)):
             self.assertTrue(path.is_dir())
             self.assertNotIn('retired', self.registry()[identity])
+
+    @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
+    def test_an_old_orphan_without_the_outcome_variable_stops_when_the_pull_request_merged(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        # A dev server that a bot started in its own shell has no COCONUT_WORKSPACE_OUTCOME.
+        pid = self.orphan(path)
+        self.holders.stop()
+        with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
+            self.assertEqual(self.retire(), [identity])
+        for _ in range(50):
+            if not self.alive(pid):
+                break
+            time.sleep(0.1)
+        self.assertFalse(self.alive(pid))
+        self.assertFalse(path.exists())
 
     @unittest.skipUnless(ENVIRONMENTS_VISIBLE, 'The test needs lsof, launchd, and visible process environments.')
     def test_an_orphan_and_its_child_process_are_both_stopped(self):

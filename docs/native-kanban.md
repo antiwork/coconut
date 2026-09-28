@@ -123,6 +123,33 @@ Retirement does these steps:
    It runs `git worktree remove --force` with a 600-second limit. It keeps the branch and its commits.
 10. It deletes the other archives of the same worktree that no binding names.
 
+Retirement keeps work only while it can resume. Coconut discards the worktree of an idle outcome in these cases:
+
+- All pull requests of the outcome merged or closed, and one of them is in the repository of the worktree.
+- The checkout is already gone.
+- Retirement refuses the worktree, and the outcome is idle for 2 days (`DISCARD_IDLE_SECONDS`) with no open pull
+  request, for example after a branch switch, a nested repository, or ignored files larger than the archive limit.
+- Retirement refuses the worktree, and the disk has less than 20 GiB free (`LOW_DISK_BYTES`). The pass then runs
+  every 10 minutes.
+
+A discard keeps the branch and a ref `refs/coconut/discarded/<identity>/<time>-<commit>` for each HEAD, nested ones
+too. A detached HEAD gets a branch `wt/<name>-detached` at its commit. The archive in `workspaces/archive/done/` holds the
+staged and unstaged patches (up to 200 MB), the untracked files (up to 200 MB), and the ignored files that are not build
+output (up to 200 MB), such as `.env`. Rebuildable folders and nested worktrees go without an archive. Only a locked
+worktree, a worktree of another outcome, or a process that is not an old orphan keeps the worktree.
+
+A later turn gets a new checkout of the saved branch, and Coconut puts the archived changes back. When the branch moved,
+a patch does not fit, or the archive is gone, the checkout stays clean, and `coconut_workspace` tells the bot which
+archive holds the changes. The refs go after 30 days. The archive goes after 30 days too. The archives that no binding
+names stay within 2 GiB together, the newer ones first, and the archives that a binding names within 4 GiB together, and
+this limit can delete a young one.
+
+The same pass deletes the files in the scratch workspace (`workspaces/<outcome>`) of such an outcome. Under the service
+lock, it checks the outcome again and moves the folder to `workspaces/.scratch-trash`, so no turn can start in it
+meanwhile. The deletion runs after the lock. The folder stays, empty, because a later turn uses it as its working
+directory. A scratch folder that no task names goes after 2 days
+without changes. A bot's own workspace and a folder that a process uses stay.
+
 Before it retires any worktree, each hourly run also stops the old orphans of every idle outcome. It checks the
 outcome's worktrees and its scratch workspace (`workspaces/<outcome>`), with one `lsof` scan, and uses the same
 orphan rules. This runs even when retirement refuses the worktree, for example for a locked nested worktree.
