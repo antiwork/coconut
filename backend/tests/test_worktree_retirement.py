@@ -379,7 +379,7 @@ class WorktreeRetirementTests(unittest.TestCase):
         # The moved folder is deleted after the lock, and nothing stays in the trash.
         self.assertEqual(list((self.workspaces / work_workspace.TRASH).iterdir()), [])
 
-    def test_a_folder_on_another_disk_is_deleted_in_place(self):
+    def test_a_folder_on_another_disk_stays_and_is_logged(self):
         identity, path = self.refused_with_build_folders()
 
         def other_disk(source, target):
@@ -387,9 +387,20 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch('coconut.work_workspace.os.rename', side_effect=other_disk), \
                 self.assertLogs('coconut.work_workspace', 'WARNING') as logs:
             self.assertEqual(self.retire(), [])
-        self.assertFalse((path / 'tmp').exists())
-        self.assertFalse((path / 'node_modules').exists())
+        # A deletion in place would hold the registry lock for minutes.
+        self.assertTrue((path / 'tmp/cache/big.bin').exists())
         self.assertTrue(any('another disk' in line for line in logs.output))
+
+    def test_an_unreadable_build_folder_stays(self):
+        identity, path = self.refused_with_build_folders()
+        hidden = path / 'tmp/probe'
+        (hidden / 'clone/.git').mkdir(parents=True)
+        hidden.chmod(0)
+        self.addCleanup(hidden.chmod, 0o700)
+        self.assertEqual(self.retire(), [])
+        hidden.chmod(0o700)
+        self.assertTrue((hidden / 'clone/.git').is_dir())
+        self.assertFalse((path / 'node_modules').exists())
 
     def test_a_link_named_like_a_build_folder_is_not_followed(self):
         identity, path = self.refused_with_build_folders()

@@ -121,10 +121,11 @@ A failed check is logged, and retirement continues.
 When retirement refuses the worktree of an idle outcome, for example for a nested repository or a branch switch,
 Coconut deletes the rebuildable folders of that worktree. These are the folders that the archive leaves out, and a build
 creates them again. Coconut deletes only folders that Git ignores, never follows a link, and keeps a folder that holds a
-worktree or the saved path of another outcome. The worktree must belong to the saved repository, the outcome must
+worktree, another repository, a folder that it cannot read, or the saved path of another outcome. The worktree must belong to the saved repository, the outcome must
 still be idle, and no process may use the worktree. Coconut checks the binding and the folders again under
 `workspaces/.workspace.lock`. Under that lock, it moves the folders to `workspaces/build-trash`, and it deletes
-them after the lock, so a new turn does not wait for a long deletion. The next pass empties a trash that a stop left.
+them after the lock, so a new turn does not wait for a long deletion. A folder on another disk than the registry stays,
+and the log says so. The next pass empties a trash that a stop left.
 The worktree must be registered and not locked. The other files and the branch stay.
 
 Coconut never stops a shared service that a turn started, such as OrbStack, Docker Desktop, CoreSimulator,

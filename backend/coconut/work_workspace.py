@@ -909,10 +909,18 @@ def rebuildable_folders(path, keep):
 
 
 def holds_repository(folder):
-    """Return True when the folder holds a Git repository or worktree, for example a clone that a bot made in tmp."""
-    for directory, folders, files in os.walk(folder):
-        if '.git' in folders or '.git' in files:
-            return True
+    """Return True when the folder holds a Git repository or worktree, for example a clone that a bot made in tmp.
+
+    A folder that Coconut cannot read counts as one, because a repository can be inside it.
+    """
+    def unreadable(error):
+        raise error
+    try:
+        for directory, folders, files in os.walk(folder, onerror=unreadable):
+            if '.git' in folders or '.git' in files:
+                return True
+    except OSError:
+        return True
     return False
 
 
@@ -974,21 +982,14 @@ def free_rebuildable(root, identity, finished):
         for index, name in enumerate(names):
             target = trash / f'{identity}-{time.time_ns()}-{index}'
             try:
-                try:
-                    os.rename(path / name, target)
-                except OSError as error:
-                    if error.errno != errno.EXDEV:
-                        raise
-                    # The trash is on another disk. Delete the folder in place, under the lock, and say why a turn can wait.
-                    logging.getLogger(__name__).warning('Build folder %s of %s is on another disk than %s. Coconut deletes it '
-                                                        'under the registry lock, so a new turn can wait.', name, path, trash)
-                    shutil.rmtree(path / name)
-                    deleted.append(name)
-                else:
-                    moved.append((name, target))
+                os.rename(path / name, target)
             except OSError as error:
-                # One folder that Coconut cannot delete must not keep the others.
-                logging.getLogger(__name__).warning('Coconut could not delete build folder %s of %s: %s', name, path, error)
+                # One folder that Coconut cannot move must not keep the others. A folder on another disk than the
+                # trash stays, because a deletion in place would hold the lock for minutes.
+                reason = 'It is on another disk than ' + str(trash) if error.errno == errno.EXDEV else str(error)
+                logging.getLogger(__name__).warning('Coconut could not delete build folder %s of %s: %s', name, path, reason)
+            else:
+                moved.append((name, target))
     for name, target in moved:
         try:
             shutil.rmtree(target)
