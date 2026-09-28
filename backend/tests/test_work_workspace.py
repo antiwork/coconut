@@ -215,9 +215,11 @@ class WorkspaceToolTextTests(unittest.TestCase):
     def test_the_workspace_tool_tells_bots_to_rename_the_branch(self):
         from coconut.work_workspace import SCHEMA
         # A branch switch stops the work item, and a rename keeps it. The tool must say so to every bot.
-        self.assertIn('git branch -m', SCHEMA['description'])
-        self.assertIn('git switch', SCHEMA['description'])
-        self.assertIn('without a branch', SCHEMA['description'])
+        text = SCHEMA['description']
+        self.assertIn('rename the worktree branch with git branch -m <name>', text)
+        self.assertIn('Do not create or switch branches in the worktree with git checkout -b, git checkout <branch>, '
+                      'or git switch, and do not check out a commit without a branch', text)
+        self.assertIn('inside this worktree', text)
 
 if __name__ == '__main__':
     unittest.main()

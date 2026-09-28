@@ -1344,7 +1344,7 @@ SCHEMA = {'name': 'coconut_workspace', 'description':
     'To name a PR branch, rename the worktree branch with git branch -m <name>. Do not create or switch branches '
     'in the worktree with git checkout -b, git checkout <branch>, or git switch, and do not check out a commit '
     'without a branch: Coconut then stops this work item until a person recovers the checkout. To test another '
-    'commit, add a separate worktree for it. '
+    'commit, add a separate worktree for it inside this worktree, for example under tmp/, so retirement removes it. '
     'This routine setup does not require a decision card. It does not push, merge, or deploy.',
     'parameters': {'type': 'object', 'properties': {
         'repository': {'type': 'string'}, 'existing_worktree': {'type': 'string'}}, 'required': ['repository']}}
