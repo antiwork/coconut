@@ -1330,6 +1330,9 @@ SCHEMA = {'name': 'coconut_workspace', 'description':
     'Hermes creates it and reuses it for replies and recovery. Supply the local repository path. '
     'When continuing earlier changes, pass their existing_worktree to retain their branch and files. '
     'Use the returned path as cwd for all commands. Use OrbStack for isolated test services when needed. '
+    'To name a PR branch, rename the worktree branch with git branch -m <name>. Do not create or switch branches '
+    'in the worktree with git checkout -b, git checkout <branch>, or git switch: Coconut then stops this work item '
+    'until a person recovers the checkout. '
     'This routine setup does not require a decision card. It does not push, merge, or deploy.',
     'parameters': {'type': 'object', 'properties': {
         'repository': {'type': 'string'}, 'existing_worktree': {'type': 'string'}}, 'required': ['repository']}}

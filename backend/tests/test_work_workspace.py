@@ -52,6 +52,12 @@ class WorkWorkspaceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'missing'):
             preferred(self.saved, first)
 
+    def test_the_workspace_tool_tells_bots_to_rename_the_branch(self):
+        from coconut.work_workspace import SCHEMA
+        # A branch switch stops the work item, and a rename keeps it. The tool must say so to every bot.
+        self.assertIn('git branch -m', SCHEMA['description'])
+        self.assertIn('git switch', SCHEMA['description'])
+
     def test_a_retired_native_worktree_returns_with_its_changes(self):
         outcome = str(uuid4())
         original = acquire(self.saved, outcome, str(self.repo))
