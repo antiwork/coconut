@@ -20,7 +20,7 @@ REAL_GATE = update.check_hermes_candidate
 
 def saved_result(result):
     """Return the saved gate result without its time."""
-    return {key: value for key, value in result['state']['hermes_checks'].items() if key != 'checked_at'}
+    return {key: value for key, value in result['state']['hermes_checks'].items() if key not in ('checked_at', 'code')}
 
 
 class AutomaticUpdateTests(unittest.TestCase):
@@ -433,16 +433,34 @@ class AutomaticUpdateTests(unittest.TestCase):
         # The pass is not saved as a failed check, so the next pass with enough space runs the checks.
         self.assertNotIn('hermes_checks', result['state'])
 
-    def test_a_failed_pin_is_not_checked_again_for_a_day(self):
-        failed = dict(revision='new', sha='sha2', passed=False, checked_at=time.time() - 60)
-        # A merge on main rarely fixes a pin, so a new commit does not repeat the checks either.
-        for cached in (failed, dict(failed, sha='sha1')):
-            result = self.gate_case(checks_pass=True, cached=cached)
-            self.assertIn('failed for Hermes new', str(result['raised']))
-            self.assertEqual((result['commands'], result['script_calls']), ([], 0))
-        # A day later, or for a new pin, the checks run again.
-        for cached in (dict(failed, checked_at=time.time() - update.HERMES_FAILED_RETRY_SECONDS - 1), dict(failed, revision='other')):
+    def test_a_failed_pin_is_not_checked_again_for_a_day_with_the_same_code(self):
+        # gate_case has no Git checkout, so the commit stands for the code.
+        failed = dict(revision='new', sha='sha2', code='sha2', passed=False, checked_at=time.time() - 60)
+        result = self.gate_case(checks_pass=True, cached=failed)
+        self.assertIn('failed for Hermes new', str(result['raised']))
+        self.assertEqual((result['commands'], result['script_calls']), ([], 0))
+        # A day later, a new pin, or a change of the checked code runs the checks again.
+        for cached in (dict(failed, checked_at=time.time() - update.HERMES_FAILED_RETRY_SECONDS - 1),
+                       dict(failed, revision='other'), dict(failed, code='other-tree')):
             self.assertEqual(self.gate_case(checks_pass=True, cached=cached)['script_calls'], 1)
+
+    def test_the_checked_code_is_the_tree_of_backend_and_scripts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            subprocess.run(['git', 'init', '-q'], cwd=source, check=True)
+            for name in ('backend/a.py', 'scripts/b.py', 'ios/c.swift'):
+                (source / name).parent.mkdir(parents=True, exist_ok=True)
+                (source / name).write_text(name)
+            commit = ['git', '-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-qam', 'x']
+            subprocess.run(['git', 'add', '.'], cwd=source, check=True)
+            subprocess.run(commit, cwd=source, check=True)
+            first = update.checked_code(source, 'sha')
+            (source / 'ios/c.swift').write_text('changed')
+            subprocess.run(commit, cwd=source, check=True)
+            self.assertEqual(update.checked_code(source, 'sha'), first)
+            (source / 'backend/a.py').write_text('changed')
+            subprocess.run(commit, cwd=source, check=True)
+            self.assertNotEqual(update.checked_code(source, 'sha'), first)
 
     def test_the_gate_removes_its_runtime_folder_and_caches(self):
         def install(args, **kwargs):
@@ -471,13 +489,13 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertFalse(result['receipt']['passed'])
 
     def test_a_passed_hermes_pin_is_not_checked_again(self):
-        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha2', passed=True))
+        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha2', code='sha2', passed=True))
         self.assertIsNone(result['raised'])
         self.assertEqual((result['commands'], result['script_calls']), ([], 0))
 
     def test_a_new_source_commit_checks_the_same_pin_again(self):
         # The checks run the Coconut code of the checkout too, so a pass for another commit does not count.
-        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha1', passed=True))
+        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha1', code='sha1', passed=True))
         self.assertEqual(result['script_calls'], 1)
         self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', passed=True))
 
