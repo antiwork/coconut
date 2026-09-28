@@ -58,10 +58,10 @@ def attach_previews(service, decision, payload):
         prepared.append((dict(artifact_id=artifact_id, caption=caption, width=width, height=height),
             dict(id=artifact_id, bot_id=decision['bot_id'], task_id=decision['task_id'],
                  title=f'preview.{extension}', kind='file', status='ready', preview=caption, url=None,
-                 created_at=now(), _hidden=True, _decision_id=decision['id'],
-                 _content_base64=base64.b64encode(content).decode())))
+                 created_at=now(), _hidden=True, _decision_id=decision['id']), content))
     # Validate the whole set before writing any bytes. The caller owns the transaction.
-    for _, artifact in prepared:
+    for _, artifact, content in prepared:
         service._put('artifacts', artifact)
-    decision['previews'] = [preview for preview, _ in prepared]
+        service.store_artifact_content(artifact['id'], content)
+    decision['previews'] = [preview for preview, _, _ in prepared]
     decision['previews_hash'] = digest(encoded(decision['previews'])) if prepared else None
