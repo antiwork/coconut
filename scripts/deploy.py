@@ -564,7 +564,7 @@ def reconcile(root, operations):
         try:
             if record['service_state']['mode'] != 'stopped':
                 # This probe usually fails on a stopped service, so it must not wait the full startup deadline.
-                getattr(operations, 'probe', operations.health)(root, old['address'])
+                operations.probe(root, old['address'])
             else:
                 operations.assert_stopped(root)
         except DeployError:

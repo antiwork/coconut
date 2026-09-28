@@ -45,6 +45,9 @@ class Operations:
             raise RuntimeError('The host became unreachable.')
         return dict(ok=True, api_version=1)
 
+    def probe(self, root, address):
+        return self.health(root, address)
+
 
 class MigrationTests(unittest.TestCase):
     def setUp(self):

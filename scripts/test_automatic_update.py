@@ -185,16 +185,28 @@ class AutomaticUpdateTests(unittest.TestCase):
             with patch.object(update, 'service_answers', return_value=False), self.assertRaises(RuntimeError):
                 attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
             self.assertEqual(received, ['first', 'first'])
-            with self.assertRaises(RuntimeError):
-                attempt(1000 + update.FAILED_DEPLOY_SECONDS)
+            # The second failure doubled the wait. After it ends, the same commit is tried again.
+            retry_at = json.loads(state_path.read_text())['failed_deploy']['retry_at']
+            self.assertEqual(retry_at, 1000 + update.FAILED_DEPLOY_SECONDS - 1 + 2 * update.FAILED_DEPLOY_SECONDS)
+            with patch.object(update, 'service_answers', return_value=True), self.assertRaises(RuntimeError):
+                attempt(retry_at)
             self.assertEqual(json.loads(state_path.read_text())['failed_deploy']['attempts'], 3)
             # A new merged commit deploys at once, and success clears the backoff.
             head[0], outcome[0] = 'second', 'ok'
-            attempt(1001 + update.FAILED_DEPLOY_SECONDS)
+            attempt(retry_at + 1)
             self.assertEqual(received, ['first', 'first', 'first', 'second'])
             saved = json.loads(state_path.read_text())
             self.assertNotIn('failed_deploy', saved)
             self.assertEqual(saved['source_sha'], 'second')
+
+    def test_a_starting_service_counts_as_running(self):
+        # During startup migrations the service does not listen yet. Its launchd job still has a process.
+        with tempfile.TemporaryDirectory() as directory:
+            live = Path(directory)
+            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout='{\n\t"PID" = 4242;\n};')):
+                self.assertTrue(update.service_answers(live))
+            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=113, stdout='')):
+                self.assertFalse(update.service_answers(live))
 
     def test_completed_archive_receipt_survives_interruption(self):
         with tempfile.TemporaryDirectory() as directory:

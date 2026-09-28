@@ -283,8 +283,21 @@ def release_ios(config, state, state_path):
     save(state_path, state)
 
 
+# The launch agent that runs the installed service. scripts/host.py installs it.
+SERVICE_LABEL = 'local.coconut.agent'
+
+
 def service_answers(live):
-    """Return True when the installed service accepts a local connection."""
+    """Return True when the installed service runs or accepts a local connection.
+
+    During startup migrations the service does not listen yet, so a running launchd job also counts.
+    """
+    try:
+        listing = subprocess.run(['launchctl', 'list', SERVICE_LABEL], capture_output=True, text=True, timeout=10)
+        if listing.returncode == 0 and re.search(r'"PID" = [0-9]+;', listing.stdout):
+            return True
+    except (OSError, subprocess.TimeoutExpired):
+        pass
     try:
         port = urlsplit(json.loads((live / '.runtime/host/connection.json').read_text())['address']).port or 443
         with socket.create_connection(('127.0.0.1', port), timeout=3):
@@ -348,31 +361,33 @@ def update(config, state_path):
                      '--directory', str(live.relative_to(Path.home())), '--address', address]
         if runtime.get('commit') != validated.revision:
             arguments.append('--update-runtime')
-        try:
+    try:
+        if not matches:
             with package.open('rb') as stream:
                 output = run(arguments, stdin=stream)
             save(state_path.parent / 'deployment-result.json', dict(source_sha=sha, output=output))
             result = [json.loads(line.split('=', 1)[1]) for line in output.splitlines() if line.startswith('COCONUT_DEPLOY_RESULT=')]
             if len(result) != 1 or not result[0].get('ok'):
                 raise RuntimeError('The installer did not confirm a successful deployment.')
-        except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError):
-            # A failed install restores the previous source and restarts the service. Back off for this commit:
-            # 10 minutes, then double up to 6 hours. A new merged commit deploys at once.
-            attempts = failed.get('attempts', 0) + 1 if failed.get('source_sha') == sha else 1
-            state['failed_deploy'] = dict(source_sha=sha, attempts=attempts,
-                                          retry_at=time.time() + min(FAILED_DEPLOY_MAX_SECONDS, FAILED_DEPLOY_SECONDS * 2 ** (attempts - 1)))
-            save(state_path, state)
-            raise
-    address = json.loads((live / '.runtime/host/connection.json').read_text())['address']
-    expected.Operations().health(live, address)
-    marker = json.loads(marker_path.read_text())
-    runtime = json.loads(runtime_path.read_text())
-    if not isinstance(runtime, dict) or runtime.get('commit') != validated.revision:
-        raise RuntimeError('The installed runtime does not match the merged commit.')
-    if marker.get('state') != 'installed' or marker.get('files') != validated.hashes or any(
-            hashlib.sha256((live / name).read_bytes()).hexdigest() != digest
-            for name, digest in validated.hashes.items()):
-        raise RuntimeError('The installed files do not match the merged commit.')
+        address = json.loads((live / '.runtime/host/connection.json').read_text())['address']
+        expected.Operations().health(live, address)
+        marker = json.loads(marker_path.read_text())
+        runtime = json.loads(runtime_path.read_text())
+        if not isinstance(runtime, dict) or runtime.get('commit') != validated.revision:
+            raise RuntimeError('The installed runtime does not match the merged commit.')
+        if marker.get('state') != 'installed' or marker.get('files') != validated.hashes or any(
+                hashlib.sha256((live / name).read_bytes()).hexdigest() != digest
+                for name, digest in validated.hashes.items()):
+            raise RuntimeError('The installed files do not match the merged commit.')
+    except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError):
+        # A failed install or check restores the previous source or leaves the next pass to install again. Each
+        # install stops and restarts the service, so back off for this commit: 10 minutes, then double up to
+        # 6 hours. A new merged commit deploys at once.
+        attempts = failed.get('attempts', 0) + 1 if failed.get('source_sha') == sha else 1
+        state['failed_deploy'] = dict(source_sha=sha, attempts=attempts,
+                                      retry_at=time.time() + min(FAILED_DEPLOY_MAX_SECONDS, FAILED_DEPLOY_SECONDS * 2 ** (attempts - 1)))
+        save(state_path, state)
+        raise
     state.pop('failed_deploy', None)
     state.update(source_sha=sha, package_id=metadata['package_id'])
     fingerprint = ios_hash(source)
