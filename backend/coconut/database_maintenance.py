@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import logging
+import shutil
 import time
 
 from .background_processes import PENDING_COMPLETIONS
@@ -47,6 +48,9 @@ BATCH_ROWS = 1000
 BATCH_PAUSE_SECONDS = 0.05
 # An old store without incremental vacuum gets one full VACUUM above this free-page fraction.
 VACUUM_MIN_FREELIST_RATIO = 0.25
+# VACUUM writes a temporary copy of the used pages and then the same pages to the WAL. It runs only when the disk
+# keeps this much space after two such copies, so that it never fills the disk of a busy host.
+VACUUM_DISK_RESERVE_BYTES = 2 * 1024 ** 3
 # One incremental step frees this many pages (8 MB at 4 KB pages).
 VACUUM_PAGES = 2048
 
@@ -223,7 +227,8 @@ class DatabaseMaintenance:
                     # executescript runs the pragma to the end. The connection has no open transaction here.
                     self.db.executescript(f'PRAGMA incremental_vacuum({VACUUM_PAGES});')
                     freed += min(free, VACUUM_PAGES)
-                elif pages and free / pages > VACUUM_MIN_FREELIST_RATIO and self._database_quiet():
+                elif (pages and free / pages > VACUUM_MIN_FREELIST_RATIO and self._database_quiet()
+                      and self._vacuum_fits(pages - free)):
                     started = time.monotonic()
                     self.db.execute('PRAGMA auto_vacuum=INCREMENTAL')
                     self.db.execute('VACUUM')
@@ -239,6 +244,10 @@ class DatabaseMaintenance:
                 # The WAL keeps its largest size until a truncating checkpoint. A busy reader defers it to the next hour.
                 self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchall()
         return freed
+
+    def _vacuum_fits(self, used_pages):
+        size = self.db.execute('PRAGMA page_size').fetchone()[0]
+        return shutil.disk_usage(self.root).free >= 2 * used_pages * size + VACUUM_DISK_RESERVE_BYTES
 
     def _database_quiet(self):
         """Return True when no task worker, context, or native run is live. The caller holds the service lock.

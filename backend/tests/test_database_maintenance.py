@@ -5,6 +5,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
@@ -223,6 +224,10 @@ class FreePageTests(unittest.TestCase):
         service = self.open()
         self.assertEqual(self.pragma(service, 'auto_vacuum'), 0)
         with patch.dict(service.running, {'task': threading.current_thread()}):
+            self.assertEqual(service._release_free_pages(), 0)
+        # A disk without room for the rewrite keeps the file as it is.
+        with patch.object(database_maintenance.shutil, 'disk_usage',
+                          return_value=SimpleNamespace(free=database_maintenance.VACUUM_DISK_RESERVE_BYTES)):
             self.assertEqual(service._release_free_pages(), 0)
         self.assertEqual(self.pragma(service, 'auto_vacuum'), 0)
         with self.assertLogs('coconut.database_maintenance', 'WARNING'):
