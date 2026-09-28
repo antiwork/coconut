@@ -17,6 +17,8 @@ from .work_capacity import execution_key
 from .worktree_retirement import NATIVE_IDLE_STATUSES
 
 DATABASE_MAINTENANCE_SECONDS = 60 * 60
+# A pass that fails runs again after this delay, not after an hour.
+DATABASE_RETRY_SECONDS = 5 * 60
 # The phone replays at most 1000 events. After a larger gap, or a gap that this deletion makes, it loads a full
 # snapshot (StateSync.updates, and MessageReplay on the phone). Older events serve no sync.
 EVENT_RETENTION_DAYS = 2
@@ -66,11 +68,12 @@ class DatabaseMaintenance:
         current = time.time() if current is None else current
         if current < getattr(self, '_next_database_maintenance', 0):
             return {}
-        self._next_database_maintenance = current + DATABASE_MAINTENANCE_SECONDS
+        self._next_database_maintenance = current + DATABASE_RETRY_SECONDS
         result = dict(events=self._prune_events(current), receipts=self._prune_receipts(current))
         result['vacuum'] = self._release_free_pages()
         logs = self.root / 'logs'
         result['rotated'] = [name for fd, name in ((1, 'service.log'), (2, 'error.log')) if rotate_log(fd, logs / name)]
+        self._next_database_maintenance = current + DATABASE_MAINTENANCE_SECONDS
         if result['events'] or result['receipts'] or result['vacuum']:
             logging.getLogger(__name__).warning('coconut.database_maintenance %s', json.dumps(result))
         return result
@@ -148,8 +151,10 @@ class DatabaseMaintenance:
             decisions = self._all_shared('decisions')
             artifacts = self._all_shared('artifacts')
             held = {c['task_id'] for c in self._all_shared('contexts') if c['status'] in ('queued', 'working')}
+            scoped = set()
             for decision in decisions:
                 if decision['status'] == 'pending' and decision['task_id'] in tasks:
+                    scoped.add(decision['id'])
                     held.add(decision['task_id'])
                     held.update(self._decision_scope(decision, tasks, pending, artifacts)[0])
             candidates = {t['id']: execution_key(t) for t in tasks.values() if execution_key(t) in idle and t['id'] not in held}
@@ -169,16 +174,25 @@ class DatabaseMaintenance:
             if self._maintenance_stopped():
                 break
             with self.transaction():
-                # A turn, a context, or a decision can start between batches. The status indexes find them quickly.
+                # A turn, a context, a wait, or a decision can start between batches. Indexes find them quickly.
+                decisions = self.db.execute("SELECT id, json_extract(data,'$.task_id'), json_extract(data,'$.status'), "
+                                            "json_extract(data,'$._receipt_id') FROM decisions").fetchall()
+                if any(status == 'pending' and identity not in scoped for identity, _, status, _ in decisions):
+                    # A new pending decision has a scope that this pass did not compute. The next pass computes it.
+                    break
                 live = [json.loads(row[0]) for row in self.db.execute(
                     "SELECT data FROM tasks WHERE json_extract(data,'$.status') IN (SELECT value FROM json_each(?))",
                     (json.dumps(sorted(self.ACTIVE)),))]
+                pending = self._pending_completion_receipts()
                 keys = {execution_key(t) for t in live}
                 excluded = {identity for identity, key in candidates.items() if key in keys}
                 excluded.update(row[0] for row in self.db.execute(
-                    "SELECT json_extract(data,'$.task_id') FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working') "
-                    "UNION SELECT json_extract(data,'$.task_id') FROM decisions WHERE json_extract(data,'$.status')='pending'"))
-                names = named | {i for t in live for i in t.get('_continuation_receipt_ids', [])}
+                    "SELECT json_extract(data,'$.task_id') FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working')"))
+                excluded.update(task_id for _, task_id, status, _ in decisions if status == 'pending')
+                excluded.update(r['task_id'] for r in pending)
+                names = (named | {i for t in live for i in t.get('_continuation_receipt_ids', [])}
+                         | {receipt for *_, receipt in decisions if receipt}
+                         | {r['_wait_process_receipt'] for r in pending if r.get('_wait_process_receipt')})
                 deleted += self.db.execute(
                     'DELETE FROM native_receipts WHERE rowid IN (SELECT value FROM json_each(?)) '
                     "AND json_extract(data,'$.state')='completed' AND NOT (" + PENDING_COMPLETIONS + ') '

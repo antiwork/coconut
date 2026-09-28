@@ -159,6 +159,37 @@ class ReceiptRetentionTests(ServiceCase):
         self.assertEqual(self.remaining(), {kept})
         self.assertNotIn(gone, self.remaining())
 
+    def between_batches(self, change):
+        wait = self.service.stopping.wait
+        calls = []
+        def pause(timeout):
+            if not calls:
+                calls.append(True)
+                with self.service.transaction():
+                    change()
+            return wait(timeout)
+        with patch.object(database_maintenance, 'BATCH_ROWS', 1), patch.object(self.service.stopping, 'wait', side_effect=pause):
+            self.service._prune_receipts(NOW)
+
+    def test_a_decision_that_opens_between_batches_stops_the_pass(self):
+        first, second, other = self.task(), self.task(), self.task()
+        gone, kept = self.receipt(first), self.receipt(second)
+        # The scope of the new decision is unknown to this pass, so no later batch runs.
+        self.between_batches(lambda: self.service._put('decisions', dict(
+            id=str(uuid4()), task_id=other['id'], bot_id=self.bot['id'], status='pending')))
+        self.assertEqual(self.remaining(), {kept})
+        self.assertNotIn(gone, self.remaining())
+
+    def test_a_wait_that_starts_between_batches_keeps_the_receipt_it_names(self):
+        first, second, waiter = self.task(), self.task(), self.task(status='working')
+        gone, waited = self.receipt(first), self.receipt(second)
+        def wait_for_it():
+            self.service._put('native_receipts', dict(id='wait', task_id=waiter['id'], turn_id='turn', state='completed',
+                action={'name': 'process', 'arguments': {}}, action_hash='hash', created_at=RECENT, _wait_process_receipt=waited))
+        self.between_batches(wait_for_it)
+        self.assertEqual(self.remaining(), {waited, 'wait'})
+        self.assertNotIn(gone, self.remaining())
+
 
 class FreePageTests(unittest.TestCase):
     def setUp(self):
@@ -244,6 +275,18 @@ class LogRotationTests(unittest.TestCase):
         other.write_bytes(b'x' * 100)
         self.assertFalse(rotate_log(self.fd, other, limit=10))
         self.assertEqual(sorted(p.name for p in Path(self.temp.name).iterdir()), ['error.log', 'service.log'])
+
+    def test_a_failed_pass_runs_again_after_five_minutes(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        service = Service(temp.name, FixtureProvider(temp.name), start_workers=False)
+        self.addCleanup(service.close)
+        with patch.object(service, '_prune_events', side_effect=[OSError('disk'), 0, 0]):
+            with self.assertRaises(OSError):
+                service.maintain_database(NOW)
+            self.assertEqual(service.maintain_database(NOW + 60), {})
+            self.assertIn('rotated', service.maintain_database(NOW + database_maintenance.DATABASE_RETRY_SECONDS))
+            self.assertEqual(service.maintain_database(NOW + 2 * database_maintenance.DATABASE_RETRY_SECONDS), {})
 
     def test_maintenance_rotates_the_service_logs_once_an_hour(self):
         temp = tempfile.TemporaryDirectory()
