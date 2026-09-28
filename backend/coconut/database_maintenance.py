@@ -219,8 +219,9 @@ class DatabaseMaintenance:
         The recovery count goes with the text: `_start_context` reads the text whenever the count is set, and a copy of
         an ended context keeps both fields, so the two must never part.
 
-        A dismissed proposal stays as it is too: it returns to pending when a person restores it (DecisionInbox), with
-        the same revision, and a recovery then reads its contexts.
+        A dismissed proposal stays as it is while its Undo window is open (`inbox_undo_until` is set, for 10 seconds): it
+        returns to pending when a person restores it (DecisionInbox), with the same revision, and a recovery then reads
+        its contexts. After the window, finish_inbox_swipes clears the mark, and the proposal cannot return.
 
         A recovery reads `question`, `_context_recovery`, and `_recovery_unknown_tools` of a context only for a
         pending decision (WorkRecovery._queue_context_recoveries and DecisionFreshness._refresh_recovery_records).
@@ -234,7 +235,8 @@ class DatabaseMaintenance:
                     "AND (json_type(data,'$._context_recovery') IS NOT NULL OR json_type(data,'$._recovery_unknown_tools') IS NOT NULL "
                     "OR length(COALESCE(json_extract(data,'$.question'),'')) > ?) "
                     "AND COALESCE(json_extract(data,'$.decision_id'),'') NOT IN "
-                    "(SELECT id FROM decisions WHERE json_extract(data,'$.status') IN ('pending','dismissed')) LIMIT ?",
+                    "(SELECT id FROM decisions WHERE json_extract(data,'$.status')='pending' "
+                    "OR (json_extract(data,'$.status')='dismissed' AND json_extract(data,'$.inbox_undo_until') IS NOT NULL)) LIMIT ?",
                     (CONTEXT_QUESTION_CHARACTERS, BATCH_ROWS))]
                 if not ids:
                     break

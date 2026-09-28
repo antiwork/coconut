@@ -52,8 +52,8 @@ class ContextRetentionTests(ServiceCase):
             self.service._put('contexts', row)
         return row['id']
 
-    def decision(self, status):
-        row = dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=str(uuid4()), status=status, revision=1)
+    def decision(self, status, **fields):
+        row = dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=str(uuid4()), status=status, revision=1, **fields)
         with self.service.transaction():
             self.service._put('decisions', row)
         return row['id']
@@ -78,8 +78,8 @@ class ContextRetentionTests(ServiceCase):
 
     def test_a_pending_or_dismissed_decision_and_a_live_context_keep_their_text(self):
         pending = self.decision('pending')
-        # A dismissed proposal returns to pending when a person restores it, with the same revision.
-        dismissed = self.decision('dismissed')
+        # A dismissed proposal returns to pending when a person restores it inside its Undo window.
+        dismissed = self.decision('dismissed', inbox_undo_until='2026-09-28T12:00:10+00:00')
         settled = self.decision('approved')
         keep = [self.context(pending, 'failed'), self.context(dismissed, 'failed'),
                 self.context(settled, 'working'), self.context(settled, 'queued')]
@@ -87,6 +87,13 @@ class ContextRetentionTests(ServiceCase):
         for identity in keep:
             row = self.stored(identity)
             self.assertEqual((len(row['question']), row['_context_recovery'][0]), (5000, 'r'))
+
+    def test_a_dismissed_proposal_after_its_undo_window_loses_its_text(self):
+        # finish_inbox_swipes clears the mark when the window ends, and then no restore is possible.
+        dismissed = self.decision('dismissed', inbox_undo_until=None)
+        identity = self.context(dismissed, 'failed')
+        self.assertEqual(self.service._prune_contexts(), 1)
+        self.assertNotIn('_context_recovery', self.stored(identity))
 
     def test_the_batches_cover_every_row(self):
         settled = self.decision('approved')
