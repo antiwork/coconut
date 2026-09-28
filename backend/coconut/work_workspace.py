@@ -908,6 +908,14 @@ def rebuildable_folders(path, keep):
     return sorted(name for name in names if not any(name.startswith(other + '/') for other in names))
 
 
+def holds_repository(folder):
+    """Return True when the folder holds a Git repository or worktree, for example a clone that a bot made in tmp."""
+    for directory, folders, files in os.walk(folder):
+        if '.git' in folders or '.git' in files:
+            return True
+    return False
+
+
 def free_rebuildable(root, identity, finished):
     """Delete the rebuildable folders of an idle worktree that retirement refused. Return the deleted names.
 
@@ -944,7 +952,9 @@ def free_rebuildable(root, identity, finished):
     protected = keep(json.loads(manifest.read_text()))
     if protected is None:
         return []
-    names = rebuildable_folders(path, protected)
+    # A nested clone or a worktree of another repository can hold uncommitted work, and no archive keeps it.
+    # The walk runs before the lock, because a large folder takes a while. The outcome is idle, so no turn adds one.
+    names = [name for name in rebuildable_folders(path, protected) if not holds_repository(path / name)]
     if not names or not finished(True) or in_use(path):
         return []
     with (root / '.workspace.lock').open('a') as lock:
@@ -952,7 +962,7 @@ def free_rebuildable(root, identity, finished):
         # acquire() and restore() take this lock, so no outcome can claim the worktree during the deletion.
         saved = json.loads(manifest.read_text())
         protected = keep(saved)
-        if saved.get(identity) != before or protected is None or rebuildable_folders(path, protected) != names:
+        if saved.get(identity) != before or protected is None or not set(names) <= set(rebuildable_folders(path, protected)):
             raise ValueError('The worktree changed while Coconut freed its rebuildable folders.')
         if not finished(False):
             return []
@@ -980,8 +990,12 @@ def free_rebuildable(root, identity, finished):
                 # One folder that Coconut cannot delete must not keep the others.
                 logging.getLogger(__name__).warning('Coconut could not delete build folder %s of %s: %s', name, path, error)
     for name, target in moved:
-        # The folder is out of the worktree now. A failed deletion leaves it in the trash for the next sweep.
-        shutil.rmtree(target, ignore_errors=True)
+        try:
+            shutil.rmtree(target)
+        except OSError as error:
+            # The folder is out of the worktree now. The next sweep tries again.
+            logging.getLogger(__name__).warning('Coconut could not delete build folder %s of %s from %s: %s', name, path, target, error)
+            continue
         deleted.append(name)
     return sorted(deleted)
 
@@ -1032,7 +1046,12 @@ def sweep_temporary(root):
         for temporary in folder.glob('.*.tar.gz.tmp'):
             temporary.unlink(missing_ok=True)
     # free_rebuildable moves build folders here before it deletes them. A stop can leave some.
-    shutil.rmtree(Path(root) / TRASH, ignore_errors=True)
+    trash = Path(root) / TRASH
+    if trash.is_dir() and not trash.is_symlink():
+        try:
+            shutil.rmtree(trash)
+        except OSError as error:
+            logging.getLogger(__name__).warning('Coconut could not empty %s: %s', trash, error)
     trim_nested_archives(root)
 
 

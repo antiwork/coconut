@@ -467,6 +467,31 @@ class WorktreeRetirementTests(unittest.TestCase):
         free.assert_not_called()
         self.assertTrue((path / 'tmp/cache/big.bin').exists())
 
+    def test_a_build_folder_that_holds_another_repository_stays(self):
+        identity, path = self.refused_with_build_folders()
+        clone = path / 'tmp/clone'
+        clone.mkdir()
+        git(clone, 'init', '-q')
+        (clone / 'work.txt').write_text('uncommitted\n')
+        self.assertEqual(self.retire(), [])
+        self.assertEqual((clone / 'work.txt').read_text(), 'uncommitted\n')
+        self.assertFalse((path / 'node_modules').exists())
+
+    def test_a_failed_deletion_is_logged_and_not_counted(self):
+        identity, path = self.refused_with_build_folders()
+        rmtree = shutil.rmtree
+
+        def fail_in_trash(target, *args, **kwargs):
+            # The folders move out of the worktree, and then their deletion in the trash fails.
+            if work_workspace.TRASH in str(target):
+                raise PermissionError('Operation not permitted')
+            return rmtree(target, *args, **kwargs)
+        with patch('coconut.work_workspace.shutil.rmtree', side_effect=fail_in_trash), \
+                self.assertLogs('coconut.work_workspace', 'WARNING') as logs:
+            freed = work_workspace.free_rebuildable(self.workspaces, identity, lambda wait: True)
+        self.assertEqual(len(freed), 0)
+        self.assertTrue(any('could not delete build folder' in line for line in logs.output))
+
     def test_a_used_or_resumed_worktree_keeps_its_build_folders(self):
         identity, path = self.refused_with_build_folders()
         with patch('coconut.work_workspace.in_use', return_value=True):
