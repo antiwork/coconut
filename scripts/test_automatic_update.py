@@ -420,10 +420,11 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertTrue(command[command.index('--runtime') + 1].endswith('source/.runtime/hermes'))
         self.assertTrue(command[command.index('--host-data') + 1].endswith('live/.runtime/host'))
 
-    def test_a_result_for_another_hermes_commit_fails_the_gate(self):
+    def test_a_result_for_another_hermes_commit_is_inconclusive(self):
         result = self.gate_case(checks_pass=True, result_text=json.dumps(dict(passed=True, hermes_sha='other', credentials=['KEY'],
                                                                               checks=dict(relay=dict(passed=True)))))
-        self.assertIn('native upgrade checks failed', str(result['raised']))
+        self.assertIn('did not finish', str(result['raised']))
+        self.assertNotIn('hermes_checks', result['state'])
 
     def test_a_full_disk_stops_the_candidate_install(self):
         result = self.gate_case(checks_pass=True, free=update.HERMES_CANDIDATE_FREE_BYTES - 1)

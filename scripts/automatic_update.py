@@ -382,7 +382,7 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         # Only a complete result with model keys and a failed check is a verdict on the pin. A missing or broken
         # result, missing keys, and a setup error are inconclusive, like a timeout.
         if not passed and not (isinstance(result, dict) and result.get('checks') and result.get('credentials')
-                               and not result.get('error')):
+                               and not result.get('error') and result.get('hermes_sha') == revision):
             inconclusive = True
     except BaseException as error:
         # The receipt is what Coconut Care reads. Name an unexpected error there too.
