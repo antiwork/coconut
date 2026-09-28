@@ -377,10 +377,6 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         code, output = run_bounded([sys.executable, str(source / 'scripts/check_hermes_candidate.py'),
                                     '--runtime', str(source / '.runtime/hermes'), '--host-data', str(live / '.runtime/host'),
                                     '--output', str(receipt)], cwd=source, timeout=HERMES_CHECKS_SECONDS)
-        # Each check program runs in its own session with the model keys. A timeout kills the check script before its
-        # own cleanup, so stop what still uses the candidate runtime.
-        with contextlib.suppress(Exception):
-            module(source, 'check_hermes_candidate').stop_leftovers(source / '.runtime/hermes')
         if code is None:
             inconclusive = True
             output += f'\nThe checks ran longer than {HERMES_CHECKS_SECONDS} seconds.'
@@ -470,7 +466,15 @@ def checked_code(source, sha):
 
 
 def clear_gate_folders(source):
-    """Remove what the Hermes gate wrote in .runtime of the updater checkout. Other data there stays."""
+    """Remove what the Hermes gate wrote in .runtime of the updater checkout. Other data there stays.
+
+    The install and the checks start Hermes workers in their own sessions, and a killed run leaves them. Stop what
+    still uses the candidate runtime first: after the folder is gone, no scan can find its processes.
+    """
+    candidate = source / '.runtime/hermes'
+    if candidate.is_dir():
+        with contextlib.suppress(Exception):
+            module(source, 'check_hermes_candidate').stop_leftovers(candidate)
     for name in HERMES_GATE_FOLDERS:
         shutil.rmtree(source / '.runtime' / name, ignore_errors=True)
 

@@ -564,6 +564,13 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertFalse(result['runtime_left'])
         self.assertTrue(result['other_left'])
 
+    def test_leftover_workers_stop_before_a_failed_install_loses_its_folder(self):
+        def install(command, **kwargs):
+            raise RuntimeError('The install failed.')
+        result = self.gate_case(checks_pass=True, install=install)
+        self.assertIn(result['runtime'], result['stopped'])
+        self.assertFalse(result['runtime_left'])
+
     def test_a_stopped_run_frees_its_folder_before_the_space_check(self):
         # gate_case leaves a candidate folder, as a run that was stopped part way does.
         result = self.gate_case(checks_pass=True, free=update.HERMES_CANDIDATE_FREE_BYTES - 1)
