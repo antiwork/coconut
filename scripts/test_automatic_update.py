@@ -194,6 +194,26 @@ class AutomaticUpdateTests(unittest.TestCase):
             self.assertNotIn('failed_deploy', saved)
             self.assertEqual(saved['source_sha'], 'second')
 
+    def test_a_backoff_does_not_stall_a_pending_testflight_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, live = root / 'source', root / 'live'
+            source.mkdir(); live.mkdir()
+            state_path = root / 'state.json'
+            update.save(state_path, dict(failed_deploy=dict(source_sha='bad', attempts=1, retry_at=2000),
+                                         pending_ios=dict(hash='ios', source_sha='good')))
+
+            def command(args, **kwargs):
+                if args[:3] == ['git', 'remote', 'get-url']: return 'https://github.com/owner/repo.git'
+                if args[:2] == ['git', 'status']: return ''
+                if args[:2] == ['git', 'rev-parse']: return 'bad'
+                return ''
+            config = dict(repository='owner/repo', source=str(source), live=str(live), release_helper='helper')
+            with patch.object(update, 'run', side_effect=command), patch.object(update, 'release_ios') as release, \
+                    patch.object(update.time, 'time', return_value=1000):
+                update.update(config, state_path)
+            release.assert_called_once()
+
     def test_a_failed_health_check_after_install_backs_off(self):
         class DeployError(Exception):
             pass

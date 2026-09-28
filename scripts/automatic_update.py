@@ -305,6 +305,12 @@ def update(config, state_path):
     if failed.get('source_sha') == sha and time.time() < failed.get('retry_at', 0):
         # Each failed attempt stops and restarts the service. Wait before the next install of the same commit.
         # launchd keeps the restored service running meanwhile, and the next install runs recovery first.
+        # A TestFlight archive uses its own checkout, so it does not wait for the backoff.
+        if state.get('pending_ios') and not processed_build and config.get('release_helper'):
+            try:
+                release_ios(config, state, state_path)
+            except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as error:
+                print(str(error), file=sys.stderr)
         return
     reviewed_merge(repository, sha)
     run(['git', 'checkout', '--detach', sha], cwd=source)

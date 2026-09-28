@@ -105,7 +105,11 @@ class FakeOperations:
         return {'status': 'ok', 'provider': 'hermes', 'ready': True}
 
     def probe(self, root, address):
-        return self.health(root, address)
+        # A probe is a short health check. An injected health failure fails it too.
+        self.record('probe', root, address)
+        if self.fail == 'health':
+            raise deploy.DeployError('The injected operation failed.')
+        return {'status': 'ok', 'provider': 'hermes', 'ready': True}
 
 
 class DeploymentPackageTests(unittest.TestCase):
@@ -295,7 +299,8 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.assertEqual(json.loads(journal.read_text())['phase'], 'code_restored')
         operations = FakeOperations(mode='managed')
         deploy.reconcile(self.target, operations)
-        self.assertEqual([call[0] for call in operations.calls], ['inspect', 'health'])
+        # The recovery check uses the short probe, not the full startup wait.
+        self.assertEqual([call[0] for call in operations.calls], ['inspect', 'probe'])
         self.assertFalse(journal.exists())
 
     def test_failed_stop_does_not_replace_code(self):
