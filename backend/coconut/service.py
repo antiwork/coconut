@@ -290,11 +290,13 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             try:
                 yield
                 self.db.execute('COMMIT')
+                self.__dict__.pop('_published_in_transaction', None)
                 self.changed.notify_all()
             except BaseException:
                 self._profile_pending = {}
-                # A rollback removes the bot events of this transaction. Forget what they said.
-                self.__dict__.pop('_published_bots', None)
+                # A rollback removes the bot events of this transaction. Forget what only they said.
+                for bot_id in self.__dict__.pop('_published_in_transaction', set()):
+                    self.__dict__.get('_published_bots', {}).pop(bot_id, None)
                 self.db.execute('ROLLBACK')
                 raise
             pending, self._profile_pending = self._profile_pending, {}
@@ -702,7 +704,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         if published.get(bot_id) == fingerprint:
             return
         self._event('bot.updated', public, bot_id)
-        published[bot_id] = fingerprint
+        self._note_published(bot_id, fingerprint)
+
+    def _note_published(self, bot_id: str, fingerprint: str):
+        """Record the public row that a bot event carried, and which transaction wrote it."""
+        self.__dict__.setdefault('_published_bots', {})[bot_id] = fingerprint
+        self.__dict__.setdefault('_published_in_transaction', set()).add(bot_id)
 
     @staticmethod
     def _public(obj: dict) -> dict:
@@ -1337,6 +1344,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._sync_profile(bot)
                 self._put('bots', bot)
                 self._event('bot.updated', bot, bot['id'])
+                # The next refresh publishes only what this event did not say.
+                self._note_published(bot['id'], encoded(self._public(bot)))
                 self._event('settings.updated', {'bot_id': bot['id']}, bot['id'])
                 return self._bot_view(bot, self._request_model_catalog)
             if len(parts) == 3 and method == 'DELETE':

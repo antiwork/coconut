@@ -92,6 +92,35 @@ class BotStatusTests(unittest.TestCase):
             self.service._refresh_bot(bot['id'])
         self.assertEqual(len(self.events(bot['id'])), len(before) + 2)
 
+    def test_a_rollback_forgets_only_the_bots_that_it_published(self):
+        first, second = (bot['id'] for bot in self.bots)
+        for bot_id in (first, second):
+            with self.service.transaction():
+                self.service._refresh_bot(bot_id)
+        before = {bot_id: len(self.events(bot_id)) for bot_id in (first, second)}
+        with self.assertRaises(RuntimeError):
+            with self.service.transaction():
+                self.service._put('tasks', dict(id=str(uuid4()), bot_id=first, status='working'))
+                self.service._refresh_bot(first)
+                self.service._refresh_bot(second)
+                raise RuntimeError('The transaction fails.')
+        # The second bot published nothing in that transaction, so its refresh stays quiet.
+        with self.service.transaction():
+            self.service._refresh_bot(second)
+        self.assertEqual(len(self.events(second)), before[second])
+
+    def test_a_settings_update_that_published_the_row_does_not_publish_it_twice(self):
+        bot = self.bots[0]
+        with self.service.transaction():
+            self.service._refresh_bot(bot['id'])
+        before = len(self.events(bot['id']))
+        self.service.mutate('PATCH', f"/v1/bots/{bot['id']}", {'name': 'Renamed'}, str(uuid4()))
+        after_patch = len(self.events(bot['id']))
+        with self.service.transaction():
+            self.service._refresh_bot(bot['id'])
+        self.assertEqual(after_patch, before + 1)
+        self.assertEqual(len(self.events(bot['id'])), after_patch)
+
     def test_a_rolled_back_event_is_published_again(self):
         bot = self.bots[0]
         with self.service.transaction():
