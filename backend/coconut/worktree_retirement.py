@@ -56,6 +56,10 @@ BUSY_RETRIES = 1
 BUSY_MESSAGE = 'The service was busy. Coconut tries again in an hour.'
 
 
+def repositories(saved):
+    return {b['repository'] for b in saved.values() if isinstance(b, dict) and isinstance(b.get('repository'), str)}
+
+
 def repository_name(repository, cache):
     """Return owner/name of the origin remote of a repository, in lower case, or None. Cache it for one pass."""
     if repository not in cache:
@@ -224,7 +228,7 @@ class WorktreeRetirement:
         if cleared:
             logging.getLogger(__name__).warning('Coconut cleared %s idle scratch workspaces.', len(cleared))
             # A bot can create a worktree of another repository in a scratch workspace. Drop the records of the deleted ones.
-            for repository in {b['repository'] for b in saved.values() if isinstance(b, dict) and isinstance(b.get('repository'), str)}:
+            for repository in repositories(saved):
                 with contextlib.suppress(*work_workspace.GIT_ERRORS):
                     work_workspace.git(repository, 'worktree', 'prune', timeout=work_workspace.CHECKOUT_SECONDS)
 
@@ -280,6 +284,9 @@ class WorktreeRetirement:
             logging.getLogger(__name__).warning('Coconut could not clear idle scratch workspaces: %s', error)
         if not saved:
             return []
+        for repository in repositories(saved):
+            with contextlib.suppress(*work_workspace.GIT_ERRORS):
+                work_workspace.prune_discarded_refs(repository)
         bindings = {k: v['outcome'] for k, v in saved.items() if not v.get('retired')}
         retired = []
         pending = [(identity, outcome) for identity, outcome in bindings.items() if outcome in finished]
@@ -338,8 +345,8 @@ class WorktreeRetirement:
                     # low. Discard it: the branch and an archive of the patches and small untracked files stay.
                     try:
                         if work_workspace.discard(root, identity, still_finished, orphan_age=ORPHAN_AGE_SECONDS):
-                            logging.getLogger(__name__).warning('Coconut discarded worktree %s of an idle outcome. Retirement '
-                                                                'refused it: %s', identity, refusal or 'it waits a day after a failure')
+                            logging.getLogger(__name__).warning('Retirement refused worktree %s of a long idle outcome: %s',
+                                                                identity, refusal or 'it waits a day after a failure')
                             retired.append(identity)
                             continue
                     except (ValueError, OSError, KeyError, tarfile.TarError, subprocess.TimeoutExpired, sqlite3.Error) as error:

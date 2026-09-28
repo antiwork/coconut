@@ -1007,11 +1007,23 @@ def finish_discard(root, identity, before, finished, present, path, repository, 
             try:
                 # The removal deletes the files of nested worktrees too. The prune then drops their Git records.
                 git(repository, 'worktree', 'remove', '--force', str(path), timeout=CHECKOUT_SECONDS)
-            except GIT_ERRORS:
+            except GIT_ERRORS as error:
                 if os.path.lexists(path) and (path / '.git').is_file():
                     # The checkout still holds the work, so the next attempt archives it again.
-                    archive.unlink(missing_ok=True)
-                raise
+                    if archive:
+                        archive.unlink(missing_ok=True)
+                    raise
+                if os.path.lexists(path):
+                    # Git deleted part of the checkout. Name the archive, and send turns to the scratch workspace.
+                    message = (f'Git stopped while it removed {path}, and part of the checkout remains. '
+                               f'The archive {archive} holds its changes. Inspect the path.')
+                    binding['branch'] = branch
+                    binding['retired'] = dict(at=stamp(datetime.now(timezone.utc)), done=True, head=head,
+                                              archive=str(archive) if archive else None,
+                                              restore_failed=dict(at=stamp(datetime.now(timezone.utc)), error=message))
+                    save_bindings(manifest, saved)
+                    raise ValueError(message) from error
+                # Git deleted the whole checkout before it stopped. The prune below drops its record.
         with contextlib.suppress(*GIT_ERRORS):
             git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
         binding.pop('retire_failed', None)
@@ -1021,7 +1033,19 @@ def finish_discard(root, identity, before, finished, present, path, repository, 
         binding['retired'] = dict(at=stamp(datetime.now(timezone.utc)), done=True, head=head,
                                   archive=str(archive) if archive else None)
         save_bindings(manifest, saved)
+    logging.getLogger(__name__).warning('Coconut discarded worktree %s of outcome %s. The branch %s keeps the commits. '
+                                        'The archive %s keeps the changes.', identity, before['outcome'], branch, archive)
     return True
+
+
+def prune_discarded_refs(repository):
+    """Delete the refs of discarded HEADs whose commit is older than NESTED_ARCHIVE_DAYS, as for the archives."""
+    oldest = time.time() - NESTED_ARCHIVE_DAYS * 86400
+    listing = git(repository, 'for-each-ref', '--format=%(refname) %(committerdate:unix)', 'refs/coconut/discarded/')
+    for line in listing.splitlines():
+        name, _, moment = line.rpartition(' ')
+        if name and moment.isdigit() and int(moment) < oldest:
+            git(repository, 'update-ref', '-d', name)
 
 
 def keep_heads(repository, identity, paths):

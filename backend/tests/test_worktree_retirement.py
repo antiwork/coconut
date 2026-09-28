@@ -161,7 +161,7 @@ class WorktreeRetirementTests(unittest.TestCase):
                 self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
             self.assertEqual(self.retire(), [identity])
         self.assertFalse(path.exists())
-        self.assertTrue(any('discarded worktree' in line and 'changed branches' in line for line in logs.output))
+        self.assertTrue(any('refused worktree' in line and 'changed branches' in line for line in logs.output))
         binding = self.registry()[identity]
         self.assertEqual((binding['branch'], binding['retired']['done']), ('switched-branch', True))
         with tarfile.open(binding['retired']['archive']) as tar:
@@ -206,6 +206,45 @@ class WorktreeRetirementTests(unittest.TestCase):
         # The checkout still holds the work, so no archive stays, and a repeated failure adds none.
         self.assertEqual(list((self.workspaces / 'archive' / 'done').glob('*.tar.gz')), [])
         self.assertTrue((path / 'draft.txt').exists())
+
+    def test_a_refused_removal_of_a_clean_checkout_is_logged(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        real = work_workspace.git
+
+        def refuse(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                raise ValueError('Git refused the removal.')
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=refuse), \
+                self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(any('Git refused the removal' in line for line in logs.output))
+
+    def test_a_partial_removal_names_the_archive_and_fences_the_path(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (path / 'draft.txt').write_text('keep\n')
+        real = work_workspace.git
+
+        def partial(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                (path / '.git').unlink()
+                raise subprocess.TimeoutExpired('git', 600)
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=partial):
+            self.assertEqual(self.retire(), [])
+        retired = self.registry()[identity]['retired']
+        self.assertTrue(Path(retired['archive']).exists())
+        self.assertIn('Inspect the path', retired['restore_failed']['error'])
+        self.assertEqual(work_workspace.preferred(self.workspaces, outcome), self.workspaces / outcome)
+
+    def test_old_discarded_refs_go(self):
+        head = git(self.repo, 'rev-parse', 'HEAD')
+        git(self.repo, 'update-ref', f'refs/coconut/discarded/x/{head}', head)
+        with patch.object(work_workspace, 'NESTED_ARCHIVE_DAYS', -1):
+            work_workspace.prune_discarded_refs(self.repo)
+        self.assertEqual(git(self.repo, 'for-each-ref', 'refs/coconut/discarded/'), '')
 
     def test_a_failed_restore_of_a_discarded_branch_sends_turns_to_the_scratch_workspace(self):
         outcome, identity, path, task = self.outcome()
