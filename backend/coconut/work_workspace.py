@@ -934,18 +934,22 @@ def free_rebuildable(root, identity, finished):
         record = next((r for r in records if r['path'] == path), None)
         if not record or record['locked']:
             # check_git refuses these too. A person locks a worktree so that nothing changes it.
-            raise ValueError('Git does not register the worktree, or the worktree is locked.')
+            return None
         inner = {r['path'] for r in records}
         return inner | {Path(binding['path']).resolve() for other, binding in saved.items()
                         if other != identity and isinstance(binding, dict) and isinstance(binding.get('path'), str)}
-    names = rebuildable_folders(path, keep(json.loads(manifest.read_text())))
+    protected = keep(json.loads(manifest.read_text()))
+    if protected is None:
+        return []
+    names = rebuildable_folders(path, protected)
     if not names or not finished(True) or in_use(path):
         return []
     with (root / '.workspace.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         # acquire() and restore() take this lock, so no outcome can claim the worktree during the deletion.
         saved = json.loads(manifest.read_text())
-        if saved.get(identity) != before or rebuildable_folders(path, keep(saved)) != names:
+        protected = keep(saved)
+        if saved.get(identity) != before or protected is None or rebuildable_folders(path, protected) != names:
             raise ValueError('The worktree changed while Coconut freed its rebuildable folders.')
         if not finished(False):
             return []

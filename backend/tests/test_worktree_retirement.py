@@ -393,7 +393,10 @@ class WorktreeRetirementTests(unittest.TestCase):
     def test_a_locked_worktree_keeps_its_build_folders(self):
         identity, path = self.refused_with_build_folders()
         git(self.repo, 'worktree', 'lock', str(path))
-        self.assertEqual(self.retire(), [])
+        with self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        # retire() already reports the lock. The build-folder step stays silent.
+        self.assertFalse(any('build folders' in line for line in logs.output))
         self.assertTrue((path / 'tmp/cache/big.bin').exists())
         self.assertTrue((path / 'node_modules/pkg/index.js').exists())
 
@@ -406,6 +409,15 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch('coconut.work_workspace.retire', side_effect=refuse):
             self.retire()
         self.service.restart_pending = False
+        self.assertTrue((path / 'tmp/cache/big.bin').exists())
+
+    def test_a_busy_service_skips_the_build_folders(self):
+        identity, path = self.refused_with_build_folders()
+        with patch('coconut.work_workspace.retire', side_effect=retirement.ServiceBusy(retirement.BUSY_MESSAGE)), \
+                patch.object(retirement, 'BUSY_RETRY_SECONDS', 0), \
+                patch('coconut.work_workspace.free_rebuildable') as free:
+            self.retire()
+        free.assert_not_called()
         self.assertTrue((path / 'tmp/cache/big.bin').exists())
 
     def test_a_used_or_resumed_worktree_keeps_its_build_folders(self):
