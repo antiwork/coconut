@@ -40,6 +40,7 @@ MARKER_PATH = Path('.coconut-install.json')
 # The service answers its health check after startup finishes.
 HEALTH_WAIT_SECONDS = 300
 # A probe whose failure is expected, such as the check for an already restored service, waits only this long.
+# This is the earlier wait. With the faster start migrations, a restored service answers well within it.
 PROBE_WAIT_SECONDS = 60
 
 

@@ -218,6 +218,17 @@ class AutomaticUpdateTests(unittest.TestCase):
                 update.update(config, state_path)
             release.assert_called_once()
 
+    def test_the_supervision_check_reads_the_host_launch_agent(self):
+        spec = importlib.util.spec_from_file_location('automatic_test_host', Path(__file__).with_name('host.py'))
+        host = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(host)
+        self.assertEqual(update.SERVICE_LABEL, host.LABEL)
+        with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as listing:
+            self.assertTrue(update.service_supervised())
+        self.assertEqual(listing.call_args.args[0], ['launchctl', 'list', host.LABEL])
+        with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=113)):
+            self.assertFalse(update.service_supervised())
+
     def test_a_failed_health_check_after_install_backs_off(self):
         class DeployError(Exception):
             pass
