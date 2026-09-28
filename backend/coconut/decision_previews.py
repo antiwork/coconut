@@ -1,5 +1,4 @@
 """Snapshot local review images into the authenticated artifact store."""
-import base64
 import os
 from pathlib import Path
 import stat

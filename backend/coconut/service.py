@@ -2500,10 +2500,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
     def _move_artifact_content(self):
         """Move the inline bytes of older artifacts into artifact_content. Run at every start; it finds nothing after the first."""
-        rows = self.db.execute("SELECT id, json_extract(data,'$._content_base64') FROM artifacts "
-                               "WHERE json_type(data,'$._content_base64')='text'").fetchall()
+        # Read the ids first and one value at a time, so the peak memory is one attachment, not all of them.
         # The caller holds the startup transaction.
-        for artifact_id, encoded in rows:
+        ids = [row[0] for row in self.db.execute("SELECT id FROM artifacts WHERE json_type(data,'$._content_base64')='text'")]
+        for artifact_id in ids:
+            encoded = self.db.execute("SELECT json_extract(data,'$._content_base64') FROM artifacts WHERE id=?", (artifact_id,)).fetchone()[0]
             self.store_artifact_content(artifact_id, base64.b64decode(encoded))
             self.db.execute("UPDATE artifacts SET data=json_remove(data,'$._content_base64') WHERE id=?", (artifact_id,))
 
