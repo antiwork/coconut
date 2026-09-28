@@ -338,7 +338,7 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
     # A run that was killed outside Python leaves its folders. Free them before any early return.
     clear_gate_folders(source)
     # A result counts for the pin, the checked code, and the model keys, so a corrected key runs the checks again.
-    tree = f'{checked_code(source, sha)} {credentials_digest(live)}'
+    tree = f'{checked_code(source, sha)} {credentials_digest(source, live)}'
     saved = state.get('hermes_checks') if isinstance(state.get('hermes_checks'), dict) else {}
     # The checks run backend and scripts of the checkout. A result counts for the pin and that code only, so a fix of
     # the Coconut code runs the checks again at once, and a commit elsewhere, such as the iOS app, reuses the result.
@@ -406,9 +406,8 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         # The receipt is what Coconut Care reads. Name an unexpected error there too.
         output = output or f'The gate stopped: {type(error).__name__}: {str(error)[-5000:]}'
         inconclusive = True
-        if isinstance(error, Exception):
-            # The run ended, so its wait starts now.
-            arm_inconclusive_wait(state, state_path, revision, tree, finished=True)
+        # The run ended, also by an interrupt, so its wait starts now.
+        arm_inconclusive_wait(state, state_path, revision, tree, finished=True)
         raise
     finally:
         verdict = 'passed' if passed else 'inconclusive' if inconclusive else 'failed'
@@ -464,13 +463,15 @@ def write_receipt(receipt, revision, verdict, output):
     save(receipt, dict(revision=revision, passed=False, verdict=verdict, checked_at=time.time(), output=output))
 
 
-def credentials_digest(live):
-    """Return a digest of the model keys of the installed service. It names the keys and their values, never shows them."""
+def credentials_digest(source, live):
+    """Return a digest of the model keys of the installed service. It covers the keys and their values, and shows neither."""
     try:
         keys = json.loads((live / '.runtime/host/credentials.json').read_text())
-    except (OSError, ValueError):
+        wanted = {name: keys[name] for name in module(source, 'host').MODEL_KEYS if isinstance(keys, dict) and name in keys}
+    except (OSError, ValueError, AttributeError):
         return 'no-keys'
-    return hashlib.sha256(json.dumps(keys, sort_keys=True).encode()).hexdigest()[:16] if isinstance(keys, dict) else 'no-keys'
+    # An unrelated entry of the file does not change what the checks use.
+    return hashlib.sha256(json.dumps(wanted, sort_keys=True).encode()).hexdigest()[:16]
 
 
 def gate_problem(source, live):

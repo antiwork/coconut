@@ -22,6 +22,7 @@ DEFAULT_KEYS = {'ANTHROPIC_API_KEY': 'k'}
 TREE = 'sha2 ' + hashlib.sha256(json.dumps(DEFAULT_KEYS, sort_keys=True).encode()).hexdigest()[:16]
 
 
+
 def saved_result(result):
     """Return the saved gate result without its time."""
     return {key: value for key, value in result['state']['hermes_checks'].items() if key != 'checked_at'}
@@ -366,7 +367,7 @@ class AutomaticUpdateTests(unittest.TestCase):
                 try:
                     REAL_GATE(source, live, 'new', 'sha2', state, state_path)
                     raised = None
-                except (RuntimeError, OSError, SystemExit) as error:
+                except (RuntimeError, OSError, SystemExit, KeyboardInterrupt) as error:
                     raised = error
             receipt = json.loads((root / 'hermes-checks.json').read_text()) if (root / 'hermes-checks.json').exists() else None
             return dict(commands=commands, script_calls=len(calls), calls=calls, state=state, raised=raised, receipt=receipt,
@@ -475,18 +476,44 @@ class AutomaticUpdateTests(unittest.TestCase):
         self.assertNotIn('ANTHROPIC_API_KEY', environment)
         self.assertEqual(environment['HARMLESS'], '1')
 
-    def test_a_run_that_ends_outside_python_still_leaves_a_wait_and_a_receipt(self):
+    def test_an_unrelated_credential_does_not_change_the_cache_key(self):
+        first = self.gate_case(checks_pass=False, keys={'ANTHROPIC_API_KEY': 'k', 'GITHUB_TOKEN': 'one'})
+        saved = first['state']['hermes_checks']
+        same = self.gate_case(checks_pass=True, cached=saved, keys={'ANTHROPIC_API_KEY': 'k', 'GITHUB_TOKEN': 'two'})
+        self.assertEqual(same['script_calls'], 0)
+
+    def test_an_interrupted_run_waits_one_hour_after_it_ends(self):
         state = {}
 
-        def killed(command, **kwargs):
-            raise SystemExit('The updater was stopped.')
-        result = self.gate_case(checks_pass=True, checks=killed, state=state)
-        # SystemExit skips the ordinary handlers of Exception. The marker of the start still holds.
-        self.assertEqual(state['hermes_inconclusive']['attempts'], 1)
-        self.assertGreater(state['hermes_inconclusive']['retry_at'], time.time() + update.HERMES_CHECKS_SECONDS)
-        self.assertEqual(result['receipt']['verdict'], 'inconclusive')
-        again = self.gate_case(checks_pass=True, state=state)
-        self.assertEqual((again['commands'], again['script_calls']), ([], 0))
+        def interrupted(command, **kwargs):
+            raise KeyboardInterrupt()
+        try:
+            self.gate_case(checks_pass=True, checks=interrupted, state=state)
+        except KeyboardInterrupt:
+            pass
+        # The wait counts from the end of the run, not from its start plus the whole budget.
+        self.assertLess(state['hermes_inconclusive']['retry_at'], time.time() + 3600 + 60)
+
+    def test_a_run_arms_its_wait_and_a_receipt_before_it_starts(self):
+        # A run that ends outside Python, for example at a restart, records nothing at its end. So the record of the
+        # start must already hold while the check script runs.
+        state, seen = {}, []
+
+        def during(command, **kwargs):
+            seen.append(json.loads(json.dumps(state.get('hermes_inconclusive'))))
+            receipt = Path(command[command.index('--output') + 1])
+            seen.append(receipt.exists())
+            output = Path(command[command.index('--output') + 1])
+            output.write_text(json.dumps(dict(passed=True, hermes_sha='new', credentials=['KEY'], checks=dict(a=dict(passed=True)))))
+            return 0, ''
+        self.gate_case(checks_pass=True, checks=during, state=state)
+        marker, receipt_existed = seen
+        self.assertEqual(marker['attempts'], 1)
+        self.assertGreater(marker['retry_at'], time.time() + update.HERMES_CHECKS_SECONDS)
+        # The check script writes its own result, so the placeholder is gone when it starts.
+        self.assertFalse(receipt_existed)
+        # A pass clears the marker.
+        self.assertNotIn('hermes_inconclusive', state)
 
     def test_a_shared_or_linked_credential_file_stops_the_gate_before_the_install(self):
         for options in (dict(mode=0o644), dict(link=True)):
