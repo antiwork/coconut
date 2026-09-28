@@ -346,7 +346,7 @@ class NativeOutcomes:
                     and card.get('current_run_id') == claim['run_id']
                     and (not card.get('worker_pid') or card['worker_pid'] == claim.get('pid')))
 
-    def _linked_owner_report_coordinator(self, owner, item, peer, reporter, peers, tasks):
+    def _linked_owner_report_coordinator(self, owner, item, peer, reporter, peers, tasks, get_deliveries):
         """Authenticate a completed activity report without transferring PR ownership."""
         if (item['kind'] != 'work' or item['task_id'] != owner['id']
                 or owner.get('source_task_id') not in tasks
@@ -364,7 +364,7 @@ class NativeOutcomes:
                 or any(reporter.get(k) != coordinator.get(k) for k in
                        ('thread_id', 'conversation_bot_id', 'exchange_id'))):
             return None
-        deliveries = self._all('deliveries')
+        deliveries = get_deliveries()
 
         def delivered(sender, recipient):
             return [d for d in deliveries if not d.get('_progress_only') and d.get('text')
@@ -383,12 +383,23 @@ class NativeOutcomes:
                     or other['task_id'] != coordinator['id'] or other.get('_review_task_id') != coordinator['id']
                     or other['bot_id'] != coordinator['bot_id']
                     or not other.get('url') or other['url'].lower() != peer['url'].lower()
-                    or not callback or not callback.get('_is_return')
-                    or callback.get('_assignment_task_id') != coordinator['id']
-                    or callback.get('source_task_id') != reporter['id']
-                    or callback.get('source_bot_id') != reporter['bot_id']
-                    or any(callback.get(k) != coordinator.get(k) for k in
-                           ('bot_id', 'session_id', 'thread_id', 'conversation_bot_id', 'exchange_id'))):
+                    or not callback):
+                continue
+            # Native owners receive dependency results on themselves, not on a
+            # separate _is_return callback. Authenticate that route separately;
+            # the caller still guards the coordinator's full native/task chain.
+            direct_native = (callback['id'] == coordinator['id'] and coordinator.get('_native_outcome_id')
+                and not coordinator.get('_is_return')
+                and coordinator.get('_assignment_task_id') in (None, coordinator['id'])
+                and (coordinator.get('_kanban_claim') or {}).get('native_id') in
+                    (None, coordinator['_native_outcome_id']))
+            returned_callback = (callback.get('_is_return')
+                and callback.get('_assignment_task_id') == coordinator['id']
+                and callback.get('source_task_id') == reporter['id']
+                and callback.get('source_bot_id') == reporter['bot_id']
+                and all(callback.get(k) == coordinator.get(k) for k in
+                        ('bot_id', 'session_id', 'thread_id', 'conversation_bot_id', 'exchange_id')))
+            if not (direct_native or returned_callback):
                 continue
             if any(m.get('sender_bot_id') == reporter['bot_id'] and m.get('result_status') == 'completed'
                    and not m.get('progress_only') and m.get('text') == delivery['text']
@@ -410,6 +421,13 @@ class NativeOutcomes:
         source = self._get('tasks', owner['source_task_id']) if owner.get('source_task_id') else None
         pending_decisions = {d['task_id'] for d in self._all('decisions') if d['status'] == 'pending'}
         open_contexts = {c['task_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
+        deliveries = None
+
+        def get_deliveries():
+            nonlocal deliveries
+            if deliveries is None:
+                deliveries = self._all('deliveries')
+            return deliveries
 
         def running_tool(task):
             # A tool call without a result blocks while its task can still run it. The process poller marks a local
@@ -543,7 +561,7 @@ class NativeOutcomes:
                         and peer['url'].lower() == item['url'].lower()
                         and (requester_activity or owner_report))
                     report_coordinator = (self._linked_owner_report_coordinator(
-                        owner, item, peer, reporter, peers, tasks) if field == '_activity_task_id' else None)
+                        owner, item, peer, reporter, peers, tasks, get_deliveries) if field == '_activity_task_id' else None)
                     # A passive same-PR report belongs to the original
                     # requester, not to an independent writer. Keep all of
                     # that requester's other branches in the guard.

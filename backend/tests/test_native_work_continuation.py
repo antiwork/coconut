@@ -715,7 +715,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
         return self.service.emit(source['id'], 'native_bot_message', dict(native_call_id=call['id'],
             native_envelope_id=uuid4().hex, target_bot_id=target, text=text))
 
-    def linked_owner_report(self):
+    def linked_owner_report(self, direct_native=False):
         owner, source = self.scheduled_native()
         self.service.kanban.tasks[owner['id']]['status'] = 'done'
         work = dict(id='owner-work', task_id=owner['id'], bot_id=owner['bot_id'],
@@ -723,6 +723,12 @@ class NativeWorkContinuationTests(unittest.TestCase):
         coordinator = self.write(f'/v1/bots/{self.desk["id"]}/messages', {'text': 'Check the existing PR'})
         coordinator = self.service._get('tasks', coordinator['id'])
         coordinator.update(status='working', _execution_session_id=coordinator['id'])
+        if direct_native:
+            # Bind before delegation: service._store_bot_message must use its
+            # real native_return route, rather than manufacture a callback.
+            coordinator.update(_native_outcome_id='t_coordinator',
+                               _kanban_claim={'native_id': 't_coordinator', 'input': coordinator['id']})
+            self.service.kanban.tasks[coordinator['id']] = dict(id='t_coordinator', status='running')
         self.service._put('tasks', coordinator)
         sent = self.linked_report_message(coordinator, owner['bot_id'], 'Report the existing PR status')
         reporter = self.service._get('tasks', sent['task_id'])
@@ -730,10 +736,22 @@ class NativeWorkContinuationTests(unittest.TestCase):
                         _kanban_claim={'native_id': 't_report', 'input': 'report'})
         self.service._put('tasks', reporter)
         self.service.emit(reporter['id'], 'completed', {'summary': 'The PR status is checked.'})
+        if direct_native:
+            self.service._put('tasks', dict(self.service._get('tasks', coordinator['id']), status='waiting'))
         self.service._drain_returns()
-        callback = next(t for t in self.service._all('tasks')
-                        if t.get('source_task_id') == reporter['id'] and t.get('_is_return'))
-        for task, native_id in ((coordinator, 't_coordinator'), (reporter, 't_report'), (callback, 't_callback')):
+        callbacks = [t for t in self.service._all('tasks')
+                     if t.get('source_task_id') == reporter['id'] and t.get('_is_return')]
+        if direct_native:
+            self.assertEqual(callbacks, [])
+            callback = self.service._get('tasks', coordinator['id'])
+            self.assertFalse(callback.get('_is_return'))
+            self.assertEqual(callback['_waiting_on'], [])
+            self.assertEqual(callback['status'], 'queued')
+            self.assertEqual(callback['_bot_messages'][-1]['result_status'], 'completed')
+        else:
+            callback, = callbacks
+        for task, native_id in ((coordinator, 't_coordinator'), (reporter, 't_report'),
+                                (callback, 't_coordinator' if direct_native else 't_callback')):
             task = self.service._get('tasks', task['id'])
             task.update(status='completed', _waiting_on=[],
                         _kanban_claim={'native_id': native_id, 'input': task['id']})
@@ -752,8 +770,11 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.service._put('artifacts', item)
         return owner, source, work, pr, coordinator_pr, reporter, coordinator, callback
 
-    def test_linked_owner_completed_report_retains_work_and_review_ownership(self):
-        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
+    def test_linked_owner_native_completed_report_retains_work_and_review_ownership(self):
+        self.test_linked_owner_completed_report_retains_work_and_review_ownership(direct_native=True)
+
+    def test_linked_owner_completed_report_retains_work_and_review_ownership(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
         self.assertNotEqual(owner['source_task_id'], coordinator['id'])
         snapshots = copy.deepcopy(self.service.kanban.tasks)
         receipt = self.resume(source)
@@ -769,6 +790,38 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(self.service.kanban.tasks, snapshots)
         self.assertEqual(self.resume(source), receipt)
 
+    def test_linked_owner_native_report_does_not_exempt_active_coordinator_caller(self):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(True)
+        self.assertEqual(coordinator['_waiting_on'], [])
+        self.service._put('tasks', dict(coordinator, status='working'))
+        card = self.service.kanban.tasks[coordinator['id']]
+        self.service.kanban.tasks[coordinator['id']] = dict(card, status='running', current_run_id=42)
+        self.assert_linked_report_blocked_without_mutation(coordinator)
+        self.service.kanban.tasks[coordinator['id']] = card
+        self.service._put('tasks', coordinator)
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
+    def test_linked_owner_report_reads_deliveries_once_per_request(self):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
+        for index in range(4):
+            self.service._put('artifacts', dict(pr, id=f'owner-pr-{index}'))
+        delivery = next(d for d in self.service._all('deliveries') if d['source_task_id'] == reporter['id'])
+        self.service._put('deliveries', dict(delivery, text='Not the saved result'))
+        with patch.object(self.service, '_all', wraps=self.service._all) as reads:
+            self.assert_linked_report_blocked_without_mutation(source)
+        self.assertEqual(sum(call.args == ('deliveries',) for call in reads.call_args_list), 1)
+        # A new request must read the repaired receipt, not reuse an earlier cache.
+        self.service._put('deliveries', delivery)
+        with patch.object(self.service, '_all', wraps=self.service._all) as reads:
+            self.assertEqual(self.resume(source)['task_id'], owner['id'])
+        self.assertEqual(sum(call.args == ('deliveries',) for call in reads.call_args_list), 1)
+
+    def test_linked_owner_report_delivery_read_is_lazy(self):
+        owner, source = self.scheduled_native()
+        with patch.object(self.service, '_all', wraps=self.service._all) as reads:
+            self.assertEqual(self.resume(source)['task_id'], owner['id'])
+        self.assertEqual(sum(call.args == ('deliveries',) for call in reads.call_args_list), 0)
+
     def assert_linked_report_blocked_without_mutation(self, source):
         before = list(self.service.db.iterdump())
         snapshots = copy.deepcopy(self.service.kanban.tasks)
@@ -777,15 +830,19 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(list(self.service.db.iterdump()), before)
         self.assertEqual(self.service.kanban.tasks, snapshots)
 
-    def test_linked_owner_report_requires_exact_work_url_and_owners(self):
-        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
+    def test_linked_owner_native_report_requires_exact_work_url_and_owners(self):
+        self.test_linked_owner_report_requires_exact_work_url_and_owners(direct_native=True)
+
+    def test_linked_owner_report_requires_exact_work_url_and_owners(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
         self.service._put('artifacts', dict(work, id='other-work', task_id=source['id'], bot_id=source['bot_id']))
         cases = ((pr, {'task_id': reporter['id']}), (pr, {'bot_id': source['bot_id']}),
                  (pr, {'_review_task_id': reporter['id']}), (pr, {'url': None}),
                  (coordinator_pr, {'work_outcome_id': None}), (coordinator_pr, {'work_outcome_id': 'other-work'}),
                  (coordinator_pr, {'url': 'https://github.com/example/project/pull/2'}),
                  (coordinator_pr, {'task_id': source['id']}), (coordinator_pr, {'_review_task_id': source['id']}),
-                 (coordinator_pr, {'bot_id': owner['bot_id']}), (coordinator_pr, {'_activity_task_id': coordinator['id']}))
+                 (coordinator_pr, {'bot_id': owner['bot_id']}),
+                 (coordinator_pr, {'_activity_task_id': source['id'] if direct_native else coordinator['id']}))
         for item, changes in cases:
             with self.subTest(item=item['id'], changes=changes):
                 self.service._put('artifacts', dict(item, **changes))
@@ -793,17 +850,28 @@ class NativeWorkContinuationTests(unittest.TestCase):
                 self.service._put('artifacts', item)
         self.assertEqual(self.resume(source)['task_id'], owner['id'])
 
-    def test_linked_owner_report_requires_delegation_and_completed_return_provenance(self):
-        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
+    def test_linked_owner_native_report_requires_delegation_and_completed_return_provenance(self):
+        self.test_linked_owner_report_requires_delegation_and_completed_return_provenance(direct_native=True)
+
+    def test_linked_owner_report_requires_delegation_and_completed_return_provenance(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
         cases = ((reporter, {'source_task_id': source['id']}), (reporter, {'source_bot_id': owner['bot_id']}),
                  (reporter, {'_reply_to_task_id': source['id']}), (reporter, {'_assignment_task_id': owner['id']}),
                  (reporter, {'_is_return': True}), (reporter, {'thread_id': source['thread_id']}),
                  (reporter, {'exchange_id': source['exchange_id']}),
-                 (callback, {'_assignment_task_id': source['id']}), (callback, {'_is_return': False}),
-                 (callback, {'source_task_id': owner['id']}), (callback, {'source_bot_id': source['bot_id']}),
+                 (callback, {'_assignment_task_id': source['id']}), (callback, {'_is_return': direct_native}),
+                 (callback, {'_bot_messages': [dict(callback['_bot_messages'][0], text='Unrelated result')]}),
+                 (callback, {'_bot_messages': [dict(callback['_bot_messages'][0], sender_bot_id=source['bot_id'])]}),
                  (callback, {'_bot_messages': []}),
                  (callback, {'_bot_messages': [dict(callback['_bot_messages'][0], result_status='failed')]}),
                  (callback, {'_bot_messages': [dict(callback['_bot_messages'][0], progress_only=True)]}))
+        if direct_native:
+            cases += ((coordinator, {'_native_outcome_id': None}),
+                      (coordinator, {'_native_outcome_id': 't_wrong'}),
+                      (coordinator, {'_kanban_claim': {'native_id': 't_wrong'}}))
+        else:
+            cases += ((callback, {'source_task_id': owner['id']}),
+                      (callback, {'source_bot_id': source['bot_id']}))
         for task, changes in cases:
             with self.subTest(task=task['id'], changes=changes):
                 self.service._put('tasks', dict(task, **changes))
@@ -826,8 +894,11 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.service._put('deliveries', delivery)
         self.assertEqual(self.resume(source)['task_id'], owner['id'])
 
-    def test_linked_owner_report_keeps_every_native_and_task_guard(self):
-        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
+    def test_linked_owner_native_report_keeps_every_native_and_task_guard(self):
+        self.test_linked_owner_report_keeps_every_native_and_task_guard(direct_native=True)
+
+    def test_linked_owner_report_keeps_every_native_and_task_guard(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
         for task in (reporter, coordinator, callback):
             card = self.service.kanban.tasks[task['id']]
             for changed in (None, dict(card, id='t_wrong'), dict(card, status='running'),
@@ -840,8 +911,10 @@ class NativeWorkContinuationTests(unittest.TestCase):
                     self.assert_linked_report_blocked_without_mutation(source)
                     self.service.kanban.tasks[task['id']] = card
             changes = [dict(status=status) for status in ('working', 'queued', 'waiting', 'paused', 'failed', 'cancelled', 'needs_you')]
-            changes += [dict(_waiting_on=['unfinished-child']), dict(_return_pending={'text': 'Undelivered'}),
-                        dict(_work_todos=fixtures.progress())]
+            changes += [dict(_waiting_on=['unfinished-child']), dict(_return_pending={'text': 'Undelivered'})]
+            # Native outcomes use their card rather than the legacy todo list.
+            if not task.get('_native_outcome_id'):
+                changes.append(dict(_work_todos=fixtures.progress()))
             for change in changes:
                 with self.subTest(task=task['id'], change=change):
                     self.service._put('tasks', dict(task, **change))
@@ -864,13 +937,18 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.service.db.execute('DELETE FROM native_receipts WHERE id=?', ('unknown-report-tool',))
         self.assertEqual(self.resume(source)['task_id'], owner['id'])
 
-    def test_linked_owner_report_guards_reporter_coordinator_and_requester_siblings(self):
-        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
+    def test_linked_owner_native_report_guards_reporter_coordinator_and_requester_siblings(self):
+        self.test_linked_owner_report_guards_reporter_coordinator_and_requester_siblings(direct_native=True)
+
+    def test_linked_owner_report_guards_reporter_coordinator_and_requester_siblings(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
         for root in (reporter, coordinator, source):
             sibling = dict(root, id='sibling', _execution_session_id='sibling', _assignment_task_id=root['id'],
                            _kanban_claim={'native_id': 't_sibling'}, status='completed')
             sibling.pop('_work_todos', None)
             sibling.pop('_waiting_on', None)
+            if sibling.get('_native_outcome_id'):
+                sibling['_native_outcome_id'] = 't_sibling'
             self.service._put('tasks', sibling)
             self.service.kanban.tasks[sibling['id']] = dict(id='t_sibling', status='running', current_run_id=4)
             self.assert_linked_report_blocked_without_mutation(source)
@@ -880,8 +958,11 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.service._put('tasks', sibling)
         self.assertEqual(self.resume(source)['task_id'], owner['id'])
 
-    def test_linked_owner_report_waits_for_care_and_does_not_exempt_coordinator_caller(self):
-        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
+    def test_linked_owner_native_report_waits_for_care_and_does_not_exempt_coordinator_caller(self):
+        self.test_linked_owner_report_waits_for_care_and_does_not_exempt_coordinator_caller(direct_native=True)
+
+    def test_linked_owner_report_waits_for_care_and_does_not_exempt_coordinator_caller(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
         care = self.write('/v1/bots', {'name': 'Care'})
         self.service._put('tasks', dict(callback, status='working'))
         receipt = self.linked_report_message(callback, care['id'], 'Check the guard.')
@@ -904,8 +985,11 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.service.kanban.tasks[child['id']] = dict(id='t_care', status='done')
         self.assertEqual(self.resume(source)['task_id'], owner['id'])
 
-    def test_linked_owner_report_preserves_human_pause_and_cancelled_exchange(self):
-        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
+    def test_linked_owner_native_report_preserves_human_pause_and_cancelled_exchange(self):
+        self.test_linked_owner_report_preserves_human_pause_and_cancelled_exchange(direct_native=True)
+
+    def test_linked_owner_report_preserves_human_pause_and_cancelled_exchange(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
         exchange = self.service._get('exchanges', coordinator['exchange_id'])
         self.service._put('exchanges', dict(exchange, cancelled=True))
         self.assert_linked_report_blocked_without_mutation(source)
@@ -918,8 +1002,11 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.resume(source)
         self.assertEqual(list(self.service.db.iterdump()), before)
 
-    def test_linked_owner_report_never_waives_review_task_guard(self):
-        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
+    def test_linked_owner_native_report_never_waives_review_task_guard(self):
+        self.test_linked_owner_report_never_waives_review_task_guard(direct_native=True)
+
+    def test_linked_owner_report_never_waives_review_task_guard(self, direct_native=False):
+        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
         self.service._put('artifacts', dict(pr, _review_task_id=reporter['id'], _activity_task_id=owner['id']))
         self.assert_linked_report_blocked_without_mutation(source)
 
