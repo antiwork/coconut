@@ -124,6 +124,7 @@ creates them again. Coconut deletes only folders that Git ignores, never follows
 worktree or the saved path of another outcome. The worktree must belong to the saved repository, the outcome must
 still be idle, and no process may use the worktree. Coconut checks the binding and the folders again under
 `workspaces/.workspace.lock` and deletes them under that lock. The other files and the branch stay.
+
 Coconut never stops a shared service that a turn started, such as OrbStack, Docker Desktop, CoreSimulator,
 `launchd_sim`, or the `adb` server, because every outcome uses it. `SHARED_APP_BUNDLES`,
 `SHARED_EXECUTABLE_PREFIXES`, `SHARED_EXECUTABLE_NAMES`, and `ADB_SERVER_ARGUMENTS` in `work_workspace.py` name

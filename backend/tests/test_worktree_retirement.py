@@ -351,6 +351,18 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual((path / 'draft.txt').read_text(), 'keep\n')
         self.assertEqual(git(path, 'branch', '--show-current'), 'other-branch')
 
+    def test_a_folder_that_git_lists_with_its_children_is_deleted_once(self):
+        identity, path = self.refused_with_build_folders()
+        # Git lists .cache/ and .cache/pkg/ when only the folder's own .gitignore ignores its files.
+        (path / '.cache/pkg').mkdir(parents=True)
+        (path / '.cache/pkg/data.bin').write_bytes(b'x')
+        (path / '.cache/.gitignore').write_text('*\n')
+        listing = work_workspace.git_output(path, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z')
+        self.assertIn(b'.cache/pkg/\0', listing)
+        self.assertEqual(self.retire(), [])
+        self.assertFalse((path / '.cache').exists())
+        self.assertFalse((path / 'tmp').exists())
+
     def test_a_build_folder_that_holds_a_worktree_stays(self):
         identity, path = self.refused_with_build_folders()
         # coconut_workspace tells a bot to test another commit in a worktree under tmp.

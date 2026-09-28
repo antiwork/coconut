@@ -901,7 +901,8 @@ def rebuildable_folders(path, keep):
                 and folder.resolve().parent.is_relative_to(path)
                 and not any(inner == folder or folder in inner.parents for inner in keep)):
             names.append(entry.rstrip('/'))
-    return sorted(names)
+    # Git can list a folder and its children when the folder's own .gitignore ignores everything. Keep the top one.
+    return sorted(name for name in names if not any(name.startswith(other + '/') for other in names))
 
 
 def free_rebuildable(root, identity, finished):
@@ -943,9 +944,16 @@ def free_rebuildable(root, identity, finished):
             raise ValueError('The worktree changed while Coconut freed its rebuildable folders.')
         if not finished(False):
             return []
+        deleted = []
         for name in names:
-            shutil.rmtree(path / name)
-    return names
+            try:
+                shutil.rmtree(path / name)
+            except OSError as error:
+                # One folder that Coconut cannot delete must not keep the others.
+                logging.getLogger(__name__).warning('Coconut could not delete build folder %s of %s: %s', name, path, error)
+                continue
+            deleted.append(name)
+    return deleted
 
 
 def removal_stopped(manifest, saved, binding, path, repository, current, archive, error):
