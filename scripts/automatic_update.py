@@ -30,6 +30,9 @@ HERMES_CANDIDATE_FREE_BYTES = 8 * 1024 ** 3
 # A failed check run costs up to 80 minutes and model calls, and a repeat at the same commit usually fails the same way.
 # The gate repeats the checks for the same pin and commit only after this wait. A new commit runs them at once.
 HERMES_FAILED_RETRY_SECONDS = 24 * 60 * 60
+HERMES_INSTALL_SECONDS = 60 * 60
+# scripts/hermes.py install writes these folders of .runtime. The gate removes only these and its scratch folders.
+HERMES_GATE_FOLDERS = ('hermes', 'cache', 'tmp', 'tools')
 
 
 def run(args, *, cwd=None, stdin=None, pass_fds=()):
@@ -336,9 +339,9 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         if isinstance(checked_at, (int, float)) and time.time() - checked_at < HERMES_FAILED_RETRY_SECONDS:
             raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]} at this commit. Read {receipt}. '
                                'A new commit on main runs them again at once.')
-    # Only the gate uses .runtime in this checkout, and each run removes it at the end. A run that was stopped
-    # part way left it. Free that space before the space check. hermes.py also refuses a folder with another commit.
-    shutil.rmtree(source / '.runtime', ignore_errors=True)
+    # Each run removes its folders at the end. A run that was stopped part way left them. Free that space before
+    # the space check. hermes.py also refuses a runtime folder with another commit.
+    clear_gate_folders(source)
     free = shutil.disk_usage(source).free
     if free < HERMES_CANDIDATE_FREE_BYTES:
         output = (f'The candidate install needs {HERMES_CANDIDATE_FREE_BYTES // 1024 ** 3} GiB of free disk space, and '
@@ -347,12 +350,17 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         raise RuntimeError(output)
     passed, output = False, ''
     try:
+        checks = module(source, 'hermes_candidate_checks')
         try:
-            run([sys.executable, str(source / 'scripts/hermes.py'), 'install', '--revision', revision], cwd=source)
+            # run_tree also stops the uv and git processes below the install, so a stalled download cannot hold
+            # the updater and its lock after the timeout.
+            install = checks.run_tree([sys.executable, str(source / 'scripts/hermes.py'), 'install', '--revision', revision],
+                                      cwd=source, timeout=HERMES_INSTALL_SECONDS)
+            if install.returncode:
+                raise RuntimeError(install.stderr[-2000:] or install.stdout[-2000:] or 'The install failed.')
         except (RuntimeError, subprocess.TimeoutExpired) as error:
             output = 'The candidate install failed before any check ran: ' + str(error)[-5000:]
             raise RuntimeError(output) from None
-        checks = module(source, 'hermes_candidate_checks')
         command = [sys.executable, str(source / 'scripts/hermes_candidate_checks.py'), '--checkout', str(source), '--live', str(live)]
         try:
             # The checks start Hermes workers. A timeout stops the checks and every process below them.
@@ -369,14 +377,22 @@ def check_hermes_candidate(source, live, revision, sha, state, state_path):
         raise
     finally:
         save(receipt, dict(revision=revision, passed=passed, checked_at=time.time(), output=output))
-        # The live install builds its own runtime. Only the gate uses .runtime in this checkout: the candidate,
-        # the install caches, and a scratch folder that a timeout left, because the timeout kills the check script
-        # before it can remove its own folder. Free all of it.
-        shutil.rmtree(source / '.runtime', ignore_errors=True)
+        # The live install builds its own runtime. Free the candidate, the install caches, and a scratch folder
+        # that a timeout left, because the timeout kills the check script before it can remove its own folder.
+        clear_gate_folders(source)
     state['hermes_checks'] = dict(revision=revision, sha=sha, passed=passed, checked_at=time.time())
     save(state_path, state)
     if not passed:
         raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}.')
+
+
+def clear_gate_folders(source):
+    """Remove what the Hermes gate wrote in .runtime of the updater checkout. Other data there stays."""
+    runtime = source / '.runtime'
+    for name in HERMES_GATE_FOLDERS:
+        shutil.rmtree(runtime / name, ignore_errors=True)
+    for scratch in runtime.glob('candidate-checks-*'):
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def recover_journal(source, live):

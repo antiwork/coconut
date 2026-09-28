@@ -10,7 +10,7 @@ import time
 import hashlib
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 spec = importlib.util.spec_from_file_location('automatic_update', Path(__file__).with_name('automatic_update.py'))
 update = importlib.util.module_from_spec(spec)
@@ -142,8 +142,9 @@ class AutomaticUpdateTests(unittest.TestCase):
                 update.update(config, state_path)
             self.assertEqual(len(received), 1)
             self.assertIn('--update-runtime', received[0])
-            # A runtime update runs the Hermes candidate gate before the live install.
-            self.gate.assert_called_once()
+            # A runtime update runs the Hermes candidate gate before the live install. The order of source and live
+            # matters: the gate installs into and cleans the first one.
+            self.gate.assert_called_once_with(source, live, 'runtime', 'corrected', ANY, state_path)
             saved = json.loads(state_path.read_text())
             self.assertEqual(saved['pending_ios']['source_sha'], 'corrected')
             release.assert_called_once()
@@ -309,12 +310,15 @@ class AutomaticUpdateTests(unittest.TestCase):
             source, live = root / 'source', root / 'live'
             (source / '.runtime/hermes').mkdir(parents=True)
             (source / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit=installed)))
+            # Other project scripts keep private data in .runtime, for example remote.py its deploy key.
+            (source / '.runtime/ssh').mkdir()
+            (source / '.runtime/ssh/key').write_text('private')
             live.mkdir()
             state_path = root / 'state.json'
             state = dict(hermes_checks=cached) if cached else {}
             commands = []
 
-            def command(args, **kwargs):
+            def record(args, **kwargs):
                 commands.append(args)
                 return ''
             report = dict(revision='new', passed=checks_pass, checks=[])
@@ -324,10 +328,16 @@ class AutomaticUpdateTests(unittest.TestCase):
             def fake_tree(command, *, cwd=None, timeout):
                 calls.append(command)
                 return subprocess.CompletedProcess(command, 0 if checks_pass else 1, output, '')
-            checks = SimpleNamespace(run_tree=run_tree or fake_tree)
+
+            def tree(command, *, cwd=None, timeout):
+                if 'install' in command:
+                    (install or record)(command, cwd=cwd)
+                    return subprocess.CompletedProcess(command, 0, '', '')
+                return (run_tree or fake_tree)(command, cwd=cwd, timeout=timeout)
+            checks = SimpleNamespace(run_tree=tree)
             # setUp patches the gate for other tests. These tests call the real function.
             real = REAL_GATE
-            with patch.object(update, 'run', side_effect=install if install else command), \
+            with patch.object(update, 'run', side_effect=AssertionError('The gate runs its commands through run_tree.')), \
                     patch.object(update, 'module', return_value=checks), \
                     patch.object(update.shutil, 'disk_usage', return_value=SimpleNamespace(free=free)):
                 try:
@@ -339,7 +349,8 @@ class AutomaticUpdateTests(unittest.TestCase):
             return dict(commands=commands, script_calls=len(calls), state=state, raised=raised, receipt=receipt,
                         candidate_left=(source / '.runtime/hermes').exists(),
                         scratch_left=list((source / '.runtime').glob('candidate-checks-*')),
-                        runtime_left=(source / '.runtime').exists())
+                        runtime_left=any((source / '.runtime' / name).exists() for name in update.HERMES_GATE_FOLDERS),
+                        other_left=(source / '.runtime/ssh/key').exists())
 
     def test_a_new_hermes_pin_is_checked_before_the_live_install(self):
         # The folder already has the new pin, so only the cleanup after the checks can remove it.
@@ -415,6 +426,7 @@ class AutomaticUpdateTests(unittest.TestCase):
         result = self.gate_case(checks_pass=True, install=install)
         self.assertIsNone(result['raised'])
         self.assertFalse(result['runtime_left'])
+        self.assertTrue(result['other_left'])
 
     def test_a_stopped_run_frees_its_folder_before_the_space_check(self):
         # gate_case leaves a candidate folder, as a run that was stopped part way does.
