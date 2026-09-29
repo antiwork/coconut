@@ -1331,7 +1331,9 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
             self.assertFalse(self.service._get('native_receipts', 'cut-off').get('_process_ended_at'))
             # The same setup with an executing receipt and a quiet card does end.
-            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'), state='executing'))
+            interrupted = dict(self.service._get('native_receipts', 'cut-off'), state='executing')
+            interrupted.pop('result')
+            self.service._put('native_receipts', interrupted)
             self.service._ended_tool_check_at = 0
             self.assertEqual(self.service._mark_ended_tool_calls(current=122), ['cut-off'])
 
