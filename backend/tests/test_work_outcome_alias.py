@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 
 import test_delegated_work_duplicates as fixtures
 from coconut.service import ServiceError
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class WorkOutcomeAliasTests(unittest.TestCase):

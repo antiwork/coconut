@@ -9,6 +9,9 @@ import unittest
 import test_automatic_work as fixtures
 from coconut.hermes_worker import conversation_input
 from coconut.service import Service
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 def legacy_recovery_card(service, task, items):
     from coconut.service import YieldForDecision

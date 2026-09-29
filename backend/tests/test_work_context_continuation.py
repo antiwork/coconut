@@ -1,6 +1,9 @@
 import unittest
 
 import test_work_self_recovery as fixtures
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class WorkContextContinuationTests(unittest.TestCase):

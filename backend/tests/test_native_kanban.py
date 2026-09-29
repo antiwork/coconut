@@ -11,6 +11,9 @@ from uuid import uuid4
 
 from coconut.providers import FixtureProvider
 from coconut.service import Service
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
 PYTHON = os.environ.get('COCONUT_HERMES_PYTHON')
@@ -159,7 +162,7 @@ class NativeKanbanTests(unittest.TestCase):
 
         with ExitStack() as stack:
             maintenance = [stack.enter_context(patch.object(self.service, name)) for name in (
-                'tick_routines', '_sync_automatic_work', '_queue_work_recoveries',
+                'tick_routines', '_queue_work_recoveries',
                 '_queue_context_recoveries', '_queue_decision_refreshes')]
             stack.enter_context(patch.object(self.service.kanban, 'call', side_effect=flaky_adapter))
             log = stack.enter_context(patch('coconut.service.logging.getLogger'))

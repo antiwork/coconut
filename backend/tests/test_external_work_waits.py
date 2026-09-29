@@ -3,6 +3,9 @@ from uuid import uuid4
 
 import test_automatic_work as fixtures
 from coconut.service import Service, ServiceError
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class ExternalWorkWaitTests(unittest.TestCase):

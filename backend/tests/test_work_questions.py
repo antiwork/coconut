@@ -3,6 +3,9 @@ import unittest
 
 import test_tracked_work as fixtures
 from coconut.service import ServiceError
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class WorkQuestionTests(unittest.TestCase):

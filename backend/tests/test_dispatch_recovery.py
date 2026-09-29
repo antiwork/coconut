@@ -22,7 +22,7 @@ class RecordingProvider(FixtureProvider):
 
 class DispatchRecoveryTests(unittest.TestCase):
     def test_failed_maintenance_or_return_delivery_does_not_stop_work(self):
-        for operation in ('tick_routines', '_sync_automatic_work', '_drain_returns'):
+        for operation in ('tick_routines', '_drain_returns'):
             with self.subTest(operation=operation), tempfile.TemporaryDirectory() as root:
                 provider = RecordingProvider(root)
                 service = Service(root, provider, start_workers=False)
