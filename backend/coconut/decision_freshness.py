@@ -463,7 +463,9 @@ class DecisionFreshness:
                 if failures and (same >= REFRESH_MAX_FAILURES
                                  or failures >= REFRESH_MAX_CONSECUTIVE_FAILURES and waited < REFRESH_QUIET_SECONDS
                                  or waited < min(RETRY_SECONDS * 2 ** (failures - 1), REFRESH_MAX_BACKOFF_SECONDS)):
-                    # New evidence changes the fingerprint, and then the first count starts again. The card stays open for a person.
+                    # New evidence ends the stop after REFRESH_MAX_FAILURES, but the wait and the run of failures in a row still
+                    # apply: a check that changes the evidence itself looks the same as a person who changes the scope.
+                    # The card stays open for a person all this time.
                     continue
                 prior_records = [r for r in records if r.get('turn_id') in chain]
                 outstanding = [r for r in prior_records if (subscription(r) or r.get('_relay_task_id')) and not r.get('_process_delivery')]
