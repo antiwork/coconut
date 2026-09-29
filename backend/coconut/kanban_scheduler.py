@@ -344,7 +344,7 @@ class NativeKanban(NativeOutcomes):
         # run back to back and keep the service at full CPU. The pass rests for twice its own time, so a pass of
         # 0.5 s or less uses at most a third of the time, and a longer pass rests for the longest rest. The time is
         # wall-clock time. The dispatch gate is free here, and _dispatch_conversations admits chat messages at once.
-        rest = min(KANBAN_PASS_REST_SECONDS, 2 * (time.monotonic() - self._kanban_pass_started))
+        rest = min(KANBAN_PASS_REST_SECONDS, 2 * (time.monotonic() - getattr(self, '_kanban_pass_started', time.monotonic())))
         self.stopping.wait(rest)
         with self.changed:
             self.changed.wait(max(0.0, KANBAN_PASS_SECONDS - rest))
