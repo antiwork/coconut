@@ -144,6 +144,34 @@ class NativeOutcomes:
                 return True
         return False
 
+    def _dependency_unlink_tasks(self, tasks, parent, child):
+        from .work_capacity import execution_key
+
+        def scope(task):
+            return execution_key(task) if task.get('_execution_session_id') else task['id']
+
+        by_id = {t['id']: t for t in tasks}
+        linked, _ = self._work_links(by_id, self._pending_completion_receipts(), True)
+        executions = {}
+        for task in tasks:
+            executions.setdefault(scope(task), set()).add(task['id'])
+            # Legacy delegated helpers predate native relay/assignment markers.
+            # Follow their authenticated source downward, never requester siblings.
+            source = by_id.get(task.get('source_task_id'))
+            if source and task.get('source_bot_id') == source['bot_id']:
+                linked.setdefault(source['id'], set()).add(task['id'])
+        found, pending = {}, [parent['id'], child['id']]
+        while pending:
+            identity = pending.pop()
+            if identity in found or identity not in by_id:
+                continue
+            task = found[identity] = by_id[identity]
+            pending.extend(executions[scope(task)] - found.keys())
+            pending.extend(linked.get(identity, set()) - found.keys())
+        # Follow saved helpers and returns even across sessions, but never walk
+        # up to a requester and pull in that bot's unrelated assignments.
+        return found
+
     def unlink_native_dependency(self, source_id, payload):
         import re
         from .service import ServiceError, digest, encoded, require_text
@@ -151,10 +179,6 @@ class NativeOutcomes:
 
         def native_identity(task):
             return task.get('_native_outcome_id') or (task.get('_kanban_claim') or {}).get('native_id')
-
-        def guard_inspects(task, parent, child):
-            return (execution_key(task) in (execution_key(parent), execution_key(child))
-                    or task['bot_id'] == child['bot_id'])
 
         if set(payload) != {'parent_id', 'child_id', 'reason'}:
             raise ServiceError(400, 'Supply only parent_id, child_id, and reason.')
@@ -177,15 +201,11 @@ class NativeOutcomes:
                           for identity in (parent_id, child_id)}
                 parent_owner = owners[parent_id][0] if len(owners[parent_id]) == 1 else None
                 child_owner = owners[child_id][0] if len(owners[child_id]) == 1 else None
-                # Done cards fall out of the default snapshot. Request only finished
-                # tasks the later guard inspects, so unrelated history is not queried
-                # under this lock or added to the snapshot.
+                # Done cards fall out of the default snapshot. Refresh the exact
+                # execution/helper scope, without adding unrelated bot history.
                 observed = []
                 if parent_owner and child_owner:
-                    observed = [t['id'] for t in tasks
-                                if t['status'] in ('completed', 'failed')
-                                and guard_inspects(t, parent_owner, child_owner)
-                                and self._native_task_receipts(t['id'], state='executing')]
+                    observed = list(self._dependency_unlink_tasks(tasks, parent_owner, child_owner))
             snapshots = {t['external_id']: t for t in self.kanban.call(
                 {'op': 'snapshot', 'external_ids': list(dict.fromkeys(identities + observed))})['tasks']}
             def authorize():
@@ -208,6 +228,8 @@ class NativeOutcomes:
                     child_external_id=child['id'], child_bot_id=child['bot_id'],
                     source_task_id=source_id, source_bot_id=source['bot_id'], source_turn_id=source.get('_native_turn_id'),
                     source_native_id=source.get('_native_outcome_id') or (source.get('_kanban_claim') or {}).get('native_id'),
+                    guarded_native_ids=sorted({snapshots[identity]['id'] for identity in observed
+                        if identity in snapshots and (identity != source_id or identity in (parent['id'], child['id']))}),
                     request_id=digest(encoded(['unlink_dependency', source_id, source.get('_native_turn_id'), parent_id, child_id, reason])))
                 return source, parent, child, request
 
@@ -242,7 +264,9 @@ class NativeOutcomes:
                     raise ServiceError(409, 'The child’s existing decision must be answered before unlinking.')
                 # Parent appearance/decision state is deliberately not interpreted
                 # as permission for the child, or changed by this operation.
-                guarded = {t['id']: t for t in tasks if guard_inspects(t, parent, child)}
+                guarded = self._dependency_unlink_tasks(tasks, parent, child)
+                if guarded.keys() - set(observed):
+                    raise ServiceError(409, 'The related work changed. Read current work before retrying.')
                 for task in guarded.values():
                     if task['id'] == source_id and task['id'] not in (parent['id'], child['id']):
                         continue
@@ -257,9 +281,10 @@ class NativeOutcomes:
                                       and not any((r.get('action') or {}).get('name') in LOCAL_COMMAND_TOOLS
                                                   and not r.get('_process_ended_at') for r in receipts))
                     if (task['status'] == 'working' or worker and worker.is_alive()
+                            or card and (card.get('current_run_id') or card.get('worker_pid'))
                             or self._background_pending(task['id'])
                             or (receipts and not stale_receipts)
-                            or task.get('_return_pending')):
+                            or task.get('_return_pending') or task.get('_native_reply_pending')):
                         raise ServiceError(409, 'Wait for the existing owner work and tool results before unlinking.')
                 if any(c['task_id'] in guarded and c['status'] in ('queued', 'working') for c in self._all('contexts')):
                     raise ServiceError(409, 'Wait for the existing owner context before unlinking.')

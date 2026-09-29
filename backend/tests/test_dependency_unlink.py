@@ -46,7 +46,7 @@ class DependencyUnlinkTests(unittest.TestCase):
             self.service._put('tasks', original)
         self.requests = []
         self.hidden_snapshots = set()
-        self.snapshot_rows = [dict(external_id=t['id'], id=t['_native_outcome_id'], status=status)
+        self.snapshot_rows: list[dict] = [dict(external_id=t['id'], id=t['_native_outcome_id'], status=status)
                               for t, status in ((parent, 'review'), (child, 'todo'))]
 
         def call(request):
@@ -181,6 +181,7 @@ class DependencyUnlinkTests(unittest.TestCase):
         child, parent, source = self.setup_edge()
         other = dict(child, id=str(uuid4()), status='working', _native_outcome_id='t_44444444')
         other['_execution_session_id'] = other['id']
+        other['_assignment_task_id'] = child['id']
         self.service._put('tasks', other)
         with self.assertRaisesRegex(ServiceError, 'owner work'):
             self.unlink(source)
@@ -195,6 +196,7 @@ class DependencyUnlinkTests(unittest.TestCase):
         child, parent, source = self.setup_edge()
         other = dict(child, id=str(uuid4()), status='completed', _native_outcome_id='t_44444444')
         other['_execution_session_id'] = other['id']
+        other['_assignment_task_id'] = child['id']
         self.service._put('tasks', other)
         self.service._put('native_receipts', dict(
             id='stale-read', task_id=other['id'], state='executing', action={'name': 'read_file'}))
@@ -257,6 +259,7 @@ class DependencyUnlinkTests(unittest.TestCase):
         child, parent, source = self.setup_edge()
         related = dict(child, id=str(uuid4()), status='completed', _native_outcome_id='t_44444444')
         related['_execution_session_id'] = related['id']
+        related['_assignment_task_id'] = child['id']
         self.service._put('tasks', related)
         self.service._put('native_receipts', dict(
             id='related-read', task_id=related['id'], state='executing', action={'name': 'read_file'}))
@@ -596,6 +599,36 @@ class DependencyJournalTests(unittest.TestCase):
                 self.conn.execute('UPDATE tasks SET '+field+'=? WHERE id=?', (before, identity))
         self.board.kb.unlink_tasks.assert_not_called()
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM coconut_unlinks').fetchone()[0], 0)
+
+    def test_scoped_request_allows_unrelated_native_worker_without_changing_it(self):
+        self.conn.execute("INSERT INTO tasks VALUES ('t_44444444','dev','running',99,123)")
+        scope = ['t_11111111', 't_22222222']
+        with self.assertRaisesRegex(ValueError, 'other native work'):
+            self.unlink()
+        receipt = self.unlink(guarded_native_ids=scope)
+        self.assertEqual(receipt['status'], 'unlinked')
+        self.assertEqual(self.conn.execute("SELECT status,current_run_id,worker_pid FROM tasks WHERE id='t_44444444'").fetchone(),
+                         ('running', 99, 123))
+        self.assertEqual(self.unlink(guarded_native_ids=scope + ['t_44444444']), receipt)
+        self.board.kb.unlink_tasks.assert_called_once()
+
+    def test_scoped_request_rejects_related_claims_and_missing_identity(self):
+        scope = ['t_11111111', 't_22222222', 't_33333333']
+        for field, value in (('current_run_id', 99), ('worker_pid', 123), ('status', 'running')):
+            old = self.conn.execute('SELECT ' + field + " FROM tasks WHERE id='t_33333333'").fetchone()[0]
+            self.conn.execute('UPDATE tasks SET ' + field + "=? WHERE id='t_33333333'", (value,))
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'related native work'):
+                self.unlink(guarded_native_ids=scope)
+            self.conn.execute('UPDATE tasks SET ' + field + "=? WHERE id='t_33333333'", (old,))
+        with self.assertRaisesRegex(ValueError, 'related native work'):
+            self.unlink(guarded_native_ids=scope + ['missing'])
+        self.board.kb.unlink_tasks.assert_not_called()
+
+    def test_scoped_request_requires_both_endpoints(self):
+        for scope in ([], ['t_11111111'], ['t_22222222'], 'bad', [None]):
+            with self.subTest(scope=scope), self.assertRaisesRegex(ValueError, 'scope is incomplete'):
+                self.unlink(guarded_native_ids=scope)
+        self.board.kb.unlink_tasks.assert_not_called()
 
     def test_replay_cannot_change_reason_or_requester(self):
         self.unlink()
