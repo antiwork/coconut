@@ -1,5 +1,6 @@
 """Run with COCONUT_HERMES_ROOT/PYTHON. A finished Coconut request must not leave a native task that blocks its dependents."""
 import json
+import time
 import os
 from pathlib import Path
 import subprocess
@@ -89,15 +90,17 @@ class ArchiveSettledTests(unittest.TestCase):
 
 
 class SettleSchedulerTests(unittest.TestCase):
-    def service(self, tasks, natives, running=(), held=(), paused=False):
+    def service(self, tasks, natives, running=(), held=(), paused=False, contexts=(), threads=()):
         calls = []
         service = SimpleNamespace(kanban=SimpleNamespace(tasks=natives, call=calls.append), lock=MagicMock(), db=MagicMock(),
-                                  running={i: None for i in running}, context_threads={},
+                                  running={i: None for i in running}, context_threads={i: None for i in threads},
                                   _task_paused=lambda task: paused, _automatic_work_is_paused=lambda task: False)
         def execute(statement, values):
             wanted = set(json.loads(values[0]))
             if 'FROM decisions' in statement:
                 return [(identity,) for identity in held if identity in wanted]
+            if 'FROM contexts' in statement:
+                return [(json.dumps(c),) for c in contexts if c['id'] in wanted]
             return [(json.dumps(t),) for t in tasks if t['id'] in wanted]
         service.db.execute.side_effect = execute
         service._native_orphans = lambda slack=0: NativeKanban._native_orphans(service, slack)
@@ -118,7 +121,8 @@ class SettleSchedulerTests(unittest.TestCase):
                  dict(id='fresh', status='completed', updated_at=new), dict(id='failed', status='failed', updated_at=old),
                  dict(id='live', status='completed', updated_at=old), dict(id='active', status='queued', updated_at=old)]
         service = self.service(tasks, natives, running=['live'])
-        self.assertEqual(self.settled(service), ['t_cancelled', 't_done'])
+        # A failed request is finished too. A fresh, a running and an active request are not.
+        self.assertEqual(self.settled(service), ['t_cancelled', 't_done', 't_failed'])
         self.assertTrue(all(call['op'] == 'archive_settled' for call in service.calls))
 
     def test_the_mechanisms_of_coconut_keep_their_tasks(self):
@@ -162,6 +166,55 @@ class SettleSchedulerTests(unittest.TestCase):
     def test_a_paused_request_keeps_its_native_task(self):
         old = self.ago(SETTLE_SECONDS + 60)
         service = self.service([dict(id='a', status='completed', updated_at=old)], {'a': dict(id='t_a', status='ready')}, paused=True)
+        self.assertEqual(self.settled(service), [])
+
+    def test_a_failed_request_is_settled_like_a_finished_one(self):
+        from coconut.kanban_scheduler import SETTLE_PLAIN_SECONDS
+        minutes, day = self.ago(SETTLE_PLAIN_SECONDS + 60), self.ago(SETTLE_SECONDS + 60)
+        natives = {name: dict(id='t_' + name, status='blocked') for name in ('plain', 'young', 'outcome', 'owned')}
+        tasks = [dict(id='plain', status='failed', updated_at=minutes, summary='The worker could not start.'),
+                 dict(id='young', status='failed', updated_at=self.ago(60)),
+                 dict(id='outcome', status='failed', updated_at=minutes, _native_outcome_id='t_outcome'),
+                 dict(id='owned', status='failed', updated_at=day, _native_outcome_id='t_owned', _block_check=dict(attempt=1))]
+        service = self.service(tasks, natives)
+        # A plain failed request goes after minutes, an outcome after a day, and a block check keeps its task.
+        self.assertEqual(self.settled(service), ['t_plain'])
+        # A failed request did not succeed, so it never passes its summary as a result.
+        self.assertEqual(service.calls, [{'op': 'archive_settled', 'id': 't_plain', 'summary': None}])
+
+    def test_a_finished_decision_context_is_settled_and_a_live_one_is_not(self):
+        from coconut.kanban_scheduler import SETTLE_PLAIN_SECONDS
+        old, young = time.time() - SETTLE_PLAIN_SECONDS - 60, time.time() - 60
+        names = ('failed', 'done', 'cancelled', 'queued', 'live', 'young')
+        natives = {name: dict(id='t_' + name, status='blocked', created_at=young if name == 'young' else old) for name in names}
+        # A stored context has no dates, so the age comes from its native task.
+        contexts = [dict(id='failed', status='failed', error_code='decision_refresh_incomplete'),
+                    dict(id='done', status='completed'), dict(id='cancelled', status='cancelled'),
+                    dict(id='queued', status='queued'), dict(id='live', status='failed'), dict(id='young', status='failed')]
+        service = self.service([], natives, contexts=contexts, threads=['live'])
+        self.assertEqual(self.settled(service), ['t_cancelled', 't_done', 't_failed'])
+
+    def test_a_context_is_settled_even_when_its_task_is_paused(self):
+        from coconut.kanban_scheduler import SETTLE_PLAIN_SECONDS
+        service = self.service([], {'c': dict(id='t_c', status='blocked', created_at=time.time() - SETTLE_PLAIN_SECONDS - 60)},
+                               paused=True, contexts=[dict(id='c', status='failed')])
+        self.assertEqual(self.settled(service), ['t_c'])
+
+    def test_a_context_that_ran_long_waits_after_its_last_heartbeat(self):
+        from coconut.kanban_scheduler import SETTLE_PLAIN_SECONDS
+        started, beat = time.time() - 3 * SETTLE_PLAIN_SECONDS, time.time() - 60
+        natives = {'long': dict(id='t_long', status='blocked', created_at=started, last_heartbeat_at=beat),
+                   'quiet': dict(id='t_quiet', status='blocked', created_at=started, last_heartbeat_at=None)}
+        service = self.service([], natives, contexts=[dict(id='long', status='failed'), dict(id='quiet', status='failed')])
+        # The long turn ended a minute ago. The quiet one has no heartbeat, so its start is all we know.
+        self.assertEqual(self.settled(service), ['t_quiet'])
+
+    def test_a_context_whose_native_task_has_a_null_date_is_left_alone(self):
+        service = self.service([], {'c': dict(id='t_c', status='blocked', created_at=None)}, contexts=[dict(id='c', status='failed')])
+        self.assertEqual(self.settled(service), [])
+
+    def test_a_context_whose_native_task_has_no_date_is_left_alone(self):
+        service = self.service([], {'c': dict(id='t_c', status='blocked')}, contexts=[dict(id='c', status='failed')])
         self.assertEqual(self.settled(service), [])
 
     def test_a_native_task_that_is_running_or_final_is_not_read(self):
