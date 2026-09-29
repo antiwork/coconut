@@ -51,6 +51,28 @@ class MarkedTaskTests(unittest.TestCase):
             self.service._dispatch_status_request()
             self.service._cancel_stale_decision_refreshes()
 
+    def test_the_rows_of_many_recovering_tasks_decode_each_table_once(self):
+        from collections import Counter
+        from types import SimpleNamespace
+        base = dict(thread_id='t', session_id='s', exchange_id='e', conversation_bot_id=self.bot['id'], title='Work',
+                    created_at='2026-01-01T00:00:00Z', summary='')
+        for number in range(6):
+            identity = str(uuid4())
+            with self.service.transaction():
+                self.service._put('tasks', dict(base, id=identity, bot_id=self.bot['id'], status='queued',
+                                                _self_recovery={'attempt': 1}))
+                self.service._put('artifacts', dict(id=str(uuid4()), kind='work', status='working', task_id=identity,
+                                                    bot_id=self.bot['id'], title='Work', created_at='2026-01-01T00:00:00Z'))
+        self.service.kanban = SimpleNamespace(tasks={}, close=lambda: None)
+        reads, original = Counter(), Service._all
+        def counted(service, table):
+            reads[table] += 1
+            return original(service, table)
+        with patch.object(Service, '_all', counted):
+            rows = self.service._kanban_rows()
+        self.assertEqual(len(rows), 6)
+        self.assertTrue(all(count <= 1 for count in reads.values()), reads)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -141,6 +141,11 @@ class NativeKanban(NativeOutcomes):
                        if hasattr(self.provider, 'prepare_kanban_worker') else None)
 
     def _kanban_rows(self):
+        # The pause checks of many tasks read the same tables. One shared read decodes each table once.
+        with self._shared_reads():
+            return self._kanban_rows_shared()
+
+    def _kanban_rows_shared(self):
         from .work_capacity import execution_key
         known = self.kanban.tasks
         retained = json.dumps([i for i, task in known.items() if task.get('status') not in ('done', 'archived')])
