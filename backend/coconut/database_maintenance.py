@@ -48,16 +48,15 @@ KEPT_ACTIONS = ('kanban_create', 'cronjob_manage')
 # For a settled decision nothing reads them, and they made up 58 of the 67 MB of the contexts of a live store.
 # The question keeps this many characters, to name the context.
 CONTEXT_QUESTION_CHARACTERS = 200
-# A task that ended keeps the context text of its last claim and the history copies of its recoveries. A new
-# claim or recovery writes them again. Every pass that reads the whole table decodes them, so they go after this
-# time. The claim keeps a short start of its context, because some code tests whether a claim has one.
+# A task that ended keeps the context text of its last claim. A new claim writes it again. Every pass that reads the
+# whole table decodes it, so it shrinks after this time. The claim keeps a short start of its context, because some
+# code tests whether a claim has one. The recovery copies (_self_recovery.work and .decisions) stay: a native retry
+# or a block check of a task that ended long ago copies them into its next recovery.
 TASK_HISTORY_DAYS = 3
 CLAIM_CONTEXT_CHARACTERS = 200
 TASK_HISTORY_FIELDS = (
     ("json_type(data,'$._kanban_claim.context')='text' AND length(json_extract(data,'$._kanban_claim.context'))>:keep",
      "json_set(data,'$._kanban_claim.context',substr(json_extract(data,'$._kanban_claim.context'),1,:keep))"),
-    ("json_array_length(data,'$._self_recovery.work')>0", "json_set(data,'$._self_recovery.work',json('[]'))"),
-    ("json_array_length(data,'$._self_recovery.decisions')>0", "json_set(data,'$._self_recovery.decisions',json('[]'))"),
 )
 BATCH_ROWS = 1000
 # A pause between batches lets waiting requests take the service lock.
@@ -265,10 +264,11 @@ class DatabaseMaintenance:
         return shortened
 
     def _prune_tasks(self, current):
-        """Drop the history text of the tasks that ended more than TASK_HISTORY_DAYS ago.
+        """Shorten the claim context of the tasks that ended more than TASK_HISTORY_DAYS ago.
 
-        Each field of TASK_HISTORY_FIELDS is a copy that a later claim or recovery of the same task writes again.
-        The rows stay, with their status, links, and the marks that other code tests.
+        A later claim of the same task writes the context again. The rows stay, with their status, links, and the
+        marks that other code tests. A task that fails after a long wait shortens at once, which is safe: nothing
+        reads the context of an ended claim.
         """
         cutoff, shortened = stamp(current - TASK_HISTORY_DAYS * 86400), 0
         for condition, change in TASK_HISTORY_FIELDS:
