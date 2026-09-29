@@ -242,7 +242,6 @@ class NativeKanban(NativeOutcomes):
             self._reconcile_kanban()
             with self.changed:
                 self._kanban_dispatch_uncertain = False
-                self.changed.wait(.2)
             return
         self.finish_inbox_swipes()
         self._drain_returns()
@@ -255,7 +254,6 @@ class NativeKanban(NativeOutcomes):
         with self.changed:
             self._kanban_dispatch_uncertain = False
             if self.restart_pending or self.stopping.is_set():
-                self.changed.wait(.2)
                 return
             self._cancel_stale_decision_refreshes()
             self.running = {k: v for k, v in self.running.items() if v.is_alive()}
@@ -303,7 +301,10 @@ class NativeKanban(NativeOutcomes):
         finally:
             with self.lock:
                 self._kanban_claiming -= 1
-        if hasattr(self.provider, 'trim_kanban_workers'):
+        self._publish_kanban_changes()
+
+    def _idle_kanban(self):
+        if not (self.restart_pending or self.stopping.is_set()) and hasattr(self.provider, 'trim_kanban_workers'):
             with self.lock:
                 keep = set()
                 for record in self._pending_completion_receipts():
@@ -314,14 +315,8 @@ class NativeKanban(NativeOutcomes):
                         keep.add(identity)
             self.provider.trim_kanban_workers(keep)
         self._publish_kanban_changes()
-        # Every commit wakes the wait below, and a busy store commits several times a second. Passes would then
-        # run back to back and keep the service at full CPU. The pass rests for twice its own time, so a pass of
-        # 0.5 s or less uses at most a third of the time, and a longer pass rests for the longest rest. The time is
-        # wall-clock time. _dispatch_conversations admits chat messages at once, without this pass.
-        rest = min(KANBAN_PASS_REST_SECONDS, 2 * (time.monotonic() - started))
-        self.stopping.wait(rest)
         with self.changed:
-            self.changed.wait(max(0.0, KANBAN_PASS_SECONDS - rest))
+            self.changed.wait(.2 if self.restart_pending or self.stopping.is_set() else 1)
 
     def _publish_kanban_changes(self):
         visible = {t['id']: tuple(t.get(key) for key in ('status', 'priority', 'current_run_id', 'title',

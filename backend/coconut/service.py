@@ -2981,11 +2981,15 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._dispatch_foreground()
                 self._kanban_dispatching = True
             result = self._dispatch_pending_locked()
-            # Retain the reservation after an uncertain native response until reconciliation succeeds.
-            with self.lock:
-                self._kanban_dispatching = False
-                self.changed.notify_all()
-            return result
+        # The sole queue-dispatch thread keeps its foreground reservation through idle.
+        # Claims and their reconciliation are finished. Slow idle-worker cleanup
+        # and condition waits must not exclude an otherwise valid dependency unlink.
+        self._idle_kanban()
+        # Retain the reservation after an uncertain native response until reconciliation succeeds.
+        with self.lock:
+            self._kanban_dispatching = False
+            self.changed.notify_all()
+        return result
 
     def _dispatch_pending_locked(self):
         if self.kanban is not None:
