@@ -408,7 +408,12 @@ Each outcome has its own work session. Once an hour, with worktree retirement, C
    More than a quarter of the file is free, or the store is over 512 MiB and 1.5 times as large as after the last VACUUM.
    The second test exists because the search indexes fragment and keep their pages. One 4.5 GB store had 16% of its pages free,
    and a merge plus VACUUM took it to 0.95 GB. The disk must also hold two copies of the used pages plus 2 GiB, as the VACUUM of the Coconut database requires. Otherwise the result of the run says `vacuum_skipped`.
-   The bot needs no running worker and no active or queued task, and no other process may hold the store.
+   A bot with a due VACUUM and no running turn goes on hold. It keeps its queue, but no new turn starts, and each of its ready
+   tasks waits as `scheduled`. A run that Coconut claimed before the hold starts its turn after the hold. Only a claim for this
+   bot counts as a live turn. Then Coconut rewrites the store and ends the hold, even if the rewrite fails.
+   A bot with a running turn is not held at first. Maintenance tries again after 15 minutes, up to three times. Then the bot goes
+   on hold, and Coconut waits up to two minutes for its running turns. If one is still running, or if the pass ends without a
+   VACUUM for another reason, for example because another process holds the store, the bot goes on hold again only after six hours.
 
 When an idle outcome resumes, Coconut reopens its session with `reopen_session`. If Hermes has already deleted it,
 Coconut seeds a new session from its own saved messages of every task in that work. The native card keeps the work record.

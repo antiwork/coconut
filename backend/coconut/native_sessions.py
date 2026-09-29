@@ -63,14 +63,15 @@ def maintain(request):
     3. Prune ended idle work sessions inactive for `retention_days`, and other ended Coconut sessions, such as
        compressed chat sessions, inactive for `history_days`. Other sources keep the profile's own settings.
     4. VACUUM at most once a week when it pays (see `vacuum_verdict`: more than a quarter of the file is free, or the
-       store is large and has regrown), the service reports the bot quiet, and no other process holds the store.
-       That test, not this run's prune count, decides, so a VACUUM that a holder deferred runs on a later hour.
+       store is large and has regrown), the service allows it, and no other process holds the store. Without
+       `allow_vacuum`, a due VACUUM sets `vacuum_pending` and does not run. The service then stops new turns of the bot
+       and calls again with `allow_vacuum`. `vacuum_skipped` says why a due VACUUM did not run.
     """
     from hermes_state import SessionDB
     from hermes_state_holders import foreign_state_db_holders, in_process_state_db_holders
 
     db = SessionDB()
-    result = dict(recorded=0, ended=0, pruned=0, vacuumed=False)
+    result = dict(recorded=0, ended=0, pruned=0, vacuumed=False, vacuum_pending=False)
     try:
         for item in request['conversations']:
             root = session_root(request['bot'], execution=item.get('execution_session_id'), epoch=item.get('epoch'))
@@ -100,16 +101,21 @@ def maintain(request):
         due = not last or time.time() - float(last) >= VACUUM_INTERVAL_SECONDS
         # VACUUM rewrites the whole file under an exclusive lock. Hermes skips it while another process
         # holds the store or a WAL sidecar, and so does Coconut. The next hour tries again.
-        verdict = vacuum_verdict(db) if request.get('allow_vacuum') and due else None
+        verdict = vacuum_verdict(db) if due else None
         if verdict == 'disk':
             # Say why a store that should shrink does not, so an operator can tell.
             result['vacuum_skipped'] = 'The disk cannot hold a second copy of the store.'
-        if (verdict == 'run'
-                and not (foreign_state_db_holders(db.db_path) + in_process_state_db_holders(db.db_path, exclude=db))):
+        if verdict == 'run' and not request.get('allow_vacuum'):
+            # The service stops new turns of the bot and runs this again with allow_vacuum.
+            result['vacuum_pending'] = True
+        elif verdict == 'run' and foreign_state_db_holders(db.db_path) + in_process_state_db_holders(db.db_path, exclude=db):
+            # Say why, so the service does not put the bot on hold again at once.
+            result['vacuum_skipped'] = 'Another process holds the store.'
+        elif verdict == 'run':
             try:
                 db.vacuum()
             except Exception as error:
-                # The VACUUM is optional. Keep the tips, ends, and prune of this run, and retry next hour.
+                # The VACUUM is optional. Keep the tips, ends, and prune of this run. The service tries again later.
                 result['vacuum_error'] = str(error)[:500]
             else:
                 db.set_meta(VACUUM_KEY, str(time.time()))

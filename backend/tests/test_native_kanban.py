@@ -879,6 +879,28 @@ for title in ('First defect', 'Second defect'):
         self.assertEqual(projected['work_state'], original['work_state'])
         self.assertEqual(self.service._work_identity(alias), self.service._work_identity(item))
 
+    def test_a_bot_on_hold_for_a_vacuum_gets_no_ready_row_and_no_claim(self):
+        queued = self.task('Continue accepted work')
+        self.assertEqual(next(r['state'] for r in self.service._kanban_rows() if r['id'] == queued['id']), 'ready')
+        self.service._store_hold.add(queued['bot_id'])
+        # The request keeps its place in the queue, but no turn can start while the store is rewritten.
+        self.assertEqual(next(r['state'] for r in self.service._kanban_rows() if r['id'] == queued['id']), 'scheduled')
+        self.service._store_hold.discard(queued['bot_id'])
+        self.assertEqual(next(r['state'] for r in self.service._kanban_rows() if r['id'] == queued['id']), 'ready')
+
+    def test_a_turn_that_was_claimed_before_the_hold_starts_after_it(self):
+        task = self.task('Continue accepted work')
+        # Claim the request, but leave the start of its turn to the next reconciliation.
+        with patch.object(self.service, '_reconcile_kanban'):
+            self.tick()
+        self.assertNotIn(task['id'], self.service.running)
+        self.service._store_hold.add(self.bot['id'])
+        self.service._reconcile_kanban()
+        # Reconciliation registers a turn as soon as it starts one.
+        self.assertNotIn(task['id'], self.service.running)
+        self.service._store_hold.discard(self.bot['id'])
+        self.settle(lambda: task['id'] in self.provider.started)
+
     def test_scheduler_reads_active_rows_and_known_terminal_transitions(self):
         queued = self.task('Continue accepted work')
         finished = self.task('Completed input')
