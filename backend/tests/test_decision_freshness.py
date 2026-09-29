@@ -108,6 +108,29 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.service._put('contexts', context)
         self.assertTrue(self.failed_check(decision, 10 ** 6))
 
+    def test_checks_that_fail_in_a_row_stop_even_when_each_changes_the_evidence(self):
+        from coconut.decision_freshness import REFRESH_MAX_CONSECUTIVE_FAILURES, REFRESH_QUIET_SECONDS
+        decision = self.question()
+        def fail_with_new_evidence(step):
+            # A check that starts a background process changes the evidence by its own receipts.
+            task = self.service._get('tasks', self.task['id'])
+            task['summary'] = f'The check changed the evidence, step {step}.'
+            self.service._put('tasks', task)
+            queued = self.failed_check(decision, 10 ** 6)
+            if queued:
+                context = self.service._all('contexts')[-1]
+                # Two hours ago: past every backoff, and still inside the quiet time.
+                context['_failed_at'] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+                self.service._put('contexts', context)
+            return queued
+        results = [fail_with_new_evidence(step) for step in range(REFRESH_MAX_CONSECUTIVE_FAILURES + 2)]
+        self.assertEqual(results, [True] * REFRESH_MAX_CONSECUTIVE_FAILURES + [False] * 2)
+        # Once the newest failure is old enough, one more check may run.
+        context = self.service._all('contexts')[-1]
+        context['_failed_at'] = (datetime.now(timezone.utc) - timedelta(seconds=REFRESH_QUIET_SECONDS + 60)).isoformat()
+        self.service._put('contexts', context)
+        self.assertTrue(fail_with_new_evidence(99))
+
     def test_new_evidence_starts_the_failure_count_again(self):
         from coconut.decision_freshness import REFRESH_MAX_FAILURES
         decision = self.question()

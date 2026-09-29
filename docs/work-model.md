@@ -39,7 +39,9 @@ Client fields are optional so an older host can run during a rolling update.
 Pending native questions receive a background check after one hour or when linked evidence changes.
 The queue runs one automatic check at a time and waits at least five minutes between attempts for the same card.
 A check that ends without a recorded result waits twice as long after each failure, up to an hour, and it stops after five failures
-against the same evidence. New evidence starts the count again, and the card stays open for a person meanwhile.
+against the same evidence. New evidence starts that count again. A check that changes the evidence itself, for example through a
+background process, does not hide a run of failures: after ten failures in a row, the next check waits six hours after the last one.
+The card stays open for a person meanwhile.
 Hermes reads the source and keeps, revises, or withdraws the existing question. These checks cannot approve actions.
 Coconut rejects results when the card revision or linked evidence changes during the check.
 Unchanged checks and failed checks do not add chat messages.

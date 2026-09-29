@@ -436,6 +436,7 @@ class BackgroundProcesses:
                        _background_completion=[text for _, text in completions])
         context.pop('error_code', None)
         context.pop('_refresh_recorded', None)
+        context.pop('_failed_at', None)
         if context.get('_decision_refresh'):
             context['_refresh_origin_id'] = source.get('_refresh_origin_id', source['id'])
             decision['_freshness'] = dict(decision.get('_freshness', {}), context_id=context['id'], queued_at=now())
