@@ -890,6 +890,35 @@ class WorktreeRetirementTests(unittest.TestCase):
         # A low disk also runs the pass more often.
         self.assertLessEqual(self.service._next_worktree_retirement - time.time(), retirement.LOW_DISK_INTERVAL_SECONDS)
 
+    def ago(self, **delta):
+        return (datetime.now(timezone.utc) - timedelta(**delta)).isoformat().replace('+00:00', 'Z')
+
+    def test_a_low_disk_retires_the_worktree_of_an_outcome_idle_for_minutes(self):
+        _, identity, path, _ = self.outcome(updated_at=self.ago(minutes=20))
+        # With enough disk space, the outcome must idle for hours.
+        self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
+
+    def test_a_low_disk_keeps_the_worktree_of_an_outcome_that_changed_a_minute_ago(self):
+        _, identity, path, _ = self.outcome(updated_at=self.ago(minutes=1))
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+
+    def test_a_low_disk_ignores_a_task_that_waited_long_in_the_queue_but_not_a_recent_or_running_one(self):
+        stale, stale_identity, stale_path, _ = self.outcome(status='queued', updated_at=self.ago(hours=13))
+        recent, _, recent_path, _ = self.outcome(status='queued', updated_at=self.ago(hours=1))
+        running, _, running_path, _ = self.outcome(status='working', updated_at=self.ago(hours=13))
+        # A queued task of a normal disk keeps its worktree, however long it waits.
+        self.assertEqual(self.retire(), [])
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [stale_identity])
+        self.assertFalse(stale_path.exists())
+        self.assertTrue(recent_path.exists() and running_path.exists())
+
     def test_a_locked_worktree_stays_even_when_long_idle(self):
         _, identity, path, _ = self.outcome()
         git(path, 'checkout', '-q', '-b', 'switched-branch')

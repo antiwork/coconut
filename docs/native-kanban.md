@@ -132,6 +132,11 @@ Retirement keeps work only while it can resume. Coconut discards the worktree of
 - Retirement refuses the worktree, and the disk has less than 20 GiB free (`LOW_DISK_BYTES`). The pass then runs
   every 10 minutes.
 
+Below 20 GiB free, an outcome counts as idle after 15 minutes without a task update (`URGENT_IDLE_SECONDS`), and not after
+6 hours. A queued or scheduled task that did not start for 12 hours (`URGENT_QUEUED_SECONDS`) does not keep the worktree
+of its outcome. A running task, a recent task, and a process that uses the worktree always keep it. The worktree comes back
+from its branch and its archive when the outcome resumes.
+
 A discard keeps the branch and a ref `refs/coconut/discarded/<identity>/<time>-<commit>` for each HEAD, nested ones
 too. A detached HEAD gets a branch `wt/<name>-detached` at its commit. The archive in `workspaces/archive/done/` holds the
 staged and unstaged patches (up to 200 MB), the untracked files (up to 200 MB), and the ignored files that are not build

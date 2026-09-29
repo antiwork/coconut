@@ -27,6 +27,12 @@ ACTIVE_STATUSES = ('queued', 'working', 'scheduled', 'waiting')
 # These native states mean that no worker runs or claims the outcome soon. Another state keeps the worktree.
 NATIVE_IDLE_STATUSES = ('done', 'archived', 'blocked', 'triage', 'review', 'todo', 'scheduled')
 RETIREMENT_INTERVAL_SECONDS = 60 * 60
+# Below LOW_DISK_BYTES an outcome counts as idle after this time without a task update, not after
+# WORKTREE_RETIRE_SECONDS. A worktree comes back from its branch and its archive when the outcome resumes.
+URGENT_IDLE_SECONDS = 15 * 60
+# Below LOW_DISK_BYTES a queued or scheduled task that did not start for this long does not start soon, so it does not
+# keep the worktree of its outcome.
+URGENT_QUEUED_SECONDS = 12 * 60 * 60
 # An idle outcome keeps a worktree that retirement cannot archive exactly for at most this long. Then Coconut discards it:
 # the branch keeps the commits, and an archive keeps the patches and the small untracked files.
 DISCARD_IDLE_SECONDS = 2 * 24 * 60 * 60
@@ -75,12 +81,15 @@ class ServiceBusy(ValueError):
 
 
 class WorktreeRetirement:
-    def _finished_outcomes(self, current, *, timeout=-1, only=None, idle=WORKTREE_RETIRE_SECONDS, ages=None):
+    def _finished_outcomes(self, current, *, timeout=-1, only=None, idle=None, ages=None, urgent=False):
         """Return the execution IDs whose work is idle, or None when the service lock is busy.
 
         Work that waits for a person, a failed task, and a blocked native outcome are idle.
+        With urgent (a low disk), idle is URGENT_IDLE_SECONDS, and a task that waited long in the queue does not count.
         Hold the service lock only to read.
         """
+        if idle is None:
+            idle = URGENT_IDLE_SECONDS if urgent else WORKTREE_RETIRE_SECONDS
         if not self.lock.acquire(timeout=timeout):
             return None
         try:
@@ -93,13 +102,21 @@ class WorktreeRetirement:
             finished = set()
             for outcome, tasks in groups.items():
                 try:
-                    latest = max(datetime.fromisoformat((t.get('updated_at') or t['created_at']).replace('Z', '+00:00'))
-                                 .timestamp() for t in tasks)
+                    updated = {t['id']: datetime.fromisoformat((t.get('updated_at') or t['created_at']).replace('Z', '+00:00'))
+                               .timestamp() for t in tasks}
                 except (KeyError, TypeError, ValueError, AttributeError):
                     continue
+                latest = max(updated.values())
                 if current - latest < idle:
                     continue
-                if any(t['status'] in ACTIVE_STATUSES or t['id'] in self.running for t in tasks):
+
+                def starts_soon(task):
+                    if task['id'] in self.running:
+                        return True
+                    if task['status'] not in ACTIVE_STATUSES:
+                        return False
+                    return not (urgent and task['status'] in ('queued', 'scheduled') and current - updated[task['id']] >= URGENT_QUEUED_SECONDS)
+                if any(starts_soon(t) for t in tasks):
                     continue
                 if any((native.get(t['id']) or by_native_id.get(t.get('_native_outcome_id')) or {}).get('status', 'done')
                        not in NATIVE_IDLE_STATUSES for t in tasks):
@@ -114,7 +131,7 @@ class WorktreeRetirement:
         finally:
             self.lock.release()
 
-    def _stop_idle_orphans(self, finished, saved):
+    def _stop_idle_orphans(self, finished, saved, urgent=False):
         """Stop the old orphaned processes of each idle outcome, in its worktrees and its scratch workspace.
 
         Retirement can refuse a worktree for another reason, for example a nested worktree with changes, and a
@@ -146,7 +163,7 @@ class WorktreeRetirement:
             if not found or self.stopping.is_set() or self.restart_pending:
                 continue
             # The outcome can resume while lsof runs. A resumed turn may use an old process, so check again.
-            again = self._finished_outcomes(time.time(), timeout=SERVICE_WAIT_SECONDS, only=outcome)
+            again = self._finished_outcomes(time.time(), timeout=SERVICE_WAIT_SECONDS, only=outcome, urgent=urgent)
             if not again or outcome not in again:
                 continue
             try:
@@ -183,7 +200,7 @@ class WorktreeRetirement:
         finally:
             self.lock.release()
 
-    def _clear_idle_scratch(self, root, eligible, current, saved):
+    def _clear_idle_scratch(self, root, eligible, current, saved, urgent=False):
         """Delete the files in the scratch workspaces (workspaces/<outcome>) of done or long idle outcomes.
 
         Nothing else removes them, and a bot often clones a repository or builds there. The folder stays, empty, because
@@ -230,7 +247,7 @@ class WorktreeRetirement:
             try:
                 # A turn starts under this lock. Check the outcome again, and move the folder before the lock goes.
                 # Confirm the idle time that made the outcome eligible, and not only that no task is active now.
-                again = (self._finished_outcomes(time.time(), only=name, idle=WORKTREE_RETIRE_SECONDS)
+                again = (self._finished_outcomes(time.time(), only=name, urgent=urgent)
                          if name in known else {name})
                 if not again or name not in again:
                     continue
@@ -280,7 +297,7 @@ class WorktreeRetirement:
         # Only this poller writes archives, and no retirement runs now.
         work_workspace.sweep_temporary(root)
         ages = {}
-        finished = self._finished_outcomes(current, timeout=SERVICE_WAIT_SECONDS, ages=ages)
+        finished = self._finished_outcomes(current, timeout=SERVICE_WAIT_SECONDS, ages=ages, urgent=low_disk)
         if finished is None:
             # The service was busy. Run the pass again soon instead of in an hour.
             self._next_worktree_retirement = current + BUSY_RETRY_SECONDS
@@ -288,7 +305,7 @@ class WorktreeRetirement:
         # The registry changes by atomic rename, so this read needs no lock. Retirement checks again under the lock.
         saved = json.loads(manifest.read_text()) if manifest.exists() else {}
         try:
-            self._stop_idle_orphans(finished, saved)
+            self._stop_idle_orphans(finished, saved, urgent=low_disk)
         except (ValueError, OSError, KeyError, subprocess.TimeoutExpired, sqlite3.Error) as error:
             # A failed orphan check must not stop retirement.
             logging.getLogger(__name__).warning('Coconut could not stop the orphans of idle outcomes: %s', error)
@@ -314,7 +331,7 @@ class WorktreeRetirement:
             return bool(bindings) and all(repository_name(b.get('repository'), names) in merged_in for b in bindings)
         scratch_done = {outcome for outcome, merged_in in done.items() if in_own_repositories(outcome, merged_in)}
         try:
-            self._clear_idle_scratch(root, scratch_done | stale, current, saved)
+            self._clear_idle_scratch(root, scratch_done | stale, current, saved, urgent=low_disk)
         except (ValueError, OSError, subprocess.TimeoutExpired, sqlite3.Error) as error:
             logging.getLogger(__name__).warning('Coconut could not clear idle scratch workspaces: %s', error)
         if not saved:
@@ -352,7 +369,8 @@ class WorktreeRetirement:
                 def still_finished(wait, outcome=outcome):
                     # Under the registry lock, wait is False. No thread waits for the registry lock while it holds the service lock,
                     # so a short, bounded wait there cannot deadlock.
-                    result = self._finished_outcomes(time.time(), timeout=SERVICE_WAIT_SECONDS if wait else LOCKED_WAIT_SECONDS, only=outcome)
+                    result = self._finished_outcomes(time.time(), timeout=SERVICE_WAIT_SECONDS if wait else LOCKED_WAIT_SECONDS,
+                                                    only=outcome, urgent=low_disk)
                     if result is None:
                         raise ServiceBusy(BUSY_MESSAGE)
                     return outcome in result
