@@ -1,5 +1,6 @@
 """Run with COCONUT_HERMES_ROOT/PYTHON. A finished Coconut request must not leave a native task that blocks its dependents."""
 import json
+import time
 import os
 from pathlib import Path
 import subprocess
@@ -183,21 +184,25 @@ class SettleSchedulerTests(unittest.TestCase):
 
     def test_a_finished_decision_context_is_settled_and_a_live_one_is_not(self):
         from coconut.kanban_scheduler import SETTLE_PLAIN_SECONDS
-        old = self.ago(SETTLE_PLAIN_SECONDS + 60)
+        old, young = time.time() - SETTLE_PLAIN_SECONDS - 60, time.time() - 60
         names = ('failed', 'done', 'cancelled', 'queued', 'live', 'young')
-        natives = {name: dict(id='t_' + name, status='blocked') for name in names}
-        contexts = [dict(id='failed', status='failed', updated_at=old, error_code='decision_refresh_incomplete'),
-                    dict(id='done', status='completed', updated_at=old), dict(id='cancelled', status='cancelled', updated_at=old),
-                    dict(id='queued', status='queued', updated_at=old), dict(id='live', status='failed', updated_at=old),
-                    dict(id='young', status='failed', updated_at=self.ago(60))]
+        natives = {name: dict(id='t_' + name, status='blocked', created_at=young if name == 'young' else old) for name in names}
+        # A stored context has no dates, so the age comes from its native task.
+        contexts = [dict(id='failed', status='failed', error_code='decision_refresh_incomplete'),
+                    dict(id='done', status='completed'), dict(id='cancelled', status='cancelled'),
+                    dict(id='queued', status='queued'), dict(id='live', status='failed'), dict(id='young', status='failed')]
         service = self.service([], natives, contexts=contexts, threads=['live'])
         self.assertEqual(self.settled(service), ['t_cancelled', 't_done', 't_failed'])
 
     def test_a_context_is_settled_even_when_its_task_is_paused(self):
         from coconut.kanban_scheduler import SETTLE_PLAIN_SECONDS
-        service = self.service([], {'c': dict(id='t_c', status='blocked')}, paused=True,
-                               contexts=[dict(id='c', status='failed', updated_at=self.ago(SETTLE_PLAIN_SECONDS + 60))])
+        service = self.service([], {'c': dict(id='t_c', status='blocked', created_at=time.time() - SETTLE_PLAIN_SECONDS - 60)},
+                               paused=True, contexts=[dict(id='c', status='failed')])
         self.assertEqual(self.settled(service), ['t_c'])
+
+    def test_a_context_whose_native_task_has_no_date_is_left_alone(self):
+        service = self.service([], {'c': dict(id='t_c', status='blocked')}, contexts=[dict(id='c', status='failed')])
+        self.assertEqual(self.settled(service), [])
 
     def test_a_native_task_that_is_running_or_final_is_not_read(self):
         service = self.service([], {'a': dict(id='t_a', status='running'), 'b': dict(id='t_b', status='done')})
