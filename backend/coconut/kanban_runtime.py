@@ -186,6 +186,18 @@ class Board:
                                   'DO UPDATE SET native_id=excluded.native_id,intent=excluded.intent',
                                   (row['id'], identity, intent))
 
+    def _note_respawn_guard(self, identity, reason):
+        """Record why a ready task does not spawn, unless its newest event already says so.
+
+        The dispatcher passes about once a second. Hermes writes one event per pass for each guarded task, which was
+        288,000 of 404,000 events in 13 days, and each event is a write transaction.
+        """
+        last = self.conn.execute('SELECT kind,payload FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1', (identity,)).fetchone()
+        if last and last[0] == 'respawn_guarded' and json.loads(last[1] or '{}').get('reason') == reason:
+            return
+        with self.kb.write_txn(self.conn):
+            self.kb._append_event(self.conn, identity, 'respawn_guarded', {'reason': reason})
+
     def promote(self, row):
         binding = self.conn.execute('SELECT native_id FROM coconut_bindings WHERE external_id=?', (row['id'],)).fetchone()
         previous = self.kb.get_task(self.conn, binding[0]) if binding else None
@@ -482,6 +494,11 @@ class Board:
                 recovering = (row.get('recovering') and row.get('native_id') == task['id']
                               and row.get('previous_input') == row['input'])
                 guard = self.dispatch.check_respawn_guard(self.conn, task['id'])
+                if guard is not None and not (continuing or (new_input or recovering) and guard == 'active_pr'):
+                    # Hermes would refuse this task and write one event per pass. One event per reason tells the operator why.
+                    result.respawn_guarded.append((task['id'], guard))
+                    self._note_respawn_guard(task['id'], guard)
+                    continue
                 if not (continuing or (new_input or recovering) and guard == 'active_pr'):
                     def spawn_with_lease(claimed, workspace):
                         pid = spawn(claimed, workspace)
