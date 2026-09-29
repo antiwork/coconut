@@ -3,6 +3,7 @@ import threading
 from datetime import datetime, timezone
 
 import test_tracked_work as fixtures
+import legacy_work_sync  # noqa: F401  (adds Service._sync_automatic_work)
 
 
 class DelegatedWorkDuplicatesTests(unittest.TestCase):

@@ -2927,11 +2927,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 continue
             if time.monotonic() >= next_routine_tick:
                 next_routine_tick = time.monotonic() + 1
-                for update in (self.tick_routines, self._sync_automatic_work):
-                    try:
-                        update()
-                    except Exception:
-                        logging.getLogger(__name__).exception('Queue maintenance failed: %s', update.__name__)
+                try:
+                    self.tick_routines()
+                except Exception:
+                    logging.getLogger(__name__).exception('Queue maintenance failed: tick_routines')
             if time.monotonic() >= next_recovery_tick:
                 next_recovery_tick = time.monotonic() + 5
                 try:

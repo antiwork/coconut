@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import test_tracked_work as fixtures
 from coconut.service import now
+import legacy_work_sync  # noqa: F401  (adds Service._sync_automatic_work)
 
 
 class WorkReadCostTests(unittest.TestCase):
