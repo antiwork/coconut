@@ -75,17 +75,26 @@ class ArchiveSettledTests(unittest.TestCase):
 
 
 class SettleSchedulerTests(unittest.TestCase):
-    def service(self, tasks, natives, running=()):
+    def service(self, tasks, natives, running=(), held=(), paused=False):
         calls = []
         service = SimpleNamespace(kanban=SimpleNamespace(tasks=natives, call=calls.append), lock=MagicMock(), db=MagicMock(),
-                                  running={i: None for i in running}, context_threads={})
-        wanted = [json.dumps(t) for t in tasks]
-        service.db.execute.return_value = [(text,) for text in wanted]
+                                  running={i: None for i in running}, context_threads={},
+                                  _task_paused=lambda task: paused, _automatic_work_is_paused=lambda task: False)
+        def execute(statement, values):
+            wanted = set(json.loads(values[0]))
+            if 'FROM decisions' in statement:
+                return [(identity,) for identity in held if identity in wanted]
+            return [(json.dumps(t),) for t in tasks if t['id'] in wanted]
+        service.db.execute.side_effect = execute
         service.calls = calls
         return service
 
     def ago(self, seconds):
         return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+
+    def settled(self, service):
+        NativeKanban._settle_native_orphans(service)
+        return sorted(call['id'] for call in service.calls)
 
     def test_only_a_long_finished_request_is_settled(self):
         old, new = self.ago(SETTLE_SECONDS + 60), self.ago(60)
@@ -94,9 +103,29 @@ class SettleSchedulerTests(unittest.TestCase):
                  dict(id='fresh', status='completed', updated_at=new), dict(id='failed', status='failed', updated_at=old),
                  dict(id='live', status='completed', updated_at=old), dict(id='active', status='queued', updated_at=old)]
         service = self.service(tasks, natives, running=['live'])
-        NativeKanban._settle_native_orphans(service)
-        self.assertEqual(sorted(call['id'] for call in service.calls), ['t_cancelled', 't_done'])
+        self.assertEqual(self.settled(service), ['t_cancelled', 't_done'])
         self.assertTrue(all(call['op'] == 'archive_settled' for call in service.calls))
+
+    def test_the_mechanisms_of_coconut_keep_their_tasks(self):
+        old = self.ago(SETTLE_SECONDS + 60)
+        natives = {'retry': dict(id='t_retry', status='ready'), 'check': dict(id='t_check', status='triage'),
+                   'input': dict(id='t_input', status='blocked', block_kind='needs_input'),
+                   'capability': dict(id='t_capability', status='triage', block_kind='capability'),
+                   'parent': dict(id='t_parent', status='todo', dependencies=[{'id': 't_open'}]),
+                   'card': dict(id='t_card', status='ready'), 'plain': dict(id='t_plain', status='triage')}
+        tasks = [dict(id='retry', status='completed', updated_at=old, _native_outcome_id='t_retry'),
+                 dict(id='check', status='completed', updated_at=old, _block_check=dict(attempt=1)),
+                 dict(id='input', status='completed', updated_at=old), dict(id='capability', status='completed', updated_at=old),
+                 dict(id='parent', status='completed', updated_at=old), dict(id='card', status='completed', updated_at=old),
+                 dict(id='plain', status='completed', updated_at=old, _native_outcome_id='t_plain')]
+        service = self.service(tasks, natives, held=['card'])
+        # Only the triage task of an outcome that no block check or card holds goes.
+        self.assertEqual(self.settled(service), ['t_plain'])
+
+    def test_a_paused_request_keeps_its_native_task(self):
+        old = self.ago(SETTLE_SECONDS + 60)
+        service = self.service([dict(id='a', status='completed', updated_at=old)], {'a': dict(id='t_a', status='ready')}, paused=True)
+        self.assertEqual(self.settled(service), [])
 
     def test_a_native_task_that_is_running_or_final_is_not_read(self):
         service = self.service([], {'a': dict(id='t_a', status='running'), 'b': dict(id='t_b', status='done')})
@@ -108,8 +137,7 @@ class SettleSchedulerTests(unittest.TestCase):
         names = [f'n{i}' for i in range(SETTLE_BATCH + 10)]
         service = self.service([dict(id=n, status='completed', updated_at=old) for n in names],
                                {n: dict(id='t_' + n, status='todo') for n in names})
-        NativeKanban._settle_native_orphans(service)
-        self.assertEqual(len(service.calls), SETTLE_BATCH)
+        self.assertEqual(len(self.settled(service)), SETTLE_BATCH)
 
 
 if __name__ == '__main__':
