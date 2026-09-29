@@ -1141,8 +1141,16 @@ def run_turn(request, emit, request_receipt):
             allowed.add(SUGGEST_SCHEMA['name'])
         if operation == 'context' and request['task'].get('_decision_refresh'):
             from decision_freshness import REFRESH_SCHEMA
+            revision_schema = QUESTION_SCHEMA['parameters']
+            if request['task'].get('pending_decision', {}).get('action_type') == 'draft_message':
+                revision_schema = {'type': 'object', 'additionalProperties': False, 'minProperties': 1,
+                    'description': 'Update risk_level and risk together, or uncertainty, or all three. Omitted fields are preserved. Never change draft content.',
+                    'allOf': [{'if': {'required': [key]}, 'then': {'required': [other]}}
+                              for key, other in (('risk_level', 'risk'), ('risk', 'risk_level'))],
+                    'properties': {key: QUESTION_SCHEMA['parameters']['properties'][key]
+                                   for key in ('risk_level', 'risk', 'uncertainty')}}
             refresh_schema = dict(REFRESH_SCHEMA, parameters=dict(REFRESH_SCHEMA['parameters'],
-                properties=dict(REFRESH_SCHEMA['parameters']['properties'], revision=QUESTION_SCHEMA['parameters'])))
+                properties=dict(REFRESH_SCHEMA['parameters']['properties'], revision=revision_schema)))
             registry.register(name=REFRESH_SCHEMA['name'], toolset='coconut', schema=refresh_schema,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('decision_response', arguments)))
             allowed.add(REFRESH_SCHEMA['name'])
@@ -1445,7 +1453,11 @@ def run_turn(request, emit, request_receipt):
         if scope.unconfirmed:
             emit('failed', {'summary': 'Coconut must confirm the last tool result before this work continues.'})
             return 1
-        return 0
+        if (bridge is not None and bridge.paused.is_set()) or scope.cancelled.is_set():
+            return 0
+        emit('failed', {'summary': 'Hermes stopped before confirming this reply. The execution claim or tool result could not be confirmed.',
+                        'error_code': 'native_turn_failed'})
+        return 1
     except Exception:
         # Model libraries can include request bodies or keys in exception strings.
         summary = 'Coconut could not prepare this conversation.' if agent is None else 'Hermes could not finish this reply.'

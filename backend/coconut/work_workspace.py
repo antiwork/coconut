@@ -1,5 +1,6 @@
 """Keep one native Hermes worktree per outcome and repository."""
 import contextlib
+import errno
 from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
@@ -103,6 +104,8 @@ def save_bindings(manifest, saved):
 UNTRACKED, IGNORED = 'untracked/', 'ignored/'
 PATCHES = ('staged.patch', 'unstaged.patch')
 IN_PROGRESS = ('MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG', 'rebase-merge', 'rebase-apply')
+# free_rebuildable moves build folders into this folder of the registry, and then deletes them.
+TRASH = 'build-trash'
 # Coconut does not archive these ignored folders. An install or a build creates them again.
 REBUILDABLE_NAMES = ('node_modules', '.cache')
 REBUILDABLE_PATHS = ('tmp', 'log', 'public/packs', 'public/packs-test', 'coverage')
@@ -116,6 +119,8 @@ PATCH_LIMIT_BYTES = 200 * 1024 * 1024
 # together are larger than NESTED_ARCHIVE_LIMIT_BYTES.
 NESTED_ARCHIVE_DAYS = 30
 NESTED_ARCHIVE_LIMIT_BYTES = 2 * 1024 ** 3
+# The discard archives that a binding still names, together, stay within this limit.
+DISCARD_ARCHIVE_LIMIT_BYTES = 4 * 1024 ** 3
 # The size limit never deletes an archive younger than this, so a person has time to recover the work.
 NESTED_ARCHIVE_KEEP_SECONDS = 24 * 60 * 60
 # After Git refuses to remove a worktree, Coconut waits this long before the next attempt.
@@ -375,6 +380,13 @@ def shared(executable, pid=None, *, unknown=False):
     return executable.startswith(SHARED_EXECUTABLE_PREFIXES) or name in SHARED_EXECUTABLE_NAMES
 
 
+# Without the outcome marker, Coconut still keeps these programs: a person starts them, and they hold a session.
+UNMARKED_KEEP_NAMES = ('tmux', 'screen', 'zellij', 'mosh-server', 'ssh-agent', 'gpg-agent', 'sshd', 'login', 'emacs', 'vim', 'nvim',
+                       # Machine-wide daemons and language servers watch or index folders. Other projects use them too.
+                       'watchman', 'fseventsd', 'mds', 'mds_stores', 'mdworker', 'bird', 'cloudd', 'Dropbox', 'tsserver',
+                       'gopls', 'rust-analyzer', 'sourcekit-lsp', 'pyright', 'pylsp', 'ruby-lsp', 'solargraph')
+
+
 def environment_names(pid, mark):
     """Return True when the environment of the process contains the `NAME=value` item `mark`."""
     with contextlib.suppress(OSError):
@@ -459,7 +471,7 @@ def stop(pids, sig, seconds):
     return remaining
 
 
-def stop_orphans(found, outcome, age):
+def stop_orphans(found, outcome, age, *, marked=True):
     """Stop the old orphaned processes of the outcome in `found`, and their child processes. Return their IDs.
 
     An orphan is a process that launchd (PID 1) adopted after its parent ended. launchd also starts apps and agents.
@@ -468,6 +480,9 @@ def stop_orphans(found, outcome, age):
     When the system does not show the environment of a process, for example a macOS platform binary, Coconut does not stop it.
     It never stops a shared app or system daemon that `shared` names, such as OrbStack.
     A process that does not end after SIGTERM gets SIGKILL.
+    With marked=False, the environment check does not apply, and only the programs in UNMARKED_KEEP_NAMES stay. `found` must then hold only processes in the worktree of
+    an outcome whose pull requests merged or closed, so that an old orphan there, such as a dev server that a bot
+    started without the variable, cannot belong to other work.
     """
     if not found:
         return set()
@@ -481,7 +496,8 @@ def stop_orphans(found, outcome, age):
             answers[pid] = shared(table[pid][2], pid, unknown=True)
         return answers[pid]
     stopped = {pid for pid in found if pid in table and pid != os.getpid() and table[pid][0] == 1
-               and table[pid][1] >= age and not is_shared(pid) and environment_names(pid, mark)}
+               and table[pid][1] >= age and not is_shared(pid)
+               and (environment_names(pid, mark) if marked else table[pid][2].rsplit('/', 1)[-1] not in UNMARKED_KEEP_NAMES)}
     while stopped:
         # The parent proves who owns a child process. macOS also hides the environment of a child shell.
         # A shared service stays even as a child. A system program that the orphan started, such as a WebKit
@@ -682,11 +698,11 @@ def remove_nested(root, path, repository, *, check_only=False, finished=None):
             temporary.unlink(missing_ok=True)
 
 
-def release(path, outcome, orphan_age):
+def release(path, outcome, orphan_age, *, marked=True):
     """Stop the old orphaned processes of the outcome in the path. Refuse the path if another process uses it."""
     held = holders(path, detail=True)
     if held and orphan_age is not None:
-        stopped = stop_orphans(set(held), outcome, orphan_age)
+        stopped = stop_orphans(set(held), outcome, orphan_age, marked=marked)
         if stopped:
             logging.getLogger(__name__).warning('Coconut stopped orphaned processes %s in worktree %s.', sorted(stopped), path)
         held = {pid: cwd_only for pid, cwd_only in held.items() if pid not in stopped}
@@ -786,7 +802,8 @@ def retire(root, identity, finished, *, orphan_age=None):
     Coconut calls it with wait=True before it takes the registry lock, and with wait=False under that lock.
     With `orphan_age`, Coconut first stops the orphaned processes of the outcome that are older than that many seconds.
     The Git, lsof, and archive work runs before the registry lock. Under the lock, Coconut only
-    repeats the Git checks that do not wait for other processes.
+    repeats the Git checks that do not wait for other processes. When a bot renamed the branch, Coconut first takes
+    the registry lock alone to save the new name. It calls no `finished` check in that block.
     """
     root = Path(root)
     manifest = root / 'worktrees.json'
@@ -797,7 +814,18 @@ def retire(root, identity, finished, *, orphan_age=None):
     failed = (before.get('retire_failed') or {}).get('at')
     if failed and datetime.now(timezone.utc) - datetime.fromisoformat(failed.replace('Z', '+00:00')) < RETRY_AFTER:
         return None
-    path = validate_binding(dict(before)).resolve()
+    checked = dict(before)
+    path = validate_binding(checked, allow_rename=True).resolve()
+    if checked['branch'] != before['branch']:
+        # A bot renamed the branch in its last turn, as coconut_workspace asks. Save the new name first,
+        # so the checks below and the archive use it.
+        with (root / '.workspace.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            saved = json.loads(manifest.read_text())
+            if saved.get(identity) != before:
+                raise ValueError('The workspace binding changed during retirement.')
+            saved[identity] = before = dict(before, branch=checked['branch'], _head_log=checked['_head_log'])
+            save_bindings(manifest, saved)
     repository = Path(before['repository'])
     check_git(path, before, repository, allow_nested=True)
     if nested(path, registered(repository)):
@@ -878,6 +906,118 @@ def retire(root, identity, finished, *, orphan_age=None):
         temporary.unlink(missing_ok=True)
 
 
+def rebuildable_folders(path, keep):
+    """Return the ignored folders of the worktree that a build creates again. Skip a folder that holds a path in `keep`."""
+    listing = git_output(path, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z')
+    names = []
+    for entry in (os.fsdecode(name) for name in listing.split(b'\0') if name):
+        # Git lists an ignored folder with a slash, and a link to a folder without one. Never follow a link.
+        folder = path / entry.rstrip('/')
+        if (entry.endswith('/') and rebuildable(entry) and not folder.is_symlink()
+                and folder.resolve().parent.is_relative_to(path)
+                and not any(inner == folder or folder in inner.parents for inner in keep)):
+            names.append(entry.rstrip('/'))
+    # Git can list a folder and its children when the folder's own .gitignore ignores everything. Keep the top one.
+    return sorted(name for name in names if not any(name.startswith(other + '/') for other in names))
+
+
+def holds_repository(folder):
+    """Return True when the folder holds a Git repository or worktree, for example a clone that a bot made in tmp.
+
+    A folder that Coconut cannot read counts as one, because a repository can be inside it.
+    """
+    def unreadable(error):
+        raise error
+    try:
+        for directory, folders, files in os.walk(folder, onerror=unreadable):
+            # A bare clone or a mirror has no .git entry. It holds HEAD, objects, and refs at its top.
+            if '.git' in folders or '.git' in files or ('HEAD' in files and {'objects', 'refs'} <= set(folders)):
+                return True
+    except OSError:
+        return True
+    return False
+
+
+def free_rebuildable(root, identity, finished):
+    """Delete the rebuildable folders of an idle worktree that retirement refused. Return the deleted names.
+
+    retire() does not archive these folders, because an install or a build creates them again. A worktree that
+    retirement refuses, for example for a nested repository or a branch switch, can keep gigabytes of them for days.
+    Coconut deletes only the folders that Git ignores and that `rebuildable` names. It keeps a folder that holds a
+    worktree, because retirement archives the changes of a nested worktree first. `finished` is the check of retire().
+    """
+    root = Path(root)
+    manifest = root / 'worktrees.json'
+    before = json.loads(manifest.read_text()).get(identity)
+    if not before or before.get('retired') or not isinstance(before.get('path'), str):
+        return []
+    path = Path(before['path'])
+    if path.is_symlink() or not (path / '.git').is_file():
+        return []
+    path = path.resolve()
+    repository = Path(before['repository']).resolve()
+    # validate_binding makes the same check. Another repository can own a worktree at this path now.
+    if (Path(git(path, 'rev-parse', '--show-toplevel')).resolve() != path or path == repository
+            or Path(git(path, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve() != repository / '.git'):
+        return []
+
+    def keep(saved):
+        # A folder can hold a worktree of the repository, or the saved path of another outcome.
+        records = registered(repository)
+        record = next((r for r in records if r['path'] == path), None)
+        if not record or record['locked']:
+            # check_git refuses these too. A person locks a worktree so that nothing changes it.
+            return None
+        inner = {r['path'] for r in records}
+        return inner | {Path(binding['path']).resolve() for other, binding in saved.items()
+                        if other != identity and isinstance(binding, dict) and isinstance(binding.get('path'), str)}
+    protected = keep(json.loads(manifest.read_text()))
+    if protected is None:
+        return []
+    # A nested clone or a worktree of another repository can hold uncommitted work, and no archive keeps it.
+    # The walk runs before the lock, because a large folder takes a while. The outcome is idle, so no turn adds one.
+    names = [name for name in rebuildable_folders(path, protected) if not holds_repository(path / name)]
+    if not names or not finished(True) or in_use(path):
+        return []
+    with (root / '.workspace.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        # acquire() and restore() take this lock, so no outcome can claim the worktree during the deletion.
+        saved = json.loads(manifest.read_text())
+        protected = keep(saved)
+        if saved.get(identity) != before or protected is None or not set(names) <= set(rebuildable_folders(path, protected)):
+            raise ValueError('The worktree changed while Coconut freed its rebuildable folders.')
+        if not finished(False):
+            return []
+        # A large folder takes minutes to delete, and acquire() waits for this lock. Under the lock, only move each
+        # folder out of the worktree. Delete it after the lock. sweep_temporary deletes what a stop left.
+        trash = root / TRASH
+        if trash.is_symlink():
+            # sweep_temporary does not follow a link, so it would never empty the target.
+            raise ValueError(f'{trash} is a link. Coconut does not move build folders through it.')
+        trash.mkdir(mode=0o700, exist_ok=True)
+        moved, deleted = [], []
+        for index, name in enumerate(names):
+            target = trash / f'{identity}-{time.time_ns()}-{index}'
+            try:
+                os.rename(path / name, target)
+            except OSError as error:
+                # One folder that Coconut cannot move must not keep the others. A folder on another disk than the
+                # trash stays, because a deletion in place would hold the lock for minutes.
+                reason = 'It is on another disk than ' + str(trash) if error.errno == errno.EXDEV else str(error)
+                logging.getLogger(__name__).warning('Coconut could not delete build folder %s of %s: %s', name, path, reason)
+            else:
+                moved.append((name, target))
+    for name, target in moved:
+        try:
+            shutil.rmtree(target)
+        except OSError as error:
+            # The folder is out of the worktree now. The next sweep tries again.
+            logging.getLogger(__name__).warning('Coconut could not delete build folder %s of %s from %s: %s', name, path, target, error)
+            continue
+        deleted.append(name)
+    return sorted(deleted)
+
+
 def removal_stopped(manifest, saved, binding, path, repository, current, archive, error):
     """Decide from the path what a failed or interrupted `git worktree remove` did. Hold the registry lock."""
     if not os.path.lexists(path):
@@ -906,6 +1046,280 @@ def removal_stopped(manifest, saved, binding, path, repository, current, archive
     raise ValueError(message) from error
 
 
+def discard(root, identity, finished, **options):
+    """Remove the worktree of an idle outcome. Return True when removed. See discard_run for the rules.
+
+    Any failure removes what the attempt made before it failed: the branch for a detached HEAD and the temporary archive.
+    A retry starts from the registry, and it makes its own.
+    """
+    state = {}
+    try:
+        return discard_run(root, identity, finished, state, **options)
+    except BaseException:
+        if state.get('made_branch'):
+            saved = json.loads((Path(root) / 'worktrees.json').read_text()).get(identity) or {}
+            if saved.get('branch') != state['made_branch'] or not saved.get('retired'):
+                with contextlib.suppress(*GIT_ERRORS):
+                    git(state['repository'], 'branch', '-D', state['made_branch'])
+        raise
+    finally:
+        if state.get('temporary'):
+            state['temporary'].unlink(missing_ok=True)
+
+
+def discard_run(root, identity, finished, state, *, orphan_age=None, merged=False, urgent=False):
+    """Remove the worktree of an idle outcome. Return True when removed.
+
+    Coconut calls this when the pull requests of the outcome all merged or closed, when the checkout is gone, and when
+    retirement cannot archive an idle worktree exactly (see worktree_retirement.DISCARD_IDLE_SECONDS). The branch keeps
+    the commits, and refs/coconut/discarded/<identity>/<time>-<commit> keeps each HEAD, also a detached one. The archive in archive/done/ keeps the staged and unstaged patches, and the untracked files when they
+    fit in UNTRACKED_LIMIT_BYTES. Ignored files, such as build output and logs, and nested worktrees go without an
+    archive. A branch switch does not keep the worktree. An old orphaned process in the worktree stops, even when its
+    environment does not name the outcome. A locked worktree and another process keep the worktree.
+    A missing checkout only loses its Git record. A later turn of the outcome gets a new checkout of the saved branch.
+    `finished(wait)` is the check of retire.
+    """
+    root = Path(root)
+    manifest = root / 'worktrees.json'
+    before = json.loads(manifest.read_text()).get(identity)
+    if not before or before.get('retired'):
+        return False
+    failed = (before.get('retire_failed') or {}).get('at')
+    if failed and (datetime.now(timezone.utc) - datetime.fromisoformat(failed.replace('Z', '+00:00'))
+                   < (timedelta(hours=1) if urgent else RETRY_AFTER)):
+        # A refused removal waits a day, as in retire, because the retry writes the same archive again. A low disk
+        # waits an hour: the disk stops every turn.
+        return False
+    path, repository = Path(before['path']), Path(before['repository']).resolve()
+    present = os.path.lexists(path)
+    head, branch, archive, temporary = None, before['branch'], None, None
+    state['repository'] = repository
+    if not present and (before.get('retire_failed') or {}).get('archive'):
+        # The checkout is gone, and an earlier retirement archived its files. That archive is the only copy.
+        # Its own record names the commit, so a resume can put the files back.
+        archive = Path(before['retire_failed']['archive'])
+        with contextlib.suppress(OSError, KeyError, ValueError, tarfile.TarError):
+            with tarfile.open(archive) as tar:
+                head = json.loads(tar.extractfile('retirement.json').read()).get('head')
+    if present:
+        if path.is_symlink() or not (path / '.git').is_file():
+            raise ValueError('The saved workspace is no longer a linked worktree.')
+        if Path(git(path, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve() != repository / '.git':
+            raise ValueError('The saved worktree belongs to another repository.')
+        records = registered(repository)
+        if any(r['locked'] for r in records if r['path'] == path.resolve() or path.resolve() in r['path'].parents):
+            raise ValueError('The worktree is locked.')
+        # A worktree that Coconut tracks for another outcome is not a leftover of this one, and no archive keeps its files.
+        tracked = {Path(other['path']).resolve() for name, other in json.loads(manifest.read_text()).items()
+                   if name != identity and isinstance(other, dict) and isinstance(other.get('path'), str)}
+        if any(path.resolve() in other.parents and other.exists() for other in tracked):
+            raise ValueError('The worktree contains a worktree of another outcome.')
+        if not finished(True):
+            raise ValueError('The outcome resumed during retirement.')
+        # Only merged or closed work proves that an unmarked old orphan in the worktree is a leftover.
+        release(path, before['outcome'], orphan_age, marked=not merged)
+        head = git(path, 'rev-parse', 'HEAD')
+        branch = git(path, 'branch', '--show-current')
+        in_progress = any(Path(p).exists() for p in git(
+            path, 'rev-parse', '--path-format=absolute', *(a for n in IN_PROGRESS for a in ('--git-path', n))).splitlines())
+        if not branch and in_progress:
+            # A rebase or a bisect detaches the HEAD, and the saved branch is the one that it works on. Keep that
+            # branch. The ref for the HEAD keeps the commit that the operation had reached.
+            branch = before['branch']
+        elif not branch:
+            # A detached HEAD names no branch. A branch at that commit keeps the work reachable, and the resume checks it out.
+            base = 'wt/' + path.name + '-detached'
+            branch, number = base, 0
+            while subprocess.run(['git', '-C', str(repository), 'rev-parse', '--verify', '--quiet', 'refs/heads/' + branch],
+                                 capture_output=True, timeout=60).returncode == 0:
+                number += 1
+                branch = f'{base}-{number}'
+            git(repository, 'branch', branch, head)
+            state['made_branch'] = branch
+        head, staged, unstaged, entries = discard_snapshot(path)
+        # The record names what the archive holds. A leftover checkout that no longer matches it is not removed.
+        state['changes'] = snapshot_digest(path, head, staged, unstaged, entries)
+        if staged or unstaged or entries:
+            directory = root / 'archive' / 'done'
+            directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+            archive = directory / (identity + '.tar.gz')
+            if archive.exists():
+                # An earlier discard of the same worktree kept other work. Do not write over it.
+                archive = directory / (identity + '-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ') + '.tar.gz')
+            temporary = directory / ('.' + archive.name + '.tmp')
+            state['temporary'] = temporary
+            write_archive(temporary, dict(branch=branch, head=head, outcome=before['outcome'],
+                repository=before['repository'], path=before['path'], at=stamp(datetime.now(timezone.utc))),
+                path, dict(zip(PATCHES, (staged, unstaged))), entries)
+    # The scan of the open files runs before the registry lock, as in retire. A turn of an idle outcome does not start.
+    if present and in_use(path):
+        raise ValueError('A process uses the worktree.')
+    return finish_discard(root, identity, before, finished, present, path, repository, branch, head, temporary, archive,
+                          state.get('changes'))
+
+
+def finish_discard(root, identity, before, finished, present, path, repository, branch, head, temporary, archive, digest=None):
+    """Remove the checkout of discard under the registry lock, and keep its archive only after the removal checks."""
+    manifest = root / 'worktrees.json'
+    with (root / '.workspace.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        saved = json.loads(manifest.read_text())
+        binding = saved.get(identity)
+        if binding != before:
+            raise ValueError('The workspace binding changed during retirement.')
+        # A dispatch marks its task active before its worker takes this lock. Check the tasks with a short wait.
+        if not finished(False):
+            raise ValueError('The outcome resumed during retirement.')
+        # The binding names the archive before the removal, as in retire, so a stop cannot leave an archive that no
+        # binding names.
+        retired = dict(at=stamp(datetime.now(timezone.utc)), done=True, head=head, archive=str(archive) if archive else None,
+                       changes=digest)
+        binding.pop('retire_failed', None)
+        binding['branch'], binding['retired'] = branch, retired
+        if present:
+            # A detached HEAD, a rebase in progress, or a nested worktree can hold commits that no branch holds.
+            # A ref keeps each HEAD, so the removal loses no commit.
+            keep_heads(repository, identity, [path, *(r['path'] for r in nested(path.resolve(), registered(repository)))])
+            if temporary:
+                temporary.replace(archive)
+                sync_directory(archive.parent)
+            save_bindings(manifest, saved)
+            try:
+                # The removal deletes the files of nested worktrees too. The prune then drops their Git records.
+                git(repository, 'worktree', 'remove', '--force', str(path), timeout=CHECKOUT_SECONDS)
+            except GIT_ERRORS as error:
+                if os.path.lexists(path) and (path / '.git').is_file():
+                    # The checkout still holds the work. Keep no archive, and wait a day before the next attempt.
+                    if archive:
+                        archive.unlink(missing_ok=True)
+                    binding.pop('retired')
+                    binding['branch'] = before['branch']
+                    binding['retire_failed'] = dict(at=stamp(datetime.now(timezone.utc)), error=str(error)[:1000], archive=None)
+                    save_bindings(manifest, saved)
+                    raise
+                if os.path.lexists(path):
+                    # Git deleted part of the checkout. Name the archive, and send turns to the scratch workspace.
+                    message = (f'Git stopped while it removed {path}, and part of the checkout remains. '
+                               f'The archive {archive} holds its changes. Inspect the path.')
+                    binding['retired'] = dict(retired, restore_failed=dict(at=stamp(datetime.now(timezone.utc)), error=message))
+                    save_bindings(manifest, saved)
+                    raise ValueError(message) from error
+                # Git deleted the whole checkout before it stopped. The prune below drops its record.
+        with contextlib.suppress(*GIT_ERRORS):
+            git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
+        # An earlier failed removal kept a retire archive for this binding. Keep the one that this binding names now.
+        drop_other_archives(root / 'archive', identity, archive if archive and archive.parent == root / 'archive' else None, saved)
+        save_bindings(manifest, saved)
+    logging.getLogger(__name__).warning('Coconut discarded worktree %s of outcome %s. The branch %s keeps the commits. '
+                                        'The archive %s keeps the changes.', identity, before['outcome'], branch, archive)
+    return True
+
+
+def prune_discarded_refs(repository):
+    """Delete the refs of HEADs discarded more than NESTED_ARCHIVE_DAYS ago, as for the archives."""
+    oldest = time.time() - NESTED_ARCHIVE_DAYS * 86400
+    for name in git(repository, 'for-each-ref', '--format=%(refname)', 'refs/coconut/discarded/').splitlines():
+        moment = name.rsplit('/', 1)[-1].split('-', 1)[0]
+        if moment.isdigit() and int(moment) < oldest:
+            git(repository, 'update-ref', '-d', name)
+
+
+def discard_snapshot(path, *, quiet=False):
+    """Return HEAD, the staged and unstaged patches, and the (name in the archive, path) entries that a discard archives.
+
+    The limits apply here: untracked files and ignored files that are too large, and patches that are too large, stay out.
+    """
+    head = git(path, 'rev-parse', 'HEAD')
+    staged, unstaged, names = changes(path)
+    log = logging.getLogger(__name__)
+    # Git lists a nested repository as a folder, and it goes without an archive.
+    files = [name for name in names if not name.endswith('/')
+             and ((path / name).is_symlink() or stat.S_ISREG(os.lstat(path / name).st_mode))]
+    if sum(os.lstat(path / name).st_size for name in files) > UNTRACKED_LIMIT_BYTES:
+        if not quiet:
+            log.warning('Coconut discards the untracked files of %s. They are larger than the archive limit.', path)
+        files = []
+    entries = sorted((UNTRACKED + name, name) for name in files)
+    try:
+        # Ignored files that are not build output can matter, for example .env. ignored_files skips the rebuildable
+        # folders and refuses more than IGNORED_LIMIT_BYTES. Then the ignored files go without an archive.
+        entries += sorted((IGNORED + name, name) for name in ignored_files(path))
+    except (ValueError, OSError) as error:
+        if not quiet:
+            log.warning('Coconut discards the ignored files of %s: %s', path, error)
+    if len(staged) + len(unstaged) > PATCH_LIMIT_BYTES:
+        # base85 patches of large binaries can be larger than the files, and the archive is written before the removal.
+        if not quiet:
+            log.warning('Coconut discards the staged and unstaged changes of %s. They are larger than the archive limit.', path)
+        staged = unstaged = b''
+    return head, staged, unstaged, entries
+
+
+def snapshot_digest(path, head, staged, unstaged, entries):
+    """Return a digest of HEAD, the patches, and the names and contents of the archived files."""
+    value = hashlib.sha256()
+    for part in (head.encode(), staged, unstaged):
+        value.update(hashlib.sha256(part).digest())
+    for arcname, name in entries:
+        value.update(arcname.encode() + b'\0')
+        target = path / name
+        if target.is_symlink():
+            value.update(os.readlink(target).encode())
+            continue
+        with target.open('rb') as stream:
+            for chunk in iter(lambda: stream.read(1 << 20), b''):
+                value.update(chunk)
+    return value.hexdigest()
+
+
+def keep_heads(repository, identity, paths):
+    """Point refs/coconut/discarded/<identity>/<time>-<commit> at the HEAD of each checkout, before Coconut removes them.
+
+    The time and the commit name the ref, so a later discard adds a ref and replaces none, and the prune can
+    count the retention from the discard, not from the commit.
+    """
+    moment = int(time.time())
+    for path in paths:
+        with contextlib.suppress(*GIT_ERRORS):
+            head = git(path, 'rev-parse', '--verify', 'HEAD')
+            git(repository, 'update-ref', f'refs/coconut/discarded/{identity}/{moment}-{head}', head)
+
+
+SCRATCH_TRASH = '.scratch-trash'
+
+
+def move_scratch(folder, *, keep=True):
+    """Move a scratch workspace to workspaces/.scratch-trash and return its new path. With keep, leave an empty folder.
+
+    A rename is fast, so the caller can hold the service lock, and no turn can start in the folder meanwhile.
+    empty_scratch_trash deletes the files later. Coconut never follows a link.
+    """
+    folder = Path(folder)
+    if folder.is_symlink() or not folder.is_dir():
+        return None
+    trash = folder.parent / SCRATCH_TRASH
+    if trash.is_symlink():
+        # empty_scratch_trash does not follow a link, so it would never delete what moved there.
+        raise OSError(f'{trash} is a link. Coconut does not move scratch folders through it.')
+    trash.mkdir(mode=0o700, exist_ok=True)
+    target = trash / f'{folder.name}-{time.time_ns()}'
+    os.rename(folder, target)
+    if keep:
+        folder.mkdir(mode=0o700)
+    return target
+
+
+def empty_scratch_trash(root):
+    """Delete the scratch workspaces that move_scratch moved, also those that a stop left."""
+    trash = Path(root) / SCRATCH_TRASH
+    if trash.is_dir() and not trash.is_symlink():
+        for item in trash.iterdir():
+            try:
+                shutil.rmtree(item) if item.is_dir() and not item.is_symlink() else item.unlink()
+            except OSError as error:
+                logging.getLogger(__name__).warning('Coconut could not delete %s: %s', item, error)
+
+
 def drop_other_archives(directory, identity, keep, saved):
     """Keep one archive for each worktree. Never delete an archive that a binding names."""
     named = {(b.get(key) or {}).get('archive') for b in saved.values() for key in ('retired', 'retire_failed')}
@@ -915,24 +1329,64 @@ def drop_other_archives(directory, identity, keep, saved):
 
 
 def sweep_temporary(root):
-    """Delete archive files that an interrupted retirement did not finish, and old nested archives.
+    """Delete archive files that an interrupted retirement did not finish, and old nested and discard archives.
 
-    Run before any retirement starts. No binding names a nested archive, and Coconut never restores one.
-    It is kept NESTED_ARCHIVE_DAYS, within NESTED_ARCHIVE_LIMIT_BYTES, for a person to recover a subagent's work.
+    Run before any retirement starts. Coconut never restores a nested or a discard archive: a discarded worktree
+    comes back as a new checkout of its branch. Each is kept NESTED_ARCHIVE_DAYS, within NESTED_ARCHIVE_LIMIT_BYTES
+    for each folder, for a person to recover work.
     """
-    for folder in (Path(root) / 'archive', Path(root) / 'archive' / 'nested'):
+    for folder in (Path(root) / 'archive', Path(root) / 'archive' / 'nested', Path(root) / 'archive' / 'done'):
         for temporary in folder.glob('.*.tar.gz.tmp'):
             temporary.unlink(missing_ok=True)
+    # free_rebuildable moves build folders here before it deletes them. A stop can leave some.
+    empty_scratch_trash(root)
+    trash = Path(root) / TRASH
+    if trash.is_dir() and not trash.is_symlink():
+        try:
+            shutil.rmtree(trash)
+        except OSError as error:
+            logging.getLogger(__name__).warning('Coconut could not empty %s: %s', trash, error)
     trim_nested_archives(root)
+    # A binding names its discard archive, and a person needs it to recover the work. Only the age rule removes it.
+    named = named_discard_archives(root)
+    trim_nested_archives(root, folder='done', keep=named)
+    kept = []
+    for archive in named:
+        with contextlib.suppress(FileNotFoundError):
+            status = archive.stat()
+            if status.st_mtime < time.time() - NESTED_ARCHIVE_DAYS * 86400:
+                archive.unlink()
+            else:
+                kept.append((status.st_mtime, status.st_size, archive))
+    # A binding names a discard archive, and a person needs it to recover the work, so it gets a larger limit than an
+    # unnamed archive. It is still a limit: the oldest go first when the named archives together exceed it.
+    total = sum(size for _, size, _ in kept)
+    for moment, size, archive in sorted(kept):
+        if total <= DISCARD_ARCHIVE_LIMIT_BYTES:
+            break
+        archive.unlink(missing_ok=True)
+        logging.getLogger(__name__).warning('Coconut deleted archive %s to keep the named archives within %s bytes.',
+                                            archive, DISCARD_ARCHIVE_LIMIT_BYTES)
+        total -= size
 
 
-def trim_nested_archives(root, keep=()):
-    """Delete nested archives older than NESTED_ARCHIVE_DAYS, then the oldest over NESTED_ARCHIVE_LIMIT_BYTES.
+def named_discard_archives(root):
+    """Return the discard archives that a binding still names, for a worktree that has not resumed."""
+    try:
+        saved = json.loads((Path(root) / 'worktrees.json').read_text())
+    except (OSError, ValueError):
+        return set()
+    return {Path(b['retired']['archive']) for b in saved.values() if isinstance(b, dict)
+            and isinstance(b.get('retired'), dict) and b['retired'].get('done') and b['retired'].get('archive')}
+
+
+def trim_nested_archives(root, keep=(), *, folder='nested'):
+    """Delete the archives in archive/<folder> older than NESTED_ARCHIVE_DAYS, then the oldest over NESTED_ARCHIVE_LIMIT_BYTES.
 
     The archives in `keep` and those younger than NESTED_ARCHIVE_KEEP_SECONDS stay, and count toward the limit.
     """
     oldest, kept, total = time.time() - NESTED_ARCHIVE_DAYS * 86400, [], 0
-    for archive in (Path(root) / 'archive' / 'nested').glob('*.tar.gz'):
+    for archive in (Path(root) / 'archive' / folder).glob('*.tar.gz'):
         if archive in keep:
             with contextlib.suppress(FileNotFoundError):
                 total += archive.stat().st_size
@@ -941,7 +1395,7 @@ def trim_nested_archives(root, keep=()):
             status = archive.stat()
             if status.st_mtime < oldest:
                 archive.unlink()
-                logging.getLogger(__name__).warning('Coconut deleted nested archive %s after %s days.', archive,
+                logging.getLogger(__name__).warning('Coconut deleted archive %s after %s days.', archive,
                                                     NESTED_ARCHIVE_DAYS)
             else:
                 kept.append((status.st_mtime, status.st_size, archive))
@@ -951,7 +1405,7 @@ def trim_nested_archives(root, keep=()):
         if total <= NESTED_ARCHIVE_LIMIT_BYTES or moment >= young:
             break
         archive.unlink(missing_ok=True)
-        logging.getLogger(__name__).warning('Coconut deleted nested archive %s to keep the folder within %s bytes.',
+        logging.getLogger(__name__).warning('Coconut deleted archive %s to keep the folder within %s bytes.',
                                             archive, NESTED_ARCHIVE_LIMIT_BYTES)
         total -= size
 
@@ -1077,7 +1531,7 @@ def compare_checkouts(bindings):
         with contextlib.suppress(*RESTORE_ERRORS):
             retired = binding['retired']
             path = Path(binding['path'])
-            if retired.get('restore_failed') or not occupied(path):
+            if retired.get('restore_failed') or retired.get('done') or not occupied(path):
                 continue
             key = json.dumps(binding, sort_keys=True)
             # An error in the comparison refuses the checkout.
@@ -1122,6 +1576,75 @@ def apply_unstaged(path, unstaged):
         # pathspec magic), without staging any content or touching other paths.
         git_output(path, '--literal-pathspecs', 'add', '--intent-to-add', '--force',
                    '--pathspec-from-file=-', '--pathspec-file-nul', data=b'\0'.join(added) + b'\0')
+
+
+def leftover_checkout(binding, path, repository):
+    """Say what the restore of a discarded binding does with a linked worktree that it finds at the path.
+
+    'adopt': a restore failed to put the archived changes back, and left a clean checkout on the saved branch.
+    'remove': a stop between the record and the removal of the discard left the checkout, and it still holds what the
+    archive holds: the same HEAD, patches, and archived files, by content (the digest in the record). The restore finishes the removal, and then it restores as usual: a new
+    checkout of the saved branch, and the archived changes on it. A checkout that changed since, by a new edit or by
+    a removal that stopped half way, is not removed: the path is not empty, and a person looks at it.
+    None: no linked worktree of this repository is there, or it needs a person.
+    """
+    if path.is_symlink() or not path.is_dir() or not (path / '.git').is_file():
+        return None
+    try:
+        if Path(git(path, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve() != repository.resolve() / '.git':
+            return None
+        if (binding['retired'].get('restore_failed') and git(path, 'branch', '--show-current') == binding['branch']
+                and git(path, 'status', '--porcelain') == ''):
+            return 'adopt'
+        if binding['retired'].get('restore_failed'):
+            return None
+        wanted = binding['retired'].get('changes')
+        return 'remove' if wanted and snapshot_digest(path, *discard_snapshot(path, quiet=True)) == wanted else None
+    except GIT_ERRORS:
+        return None
+
+
+class ReapplyFailed(ValueError):
+    """The archived changes of a discard did not go back into the new checkout."""
+
+
+def reapply_discard(path, archive, head):
+    """Put the changes of a discard archive back into a new checkout of its branch. Keep the archive.
+
+    The patches fit only the commit that they were made on. When the branch moved, or a patch does not apply, the
+    checkout stays clean, and a person can recover the work from the archive.
+    """
+    try:
+        if git(path, 'rev-parse', 'HEAD') != head:
+            raise ValueError('the branch moved after the discard')
+        with tarfile.open(archive) as tar:
+            members = {member.name: member for member in tar.getmembers()}
+            staged, unstaged = (tar.extractfile(members[name]).read() if name in members else b'' for name in PATCHES)
+            if staged:
+                git_output(path, 'apply', '--index', '--binary', '--whitespace=nowarn', '-', data=staged)
+            if unstaged:
+                apply_unstaged(path, unstaged)
+            links = []
+            for name, member in members.items():
+                prefix = next((p for p in (UNTRACKED, IGNORED) if name.startswith(p)), None)
+                target = name[len(prefix):] if prefix else name
+                if not prefix or os.path.lexists(path / target):
+                    continue
+                if member.issym():
+                    links.append((target, member.linkname))
+                elif member.isfile():
+                    tar.extract(member.replace(name=target, deep=False), path, filter='data')
+            # Create links last, so that no archived file is written through a link.
+            for target, linkname in links:
+                place_link(path, target, linkname)
+    except RESTORE_ERRORS as error:
+        with contextlib.suppress(*GIT_ERRORS):
+            git(path, 'reset', '-q', '--hard', 'HEAD')
+            git(path, 'clean', '-q', '-fd')
+        logging.getLogger(__name__).warning('Coconut did not put the changes of %s back into %s: %s. The archive keeps '
+                                            'them.', archive, path, error)
+        raise ReapplyFailed(f'Coconut could not put the archived changes back: {error}. The archive {archive} keeps them, '
+                            'and the checkout is clean.') from None
 
 
 def unpack(binding, checked, *, retry_failure=None):
@@ -1236,6 +1759,64 @@ def restore(binding, checked, *, retry_duplicates=False):
     All other failures retain the operator fence.
     """
     retired = binding['retired']
+    if retired.get('done'):
+        # discard kept only the branch. The merged work gets a new checkout of it. archive/done/ keeps the patches.
+        path, repository = Path(binding['path']), Path(binding['repository'])
+        try:
+            leftover = leftover_checkout(binding, path, repository)
+            if leftover == 'adopt':
+                binding.pop('retired')
+                validate_binding(binding)
+                return
+            if leftover == 'remove':
+                # The archive holds what the checkout held. Finish the removal that the stop interrupted.
+                git(repository, 'worktree', 'remove', '--force', str(path), timeout=CHECKOUT_SECONDS)
+            if path.is_symlink() or occupied(path):
+                raise ValueError(f'The path {path} of the discarded work is not empty. Ask the operator to inspect it.')
+            git(repository, 'rev-parse', '--verify', 'refs/heads/' + binding['branch'])
+            with contextlib.suppress(*GIT_ERRORS):
+                git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
+            holder = next((r['path'] for r in registered(repository) if r['branch'] == 'refs/heads/' + binding['branch']), None)
+            if holder:
+                # Git allows a branch in one worktree only, and another worktree, often the main one, holds it.
+                # A new branch at the saved commit keeps the outcome working, and the old branch stays where it is.
+                start = retired.get('head') or binding['branch']
+                base, number = 'wt/' + Path(binding['path']).name, 0
+                # Never move a branch that exists: it can hold commits that no other ref holds.
+                while subprocess.run(['git', '-C', str(repository), 'rev-parse', '--verify', '--quiet',
+                                      'refs/heads/' + (base if not number else f'{base}-{number}')],
+                                     capture_output=True, timeout=60).returncode == 0:
+                    number += 1
+                name = base if not number else f'{base}-{number}'
+                git(repository, 'branch', name, start)
+                # The binding names the new branch only after Git created it, so a failure keeps the saved name.
+                binding['branch'] = name
+            with contextlib.suppress(*GIT_ERRORS):
+                git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
+            with contextlib.suppress(FileNotFoundError, OSError):
+                path.rmdir()
+            # The Git calls above take time. Do not remove someone else's files if the path filled meanwhile.
+            if path.is_symlink() or occupied(path):
+                raise ValueError(f'The path {path} of the discarded work is not empty. Ask the operator to inspect it.')
+            try:
+                git(repository, 'worktree', 'add', '-q', str(path), binding['branch'], timeout=CHECKOUT_SECONDS)
+            except BaseException:
+                # An interrupted add can leave a registered partial checkout. Remove it, so the next turn tries again.
+                discard_checkout(repository, path)
+                raise
+            if retired.get('archive'):
+                if not Path(retired['archive']).is_file():
+                    raise ReapplyFailed(f'The archive {retired["archive"]} of the discarded changes is gone. The checkout is clean.')
+                reapply_discard(path, Path(retired['archive']), retired.get('head'))
+        except RESTORE_ERRORS as error:
+            # The mark sends the turn to the scratch workspace (see chosen), and the bot reads the message from
+            # coconut_workspace. A clean checkout stays, and the next restore adopts it.
+            message = str(error) if isinstance(error, ReapplyFailed) else f'Coconut could not check out {binding["branch"]} again: {error}'
+            binding['retired'] = dict(retired, restore_failed=dict(at=stamp(datetime.now(timezone.utc)), error=message[:1000]))
+            raise ValueError(message) from None
+        binding.pop('retired')
+        validate_binding(binding)
+        return
     archive = retired['archive']
     failure = retired.get('restore_failed')
     retry = (retry_duplicates and isinstance(failure, dict) and not failure.get('intent_retry_failed')
@@ -1330,6 +1911,11 @@ SCHEMA = {'name': 'coconut_workspace', 'description':
     'Hermes creates it and reuses it for replies and recovery. Supply the local repository path. '
     'When continuing earlier changes, pass their existing_worktree to retain their branch and files. '
     'Use the returned path as cwd for all commands. Use OrbStack for isolated test services when needed. '
+    'To name a PR branch, rename the worktree branch with git branch -m <name>. Do not create or switch branches '
+    'in the worktree with git checkout -b, git checkout <branch>, or git switch, and do not check out a commit '
+    'without a branch: Coconut then stops this work item until a person recovers the checkout. To test another '
+    'commit, add a separate worktree on its own branch inside this worktree, for example '
+    'git worktree add -b <name> tmp/<name> <commit>, so retirement can archive and remove it. '
     'This routine setup does not require a decision card. It does not push, merge, or deploy.',
     'parameters': {'type': 'object', 'properties': {
         'repository': {'type': 'string'}, 'existing_worktree': {'type': 'string'}}, 'required': ['repository']}}

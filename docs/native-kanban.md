@@ -44,6 +44,19 @@ reclaim and dependency promotion, before claiming ready tasks. Native scheduling
 releases those retries without starting a worker or recording a false spawn
 failure. Startup loads native bindings before accepting task replies.
 
+## Failed routine continuations
+
+An authenticated `coconut_continue_work` delivery records the exact input it authorizes.
+A failed routine can use that input without changing the original native failure or firing the routine again.
+While this continuation is queued or working, scheduled and manual runs reuse or wait for it, including gaps between tools.
+Individual tools retain their native reservation fence without holding native locks across service calls.
+
+A later input, including one created by `_native_retry`, cannot reuse that delivery.
+A saved delivery from before input binding was added does not authorize a failed routine continuation.
+The owner or requesting bot must send a new explicit `coconut_continue_work` message through the supported route.
+Replaying the old message returns its saved receipt and does not authorize another input.
+No migration changes the historical delivery or the failed occurrence.
+
 ## Workspaces
 
 `coconut_workspace` calls the native Hermes workspace resolver.
@@ -110,6 +123,33 @@ Retirement does these steps:
    It runs `git worktree remove --force` with a 600-second limit. It keeps the branch and its commits.
 10. It deletes the other archives of the same worktree that no binding names.
 
+Retirement keeps work only while it can resume. Coconut discards the worktree of an idle outcome in these cases:
+
+- All pull requests of the outcome merged or closed, and one of them is in the repository of the worktree.
+- The checkout is already gone.
+- Retirement refuses the worktree, and the outcome is idle for 2 days (`DISCARD_IDLE_SECONDS`) with no open pull
+  request, for example after a branch switch, a nested repository, or ignored files larger than the archive limit.
+- Retirement refuses the worktree, and the disk has less than 20 GiB free (`LOW_DISK_BYTES`). The pass then runs
+  every 10 minutes.
+
+A discard keeps the branch and a ref `refs/coconut/discarded/<identity>/<time>-<commit>` for each HEAD, nested ones
+too. A detached HEAD gets a branch `wt/<name>-detached` at its commit. The archive in `workspaces/archive/done/` holds the
+staged and unstaged patches (up to 200 MB), the untracked files (up to 200 MB), and the ignored files that are not build
+output (up to 200 MB), such as `.env`. Rebuildable folders and nested worktrees go without an archive. Only a locked
+worktree, a worktree of another outcome, or a process that is not an old orphan keeps the worktree.
+
+A later turn gets a new checkout of the saved branch, and Coconut puts the archived changes back. When the branch moved,
+a patch does not fit, or the archive is gone, the checkout stays clean, and `coconut_workspace` tells the bot which
+archive holds the changes. The refs go after 30 days. The archive goes after 30 days too. The archives that no binding
+names stay within 2 GiB together, the newer ones first, and the archives that a binding names within 4 GiB together, and
+this limit can delete a young one.
+
+The same pass deletes the files in the scratch workspace (`workspaces/<outcome>`) of such an outcome. Under the service
+lock, it checks the outcome again and moves the folder to `workspaces/.scratch-trash`, so no turn can start in it
+meanwhile. The deletion runs after the lock. The folder stays, empty, because a later turn uses it as its working
+directory. A scratch folder that no task names goes after 2 days
+without changes. A bot's own workspace and a folder that a process uses stay.
+
 Before it retires any worktree, each hourly run also stops the old orphans of every idle outcome. It checks the
 outcome's worktrees and its scratch workspace (`workspaces/<outcome>`), with one `lsof` scan, and uses the same
 orphan rules. This runs even when retirement refuses the worktree, for example for a locked nested worktree.
@@ -117,6 +157,17 @@ Such orphans, for example an Android emulator or a test script left by a crashed
 CPU, and memory for days. This step also runs for an outcome that has only a scratch workspace. Before it stops the
 orphans of an outcome, it checks again that the outcome is idle, because a turn can start during the `lsof` scan.
 A failed check is logged, and retirement continues.
+
+When retirement refuses the worktree of an idle outcome, for example for a nested repository or a branch switch,
+Coconut deletes the rebuildable folders of that worktree. These are the folders that the archive leaves out, and a build
+creates them again. Coconut deletes only folders that Git ignores, never follows a link, and keeps a folder that holds a
+worktree, another repository, a folder that it cannot read, or the saved path of another outcome. The worktree must belong to the saved repository, the outcome must
+still be idle, and no process may use the worktree. Coconut checks the binding and the folders again under
+`workspaces/.workspace.lock`. Under that lock, it moves the folders to `workspaces/build-trash`, and it deletes
+them after the lock, so a new turn does not wait for a long deletion. A folder on another disk than the registry stays,
+and the log says so. The next pass empties a trash that a stop left.
+The worktree must be registered and not locked. The other files and the branch stay.
+
 Coconut never stops a shared service that a turn started, such as OrbStack, Docker Desktop, CoreSimulator,
 `launchd_sim`, or the `adb` server, because every outcome uses it. `SHARED_APP_BUNDLES`,
 `SHARED_EXECUTABLE_PREFIXES`, `SHARED_EXECUTABLE_NAMES`, and `ADB_SERVER_ARGUMENTS` in `work_workspace.py` name

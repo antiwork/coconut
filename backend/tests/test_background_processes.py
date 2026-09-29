@@ -52,6 +52,28 @@ class BackgroundProcessTests(unittest.TestCase):
         self.service._run_task(task['id'])
         return task['id']
 
+    def test_the_start_migration_writes_only_changed_receipts(self):
+        task_id = self.start()
+        [record] = [r for r in self.service._all('native_receipts') if 'notify_on_complete' in str(r.get('result'))]
+        self.assertTrue(record.get('_process_registered'))
+        with self.service.transaction():
+            fresh = dict(record, id=str(uuid4()))
+            fresh.pop('_process_registered')
+            self.service._put('native_receipts', fresh)
+            self.service._put('native_receipts', dict(record, id=str(uuid4()), action={'name': 'read_file', 'arguments': {}}))
+        written = []
+        put = self.service._put
+        def counted(table, row):
+            written.append((table, row['id']))
+            return put(table, row)
+        with self.service.transaction(), patch.object(self.service, '_put', side_effect=counted):
+            # The store predates the migration.
+            self.service.db.execute("DELETE FROM settings WHERE key='process_deliveries_migrated'")
+            self.service._migrate_process_deliveries()
+        # The receipt that the live path registered stays as it is. The unregistered one is registered.
+        self.assertEqual(written, [('native_receipts', fresh['id'])])
+        self.assertTrue(self.service._get('native_receipts', fresh['id'])['_process_registered'])
+
     def test_idle_completion_resumes_same_task_without_a_human_message(self):
         task_id = self.start()
         self.assertEqual(self.service._get('tasks', task_id)['status'], 'waiting')
@@ -433,6 +455,8 @@ class BackgroundProcessTests(unittest.TestCase):
             self.service._put('native_receipts', dict(id=str(uuid4()), task_id=task_id, state='completed',
                 action={'name': 'process_manage', 'arguments': {'action': 'poll', 'session_id': 'proc_test'}},
                 result=json.dumps({'status': 'exited', 'session_id': 'proc_test'})))
+            # The store predates the migration.
+            self.service.db.execute("DELETE FROM settings WHERE key='process_deliveries_migrated'")
             self.service._migrate_process_deliveries()
         self.assertEqual(self.service._get('native_receipts', record['id'])['_process_delivery'], 'consumed')
 
@@ -442,6 +466,8 @@ class BackgroundProcessTests(unittest.TestCase):
             self.service._put('native_receipts', dict(id=str(uuid4()), task_id=task_id, state='completed',
                 action={'name': 'process_manage', 'arguments': {'action': 'poll', 'session_id': 'proc_test'}},
                 result=json.dumps({'status': 'exited', 'session_id': 'proc_test'})))
+            # The store predates the migration.
+            self.service.db.execute("DELETE FROM settings WHERE key='process_deliveries_migrated'")
             self.service._migrate_process_deliveries()
         self.provider.results['proc_test'] = 'Completed'
         self.service._drain_process_completions()

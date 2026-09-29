@@ -1,19 +1,40 @@
 import importlib.util
+import os
+import contextlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
+import time
 import hashlib
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 spec = importlib.util.spec_from_file_location('automatic_update', Path(__file__).with_name('automatic_update.py'))
 update = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(update)
+REAL_GATE = update.check_hermes_candidate
+REAL_PROBLEM = update.gate_problem
+# gate_case has no Git checkout, so the commit stands for the code. The model keys are part of the key.
+DEFAULT_KEYS = {'ANTHROPIC_API_KEY': 'k'}
+TREE = 'sha2 ' + hashlib.sha256(json.dumps(DEFAULT_KEYS, sort_keys=True).encode()).hexdigest()[:16]
+
+
+
+def saved_result(result):
+    """Return the saved gate result without its time."""
+    return {key: value for key, value in result['state']['hermes_checks'].items() if key != 'checked_at'}
 
 
 class AutomaticUpdateTests(unittest.TestCase):
+    def setUp(self):
+        # The Hermes candidate gate installs a runtime and runs model checks. Tests of other steps pass it.
+        gate = patch.object(update, 'check_hermes_candidate')
+        self.gate = gate.start()
+        self.addCleanup(gate.stop)
+
     def test_only_successful_merged_commit_passes(self):
         pull = dict(merged_at='today', merge_commit_sha='abc', number=3, base=dict(ref='main'))
         record = dict(state='MERGED', mergeCommit=dict(oid='abc'), statusCheckRollup=[dict(conclusion='SUCCESS')])
@@ -126,9 +147,605 @@ class AutomaticUpdateTests(unittest.TestCase):
                 update.update(config, state_path)
             self.assertEqual(len(received), 1)
             self.assertIn('--update-runtime', received[0])
+            # A runtime update runs the Hermes candidate gate before the live install. The order of source and live
+            # matters: the gate installs into and cleans the first one.
+            self.gate.assert_called_once_with(source, live, 'runtime', 'corrected', ANY, state_path)
             saved = json.loads(state_path.read_text())
             self.assertEqual(saved['pending_ios']['source_sha'], 'corrected')
             release.assert_called_once()
+
+    def test_a_source_only_deploy_does_not_run_the_hermes_gate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, live = root / 'source', root / 'live'
+            source.mkdir(); live.mkdir()
+            (live / '.runtime/host').mkdir(parents=True)
+            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:8443')))
+            # The installed runtime already has the pin of the package.
+            (live / '.runtime/hermes').mkdir()
+            (live / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit='runtime')))
+            (live / 'app.py').write_text('current')
+            hashes = {'app.py': hashlib.sha256(b'current').hexdigest()}
+            (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=dict(hashes, old='x'))))
+            state_path = root / 'state.json'
+            update.save(state_path, {})
+            received = []
+
+            def command(args, **kwargs):
+                if args[:3] == ['git', 'remote', 'get-url']: return 'https://github.com/owner/repo.git'
+                if args[:2] == ['git', 'status']: return ''
+                if args[:2] == ['git', 'rev-parse']: return 'next'
+                if args[:2] == ['git', 'ls-files']: return 'app.py'
+                if 'receive' in args:
+                    received.append(args)
+                    (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=hashes)))
+                    return 'COCONUT_DEPLOY_RESULT={"ok":true}'
+                return ''
+
+            def package(path):
+                path.write_bytes(b'package')
+                return dict(package_id='package')
+            packaging = SimpleNamespace(package=package, source_files=lambda: {'app.py': b'current'})
+            installer = SimpleNamespace(validate_package=lambda stream: SimpleNamespace(hashes=hashes, revision='runtime'),
+                                        Operations=lambda: SimpleNamespace(health=lambda *args: None))
+            config = dict(repository='owner/repo', source=str(source), live=str(live))
+            with patch.object(update, 'run', side_effect=command), patch.object(update, 'module', side_effect=[packaging, installer]), \
+                    patch.object(update, 'reviewed_merge'), patch.object(update, 'ios_hash', return_value='ios'), \
+                    patch.object(update.Path, 'home', return_value=root):
+                update.update(config, state_path)
+            self.assertEqual(len(received), 1)
+            self.assertNotIn('--update-runtime', received[0])
+            # The gate installs a runtime and runs model checks. A deploy that keeps the pin skips it.
+            self.gate.assert_not_called()
+
+    def test_a_failed_deploy_backs_off_for_the_same_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, live = root / 'source', root / 'live'
+            source.mkdir(); live.mkdir()
+            (live / '.runtime/host').mkdir(parents=True)
+            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:8443')))
+            (live / 'app.py').write_text('current')
+            hashes = {'app.py': hashlib.sha256(b'current').hexdigest()}
+            (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=hashes)))
+            state_path = root / 'state.json'
+            update.save(state_path, {})
+            head, received, outcome = ['first'], [], ['fail']
+
+            def command(args, **kwargs):
+                if args[:3] == ['git', 'remote', 'get-url']: return 'https://github.com/owner/repo.git'
+                if args[:2] == ['git', 'status']: return ''
+                if args[:2] == ['git', 'rev-parse']: return head[0]
+                if args[:2] == ['git', 'ls-files']: return 'app.py'
+                if 'receive' in args:
+                    received.append(head[0])
+                    if outcome[0] == 'fail':
+                        raise RuntimeError('COCONUT_DEPLOY_RESULT={"ok": false, "error": "The service did not pass its local TLS health check."}')
+                    (live / '.runtime/hermes').mkdir(exist_ok=True)
+                    (live / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit='runtime')))
+                    return 'COCONUT_DEPLOY_RESULT={"ok":true}'
+                return ''
+
+            def package(path):
+                path.write_bytes(b'package')
+                return dict(package_id='package')
+
+            def attempt(now):
+                packaging = SimpleNamespace(package=package, source_files=lambda: {'app.py': b'current'})
+                installer = SimpleNamespace(validate_package=lambda stream: SimpleNamespace(hashes=hashes, revision='runtime'),
+                                            Operations=lambda: SimpleNamespace(health=lambda *args: None))
+                config = dict(repository='owner/repo', source=str(source), live=str(live))
+                with patch.object(update, 'run', side_effect=command), \
+                        patch.object(update, 'module', side_effect=[packaging, installer]), \
+                        patch.object(update, 'reviewed_merge'), patch.object(update, 'ios_hash', return_value='ios'), \
+                        patch.object(update.time, 'time', return_value=now), patch.object(update.Path, 'home', return_value=root):
+                    update.update(config, state_path)
+
+            with self.assertRaises(RuntimeError):
+                attempt(1000)
+            failed = json.loads(state_path.read_text())['failed_deploy']
+            self.assertEqual((failed['source_sha'], failed['attempts'], failed['retry_at']), ('first', 1, 1000 + update.FAILED_DEPLOY_SECONDS))
+            # The same commit waits while launchd supervises the service, so the service does not restart again.
+            with patch.object(update, 'service_supervised', return_value=True):
+                attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
+            self.assertEqual(received, ['first'])
+            # Without a loaded launch agent nothing restarts the service, so the installer runs at once to recover.
+            with patch.object(update, 'service_supervised', return_value=False), self.assertRaises(RuntimeError):
+                attempt(1000 + update.FAILED_DEPLOY_SECONDS - 1)
+            self.assertEqual(received, ['first', 'first'])
+            # A third failure doubles the wait again.
+            failed = json.loads(state_path.read_text())['failed_deploy']
+            self.assertEqual((failed['attempts'], failed['retry_at']), (2, 1000 + 3 * update.FAILED_DEPLOY_SECONDS - 1))
+            retry_at = failed['retry_at']
+            # A new merged commit deploys at once, and success clears the backoff.
+            head[0], outcome[0] = 'second', 'ok'
+            attempt(retry_at + 1)
+            self.assertEqual(received, ['first', 'first', 'second'])
+            saved = json.loads(state_path.read_text())
+            self.assertNotIn('failed_deploy', saved)
+            self.assertEqual(saved['source_sha'], 'second')
+
+    def test_a_backoff_does_not_stall_a_pending_testflight_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, live = root / 'source', root / 'live'
+            source.mkdir(); live.mkdir()
+            state_path = root / 'state.json'
+            update.save(state_path, dict(failed_deploy=dict(source_sha='bad', attempts=1, retry_at=2000),
+                                         pending_ios=dict(hash='ios', source_sha='good')))
+
+            def command(args, **kwargs):
+                if args[:3] == ['git', 'remote', 'get-url']: return 'https://github.com/owner/repo.git'
+                if args[:2] == ['git', 'status']: return ''
+                if args[:2] == ['git', 'rev-parse']: return 'bad'
+                return ''
+            config = dict(repository='owner/repo', source=str(source), live=str(live), release_helper='helper')
+            with patch.object(update, 'run', side_effect=command), patch.object(update, 'release_ios') as release, \
+                    patch.object(update, 'service_supervised', return_value=True), \
+                    patch.object(update.time, 'time', return_value=1000):
+                update.update(config, state_path)
+            release.assert_called_once()
+
+    def test_the_supervision_check_reads_the_host_launch_agent(self):
+        spec = importlib.util.spec_from_file_location('automatic_test_host', Path(__file__).with_name('host.py'))
+        host = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(host)
+        self.assertEqual(update.SERVICE_LABEL, host.LABEL)
+        with tempfile.TemporaryDirectory() as directory:
+            live = Path(directory)
+            (live / '.runtime/host').mkdir(parents=True)
+            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:1')))
+            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as listing:
+                self.assertTrue(update.service_supervised(live))
+            self.assertEqual(listing.call_args.args[0], ['launchctl', 'print', f'gui/{os.getuid()}/{host.LABEL}'])
+            # Without a loaded agent and without an answering port, nothing keeps the service running.
+            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=113)), \
+                    patch.object(update.socket, 'create_connection', side_effect=OSError):
+                self.assertFalse(update.service_supervised(live))
+            # A service in manual mode answers on its port without the agent.
+            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=113)), \
+                    patch.object(update.socket, 'create_connection', return_value=contextlib.nullcontext()):
+                self.assertTrue(update.service_supervised(live))
+
+    def gate_case(self, *, checks_pass, cached=None, install=None, installed='old', result_text=None, checks=None,
+                  free=update.HERMES_CANDIDATE_FREE_BYTES, keys=None, problem=False, mode=0o600, link=False, state=None):
+        """Run check_hermes_candidate for a new pin. Return the run commands and the saved state."""
+        keys = {'ANTHROPIC_API_KEY': 'k'} if keys is None else keys
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, live = root / 'source', root / 'live'
+            (source / '.runtime/hermes').mkdir(parents=True)
+            # The gate reads Git for the state of backend and scripts. An empty checkout is clean.
+            subprocess.run(['git', 'init', '-q'], cwd=source, check=True)
+            (source / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit=installed)))
+            # Other project scripts keep private data in .runtime, for example remote.py its deploy key.
+            (source / '.runtime/ssh').mkdir()
+            (source / '.runtime/ssh/key').write_text('private')
+            (live / '.runtime/host').mkdir(parents=True)
+            if keys:
+                (live / '.runtime/host/credentials.json').write_text(json.dumps(keys))
+                (live / '.runtime/host/credentials.json').chmod(mode)
+                if link:
+                    (live / '.runtime/host/real.json').write_text(json.dumps(keys))
+                    (live / '.runtime/host/credentials.json').unlink()
+                    (live / '.runtime/host/credentials.json').symlink_to(live / '.runtime/host/real.json')
+            state_path = root / 'state.json'
+            state = state if state is not None else (dict(hermes_checks=cached) if cached else {})
+            commands, calls = [], []
+
+            def record(args, **kwargs):
+                commands.append(args)
+                return ''
+
+            def script(command, *, cwd, timeout):
+                # scripts/check_hermes_candidate.py writes its result to the --output path.
+                output = Path(command[command.index('--output') + 1])
+                output.write_text(result_text or json.dumps(dict(passed=checks_pass, hermes_sha='new', credentials=['KEY'],
+                                                                 checks=dict(relay=dict(passed=checks_pass)))))
+                return (0 if checks_pass else 1), 'check log'
+
+            environments = []
+
+            def bounded(command, *, cwd, timeout, env=None):
+                if 'install' not in command:
+                    environments.append(env)
+                if 'install' in command:
+                    try:
+                        (install or record)(command, cwd=cwd)
+                    except RuntimeError as error:
+                        return 1, str(error)
+                    return 0, ''
+                calls.append(command)
+                return (checks or script)(command, cwd=cwd, timeout=timeout)
+            # setUp patches the gate for other tests. These tests call the real function.
+            stopped = []
+            leftovers = SimpleNamespace(stop_leftovers=lambda folder: stopped.append(folder), MODEL_KEYS=('ANTHROPIC_API_KEY',))
+            with patch.object(update, 'run', side_effect=AssertionError('The gate runs its commands through run_bounded.')), \
+                    patch.object(update, 'run_bounded', side_effect=bounded), \
+                    patch.object(update, 'module', return_value=leftovers), \
+                    patch.object(update, 'gate_problem', side_effect=lambda source, live: (
+                        problem if isinstance(problem, str) else REAL_PROBLEM(source, live))), \
+                    patch.object(update.shutil, 'disk_usage', return_value=SimpleNamespace(free=free)):
+                try:
+                    REAL_GATE(source, live, 'new', 'sha2', state, state_path)
+                    raised = None
+                except (RuntimeError, OSError, SystemExit, KeyboardInterrupt) as error:
+                    raised = error
+            receipt = json.loads((root / 'hermes-checks.json').read_text()) if (root / 'hermes-checks.json').exists() else None
+            return dict(commands=commands, script_calls=len(calls), calls=calls, state=state, raised=raised, receipt=receipt,
+                        candidate_left=(source / '.runtime/hermes').exists(),
+                        runtime_left=any((source / '.runtime' / name).exists() for name in update.HERMES_GATE_FOLDERS),
+                        other_left=(source / '.runtime/ssh/key').exists(), stopped=stopped, runtime=source / '.runtime/hermes',
+                        environments=environments, partial_left=list((source / '.runtime/tools').glob('uv-download-*')),
+                        tools_kept=(source / '.runtime/tools/uv-1-target').exists())
+
+    def test_a_new_hermes_pin_is_checked_before_the_live_install(self):
+        # The folder already has the new pin, so only the cleanup after the checks can remove it.
+        result = self.gate_case(checks_pass=True, installed='new')
+        self.assertIsNone(result['raised'])
+        self.assertEqual(result['commands'][0][-3:], ['install', '--revision', 'new'])
+        self.assertEqual(result['script_calls'], 1)
+        self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', code=TREE, passed=True))
+        self.assertTrue(result['receipt']['passed'])
+        # The updater's copy of the runtime is removed after the checks, to keep disk space free.
+        self.assertFalse(result['candidate_left'])
+
+    def test_a_failed_hermes_check_stops_the_install(self):
+        result = self.gate_case(checks_pass=False)
+        self.assertIn('native upgrade checks failed', str(result['raised']))
+        self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', code=TREE, passed=False))
+        self.assertFalse(result['receipt']['passed'])
+
+    def test_a_failed_candidate_install_says_so_in_the_receipt(self):
+        def install(args, **kwargs):
+            raise RuntimeError('fatal: unable to access github.com')
+        result = self.gate_case(checks_pass=True, install=install)
+        self.assertIn('install failed before any check ran', str(result['raised']))
+        self.assertIn('unable to access github.com', result['receipt']['output'])
+        self.assertEqual(result['script_calls'], 0)
+
+    def test_a_pending_journal_is_recovered_before_the_candidate_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            source, live = home / 'source', home / 'Coconut'
+            (live / '.runtime/deploy').mkdir(parents=True)
+            with patch.object(update.Path, 'home', return_value=home), patch.object(update, 'run', return_value='') as run:
+                update.recover_journal(source, live)
+                run.assert_not_called()
+                (live / '.runtime/deploy/update.json').write_text('{}')
+                update.recover_journal(source, live)
+            # The recover command replays the journal and installs no package, so the refused pin cannot arrive.
+            self.assertEqual(run.call_args.args[0][1:], [str(source / 'scripts/deploy.py'), 'recover', '--directory', 'Coconut'])
+
+    def test_a_timed_out_check_fails_and_names_the_timeout(self):
+        # The timeout stops the check script before it writes its result, so the gate writes one.
+        result = self.gate_case(checks_pass=True, installed='new', checks=lambda command, **kwargs: (None, 'partial log'))
+        self.assertIn('did not finish', str(result['raised']))
+        self.assertIn('partial log', result['receipt']['output'])
+        self.assertIn('ran longer than', result['receipt']['output'])
+        self.assertFalse(result['receipt']['passed'])
+        # A timeout is inconclusive, so it does not keep the pin as failed for a day.
+        self.assertNotIn('hermes_checks', result['state'])
+        # The leftover check programs stop before the gate removes the candidate runtime.
+        self.assertEqual(result['stopped'], [result['runtime']])
+
+    def test_a_setup_failure_does_not_keep_the_pin_as_failed(self):
+        for result_text in (json.dumps(dict(passed=False, hermes_sha='new', credentials=[], checks=dict(relay=dict(passed=False)))),
+                            json.dumps(dict(passed=False, hermes_sha='new', credentials=['KEY'], error='The source changed.'))):
+            result = self.gate_case(checks_pass=False, result_text=result_text)
+            self.assertIn('did not finish', str(result['raised']))
+            self.assertNotIn('hermes_checks', result['state'])
+
+    def test_missing_keys_or_changed_code_stop_the_gate_before_the_install(self):
+        result = self.gate_case(checks_pass=True, keys={})
+        self.assertIn('cannot start', str(result['raised']))
+        self.assertIn('no model keys', result['receipt']['output'])
+        self.assertEqual((result['commands'], result['script_calls']), ([], 0))
+        result = self.gate_case(checks_pass=True, problem='The updater checkout has changed or untracked files in backend or scripts: ?? backend/x.py')
+        self.assertIn('cannot start', str(result['raised']))
+        self.assertEqual(result['commands'], [])
+
+    def test_a_cached_pass_still_frees_the_folders_of_a_killed_run(self):
+        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha2', code=TREE, passed=True))
+        self.assertIsNone(result['raised'])
+        self.assertFalse(result['runtime_left'])
+
+    def test_the_receipt_states_its_verdict(self):
+        self.assertEqual(self.gate_case(checks_pass=True)['receipt']['verdict'], 'passed')
+        self.assertEqual(self.gate_case(checks_pass=False)['receipt']['verdict'], 'failed')
+        self.assertEqual(self.gate_case(checks_pass=False, checks=lambda command, **kwargs: (None, 'log'))['receipt']['verdict'],
+                         'inconclusive')
+
+    def test_only_a_model_key_in_a_private_file_lets_the_gate_start(self):
+        result = self.gate_case(checks_pass=True, keys={'OTHER_KEY': 'x'})
+        self.assertIn('no model keys', result['receipt']['output'])
+
+    def test_a_failed_install_arms_the_wait_too(self):
+        def install(command, **kwargs):
+            raise RuntimeError('no network')
+        state = {}
+        result = self.gate_case(checks_pass=True, install=install, state=state)
+        self.assertIn('install failed', str(result['raised']))
+        self.assertEqual(state['hermes_inconclusive']['attempts'], 1)
+        self.assertGreater(state['hermes_inconclusive']['retry_at'], time.time() + 3000)
+        again = self.gate_case(checks_pass=True, install=install, state=state)
+        self.assertEqual((again['commands'], again['script_calls']), ([], 0))
+
+    def test_the_checks_do_not_inherit_a_model_key_from_the_updater(self):
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'stale', 'HARMLESS': '1'}):
+            result = self.gate_case(checks_pass=True)
+        (environment,) = result['environments']
+        self.assertNotIn('ANTHROPIC_API_KEY', environment)
+        self.assertEqual(environment['HARMLESS'], '1')
+
+    def test_an_unrelated_credential_does_not_change_the_cache_key(self):
+        first = self.gate_case(checks_pass=False, keys={'ANTHROPIC_API_KEY': 'k', 'GITHUB_TOKEN': 'one'})
+        saved = first['state']['hermes_checks']
+        same = self.gate_case(checks_pass=True, cached=saved, keys={'ANTHROPIC_API_KEY': 'k', 'GITHUB_TOKEN': 'two'})
+        self.assertEqual(same['script_calls'], 0)
+
+    def test_an_interrupted_run_waits_one_hour_after_it_ends(self):
+        state = {}
+
+        def interrupted(command, **kwargs):
+            raise KeyboardInterrupt()
+        try:
+            self.gate_case(checks_pass=True, checks=interrupted, state=state)
+        except KeyboardInterrupt:
+            pass
+        # The wait counts from the end of the run, not from its start plus the whole budget.
+        self.assertLess(state['hermes_inconclusive']['retry_at'], time.time() + 3600 + 60)
+
+    def test_a_run_arms_its_wait_and_a_receipt_before_it_starts(self):
+        # A run that ends outside Python, for example at a restart, records nothing at its end. So the record of the
+        # start must already hold while the check script runs.
+        state, seen = {}, []
+
+        def during(command, **kwargs):
+            seen.append(json.loads(json.dumps(state.get('hermes_inconclusive'))))
+            receipt = Path(command[command.index('--output') + 1])
+            seen.append(receipt.exists())
+            output = Path(command[command.index('--output') + 1])
+            output.write_text(json.dumps(dict(passed=True, hermes_sha='new', credentials=['KEY'], checks=dict(a=dict(passed=True)))))
+            return 0, ''
+        self.gate_case(checks_pass=True, checks=during, state=state)
+        marker, receipt_existed = seen
+        self.assertEqual(marker['attempts'], 1)
+        self.assertGreater(marker['retry_at'], time.time() + update.HERMES_CHECKS_SECONDS)
+        # The check script writes its own result, so the placeholder is gone when it starts.
+        self.assertFalse(receipt_existed)
+        # A pass clears the marker.
+        self.assertNotIn('hermes_inconclusive', state)
+
+    def test_a_broken_git_checkout_stops_the_gate_before_the_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, live = Path(directory) / 'source', Path(directory) / 'live'
+            (live / '.runtime/host').mkdir(parents=True)
+            (live / '.runtime/host/credentials.json').write_text(json.dumps({'ANTHROPIC_API_KEY': 'k'}))
+            (live / '.runtime/host/credentials.json').chmod(0o600)
+            source.mkdir()
+            with patch.object(update, 'module', return_value=SimpleNamespace(MODEL_KEYS=('ANTHROPIC_API_KEY',))):
+                # source is no Git checkout, so git status exits non-zero.
+                self.assertIn('Git could not read', REAL_PROBLEM(source, live))
+
+    def test_a_shared_or_linked_credential_file_stops_the_gate_before_the_install(self):
+        for options in (dict(mode=0o644), dict(link=True)):
+            result = self.gate_case(checks_pass=True, **options)
+            self.assertIn('cannot start', str(result['raised']))
+            self.assertEqual((result['commands'], result['script_calls']), ([], 0))
+            self.assertEqual(result['receipt']['verdict'], 'inconclusive')
+        self.assertIn('private', self.gate_case(checks_pass=True, mode=0o644)['receipt']['output'])
+
+    def test_early_exits_write_an_inconclusive_verdict(self):
+        for options in (dict(keys={'OTHER': 'x'}), dict(free=1), dict(install=lambda command, **kwargs: (_ for _ in ()).throw(RuntimeError('no network')))):
+            self.assertEqual(self.gate_case(checks_pass=True, **options)['receipt']['verdict'], 'inconclusive', options)
+
+    def test_a_run_where_every_program_passed_but_the_script_failed_is_inconclusive(self):
+        text = json.dumps(dict(passed=False, hermes_sha='new', credentials=['KEY'], scratch_removed=False,
+                               checks=dict(relay=dict(passed=True), profiles=dict(passed=True))))
+        result = self.gate_case(checks_pass=False, result_text=text)
+        self.assertIn('did not finish', str(result['raised']))
+        self.assertNotIn('hermes_checks', result['state'])
+        self.assertEqual(result['receipt']['verdict'], 'inconclusive')
+
+    def test_an_inconclusive_run_waits_longer_each_time(self):
+        state = {}
+        waits = []
+        for attempt in range(1, 6):
+            before = time.time()
+            result = self.gate_case(checks_pass=False, checks=lambda command, **kwargs: (None, 'log'), cached=None, state=state)
+            entry = state['hermes_inconclusive']
+            waits.append(round(entry['retry_at'] - before))
+            self.assertEqual(entry['attempts'], attempt)
+            # Until the wait passes, the next pass stops at once, and installs nothing.
+            again = self.gate_case(checks_pass=False, state=state)
+            self.assertEqual((again['commands'], again['script_calls']), ([], 0))
+            entry['retry_at'] = 0
+        self.assertEqual([wait // 3600 for wait in waits], [1, 2, 4, 8, 16])
+
+    def test_a_corrected_model_key_runs_the_checks_again(self):
+        first = self.gate_case(checks_pass=False, keys={'ANTHROPIC_API_KEY': 'old'})
+        self.assertIn('failed for', str(first['raised']))
+        saved = first['state']['hermes_checks']
+        # The same pin and code, with the same key: the failure holds. With a new key, the checks run.
+        held = self.gate_case(checks_pass=True, cached=saved, keys={'ANTHROPIC_API_KEY': 'old'})
+        self.assertEqual(held['script_calls'], 0)
+        rerun = self.gate_case(checks_pass=True, cached=saved, keys={'ANTHROPIC_API_KEY': 'new'})
+        self.assertEqual(rerun['script_calls'], 1)
+
+    def test_a_pass_that_the_gate_did_not_accept_is_not_a_pass_in_the_receipt(self):
+        text = json.dumps(dict(passed=True, hermes_sha='other', credentials=['KEY'], checks=dict(relay=dict(passed=True))))
+        result = self.gate_case(checks_pass=True, result_text=text)
+        self.assertEqual((result['receipt']['verdict'], result['receipt']['passed']), ('inconclusive', False))
+        self.assertTrue(result['receipt']['gate_note'])
+
+    def test_a_killed_download_leaves_nothing_in_tools(self):
+        def install(command, **kwargs):
+            partial = Path(command[1]).parents[1] / '.runtime/tools/uv-download-abc'
+            partial.mkdir(parents=True)
+            (partial / 'uv.tar.gz').write_bytes(b'half')
+            (partial.parent / 'uv-1-target').mkdir()
+            raise RuntimeError('killed')
+        result = self.gate_case(checks_pass=True, install=install)
+        self.assertIsNotNone(result['raised'])
+        self.assertFalse(result['partial_left'])
+        self.assertTrue(result['tools_kept'])
+
+    def test_the_check_script_gets_the_candidate_runtime_and_the_live_credentials(self):
+        result = self.gate_case(checks_pass=True)
+        command = result['calls'][0]
+        self.assertTrue(command[1].endswith('scripts/check_hermes_candidate.py'))
+        self.assertTrue(command[command.index('--runtime') + 1].endswith('source/.runtime/hermes'))
+        self.assertTrue(command[command.index('--host-data') + 1].endswith('live/.runtime/host'))
+
+    def test_a_result_for_another_hermes_commit_is_inconclusive(self):
+        result = self.gate_case(checks_pass=True, result_text=json.dumps(dict(passed=True, hermes_sha='other', credentials=['KEY'],
+                                                                              checks=dict(relay=dict(passed=True)))))
+        self.assertIn('did not finish', str(result['raised']))
+        self.assertNotIn('hermes_checks', result['state'])
+
+    def test_a_full_disk_stops_the_candidate_install(self):
+        result = self.gate_case(checks_pass=True, free=update.HERMES_CANDIDATE_FREE_BYTES - 1)
+        self.assertIn('GiB of free disk space', str(result['raised']))
+        self.assertIn('Nothing was installed', result['receipt']['output'])
+        self.assertEqual((result['commands'], result['script_calls']), ([], 0))
+        # The pass is not saved as a failed check, so the next pass with enough space runs the checks.
+        self.assertNotIn('hermes_checks', result['state'])
+
+    def test_a_failed_pin_is_not_checked_again_for_a_day_with_the_same_code(self):
+        # gate_case has no Git checkout, so the commit stands for the code.
+        failed = dict(revision='new', sha='sha2', code=TREE, passed=False, checked_at=time.time() - 60)
+        result = self.gate_case(checks_pass=True, cached=failed)
+        self.assertIn('failed for Hermes new', str(result['raised']))
+        self.assertEqual((result['commands'], result['script_calls']), ([], 0))
+        # A day later, a new pin, or a change of the checked code runs the checks again.
+        for cached in (dict(failed, checked_at=time.time() - update.HERMES_FAILED_RETRY_SECONDS - 1),
+                       dict(failed, revision='other'), dict(failed, code='other-tree 0123')):
+            self.assertEqual(self.gate_case(checks_pass=True, cached=cached)['script_calls'], 1)
+
+    def test_a_saved_result_is_reused_by_the_next_pass(self):
+        # Run the gate twice with the state that the first run saved. The second run must not run the checks again.
+        first = self.gate_case(checks_pass=False)
+        self.assertEqual(first['script_calls'], 1)
+        second = self.gate_case(checks_pass=False, cached=first['state']['hermes_checks'])
+        self.assertIn('failed for Hermes new', str(second['raised']))
+        self.assertEqual(second['script_calls'], 0)
+
+    def test_the_checked_code_is_the_tree_of_backend_and_scripts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            subprocess.run(['git', 'init', '-q'], cwd=source, check=True)
+            for name in ('backend/a.py', 'scripts/b.py', 'ios/c.swift'):
+                (source / name).parent.mkdir(parents=True, exist_ok=True)
+                (source / name).write_text(name)
+            commit = ['git', '-c', 'user.name=T', '-c', 'user.email=t@example.invalid', 'commit', '-qam', 'x']
+            subprocess.run(['git', 'add', '.'], cwd=source, check=True)
+            subprocess.run(commit, cwd=source, check=True)
+            first = update.checked_code(source, 'sha')
+            (source / 'ios/c.swift').write_text('changed')
+            subprocess.run(commit, cwd=source, check=True)
+            self.assertEqual(update.checked_code(source, 'sha'), first)
+            (source / 'backend/a.py').write_text('changed')
+            subprocess.run(commit, cwd=source, check=True)
+            self.assertNotEqual(update.checked_code(source, 'sha'), first)
+
+    def test_the_gate_removes_its_runtime_folder_and_caches(self):
+        def install(args, **kwargs):
+            source = Path(kwargs['cwd'])
+            # hermes.py puts its uv cache and its temporary files beside the runtime.
+            for name in ('.runtime/cache/uv', '.runtime/tmp'):
+                (source / name).mkdir(parents=True, exist_ok=True)
+            return ''
+        result = self.gate_case(checks_pass=True, install=install)
+        self.assertIsNone(result['raised'])
+        self.assertFalse(result['runtime_left'])
+        self.assertTrue(result['other_left'])
+
+    def test_leftover_workers_stop_before_a_failed_install_loses_its_folder(self):
+        def install(command, **kwargs):
+            raise RuntimeError('The install failed.')
+        result = self.gate_case(checks_pass=True, install=install)
+        self.assertIn(result['runtime'], result['stopped'])
+        self.assertFalse(result['runtime_left'])
+
+    def test_a_stopped_run_frees_its_folder_before_the_space_check(self):
+        # gate_case leaves a candidate folder, as a run that was stopped part way does.
+        result = self.gate_case(checks_pass=True, free=update.HERMES_CANDIDATE_FREE_BYTES - 1)
+        self.assertIn('GiB of free disk space', str(result['raised']))
+        self.assertFalse(result['runtime_left'])
+
+    def test_an_unexpected_gate_error_is_named_in_the_receipt(self):
+        def broken(*args, **kwargs):
+            raise OSError('The check script cannot run.')
+        result = self.gate_case(checks_pass=True, checks=broken)
+        self.assertIsInstance(result['raised'], OSError)
+        self.assertIn('OSError: The check script cannot run.', result['receipt']['output'])
+        self.assertFalse(result['receipt']['passed'])
+
+    def test_a_passed_hermes_pin_is_not_checked_again(self):
+        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha2', code=TREE, passed=True))
+        self.assertIsNone(result['raised'])
+        self.assertEqual((result['commands'], result['script_calls']), ([], 0))
+
+    def test_a_new_source_commit_checks_the_same_pin_again(self):
+        # The checks run the Coconut code of the checkout too, so a pass for another commit does not count.
+        result = self.gate_case(checks_pass=True, cached=dict(revision='new', sha='sha1', code='sha1 other', passed=True))
+        self.assertEqual(result['script_calls'], 1)
+        self.assertEqual(saved_result(result), dict(revision='new', sha='sha2', code=TREE, passed=True))
+
+    def test_a_malformed_check_report_fails_the_gate(self):
+        result = self.gate_case(checks_pass=True, installed='new', result_text='{"passed": tr')
+        self.assertIn('did not finish', str(result['raised']))
+        self.assertNotIn('hermes_checks', result['state'])
+        # A script that exits before it writes a result is a setup problem too.
+        result = self.gate_case(checks_pass=True, checks=lambda command, **kwargs: (1, 'Traceback: import failed'))
+        self.assertIn('did not finish', str(result['raised']))
+        self.assertIn('import failed', result['receipt']['output'])
+        self.assertFalse(result['receipt']['passed'])
+
+    def test_a_failed_health_check_after_install_backs_off(self):
+        class DeployError(Exception):
+            pass
+
+        def refuse(*args):
+            raise DeployError('The service did not pass its local TLS health check.')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, live = root / 'source', root / 'live'
+            source.mkdir(); live.mkdir()
+            (live / '.runtime/host').mkdir(parents=True)
+            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:8443')))
+            (live / 'app.py').write_text('current')
+            hashes = {'app.py': hashlib.sha256(b'current').hexdigest()}
+            (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=hashes)))
+            (live / '.runtime/hermes').mkdir()
+            (live / '.runtime/hermes/install.json').write_text(json.dumps(dict(commit='runtime')))
+            state_path = root / 'state.json'
+            update.save(state_path, {})
+
+            def command(args, **kwargs):
+                if args[:3] == ['git', 'remote', 'get-url']: return 'https://github.com/owner/repo.git'
+                if args[:2] == ['git', 'status']: return ''
+                if args[:2] == ['git', 'rev-parse']: return 'installed'
+                if args[:2] == ['git', 'ls-files']: return 'app.py'
+                return ''
+
+            def package(path):
+                path.write_bytes(b'package')
+                return dict(package_id='package')
+            packaging = SimpleNamespace(package=package, source_files=lambda: {'app.py': b'current'})
+            installer = SimpleNamespace(validate_package=lambda stream: SimpleNamespace(hashes=hashes, revision='runtime'),
+                                        Operations=lambda: SimpleNamespace(health=refuse), DeployError=DeployError)
+            config = dict(repository='owner/repo', source=str(source), live=str(live))
+            with patch.object(update, 'run', side_effect=command), \
+                    patch.object(update, 'module', side_effect=[packaging, installer]), \
+                    patch.object(update, 'reviewed_merge'), patch.object(update, 'ios_hash', return_value='ios'), \
+                    patch.object(update.time, 'time', return_value=1000), patch.object(update.Path, 'home', return_value=root):
+                with self.assertRaises(DeployError):
+                    update.update(config, state_path)
+            saved = json.loads(state_path.read_text())
+            self.assertEqual(saved['failed_deploy']['source_sha'], 'installed')
+            self.assertNotIn('source_sha', saved)
 
     def test_completed_archive_receipt_survives_interruption(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -148,8 +765,55 @@ class AutomaticUpdateTests(unittest.TestCase):
 
 
 
+class BoundedRunTests(unittest.TestCase):
+    def test_a_timeout_stops_the_process_group_and_returns_the_output(self):
+        started = time.monotonic()
+        program = 'import subprocess, sys, time; subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"]); print("started", flush=True); time.sleep(30)'
+        code, output = update.run_bounded([sys.executable, '-c', program], cwd=None, timeout=1)
+        self.assertIsNone(code)
+        self.assertIn('started', output)
+        self.assertLess(time.monotonic() - started, 10)
+
+    def test_only_the_tail_of_a_long_output_comes_back(self):
+        program = 'import sys; sys.stdout.write("x" * 100000 + "END")'
+        code, output = update.run_bounded([sys.executable, '-c', program], cwd=None, timeout=30)
+        self.assertEqual(code, 0)
+        self.assertEqual((len(output), output[-3:]), (20000, 'END'))
+
+    def test_an_interrupt_of_the_wait_stops_the_child(self):
+        real_wait = subprocess.Popen.wait
+        interrupted = []
+
+        def wait(process, timeout=None):
+            if not interrupted:
+                interrupted.append(process)
+                raise KeyboardInterrupt()
+            return real_wait(process, timeout)
+        with patch.object(subprocess.Popen, 'wait', wait), self.assertRaises(KeyboardInterrupt):
+            update.run_bounded([sys.executable, '-c', 'import time; time.sleep(60)'], cwd=None, timeout=30)
+        process = interrupted[0]
+        # The child is gone: the group kill ran in the finally block.
+        self.assertIsNotNone(process.poll())
+        self.assertLess(process.returncode, 0)
+
+    def test_a_process_in_its_own_session_cannot_block_the_updater(self):
+        # A Hermes worker starts its own session and can keep the output open. The output is a file, not a pipe.
+        program = ('import subprocess, sys; subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], '
+                   'start_new_session=True); print("done", flush=True)')
+        started = time.monotonic()
+        code, output = update.run_bounded([sys.executable, '-c', program], cwd=None, timeout=20)
+        self.assertEqual((code, output.strip()), (0, 'done'))
+        self.assertLess(time.monotonic() - started, 10)
+
+
 class PostmergeRegressionTests(unittest.TestCase):
     """Real updater entry points; external operations use only temporary fixtures."""
+
+    def setUp(self):
+        # The Hermes candidate gate installs a runtime and runs model checks. Tests of other steps pass it.
+        gate = patch.object(update, 'check_hermes_candidate')
+        self.gate = gate.start()
+        self.addCleanup(gate.stop)
 
     def ci(self, checks, *, total=None, statuses=None, merge_sha='abc'):
         values = [
@@ -251,7 +915,10 @@ class PostmergeRegressionTests(unittest.TestCase):
                 if not repaired:
                     with self.assertRaises((ValueError, RuntimeError)):
                         update.update(config, state_path)
-                    self.assertFalse(state_path.exists())
+                    # A failed check records only its backoff, never an installed commit.
+                    saved = json.loads(state_path.read_text()) if state_path.exists() else {}
+                    self.assertNotIn('source_sha', saved)
+                    self.assertEqual(saved.get('failed_deploy', {}).get('source_sha'), 'sha')
                     return
                 update.update(config, state_path)
                 update.update(config, state_path)

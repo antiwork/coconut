@@ -97,6 +97,7 @@ from .service_restart import ServiceRestart
 from .workspace_recovery import WorkspaceRecovery
 from .worktree_retirement import WorktreeRetirement
 from .session_maintenance import SessionMaintenance
+from .database_maintenance import DatabaseMaintenance
 from .tracked_work import TrackedWork
 from .work_model import WorkModel
 from .work_recovery import WorkRecovery
@@ -104,7 +105,15 @@ from .decision_freshness import DecisionFreshness
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
-class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance):
+# The statements of Service._refresh_bot. Each needs an index and no sort. A test reads the plan of each one.
+BOT_TASK_STATES = ("SELECT DISTINCT json_extract(data,'$.status') FROM tasks WHERE json_extract(data,'$.bot_id')=? "
+                   "AND json_extract(data,'$.status') IN ('working','needs_you','scheduled')")
+BOT_LATEST_TASK = "SELECT json_extract(data,'$.status') FROM tasks WHERE json_extract(data,'$.bot_id')=? ORDER BY rowid DESC LIMIT 1"
+BOT_WORKING_CONTEXT = ("SELECT 1 FROM contexts WHERE json_extract(data,'$.status')='working' "
+                       "AND json_extract(data,'$.bot_id')=? LIMIT 1")
+
+
+class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -139,6 +148,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.changed = threading.Condition(self.lock)
         self.db = sqlite3.connect(self.root / 'coconut.sqlite3', check_same_thread=False, isolation_level=None)
         os.chmod(self.root / 'coconut.sqlite3', 0o600)
+        # This takes effect only in a new store. An older store changes mode in DatabaseMaintenance.
+        self.db.execute('PRAGMA auto_vacuum=INCREMENTAL')
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('PRAGMA synchronous=FULL')
         for table in self.TABLES:
@@ -158,6 +169,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS workspace_recoveries (id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS native_receipts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS artifact_content (id TEXT PRIMARY KEY, content BLOB NOT NULL);
         CREATE INDEX IF NOT EXISTS native_receipts_executing ON native_receipts
             (json_extract(data, '$.task_id'), json_extract(data, '$.turn_id'))
             WHERE json_extract(data, '$.state')='executing';
@@ -173,6 +185,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         CREATE INDEX IF NOT EXISTS tasks_bot_session ON tasks (json_extract(data,'$.bot_id'), json_extract(data,'$.session_id'));
         CREATE INDEX IF NOT EXISTS deliveries_source ON deliveries (json_extract(data,'$.source_task_id'));
         CREATE INDEX IF NOT EXISTS tasks_status ON tasks (json_extract(data,'$.status'));
+        CREATE INDEX IF NOT EXISTS tasks_bot_status ON tasks (json_extract(data,'$.bot_id'), json_extract(data,'$.status'));
+        CREATE INDEX IF NOT EXISTS tasks_bot ON tasks (json_extract(data,'$.bot_id'));
         CREATE INDEX IF NOT EXISTS contexts_status ON contexts (json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS decisions_status ON decisions (json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS tasks_assignment ON tasks (json_extract(data, '$._assignment_task_id'));
@@ -223,6 +237,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._migrate_silent_responses()
                 self._migrate_pr_review_sources()
                 self._migrate_native_routine_prompts()
+                self._move_artifact_content()
                 if not getattr(self, '_workspace_recovery_hold', False):
                     self._recover()
         except BaseException:
@@ -285,9 +300,16 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             try:
                 yield
                 self.db.execute('COMMIT')
+                self.__dict__.pop('_published_in_transaction', None)
+                for bot_id in self.__dict__.pop('_forget_bots_on_commit', set()):
+                    self.__dict__.get('_published_bots', {}).pop(bot_id, None)
                 self.changed.notify_all()
             except BaseException:
                 self._profile_pending = {}
+                # A rollback removes the bot events of this transaction. Forget what only they said.
+                for bot_id in self.__dict__.pop('_published_in_transaction', set()):
+                    self.__dict__.get('_published_bots', {}).pop(bot_id, None)
+                self.__dict__.pop('_forget_bots_on_commit', None)
                 self.db.execute('ROLLBACK')
                 raise
             pending, self._profile_pending = self._profile_pending, {}
@@ -667,15 +689,39 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
 
     def _refresh_bot(self, bot_id: str):
+        """Set the status of a bot from its tasks and contexts, and publish the bot when its public row changed.
+
+        Two indexed queries read the states. The event goes out only when the public row differs from the one that
+        this service published last. The phone replays message events by themselves, and a bot event tells it to
+        read the bots again, so a new last message or unread count still publishes. A rolled back transaction clears
+        the record, and a restart starts without it, so the first refresh of each bot publishes.
+
+        The sync response sends every bot with any change, so a suppressed event is safe while each write to the public
+        row of a bot comes with another event: a message, a task, a read mark, or this event. Keep that pairing.
+        """
         bot = self._get('bots', bot_id)
-        tasks = [t for t in self._all('tasks') if t['bot_id'] == bot_id]
-        states = {t['status'] for t in tasks if t['status'] in ('working', 'needs_you', 'scheduled')}
-        if tasks and tasks[-1]['status'] == 'failed':
+        states = {row[0] for row in self.db.execute(BOT_TASK_STATES, (bot_id,))}
+        # The latest task of the bot decides whether a failure still shows.
+        latest = self.db.execute(BOT_LATEST_TASK, (bot_id,)).fetchone()
+        if latest and latest[0] == 'failed':
             states.add('failed')
-        answering = any(c['bot_id'] == bot_id and c['status'] == 'working' for c in self._all('contexts'))
-        bot['status'] = 'working' if answering else next((s for s in ('needs_you', 'working', 'scheduled', 'failed') if s in states), 'idle')
-        self._put('bots', bot)
-        self._event('bot.updated', self._public(bot), bot_id)
+        answering = self.db.execute(BOT_WORKING_CONTEXT, (bot_id,)).fetchone()
+        status = 'working' if answering else next((s for s in ('needs_you', 'working', 'scheduled', 'failed') if s in states), 'idle')
+        if bot.get('status') != status:
+            bot['status'] = status
+            self._put('bots', bot)
+        public = self._public(bot)
+        fingerprint = encoded(public)
+        published = self.__dict__.setdefault('_published_bots', {})
+        if published.get(bot_id) == fingerprint:
+            return
+        self._event('bot.updated', public, bot_id)
+        self._note_published(bot_id, fingerprint)
+
+    def _note_published(self, bot_id: str, fingerprint: str):
+        """Record the public row that a bot event carried, and which transaction wrote it."""
+        self.__dict__.setdefault('_published_bots', {})[bot_id] = fingerprint
+        self.__dict__.setdefault('_published_in_transaction', set()).add(bot_id)
 
     @staticmethod
     def _public(obj: dict) -> dict:
@@ -1179,6 +1225,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             bot.update(_deleted=True, archived=True, _delete_task_ids=cancelled)
             self._put('bots', bot)
             self._event('bot.deleted', {'id': bot['id']} | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
+            # A deleted bot publishes no more rows, so its record has no use. Forget it when the transaction commits.
+            self.__dict__.setdefault('_forget_bots_on_commit', set()).add(bot['id'])
             for task_id in affected:
                 task = self._get('tasks', task_id)
                 owner_id = task.get('_reply_to_task_id')
@@ -1309,7 +1357,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         bot[field] = data[field]
                 self._sync_profile(bot)
                 self._put('bots', bot)
-                self._event('bot.updated', bot, bot['id'])
+                # Publish the public row, as _refresh_bot does, so that the record and the event agree by construction.
+                self._event('bot.updated', self._public(bot), bot['id'])
+                self._note_published(bot['id'], encoded(self._public(bot)))
                 self._event('settings.updated', {'bot_id': bot['id']}, bot['id'])
                 return self._bot_view(bot, self._request_model_catalog)
             if len(parts) == 3 and method == 'DELETE':
@@ -1451,9 +1501,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
 
     def _active_routine_task(self, routine_id: str) -> dict | None:
         tasks = self._all('tasks')
-        # A closed native occurrence no longer owns the next scheduled intake.
+        # A closed occurrence releases intake unless its exact authorized
+        # continuation is queued/running, including gaps between tool fences.
         related = {task['id'] for task in tasks if task.get('routine_id') == routine_id
-                   and not task.get('_native_job_finished')}
+                   and (not task.get('_native_job_finished') or (
+                       task['status'] in ('queued', 'working')
+                       and self.native_routine_completion_input(task).get('continuation')))}
         while True:
             expanded = related | {task['id'] for task in tasks if task.get('source_task_id') in related}
             if expanded == related:
@@ -2466,10 +2519,58 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             raise ServiceError(413, 'Attachments must contain between 1 byte and 4 MB.')
         artifact_id = uid()
         # Store uploaded bytes in SQLite with the request, avoiding orphan files on retries.
-        artifact = dict(id=artifact_id, bot_id=bot['id'], task_id=None, title=filename, kind='file', status='attached', preview=f'{len(content):,} bytes', url=None, created_at=now(), _attachment=True, _content_base64=base64.b64encode(content).decode())
+        artifact = dict(id=artifact_id, bot_id=bot['id'], task_id=None, title=filename, kind='file', status='attached', preview=f'{len(content):,} bytes', url=None, created_at=now(), _attachment=True)
         self._put('artifacts', artifact)
+        self.store_artifact_content(artifact_id, content)
         self._event('artifact.created', self._public(artifact), bot['id'])
         return self._public(artifact)
+
+    def store_artifact_content(self, artifact_id: str, content: bytes):
+        """Keep the bytes of an attachment or a preview in their own table. The artifact rows stay small.
+
+        Every pass that reads a whole table decodes the rows, and the bytes made up 48 of the 51 MB of the artifacts.
+        """
+        self.db.execute('INSERT OR REPLACE INTO artifact_content(id, content) VALUES (?, ?)', (artifact_id, content))
+
+    def artifact_bytes(self, artifact: dict) -> bytes | None:
+        """Return the stored bytes of an artifact, or None when it has none. A row from before the move keeps them inline."""
+        row = self.db.execute('SELECT content FROM artifact_content WHERE id=?', (artifact['id'],)).fetchone()
+        if row:
+            return bytes(row[0])
+        try:
+            return base64.b64decode(artifact['_content_base64']) if artifact.get('_content_base64') else None
+        except ValueError:
+            # A damaged value is not the same as no bytes. Say so, so that no turn goes on without the attachment.
+            raise ServiceError(409, f'The stored bytes of the attachment {artifact["title"]} are damaged.') from None
+
+    def turn_attachment_content(self, artifact_id: str) -> dict:
+        """Return the content of an attachment for a turn: its bytes as base64, or the reason that it has none.
+
+        A damaged inline value must not stop the turn, and a decision context that fails while it assembles its
+        attachments would retry without end. The turn gets the reason in place of the preview, so the bot knows.
+        """
+        artifact = self._get('artifacts', artifact_id)
+        try:
+            content = self.artifact_bytes(artifact)
+        except ServiceError as error:
+            return {'content_base64': None, 'preview': str(error)}
+        return {'content_base64': base64.b64encode(content).decode() if content is not None else None}
+
+    def _move_artifact_content(self):
+        """Move the inline bytes of older artifacts into artifact_content. Run at every start; it finds nothing after the first."""
+        # Read the ids first and one value at a time, so the peak memory is one attachment, not all of them.
+        # The caller holds the startup transaction.
+        ids = [row[0] for row in self.db.execute("SELECT id FROM artifacts WHERE json_type(data,'$._content_base64')='text'")]
+        for artifact_id in ids:
+            encoded = self.db.execute("SELECT json_extract(data,'$._content_base64') FROM artifacts WHERE id=?", (artifact_id,)).fetchone()[0]
+            try:
+                content = base64.b64decode(encoded)
+            except ValueError:
+                # One damaged value must not stop the service. Its row keeps the inline value, and only its download fails.
+                logging.getLogger(__name__).warning('Coconut left the inline bytes of artifact %s: they are not valid base64.', artifact_id)
+                continue
+            self.store_artifact_content(artifact_id, content)
+            self.db.execute("UPDATE artifacts SET data=json_remove(data,'$._content_base64') WHERE id=?", (artifact_id,))
 
     def artifact_content(self, artifact_id: str) -> tuple[bytes, str]:
         with self.lock:
@@ -2477,8 +2578,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             bot = self._get('bots', artifact['bot_id'])
             if bot.get('_deleted'):
                 raise ServiceError(404, 'This artifact was removed.')
-            if '_content_base64' in artifact:
-                return base64.b64decode(artifact['_content_base64']), artifact['title']
+            stored = self.artifact_bytes(artifact)
+            if stored is not None:
+                return stored, artifact['title']
             path = self.files / artifact_id
             if path.is_symlink() or not path.is_file():
                 raise ServiceError(404, 'The artifact file is unavailable on the Mac.')
@@ -3204,7 +3306,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         provider_task['_work_status_only'] = task.get('_work_status_only', False)
                     provider_task.update(view.decision_chat_input(task))
                     provider_task.update(view._bot_deletion_input(task))
-                    provider_task['attachments'] = [view._public(view._get('artifacts', a)) | {'content_base64': view._get('artifacts', a).get('_content_base64')} for a in task['_turn_attachment_ids']]
+                    provider_task['attachments'] = [view._public(view._get('artifacts', a)) | {'content_base64': None} | view.turn_attachment_content(a) for a in task['_turn_attachment_ids']]
                     provider_task['_available_bots'] = [{'id': b['id'], 'name': b['name'], 'role': b['role']} for b in view._all('bots') if b['id'] != bot['id'] and not b['archived'] and not b.get('_deleted')]
                     if task.get('_is_return') and task.get('source_task_id'):
                         rows = view.db.execute(
@@ -3659,16 +3761,21 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             if message != before:
                 self._put('messages', message)
                 changed = True
+        # Index the messages once. A scan of every message for each delivery grew with both tables at every start.
+        exchanges = {(m.get('task_id'), m.get('sender_bot_id')) for m in messages if m['kind'] == 'bot_exchange'}
+        texts = {}
+        for m in messages:
+            if m['kind'] == 'text':
+                texts.setdefault(m.get('task_id'), []).append(m)
         for delivery in self._all('deliveries'):
             task = tasks.get(delivery['receipt'].get('task_id'))
             source = tasks.get(delivery['source_task_id'])
             if not task or not source:
                 continue
-            if any(m.get('task_id') == task['id'] and m['kind'] == 'bot_exchange'
-                   and m.get('sender_bot_id') == source['bot_id'] for m in messages):
+            if (task['id'], source['bot_id']) in exchanges:
                 continue
-            result = next((m for m in reversed(messages) if m.get('task_id') == source.get('_result_task_id', source['id'])
-                           and m['kind'] == 'text' and m.get('sender_bot_id') == source['bot_id']
+            result = next((m for m in reversed(texts.get(source.get('_result_task_id', source['id']), []))
+                           if m['kind'] == 'text' and m.get('sender_bot_id') == source['bot_id']
                            and m['text'] == delivery['text'] and not m.get('_direct_reply_message_id')
                            and not m.get('_hidden') and not m.get('_deleted')), None)
             if result:
@@ -3684,6 +3791,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                            decision_id=None, artifact_id=None)
             self._put('messages', message)
             messages.append(message)
+            exchanges.add((message['task_id'], message['sender_bot_id']))
             changed = True
         if changed:
             self._event('transcript.updated', {})
@@ -3803,7 +3911,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     if context.get('_recovery_attempt'):
                         provider_task['_context_recovery'] = context['_context_recovery']
                     provider_task['pending_decision'] = self._public(decision) | {'action': decision.get('_action')}
-                    provider_task['attachments'] = [self._public(self._get('artifacts', a)) | {'content_base64': self._get('artifacts', a).get('_content_base64')} for a in context.get('_attachment_ids', task.get('_turn_attachment_ids', []))]
+                    provider_task['attachments'] = [self._public(self._get('artifacts', a)) | {'content_base64': None} | self.turn_attachment_content(a) for a in context.get('_attachment_ids', task.get('_turn_attachment_ids', []))]
                 chunks = []
                 context_failure = {}
                 def emit(kind, payload):

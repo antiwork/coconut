@@ -414,6 +414,79 @@ class NativeOutcomes:
                 return coordinator
         return None
 
+    def _completed_peer_continuation(self, previous, linked, tasks, snapshots, get_deliveries):
+        """Qualify a failed historical peer, never its successor or other branches."""
+        import json
+        from .service import digest, encoded
+        from .work_capacity import execution_key
+        successor = self._continued_work_task(previous, tasks)
+        if (previous['status'] != 'failed' or not successor or successor['id'] not in linked
+                or successor['status'] != 'completed' or successor.get('parent_task_id') != previous['id']
+                or successor.get('_is_return') or successor.get('_continued_task_id')
+                or any(execution_key(t) == execution_key(previous) and t['id'] not in linked
+                       for t in tasks.values())):
+            return False
+        # Reciprocal execution links alone do not prove an authorized continuation.
+        # Join the saved native envelope to the service's exact delivery.
+        sender = tasks.get(successor.get('source_task_id'))
+        relay = successor.get('_native_relay') or {}
+        envelope = relay.get('envelope_id')
+        if (not sender or not envelope or relay.get('sender_bot_id') != sender['bot_id']
+                or successor.get('source_bot_id') != sender['bot_id']
+                or not any(d['id'] == digest(encoded([sender['id'], envelope]))
+                    and d.get('source_task_id') == sender['id']
+                    and d.get('target_bot_id') == successor['bot_id'] and not d.get('_progress_only')
+                    and d.get('receipt', {}).get('task_id') == successor['id']
+                    and d.get('receipt', {}).get('target_bot_id') == successor['bot_id']
+                    and d.get('receipt', {}).get('thread_id') == successor['thread_id']
+                    and d.get('receipt', {}).get('status') == 'queued' for d in get_deliveries())):
+            return False
+        for task in (previous, successor):
+            claim = task.get('_kanban_claim') or {}
+            bound = task.get('_native_outcome_id') or claim.get('native_id')
+            card = snapshots.get(task['id'], {})
+            worker = self.running.get(task['id'])
+            if (not bound or card.get('id') != bound or claim.get('native_id') != bound
+                    or claim.get('external_id') != task['id']
+                    or card.get('status') not in ('done', 'archived', 'blocked')
+                    or card.get('block_kind') or card.get('current_run_id') or card.get('worker_pid')
+                    or (worker and worker.is_alive()) or self._background_pending(task['id'])
+                    or any(task.get(key) for key in ('_waiting_on', '_return_pending', '_native_reply_pending',
+                        '_steering', '_live_messages', '_blocked_followup'))):
+                return False
+        claim = successor['_kanban_claim']
+        card = snapshots[successor['id']]
+        turn = successor.get('_native_turn_id')
+        if (not turn or not claim.get('run_id') or card.get('status') != 'done'
+                or card.get('input_id') != turn or claim.get('input') != turn
+                or successor.get('_native_return_prepared') != [card['id'], turn]):
+            return False
+        # A current done card and a successful receipt must identify the same
+        # producing turn/run. A prior success cannot qualify a resumed input.
+        completed = False
+        for receipt in self._native_task_receipts(successor['id'], turn_id=turn, state='completed'):
+            if (receipt.get('action') or {}).get('name') != 'kanban_complete':
+                continue
+            try:
+                result = json.loads(receipt.get('result', ''))
+            except (ValueError, TypeError):
+                continue
+            if (isinstance(result, dict) and result.get('ok') is True
+                    and result.get('task_id') == card['id'] and result.get('run_id') == claim['run_id']):
+                completed = True
+                break
+        if not completed:
+            return False
+        # Preserve unknown reads as unknown. Only the exact read intents carried
+        # into this successful recovery cease to be independent writer fences.
+        saved = {r['id']: r for r in (successor.get('_self_recovery') or {}).get('unknown_tools', [])}
+        for receipt in self._native_task_receipts(previous['id'], state='executing'):
+            if ((receipt.get('action') or {}).get('name') not in ('search_files', 'read_file')
+                    or receipt['id'] not in saved or any(receipt.get(key) != saved[receipt['id']].get(key)
+                        for key in ('task_id', 'turn_id', 'action', 'created_at'))):
+                return False
+        return True
+
     def _retain_native_work(self, owner, native, snapshot_missing=None, snapshots=None, caller=None):
         from .service import ServiceError, now
         from .work_capacity import execution_key
@@ -617,6 +690,18 @@ class NativeOutcomes:
                     native_tasks = [t for t, _ in linked.values()
                                     if t.get('_native_outcome_id') or t.get('_kanban_claim')]
                     peer_chains.append((peer, reporter, linked, native_tasks, passive_report, bool(report_coordinator)))
+            for _, _, linked, native_tasks, _, _ in peer_chains:
+                # Failed execution roots do not own their siblings in _work_chain.
+                # Before qualifying their history, guard every sibling and its
+                # branches too, including input with no callback/wait edge.
+                recovering = {execution_key(t) for t, _ in linked.values()
+                              if t['status'] == 'failed' and self._continued_work_task(t, tasks)}
+                for sibling in tasks.values():
+                    if execution_key(sibling) in recovering:
+                        linked.update(self._work_chain(sibling, tasks, records, include_continuations=True))
+                        linked.setdefault(sibling['id'], (sibling, 0))
+                native_tasks[:] = [t for t, _ in linked.values()
+                                   if t.get('_native_outcome_id') or t.get('_kanban_claim')]
             missing = sorted({t['id'] for _, _, _, native_tasks, _, _ in peer_chains for t in native_tasks
                               if t['id'] not in snapshots})
             if missing and snapshot_missing:
@@ -625,22 +710,24 @@ class NativeOutcomes:
                 foreground = (caller['id'] if passive_report and caller and caller['id'] in linked
                     and any(self._requester_callback_foreground(caller, tasks.get(identity), tasks, snapshots)
                             for identity in callers) else None)
+                historical = {t['id'] for t, _ in linked.values() if self._completed_peer_continuation(
+                    t, linked, tasks, snapshots, get_deliveries)}
                 native_pending = any(
                     (snapshot := snapshots.get(t['id'], {})).get('status') != 'done'
                     or snapshot.get('id') != (t.get('_native_outcome_id') or t['_kanban_claim'].get('native_id'))
                     or snapshot.get('current_run_id') or snapshot.get('worker_pid')
-                    for t in native_tasks if t['id'] != foreground)
+                    for t in native_tasks if t['id'] != foreground and t['id'] not in historical)
                 if (native_pending or peer['kind'] != 'pr'
                         or ((peer['bot_id'] == owner['bot_id'] or reporter['bot_id'] == owner['bot_id'])
                             and not (passive_report or linked_report))
-                        or any((t['status'] != 'completed' and t['id'] != foreground)
+                        or any((t['status'] != 'completed' and t['id'] != foreground and t['id'] not in historical)
                                or t.get('_waiting_on') or t.get('_return_pending')
-                               or (linked_report and t.get('_native_reply_pending'))
+                               or ((linked_report or historical) and t.get('_native_reply_pending'))
                                or self._task_paused(t) or self._get('exchanges', t['exchange_id']).get('cancelled')
                                or self._background_pending(t['id']) or self._unfinished_work(t)
                                or (t['id'] != foreground and self.running.get(t['id']) and self.running[t['id']].is_alive())
-                               or running_tool(t)
-                               or (t['id'] == foreground and (self._task_work_is_paused(t)
+                               or (t['id'] not in historical and running_tool(t))
+                               or ((t['id'] == foreground or historical) and (self._task_work_is_paused(t)
                                    or t.get('_steering') or t.get('_live_messages') or t.get('_blocked_followup')
                                    or t.get('_native_reply_pending')))
                                for t, _ in linked.values())
@@ -847,6 +934,8 @@ class NativeOutcomes:
             identity = native['id']
             if source['bot_id'] not in (owner['bot_id'], owner.get('source_bot_id')):
                 raise ServiceError(403, 'Only the owner or its requesting bot can continue this work.')
+            if owner.get('_native_job') and not owner.get('_native_job_finished'):
+                raise ServiceError(409, 'Wait for the original routine occurrence to finish reconciling with Hermes.')
             bot = self._get('bots', owner['bot_id'])
             if (self._task_paused(owner) or owner['session_id'] != bot['session_id']
                     or owner.get('_conversation_epoch') != self._setting('conversation_epoch')
@@ -934,7 +1023,7 @@ class NativeOutcomes:
             self._put('tasks', owner)
             receipt = dict(task_id=owner['id'], native_task_id=identity, status='queued')
             self._put('deliveries', dict(id=key, source_task_id=source_id, target_bot_id=owner['bot_id'],
-                text=text, receipt=receipt, created_at=now()))
+                text=text, receipt=receipt, turn_id=owner['_native_turn_id'], created_at=now()))
             self._event('task.updated', self._public(owner), owner['bot_id'], owner['id'])
             self._refresh_bot(owner['bot_id'])
             return receipt
