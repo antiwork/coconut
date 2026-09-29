@@ -5,7 +5,9 @@ from unittest.mock import patch
 import test_followup_conversation_scope as fixtures
 from coconut.service import ServiceError
 from coconut.tracked_work import TrackedWork
-import legacy_work_sync  # noqa: F401  (adds Service._sync_automatic_work)
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class WorkFollowupIdentityTests(unittest.TestCase):

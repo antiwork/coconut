@@ -11,6 +11,9 @@ import test_work_self_recovery as recovery_fixtures
 from unittest.mock import patch
 
 from coconut.work_workspace import acquire, git, preferred, retire
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
 

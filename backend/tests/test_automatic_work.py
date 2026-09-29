@@ -3,7 +3,9 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 import test_service_pr as fixtures
-import legacy_work_sync  # noqa: F401  (adds Service._sync_automatic_work)
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class AutomaticWorkTests(unittest.TestCase):

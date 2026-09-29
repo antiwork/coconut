@@ -7,7 +7,9 @@ from datetime import datetime, timedelta, timezone
 import test_automatic_work as fixtures
 from coconut.hermes_worker import conversation_input
 from coconut.service import ServiceError, YieldForDecision
-import legacy_work_sync  # noqa: F401  (adds Service._sync_automatic_work)
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class DecisionFreshnessTests(unittest.TestCase):

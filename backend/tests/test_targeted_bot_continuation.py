@@ -12,7 +12,9 @@ from coconut.native_relay import delivery_payload, message_tool_schema
 from coconut.service import Service, ServiceError, YieldForDecision
 import test_work_progress as fixtures
 from test_work_progress import progress
-import legacy_work_sync  # noqa: F401  (adds Service._sync_automatic_work)
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class TargetedBotContinuationTests(unittest.TestCase):

@@ -2,6 +2,9 @@ import copy
 import unittest
 
 import test_automatic_work as fixtures
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class WorkRecoveryTests(unittest.TestCase):

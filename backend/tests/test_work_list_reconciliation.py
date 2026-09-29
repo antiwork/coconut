@@ -4,7 +4,9 @@ import unittest
 import test_automatic_work as automatic
 import test_tracked_work as tracked
 import test_decision_inbox as inbox
-import legacy_work_sync  # noqa: F401  (adds Service._sync_automatic_work)
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class WorkListReconciliationTests(unittest.TestCase):

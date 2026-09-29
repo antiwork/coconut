@@ -2,8 +2,10 @@
 
 Production never runs it. With Hermes, a Work row comes from a native outcome, and Service._sync_automatic_work
 returned at once. Fixture mode (a demo mode) no longer builds these rows. Many tests still build them this way, so
-the code lives here. Importing this module adds the methods to Service for the whole process. CI runs each test
-file in its own process, so the change stays inside the files that import it.
+the code lives here. A test module adds the methods to Service for its own tests and removes them afterwards:
+
+    import legacy_work_sync
+    setUpModule, tearDownModule = legacy_work_sync.scope()
 """
 from datetime import datetime, timezone
 
@@ -177,5 +179,18 @@ class LegacyWorkSync:
                 self._event('artifact.updated', self._public(item), item['bot_id'], item['task_id'])
 
 
-for name in ('_work_title', '_sync_followup_work', '_resume_tracked_work', '_automatic_work_state', '_sync_automatic_work'):
-    setattr(Service, name, getattr(LegacyWorkSync, name))
+
+NAMES = ('_work_title', '_sync_followup_work', '_resume_tracked_work', '_automatic_work_state', '_sync_automatic_work')
+
+
+def scope():
+    """Return the setUpModule and tearDownModule of a test module that needs the legacy builder."""
+    def set_up():
+        for name in NAMES:
+            setattr(Service, name, getattr(LegacyWorkSync, name))
+
+    def tear_down():
+        for name in NAMES:
+            if name in Service.__dict__:
+                delattr(Service, name)
+    return set_up, tear_down
