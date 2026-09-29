@@ -143,7 +143,10 @@ class NativeSessionTests(unittest.TestCase):
             backend = Path(__file__).resolve().parents[1]
             env = dict(os.environ, HERMES_HOME=home,
                        PYTHONPATH=os.pathsep.join((str(backend), str(backend / 'coconut'), SOURCE)))
-            result = subprocess.run([PYTHON, '-c', textwrap.dedent(program)], env=env,
+            # A VACUUM needs free disk. These programs must not depend on the disk of the machine that runs them.
+            roomy = ("import collections, shutil\n"
+                     "shutil.disk_usage = lambda path: collections.namedtuple('usage', 'total used free')(1 << 50, 0, 1 << 50)\n")
+            result = subprocess.run([PYTHON, '-c', roomy + textwrap.dedent(program)], env=env,
                                     capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stderr)
             return result.stdout
@@ -229,6 +232,99 @@ class NativeSessionTests(unittest.TestCase):
             with patch('hermes_state_holders.foreign_state_db_holders', return_value=[]):
                 second = native_sessions.maintain(request)
             assert second['pruned'] == 0 and second['vacuumed'], second
+        ''')
+
+    def test_a_large_store_with_few_free_pages_vacuums_again_only_after_it_regrows(self):
+        self.run_native('''
+            from uuid import uuid4
+            from unittest.mock import patch
+            from hermes_state import SessionDB
+            from coconut import native_sessions
+            bot = dict(id=str(uuid4()), session_id=str(uuid4()))
+            db = SessionDB()
+            def grow(name, count):
+                db.create_session(name, source='coconut')
+                for _ in range(count):
+                    db.append_message(name, 'user', 'x' * 2000)
+            grow('first', 200)
+            request = dict(bot=bot, conversations=[], outcomes=[], retention_days=365, history_days=365, allow_vacuum=True)
+            native_sessions.VACUUM_INTERVAL_SECONDS = 0
+            with patch('hermes_state_holders.foreign_state_db_holders', return_value=[]), \\
+                    patch.object(native_sessions, 'VACUUM_MIN_BYTES', 1):
+                # Nothing was deleted, so no page is free. The store is over the size floor and was never vacuumed.
+                pages, free, _ = native_sessions.store_pages(db.db_path)
+                assert free / pages < native_sessions.VACUUM_MIN_FREELIST_RATIO
+                assert native_sessions.maintain(request)['vacuumed']
+                # Nothing changed since the last VACUUM.
+                assert not native_sessions.maintain(request)['vacuumed']
+                grow('second', 400)
+                assert native_sessions.maintain(request)['vacuumed']
+        ''')
+
+    def test_a_vacuum_waits_for_the_disk_to_hold_a_second_copy(self):
+        self.run_native('''
+            from collections import namedtuple
+            from uuid import uuid4
+            from unittest.mock import patch
+            from hermes_state import SessionDB
+            from coconut import native_sessions
+            bot = dict(id=str(uuid4()), session_id=str(uuid4()))
+            db = SessionDB()
+            db.create_session('one', source='coconut')
+            for _ in range(200):
+                db.append_message('one', 'user', 'x' * 2000)
+            request = dict(bot=bot, conversations=[], outcomes=[], retention_days=365, history_days=365, allow_vacuum=True)
+            usage = namedtuple('usage', 'total used free')
+            with patch('hermes_state_holders.foreign_state_db_holders', return_value=[]), \\
+                    patch.object(native_sessions, 'VACUUM_MIN_BYTES', 1), \\
+                    patch('shutil.disk_usage', return_value=usage(10, 9, 1024)):
+                skipped = native_sessions.maintain(request)
+                assert not skipped['vacuumed'] and 'disk' in skipped['vacuum_skipped'], skipped
+            with patch('hermes_state_holders.foreign_state_db_holders', return_value=[]), \\
+                    patch.object(native_sessions, 'VACUUM_MIN_BYTES', 1):
+                assert native_sessions.maintain(request)['vacuumed']
+        ''')
+
+    def test_an_unreadable_size_after_the_vacuum_keeps_the_run_result(self):
+        self.run_native('''
+            from uuid import uuid4
+            from unittest.mock import patch
+            from hermes_state import SessionDB
+            from coconut import native_sessions
+            bot = dict(id=str(uuid4()), session_id=str(uuid4()))
+            db = SessionDB()
+            db.create_session('one', source='coconut')
+            for _ in range(200):
+                db.append_message('one', 'user', 'x' * 2000)
+            request = dict(bot=bot, conversations=[], outcomes=[], retention_days=365, history_days=365, allow_vacuum=True)
+            real = native_sessions.store_pages
+            calls = []
+            def store_pages(path):
+                calls.append(path)
+                # The verdict reads the store first. The read after the VACUUM fails.
+                if len(calls) > 1:
+                    raise RuntimeError('database is locked')
+                return real(path)
+            with patch('hermes_state_holders.foreign_state_db_holders', return_value=[]), \\
+                    patch.object(native_sessions, 'VACUUM_MIN_BYTES', 1), \\
+                    patch.object(native_sessions, 'store_pages', store_pages):
+                result = native_sessions.maintain(request)
+            assert result['vacuumed'] and 'locked' in result['vacuum_error'], result
+        ''')
+
+    def test_a_small_store_is_not_vacuumed_for_its_size(self):
+        self.run_native('''
+            from uuid import uuid4
+            from unittest.mock import patch
+            from hermes_state import SessionDB
+            from coconut import native_sessions
+            bot = dict(id=str(uuid4()), session_id=str(uuid4()))
+            db = SessionDB()
+            db.create_session('one', source='coconut')
+            db.append_message('one', 'user', 'x' * 2000)
+            request = dict(bot=bot, conversations=[], outcomes=[], retention_days=365, history_days=365, allow_vacuum=True)
+            with patch('hermes_state_holders.foreign_state_db_holders', return_value=[]):
+                assert not native_sessions.maintain(request)['vacuumed']
         ''')
 
     def test_a_failed_vacuum_keeps_the_rest_of_the_run(self):

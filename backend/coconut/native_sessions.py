@@ -15,16 +15,42 @@ VACUUM_KEY = 'coconut.last-vacuum'
 VACUUM_INTERVAL_SECONDS = 7 * 86400
 # Hermes vacuums only above this free-page fraction. Below it, a rewrite costs more than it returns.
 VACUUM_MIN_FREELIST_RATIO = 0.25
+# The search indexes of a store fragment as the store grows and loses old sessions, and they keep their pages. On the mini,
+# one store held 4.5 GB with 16% of its pages free. Hermes merged the indexes and vacuumed it to 0.95 GB in 150 seconds.
+# So a store above this size also gets a VACUUM when it is 1.5 times as large as it was after the last one.
+VACUUM_SIZE_KEY = 'coconut.vacuum-size'
+VACUUM_MIN_BYTES = 512 * 1024 ** 2
+VACUUM_REGROWTH = 1.5
+# A VACUUM writes a new copy of the store. Without this much free disk it could fill the disk.
+VACUUM_DISK_RESERVE_BYTES = 2 * 1024 ** 3
 
 
-def freelist_ratio(path):
+def store_pages(path):
+    """Return the page count, the free page count and the page size of a store, read over a short connection."""
     from contextlib import closing
     import sqlite3
     # Close this reader before the holder checks and the VACUUM. as_uri() escapes the path.
     with closing(sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True, timeout=5)) as connection:
-        pages = connection.execute('PRAGMA page_count').fetchone()[0]
-        free = connection.execute('PRAGMA freelist_count').fetchone()[0]
-    return free / pages if pages else 0.0
+        return tuple(connection.execute('PRAGMA ' + name).fetchone()[0] for name in ('page_count', 'freelist_count', 'page_size'))
+
+
+def vacuum_verdict(db):
+    """Return 'run' when a VACUUM of this store pays, 'disk' when it would pay but the disk cannot hold it, else None.
+
+    The new copy holds only the used pages, and in WAL mode the rewrite passes through the log once more. So the disk
+    needs twice the used pages, plus a reserve, as `_vacuum_fits` in `database_maintenance.py` also requires.
+    """
+    import shutil
+    pages, free, page_size = store_pages(db.db_path)
+    size = pages * page_size
+    after_last = db.get_meta(VACUUM_SIZE_KEY)
+    mostly_free = pages > 0 and free / pages > VACUUM_MIN_FREELIST_RATIO
+    regrown = size >= VACUUM_MIN_BYTES and (not after_last or size >= VACUUM_REGROWTH * float(after_last))
+    if not (mostly_free or regrown):
+        return None
+    if shutil.disk_usage(Path(db.db_path).parent).free < 2 * (pages - free) * page_size + VACUUM_DISK_RESERVE_BYTES:
+        return 'disk'
+    return 'run'
 
 
 def maintain(request):
@@ -36,9 +62,9 @@ def maintain(request):
     2. End the newest session of each idle outcome. Coconut never ends a chat.
     3. Prune ended idle work sessions inactive for `retention_days`, and other ended Coconut sessions, such as
        compressed chat sessions, inactive for `history_days`. Other sources keep the profile's own settings.
-    4. VACUUM at most once a week when more than a quarter of the file is free, the service reports the bot quiet,
-       and no other process holds the store. The free-page test, not this run's prune count, decides, so a VACUUM
-       that a holder deferred runs on a later hour.
+    4. VACUUM at most once a week when it pays (see `vacuum_verdict`: more than a quarter of the file is free, or the
+       store is large and has regrown), the service reports the bot quiet, and no other process holds the store.
+       That test, not this run's prune count, decides, so a VACUUM that a holder deferred runs on a later hour.
     """
     from hermes_state import SessionDB
     from hermes_state_holders import foreign_state_db_holders, in_process_state_db_holders
@@ -74,8 +100,11 @@ def maintain(request):
         due = not last or time.time() - float(last) >= VACUUM_INTERVAL_SECONDS
         # VACUUM rewrites the whole file under an exclusive lock. Hermes skips it while another process
         # holds the store or a WAL sidecar, and so does Coconut. The next hour tries again.
-        if (request.get('allow_vacuum') and due
-                and freelist_ratio(db.db_path) > VACUUM_MIN_FREELIST_RATIO
+        verdict = vacuum_verdict(db) if request.get('allow_vacuum') and due else None
+        if verdict == 'disk':
+            # Say why a store that should shrink does not, so an operator can tell.
+            result['vacuum_skipped'] = 'The disk cannot hold a second copy of the store.'
+        if (verdict == 'run'
                 and not (foreign_state_db_holders(db.db_path) + in_process_state_db_holders(db.db_path, exclude=db))):
             try:
                 db.vacuum()
@@ -84,6 +113,12 @@ def maintain(request):
                 result['vacuum_error'] = str(error)[:500]
             else:
                 db.set_meta(VACUUM_KEY, str(time.time()))
+                try:
+                    pages, _, page_size = store_pages(db.db_path)
+                    db.set_meta(VACUUM_SIZE_KEY, str(pages * page_size))
+                except Exception as error:
+                    # The VACUUM is done. Without a size, the next weekly run may vacuum a store that has not regrown.
+                    result['vacuum_error'] = 'The size after the VACUUM is unknown: ' + str(error)[:400]
                 result['vacuumed'] = True
     finally:
         db.close()
