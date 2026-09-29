@@ -28,6 +28,19 @@ NATIVE_ERROR_CODES = frozenset({'native_' + reason for reason in _FAILURES} | {
     'native_interrupted', 'native_turn_failed', 'worker_preparation_failed'})
 
 
+# A failure of the model provider that the provider ends on its own: a rate limit, a billing limit, an overload, a timeout.
+# Hermes must retry the task later without counting a failure, so its respawn guard does not park the task for good.
+TRANSIENT_ERROR_CODES = frozenset('native_' + reason for reason in (
+    'rate_limit', 'billing', 'billing_unverified', 'overloaded', 'timeout', 'server_error'))
+# The text that Hermes stores for such a failure. It must not contain a word that the respawn guard reads as an
+# authorization blocker (quota, rate limit, auth, billing, and so on).
+TRANSIENT_NATIVE_ERROR = 'The model provider stopped this turn. Coconut retries it later.'
+
+
+# The exact text that Coconut stores for each failure. Hermes keeps it as last_failure_error of a task that it parked.
+FAILURE_TEXT = {'native_' + reason: text for reason, text in _FAILURES.items()}
+
+
 def native_failure(result):
     reason = result.get('failure_reason')
     if isinstance(reason, str) and reason in _FAILURES:
