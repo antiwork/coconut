@@ -250,6 +250,8 @@ class NativeRoutines:
             with self.lock:
                 tasks = self._all('tasks')
             for candidate in tasks:
+                if not candidate.get('_native_job') or candidate.get('_native_job_finished'):
+                    continue
                 with self.lock:
                     task = self._get('tasks', candidate['id'])
                     job = task.get('_native_job')
@@ -286,10 +288,13 @@ class NativeRoutines:
                         task['_native_finish_unconfirmed'] = not result['ok']
                         self._put('tasks', task)
             with self.transaction():
+                # One grouping of the tasks serves every routine. A task that a claim adds belongs to its own routine,
+                # so it cannot change the result for another routine.
+                index = self._routine_index()
                 for routine in self._all('routines'):
                     bot = self._get('bots', routine['bot_id'])
                     due = routine.get('next_run_at')
-                    if routine['id'] in finished or routine.get('error') or not routine['enabled'] or bot['archived'] or self._active_routine_task(routine['id']):
+                    if routine['id'] in finished or routine.get('error') or not routine['enabled'] or bot['archived'] or self._active_routine_task(routine['id'], index):
                         continue
                     if routine.get('_recover_claim') or (due and datetime.fromisoformat(due.replace('Z', '+00:00')) <= datetime.now(timezone.utc)):
                         self.claim_native_routine(routine)

@@ -195,6 +195,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         CREATE INDEX IF NOT EXISTS messages_chat ON messages (json_extract(data, '$.bot_id'));
         CREATE INDEX IF NOT EXISTS tasks_bot_session ON tasks (json_extract(data,'$.bot_id'), json_extract(data,'$.session_id'));
         CREATE INDEX IF NOT EXISTS deliveries_source ON deliveries (json_extract(data,'$.source_task_id'));
+        CREATE INDEX IF NOT EXISTS events_task ON events (task_id, seq);
+        CREATE INDEX IF NOT EXISTS deliveries_receipt ON deliveries (json_extract(data,'$.receipt.task_id'));
         CREATE INDEX IF NOT EXISTS tasks_status ON tasks (json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS tasks_bot_status ON tasks (json_extract(data,'$.bot_id'), json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS tasks_bot ON tasks (json_extract(data,'$.bot_id'));
@@ -1519,20 +1521,36 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             return self._queue_routine(routine, current, current, manual=True)
         raise ServiceError(404, 'This routine route was not found.')
 
-    def _active_routine_task(self, routine_id: str) -> dict | None:
+    def _routine_index(self) -> dict:
+        """Group the tasks by routine and by source task once, for a pass over many routines."""
         tasks = self._all('tasks')
+        index = dict(tasks=tasks, order={}, by_id={}, by_routine={}, by_source={})
+        for position, task in enumerate(tasks):
+            index['order'][task['id']] = position
+            index['by_id'][task['id']] = task
+            if task.get('routine_id') is not None:
+                index['by_routine'].setdefault(task['routine_id'], []).append(task)
+            if task.get('source_task_id') is not None:
+                index['by_source'].setdefault(task['source_task_id'], []).append(task)
+        return index
+
+    def _active_routine_task(self, routine_id: str, index: dict | None = None) -> dict | None:
+        """The task that keeps a routine busy. A pass over many routines gives one _routine_index to every call."""
+        index = index or self._routine_index()
         # A closed occurrence releases intake unless its exact authorized
         # continuation is queued/running, including gaps between tool fences.
-        related = {task['id'] for task in tasks if task.get('routine_id') == routine_id
-                   and (not task.get('_native_job_finished') or (
+        related = {task['id'] for task in index['by_routine'].get(routine_id, ())
+                   if not task.get('_native_job_finished') or (
                        task['status'] in ('queued', 'working')
-                       and self.native_routine_completion_input(task).get('continuation')))}
-        while True:
-            expanded = related | {task['id'] for task in tasks if task.get('source_task_id') in related}
-            if expanded == related:
-                break
-            related = expanded
-        active = [task for task in tasks if task['id'] in related and (task['status'] in self.ACTIVE or task.get('_return_pending'))]
+                       and self.native_routine_completion_input(task).get('continuation'))}
+        pending = list(related)
+        while pending:
+            for child in index['by_source'].get(pending.pop(), ()):
+                if child['id'] not in related:
+                    related.add(child['id'])
+                    pending.append(child['id'])
+        active = [index['by_id'][identity] for identity in sorted(related, key=index['order'].get)
+                  if index['by_id'][identity]['status'] in self.ACTIVE or index['by_id'][identity].get('_return_pending')]
         return next((task for task in active if task['status'] != 'waiting'), active[0] if active else None)
 
     def _queue_routine(self, routine: dict, scheduled: datetime, current: datetime, *, manual: bool = False) -> dict:
@@ -1564,12 +1582,13 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         if current.tzinfo is None:
             raise ValueError('Routine ticks require an aware time.')
         with self.transaction():
+            index = self._routine_index()
             for routine in self._all('routines'):
                 if self.stopping.is_set() or routine.get('_deleted') or not routine['enabled'] or not routine.get('next_run_at'):
                     continue
                 scheduled = datetime.fromisoformat(routine['next_run_at'].replace('Z', '+00:00'))
                 bot = self._get('bots', routine['bot_id'])
-                if scheduled > current or bot['archived'] or bot.get('_deleted') or self._active_routine_task(routine['id']):
+                if scheduled > current or bot['archived'] or bot.get('_deleted') or self._active_routine_task(routine['id'], index):
                     continue
                 self._queue_routine(routine, scheduled, current)
 
