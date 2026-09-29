@@ -24,6 +24,9 @@ VACUUM_DRAIN_SECONDS = 120
 VACUUM_RETRY_SECONDS = 15 * 60
 # After a pass that ends without a VACUUM, the bot goes on hold again only after this time.
 VACUUM_DEFERRED_SECONDS = 6 * 60 * 60
+# A bot that has a running turn is not held at first. Maintenance tries again for a quiet moment, and only after this
+# many busy tries does the bot go on hold, so a bot with long turns loses two minutes once in many hours.
+VACUUM_IDLE_TRIES = 3
 
 
 class SessionMaintenance:
@@ -109,20 +112,26 @@ class SessionMaintenance:
 
         A busy bot never has a quiet moment, and its store can grow for weeks. So the bot goes on hold: it keeps its
         queue, and its running turns finish, but no new one starts. Then the store is rewritten and the hold ends.
-        Only a bot with a due VACUUM goes on hold, and at most VACUUM_DRAIN_SECONDS plus the rewrite. A pass that does
-        not end in a VACUUM, for example because another process holds the store, waits VACUUM_DEFERRED_SECONDS before
-        the bot goes on hold again.
+        Only a bot with a due VACUUM goes on hold, and at most VACUUM_DRAIN_SECONDS plus the rewrite. A bot with a running
+        turn first gets VACUUM_IDLE_TRIES tries without a hold. A pass that does not end in a VACUUM, for example because
+        a turn outlasts the drain or another process holds the store, waits VACUUM_DEFERRED_SECONDS before the bot goes
+        on hold again.
         """
         retries = self.__dict__.setdefault('_vacuum_retry_at', {})
+        busy_tries = self.__dict__.setdefault('_vacuum_busy_tries', {})
         if current < retries.get(bot_id, 0):
             return first
+        if busy_tries.get(bot_id, 0) < VACUUM_IDLE_TRIES and self._bot_has_live_turn(bot_id):
+            # No hold yet. A quiet moment can come, and the hold costs the bot its new turns.
+            busy_tries[bot_id] = busy_tries.get(bot_id, 0) + 1
+            retries[bot_id] = self._next_session_maintenance = current + VACUUM_RETRY_SECONDS
+            return first
+        busy_tries[bot_id] = 0
         retries[bot_id] = current + VACUUM_DEFERRED_SECONDS
         try:
             with self.lock:
                 self._store_hold.add(bot_id)
             if not self._wait_for_turns(bot_id):
-                retries[bot_id] = current + VACUUM_RETRY_SECONDS
-                self._next_session_maintenance = current + VACUUM_RETRY_SECONDS
                 return first
             second = self.provider.maintain_sessions(*arguments, allow_vacuum=True)
         finally:

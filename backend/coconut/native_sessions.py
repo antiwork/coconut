@@ -63,8 +63,9 @@ def maintain(request):
     3. Prune ended idle work sessions inactive for `retention_days`, and other ended Coconut sessions, such as
        compressed chat sessions, inactive for `history_days`. Other sources keep the profile's own settings.
     4. VACUUM at most once a week when it pays (see `vacuum_verdict`: more than a quarter of the file is free, or the
-       store is large and has regrown), the service reports the bot quiet, and no other process holds the store.
-       That test, not this run's prune count, decides, so a VACUUM that a holder deferred runs on a later hour.
+       store is large and has regrown), the service allows it, and no other process holds the store. Without
+       `allow_vacuum`, a due VACUUM sets `vacuum_pending` and does not run. The service then stops new turns of the bot
+       and calls again with `allow_vacuum`. `vacuum_skipped` says why a due VACUUM did not run.
     """
     from hermes_state import SessionDB
     from hermes_state_holders import foreign_state_db_holders, in_process_state_db_holders

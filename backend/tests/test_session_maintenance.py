@@ -152,11 +152,12 @@ class SessionSelectionTests(unittest.TestCase):
         self.addCleanup(finished.set)
         self.service.running[task['id']] = worker
         self.pending_vacuum()
-        with patch.object(session_maintenance, 'VACUUM_DRAIN_SECONDS', 0):
+        with patch.object(session_maintenance, 'VACUUM_DRAIN_SECONDS', 0), patch.object(session_maintenance, 'VACUUM_IDLE_TRIES', 0):
             self.run_maintenance(current=1000)
         self.assertEqual(self.vacuums, [False])
         self.assertEqual(self.service._store_hold, set())
-        self.assertEqual(self.service._next_session_maintenance, 1000 + session_maintenance.VACUUM_RETRY_SECONDS)
+        # The bot went on hold once. It does not go on hold again for hours.
+        self.assertEqual(self.service._vacuum_retry_at[self.bot['id']], 1000 + session_maintenance.VACUUM_DEFERRED_SECONDS)
 
     def test_the_vacuum_waits_for_a_running_turn_to_end(self):
         task = self.task(status='working')
@@ -166,7 +167,7 @@ class SessionSelectionTests(unittest.TestCase):
         self.service.running[task['id']] = worker
         self.pending_vacuum()
         threading.Timer(0.3, finished.set).start()
-        with patch.object(session_maintenance, 'VACUUM_DRAIN_SECONDS', 30):
+        with patch.object(session_maintenance, 'VACUUM_DRAIN_SECONDS', 30), patch.object(session_maintenance, 'VACUUM_IDLE_TRIES', 0):
             self.run_maintenance()
         self.assertEqual(self.vacuums, [False, True])
 
@@ -180,9 +181,35 @@ class SessionSelectionTests(unittest.TestCase):
         self.addCleanup(finished.set)
         self.service.context_threads['context'] = worker
         self.pending_vacuum()
-        with patch.object(session_maintenance, 'VACUUM_DRAIN_SECONDS', 0):
+        with patch.object(session_maintenance, 'VACUUM_DRAIN_SECONDS', 0), patch.object(session_maintenance, 'VACUUM_IDLE_TRIES', 0):
             self.run_maintenance()
         self.assertEqual(self.vacuums, [False])
+
+    def test_a_bot_with_a_running_turn_goes_on_hold_only_after_its_idle_tries(self):
+        task = self.task(status='working')
+        finished = threading.Event()
+        worker = threading.Thread(target=finished.wait, daemon=True)
+        worker.start()
+        self.addCleanup(finished.set)
+        self.service.running[task['id']] = worker
+        holds = []
+        real = self.service._wait_for_turns
+        def wait(bot_id):
+            holds.append(set(self.service._store_hold))
+            return real(bot_id)
+        self.pending_vacuum()
+        step = session_maintenance.VACUUM_RETRY_SECONDS + 1
+        with patch.object(session_maintenance, 'VACUUM_DRAIN_SECONDS', 0), patch.object(self.service, '_wait_for_turns', wait):
+            for attempt in range(session_maintenance.VACUUM_IDLE_TRIES):
+                self.run_maintenance(current=step * (attempt + 1) * 4)
+                # The bot has a running turn, so it is not held, and maintenance tries again soon.
+                self.assertEqual(holds, [])
+                self.assertEqual(self.service._next_session_maintenance, step * (attempt + 1) * 4 + session_maintenance.VACUUM_RETRY_SECONDS)
+            self.run_maintenance(current=step * 20)
+        # After its idle tries, the bot goes on hold once, and the turn outlasts the drain.
+        self.assertEqual(holds, [{self.bot['id']}])
+        self.assertEqual(self.service._store_hold, set())
+        self.assertEqual(set(self.vacuums), {False})
 
     def test_a_pending_decision_does_not_keep_its_bot_from_the_vacuum(self):
         self.task(_execution_session_id='asking', status='needs_you')
