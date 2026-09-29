@@ -279,14 +279,17 @@ class NativeOutcomes:
                     card = snapshots.get(task['id'])
                     # A missing card is not proof the run stopped. A returned quiet card is.
                     # A live worker, native run, or local command that has not ended is still owner work.
-                    stale_receipts = (task['status'] in ('completed', 'failed')
+                    # A queued task has no worker yet. A tool call of an earlier turn cannot still run, for example a
+                    # process wait that the turn never closed.
+                    stale_receipts = ((task['status'] in ('completed', 'failed')
+                                       or task['status'] == 'queued' and all(r.get('turn_id') != task.get('_native_turn_id') for r in receipts))
                                       and card is not None
                                       and not (card.get('current_run_id') or card.get('worker_pid'))
                                       and not any((r.get('action') or {}).get('name') in LOCAL_COMMAND_TOOLS
                                                   and not r.get('_process_ended_at') for r in receipts))
                     if (task['status'] == 'working' or worker and worker.is_alive()
                             or card and (card.get('current_run_id') or card.get('worker_pid'))
-                            or self._background_pending(task['id'])
+                            or self._background_pending(task['id'], ignore_settled=True)
                             or (receipts and not stale_receipts)
                             or task.get('_return_pending') or task.get('_native_reply_pending')):
                         raise ServiceError(409, 'Wait for the existing owner work and tool results before unlinking.')
