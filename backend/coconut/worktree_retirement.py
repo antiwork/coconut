@@ -251,7 +251,8 @@ class WorktreeRetirement:
             try:
                 # A turn starts under this lock. Check the outcome again, and move the folder before the lock goes.
                 # Confirm the idle time that made the outcome eligible, and not only that no task is active now.
-                again = (self._finished_outcomes(time.time(), only=name, urgent=urgent)
+                again = (self._finished_outcomes(time.time(), only=name, urgent=urgent,
+                                                idle=URGENT_DISCARD_IDLE_SECONDS if urgent else None)
                          if name in known else {name})
                 if not again or name not in again:
                     continue

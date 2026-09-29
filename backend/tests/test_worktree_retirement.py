@@ -908,6 +908,19 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.assertEqual(self.retire(), [])
         self.assertTrue(path.exists())
 
+    def test_a_low_disk_clears_the_scratch_files_of_an_outcome_only_after_two_idle_hours(self):
+        young, _, _, young_task = self.outcome(updated_at=self.ago(minutes=30))
+        old, _, _, old_task = self.outcome(updated_at=self.ago(hours=3))
+        for outcome, task in ((young, young_task), (old, old_task)):
+            self.pull_request(task, 'merged')
+            (self.workspaces / outcome).mkdir()
+            (self.workspaces / outcome / 'notes.txt').write_text('scratch\n')
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.retire()
+        # Scratch files have no archive, so they wait longer than a worktree.
+        self.assertTrue((self.workspaces / young / 'notes.txt').exists())
+        self.assertFalse((self.workspaces / old / 'notes.txt').exists())
+
     def test_a_low_disk_keeps_a_stale_queued_worktree_while_a_claim_is_in_progress(self):
         _, identity, path, _ = self.outcome(status='queued', updated_at=self.ago(hours=13))
         self.service._kanban_claiming = 1
