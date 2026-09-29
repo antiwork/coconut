@@ -404,8 +404,11 @@ Each outcome has its own work session. Once an hour, with worktree retirement, C
 3. With Hermes `prune_sessions`, it deletes idle work sessions (`coconut_idle`) inactive for `SESSION_RETENTION_DAYS` (7),
    and other ended `coconut` sessions, such as compressed parts of a chat, inactive for `SESSION_HISTORY_DAYS` (30).
    So native `session_search` finds a month of chat history. Sessions of other sources, such as cron or CLI, keep the profile's own Hermes settings.
-4. At most once a week, it runs Hermes `vacuum`. The free-page test decides, so a VACUUM that a holder deferred runs later. It needs more than a quarter of the file free, as Hermes
-   requires, no running worker and no active or queued task for the bot, and no other process holding the store.
+4. At most once a week, it runs Hermes `vacuum`, which first merges the search indexes. Two tests decide, so a VACUUM that a holder deferred runs later.
+   More than a quarter of the file is free, or the store is over 512 MiB and 1.5 times as large as after the last VACUUM.
+   The second test exists because the search indexes fragment and keep their pages. One 4.5 GB store had 16% of its pages free,
+   and a merge plus VACUUM took it to 0.95 GB. The disk must also hold a second copy of the store plus 2 GiB.
+   The bot needs no running worker and no active or queued task, and no other process may hold the store.
 
 When an idle outcome resumes, Coconut reopens its session with `reopen_session`. If Hermes has already deleted it,
 Coconut seeds a new session from its own saved messages of every task in that work. The native card keeps the work record.
