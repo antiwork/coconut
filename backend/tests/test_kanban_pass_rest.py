@@ -43,31 +43,6 @@ class KanbanPassRestTests(unittest.TestCase):
         self.assertAlmostEqual(self.rests[-1], 0.02)
         self.assertAlmostEqual(self.waits[-1], 0.98)
 
-    def test_the_work_migration_runs_once_in_its_interval(self):
-        calls, clock = [], [1000.0]
-        self.service._migrate_native_work = lambda: calls.append(clock[0])
-        fake = SimpleNamespace(monotonic=lambda: clock[0], time=time.time)
-        self.service.changed.wait = lambda timeout=None: None
-        with patch.object(kanban_scheduler, 'time', fake), patch.object(self.service.stopping, 'wait', lambda rest: None):
-            for now in (1000.0, 1003.0, 1009.0, 1010.5, 1011.0):
-                clock[0] = now
-                self.service._dispatch_kanban()
-        self.assertEqual(calls, [1000.0, 1010.5])
-
-    def test_a_failed_migration_runs_again_on_the_next_pass(self):
-        attempts = []
-        def migrate():
-            attempts.append(1)
-            if len(attempts) == 1:
-                raise RuntimeError('boom')
-        self.service._migrate_native_work = migrate
-        self.service.changed.wait = lambda timeout=None: None
-        with patch.object(self.service.stopping, 'wait', lambda rest: None):
-            with self.assertRaises(RuntimeError):
-                self.service._dispatch_kanban()
-            self.service._dispatch_kanban()
-        self.assertEqual(len(attempts), 2)
-
 
 if __name__ == '__main__':
     unittest.main()

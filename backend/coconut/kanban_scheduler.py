@@ -11,10 +11,9 @@ import subprocess
 import threading
 
 
-# The longest rest between two passes of the dispatcher, whatever wakes it.
+# The time from the start of one dispatcher pass to the next when nothing wakes it, and the longest rest inside it.
+KANBAN_PASS_SECONDS = 1.0
 KANBAN_PASS_REST_SECONDS = 1.0
-# The least time between two runs of the migration of saved work items to native tasks.
-NATIVE_MIGRATION_SECONDS = 10
 
 
 class KanbanRequestError(RuntimeError):
@@ -249,12 +248,8 @@ class NativeKanban(NativeOutcomes):
         self._drain_returns()
         # Read committed claims first. A lost adapter response cannot create another turn.
         self.kanban.call({'op': 'snapshot'})
-        # The migration checks the saved work items that have no native task yet. On a live store one item fails the
-        # checks on every pass, and each check costs about 0.15 s. A new item can wait this long.
-        if time.monotonic() >= getattr(self, '_native_migration_at', 0):
-            with self.transaction():
-                self._migrate_native_work()
-            self._native_migration_at = time.monotonic() + NATIVE_MIGRATION_SECONDS
+        with self.transaction():
+            self._migrate_native_work()
         self._adopt_native_outcomes()
         self._reconcile_kanban()
         with self.changed:
@@ -320,12 +315,13 @@ class NativeKanban(NativeOutcomes):
             self.provider.trim_kanban_workers(keep)
         self._publish_kanban_changes()
         # Every commit wakes the wait below, and a busy store commits several times a second. Passes would then
-        # run back to back and keep the service at full CPU. The pass rests for twice its own time, so it uses at
-        # most a third of one core. _dispatch_conversations admits chat messages at once, without this pass.
+        # run back to back and keep the service at full CPU. The pass rests for twice its own time, so a pass of
+        # 0.5 s or less uses at most a third of the time, and a longer pass rests for the longest rest. The time is
+        # wall-clock time. _dispatch_conversations admits chat messages at once, without this pass.
         rest = min(KANBAN_PASS_REST_SECONDS, 2 * (time.monotonic() - started))
         self.stopping.wait(rest)
         with self.changed:
-            self.changed.wait(max(0.0, 1 - rest))
+            self.changed.wait(max(0.0, KANBAN_PASS_SECONDS - rest))
 
     def _publish_kanban_changes(self):
         visible = {t['id']: tuple(t.get(key) for key in ('status', 'priority', 'current_run_id', 'title',
