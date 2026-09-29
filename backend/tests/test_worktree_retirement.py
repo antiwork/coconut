@@ -818,14 +818,14 @@ class WorktreeRetirementTests(unittest.TestCase):
         real = self.service._finished_outcomes
         idles = []
 
-        def watched(current, *, timeout=-1, only=None, idle=retirement.WORKTREE_RETIRE_SECONDS, **options):
+        def watched(current, *, timeout=-1, only=None, idle=None, **options):
             if only == outcome:
-                idles.append(idle)
+                idles.append((idle, options.get('urgent', False)))
             return real(current, timeout=timeout, only=only, idle=idle, **options)
         with patch.object(self.service, '_finished_outcomes', side_effect=watched):
             self.retire()
         # Every re-check of this outcome, also the one before the scratch move, uses the real idle time.
-        self.assertTrue(idles and all(idle == retirement.WORKTREE_RETIRE_SECONDS for idle in idles), idles)
+        self.assertTrue(idles and all(idle in (None, retirement.WORKTREE_RETIRE_SECONDS) and not urgent for idle, urgent in idles), idles)
 
     def test_a_second_discard_keeps_the_first_archive(self):
         outcome, identity, path, task = self.outcome()
@@ -889,6 +889,72 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertFalse(path.exists())
         # A low disk also runs the pass more often.
         self.assertLessEqual(self.service._next_worktree_retirement - time.time(), retirement.LOW_DISK_INTERVAL_SECONDS)
+
+    def ago(self, **delta):
+        return (datetime.now(timezone.utc) - timedelta(**delta)).isoformat().replace('+00:00', 'Z')
+
+    def test_a_low_disk_retires_the_worktree_of_an_outcome_idle_for_minutes(self):
+        _, identity, path, _ = self.outcome(updated_at=self.ago(minutes=20))
+        # With enough disk space, the outcome must idle for hours.
+        self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
+
+    def test_a_low_disk_keeps_the_worktree_of_an_outcome_that_changed_a_minute_ago(self):
+        _, identity, path, _ = self.outcome(updated_at=self.ago(minutes=1))
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+
+    def test_a_low_disk_clears_the_scratch_files_of_an_outcome_only_after_two_idle_hours(self):
+        young, _, _, young_task = self.outcome(updated_at=self.ago(minutes=30))
+        old, _, _, old_task = self.outcome(updated_at=self.ago(hours=3))
+        for outcome, task in ((young, young_task), (old, old_task)):
+            self.pull_request(task, 'merged')
+            (self.workspaces / outcome).mkdir()
+            (self.workspaces / outcome / 'notes.txt').write_text('scratch\n')
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.retire()
+        # Scratch files have no archive, so they wait longer than a worktree.
+        self.assertTrue((self.workspaces / young / 'notes.txt').exists())
+        self.assertFalse((self.workspaces / old / 'notes.txt').exists())
+
+    def test_a_low_disk_keeps_a_stale_queued_worktree_only_while_its_own_claim_is_in_progress(self):
+        claimed, claimed_identity, claimed_path, _ = self.outcome(status='queued', updated_at=self.ago(hours=13))
+        other, other_identity, other_path, _ = self.outcome(status='queued', updated_at=self.ago(hours=13))
+        self.service._kanban_claiming = 1
+        self.service._kanban_claim_outcomes = {claimed}
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            # A claim for another outcome does not delay the space recovery.
+            self.assertEqual(self.retire(), [other_identity])
+        self.assertTrue(claimed_path.exists())
+        self.service._kanban_claiming = 0
+        self.service._kanban_claim_outcomes = set()
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [claimed_identity])
+
+    def test_a_low_disk_discards_a_refused_worktree_only_after_two_idle_hours(self):
+        _, young, young_path, _ = self.outcome(updated_at=self.ago(hours=1))
+        _, old, old_path, _ = self.outcome(updated_at=self.ago(hours=3))
+        for path in (young_path, old_path):
+            git(path, 'checkout', '-q', '-b', 'switched-' + path.name[:8])
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [old])
+        self.assertTrue(young_path.exists())
+        self.assertFalse(old_path.exists())
+
+    def test_a_low_disk_ignores_a_task_that_waited_long_in_the_queue_but_not_a_recent_or_running_one(self):
+        stale, stale_identity, stale_path, _ = self.outcome(status='queued', updated_at=self.ago(hours=13))
+        recent, _, recent_path, _ = self.outcome(status='queued', updated_at=self.ago(hours=1))
+        running, _, running_path, _ = self.outcome(status='working', updated_at=self.ago(hours=13))
+        # A queued task of a normal disk keeps its worktree, however long it waits.
+        self.assertEqual(self.retire(), [])
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [stale_identity])
+        self.assertFalse(stale_path.exists())
+        self.assertTrue(recent_path.exists() and running_path.exists())
 
     def test_a_locked_worktree_stays_even_when_long_idle(self):
         _, identity, path, _ = self.outcome()

@@ -270,6 +270,8 @@ class NativeKanban(NativeOutcomes):
             # READY continuation must not change input between row capture and
             # native claim/spawn. Never wait for the adapter under the service lock.
             self._kanban_claiming += 1
+            # Retirement keeps the worktrees of these outcomes while the claim runs.
+            self._kanban_claim_outcomes = {row['execution_id'] for row in rows if row['state'] == 'ready'}
             # A lost response stays fenced until a later snapshot is reconciled.
             self._kanban_dispatch_uncertain = True
         def spawn(claim):
@@ -301,6 +303,8 @@ class NativeKanban(NativeOutcomes):
         finally:
             with self.lock:
                 self._kanban_claiming -= 1
+                if not self._kanban_claiming:
+                    self._kanban_claim_outcomes = set()
         self._publish_kanban_changes()
 
     def _idle_kanban(self):
