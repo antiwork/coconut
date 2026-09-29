@@ -53,11 +53,18 @@ class NativeRelay:
             root = session_root(self.request['bot'], execution=execution,
                                 epoch=self.request['task'].get('_conversation_epoch'))
             conversation.db.set_session_title(conversation.session_id, ('Work ' if execution else 'Chat ') + root)
-        self.sync_roster()
+        self.publish_roster()
+
+    def publish_roster(self):
+        # The roster file belongs to the profile, and every worker of the bot shares it. A context turn (a decision
+        # check or reply) has no contact list and cannot message a bot. It must not replace the roster of a work turn.
+        if self.request['operation'] != 'context':
+            self.sync_roster()
 
     def enqueue(self, arguments):
-        from tools.bot_relay import enqueue_envelope, read_remote_roster, resolve_remote_target
-        target = resolve_remote_target(arguments['target'], read_remote_roster(self.home))
+        from tools.bot_relay import enqueue_envelope, resolve_remote_target
+        # Resolve against the contacts of this turn. The shared roster file can change under a concurrent worker.
+        target = resolve_remote_target(arguments['target'], self.roster())
         if not isinstance(target, dict) or target['connection_id'] not in self.peers:
             return json.dumps({'error': 'Choose a bot from the current contact list.'})
         text = arguments.get('message', '')
@@ -67,12 +74,13 @@ class NativeRelay:
                          sender_profile=self.request['bot']['id'], sender_handle=self.request['bot']['id'])
         return json.dumps({'status': 'queued'})
 
+    def roster(self):
+        return [dict(connection_id=bot['id'], connection_label=bot['name'], profile='default', handle=bot['id'],
+                     title=bot['name'], description=bot.get('role', ''), online=True) for bot in self.peers.values()]
+
     def sync_roster(self):
         from tools.bot_relay import write_remote_roster
-        write_remote_roster(self.home, [dict(connection_id=bot['id'], connection_label=bot['name'],
-                                           profile='default', handle=bot['id'], title=bot['name'],
-                                           description=bot.get('role', ''), online=True)
-                                       for bot in self.peers.values()])
+        write_remote_roster(self.home, self.roster())
 
     def add_peer(self, bot):
         self.peers[bot['bot_id']] = dict(id=bot['bot_id'], name=bot['name'])
