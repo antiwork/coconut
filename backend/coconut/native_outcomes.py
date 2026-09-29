@@ -155,6 +155,11 @@ class NativeOutcomes:
         executions = {}
         for task in tasks:
             executions.setdefault(scope(task), set()).add(task['id'])
+            # Legacy delegated helpers predate native relay/assignment markers.
+            # Follow their authenticated source downward, never requester siblings.
+            source = by_id.get(task.get('source_task_id'))
+            if source and task.get('source_bot_id') == source['bot_id']:
+                linked.setdefault(source['id'], set()).add(task['id'])
         found, pending = {}, [parent['id'], child['id']]
         while pending:
             identity = pending.pop()

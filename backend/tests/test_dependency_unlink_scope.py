@@ -120,6 +120,23 @@ class DependencyUnlinkScopeTests(unittest.TestCase):
             self.unlink(source)
         self.assertEqual(self.requests, [])
 
+    def test_consumed_legacy_helper_still_guards_a_new_native_claim(self):
+        from test_dependency_unlink_epoch import MissingEpochUnlinkTests
+        fixture = MissingEpochUnlinkTests()
+        fixture.setUp()
+        try:
+            child, parent, source = fixture.setup_edge()
+            helper = fixture.producer
+            self.assertNotIn('_native_relay', helper)
+            self.assertNotIn('_assignment_task_id', helper)
+            fixture.snapshot_rows.append(dict(external_id=helper['id'], id='t_44444444',
+                                             status='running', current_run_id=123))
+            with self.assertRaisesRegex(ServiceError, 'owner work'):
+                fixture.unlink(source)
+            self.assertEqual(fixture.requests, [])
+        finally:
+            fixture.tearDown()
+
     def test_legacy_helpers_do_not_expand_scope_to_every_unbound_task(self):
         child, parent, source = self.setup_edge()
         helper = self.other(child, _execution_session_id=None, _assignment_task_id=child['id'])

@@ -46,7 +46,7 @@ class DependencyUnlinkTests(unittest.TestCase):
             self.service._put('tasks', original)
         self.requests = []
         self.hidden_snapshots = set()
-        self.snapshot_rows = [dict(external_id=t['id'], id=t['_native_outcome_id'], status=status)
+        self.snapshot_rows: list[dict] = [dict(external_id=t['id'], id=t['_native_outcome_id'], status=status)
                               for t, status in ((parent, 'review'), (child, 'todo'))]
 
         def call(request):
