@@ -1,4 +1,5 @@
 """Check worker cleanup with the installed Hermes process registry."""
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -129,6 +130,9 @@ for line in sys.stdin:
         self.provider.release_kanban_preparation('next')
         self.assertNotIn('cancelled', self.provider._prepared)
         self.provider.trim_kanban_workers(set())
+        # The stop is asynchronous: the worker needs a moment to exit, more on a busy runner.
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            first.wait(timeout=10)
         self.assertIsNotNone(first.poll())
 
     def test_idle_eviction_preserves_native_browser_state_until_it_closes(self):

@@ -229,7 +229,9 @@ class WorktreeRetirement:
                 continue
             try:
                 # A turn starts under this lock. Check the outcome again, and move the folder before the lock goes.
-                again = self._finished_outcomes(time.time(), only=name, idle=0) if name in known else {name}
+                # Confirm the idle time that made the outcome eligible, and not only that no task is active now.
+                again = (self._finished_outcomes(time.time(), only=name, idle=WORKTREE_RETIRE_SECONDS)
+                         if name in known else {name})
                 if not again or name not in again:
                     continue
                 work_workspace.move_scratch(folder, keep=name in known)
