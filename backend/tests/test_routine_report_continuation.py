@@ -155,6 +155,18 @@ class RoutineReportContinuationTests(unittest.TestCase):
                 self.service._put('tasks', dict(returned, **{field: value}))
                 self.reject_unchanged(caller, owner, reporter, returned)
 
+    def test_original_owner_unknown_tool_blocks_report_consumption(self):
+        for name in ('terminal', 'delegate_task', 'cronjob_manage'):
+            with self.subTest(name=name):
+                self.tearDown(); self.setUp()
+                owner, caller, reporter, coordinator, returned, _, _ = self.incident()
+                self.service._put('tasks', dict(owner, status='working'))
+                self.service.emit(owner['id'], 'native_call', dict(name=name, arguments={}))
+                self.service._put('tasks', owner)
+                with self.assertRaisesRegex(ServiceError, 'original owner to finish its tool call'):
+                    self.resume(caller)
+                self.reject_unchanged(caller, owner, reporter, returned)
+
     def test_legacy_claim_without_retained_input_accepts_only_same_native(self):
         owner, caller, reporter, coordinator, returned, _, _ = self.incident()
         for task in (reporter, coordinator, caller):

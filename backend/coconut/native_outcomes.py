@@ -731,6 +731,8 @@ class NativeOutcomes:
                 projection = (routine_reports.project(self, routine_scope, tasks, snapshots, get_deliveries(), caller)
                               if routine_scope else None)
                 if projection:
+                    if running_tool(owner):
+                        raise ServiceError(409, 'Wait for the original owner to finish its tool call.')
                     changes, current = projection
                     report_changes.update(changes)
                     linked = {key: (changes.get(key, task), depth) for key, (task, depth) in linked.items()}
