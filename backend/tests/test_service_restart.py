@@ -62,17 +62,27 @@ class ServiceRestartTests(unittest.TestCase):
         self.service.running[self.task['id']] = active
         bot = self.service.mutate('POST', '/v1/bots', {'name': 'Dev'}, str(uuid4()))
         queued = self.service.mutate('POST', f"/v1/bots/{bot['id']}/messages", {'text': 'Review the PR'}, str(uuid4()))
-        with patch('coconut.service_restart.time.monotonic', return_value=100) as clock:
+        # The runner has few processors, and the active turn would fill an automatic limit of one.
+        with patch('coconut.work_capacity.automatic_limit', return_value=5), \
+                patch('coconut.service_restart.time.monotonic', return_value=100) as clock:
             self.request()
             self.service._dispatch_pending()
             self.assertNotIn(queued['id'], self.service.running)
             clock.return_value += RESTART_DRAIN_SECONDS
             self.assertFalse(self.service.take_service_restart())
             self.assertFalse(self.service.stopping.is_set())
-            self.service._dispatch_pending()
-        worker = self.service.running[queued['id']]
-        worker.join(timeout=3)
-        self.assertFalse(worker.is_alive())
+            started = []
+            real_start = threading.Thread.start
+            def record(thread):
+                started.append(thread)
+                real_start(thread)
+            # The worker can finish and leave service.running before this test reads it, so record the thread itself.
+            with patch.object(threading.Thread, 'start', record):
+                self.service._dispatch_pending()
+        self.assertTrue(started)
+        for worker in started:
+            worker.join(timeout=3)
+            self.assertFalse(worker.is_alive())
         self.assertEqual(self.service._get('tasks', queued['id'])['status'], 'completed')
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'working')
         self.assertIs(self.service.running[self.task['id']], active)

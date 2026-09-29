@@ -17,6 +17,9 @@ from .native_failure import FAILURE_TEXT, TRANSIENT_ERROR_CODES
 # The time from the start of one dispatcher pass to the next when nothing wakes it, and the longest rest inside it.
 KANBAN_PASS_SECONDS = 1.0
 KANBAN_PASS_REST_SECONDS = 1.0
+# A finished Coconut request whose native task still waits is archived after this time. The retries of Coconut act sooner.
+SETTLE_SECONDS = 24 * 60 * 60
+SETTLE_BATCH = 25
 # A task whose provider failure is at least this old loses the text that parks it (see _clear_provider_guards).
 PROVIDER_GUARD_SECONDS = 5 * 60
 
@@ -341,7 +344,7 @@ class NativeKanban(NativeOutcomes):
         # run back to back and keep the service at full CPU. The pass rests for twice its own time, so a pass of
         # 0.5 s or less uses at most a third of the time, and a longer pass rests for the longest rest. The time is
         # wall-clock time. The dispatch gate is free here, and _dispatch_conversations admits chat messages at once.
-        rest = min(KANBAN_PASS_REST_SECONDS, 2 * (time.monotonic() - self._kanban_pass_started))
+        rest = min(KANBAN_PASS_REST_SECONDS, 2 * (time.monotonic() - getattr(self, '_kanban_pass_started', time.monotonic())))
         self.stopping.wait(rest)
         with self.changed:
             self.changed.wait(max(0.0, KANBAN_PASS_SECONDS - rest))
@@ -462,6 +465,7 @@ class NativeKanban(NativeOutcomes):
         for request in finishes:
             self.kanban.call(request)
         self._clear_provider_guards()
+        self._settle_native_orphans()
         if finishes:
             self.kanban.call({'op': 'snapshot'})
             with self.transaction():
@@ -498,6 +502,52 @@ class NativeKanban(NativeOutcomes):
             if (task.get('error_code') in TRANSIENT_ERROR_CODES and stopped <= cutoff
                     and native.get('last_failure_error') == FAILURE_TEXT[task['error_code']]):
                 self.kanban.call({'op': 'clear_failure_text', 'id': native['id']})
+
+    def _settle_native_orphans(self):
+        """Archive the native tasks that wait although Coconut finished their request.
+
+        A request that Coconut finished (completed or cancelled) can leave its native task in ready, todo, triage or
+        blocked, for example when the worker ended a run without a terminal call and Hermes gave up after two
+        failures. Hermes then keeps the task for ever, and every dependent task waits for it.
+
+        These states have their own owners, and the task stays with them:
+        - A native retry requeues a ready task that has a native outcome, unless a card or a pause holds it.
+        - The block check owns a task that a capability or an input blocks, and it keeps a `_block_check` record.
+        - A pending card or a pause holds the work.
+        A task with an open parent waits for that parent, and it is settled in a later pass when the parent goes.
+        """
+        waiting = {identity: native for identity, native in self.kanban.tasks.items()
+                   if native['status'] in ('ready', 'todo', 'triage', 'blocked', 'scheduled') and not native.get('unbound')
+                   and not native.get('dependencies') and native.get('block_kind') not in ('capability', 'needs_input')}
+        if not waiting:
+            return
+        with self.lock:
+            rows = [json.loads(row[0]) for row in self.db.execute(
+                'SELECT data FROM tasks WHERE id IN (SELECT value FROM json_each(?))', (json.dumps(list(waiting)),))]
+        cutoff = datetime.now(timezone.utc).timestamp() - SETTLE_SECONDS
+        candidates = []
+        for task in rows:
+            if (task['status'] not in ('completed', 'cancelled') or task['id'] in self.running
+                    or task['id'] in self.context_threads or task.get('_block_check')
+                    or (task.get('_native_outcome_id') and waiting[task['id']]['status'] == 'ready')):
+                continue
+            try:
+                finished = datetime.fromisoformat((task.get('updated_at') or task['created_at']).replace('Z', '+00:00')).timestamp()
+            except (KeyError, AttributeError, ValueError):
+                continue
+            if finished <= cutoff:
+                candidates.append(task)
+        if not candidates:
+            return
+        with self.lock:
+            held = {row[0] for row in self.db.execute(
+                "SELECT json_extract(data,'$.task_id') FROM decisions WHERE json_extract(data,'$.status')='pending' "
+                "AND json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?))",
+                (json.dumps([task['id'] for task in candidates]),))}
+            settled = [task for task in candidates if task['id'] not in held and not self._task_paused(task)
+                       and not self._automatic_work_is_paused(task)]
+        for task in settled[:SETTLE_BATCH]:
+            self.kanban.call({'op': 'archive_settled', 'id': waiting[task['id']]['id']})
 
     def _kanban_finished(self):
         with self.changed:
