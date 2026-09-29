@@ -89,6 +89,8 @@ class NativeDependencyUnlinkTests(unittest.TestCase):
             from types import SimpleNamespace
             from unittest.mock import patch
             from coconut.kanban_runtime import Board
+            from coconut.kanban_scheduler import KanbanRequestError
+            from coconut.service import ServiceError
             from test_dependency_unlink_epoch import MissingEpochUnlinkTests
             from test_provider import ProviderTests
             fixture = MissingEpochUnlinkTests()
@@ -108,11 +110,15 @@ class NativeDependencyUnlinkTests(unittest.TestCase):
                     service._put('tasks', task | {'_native_outcome_id': identity})
                     return identity
                 parent_id, child_id = native(parent), native(child)
+                related_id = native(fixture.producer)
+                assert kb.request_review(conn, related_id, summary='Related helper review')
+                late_claim = []
                 # Another execution by Dev must not block this exact edge.
                 unrelated_workspace = Path(sys.argv[1]) / 'unrelated-workspace'
                 unrelated_workspace.mkdir()
                 unrelated = kb.create_task(conn, title='Unrelated Dev review', body='Independent work', assignee='default',
                     tenant=child['bot_id'], workspace_kind='dir', workspace_path=str(unrelated_workspace), initial_status='blocked')
+                board.bind(unrelated, 'unrelated-review')
                 assert kb.request_review(conn, unrelated, summary='Independent review')
                 assert kb.claim_review_task(conn, unrelated) is not None
                 other = kb.create_task(conn, title='Other dependency', body='Must remain', assignee='default',
@@ -126,9 +132,23 @@ class NativeDependencyUnlinkTests(unittest.TestCase):
                         return {'tasks': board.snapshot(request.get('external_ids', []))}
                     if request['op'] == 'unlink_receipt':
                         return {'receipt': board._unlink_dependency(request | {'op': 'unlink_dependency'}, receipt_only=True)}
-                    return board.unlink_dependency(request)
+                    assert related_id in request['guarded_native_ids']
+                    if not late_claim:
+                        late_claim.append(kb.claim_review_task(conn, related_id))
+                        assert late_claim[0] is not None
+                    try:
+                        return board.unlink_dependency(request)
+                    except ValueError as error:
+                        # The real scheduler translates confirmed adapter rejections.
+                        raise KanbanRequestError(str(error)) from error
                 service.kanban = SimpleNamespace(tasks={t['external_id']: t for t in board.snapshot()}, call=call, close=conn.close)
                 arguments = fixture.arguments | {'parent_id': parent_id, 'child_id': child_id}
+                graph_before_claim = [tuple(r) for r in conn.execute('SELECT * FROM task_links')]
+                with fixture.assertRaisesRegex(ServiceError, 'related native work'):
+                    service.emit(source['id'], 'dependency_unlink', arguments)
+                assert [tuple(r) for r in conn.execute('SELECT * FROM task_links')] == graph_before_claim
+                assert kb.complete_task(conn, related_id, summary='Related review completed',
+                    expected_run_id=late_claim[0].current_run_id)
                 fixture.root = Path(fixture.temp.name) / 'provider'
                 provider = ProviderTests.fake_hermes(fixture,
                     "receipt = json.loads(registry.dispatch('coconut_unlink_dependency', " + repr(arguments) + "))\\n"
