@@ -13,7 +13,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 UTC = timezone.utc
 _SEARCH_DAYS = 146_097  # The Gregorian calendar repeats after 400 years.
 _PART = re.compile(r'(\*|[0-9]+(?:-[0-9]+)?)(?:/([0-9]+))?')
-_WEEKDAYS = ('Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday')
 
 
 class ScheduleError(ValueError):
@@ -142,30 +141,3 @@ def next_run(cron: str, timezone_name: str, after: datetime) -> datetime:
                 if round_trip == wall and candidate > after_utc:
                     return candidate
     raise ScheduleError('This schedule has no future occurrence within 400 years or the supported date range.')
-
-
-def schedule_description(cron: str, timezone_name: str) -> str:
-    """Describe common schedules without guessing about complex expressions."""
-    schedule, _ = _validated(cron, timezone_name)
-    minute, hour, day, month, weekday = schedule.fields
-    suffix = f' ({timezone_name})'
-    if schedule.fields == ('*', '*', '*', '*', '*'):
-        return 'Every minute' + suffix
-    if (hour, day, month, weekday) == ('*', '*', '*', '*'):
-        if len(schedule.minutes) == 1:
-            return f'Hourly at minute {schedule.minutes[0]:02d}' + suffix
-        if re.fullmatch(r'\*/[0-9]+', minute):
-            step = int(minute[2:])
-            if 60 % step == 0:
-                if step == 1:
-                    return 'Every minute' + suffix
-                return f'Every {step} minutes' + suffix
-    if len(schedule.hours) == 1 and len(schedule.minutes) == 1 and day == month == '*':
-        clock = f'{schedule.hours[0]:02d}:{schedule.minutes[0]:02d}'
-        if weekday == '*':
-            return f'Daily at {clock}' + suffix
-        if schedule.weekdays == frozenset(range(1, 6)):
-            return f'Weekdays at {clock}' + suffix
-        if len(schedule.weekdays) == 1:
-            return f'Every {_WEEKDAYS[next(iter(schedule.weekdays))]} at {clock}' + suffix
-    return ' '.join(schedule.fields) + suffix

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 import unittest
 from zoneinfo import ZoneInfo
 
-from coconut.routines import ScheduleError, next_run, schedule_description, validate_schedule
+from coconut.routines import ScheduleError, next_run, validate_schedule
 
 
 UTC = timezone.utc
@@ -89,14 +89,6 @@ class RoutineScheduleTests(unittest.TestCase):
     def test_after_can_use_an_aware_local_datetime(self):
         after = datetime(2026, 11, 1, 1, 15, tzinfo=ZoneInfo('America/New_York'), fold=1)
         self.assertEqual(next_run('30 1 * * *', 'America/New_York', after), instant('2026-11-02T06:30:00Z'))
-
-    def test_schedule_descriptions_do_not_claim_uniform_irregular_steps(self):
-        self.assertEqual(schedule_description('0 9 * * 1-5', 'UTC'), 'Weekdays at 09:00 (UTC)')
-        self.assertEqual(schedule_description('0 9 * * *', 'UTC'), 'Daily at 09:00 (UTC)')
-        self.assertEqual(schedule_description('15 * * * *', 'UTC'), 'Hourly at minute 15 (UTC)')
-        self.assertEqual(schedule_description('*/15 * * * *', 'UTC'), 'Every 15 minutes (UTC)')
-        self.assertEqual(schedule_description('*/23 * * * *', 'UTC'), '*/23 * * * * (UTC)')
-        self.assertEqual(schedule_description('0 9 * * 7', 'UTC'), 'Every Sunday at 09:00 (UTC)')
 
     def test_invalid_syntax_and_field_values(self):
         schedules = (

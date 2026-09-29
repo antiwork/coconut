@@ -2,7 +2,6 @@ import base64
 import json
 import tempfile
 import subprocess
-import sys
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
@@ -160,17 +159,6 @@ class RelayPushTests(unittest.TestCase):
             self.service._put('tasks', current)
         self.flush()
         self.assertEqual(self.relay.sealed[0]['aps']['alert']['body'], task['title'])
-
-    def test_migration_clears_delivery_credentials(self):
-        from pathlib import Path
-        import importlib.util
-        path = Path(__file__).resolve().parents[2] / 'scripts/migrate.py'
-        spec = importlib.util.spec_from_file_location('push_migration_test', path)
-        module = importlib.util.module_from_spec(spec)
-        with patch.object(sys, 'path', [str(path.parent), *sys.path]):
-            spec.loader.exec_module(module)
-        module.revoke_devices(self.service.root / 'coconut.sqlite3')
-        self.assertEqual(self.service.db.execute('SELECT count(*) FROM push_routes').fetchone()[0], 0)
 
     def test_snapshot_excludes_delivery_credentials(self):
         self.assertNotIn(self.route['send_token'], json.dumps(self.service.snapshot()))

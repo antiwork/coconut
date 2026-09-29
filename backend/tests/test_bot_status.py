@@ -163,7 +163,7 @@ class BotStatusTests(unittest.TestCase):
             self.assertNotIn('TEMP B-TREE', plan, (name, plan))
 
     def test_a_restart_publishes_one_event_for_each_bot(self):
-        # scripts/migrate.py verify_started expects this: one bot.updated for each bot after a start, and nothing else.
+        # The iPhone replays the events of a start. It expects one bot.updated for each bot and nothing else.
         cursor = self.service.db.execute('SELECT COALESCE(MAX(seq),0) FROM events').fetchone()[0]
         self.close(self.service)
         reopened = self.open()
