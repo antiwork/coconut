@@ -386,6 +386,16 @@ class Board:
             return self.kb.schedule_task(self.conn, identity, reason=summary, expected_run_id=run_id)
         return self.kb.block_task(self.conn, identity, reason=summary, expected_run_id=run_id)
 
+    def archive_settled(self, identity):
+        """Archive a native task that waits while Coconut has finished its request, so its dependents can start.
+
+        A running task keeps its worker, and a done or archived task is already final.
+        """
+        task = self.kb.get_task(self.conn, identity)
+        if task is None or task.status not in ('ready', 'todo', 'triage', 'blocked', 'scheduled'):
+            return False
+        return self.kb.archive_task(self.conn, identity)
+
     def clear_failure_text(self, identity):
         """Forget the stored failure text of a ready task, so the respawn guard no longer parks it."""
         with self.kb.write_txn(self.conn):
@@ -537,6 +547,8 @@ def main():
                 elif request['op'] == 'finish':
                     result = {'ok': board.finish(request['id'], request['run_id'], request['state'], request['summary'],
                                                  request.get('error_code'))}
+                elif request['op'] == 'archive_settled':
+                    result = {'ok': board.archive_settled(request['id'])}
                 elif request['op'] == 'clear_failure_text':
                     result = {'ok': board.clear_failure_text(request['id'])}
                 elif request['op'] == 'promote':

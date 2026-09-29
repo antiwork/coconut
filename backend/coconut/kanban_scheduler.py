@@ -17,6 +17,9 @@ from .native_failure import FAILURE_TEXT, TRANSIENT_ERROR_CODES
 # The time from the start of one dispatcher pass to the next when nothing wakes it, and the longest rest inside it.
 KANBAN_PASS_SECONDS = 1.0
 KANBAN_PASS_REST_SECONDS = 1.0
+# A finished Coconut request whose native task still waits is archived after this time. A retry starts sooner.
+SETTLE_SECONDS = 60 * 60
+SETTLE_BATCH = 25
 # A task whose provider failure is at least this old loses the text that parks it (see _clear_provider_guards).
 PROVIDER_GUARD_SECONDS = 5 * 60
 
@@ -462,6 +465,7 @@ class NativeKanban(NativeOutcomes):
         for request in finishes:
             self.kanban.call(request)
         self._clear_provider_guards()
+        self._settle_native_orphans()
         if finishes:
             self.kanban.call({'op': 'snapshot'})
             with self.transaction():
@@ -498,6 +502,33 @@ class NativeKanban(NativeOutcomes):
             if (task.get('error_code') in TRANSIENT_ERROR_CODES and stopped <= cutoff
                     and native.get('last_failure_error') == FAILURE_TEXT[task['error_code']]):
                 self.kanban.call({'op': 'clear_failure_text', 'id': native['id']})
+
+    def _settle_native_orphans(self):
+        """Archive the native tasks that wait although Coconut finished their request.
+
+        A request that Coconut finished (completed or cancelled) can leave its native task in ready, todo, triage or
+        blocked, for example after a retry that no turn followed. Hermes then keeps the task for ever, and every
+        dependent task waits for it. Wait SETTLE_SECONDS, because a native retry requeues a task within minutes.
+        """
+        waiting = {identity: native for identity, native in self.kanban.tasks.items()
+                   if native['status'] in ('ready', 'todo', 'triage', 'blocked', 'scheduled') and not native.get('unbound')}
+        if not waiting:
+            return
+        with self.lock:
+            rows = [json.loads(row[0]) for row in self.db.execute(
+                'SELECT data FROM tasks WHERE id IN (SELECT value FROM json_each(?))', (json.dumps(list(waiting)),))]
+        cutoff = datetime.now(timezone.utc).timestamp() - SETTLE_SECONDS
+        settled = 0
+        for task in rows:
+            if task['status'] not in ('completed', 'cancelled') or task['id'] in self.running or task['id'] in self.context_threads:
+                continue
+            try:
+                finished = datetime.fromisoformat((task.get('updated_at') or task['created_at']).replace('Z', '+00:00')).timestamp()
+            except (KeyError, AttributeError, ValueError):
+                continue
+            if finished <= cutoff and settled < SETTLE_BATCH:
+                self.kanban.call({'op': 'archive_settled', 'id': waiting[task['id']]['id']})
+                settled += 1
 
     def _kanban_finished(self):
         with self.changed:
