@@ -200,6 +200,19 @@ class SettleSchedulerTests(unittest.TestCase):
                                paused=True, contexts=[dict(id='c', status='failed')])
         self.assertEqual(self.settled(service), ['t_c'])
 
+    def test_a_context_that_ran_long_waits_after_its_last_heartbeat(self):
+        from coconut.kanban_scheduler import SETTLE_PLAIN_SECONDS
+        started, beat = time.time() - 3 * SETTLE_PLAIN_SECONDS, time.time() - 60
+        natives = {'long': dict(id='t_long', status='blocked', created_at=started, last_heartbeat_at=beat),
+                   'quiet': dict(id='t_quiet', status='blocked', created_at=started, last_heartbeat_at=None)}
+        service = self.service([], natives, contexts=[dict(id='long', status='failed'), dict(id='quiet', status='failed')])
+        # The long turn ended a minute ago. The quiet one has no heartbeat, so its start is all we know.
+        self.assertEqual(self.settled(service), ['t_quiet'])
+
+    def test_a_context_whose_native_task_has_a_null_date_is_left_alone(self):
+        service = self.service([], {'c': dict(id='t_c', status='blocked', created_at=None)}, contexts=[dict(id='c', status='failed')])
+        self.assertEqual(self.settled(service), [])
+
     def test_a_context_whose_native_task_has_no_date_is_left_alone(self):
         service = self.service([], {'c': dict(id='t_c', status='blocked')}, contexts=[dict(id='c', status='failed')])
         self.assertEqual(self.settled(service), [])

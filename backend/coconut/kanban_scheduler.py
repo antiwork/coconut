@@ -557,9 +557,10 @@ class NativeKanban(NativeOutcomes):
                     or (task.get('_native_outcome_id') and waiting[task['id']]['status'] == 'ready')):
                 continue
             try:
-                # A context has no dates. The native task of a context is made when the turn is claimed, and a turn ends
-                # within minutes, so its creation time bounds the end time from below. The wait only avoids a race.
-                finished = (waiting[task['id']]['created_at'] if task.get('_context')
+                # A context has no dates. Its native task was made when the turn was queued, and a running turn beats
+                # every few seconds, so the newer of the two times is close to the end of the turn.
+                native = waiting[task['id']]
+                finished = (float(max(native['created_at'], native.get('last_heartbeat_at') or 0)) if task.get('_context')
                             else datetime.fromisoformat((task.get('updated_at') or task['created_at']).replace('Z', '+00:00')).timestamp())
             except (KeyError, TypeError, AttributeError, ValueError):
                 continue
