@@ -111,6 +111,17 @@ BOT_TASK_STATES = ("SELECT DISTINCT json_extract(data,'$.status') FROM tasks WHE
 BOT_LATEST_TASK = "SELECT json_extract(data,'$.status') FROM tasks WHERE json_extract(data,'$.bot_id')=? ORDER BY rowid DESC LIMIT 1"
 BOT_WORKING_CONTEXT = ("SELECT 1 FROM contexts WHERE json_extract(data,'$.status')='working' "
                        "AND json_extract(data,'$.bot_id')=? LIMIT 1")
+# Task fields that the dispatcher looks for on every pass. Each has a partial index, so a pass reads only the tasks
+# that carry the field and not the whole table.
+MARKS = ('_return_pending', '_native_reply_pending', '_work_status_only')
+
+
+def marked(field):
+    """The SQL condition of a task that has a marker in the field. It is the condition of the index of the same field."""
+    if field not in MARKS:
+        raise ValueError(field)
+    # A stored false or null is not a marker. The fields are objects or true.
+    return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
 class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance):
@@ -195,6 +206,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         CREATE TABLE IF NOT EXISTS receipts (decision_id TEXT PRIMARY KEY, state TEXT NOT NULL, artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL, detail TEXT NOT NULL);
         ''')
         self.db.execute('CREATE INDEX IF NOT EXISTS native_receipts_pending_completion ON native_receipts (id) WHERE ' + PENDING_COMPLETIONS)
+        for field in MARKS:
+            self.db.execute(f'CREATE INDEX IF NOT EXISTS tasks{field} ON tasks (id) WHERE ' + marked(field))
         self._request_device_id = None
         self._request_key = None
         self._message_interaction = None
@@ -430,6 +443,13 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         if 'pending receipts' not in cache:
             cache['pending receipts'] = self._pending_completion_receipts()
         return cache['pending receipts']
+
+    def _marked_tasks(self, field):
+        """The tasks with a true value in the field, in row order. A partial index finds them."""
+        with self.lock:
+            # No ORDER BY: it makes SQLite scan the table. The few rows sort here.
+            rows = self.db.execute(f'SELECT rowid, data FROM tasks WHERE {marked(field)}').fetchall()
+        return [task for task in (json.loads(row[1]) for row in sorted(rows)) if task.get(field)]
 
     def _read_one(self, statement, parameters):
         cache = getattr(self, '_read_cache', None)
@@ -1877,7 +1897,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 if task['status'] == 'failed' and task.get('_is_return'):
                     self._consume_stopped_dependency_result(task, self._assignment(task))
         with self.lock:
-            native_replies = [(task['id'], task['_native_reply_pending']) for task in self._all('tasks') if task.get('_native_reply_pending')]
+            native_replies = [(task['id'], task['_native_reply_pending']) for task in self._marked_tasks('_native_reply_pending')]
         for task_id, reply in native_replies:
             sender = self._get('bots', reply['sender_bot_id'])
             if not sender.get('_deleted') and hasattr(self.provider, 'native_settings'):
@@ -1891,7 +1911,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 task.pop('_native_reply_pending', None)
                 self._put('tasks', task)
         with self.lock:
-            returns = [task['id'] for task in self._all('tasks') if task.get('_return_pending')]
+            returns = [task['id'] for task in self._marked_tasks('_return_pending')]
         for task_id in returns:
             with self.transaction():
                 task = self._get('tasks', task_id)

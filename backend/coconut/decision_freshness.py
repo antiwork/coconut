@@ -285,7 +285,7 @@ class DecisionFreshness:
         return (any(not context.get('_decision_refresh') and context['status'] == 'queued'
                     and owns(tasks[context['task_id']]) and context_runnable(context, tasks[context['task_id']])
                     for context in self._all_shared('contexts'))
-                or any(owns(item) and task_runnable(item) for item in tasks.values()))
+                or any(item['status'] in ('queued', 'scheduled') and owns(item) and task_runnable(item) for item in tasks.values()))
 
     def _refresh_session_busy(self, task):
         from .work_capacity import execution_key
@@ -309,26 +309,34 @@ class DecisionFreshness:
                    and self._decision_visible_to_task(self._get('decisions', c['decision_id']), task) for c in contexts)
 
     def _cancel_stale_decision_refreshes(self):
-        contexts = self._all('contexts')
-        for context in contexts:
-            if not context.get('_decision_refresh') or context['status'] not in ('queued', 'working'):
-                continue
-            task = self._get('tasks', context['task_id'])
-            decision = self._get('decisions', context['decision_id'])
-            if (decision['status'] == 'pending' and decision['revision'] == context['_decision_revision']
-                    and task['status'] != 'cancelled' and not self._task_paused(task)
-                    and not self._human_reply_pending(task, contexts)
-                    and not self._refresh_has_queued_owner(task)
-                    and not (context['status'] == 'queued' and self._refresh_session_busy(task))
-                    and context.get('_human_input_ids') == [m['id'] for m in self._decision_human_messages(task)]
-                    and context.get('_conversation_epoch') == task.get('_conversation_epoch')):
-                continue
-            context['status'] = 'cancelled'
-            self._put('contexts', context)
-            if hasattr(self.provider, 'cancel_context'):
-                self.provider.cancel_context(task['id'], context['id'])
-            self._refresh_bot(task['bot_id'])
-            self._event('context.cancelled', {'id': context['id'], 'decision_id': decision['id']}, task['bot_id'], task['id'])
+        with self.lock:
+            active = {row[0] for row in self.db.execute(
+                "SELECT id FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working') "
+                "AND json_extract(data,'$._decision_refresh')")}
+        if not active:
+            return
+        with self._shared_reads():
+            # Later checks read the contexts that this loop has already cancelled.
+            contexts = self._all('contexts')
+            for context in contexts:
+                if context['id'] not in active:
+                    continue
+                task = self._get('tasks', context['task_id'])
+                decision = self._get('decisions', context['decision_id'])
+                if (decision['status'] == 'pending' and decision['revision'] == context['_decision_revision']
+                        and task['status'] != 'cancelled' and not self._task_paused(task)
+                        and not self._human_reply_pending(task, contexts)
+                        and not self._refresh_has_queued_owner(task)
+                        and not (context['status'] == 'queued' and self._refresh_session_busy(task))
+                        and context.get('_human_input_ids') == [m['id'] for m in self._decision_human_messages(task)]
+                        and context.get('_conversation_epoch') == task.get('_conversation_epoch')):
+                    continue
+                context['status'] = 'cancelled'
+                self._put('contexts', context)
+                if hasattr(self.provider, 'cancel_context'):
+                    self.provider.cancel_context(task['id'], context['id'])
+                self._refresh_bot(task['bot_id'])
+                self._event('context.cancelled', {'id': context['id'], 'decision_id': decision['id']}, task['bot_id'], task['id'])
 
     def _refresh_recovery_records(self, source, contexts, records):
         from .background_processes import subscription

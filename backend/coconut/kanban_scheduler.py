@@ -141,6 +141,11 @@ class NativeKanban(NativeOutcomes):
                        if hasattr(self.provider, 'prepare_kanban_worker') else None)
 
     def _kanban_rows(self):
+        # The pause checks of many tasks read the same tables. One shared read decodes each table once.
+        with self._shared_reads():
+            return self._kanban_rows_shared()
+
+    def _kanban_rows_shared(self):
         from .work_capacity import execution_key
         known = self.kanban.tasks
         retained = json.dumps([i for i, task in known.items() if task.get('status') not in ('done', 'archived')])
@@ -195,8 +200,8 @@ class NativeKanban(NativeOutcomes):
         # A read-only progress question keeps its own bounded session when work capacity is full.
         if any(self._get('tasks', identity).get('_work_status_only') or self._get('tasks', identity).get('_chat_session') for identity in self.running):
             return
-        for task in self._all('tasks'):
-            if not task.get('_work_status_only') or not self._dispatch_eligible(task, time.time()):
+        for task in self._marked_tasks('_work_status_only'):
+            if not self._dispatch_eligible(task, time.time()):
                 continue
             self._ensure_execution_session(task)
             worker = threading.Thread(target=self._run_task, args=(task['id'],), daemon=True, name='work-status')

@@ -7,8 +7,9 @@ PAUSE_DECISION_STATES = ('approved', 'rejected', 'modified', 'replied', 'execute
 
 
 class WorkStatus:
-    def _work_pause_peers(self, item):
-        artifacts = {a['id']: a for a in self._all('artifacts')}
+    def _work_pause_peers(self, item, *, shared=False):
+        # shared=True is for a caller that only reads the peers. _save_work_pause changes them, so it asks for copies.
+        artifacts = {a['id']: a for a in (self._all_shared('artifacts') if shared else self._all('artifacts'))}
         artifacts[item['id']] = item
         def identity(value):
             seen = set()
@@ -24,9 +25,9 @@ class WorkStatus:
 
     def _work_pause(self, item, decisions=None, peers=None):
         if peers is None:
-            peers = self._work_pause_peers(item)
+            peers = self._work_pause_peers(item, shared=True)
         identities = {p.get('paused_by_decision_id') for p in peers}
-        return next((d for d in (decisions if decisions is not None else self._all('decisions'))
+        return next((d for d in (decisions if decisions is not None else self._all_shared('decisions'))
                      if d['id'] in identities and d.get('decided_by')
                      and d['status'] in PAUSE_DECISION_STATES), None)
 
@@ -47,7 +48,7 @@ class WorkStatus:
             self._put('artifacts', peer)
 
     def _work_has_new_direction(self, task, pause, item):
-        tasks = {t['id']: t for t in self._all('tasks')}
+        tasks = self._task_map()
         roots, pending = set(), [task['id']]
         while pending:
             identity = pending.pop()
@@ -57,18 +58,18 @@ class WorkStatus:
             pending.extend(tasks[identity].get(key) for key in ('parent_task_id', 'source_task_id', '_assignment_task_id'))
         if any(tasks[identity].get('_work_status_only') for identity in roots):
             return False
-        after = max((p.get('_work_pause_at', '') for p in self._work_pause_peers(item)), default='')
+        after = max((p.get('_work_pause_at', '') for p in self._work_pause_peers(item, shared=True)), default='')
         after = after or pause.get('decided_at') or pause['created_at']
         return (any(m.get('task_id') in roots and m.get('_human_device_id') and m['role'] == 'user'
                     and m.get('decision_id') != pause['id'] and m['created_at'] > after
-                    for m in self._all('messages'))
+                    for m in self._all_shared('messages'))
                 or any(d['task_id'] in roots and d['id'] != pause['id'] and d.get('decided_by')
                        and d['status'] in ('approved', 'modified') and d.get('decided_at', '') > after
-                       for d in self._all('decisions')))
+                       for d in self._all_shared('decisions')))
 
     def _task_work_items(self, task):
         identities = {task['id'], task.get('_assignment_task_id')} - {None}
-        return [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr')
+        return [a for a in self._all_shared('artifacts') if a['kind'] in ('work', 'pr')
                 and (not a.get('_hidden') or a.get('_work_parent_id'))
                 and (a['status'] not in ('completed', 'cancelled') if a['kind'] == 'work'
                      else a.get('pr_state') not in ('closed', 'merged'))
