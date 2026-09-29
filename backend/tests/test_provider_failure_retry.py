@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from coconut.kanban_scheduler import NativeKanban, PROVIDER_GUARD_SECONDS
-from coconut.native_failure import TRANSIENT_ERROR_CODES, TRANSIENT_NATIVE_ERROR, _FAILURES
+from coconut.native_failure import FAILURE_TEXT, TRANSIENT_ERROR_CODES, TRANSIENT_NATIVE_ERROR, _FAILURES
 
 SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
 PYTHON = os.environ.get('COCONUT_HERMES_PYTHON')
@@ -102,10 +102,13 @@ class ClearProviderGuardTests(unittest.TestCase):
         from datetime import datetime, timedelta, timezone
         old = (datetime.now(timezone.utc) - timedelta(seconds=PROVIDER_GUARD_SECONDS + 5)).isoformat()
         new = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
-        native = dict(id='t_1', status='ready', dispatch_blocker='blocker_auth')
-        for code, updated, freed in (('native_billing', old, True), ('native_billing', new, False),
-                                     ('native_auth_permanent', old, False)):
-            with self.subTest(code=code, updated=updated):
+        text = FAILURE_TEXT['native_billing']
+        for code, updated, error, freed in (('native_billing', old, text, True), ('native_billing', new, text, False),
+                                            ('native_auth_permanent', old, FAILURE_TEXT['native_auth_permanent'], False),
+                                            # A later failure with other text stays parked.
+                                            ('native_billing', old, 'Hermes rejected the credential of this profile.', False)):
+            with self.subTest(code=code, updated=updated, error=error[:20]):
+                native = dict(id='t_1', status='ready', dispatch_blocker='blocker_auth', last_failure_error=error)
                 service = self.service(dict(id='a', error_code=code, updated_at=updated), native)
                 NativeKanban._clear_provider_guards(service)
                 self.assertEqual(service.calls, [{'op': 'clear_failure_text', 'id': 't_1'}] if freed else [])

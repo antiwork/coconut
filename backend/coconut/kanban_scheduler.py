@@ -11,7 +11,7 @@ from pathlib import Path
 import subprocess
 import threading
 
-from .native_failure import TRANSIENT_ERROR_CODES
+from .native_failure import FAILURE_TEXT, TRANSIENT_ERROR_CODES
 
 
 # The time from the start of one dispatcher pass to the next when nothing wakes it, and the longest rest inside it.
@@ -489,7 +489,10 @@ class NativeKanban(NativeOutcomes):
             except (KeyError, AttributeError, ValueError):
                 continue
             native = self.kanban.tasks[task['id']]
-            if task.get('error_code') in TRANSIENT_ERROR_CODES and stopped <= cutoff:
+            # Clear only the text of the transient failure. A later failure, for example a credential that Hermes
+            # rejected before any worker started, has other text and stays parked.
+            if (task.get('error_code') in TRANSIENT_ERROR_CODES and stopped <= cutoff
+                    and native.get('last_failure_error') == FAILURE_TEXT[task['error_code']]):
                 self.kanban.call({'op': 'clear_failure_text', 'id': native['id']})
 
     def _kanban_finished(self):
