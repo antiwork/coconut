@@ -13,6 +13,8 @@ import threading
 
 # The longest rest between two passes of the dispatcher, whatever wakes it.
 KANBAN_PASS_REST_SECONDS = 1.0
+# The least time between two runs of the migration of saved work items to native tasks.
+NATIVE_MIGRATION_SECONDS = 10
 
 
 class KanbanRequestError(RuntimeError):
@@ -247,8 +249,12 @@ class NativeKanban(NativeOutcomes):
         self._drain_returns()
         # Read committed claims first. A lost adapter response cannot create another turn.
         self.kanban.call({'op': 'snapshot'})
-        with self.transaction():
-            self._migrate_native_work()
+        # The migration checks the saved work items that have no native task yet. On a live store one item fails the
+        # checks on every pass, and each check costs about 0.15 s. A new item can wait this long.
+        if time.monotonic() >= getattr(self, '_native_migration_at', 0):
+            with self.transaction():
+                self._migrate_native_work()
+            self._native_migration_at = time.monotonic() + NATIVE_MIGRATION_SECONDS
         self._adopt_native_outcomes()
         self._reconcile_kanban()
         with self.changed:
