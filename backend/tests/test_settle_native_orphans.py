@@ -65,6 +65,20 @@ class ArchiveSettledTests(unittest.TestCase):
             assert kb.get_task(conn, done).status == 'done'
         ''')
 
+    def test_a_ready_task_completes_with_the_result_of_its_request_and_a_todo_task_is_archived(self):
+        self.run_native('''
+            ready = native('ready')
+            assert board.archive_settled(ready, 'Ready to review.') is True
+            task = kb.get_task(conn, ready)
+            # A successor and a routine report read the result of a done task.
+            assert task.status == 'done', task.status
+            assert kb.latest_summary(conn, ready) == 'Ready to review.', kb.latest_summary(conn, ready)
+            parent = native('parent')
+            child = native('child', parents=[parent])
+            assert board.archive_settled(child, 'Ready to review.') is True
+            assert kb.get_task(conn, child).status == 'archived'
+        ''')
+
     def test_a_todo_task_waiting_on_a_stuck_parent_is_archived(self):
         self.run_native('''
             parent = native('parent')
@@ -121,6 +135,28 @@ class SettleSchedulerTests(unittest.TestCase):
         service = self.service(tasks, natives, held=['card'])
         # Only the triage task of an outcome that no block check or card holds goes.
         self.assertEqual(self.settled(service), ['t_plain'])
+
+    def test_a_plain_request_settles_after_minutes_and_an_outcome_after_a_day(self):
+        from coconut.kanban_scheduler import SETTLE_PLAIN_SECONDS
+        recent = self.ago(SETTLE_PLAIN_SECONDS + 60)
+        natives = {'plain': dict(id='t_plain', status='triage'), 'young': dict(id='t_young', status='triage'),
+                   'outcome': dict(id='t_outcome', status='triage')}
+        tasks = [dict(id='plain', status='completed', updated_at=recent, summary='Complete.'),
+                 dict(id='young', status='completed', updated_at=self.ago(60)),
+                 dict(id='outcome', status='completed', updated_at=recent, _native_outcome_id='t_outcome')]
+        service = self.service(tasks, natives)
+        self.assertEqual(self.settled(service), ['t_plain'])
+        # The result of the request goes with the call, so a done task keeps it.
+        self.assertEqual(service.calls, [{'op': 'archive_settled', 'id': 't_plain', 'summary': 'Complete.'}])
+
+    def test_a_cancelled_request_is_archived_and_never_completed(self):
+        old = self.ago(SETTLE_SECONDS + 60)
+        service = self.service([dict(id='a', status='cancelled', updated_at=old, summary='Cancelled by you.'),
+                                dict(id='b', status='completed', updated_at=old, summary='Complete.')],
+                               {'a': dict(id='t_a', status='ready'), 'b': dict(id='t_b', status='ready')})
+        self.assertEqual(self.settled(service), ['t_a', 't_b'])
+        summaries = {call['id']: call['summary'] for call in service.calls}
+        self.assertEqual(summaries, {'t_a': None, 't_b': 'Complete.'})
 
     def test_a_paused_request_keeps_its_native_task(self):
         old = self.ago(SETTLE_SECONDS + 60)

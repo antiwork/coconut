@@ -386,14 +386,20 @@ class Board:
             return self.kb.schedule_task(self.conn, identity, reason=summary, expected_run_id=run_id)
         return self.kb.block_task(self.conn, identity, reason=summary, expected_run_id=run_id)
 
-    def archive_settled(self, identity):
-        """Archive a native task that waits while Coconut has finished its request, so its dependents can start.
+    def archive_settled(self, identity, summary=None):
+        """Close a native task that waits while Coconut has finished its request, so its dependents can start.
 
-        A running task keeps its worker, and a done or archived task is already final.
+        Completion comes first, because a successor and a routine report read the result of a done task. A task that
+        still has an open parent, or that waits in triage, cannot complete, so it is archived. A running task keeps its
+        worker, and a done or archived task is already final.
         """
         task = self.kb.get_task(self.conn, identity)
         if task is None or task.status not in ('ready', 'todo', 'triage', 'blocked', 'scheduled'):
             return False
+        if task.status in ('ready', 'blocked') and summary:
+            with contextlib.suppress(Exception):
+                if self.kb.complete_task(self.conn, identity, summary=summary):
+                    return True
         return self.kb.archive_task(self.conn, identity)
 
     def clear_failure_text(self, identity):
@@ -548,7 +554,7 @@ def main():
                     result = {'ok': board.finish(request['id'], request['run_id'], request['state'], request['summary'],
                                                  request.get('error_code'))}
                 elif request['op'] == 'archive_settled':
-                    result = {'ok': board.archive_settled(request['id'])}
+                    result = {'ok': board.archive_settled(request['id'], request.get('summary'))}
                 elif request['op'] == 'clear_failure_text':
                     result = {'ok': board.clear_failure_text(request['id'])}
                 elif request['op'] == 'promote':
