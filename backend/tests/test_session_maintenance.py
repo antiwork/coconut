@@ -285,6 +285,33 @@ class NativeSessionTests(unittest.TestCase):
                 assert native_sessions.maintain(request)['vacuumed']
         ''')
 
+    def test_an_unreadable_size_after_the_vacuum_keeps_the_run_result(self):
+        self.run_native('''
+            from uuid import uuid4
+            from unittest.mock import patch
+            from hermes_state import SessionDB
+            from coconut import native_sessions
+            bot = dict(id=str(uuid4()), session_id=str(uuid4()))
+            db = SessionDB()
+            db.create_session('one', source='coconut')
+            for _ in range(200):
+                db.append_message('one', 'user', 'x' * 2000)
+            request = dict(bot=bot, conversations=[], outcomes=[], retention_days=365, history_days=365, allow_vacuum=True)
+            real = native_sessions.store_pages
+            calls = []
+            def store_pages(path):
+                calls.append(path)
+                # The verdict reads the store first. The read after the VACUUM fails.
+                if len(calls) > 1:
+                    raise RuntimeError('database is locked')
+                return real(path)
+            with patch('hermes_state_holders.foreign_state_db_holders', return_value=[]), \\
+                    patch.object(native_sessions, 'VACUUM_MIN_BYTES', 1), \\
+                    patch.object(native_sessions, 'store_pages', store_pages):
+                result = native_sessions.maintain(request)
+            assert result['vacuumed'] and 'locked' in result['vacuum_error'], result
+        ''')
+
     def test_a_small_store_is_not_vacuumed_for_its_size(self):
         self.run_native('''
             from uuid import uuid4

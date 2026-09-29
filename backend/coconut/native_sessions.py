@@ -37,7 +37,8 @@ def store_pages(path):
 def vacuum_verdict(db):
     """Return 'run' when a VACUUM of this store pays, 'disk' when it would pay but the disk cannot hold it, else None.
 
-    The new copy holds only the used pages. It needs that much free disk, plus a reserve.
+    The new copy holds only the used pages, and in WAL mode the rewrite passes through the log once more. So the disk
+    needs twice the used pages, plus a reserve, as `_vacuum_fits` in `database_maintenance.py` also requires.
     """
     import shutil
     pages, free, page_size = store_pages(db.db_path)
@@ -47,7 +48,7 @@ def vacuum_verdict(db):
     regrown = size >= VACUUM_MIN_BYTES and (not after_last or size >= VACUUM_REGROWTH * float(after_last))
     if not (mostly_free or regrown):
         return None
-    if shutil.disk_usage(Path(db.db_path).parent).free < (pages - free) * page_size + VACUUM_DISK_RESERVE_BYTES:
+    if shutil.disk_usage(Path(db.db_path).parent).free < 2 * (pages - free) * page_size + VACUUM_DISK_RESERVE_BYTES:
         return 'disk'
     return 'run'
 
@@ -112,8 +113,12 @@ def maintain(request):
                 result['vacuum_error'] = str(error)[:500]
             else:
                 db.set_meta(VACUUM_KEY, str(time.time()))
-                pages, _, page_size = store_pages(db.db_path)
-                db.set_meta(VACUUM_SIZE_KEY, str(pages * page_size))
+                try:
+                    pages, _, page_size = store_pages(db.db_path)
+                    db.set_meta(VACUUM_SIZE_KEY, str(pages * page_size))
+                except Exception as error:
+                    # The VACUUM is done. Without a size, the next weekly run may vacuum a store that has not regrown.
+                    result['vacuum_error'] = 'The size after the VACUUM is unknown: ' + str(error)[:400]
                 result['vacuumed'] = True
     finally:
         db.close()
