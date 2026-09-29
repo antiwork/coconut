@@ -297,6 +297,26 @@ class DependencyUnlinkTests(unittest.TestCase):
         # The plain check still counts the undelivered wait.
         self.assertTrue(self.service._background_pending(child['id']))
 
+    def test_a_relay_wait_is_settled_only_by_a_returned_result_and_a_process_never(self):
+        child, parent, source = self.setup_edge()
+        recipient = dict(child, id=str(uuid4()), status='working', _native_outcome_id='t_44444444')
+        recipient['_execution_session_id'] = recipient['id']
+        self.service._put('tasks', recipient)
+        relay = dict(id=str(uuid4()), task_id=child['id'], state='completed', action={'name': 'message_agent'},
+                     _relay_task_id=recipient['id'])
+        self.service._put('native_receipts', relay)
+        self.assertFalse(self.service._wait_settled(relay))
+        self.assertTrue(self.service._background_pending(child['id'], ignore_settled=True))
+        self.service._put('tasks', recipient | {'_native_relay_result': {'text': 'Verified.', 'failed': False}})
+        self.assertTrue(self.service._wait_settled(relay))
+        self.assertFalse(self.service._background_pending(child['id'], ignore_settled=True))
+        # A process subscription has no answer to read here, so it always blocks.
+        process = dict(id=str(uuid4()), task_id=child['id'], state='completed', action={'name': 'terminal'},
+                       result=json.dumps({'notify_on_complete': True, 'session_id': 'proc_1'}))
+        self.service._put('native_receipts', process)
+        self.assertFalse(self.service._wait_settled(process))
+        self.assertTrue(self.service._background_pending(child['id'], ignore_settled=True))
+
     def test_a_tool_call_of_an_earlier_turn_does_not_keep_a_queued_owner_busy(self):
         child, parent, source = self.setup_edge()
         child['_native_turn_id'] = 'current-turn'
