@@ -143,7 +143,10 @@ class NativeSessionTests(unittest.TestCase):
             backend = Path(__file__).resolve().parents[1]
             env = dict(os.environ, HERMES_HOME=home,
                        PYTHONPATH=os.pathsep.join((str(backend), str(backend / 'coconut'), SOURCE)))
-            result = subprocess.run([PYTHON, '-c', textwrap.dedent(program)], env=env,
+            # A VACUUM needs free disk. These programs must not depend on the disk of the machine that runs them.
+            roomy = ("import collections, shutil\n"
+                     "shutil.disk_usage = lambda path: collections.namedtuple('usage', 'total used free')(1 << 50, 0, 1 << 50)\n")
+            result = subprocess.run([PYTHON, '-c', roomy + textwrap.dedent(program)], env=env,
                                     capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stderr)
             return result.stdout
@@ -249,7 +252,8 @@ class NativeSessionTests(unittest.TestCase):
             with patch('hermes_state_holders.foreign_state_db_holders', return_value=[]), \\
                     patch.object(native_sessions, 'VACUUM_MIN_BYTES', 1):
                 # Nothing was deleted, so no page is free. The store is over the size floor and was never vacuumed.
-                assert native_sessions.freelist_ratio(db.db_path) < native_sessions.VACUUM_MIN_FREELIST_RATIO
+                pages, free, _ = native_sessions.store_pages(db.db_path)
+                assert free / pages < native_sessions.VACUUM_MIN_FREELIST_RATIO
                 assert native_sessions.maintain(request)['vacuumed']
                 # Nothing changed since the last VACUUM.
                 assert not native_sessions.maintain(request)['vacuumed']
@@ -274,7 +278,8 @@ class NativeSessionTests(unittest.TestCase):
             with patch('hermes_state_holders.foreign_state_db_holders', return_value=[]), \\
                     patch.object(native_sessions, 'VACUUM_MIN_BYTES', 1), \\
                     patch('shutil.disk_usage', return_value=usage(10, 9, 1024)):
-                assert not native_sessions.maintain(request)['vacuumed']
+                skipped = native_sessions.maintain(request)
+                assert not skipped['vacuumed'] and 'disk' in skipped['vacuum_skipped'], skipped
             with patch('hermes_state_holders.foreign_state_db_holders', return_value=[]), \\
                     patch.object(native_sessions, 'VACUUM_MIN_BYTES', 1):
                 assert native_sessions.maintain(request)['vacuumed']

@@ -25,33 +25,31 @@ VACUUM_REGROWTH = 1.5
 VACUUM_DISK_RESERVE_BYTES = 2 * 1024 ** 3
 
 
-def freelist_ratio(path):
+def store_pages(path):
+    """Return the page count, the free page count and the page size of a store, read over a short connection."""
     from contextlib import closing
     import sqlite3
     # Close this reader before the holder checks and the VACUUM. as_uri() escapes the path.
     with closing(sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True, timeout=5)) as connection:
-        pages = connection.execute('PRAGMA page_count').fetchone()[0]
-        free = connection.execute('PRAGMA freelist_count').fetchone()[0]
-    return free / pages if pages else 0.0
+        return tuple(connection.execute('PRAGMA ' + name).fetchone()[0] for name in ('page_count', 'freelist_count', 'page_size'))
 
 
-def store_bytes(path):
-    from contextlib import closing
-    import sqlite3
-    with closing(sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True, timeout=5)) as connection:
-        return connection.execute('PRAGMA page_count').fetchone()[0] * connection.execute('PRAGMA page_size').fetchone()[0]
+def vacuum_verdict(db):
+    """Return 'run' when a VACUUM of this store pays, 'disk' when it would pay but the disk cannot hold it, else None.
 
-
-def vacuum_pays(db):
-    """Return True when a VACUUM of this store frees enough to be worth its exclusive lock, and the disk can hold it."""
+    The new copy holds only the used pages. It needs that much free disk, plus a reserve.
+    """
     import shutil
-    size = store_bytes(db.db_path)
-    if shutil.disk_usage(Path(db.db_path).parent).free < size + VACUUM_DISK_RESERVE_BYTES:
-        return False
-    if freelist_ratio(db.db_path) > VACUUM_MIN_FREELIST_RATIO:
-        return True
+    pages, free, page_size = store_pages(db.db_path)
+    size = pages * page_size
     after_last = db.get_meta(VACUUM_SIZE_KEY)
-    return size >= VACUUM_MIN_BYTES and (not after_last or size >= VACUUM_REGROWTH * float(after_last))
+    mostly_free = pages > 0 and free / pages > VACUUM_MIN_FREELIST_RATIO
+    regrown = size >= VACUUM_MIN_BYTES and (not after_last or size >= VACUUM_REGROWTH * float(after_last))
+    if not (mostly_free or regrown):
+        return None
+    if shutil.disk_usage(Path(db.db_path).parent).free < (pages - free) * page_size + VACUUM_DISK_RESERVE_BYTES:
+        return 'disk'
+    return 'run'
 
 
 def maintain(request):
@@ -63,7 +61,7 @@ def maintain(request):
     2. End the newest session of each idle outcome. Coconut never ends a chat.
     3. Prune ended idle work sessions inactive for `retention_days`, and other ended Coconut sessions, such as
        compressed chat sessions, inactive for `history_days`. Other sources keep the profile's own settings.
-    4. VACUUM at most once a week when it pays (see `vacuum_pays`: more than a quarter of the file is free, or the
+    4. VACUUM at most once a week when it pays (see `vacuum_verdict`: more than a quarter of the file is free, or the
        store is large and has regrown), the service reports the bot quiet, and no other process holds the store.
        That test, not this run's prune count, decides, so a VACUUM that a holder deferred runs on a later hour.
     """
@@ -101,8 +99,11 @@ def maintain(request):
         due = not last or time.time() - float(last) >= VACUUM_INTERVAL_SECONDS
         # VACUUM rewrites the whole file under an exclusive lock. Hermes skips it while another process
         # holds the store or a WAL sidecar, and so does Coconut. The next hour tries again.
-        if (request.get('allow_vacuum') and due
-                and vacuum_pays(db)
+        verdict = vacuum_verdict(db) if request.get('allow_vacuum') and due else None
+        if verdict == 'disk':
+            # Say why a store that should shrink does not, so an operator can tell.
+            result['vacuum_skipped'] = 'The disk cannot hold a second copy of the store.'
+        if (verdict == 'run'
                 and not (foreign_state_db_holders(db.db_path) + in_process_state_db_holders(db.db_path, exclude=db))):
             try:
                 db.vacuum()
@@ -111,7 +112,8 @@ def maintain(request):
                 result['vacuum_error'] = str(error)[:500]
             else:
                 db.set_meta(VACUUM_KEY, str(time.time()))
-                db.set_meta(VACUUM_SIZE_KEY, str(store_bytes(db.db_path)))
+                pages, _, page_size = store_pages(db.db_path)
+                db.set_meta(VACUUM_SIZE_KEY, str(pages * page_size))
                 result['vacuumed'] = True
     finally:
         db.close()

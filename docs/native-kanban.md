@@ -407,7 +407,7 @@ Each outcome has its own work session. Once an hour, with worktree retirement, C
 4. At most once a week, it runs Hermes `vacuum`, which first merges the search indexes. Two tests decide, so a VACUUM that a holder deferred runs later.
    More than a quarter of the file is free, or the store is over 512 MiB and 1.5 times as large as after the last VACUUM.
    The second test exists because the search indexes fragment and keep their pages. One 4.5 GB store had 16% of its pages free,
-   and a merge plus VACUUM took it to 0.95 GB. The disk must also hold a second copy of the store plus 2 GiB.
+   and a merge plus VACUUM took it to 0.95 GB. The disk must also hold a copy of the used pages plus 2 GiB. Otherwise the result of the run says `vacuum_skipped`.
    The bot needs no running worker and no active or queued task, and no other process may hold the store.
 
 When an idle outcome resumes, Coconut reopens its session with `reopen_session`. If Hermes has already deleted it,
