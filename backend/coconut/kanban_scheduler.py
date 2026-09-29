@@ -11,6 +11,11 @@ import subprocess
 import threading
 
 
+# The time from the start of one dispatcher pass to the next when nothing wakes it, and the longest rest inside it.
+KANBAN_PASS_SECONDS = 1.0
+KANBAN_PASS_REST_SECONDS = 1.0
+
+
 class KanbanRequestError(RuntimeError):
     pass
 
@@ -229,6 +234,7 @@ class NativeKanban(NativeOutcomes):
 
     def _dispatch_kanban(self):
         from .work_capacity import execution_key, state as capacity_state
+        started = time.monotonic()
         if self.restart_pending or self.stopping.is_set():
             # Finish committed turns, but neither adopt work nor claim/start any
             # new turn while the operator drain owns the dispatch gate.
@@ -308,8 +314,14 @@ class NativeKanban(NativeOutcomes):
                         keep.add(identity)
             self.provider.trim_kanban_workers(keep)
         self._publish_kanban_changes()
+        # Every commit wakes the wait below, and a busy store commits several times a second. Passes would then
+        # run back to back and keep the service at full CPU. The pass rests for twice its own time, so a pass of
+        # 0.5 s or less uses at most a third of the time, and a longer pass rests for the longest rest. The time is
+        # wall-clock time. _dispatch_conversations admits chat messages at once, without this pass.
+        rest = min(KANBAN_PASS_REST_SECONDS, 2 * (time.monotonic() - started))
+        self.stopping.wait(rest)
         with self.changed:
-            self.changed.wait(1)
+            self.changed.wait(max(0.0, KANBAN_PASS_SECONDS - rest))
 
     def _publish_kanban_changes(self):
         visible = {t['id']: tuple(t.get(key) for key in ('status', 'priority', 'current_run_id', 'title',
