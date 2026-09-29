@@ -49,6 +49,62 @@ class DecisionFreshnessTests(unittest.TestCase):
         context['status'] = 'completed'
         self.service._put('contexts', context)
 
+    def failed_check(self, decision, waited):
+        """Let `waited` seconds pass since the last queued check, run the queue, and fail the check it queues. Return whether it queued one."""
+        saved = self.service._get('decisions', decision['id'])
+        saved['_freshness']['queued_at'] = (datetime.now(timezone.utc) - timedelta(seconds=waited)).isoformat()
+        self.service._put('decisions', saved)
+        before = len(self.service._all('contexts'))
+        self.service._queue_decision_refreshes()
+        contexts = self.service._all('contexts')
+        if len(contexts) == before:
+            return False
+        context = self.service._get('contexts', contexts[-1]['id'])
+        context.update(status='failed', error_code='decision_refresh_incomplete')
+        self.service._put('contexts', context)
+        return True
+
+    def test_a_check_that_keeps_failing_stops_after_its_failure_limit(self):
+        from coconut.decision_freshness import REFRESH_MAX_FAILURES
+        decision = self.question()
+        results = [self.failed_check(decision, 10 ** 6) for _ in range(REFRESH_MAX_FAILURES + 3)]
+        # A very long wait passes every backoff, so only the limit stops the checks.
+        self.assertEqual(results, [True] * REFRESH_MAX_FAILURES + [False] * 3)
+
+    def test_a_failed_check_waits_twice_as_long_after_each_failure(self):
+        from coconut.decision_freshness import RETRY_SECONDS
+        decision = self.question()
+        self.assertTrue(self.failed_check(decision, 10 ** 6))
+        # One failure: the wait is the retry time.
+        self.assertFalse(self.failed_check(decision, RETRY_SECONDS - 30))
+        self.assertTrue(self.failed_check(decision, RETRY_SECONDS + 30))
+        # Two failures: twice the retry time.
+        self.assertFalse(self.failed_check(decision, 2 * RETRY_SECONDS - 30))
+        self.assertTrue(self.failed_check(decision, 2 * RETRY_SECONDS + 30))
+        # Three failures: four times.
+        self.assertFalse(self.failed_check(decision, 4 * RETRY_SECONDS - 30))
+
+    def test_new_evidence_starts_the_failure_count_again(self):
+        from coconut.decision_freshness import REFRESH_MAX_FAILURES
+        decision = self.question()
+        for _ in range(REFRESH_MAX_FAILURES):
+            self.assertTrue(self.failed_check(decision, 10 ** 6))
+        self.assertFalse(self.failed_check(decision, 10 ** 6))
+        task = self.service._get('tasks', self.task['id'])
+        task['summary'] = 'The scope changed again.'
+        self.service._put('tasks', task)
+        self.assertTrue(self.failed_check(decision, 10 ** 6))
+
+    def test_a_stale_check_neither_counts_nor_hides_the_failures_before_it(self):
+        from coconut.decision_freshness import REFRESH_MAX_FAILURES
+        decision = self.question()
+        for _ in range(REFRESH_MAX_FAILURES):
+            self.assertTrue(self.failed_check(decision, 10 ** 6))
+        # A check that a newer state cancelled sits after the failures. The limit still holds.
+        last = self.service._all('contexts')[-1]
+        self.service._put('contexts', dict(last, id='cancelled-check', status='cancelled', _refresh_recorded=False))
+        self.assertFalse(self.failed_check(decision, 10 ** 6))
+
     def test_a_refresh_pass_parses_each_table_once_for_many_questions(self):
         decision = self.question(old=False)
         for index in range(4):
