@@ -133,9 +133,10 @@ Retirement keeps work only while it can resume. Coconut discards the worktree of
   every 10 minutes.
 
 Below 20 GiB free, an outcome counts as idle after 15 minutes without a task update (`URGENT_IDLE_SECONDS`), and not after
-6 hours. A queued or scheduled task that did not start for 12 hours (`URGENT_QUEUED_SECONDS`) does not keep the worktree
-of its outcome. A running task, a recent task, and a process that uses the worktree always keep it. The worktree comes back
-from its branch and its archive when the outcome resumes.
+6 hours. A queued task that did not start for 12 hours (`URGENT_QUEUED_SECONDS`) does not keep the worktree of its
+outcome, except while a claim is in progress. Retirement archives such a worktree exactly. The discard of a worktree that
+retirement refuses waits 2 hours (`URGENT_DISCARD_IDLE_SECONDS`). A running task, a recent task, and a process that uses the
+worktree always keep it. The worktree comes back from its branch and its archive when the outcome resumes.
 
 A discard keeps the branch and a ref `refs/coconut/discarded/<identity>/<time>-<commit>` for each HEAD, nested ones
 too. A detached HEAD gets a branch `wt/<name>-detached` at its commit. The archive in `workspaces/archive/done/` holds the

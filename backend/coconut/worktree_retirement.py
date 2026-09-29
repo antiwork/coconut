@@ -30,9 +30,12 @@ RETIREMENT_INTERVAL_SECONDS = 60 * 60
 # Below LOW_DISK_BYTES an outcome counts as idle after this time without a task update, not after
 # WORKTREE_RETIRE_SECONDS. A worktree comes back from its branch and its archive when the outcome resumes.
 URGENT_IDLE_SECONDS = 15 * 60
-# Below LOW_DISK_BYTES a queued or scheduled task that did not start for this long does not start soon, so it does not
-# keep the worktree of its outcome.
+# Below LOW_DISK_BYTES a queued task that did not start for this long does not start soon, so it does not keep the
+# worktree of its outcome. While a claim is in progress, it does.
 URGENT_QUEUED_SECONDS = 12 * 60 * 60
+# Below LOW_DISK_BYTES, a worktree that retirement refuses (a branch switch, a nested repository, large ignored files)
+# waits this long before the discard. Retirement itself, which archives exactly, has no such wait.
+URGENT_DISCARD_IDLE_SECONDS = 2 * 60 * 60
 # An idle outcome keeps a worktree that retirement cannot archive exactly for at most this long. Then Coconut discards it:
 # the branch keeps the commits, and an archive keeps the patches and the small untracked files.
 DISCARD_IDLE_SECONDS = 2 * 24 * 60 * 60
@@ -115,7 +118,8 @@ class WorktreeRetirement:
                         return True
                     if task['status'] not in ACTIVE_STATUSES:
                         return False
-                    return not (urgent and task['status'] in ('queued', 'scheduled') and current - updated[task['id']] >= URGENT_QUEUED_SECONDS)
+                    return not (urgent and task['status'] == 'queued' and not self._kanban_claiming
+                                and current - updated[task['id']] >= URGENT_QUEUED_SECONDS)
                 if any(starts_soon(t) for t in tasks):
                     continue
                 if any((native.get(t['id']) or by_native_id.get(t.get('_native_outcome_id')) or {}).get('status', 'done')
@@ -320,8 +324,9 @@ class WorktreeRetirement:
         done, open_pull_requests = classified or ({}, set())
         # An outcome idle this long loses a worktree that retirement refuses, and the files of its scratch workspace.
         # An open pull request keeps its work until the disk is low.
-        stale = set(finished) if low_disk else {outcome for outcome in finished if ages.get(outcome, 0) >= DISCARD_IDLE_SECONDS
-                                                and outcome not in open_pull_requests} if classified is not None else set()
+        stale = ({outcome for outcome in finished if ages.get(outcome, 0) >= URGENT_DISCARD_IDLE_SECONDS} if low_disk else
+                 {outcome for outcome in finished if ages.get(outcome, 0) >= DISCARD_IDLE_SECONDS
+                  and outcome not in open_pull_requests} if classified is not None else set())
         names = {}
         # A merged pull request ends the work only in its own repository. An outcome that also works in another
         # repository keeps the scratch files, which can hold a clone of it.

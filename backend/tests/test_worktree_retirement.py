@@ -818,14 +818,14 @@ class WorktreeRetirementTests(unittest.TestCase):
         real = self.service._finished_outcomes
         idles = []
 
-        def watched(current, *, timeout=-1, only=None, idle=retirement.WORKTREE_RETIRE_SECONDS, **options):
+        def watched(current, *, timeout=-1, only=None, idle=None, **options):
             if only == outcome:
-                idles.append(idle)
+                idles.append((idle, options.get('urgent', False)))
             return real(current, timeout=timeout, only=only, idle=idle, **options)
         with patch.object(self.service, '_finished_outcomes', side_effect=watched):
             self.retire()
         # Every re-check of this outcome, also the one before the scratch move, uses the real idle time.
-        self.assertTrue(idles and all(idle == retirement.WORKTREE_RETIRE_SECONDS for idle in idles), idles)
+        self.assertTrue(idles and all(idle in (None, retirement.WORKTREE_RETIRE_SECONDS) and not urgent for idle, urgent in idles), idles)
 
     def test_a_second_discard_keeps_the_first_archive(self):
         outcome, identity, path, task = self.outcome()
@@ -907,6 +907,26 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
             self.assertEqual(self.retire(), [])
         self.assertTrue(path.exists())
+
+    def test_a_low_disk_keeps_a_stale_queued_worktree_while_a_claim_is_in_progress(self):
+        _, identity, path, _ = self.outcome(status='queued', updated_at=self.ago(hours=13))
+        self.service._kanban_claiming = 1
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+        self.service._kanban_claiming = 0
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [identity])
+
+    def test_a_low_disk_discards_a_refused_worktree_only_after_two_idle_hours(self):
+        _, young, young_path, _ = self.outcome(updated_at=self.ago(hours=1))
+        _, old, old_path, _ = self.outcome(updated_at=self.ago(hours=3))
+        for path in (young_path, old_path):
+            git(path, 'checkout', '-q', '-b', 'switched-' + path.name[:8])
+        with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            self.assertEqual(self.retire(), [old])
+        self.assertTrue(young_path.exists())
+        self.assertFalse(old_path.exists())
 
     def test_a_low_disk_ignores_a_task_that_waited_long_in_the_queue_but_not_a_recent_or_running_one(self):
         stale, stale_identity, stale_path, _ = self.outcome(status='queued', updated_at=self.ago(hours=13))
