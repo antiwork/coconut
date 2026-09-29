@@ -162,8 +162,7 @@ class NativeKanbanTests(unittest.TestCase):
 
         with ExitStack() as stack:
             maintenance = [stack.enter_context(patch.object(self.service, name)) for name in (
-                'tick_routines', '_queue_work_recoveries',
-                '_queue_context_recoveries', '_queue_decision_refreshes')]
+                'tick_routines', '_queue_context_recoveries', '_queue_decision_refreshes')]
             stack.enter_context(patch.object(self.service.kanban, 'call', side_effect=flaky_adapter))
             log = stack.enter_context(patch('coconut.service.logging.getLogger'))
             self.service.dispatcher = threading.Thread(target=self.service._dispatch)

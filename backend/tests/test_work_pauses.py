@@ -7,6 +7,9 @@ import test_service_pr as pr_fixtures
 import test_delegated_work_duplicates as delegation_fixtures
 from coconut.service import ServiceError, YieldForDecision
 from test_service_pr import URL, SHA, observation
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class WorkPauseTests(unittest.TestCase):

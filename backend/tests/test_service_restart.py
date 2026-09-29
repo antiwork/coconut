@@ -81,6 +81,28 @@ class ServiceRestartTests(unittest.TestCase):
         self.assertTrue(self.service.take_service_restart())
         self.assertFalse(self.service.take_service_restart())
 
+    def check_trim_drain_deadline(self, active_turn):
+        active = Mock()
+        active.is_alive.return_value = active_turn
+        self.service.running[self.task['id']] = active
+        self.service._kanban_trimming = True
+        with patch('coconut.service_restart.time.monotonic', return_value=100) as clock:
+            self.request()
+            clock.return_value += RESTART_DRAIN_SECONDS
+            self.assertFalse(self.service.take_service_restart())
+            self.assertFalse(self.service.restart_pending)
+            self.assertFalse(self.service.stopping.is_set())
+            active.is_alive.return_value = False
+            self.assertFalse(self.service.take_service_restart())
+            self.service._kanban_trimming = False
+            self.assertTrue(self.service.take_service_restart())
+
+    def test_trim_does_not_extend_the_active_turn_drain_deadline(self):
+        self.check_trim_drain_deadline(True)
+
+    def test_trim_alone_does_not_extend_the_drain_deadline(self):
+        self.check_trim_drain_deadline(False)
+
     def test_context_defers_once_and_reports_deferral_on_repeated_requests(self):
         active = Mock()
         active.is_alive.return_value = True
