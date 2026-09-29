@@ -10,6 +10,12 @@ from pathlib import Path
 import sys
 import time
 
+try:
+    from .native_failure import TRANSIENT_ERROR_CODES, TRANSIENT_NATIVE_ERROR
+except ImportError:
+    # The adapter runs as a script, so its folder is on the path and the package is not.
+    from native_failure import TRANSIENT_ERROR_CODES, TRANSIENT_NATIVE_ERROR
+
 
 def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
@@ -345,7 +351,7 @@ class Board:
                               (json.dumps(receipt, sort_keys=True), request['request_id']))
         return receipt
 
-    def finish(self, identity, run_id, state, summary):
+    def finish(self, identity, run_id, state, summary, error_code=None):
         task = self.kb.get_task(self.conn, identity)
         if not task or task.current_run_id != run_id or task.status != 'running':
             return False
@@ -354,6 +360,13 @@ class Board:
         if self.kb._retry_status_for_run(self.conn, identity, run_id) == 'review':
             return False
         owned = self.conn.execute('SELECT 1 FROM coconut_outcomes WHERE native_id=?', (identity,)).fetchone()
+        if owned and state == 'blocked' and error_code in TRANSIENT_ERROR_CODES:
+            # The provider stopped this turn for a while. Book an infrastructure failure: it leaves the failure count
+            # alone, and the respawn guard spaces the retries. The stored text names no authorization blocker,
+            # or the guard would park the task after the cooldown.
+            self.dispatch._record_task_failure(self.conn, identity, TRANSIENT_NATIVE_ERROR, outcome='spawn_failed',
+                release_claim=True, end_run=True, infrastructure=True)
+            return True
         if owned and state in ('done', 'blocked'):
             # Hermes retries a stopped worker. A Coconut reply cannot complete the outcome.
             self.dispatch._record_task_failure(self.conn, identity, summary or 'The worker stopped without an outcome.',
@@ -372,6 +385,12 @@ class Board:
         if state == 'scheduled':
             return self.kb.schedule_task(self.conn, identity, reason=summary, expected_run_id=run_id)
         return self.kb.block_task(self.conn, identity, reason=summary, expected_run_id=run_id)
+
+    def clear_failure_text(self, identity):
+        """Forget the stored failure text of a ready task, so the respawn guard no longer parks it."""
+        with self.kb.write_txn(self.conn):
+            return self.conn.execute("UPDATE tasks SET last_failure_error = NULL WHERE id = ? AND status = 'ready'",
+                                     (identity,)).rowcount == 1
 
     def snapshot(self, external_ids=()):
         result = []
@@ -516,7 +535,10 @@ def main():
                 if request['op'] == 'tick':
                     result = board.tick(request['rows'], request['capacity'], spawn)
                 elif request['op'] == 'finish':
-                    result = {'ok': board.finish(request['id'], request['run_id'], request['state'], request['summary'])}
+                    result = {'ok': board.finish(request['id'], request['run_id'], request['state'], request['summary'],
+                                                 request.get('error_code'))}
+                elif request['op'] == 'clear_failure_text':
+                    result = {'ok': board.clear_failure_text(request['id'])}
                 elif request['op'] == 'promote':
                     result = {'id': board.promote(request['row'])}
                 elif request['op'] == 'bind':
