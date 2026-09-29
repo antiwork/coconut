@@ -57,6 +57,14 @@ The owner or requesting bot must send a new explicit `coconut_continue_work` mes
 Replaying the old message returns its saved receipt and does not authorize another input.
 No migration changes the historical delivery or the failed occurrence.
 
+## Disagreement report
+
+Coconut and Hermes each keep a lifecycle for a request. The settle pass archives the native task of a finished request.
+At most once in ten minutes, the dispatcher checks for a task that this pass should already have archived, one hour after its due time.
+It also counts the native tasks that no request owns. If either count is not zero, it logs one warning that starts with
+`Coconut and Hermes disagree`. The health check of Care reads this line. The settle pass and the report share `_native_orphans`,
+so they cannot use different rules.
+
 ## Workspaces
 
 `coconut_workspace` calls the native Hermes workspace resolver.

@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import contextlib
+import logging
 import os
 import queue
 import time
@@ -22,6 +23,10 @@ SETTLE_SECONDS = 24 * 60 * 60
 # A plain request has no retry or block check. Its native task only carried one turn.
 SETTLE_PLAIN_SECONDS = 15 * 60
 SETTLE_BATCH = 25
+# A native task that the settle pass still has not archived this long after its due time counts as a disagreement.
+# The pass only skips a task through a slow start or a bounded batch, so a task this late points at a defect.
+ORPHAN_ALERT_SLACK_SECONDS = 60 * 60
+ORPHAN_ALERT_EVERY_SECONDS = 10 * 60
 # A task whose provider failure is at least this old loses the text that parks it (see _clear_provider_guards).
 PROVIDER_GUARD_SECONDS = 5 * 60
 
@@ -468,6 +473,7 @@ class NativeKanban(NativeOutcomes):
             self.kanban.call(request)
         self._clear_provider_guards()
         self._settle_native_orphans()
+        self._report_native_disagreements()
         if finishes:
             self.kanban.call({'op': 'snapshot'})
             with self.transaction():
@@ -505,8 +511,11 @@ class NativeKanban(NativeOutcomes):
                     and native.get('last_failure_error') == FAILURE_TEXT[task['error_code']]):
                 self.kanban.call({'op': 'clear_failure_text', 'id': native['id']})
 
-    def _settle_native_orphans(self):
-        """Archive the native tasks that wait although Coconut finished their request.
+    def _native_orphans(self, slack=0):
+        """Return the native tasks of finished requests that still wait, each with its native task.
+
+        This is the one rule that the settle pass and the disagreement report both read. `slack` moves the due time
+        back, so the report names only the tasks that the settle pass should already have archived.
 
         A request that Coconut finished (completed or cancelled) can leave its native task in ready, todo, triage or
         blocked, for example when the worker ended a run without a terminal call and Hermes gave up after two
@@ -522,12 +531,12 @@ class NativeKanban(NativeOutcomes):
                    if native['status'] in ('ready', 'todo', 'triage', 'blocked', 'scheduled') and not native.get('unbound')
                    and not native.get('dependencies') and native.get('block_kind') not in ('capability', 'needs_input')}
         if not waiting:
-            return
+            return []
         with self.lock:
             rows = [json.loads(row[0]) for row in self.db.execute(
                 'SELECT data FROM tasks WHERE id IN (SELECT value FROM json_each(?))', (json.dumps(list(waiting)),))]
-        cutoff = datetime.now(timezone.utc).timestamp() - SETTLE_SECONDS
-        plain_cutoff = datetime.now(timezone.utc).timestamp() - SETTLE_PLAIN_SECONDS
+        now = datetime.now(timezone.utc).timestamp()
+        cutoff, plain_cutoff = now - SETTLE_SECONDS - slack, now - SETTLE_PLAIN_SECONDS - slack
         candidates = []
         for task in rows:
             if (task['status'] not in ('completed', 'cancelled') or task['id'] in self.running
@@ -541,17 +550,37 @@ class NativeKanban(NativeOutcomes):
             if finished <= (plain_cutoff if not task.get('_native_outcome_id') else cutoff):
                 candidates.append(task)
         if not candidates:
-            return
+            return []
         with self.lock:
             held = {row[0] for row in self.db.execute(
                 "SELECT json_extract(data,'$.task_id') FROM decisions WHERE json_extract(data,'$.status')='pending' "
                 "AND json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?))",
                 (json.dumps([task['id'] for task in candidates]),))}
-            settled = [task for task in candidates if task['id'] not in held and not self._task_paused(task)
-                       and not self._automatic_work_is_paused(task)]
+            return [(task, waiting[task['id']]) for task in candidates if task['id'] not in held and not self._task_paused(task)
+                    and not self._automatic_work_is_paused(task)]
+
+    def _settle_native_orphans(self):
+        """Archive the native tasks that wait although Coconut finished their request. See `_native_orphans`."""
         # A cancelled request has a summary too, but its work did not succeed, so only a completed one passes its result.
-        for task in settled[:SETTLE_BATCH]:
-            self.kanban.call({'op': 'archive_settled', 'id': waiting[task['id']]['id'], 'summary': (task.get('summary') or None) if task['status'] == 'completed' else None})
+        for task, native in self._native_orphans()[:SETTLE_BATCH]:
+            self.kanban.call({'op': 'archive_settled', 'id': native['id'], 'summary': (task.get('summary') or None) if task['status'] == 'completed' else None})
+
+    def _report_native_disagreements(self):
+        """Log the tasks on which Coconut and Hermes disagree, at most once in ORPHAN_ALERT_EVERY_SECONDS.
+
+        A finished request whose native task the settle pass should already have archived is a defect in one of the
+        two lifecycles. So is a native task that has no binding to any request. The health check of Care reads this line.
+        """
+        if time.monotonic() < getattr(self, '_orphan_report_after', 0):
+            return
+        self._orphan_report_after = time.monotonic() + ORPHAN_ALERT_EVERY_SECONDS
+        late = [native['id'] for _, native in self._native_orphans(ORPHAN_ALERT_SLACK_SECONDS)]
+        unbound = [native['id'] for native in self.kanban.tasks.values()
+                   if native.get('unbound') and native['status'] not in ('done', 'archived')]
+        if late or unbound:
+            logging.getLogger(__name__).warning(
+                'Coconut and Hermes disagree: %d finished requests keep a waiting native task (%s), %d native tasks have no request (%s).',
+                len(late), ', '.join(late[:5]), len(unbound), ', '.join(unbound[:5]))
 
     def _kanban_finished(self):
         with self.changed:
