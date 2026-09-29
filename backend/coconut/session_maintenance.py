@@ -19,10 +19,11 @@ SESSION_LOCK_WAIT_SECONDS = 5
 TIP_WINDOW_SECONDS = 30 * 86400
 TIPS_SETTING = 'sessions.tips-recorded.'
 # A VACUUM rewrites the store of one bot and takes minutes. The service stops new turns of that bot and waits this long for
-# its running turns to end. If one is still running, the bot goes on and maintenance tries again after the retry time.
+# its running turns to end. If one is still running, the bot goes on, and it goes on hold again only after the deferred time.
 VACUUM_DRAIN_SECONDS = 120
+# A bot with a running turn is not held at first. Maintenance tries again after this time (see VACUUM_IDLE_TRIES).
 VACUUM_RETRY_SECONDS = 15 * 60
-# After a pass that ends without a VACUUM, the bot goes on hold again only after this time.
+# After a pass that ends without a VACUUM, whatever the reason, the bot goes on hold again only after this time.
 VACUUM_DEFERRED_SECONDS = 6 * 60 * 60
 # A bot that has a running turn is not held at first. Maintenance tries again for a quiet moment, and only after this
 # many busy tries does the bot go on hold, so a bot with long turns loses two minutes once in many hours.
