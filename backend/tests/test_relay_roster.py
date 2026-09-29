@@ -20,7 +20,7 @@ class RelayRosterTests(unittest.TestCase):
         self.home.mkdir()
         self.current, self.peer = {'id': str(uuid4()), 'name': 'Desk'}, {'id': str(uuid4()), 'name': 'Dev', 'role': 'Code'}
         patches = (patch.dict(os.environ, HERMES_HOME=str(self.home)),
-                   patch.object(sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), SOURCE, *sys.path]))
+                   patch.object(sys, 'path', [str(Path(__file__).parents[1]), str(Path(__file__).parents[1] / 'coconut'), SOURCE, *sys.path]))
         for item in patches:
             item.start()
             self.addCleanup(item.stop)
