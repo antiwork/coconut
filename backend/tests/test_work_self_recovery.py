@@ -267,7 +267,7 @@ class WorkSelfRecoveryTests(unittest.TestCase):
 
     def test_retries_back_off_and_do_not_reserve_worker_capacity(self):
         from datetime import datetime, timezone
-        from coconut.work_recovery import retry_delay
+        from legacy_work_sync import retry_delay
         self.assertEqual([retry_delay(n) for n in range(8)], [0, 0, 300, 600, 1200, 2400, 3600, 3600])
         self.stranded()
         for attempt in range(2):
