@@ -116,7 +116,12 @@ class UnlinkDispatchIdleTests(unittest.TestCase):
             self.assertFalse(worker.is_alive())
             self.assertEqual(errors, [])
             self.assertEqual(trim_mock.call_count, 0 if restart else 1)
-            self.assertEqual(wait_timeouts, [.2 if restart or restart_during_trim else 1])
+            if restart or restart_during_trim:
+                self.assertEqual(wait_timeouts, [.2])
+            else:
+                # The pass rests first, so the wait is what remains of one second.
+                self.assertEqual(len(wait_timeouts), 1)
+                self.assertTrue(0 <= wait_timeouts[0] <= 1, wait_timeouts)
             if restart_during_trim:
                 self.assertTrue(self.service.take_service_restart())
                 self.assertTrue(self.service.stopping.is_set())

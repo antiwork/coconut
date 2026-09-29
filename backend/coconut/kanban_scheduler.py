@@ -234,7 +234,7 @@ class NativeKanban(NativeOutcomes):
 
     def _dispatch_kanban(self):
         from .work_capacity import execution_key, state as capacity_state
-        started = time.monotonic()
+        self._kanban_pass_started = time.monotonic()
         if self.restart_pending or self.stopping.is_set():
             # Finish committed turns, but neither adopt work nor claim/start any
             # new turn while the operator drain owns the dispatch gate.
@@ -324,8 +324,18 @@ class NativeKanban(NativeOutcomes):
                 with self.changed:
                     self._kanban_trimming = False
                     self.changed.notify_all()
+        if self.restart_pending or self.stopping.is_set():
+            with self.changed:
+                self.changed.wait(.2)
+            return
+        # Every commit wakes the wait below, and a busy store commits several times a second. Passes would then
+        # run back to back and keep the service at full CPU. The pass rests for twice its own time, so a pass of
+        # 0.5 s or less uses at most a third of the time, and a longer pass rests for the longest rest. The time is
+        # wall-clock time. The dispatch gate is free here, and _dispatch_conversations admits chat messages at once.
+        rest = min(KANBAN_PASS_REST_SECONDS, 2 * (time.monotonic() - self._kanban_pass_started))
+        self.stopping.wait(rest)
         with self.changed:
-            self.changed.wait(.2 if self.restart_pending or self.stopping.is_set() else 1)
+            self.changed.wait(max(0.0, KANBAN_PASS_SECONDS - rest))
 
     def _publish_kanban_changes(self):
         visible = {t['id']: tuple(t.get(key) for key in ('status', 'priority', 'current_run_id', 'title',
