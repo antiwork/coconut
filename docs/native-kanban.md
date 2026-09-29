@@ -409,7 +409,8 @@ Each outcome has its own work session. Once an hour, with worktree retirement, C
    The second test exists because the search indexes fragment and keep their pages. One 4.5 GB store had 16% of its pages free,
    and a merge plus VACUUM took it to 0.95 GB. The disk must also hold two copies of the used pages plus 2 GiB, as the VACUUM of the Coconut database requires. Otherwise the result of the run says `vacuum_skipped`.
    A busy bot never has a quiet moment, so a due VACUUM puts the bot on hold. It keeps its queue and its running turns finish,
-   but no new turn starts, and each of its ready tasks waits as `scheduled`. Coconut waits up to two minutes for the running turns.
+   but no new turn starts, and each of its ready tasks waits as `scheduled`. A run that Coconut claimed before the hold
+   starts its turn after the hold. Only a claim for this bot counts as a live turn. Coconut waits up to two minutes for the running turns.
    Then it rewrites the store and ends the hold, even if the rewrite fails. If a turn is still running, there is no hold,
    and maintenance tries again after 15 minutes. If the pass ends without a VACUUM, for example because another process holds
    the store, the bot goes on hold again only after six hours. No other process may hold the store.

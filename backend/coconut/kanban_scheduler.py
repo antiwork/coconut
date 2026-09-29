@@ -288,6 +288,7 @@ class NativeKanban(NativeOutcomes):
             self._kanban_claiming += 1
             # Retirement keeps the worktrees of these outcomes while the claim runs.
             self._kanban_claim_outcomes = {row['execution_id'] for row in rows if row['state'] == 'ready'}
+            self._kanban_claim_bots = {row['bot_id'] for row in rows if row['state'] == 'ready'}
             # A lost response stays fenced until a later snapshot is reconciled.
             self._kanban_dispatch_uncertain = True
         def spawn(claim):
@@ -321,6 +322,7 @@ class NativeKanban(NativeOutcomes):
                 self._kanban_claiming -= 1
                 if not self._kanban_claiming:
                     self._kanban_claim_outcomes = set()
+                    self._kanban_claim_bots = set()
         self._publish_kanban_changes()
 
     def _idle_kanban(self):
@@ -447,6 +449,9 @@ class NativeKanban(NativeOutcomes):
                     pending_start = (item.get('_kanban_started') != claim['run_id'] and same_process
                                      and native.get('worker_pid') == claim.get('pid'))
                     status = item['status']
+                    if pending_start and self._store_held(item):
+                        # A store rewrite holds the bot. The claim starts its turn on a later tick, after the hold.
+                        continue
                     if pending_start and status in ('queued', 'scheduled') and not self.stopping.is_set() and not self.restart_pending:
                         item['_kanban_started'] = claim['run_id']
                         self._put(table, item)

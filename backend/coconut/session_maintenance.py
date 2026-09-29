@@ -144,7 +144,7 @@ class SessionMaintenance:
         if not self.lock.acquire(timeout=SESSION_LOCK_WAIT_SECONDS):
             return True
         try:
-            if self._kanban_claiming:
+            if bot_id in self._kanban_claim_bots:
                 return True
             live = [self._get('tasks', i)['bot_id'] for i, worker in self.running.items() if worker.is_alive()]
             live += [self._get('contexts', i)['bot_id'] for i, worker in self.context_threads.items() if worker.is_alive()]

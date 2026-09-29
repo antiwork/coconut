@@ -226,6 +226,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self._kanban_dispatching = False
         self._kanban_claiming = 0
         self._kanban_claim_outcomes = set()
+        self._kanban_claim_bots = set()
         # Bots whose session store a VACUUM rewrites. A bot in this set starts no new turn (see session_maintenance).
         self._store_hold = set()
         self._kanban_trimming = False
@@ -3017,7 +3018,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 task = self._get('tasks', context['task_id'])
                 if context.get('_decision_refresh') and refresh_active:
                     continue
-                if context['status'] != 'queued' or context['id'] in self.context_threads or self._task_paused(task):
+                if (context['status'] != 'queued' or context['id'] in self.context_threads or self._task_paused(task)
+                        or self._store_held(task)):
                     continue
                 self._ensure_execution_session(task)
                 key = execution_key(task)

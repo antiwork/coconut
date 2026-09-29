@@ -190,6 +190,13 @@ class SessionSelectionTests(unittest.TestCase):
         self.run_maintenance()
         self.assertEqual(self.vacuums, [False, True])
 
+    def test_a_claim_for_another_bot_does_not_delay_the_drain(self):
+        self.service._kanban_claim_bots = {'another-bot'}
+        self.assertFalse(self.service._bot_has_live_turn(self.bot['id']))
+        # A claim for this bot can still start a turn, so the bot has one.
+        self.service._kanban_claim_bots = {self.bot['id']}
+        self.assertTrue(self.service._bot_has_live_turn(self.bot['id']))
+
     def test_a_pass_without_a_due_vacuum_holds_nothing(self):
         with patch.object(self.service, '_finished_outcomes', return_value=set()):
             self.service.maintain_native_sessions(current=0)
