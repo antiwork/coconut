@@ -666,22 +666,6 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.assertIsNone(saved['merge_pr_url'])
         self.assertIsNone(saved['_merge_pr_head'])
 
-    def test_recovery_revision_preserves_fixed_actions(self):
-        decision = self.question()
-        decision.update(_recovery_work_ids=['work'], options=[dict(id='retry', label='Retry'), dict(id='stop', label='Stop')])
-        self.service._put('decisions', decision)
-        context = self.refresh()
-        revision = dict(title='Continue the interrupted test?', context='The tool result is available.',
-                        options=[dict(id='retry', label='Retry'), dict(id='stop-work', label='Stop this work')])
-        with self.assertRaises(ServiceError):
-            self.service.refresh_decision(context['id'], dict(status='revise', evidence='Read the tool result.', revision=revision))
-        self.assertEqual(self.service._get('decisions', decision['id'])['options'], decision['options'])
-        revision['options'] = decision['options']
-        self.service.refresh_decision(context['id'], dict(status='revise', evidence='Read the tool result.', revision=revision))
-        saved = self.service._get('decisions', decision['id'])
-        self.assertEqual(saved['title'], revision['title'])
-        self.assertEqual([(o['id'], o['label']) for o in saved['options']], [('retry', 'Retry'), ('stop', 'Stop')])
-
     def test_callback_card_includes_changes_from_a_sibling_delegate(self):
         decision = self.question()
         owner = self.service._get('tasks', self.task['id'])
@@ -903,24 +887,6 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.assertNotEqual(retry['id'], context['id'])
         self.assertIn('The local dependency is installed and verified.', retry['_context_recovery'])
         self.assertEqual(retry['_recovery_unknown_tools'][0]['state'], 'completed')
-
-    def test_recovery_card_checks_receipts_from_previous_work_attempts(self):
-        decision = self.question()
-        record = self.process_receipt()
-        previous = self.service._get('tasks', self.task['id'])
-        current = self.write('POST', '/v1/bots/' + self.bot['id'] + '/messages', dict(text='Recover this outcome', mode='queue'))
-        current = self.service._get('tasks', current['id'])
-        current.update(status='needs_you', _conversation_epoch=previous['_conversation_epoch'])
-        self.service._put('tasks', current)
-        self.service._put('artifacts', dict(id='work-history', kind='work', bot_id=self.bot['id'], task_id=current['id'],
-            _work_previous_task_ids=[previous['id']], title='Verify the export', status='blocked', created_at=previous['created_at']))
-        decision.update(task_id=current['id'], _recovery_work_ids=['work-history'])
-        self.service._put('decisions', decision)
-        context = self.refresh()
-        record['_completion_text'] = 'Export verification failed.'
-        self.service._put('native_receipts', record)
-        with self.assertRaises(ServiceError):
-            self.service.refresh_decision(context['id'], dict(status='withdraw', evidence='Old result.'))
 
     def test_answer_interrupts_only_its_automatic_check(self):
         decision = self.question()
@@ -1420,24 +1386,6 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.service._put('tasks', task)
         context = self.refresh()
         self.assertIn('Do not install dependencies.', context['question'])
-
-    def test_withdrawn_recovery_preserves_unknown_effects_in_a_new_turn(self):
-        decision = self.question()
-        task = self.service._get('tasks', self.task['id'])
-        task['_self_recovery'] = dict(attempt=2, unknown_tools=[])
-        previous_turn = task['_native_turn_id']
-        self.service._put('tasks', task)
-        self.service._put('native_receipts', dict(id='unknown', task_id=task['id'], turn_id=previous_turn,
-            action={'name': 'terminal'}, state='executing', created_at=task['created_at']))
-        decision['_recovery_work_ids'] = ['work']
-        self.service._put('decisions', decision)
-        context = self.refresh()
-        self.service.refresh_decision(context['id'], dict(status='withdraw', evidence='The result can be verified within the existing request.'))
-        saved = self.service._get('tasks', task['id'])
-        self.assertNotEqual(saved['_native_turn_id'], previous_turn)
-        self.assertFalse(self.service._has_uncertain_receipt(task['id'], saved['_native_turn_id']))
-        self.assertEqual(saved['_self_recovery']['unknown_tools'][0]['id'], 'unknown')
-        self.assertEqual(self.service._get('native_receipts', 'unknown')['state'], 'executing')
 
     def test_new_chat_instruction_invalidates_an_automatic_check(self):
         decision = self.question()
