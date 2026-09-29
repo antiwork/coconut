@@ -1,6 +1,6 @@
-"""Bound the event log, the native receipt journal, and the recovery text of contexts, and give free pages back.
+"""Bound the event log, the native receipt journal, and the old text of contexts and tasks, and give free pages back.
 
-The event log and the journal grow with every turn, and a context keeps its recovery text after it ends.
+The event log and the journal grow with every turn, and a context or a task keeps its recovery text after it ends.
 Maintenance deletes old rows and shortens old text in batches. Each batch is one short transaction,
 so a phone request or a tool call waits for at most one batch.
 """
@@ -48,6 +48,17 @@ KEPT_ACTIONS = ('kanban_create', 'cronjob_manage')
 # For a settled decision nothing reads them, and they made up 58 of the 67 MB of the contexts of a live store.
 # The question keeps this many characters, to name the context.
 CONTEXT_QUESTION_CHARACTERS = 200
+# A task that ended keeps the context text of its last claim and the history copies of its recoveries. A new
+# claim or recovery writes them again. Every pass that reads the whole table decodes them, so they go after this
+# time. The claim keeps a short start of its context, because some code tests whether a claim has one.
+TASK_HISTORY_DAYS = 3
+CLAIM_CONTEXT_CHARACTERS = 200
+TASK_HISTORY_FIELDS = (
+    ("json_type(data,'$._kanban_claim.context')='text' AND length(json_extract(data,'$._kanban_claim.context'))>:keep",
+     "json_set(data,'$._kanban_claim.context',substr(json_extract(data,'$._kanban_claim.context'),1,:keep))"),
+    ("json_array_length(data,'$._self_recovery.work')>0", "json_set(data,'$._self_recovery.work',json('[]'))"),
+    ("json_array_length(data,'$._self_recovery.decisions')>0", "json_set(data,'$._self_recovery.decisions',json('[]'))"),
+)
 BATCH_ROWS = 1000
 # A pause between batches lets waiting requests take the service lock.
 BATCH_PAUSE_SECONDS = 0.05
@@ -79,12 +90,12 @@ class DatabaseMaintenance:
             return {}
         self._next_database_maintenance = current + DATABASE_RETRY_SECONDS
         result = dict(events=self._prune_events(current), receipts=self._prune_receipts(current),
-                      contexts=self._prune_contexts())
+                      contexts=self._prune_contexts(), tasks=self._prune_tasks(current))
         result['vacuum'] = self._release_free_pages()
         logs = self.root / 'logs'
         result['rotated'] = [name for fd, name in ((1, 'service.log'), (2, 'error.log')) if rotate_log(fd, logs / name)]
         self._next_database_maintenance = current + DATABASE_MAINTENANCE_SECONDS
-        if result['events'] or result['receipts'] or result['contexts'] or result['vacuum']:
+        if result['events'] or result['receipts'] or result['contexts'] or result['tasks'] or result['vacuum']:
             logging.getLogger(__name__).warning('coconut.database_maintenance %s', json.dumps(result))
         return result
 
@@ -251,6 +262,35 @@ class DatabaseMaintenance:
             if len(ids) < BATCH_ROWS:
                 break
             self.stopping.wait(BATCH_PAUSE_SECONDS)
+        return shortened
+
+    def _prune_tasks(self, current):
+        """Drop the history text of the tasks that ended more than TASK_HISTORY_DAYS ago.
+
+        Each field of TASK_HISTORY_FIELDS is a copy that a later claim or recovery of the same task writes again.
+        The rows stay, with their status, links, and the marks that other code tests.
+        """
+        cutoff, shortened = stamp(current - TASK_HISTORY_DAYS * 86400), 0
+        for condition, change in TASK_HISTORY_FIELDS:
+            while not self._maintenance_stopped():
+                arguments = dict(cutoff=cutoff, keep=CLAIM_CONTEXT_CHARACTERS, rows=BATCH_ROWS)
+                with self.transaction():
+                    ids = [row[0] for row in self.db.execute(
+                        "SELECT id FROM tasks WHERE json_extract(data,'$.status') IN ('completed','failed','cancelled') "
+                        "AND COALESCE(json_extract(data,'$.updated_at'),json_extract(data,'$.created_at'),'')<:cutoff "
+                        f'AND {condition} LIMIT :rows', arguments)]
+                    if not ids:
+                        break
+                    self.db.execute(f'UPDATE tasks SET data={change} WHERE id IN (SELECT value FROM json_each(:ids))',
+                                    dict(arguments, ids=json.dumps(ids)))
+                    cache = self._shared_cache()
+                    if cache is not None:
+                        for key in ('tasks', 'task map', 'graphs', 'latest graphs'):
+                            cache.pop(key, None)
+                    shortened += len(ids)
+                if len(ids) < BATCH_ROWS:
+                    break
+                self.stopping.wait(BATCH_PAUSE_SECONDS)
         return shortened
 
     def _release_free_pages(self):

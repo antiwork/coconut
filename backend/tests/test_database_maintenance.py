@@ -109,6 +109,67 @@ class ContextRetentionTests(ServiceCase):
         self.assertEqual(result['contexts'], 1)
 
 
+class TaskHistoryTests(ServiceCase):
+    """A task that ended long ago loses the copies of its claims and recoveries. Other tasks keep them."""
+
+    CONTEXT = 'c' * 4000
+
+    def task(self, status, updated_at=OLD, **fields):
+        row = dict(id=str(uuid4()), bot_id=self.bot['id'], status=status, created_at=OLD, updated_at=updated_at,
+                   _kanban_claim=dict(run_id=7, native_id='t_1', context=self.CONTEXT, pid=3),
+                   _self_recovery=dict(attempt=1, previous_task_id='p', saved_tasks=[{'id': 'a'}], work=[{'id': 'w'}],
+                                       decisions=[{'id': 'd'}]))
+        row.update(fields)
+        with self.service.transaction():
+            self.service._put('tasks', row)
+        return row['id']
+
+    def stored(self, identity):
+        return json.loads(self.service.db.execute('SELECT data FROM tasks WHERE id=?', (identity,)).fetchone()[0])
+
+    def test_an_old_ended_task_loses_the_copies_and_keeps_the_marks(self):
+        ended = [self.task(status) for status in ('completed', 'failed', 'cancelled')]
+        self.assertEqual(self.service._prune_tasks(NOW), 9)
+        for identity in ended:
+            row = self.stored(identity)
+            self.assertEqual(len(row['_kanban_claim']['context']), database_maintenance.CLAIM_CONTEXT_CHARACTERS)
+            self.assertEqual((row['_kanban_claim']['run_id'], row['_kanban_claim']['pid']), (7, 3))
+            self.assertEqual((row['_self_recovery']['work'], row['_self_recovery']['decisions']), ([], []))
+            self.assertEqual((row['_self_recovery']['previous_task_id'], row['_self_recovery']['saved_tasks']), ('p', [{'id': 'a'}]))
+        self.assertEqual(self.service._prune_tasks(NOW), 0)
+
+    def test_a_recent_or_active_task_keeps_everything(self):
+        keep = [self.task('completed', updated_at=RECENT), self.task('working'), self.task('queued'), self.task('needs_you')]
+        self.assertEqual(self.service._prune_tasks(NOW), 0)
+        for identity in keep:
+            row = self.stored(identity)
+            self.assertEqual(row['_kanban_claim']['context'], self.CONTEXT)
+            self.assertEqual(row['_self_recovery']['work'], [{'id': 'w'}])
+
+    def test_a_task_without_a_claim_or_recovery_gets_no_new_field(self):
+        identity = self.task('completed')
+        with self.service.transaction():
+            row = self.stored(identity)
+            for key in ('_kanban_claim', '_self_recovery'):
+                row.pop(key)
+            self.service._put('tasks', row)
+        self.assertEqual(self.service._prune_tasks(NOW), 0)
+        self.assertTrue({'_kanban_claim', '_self_recovery'}.isdisjoint(self.stored(identity)))
+
+    def test_a_short_context_stays_and_the_pass_runs_in_batches(self):
+        short = self.task('completed', _kanban_claim=dict(context='short'))
+        ids = [self.task('failed') for _ in range(7)]
+        with patch.object(database_maintenance, 'BATCH_ROWS', 3), patch.object(self.service.stopping, 'wait'):
+            # The short task still has two recovery copies.
+            self.assertEqual(self.service._prune_tasks(NOW), 7 * 3 + 2)
+        self.assertEqual(self.stored(short)['_kanban_claim']['context'], 'short')
+        self.assertTrue(all(self.stored(identity)['_self_recovery']['work'] == [] for identity in ids))
+
+    def test_the_pass_reports_the_tasks_in_the_hourly_maintenance(self):
+        self.task('completed')
+        self.assertEqual(self.service.maintain_database(NOW)['tasks'], 3)
+
+
 class EventRetentionTests(ServiceCase):
     def setUp(self):
         super().setUp()
