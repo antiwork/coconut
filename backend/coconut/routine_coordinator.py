@@ -5,6 +5,12 @@ import json
 from uuid import UUID, uuid5
 
 
+# Statements of the routine pass. Each needs an index and no scan. A test reads the plan of each one.
+ROUTINE_EVENTS = 'SELECT type,data,created_at FROM events WHERE task_id=? AND bot_id=? ORDER BY seq'
+COMPLETION_EVENTS = 'SELECT type,data FROM events WHERE task_id=? AND bot_id=? ORDER BY seq'
+ROUTINE_DELIVERIES = "SELECT data FROM deliveries WHERE json_extract(data,'$.receipt.task_id')=? ORDER BY rowid DESC"
+
+
 class NativeRoutines:
     def _routine_continuation_input(self, task, job, owner):
         # The immutable native outcome is checked in the worker. Here require
@@ -14,9 +20,7 @@ class NativeRoutines:
                 or task.get('_self_recovery', {}).get('previous_task_id') != task['id']):
             return {}
         triggered, failed_at = False, None
-        for kind, raw, stamp in self.db.execute(
-                'SELECT type,data,created_at FROM events WHERE task_id=? AND bot_id=? ORDER BY seq',
-                (task['id'], task['bot_id'])):
+        for kind, raw, stamp in self.db.execute(ROUTINE_EVENTS, (task['id'], task['bot_id'])):
             data = json.loads(raw)
             if kind == 'routine.triggered':
                 if triggered or data != dict(routine_id=task['routine_id'], task_id=task['id']):
@@ -31,8 +35,7 @@ class NativeRoutines:
                     failed_at = stamp
         if not triggered or not failed_at:
             return {}
-        rows = self.db.execute("SELECT data FROM deliveries WHERE json_extract(data,'$.receipt.task_id')=? ORDER BY rowid DESC",
-                               (task['id'],))
+        rows = self.db.execute(ROUTINE_DELIVERIES, (task['id'],))
         for row in rows:
             delivery = json.loads(row[0])
             expected = dict(task_id=task['id'], native_task_id=task['_native_outcome_id'], status='queued')
@@ -83,8 +86,7 @@ class NativeRoutines:
         if task.get('_native_job_completion_receipt') == expected:
             return dict(expected, native_confirmed=True)
         triggered, succeeded = False, False
-        rows = self.db.execute('SELECT type,data FROM events WHERE task_id=? AND bot_id=? ORDER BY seq',
-                               (task['id'], task['bot_id']))
+        rows = self.db.execute(COMPLETION_EVENTS, (task['id'], task['bot_id']))
         for kind, raw in rows:
             data = json.loads(raw)
             if kind == 'routine.triggered':
@@ -250,6 +252,8 @@ class NativeRoutines:
             with self.lock:
                 tasks = self._all('tasks')
             for candidate in tasks:
+                if not candidate.get('_native_job') or candidate.get('_native_job_finished'):
+                    continue
                 with self.lock:
                     task = self._get('tasks', candidate['id'])
                     job = task.get('_native_job')
@@ -286,10 +290,13 @@ class NativeRoutines:
                         task['_native_finish_unconfirmed'] = not result['ok']
                         self._put('tasks', task)
             with self.transaction():
+                # One grouping of the tasks serves every routine. A task that a claim adds belongs to its own routine,
+                # so it cannot change the result for another routine.
+                index = None
                 for routine in self._all('routines'):
                     bot = self._get('bots', routine['bot_id'])
                     due = routine.get('next_run_at')
-                    if routine['id'] in finished or routine.get('error') or not routine['enabled'] or bot['archived'] or self._active_routine_task(routine['id']):
+                    if routine['id'] in finished or routine.get('error') or not routine['enabled'] or bot['archived'] or self._active_routine_task(routine['id'], index := index or self._routine_index()):
                         continue
                     if routine.get('_recover_claim') or (due and datetime.fromisoformat(due.replace('Z', '+00:00')) <= datetime.now(timezone.utc)):
                         self.claim_native_routine(routine)
