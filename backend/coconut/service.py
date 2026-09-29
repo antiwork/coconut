@@ -225,6 +225,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.chat_dispatcher: threading.Thread | None = None
         self._kanban_dispatching = False
         self._kanban_claiming = 0
+        self._kanban_trimming = False
         self._dependency_unlinking = False
         self._kanban_dispatch_uncertain = False
         self.pr_poller: threading.Thread | None = None
@@ -2934,7 +2935,6 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             if time.monotonic() >= next_recovery_tick:
                 next_recovery_tick = time.monotonic() + 5
                 try:
-                    self._queue_work_recoveries()
                     self._queue_context_recoveries()
                 except Exception:
                     logging.getLogger(__name__).exception('Work recovery failed; the next scan will retry.')
@@ -2981,11 +2981,15 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._dispatch_foreground()
                 self._kanban_dispatching = True
             result = self._dispatch_pending_locked()
-            # Retain the reservation after an uncertain native response until reconciliation succeeds.
-            with self.lock:
-                self._kanban_dispatching = False
-                self.changed.notify_all()
-            return result
+        # The sole queue-dispatch thread keeps its foreground reservation through idle.
+        # Claims and their reconciliation are finished. Slow idle-worker cleanup
+        # and condition waits must not exclude an otherwise valid dependency unlink.
+        self._idle_kanban()
+        # Retain the reservation after an uncertain native response until reconciliation succeeds.
+        with self.lock:
+            self._kanban_dispatching = False
+            self.changed.notify_all()
+        return result
 
     def _dispatch_pending_locked(self):
         if self.kanban is not None:

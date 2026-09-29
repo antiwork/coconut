@@ -234,7 +234,7 @@ class NativeKanban(NativeOutcomes):
 
     def _dispatch_kanban(self):
         from .work_capacity import execution_key, state as capacity_state
-        started = time.monotonic()
+        self._kanban_pass_started = time.monotonic()
         if self.restart_pending or self.stopping.is_set():
             # Finish committed turns, but neither adopt work nor claim/start any
             # new turn while the operator drain owns the dispatch gate.
@@ -242,7 +242,6 @@ class NativeKanban(NativeOutcomes):
             self._reconcile_kanban()
             with self.changed:
                 self._kanban_dispatch_uncertain = False
-                self.changed.wait(.2)
             return
         self.finish_inbox_swipes()
         self._drain_returns()
@@ -255,7 +254,6 @@ class NativeKanban(NativeOutcomes):
         with self.changed:
             self._kanban_dispatch_uncertain = False
             if self.restart_pending or self.stopping.is_set():
-                self.changed.wait(.2)
                 return
             self._cancel_stale_decision_refreshes()
             self.running = {k: v for k, v in self.running.items() if v.is_alive()}
@@ -303,8 +301,12 @@ class NativeKanban(NativeOutcomes):
         finally:
             with self.lock:
                 self._kanban_claiming -= 1
-        if hasattr(self.provider, 'trim_kanban_workers'):
-            with self.lock:
+        self._publish_kanban_changes()
+
+    def _idle_kanban(self):
+        with self.lock:
+            trim = not (self.restart_pending or self.stopping.is_set()) and hasattr(self.provider, 'trim_kanban_workers')
+            if trim:
                 keep = set()
                 for record in self._pending_completion_receipts():
                     if self._get('tasks', record['task_id'])['status'] == 'cancelled':
@@ -312,13 +314,25 @@ class NativeKanban(NativeOutcomes):
                     identity = self._receipt_native_worker_id(record)
                     if identity:
                         keep.add(identity)
-            self.provider.trim_kanban_workers(keep)
-        self._publish_kanban_changes()
+                # Restart must not close the provider after trim removes a worker
+                # from its registry but before that worker has terminated.
+                self._kanban_trimming = True
+        if trim:
+            try:
+                self.provider.trim_kanban_workers(keep)
+            finally:
+                with self.changed:
+                    self._kanban_trimming = False
+                    self.changed.notify_all()
+        if self.restart_pending or self.stopping.is_set():
+            with self.changed:
+                self.changed.wait(.2)
+            return
         # Every commit wakes the wait below, and a busy store commits several times a second. Passes would then
         # run back to back and keep the service at full CPU. The pass rests for twice its own time, so a pass of
         # 0.5 s or less uses at most a third of the time, and a longer pass rests for the longest rest. The time is
-        # wall-clock time. _dispatch_conversations admits chat messages at once, without this pass.
-        rest = min(KANBAN_PASS_REST_SECONDS, 2 * (time.monotonic() - started))
+        # wall-clock time. The dispatch gate is free here, and _dispatch_conversations admits chat messages at once.
+        rest = min(KANBAN_PASS_REST_SECONDS, 2 * (time.monotonic() - self._kanban_pass_started))
         self.stopping.wait(rest)
         with self.changed:
             self.changed.wait(max(0.0, KANBAN_PASS_SECONDS - rest))

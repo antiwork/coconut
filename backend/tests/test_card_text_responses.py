@@ -9,6 +9,9 @@ import test_decision_inbox as inbox_tests
 import test_message_drafts as draft_tests
 from coconut.hermes_worker import conversation_input
 from coconut.service import ServiceError, YieldForDecision
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class CardTextResponseTests(unittest.TestCase):

@@ -29,6 +29,7 @@ class KanbanPassRestTests(unittest.TestCase):
         self.service.changed.wait = lambda timeout=None: self.waits.append(timeout)
         with patch.object(kanban_scheduler, 'time', fake), patch.object(self.service.stopping, 'wait', self.rests.append):
             self.service._dispatch_kanban()
+            self.service._idle_kanban()
 
     def test_a_slow_pass_rests_for_twice_its_time_up_to_one_second(self):
         self.run_pass(0.3)
