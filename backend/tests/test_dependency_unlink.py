@@ -255,6 +255,92 @@ class DependencyUnlinkTests(unittest.TestCase):
             self.unlink(source)
         self.assertEqual(len(self.requests), 2)
 
+    def wait_receipt(self, child, target, **fields):
+        record = dict(id=str(uuid4()), task_id=child['id'], state='completed', action={'name': 'coconut_wait'},
+                      _wait_task_id=target['id'], _wait_session_id=target['session_id'])
+        self.service._put('native_receipts', record | fields)
+        return record
+
+    def test_a_queued_owner_with_waits_that_have_their_answer_does_not_block_unlink(self):
+        # The owner cannot run before the unlink, so it cannot consume the answers that wait for it.
+        child, parent, source = self.setup_edge()
+        finished = dict(child, id=str(uuid4()), status='failed', summary='The model provider stopped.', _native_outcome_id='t_44444444')
+        finished['_execution_session_id'] = finished['id']
+        self.service._put('tasks', finished)
+        self.wait_receipt(child, finished)
+        self.service._put('tasks', child | {'_background_completion': ['Reply from the other bot: done.']})
+        self.assertEqual(self.unlink(source)['status'], 'unlinked')
+
+    def test_a_queued_owner_that_still_waits_for_running_work_blocks_unlink(self):
+        child, parent, source = self.setup_edge()
+        running = dict(child, id=str(uuid4()), status='working', _native_outcome_id='t_44444444')
+        running['_execution_session_id'] = running['id']
+        self.service._put('tasks', running)
+        self.wait_receipt(child, running)
+        with self.assertRaisesRegex(ServiceError, 'owner work'):
+            self.unlink(source)
+        self.assertEqual(self.requests, [])
+
+    def test_only_a_wait_with_an_answer_is_settled(self):
+        # Checked on the helper itself, because a running target also blocks the unlink through its own task.
+        child, parent, source = self.setup_edge()
+        target = dict(child, id=str(uuid4()), status='working', _native_outcome_id='t_44444444')
+        target['_execution_session_id'] = target['id']
+        self.service._put('tasks', target)
+        record = self.wait_receipt(child, target)
+        self.assertTrue(self.service._background_pending(child['id'], ignore_settled=True))
+        self.assertTrue(self.service._background_pending(child['id']))
+        self.service._put('tasks', target | {'status': 'failed', 'summary': 'The model provider stopped.'})
+        self.assertFalse(self.service._wait_settled(dict(record, _wait_task_id=None)))
+        self.assertTrue(self.service._wait_settled(record))
+        self.assertFalse(self.service._background_pending(child['id'], ignore_settled=True))
+        # The plain check still counts the undelivered wait.
+        self.assertTrue(self.service._background_pending(child['id']))
+
+    def test_a_relay_wait_is_settled_only_by_a_returned_result_and_a_process_never(self):
+        child, parent, source = self.setup_edge()
+        recipient = dict(child, id=str(uuid4()), status='working', _native_outcome_id='t_44444444')
+        recipient['_execution_session_id'] = recipient['id']
+        self.service._put('tasks', recipient)
+        relay = dict(id=str(uuid4()), task_id=child['id'], state='completed', action={'name': 'message_agent'},
+                     _relay_task_id=recipient['id'])
+        self.service._put('native_receipts', relay)
+        self.assertFalse(self.service._wait_settled(relay))
+        self.assertTrue(self.service._background_pending(child['id'], ignore_settled=True))
+        self.service._put('tasks', recipient | {'_native_relay_result': {'text': 'Verified.', 'failed': False}})
+        self.assertTrue(self.service._wait_settled(relay))
+        self.assertFalse(self.service._background_pending(child['id'], ignore_settled=True))
+        # A process subscription has no answer to read here, so it always blocks.
+        process = dict(id=str(uuid4()), task_id=child['id'], state='completed', action={'name': 'terminal'},
+                       result=json.dumps({'notify_on_complete': True, 'session_id': 'proc_1'}))
+        self.service._put('native_receipts', process)
+        self.assertFalse(self.service._wait_settled(process))
+        self.assertTrue(self.service._background_pending(child['id'], ignore_settled=True))
+
+    def test_a_tool_call_of_an_earlier_turn_does_not_keep_a_queued_owner_busy(self):
+        child, parent, source = self.setup_edge()
+        child['_native_turn_id'] = 'current-turn'
+        self.service._put('tasks', child)
+        self.service._put('native_receipts', dict(id='old-wait', task_id=child['id'], turn_id='earlier-turn', state='executing',
+                                                  action={'name': 'process_manage'}))
+        self.assertEqual(self.unlink(source)['status'], 'unlinked')
+
+    def test_a_tool_call_of_the_current_turn_or_an_open_command_still_blocks(self):
+        child, parent, source = self.setup_edge()
+        child['_native_turn_id'] = 'current-turn'
+        self.service._put('tasks', child)
+        self.service._put('native_receipts', dict(id='live', task_id=child['id'], turn_id='current-turn', state='executing',
+                                                  action={'name': 'process_manage'}))
+        with self.assertRaisesRegex(ServiceError, 'owner work'):
+            self.unlink(source)
+        self.service._put('native_receipts', dict(id='live', task_id=child['id'], turn_id='current-turn', state='completed',
+                                                  action={'name': 'process_manage'}))
+        self.service._put('native_receipts', dict(id='command', task_id=child['id'], turn_id='earlier-turn', state='executing',
+                                                  action={'name': 'terminal'}))
+        with self.assertRaisesRegex(ServiceError, 'owner work'):
+            self.unlink(source)
+        self.assertEqual(self.requests, [])
+
     def test_unlink_receipt_scan_ignores_unrelated_finished_tasks(self):
         child, parent, source = self.setup_edge()
         related = dict(child, id=str(uuid4()), status='completed', _native_outcome_id='t_44444444')

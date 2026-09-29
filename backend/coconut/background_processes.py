@@ -100,7 +100,29 @@ class BackgroundProcesses:
                     self._put('native_receipts', record)
         self.db.execute("INSERT INTO settings VALUES ('process_deliveries_migrated','true')")
 
-    def _background_pending(self, task_id, *, finishing_task_id=None, excluding_task_ids=()):
+    def _wait_settled(self, record):
+        """True when the wait of a receipt has its answer and only the delivery is missing.
+
+        A relay wait is settled when the other bot returned its result. A task, process, or decision wait is settled
+        when its completion text exists. A process subscription is never settled here.
+        """
+        from .service import ServiceError
+        try:
+            if record.get('_relay_task_id'):
+                return bool(self._get('tasks', record['_relay_task_id']).get('_native_relay_result'))
+            if record.get('_wait_task_id') or record.get('_wait_process_receipt') or record.get('_wait_decision_id'):
+                return self._wait_completion(record, self._get('tasks', record['task_id'])) is not None
+        except (ServiceError, KeyError):
+            return False
+        return False
+
+    def _background_pending(self, task_id, *, finishing_task_id=None, excluding_task_ids=(), ignore_settled=False):
+        """True while a process, a relay, or a wait of the task, or of a turn of its assignment, has no delivery.
+
+        ignore_settled skips the waits that already have their answer, and a queued turn that carries delivered answers
+        of any kind. Such a turn does not run now: the caller holds the dispatch gate, which the dispatcher needs. The
+        answer reaches an owner only when the owner runs, so it says nothing about work that runs now.
+        """
         with self.lock:
             turns = [json.loads(row[0]) for row in self.db.execute(
                 "SELECT data FROM tasks WHERE id=? OR json_extract(data, '$._assignment_task_id')=?",
@@ -114,9 +136,11 @@ class BackgroundProcesses:
                 (task_id, task_id))
             return (any((subscription(r) or r.get('_relay_task_id') or r.get('_wait_task_id') or r.get('_wait_process_receipt') or r.get('_wait_decision_id')) and not r.get('_process_delivery')
                         and not (r.get('_relay_task_id') in excluding_task_ids or r.get('_wait_task_id') in excluding_task_ids)
+                        and not (ignore_settled and self._wait_settled(r))
                         for r in (json.loads(row[0]) for row in receipts))
                     or any(t['id'] != finishing_task_id and t.get('_background_completion')
-                           and t['status'] in ('queued', 'working', 'needs_you', 'paused') for t in turns))
+                           and t['status'] in (('working', 'needs_you', 'paused') if ignore_settled else ('queued', 'working', 'needs_you', 'paused'))
+                           for t in turns))
 
     def _pending_completion_receipts(self):
         with self.lock:
