@@ -569,14 +569,20 @@ class NativeKanban(NativeOutcomes):
         """Log the tasks on which Coconut and Hermes disagree, at most once in ORPHAN_ALERT_EVERY_SECONDS.
 
         A finished request whose native task the settle pass should already have archived is a defect in one of the
-        two lifecycles. So is a native task that has no binding to any request. A task must stay on the list through
+        two lifecycles. So is a native task that has no binding to any request, and a task that adoption skips on
+        purpose stays on the list, because nothing else owns it. A task must stay on the list through
         two reports in a row. The snapshot can still show a task that the settle pass just archived, or one that
         adoption has not bound yet, and the next report no longer lists it. The health check of Care reads the line.
         """
         if time.monotonic() < getattr(self, '_orphan_report_after', 0):
             return
         self._orphan_report_after = time.monotonic() + ORPHAN_ALERT_EVERY_SECONDS
-        late = {native['id'] for _, native in self._native_orphans(ORPHAN_ALERT_SLACK_SECONDS)}
+        try:
+            late = {native['id'] for _, native in self._native_orphans(ORPHAN_ALERT_SLACK_SECONDS)}
+        except Exception:
+            # The report only observes. A failed read must not stop the dispatcher pass around it.
+            logging.getLogger(__name__).exception('The disagreement report failed; the next report retries.')
+            return
         unbound = {native['id'] for native in self.kanban.tasks.values()
                    if native.get('unbound') and native['status'] not in ('done', 'archived')}
         listed, self._orphan_listed = getattr(self, '_orphan_listed', (set(), set())), (late, unbound)

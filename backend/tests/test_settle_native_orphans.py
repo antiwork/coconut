@@ -221,6 +221,12 @@ class SettleSchedulerTests(unittest.TestCase):
         with self.assertNoLogs('coconut.kanban_scheduler', level='WARNING'):
             NativeKanban._report_native_disagreements(service)
 
+    def test_a_failed_read_does_not_stop_the_pass(self):
+        service = self.service([], {})
+        service._native_orphans = MagicMock(side_effect=RuntimeError('store is busy'))
+        with self.assertLogs('coconut.kanban_scheduler', level='ERROR'):
+            NativeKanban._report_native_disagreements(service)
+
     def test_the_report_runs_once_in_its_interval(self):
         service = self.service([], {'x': dict(id='t_x', status='todo', unbound=True)})
         self.report(service)
