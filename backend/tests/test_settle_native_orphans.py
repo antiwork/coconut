@@ -74,6 +74,50 @@ class ArchiveSettledTests(unittest.TestCase):
         ''')
 
 
+@unittest.skipUnless(SOURCE and PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+class FinishAtSourceTests(ArchiveSettledTests):
+    """A finished Coconut request must not leave its native task behind."""
+
+    def test_a_plain_request_that_finished_archives_its_waiting_native_task_at_the_next_sync(self):
+        self.run_native('''
+            parent = native('parent')
+            child = native('child', parents=[parent])
+            for identity, name in ((parent, 'parent'), (child, 'child')):
+                row = dict(id=name, state='done', input=name, bot_id='care', title=name, priority=10, workspace=str(home / name),
+                           workspace_changed=False, native_id=None)
+                board.sync([row])
+                assert kb.get_task(conn, identity).status == 'archived', (name, kb.get_task(conn, identity).status)
+        ''')
+
+    def test_an_outcome_a_review_and_a_running_task_stay_as_they_are(self):
+        self.run_native('''
+            outcome = native('outcome')
+            row = dict(id='outcome', state='done', input='outcome', bot_id='care', title='outcome', priority=10,
+                       workspace=str(home / 'outcome'), workspace_changed=False, native_id=outcome)
+            board.sync([row])
+            assert kb.get_task(conn, outcome).status == 'ready', kb.get_task(conn, outcome).status
+            running = native('running')
+            assert kb.claim_task(conn, running) is not None
+            board.sync([dict(row, id='running', native_id=None, input='running')])
+            assert kb.get_task(conn, running).status == 'running'
+        ''')
+
+    def test_a_finish_that_native_completion_refuses_archives_the_task(self):
+        self.run_native('''
+            identity = native('turn')
+            # A plain request is bound without an outcome record. bind() adds one for an outcome.
+            conn.execute('DELETE FROM coconut_outcomes WHERE native_id=?', (identity,))
+            task = kb.claim_task(conn, identity)
+            # A parent that is still open, as when a worker or a recovery linked one during the turn.
+            open_parent = native('open')
+            with kb.write_txn(conn):
+                conn.execute('INSERT INTO task_links(parent_id, child_id) VALUES (?, ?)', (open_parent, identity))
+            assert kb.complete_task(conn, identity, summary='Complete.', expected_run_id=task.current_run_id) is False
+            assert board.finish(identity, task.current_run_id, 'done', 'Complete.') is True
+            assert kb.get_task(conn, identity).status == 'archived', kb.get_task(conn, identity).status
+        ''')
+
+
 class SettleSchedulerTests(unittest.TestCase):
     def service(self, tasks, natives, running=(), held=(), paused=False):
         calls = []

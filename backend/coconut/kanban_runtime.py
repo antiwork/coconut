@@ -75,6 +75,11 @@ class Board:
         for row in rows:
             old = self.conn.execute('SELECT native_id,intent FROM coconut_bindings WHERE external_id=?',
                                     (row['id'],)).fetchone()
+            if old and row['state'] in ('done', 'archived') and not row.get('native_id'):
+                # Coconut finished a plain request. Its native task only carried the turn, and nothing continues it.
+                # A task that still waits (a dependency the worker linked, a retry that no turn follows) would hold its
+                # dependents for ever, whatever the last synchronized state was.
+                self.archive_settled(old[0])
             intent = fingerprint({k: row[k] for k in ('state', 'input')})
             if row.get('native_id'):
                 task = self.kb.get_task(self.conn, old[0] if old else row['native_id'])
@@ -373,7 +378,11 @@ class Board:
                 outcome='worker_protocol_violation' if state == 'done' else 'worker_failed', release_claim=True, end_run=True)
             return True
         if state == 'done':
-            return self.kb.complete_task(self.conn, identity, summary=summary, expected_run_id=run_id)
+            if self.kb.complete_task(self.conn, identity, summary=summary, expected_run_id=run_id):
+                return True
+            # A parent that the worker linked during the turn keeps the completion from applying. Coconut has finished
+            # this request, so archive the task. It then releases its dependents, and Hermes never holds it again.
+            return self.kb.archive_task(self.conn, identity)
         if state == 'review':
             return self.kb.request_review(self.conn, identity, summary=summary, expected_run_id=run_id)
         if state == 'archived':
