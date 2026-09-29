@@ -1,15 +1,19 @@
-"""The legacy builder of automatic Work rows, for tests only.
+"""The legacy builders of automatic Work rows and of work recoveries, for tests only.
 
-Production never runs it. With Hermes, a Work row comes from a native outcome, and Service._sync_automatic_work
+Production never runs them. With Hermes, a Work row comes from a native outcome, and Service._sync_automatic_work
 returned at once. Fixture mode (a demo mode) no longer builds these rows. Many tests still build them this way, so
 the code lives here. A test module adds the methods to Service for its own tests and removes them afterwards:
 
     import legacy_work_sync
     setUpModule, tearDownModule = legacy_work_sync.scope()
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from coconut.service import Service
+
+
+def retry_delay(attempt):
+    return 0 if attempt < 2 else min(3600, 300 * 2 ** min(attempt - 2, 4))
 
 
 class LegacyWorkSync:
@@ -180,7 +184,104 @@ class LegacyWorkSync:
 
 
 
-NAMES = ('_work_title', '_sync_followup_work', '_resume_tracked_work', '_automatic_work_state', '_sync_automatic_work')
+    def _queue_work_recoveries(self):
+        from coconut.service import now
+        with self.transaction():
+            if self.stopping.is_set() or self.restart_pending:
+                return
+            self._retire_obsolete_recovery_questions()
+            items = [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr') and not a.get('_hidden') and not a.get('_native_outcome_id')]
+            if not any(not self._retained_terminal_work(self._work_outcome_artifact(a))
+                       and not self._work_outcome_artifact(a).get('_native_outcome_id') for a in items):
+                return
+            # Keep terminal peer reports as evidence when retained work still needs observation.
+            tasks = {t['id']: t for t in self._all('tasks')}
+            items = [a for a in items if a['kind'] == 'pr' or (a.get('status') not in ('completed', 'cancelled')
+                     and tasks.get(a.get('task_id'), {}).get('status') in ('completed', 'failed', 'waiting'))]
+            canonical = {}
+            groups = {}
+            for item in items:
+                groups.setdefault(self._work_identity(item), []).append(item)
+            for peers in groups.values():
+                outcome = self._work_outcome_artifact(peers[0])
+                selected = self._pr_review_owner(peers) if outcome['kind'] == 'pr' else outcome
+                if outcome.get('_native_outcome_id'):
+                    selected = None
+                for peer in peers:
+                    canonical[peer['id']] = selected
+            projected = self._work_projection([dict(a) for a in items])
+            records = self._work_receipts()
+            handled = set()
+            for row in projected:
+                if row.get('work_state') != 'needs_recovery' or row.get('work_dismissal_id'):
+                    continue
+                item = canonical[row['id']]
+                if item is None:
+                    continue
+                owner = tasks.get(item.get('_review_task_id') if item['kind'] == 'pr' else item.get('task_id'))
+                if not owner or owner['id'] in handled:
+                    continue
+                bot = self._get('bots', owner['bot_id'])
+                if (not self._process_observation_current(owner, bot) or self._task_paused(owner)
+                        or owner['status'] not in ('completed', 'failed', 'waiting')):
+                    continue
+                chain = self._work_chain(owner, tasks, records, include_continuations=True)
+                ids = set(chain)
+                if (any(t['status'] in ('queued', 'working', 'scheduled', 'needs_you') for t, _ in chain.values())
+                        or any(d['task_id'] in ids and d['status'] == 'pending' for d in self._all('decisions'))
+                        or any(c['task_id'] in ids and c['status'] in ('queued', 'working') for c in self._all('contexts'))
+                        or any(self.running.get(i) and self.running[i].is_alive() for i in ids)):
+                    continue
+                # One verification turn owns all affected outcomes from this assignment.
+                affected = [a for a in items if any(p['id'] == a['id'] and p.get('work_state') == 'needs_recovery'
+                            and not p.get('work_dismissal_id') for p in projected)
+                            and canonical[a['id']] is not None
+                            and canonical[a['id']].get('_review_task_id' if canonical[a['id']]['kind'] == 'pr' else 'task_id') == owner['id']]
+                handled.add(owner['id'])
+                previous = owner.get('_self_recovery', {})
+                delay = retry_delay(previous.get('attempt', 0))
+                scheduled = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat() if delay else None
+                context = dict(attempt=previous.get('attempt', 0) + 1,
+                    previous_task_id=owner['id'], previous_turn_id=owner.get('_native_turn_id'),
+                    previous_status=owner['status'], failure=owner['summary'],
+                    work=[self.work_context_input(a['id']) | {'key': a.get('_work_key')}
+                          for a in {canonical[p['id']]['id']: canonical[p['id']] for p in affected}.values()],
+                    unknown_tools=[{k: r.get(k) for k in ('id', 'task_id', 'turn_id', 'action', 'created_at')}
+                                   for r in records if r['task_id'] in ids and r['state'] == 'executing'],
+                    decisions=[self._public(d) for d in self._all('decisions') if d['task_id'] in ids])
+                context['decisions'] = list({d['id']: d for d in previous.get('decisions', [])
+                    + [d for work in context['work'] for d in work.get('decisions', [])] + context['decisions']}.values())
+                context['unknown_tools'] = list({r['id']: r for r in previous.get('unknown_tools', []) + context['unknown_tools']}.values())
+                context['saved_tasks'] = [dict(id=t['id'], title=t['title'], summary=t['summary'],
+                    todos=t.get('_work_todos'), bot_messages=t.get('_bot_messages', [])) for t, _ in chain.values()]
+                task = self._send(bot, dict(text=item['title'], mode='queue', scheduled_at=scheduled), thread_id=owner['thread_id'],
+                    parent_task_id=owner['id'], conversation_bot_id=owner['conversation_bot_id'],
+                    record_message=False, human_authored=False, work_item=item)
+                task = self._get('tasks', task['id'])
+                task.update(_self_recovery=context, _conversation_epoch=self._setting('conversation_epoch'),
+                            summary='Will retry automatically' if scheduled else 'Queued to check unfinished work')
+                self._put('tasks', task)
+                outcomes = {self._work_identity(target): target for target in affected}
+                for target in outcomes.values():
+                    outcome = self._work_outcome_artifact(target)
+                    if (outcome['kind'] == 'work' and outcome.get('_hidden')
+                            and outcome.get('task_id') == owner['id']):
+                        affected.append(outcome)
+                for target in affected:
+                    if target['kind'] == 'work':
+                        self._carry_work_history(target, dict(target))
+                        target.update(task_id=task['id'], status='waiting', activity='Queued to check unfinished work',
+                                      observed_at=now(), _work_resuming=True)
+                    self._put('artifacts', target)
+                for target in outcomes.values():
+                    self._resume_pr_reviews(target, task, reset_heads=False)
+                for target in affected:
+                    target = self._get('artifacts', target['id'])
+                    self._event('artifact.updated', self._work_projection([dict(target)])[0], target['bot_id'], task['id'])
+                self._event('work.recovery_queued', dict(task_id=task['id'], previous_task_id=owner['id'],
+                    work_ids=[a['id'] for a in affected]), bot['id'], task['id'])
+
+NAMES = ('_queue_work_recoveries', '_work_title', '_sync_followup_work', '_resume_tracked_work', '_automatic_work_state', '_sync_automatic_work')
 
 
 def scope():

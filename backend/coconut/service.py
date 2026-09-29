@@ -2934,7 +2934,6 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             if time.monotonic() >= next_recovery_tick:
                 next_recovery_tick = time.monotonic() + 5
                 try:
-                    self._queue_work_recoveries()
                     self._queue_context_recoveries()
                 except Exception:
                     logging.getLogger(__name__).exception('Work recovery failed; the next scan will retry.')
