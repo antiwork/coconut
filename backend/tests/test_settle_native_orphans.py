@@ -65,70 +65,26 @@ class ArchiveSettledTests(unittest.TestCase):
             assert kb.get_task(conn, done).status == 'done'
         ''')
 
+    def test_a_ready_task_completes_with_the_result_of_its_request_and_a_todo_task_is_archived(self):
+        self.run_native('''
+            ready = native('ready')
+            assert board.archive_settled(ready, 'Ready to review.') is True
+            task = kb.get_task(conn, ready)
+            # A successor and a routine report read the result of a done task.
+            assert task.status == 'done', task.status
+            assert kb.latest_summary(conn, ready) == 'Ready to review.', kb.latest_summary(conn, ready)
+            parent = native('parent')
+            child = native('child', parents=[parent])
+            assert board.archive_settled(child, 'Ready to review.') is True
+            assert kb.get_task(conn, child).status == 'archived'
+        ''')
+
     def test_a_todo_task_waiting_on_a_stuck_parent_is_archived(self):
         self.run_native('''
             parent = native('parent')
             child = native('child', parents=[parent])
             assert board.archive_settled(child) is True
             assert kb.get_task(conn, child).status == 'archived'
-        ''')
-
-
-@unittest.skipUnless(SOURCE and PYTHON, 'Set Coconut Hermes paths for native integration checks.')
-class FinishAtSourceTests(ArchiveSettledTests):
-    """A finished Coconut request must not leave its native task behind."""
-
-    def test_a_plain_request_that_finished_archives_its_waiting_native_task_at_the_next_sync(self):
-        self.run_native('''
-            parent = native('parent')
-            child = native('child', parents=[parent])
-            for identity, name in ((parent, 'parent'), (child, 'child')):
-                row = dict(id=name, state='done', input=name, bot_id='care', title=name, priority=10, workspace=str(home / name),
-                           workspace_changed=False, native_id=None)
-                board.sync([row])
-                assert kb.get_task(conn, identity).status == 'archived', (name, kb.get_task(conn, identity).status)
-        ''')
-
-    def test_a_task_that_returns_to_ready_after_the_done_state_was_synced_is_archived(self):
-        # The sync skips a row whose intent did not change. A dependency wait can move the task back to ready later.
-        self.run_native('''
-            from coconut.kanban_runtime import fingerprint
-            identity = native('turn')
-            row = dict(id='turn', state='done', input='turn', bot_id='care', title='turn', priority=10,
-                       workspace=str(home / 'turn'), workspace_changed=False, native_id=None)
-            conn.execute('UPDATE coconut_bindings SET intent=? WHERE external_id=?',
-                         (fingerprint({'state': 'done', 'input': 'turn'}), 'turn'))
-            assert kb.get_task(conn, identity).status == 'ready'
-            board.sync([row])
-            assert kb.get_task(conn, identity).status == 'archived', kb.get_task(conn, identity).status
-        ''')
-
-    def test_an_outcome_a_review_and_a_running_task_stay_as_they_are(self):
-        self.run_native('''
-            outcome = native('outcome')
-            row = dict(id='outcome', state='done', input='outcome', bot_id='care', title='outcome', priority=10,
-                       workspace=str(home / 'outcome'), workspace_changed=False, native_id=outcome)
-            board.sync([row])
-            assert kb.get_task(conn, outcome).status == 'ready', kb.get_task(conn, outcome).status
-            running = native('running')
-            assert kb.claim_task(conn, running) is not None
-            board.sync([dict(row, id='running', native_id=None, input='running')])
-            assert kb.get_task(conn, running).status == 'running'
-        ''')
-
-    def test_a_finish_that_native_completion_refuses_archives_the_task(self):
-        self.run_native('''
-            identity = native('turn')
-            # A plain request is bound without an outcome record. bind() adds one for an outcome.
-            conn.execute('DELETE FROM coconut_outcomes WHERE native_id=?', (identity,))
-            task = kb.claim_task(conn, identity)
-            # A parent that is still open, as when a worker or a recovery linked one during the turn.
-            open_parent = native('open')
-            with kb.write_txn(conn):
-                conn.execute('INSERT INTO task_links(parent_id, child_id) VALUES (?, ?)', (open_parent, identity))
-            assert kb.complete_task(conn, identity, summary='Complete.', expected_run_id=task.current_run_id) is False
-            assert board.finish(identity, task.current_run_id, 'done', 'Complete.') is True
-            assert kb.get_task(conn, identity).status == 'archived', kb.get_task(conn, identity).status
         ''')
 
 
@@ -179,6 +135,19 @@ class SettleSchedulerTests(unittest.TestCase):
         service = self.service(tasks, natives, held=['card'])
         # Only the triage task of an outcome that no block check or card holds goes.
         self.assertEqual(self.settled(service), ['t_plain'])
+
+    def test_a_plain_request_settles_after_minutes_and_an_outcome_after_a_day(self):
+        from coconut.kanban_scheduler import SETTLE_PLAIN_SECONDS
+        recent = self.ago(SETTLE_PLAIN_SECONDS + 60)
+        natives = {'plain': dict(id='t_plain', status='triage'), 'young': dict(id='t_young', status='triage'),
+                   'outcome': dict(id='t_outcome', status='triage')}
+        tasks = [dict(id='plain', status='completed', updated_at=recent, summary='Complete.'),
+                 dict(id='young', status='completed', updated_at=self.ago(60)),
+                 dict(id='outcome', status='completed', updated_at=recent, _native_outcome_id='t_outcome')]
+        service = self.service(tasks, natives)
+        self.assertEqual(self.settled(service), ['t_plain'])
+        # The result of the request goes with the call, so a done task keeps it.
+        self.assertEqual(service.calls, [{'op': 'archive_settled', 'id': 't_plain', 'summary': 'Complete.'}])
 
     def test_a_paused_request_keeps_its_native_task(self):
         old = self.ago(SETTLE_SECONDS + 60)

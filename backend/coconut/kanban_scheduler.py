@@ -17,8 +17,10 @@ from .native_failure import FAILURE_TEXT, TRANSIENT_ERROR_CODES
 # The time from the start of one dispatcher pass to the next when nothing wakes it, and the longest rest inside it.
 KANBAN_PASS_SECONDS = 1.0
 KANBAN_PASS_REST_SECONDS = 1.0
-# A finished Coconut request whose native task still waits is archived after this time. The retries of Coconut act sooner.
+# A finished Coconut request whose native task still waits is settled after this time. The retries of Coconut act sooner.
 SETTLE_SECONDS = 24 * 60 * 60
+# A plain request has no retry or block check. Its native task only carried one turn.
+SETTLE_PLAIN_SECONDS = 15 * 60
 SETTLE_BATCH = 25
 # A task whose provider failure is at least this old loses the text that parks it (see _clear_provider_guards).
 PROVIDER_GUARD_SECONDS = 5 * 60
@@ -525,6 +527,7 @@ class NativeKanban(NativeOutcomes):
             rows = [json.loads(row[0]) for row in self.db.execute(
                 'SELECT data FROM tasks WHERE id IN (SELECT value FROM json_each(?))', (json.dumps(list(waiting)),))]
         cutoff = datetime.now(timezone.utc).timestamp() - SETTLE_SECONDS
+        plain_cutoff = datetime.now(timezone.utc).timestamp() - SETTLE_PLAIN_SECONDS
         candidates = []
         for task in rows:
             if (task['status'] not in ('completed', 'cancelled') or task['id'] in self.running
@@ -535,7 +538,7 @@ class NativeKanban(NativeOutcomes):
                 finished = datetime.fromisoformat((task.get('updated_at') or task['created_at']).replace('Z', '+00:00')).timestamp()
             except (KeyError, AttributeError, ValueError):
                 continue
-            if finished <= cutoff:
+            if finished <= (plain_cutoff if not task.get('_native_outcome_id') else cutoff):
                 candidates.append(task)
         if not candidates:
             return
@@ -547,7 +550,7 @@ class NativeKanban(NativeOutcomes):
             settled = [task for task in candidates if task['id'] not in held and not self._task_paused(task)
                        and not self._automatic_work_is_paused(task)]
         for task in settled[:SETTLE_BATCH]:
-            self.kanban.call({'op': 'archive_settled', 'id': waiting[task['id']]['id']})
+            self.kanban.call({'op': 'archive_settled', 'id': waiting[task['id']]['id'], 'summary': task.get('summary') or None})
 
     def _kanban_finished(self):
         with self.changed:

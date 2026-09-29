@@ -75,11 +75,6 @@ class Board:
         for row in rows:
             old = self.conn.execute('SELECT native_id,intent FROM coconut_bindings WHERE external_id=?',
                                     (row['id'],)).fetchone()
-            if old and row['state'] in ('done', 'archived') and not row.get('native_id'):
-                # Coconut finished a plain request. Its native task only carried the turn, and nothing continues it.
-                # A task that still waits (a dependency the worker linked, a retry that no turn follows) would hold its
-                # dependents for ever, whatever the last synchronized state was.
-                self.archive_settled(old[0])
             intent = fingerprint({k: row[k] for k in ('state', 'input')})
             if row.get('native_id'):
                 task = self.kb.get_task(self.conn, old[0] if old else row['native_id'])
@@ -378,11 +373,7 @@ class Board:
                 outcome='worker_protocol_violation' if state == 'done' else 'worker_failed', release_claim=True, end_run=True)
             return True
         if state == 'done':
-            if self.kb.complete_task(self.conn, identity, summary=summary, expected_run_id=run_id):
-                return True
-            # A parent that the worker linked during the turn keeps the completion from applying. Coconut has finished
-            # this request, so archive the task. It then releases its dependents, and Hermes never holds it again.
-            return self.kb.archive_task(self.conn, identity)
+            return self.kb.complete_task(self.conn, identity, summary=summary, expected_run_id=run_id)
         if state == 'review':
             return self.kb.request_review(self.conn, identity, summary=summary, expected_run_id=run_id)
         if state == 'archived':
@@ -395,14 +386,20 @@ class Board:
             return self.kb.schedule_task(self.conn, identity, reason=summary, expected_run_id=run_id)
         return self.kb.block_task(self.conn, identity, reason=summary, expected_run_id=run_id)
 
-    def archive_settled(self, identity):
-        """Archive a native task that waits while Coconut has finished its request, so its dependents can start.
+    def archive_settled(self, identity, summary=None):
+        """Close a native task that waits while Coconut has finished its request, so its dependents can start.
 
-        A running task keeps its worker, and a done or archived task is already final.
+        Completion comes first, because a successor and a routine report read the result of a done task. A task that
+        still has an open parent, or that waits in triage, cannot complete, so it is archived. A running task keeps its
+        worker, and a done or archived task is already final.
         """
         task = self.kb.get_task(self.conn, identity)
         if task is None or task.status not in ('ready', 'todo', 'triage', 'blocked', 'scheduled'):
             return False
+        if task.status in ('ready', 'blocked') and summary:
+            with contextlib.suppress(Exception):
+                if self.kb.complete_task(self.conn, identity, summary=summary):
+                    return True
         return self.kb.archive_task(self.conn, identity)
 
     def clear_failure_text(self, identity):
@@ -557,7 +554,7 @@ def main():
                     result = {'ok': board.finish(request['id'], request['run_id'], request['state'], request['summary'],
                                                  request.get('error_code'))}
                 elif request['op'] == 'archive_settled':
-                    result = {'ok': board.archive_settled(request['id'])}
+                    result = {'ok': board.archive_settled(request['id'], request.get('summary'))}
                 elif request['op'] == 'clear_failure_text':
                     result = {'ok': board.clear_failure_text(request['id'])}
                 elif request['op'] == 'promote':
