@@ -300,13 +300,20 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.assertEqual(self.retire(), [])
         self.assertTrue(path.exists())
 
-    def test_an_unmarked_stop_keeps_interactive_session_programs(self):
-        table = {10: (1, 10 ** 6, '/usr/bin/tmux'), 11: (1, 10 ** 6, '/usr/local/bin/node'), 12: (1, 10 ** 6, '/opt/homebrew/bin/watchman')}
+    def test_an_unmarked_stop_needs_the_path_on_the_command_line_and_keeps_session_programs(self):
+        worktree = '/work/tree'
+        table = {10: (1, 10 ** 6, '/usr/bin/tmux'), 11: (1, 10 ** 6, '/usr/local/bin/node'), 12: (1, 10 ** 6, '/opt/homebrew/bin/watchman'),
+                 13: (1, 10 ** 6, '/System/Library/mdworker_shared'), 14: (1, 10 ** 6, '/usr/local/bin/node')}
+        lines = {10: f'tmux new -c {worktree}', 11: f'node {worktree}/node_modules/.bin/vite', 12: f'watchman --path {worktree}',
+                 13: 'mdworker_shared -s mdworker', 14: 'node /elsewhere/server.js'}
         with patch.object(work_workspace, 'process_table', return_value=table), \
                 patch.object(work_workspace, 'shared', return_value=False), \
+                patch.object(work_workspace, 'arguments', side_effect=lambda pid: lines[pid]), \
                 patch.object(work_workspace, 'stop', side_effect=lambda pids, sig, seconds: set()) as stop:
-            work_workspace.stop_orphans({10, 11, 12}, 'outcome', 1, marked=False)
+            work_workspace.stop_orphans({10, 11, 12, 13, 14}, 'outcome', 1, marked=False, within=worktree)
         stopped = set().union(*(call.args[0] for call in stop.call_args_list))
+        # Only the dev server that names the worktree goes. A session program, a daemon that names the worktree, a
+        # system daemon that only holds a file, and a program that names another path stay.
         self.assertEqual(stopped, {11})
 
     def test_a_resumed_discard_gets_its_links_back(self):
@@ -749,6 +756,27 @@ class WorktreeRetirementTests(unittest.TestCase):
         Path(self.registry()[identity]['retired']['archive']).unlink()
         with self.assertRaisesRegex(ValueError, 'is gone'):
             acquire(self.workspaces, outcome, str(self.repo))
+
+    def test_the_snapshot_digest_cannot_be_forged_by_rearranging_files(self):
+        _, identity, path, task = self.outcome()
+        (path / 'a').write_bytes(b'untracked/b\0R')
+        (path / 'b').write_bytes(b'')
+        head = git(path, 'rev-parse', 'HEAD')
+        one = work_workspace.snapshot_digest(path, head, b'', b'', [('untracked/a', 'a')])
+        (path / 'a').write_bytes(b'')
+        (path / 'b').write_bytes(b'R')
+        two = work_workspace.snapshot_digest(path, head, b'', b'', [('untracked/a', 'a'), ('untracked/b', 'b')])
+        self.assertNotEqual(one, two)
+
+    def test_a_dropped_nested_repository_is_logged(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        clone = path / 'other-clone'
+        clone.mkdir()
+        git(clone, 'init', '-q')
+        with self.assertLogs('coconut.work_workspace', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [identity])
+        self.assertTrue(any('nested repositories' in line and 'other-clone' in line for line in logs.output))
 
     def test_a_second_discard_keeps_the_first_archive(self):
         outcome, identity, path, task = self.outcome()
@@ -1955,10 +1983,14 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertNotIn('retired', self.registry()[identity])
 
 
-    def orphan(self, path, outcome=None):
-        """Start a process in the path whose parent ends at once, so that launchd adopts it."""
+    def orphan(self, path, outcome=None, *, argument=None):
+        """Start a process in the path whose parent ends at once, so that launchd adopts it.
+
+        `argument` goes on its command line, as the path of a dev server does.
+        """
         env = dict(os.environ, COCONUT_WORKSPACE_OUTCOME=outcome) if outcome else None
-        command = f'{shlex.quote(sys.executable)} -c "import time; time.sleep(60)" >/dev/null 2>&1 & echo $!'
+        command = (f'{shlex.quote(sys.executable)} -c "import time; time.sleep(60)" {shlex.quote(argument or "")} '
+                   '>/dev/null 2>&1 & echo $!')
         started = subprocess.run(['sh', '-c', command], cwd=path, env=env, capture_output=True, text=True, check=True)
         pid = int(started.stdout)
         self.addCleanup(lambda: subprocess.run(['kill', str(pid)], capture_output=True))
@@ -2024,8 +2056,8 @@ class WorktreeRetirementTests(unittest.TestCase):
     def test_an_old_orphan_without_the_outcome_variable_stops_when_the_pull_request_merged(self):
         _, identity, path, task = self.outcome()
         self.pull_request(task, 'merged')
-        # A dev server that a bot started in its own shell has no COCONUT_WORKSPACE_OUTCOME.
-        pid = self.orphan(path)
+        # A dev server that a bot started in its own shell has no COCONUT_WORKSPACE_OUTCOME. Its command line names the path.
+        pid = self.orphan(path, argument=str(path / 'node_modules/.bin/vite'))
         self.holders.stop()
         with patch.object(retirement, 'ORPHAN_AGE_SECONDS', 0):
             self.assertEqual(self.retire(), [identity])

@@ -471,7 +471,7 @@ def stop(pids, sig, seconds):
     return remaining
 
 
-def stop_orphans(found, outcome, age, *, marked=True):
+def stop_orphans(found, outcome, age, *, marked=True, within=None):
     """Stop the old orphaned processes of the outcome in `found`, and their child processes. Return their IDs.
 
     An orphan is a process that launchd (PID 1) adopted after its parent ended. launchd also starts apps and agents.
@@ -480,9 +480,10 @@ def stop_orphans(found, outcome, age, *, marked=True):
     When the system does not show the environment of a process, for example a macOS platform binary, Coconut does not stop it.
     It never stops a shared app or system daemon that `shared` names, such as OrbStack.
     A process that does not end after SIGTERM gets SIGKILL.
-    With marked=False, the environment check does not apply, and only the programs in UNMARKED_KEEP_NAMES stay. `found` must then hold only processes in the worktree of
-    an outcome whose pull requests merged or closed, so that an old orphan there, such as a dev server that a bot
-    started without the variable, cannot belong to other work.
+    With marked=False, the environment check does not apply. Coconut then stops an orphan only when its command line
+    names `within`, the path of the worktree, as a dev server that a bot started there does, and never a program in
+    UNMARKED_KEEP_NAMES. A daemon that merely holds a file in the worktree does not name it. `found` must hold only
+    processes of a worktree of an outcome that is done or idle for long.
     """
     if not found:
         return set()
@@ -495,9 +496,14 @@ def stop_orphans(found, outcome, age, *, marked=True):
         if pid not in answers:
             answers[pid] = shared(table[pid][2], pid, unknown=True)
         return answers[pid]
+    def owned(pid):
+        if marked:
+            return environment_names(pid, mark)
+        line = arguments(pid)
+        return (table[pid][2].rsplit('/', 1)[-1] not in UNMARKED_KEEP_NAMES
+                and bool(within) and line is not None and str(within) in line)
     stopped = {pid for pid in found if pid in table and pid != os.getpid() and table[pid][0] == 1
-               and table[pid][1] >= age and not is_shared(pid)
-               and (environment_names(pid, mark) if marked else table[pid][2].rsplit('/', 1)[-1] not in UNMARKED_KEEP_NAMES)}
+               and table[pid][1] >= age and not is_shared(pid) and owned(pid)}
     while stopped:
         # The parent proves who owns a child process. macOS also hides the environment of a child shell.
         # A shared service stays even as a child. A system program that the orphan started, such as a WebKit
@@ -702,7 +708,7 @@ def release(path, outcome, orphan_age, *, marked=True):
     """Stop the old orphaned processes of the outcome in the path. Refuse the path if another process uses it."""
     held = holders(path, detail=True)
     if held and orphan_age is not None:
-        stopped = stop_orphans(set(held), outcome, orphan_age, marked=marked)
+        stopped = stop_orphans(set(held), outcome, orphan_age, marked=marked, within=path)
         if stopped:
             logging.getLogger(__name__).warning('Coconut stopped orphaned processes %s in worktree %s.', sorted(stopped), path)
         held = {pid: cwd_only for pid, cwd_only in held.items() if pid not in stopped}
@@ -1235,6 +1241,11 @@ def discard_snapshot(path, *, quiet=False):
     # Git lists a nested repository as a folder, and it goes without an archive.
     files = [name for name in names if not name.endswith('/')
              and ((path / name).is_symlink() or stat.S_ISREG(os.lstat(path / name).st_mode))]
+    folders = [name for name in names if name.endswith('/')]
+    if folders and not quiet:
+        # A folder that Git lists here is a nested repository or a clone. No archive keeps it. Say so, so that no
+        # deletion is silent, and a person can find what went in the log.
+        log.warning('Coconut discards the nested repositories %s of %s without an archive.', folders, path)
     if sum(os.lstat(path / name).st_size for name in files) > UNTRACKED_LIMIT_BYTES:
         if not quiet:
             log.warning('Coconut discards the untracked files of %s. They are larger than the archive limit.', path)
@@ -1261,14 +1272,16 @@ def snapshot_digest(path, head, staged, unstaged, entries):
     for part in (head.encode(), staged, unstaged):
         value.update(hashlib.sha256(part).digest())
     for arcname, name in entries:
-        value.update(arcname.encode() + b'\0')
+        # Each value gets its own digest, so that the end of one file cannot merge with the start of the next entry.
         target = path / name
         if target.is_symlink():
-            value.update(os.readlink(target).encode())
-            continue
-        with target.open('rb') as stream:
-            for chunk in iter(lambda: stream.read(1 << 20), b''):
-                value.update(chunk)
+            content = hashlib.sha256(os.readlink(target).encode())
+        else:
+            content = hashlib.sha256()
+            with target.open('rb') as stream:
+                for chunk in iter(lambda: stream.read(1 << 20), b''):
+                    content.update(chunk)
+        value.update(hashlib.sha256(arcname.encode()).digest() + content.digest())
     return value.hexdigest()
 
 
