@@ -165,7 +165,7 @@ class DecisionFreshness:
         chain.update(self._work_chain(task, tasks, records, include_continuations=True))
         ids = set(chain) | {task['id']}
         work = [a for a in artifacts if not a.get('_hidden') and (a.get('task_id') in ids
-                or a.get('_review_task_id') in ids or a['id'] in decision.get('_recovery_work_ids', [])
+                or a.get('_review_task_id') in ids
                 or a['id'] in (task.get('_work_context_id'), assignment.get('_work_context_id'))
                 or (decision.get('merge_pr_url') and a.get('url') == decision['merge_pr_url']))]
         for item in work:
@@ -500,10 +500,6 @@ class DecisionFreshness:
                     if record['state'] == 'awaiting_answer':
                         record.update(state='completed', completed_at=now(), result=encoded({'response': response, 'resolution': 'withdrawn'}))
                         self._put('native_receipts', record)
-                # Withdrawing a system recovery question must not consume another failed attempt.
-                if decision.get('_recovery_work_ids') and task.get('_self_recovery'):
-                    task['_self_recovery'] = dict(task['_self_recovery'], attempt=0)
-                    self._advance_recovery_input(task)
                 if (decision['action_type'] == 'question' and decision.get('inbox_kind') != 'proposal' and task['status'] == 'needs_you'
                         and not any(d['id'] != decision['id'] and d['task_id'] == task['id'] and d['status'] == 'pending' and d.get('inbox_kind') != 'proposal'
                                     for d in self._all('decisions'))):

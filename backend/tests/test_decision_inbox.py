@@ -106,20 +106,6 @@ class DecisionInboxTests(unittest.TestCase):
         saved = self.service._get('decisions', decision['id'])
         self.assertEqual((saved['title'], saved['revision']), ('Publish?', 1))
 
-    def test_fixed_actions_allow_new_assessments_without_changing_the_actions(self):
-        decision = self.question()
-        decision['_recovery_work_ids'] = ['existing-work']
-        task = self.service._get('tasks', decision['task_id'])
-        options = [dict(option, risk_level='not_assessed', risk='The saved result needs verification.')
-                   for option in decision['options']]
-        self.service._revise_question(decision, task, dict(title=decision['title'], options=options), 'Checked the risks.')
-        saved = self.service._get('decisions', decision['id'])
-        self.assertEqual(saved['options'][0]['risk_level'], 'not_assessed')
-        self.assertEqual(saved['options'][0]['label'], decision['options'][0]['label'])
-        options[0]['label'] = 'Run a different action'
-        with self.assertRaises(ServiceError):
-            self.service._revise_question(saved, task, dict(title=saved['title'], options=options), 'Change the action.')
-
     def test_card_rules_match_titles_to_scope_and_offer_the_next_step(self):
         from coconut.decision_inbox import DECISION_INSTRUCTIONS
         self.assertIn('The title names exactly what approval authorizes', DECISION_INSTRUCTIONS)

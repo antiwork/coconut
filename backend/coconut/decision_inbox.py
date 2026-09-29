@@ -335,12 +335,6 @@ class DecisionInbox:
         from .service import ServiceError
         options = decision_options(revision.get('options'))
         assessment = decision_risk(revision)
-        if decision.get('_recovery_work_ids'):
-            def actions(values):
-                return [{key: value for key, value in option.items() if key not in ('risk', 'risk_level')}
-                        for option in values]
-            if actions(options) != actions(decision_options(decision['options'])):
-                raise ServiceError(400, 'Recovery actions are fixed. Keep the existing options, or withdraw an obsolete recovery question.')
         title = revision.get('title')
         if not isinstance(title, str) or not title.strip() or len(title) > 160:
             raise ServiceError(400, 'Supply the revised question.')

@@ -65,7 +65,7 @@ class NativeExecution:
                 except ServiceError:
                     continue
 
-    def native_event(self, task_id, kind, payload, context_id=None, *, recovery_work_ids=None):
+    def native_event(self, task_id, kind, payload, context_id=None):
         from .service import ServiceError, YieldForDecision, now, digest, encoded
         source_facts, source_seen = {}, {}
         if kind in ('native_question', 'native_proposal'):
@@ -76,8 +76,6 @@ class NativeExecution:
                     and d.get('_proposal_key') == payload.get('key') for d in self._all('decisions'))
                 context = self._get('contexts', context_id) if context_id else None
                 active = context['status'] == 'working' and context['task_id'] == task_id if context else task['status'] == 'working'
-                if recovery_work_ids and kind == 'native_question' and not context:
-                    active = task['status'] in ('completed', 'failed', 'waiting')
             if active and not duplicate:
                 # Source reads must not hold the service transaction or block phone requests.
                 from .decision_sources import check_new_decision_sources
@@ -86,8 +84,6 @@ class NativeExecution:
             task = self._get('tasks', task_id)
             context = self._get('contexts', context_id) if context_id else None
             active = context['status'] == 'working' and context['task_id'] == task_id if context else task['status'] == 'working'
-            if recovery_work_ids and kind == 'native_question' and not context:
-                active = task['status'] in ('completed', 'failed', 'waiting')
             late_result = False
             if context and context.get('_decision_refresh') and context['status'] == 'cancelled' and kind == 'native_result':
                 receipt = self._get('native_receipts', payload['id'])
@@ -210,8 +206,6 @@ class NativeExecution:
             if draft is not None:
                 decision['draft'] = draft
                 decision['draft_hash'] = digest(encoded(draft))
-            if recovery_work_ids is not None:
-                decision['_recovery_work_ids'] = recovery_work_ids
             decision.update(self.decision_origin(task))
             if not approval:
                 # A resumed task can also prepare an unrelated draft. Require its explicit link.
@@ -294,14 +288,7 @@ class NativeExecution:
                 self._put('decisions', decision)
             self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
             return self._public(decision)
-        if decision.get('_recovery_work_ids'):
-            if option_id == 'stop' or choice == 'reject':
-                for identity in decision['_recovery_work_ids']:
-                    self._cancel_work(identity, callbacks)
-                self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
-                return self._public(decision)
-            self._advance_recovery_input(task)
-        if task.get('_self_recovery') and (not decision.get('_recovery_work_ids') or option_id == 'retry'):
+        if task.get('_self_recovery'):
             task['_self_recovery']['attempt'] = 0
         if choice == 'reply':
             task['_direct_reply_message_id'] = reply_message_id
@@ -313,10 +300,3 @@ class NativeExecution:
         self._event('task.updated', self._public(task), task['bot_id'], task['id'])
         self._refresh_bot(task['bot_id'])
         return self._public(decision)
-
-    def _advance_recovery_input(self, task):
-        unknown = task['_self_recovery'].get('unknown_tools', [])
-        unknown += [{k: r.get(k) for k in ('id', 'task_id', 'turn_id', 'action', 'created_at')}
-                    for r in self._native_task_receipts(task['id'], state='executing')]
-        task['_self_recovery']['unknown_tools'] = list({r['id']: r for r in unknown}.values())
-        self._advance_input(task)

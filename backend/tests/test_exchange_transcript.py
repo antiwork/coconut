@@ -128,29 +128,6 @@ class ExchangeTranscriptTests(unittest.TestCase):
         self.assertEqual(restored['bot_id'], self.b['id'])
         self.assertFalse(restored.get('exchange_recipient_bot_ids'))
 
-    def test_text_reply_to_a_legacy_recovery_card_keeps_its_recipient(self):
-        root = self.working(self.send(self.a))
-        child = self.working({'id': self.deliver(root, self.b)['task_id']})
-        item = self.service._register_work(child['id'], dict(key='report', title='Check the report',
-            status='completed', activity='Report checked', completion_evidence='Saved report verified.'))
-        with self.service.transaction():
-            task = self.service._get('tasks', child['id'])
-            task.update(status='failed', _self_recovery=dict(unknown_tools=[]))
-            self.service._put('tasks', task)
-        with self.assertRaises(YieldForDecision):
-            self.service.native_event(child['id'], 'native_question', dict(title='Retry recovery?',
-                options=[dict(id='retry', label='Retry'), dict(id='stop', label='Stop')]), recovery_work_ids=[item['id']])
-        decision = self.service._all('decisions')[-1]
-        self.write('POST', f"/v1/decisions/{decision['id']}/answer", dict(choice='reply', correction='Explain this.', revision=1))
-        def reply(task, bot, history, decision, emit):
-            emit('text_delta', dict(text='The report is already complete.'))
-            emit('completed', dict(summary='Complete.'))
-        self.provider.resume_task = reply
-        self.service._run_task(child['id'])
-        answer = next(m for m in self.service.snapshot()['messages'] if m['text']=='The report is already complete.')
-        self.assertEqual(answer['bot_id'], self.b['id'])
-        self.assertFalse(answer.get('exchange_recipient_bot_ids'))
-
     def test_card_replies_to_a_mentioned_bot_keep_the_original_conversation(self):
         child = self.working(self.send(self.a, recipient_bot_ids=[self.b['id']]))
         with self.assertRaises(YieldForDecision):
