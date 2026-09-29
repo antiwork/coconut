@@ -221,6 +221,21 @@ class SettleSchedulerTests(unittest.TestCase):
         with self.assertNoLogs('coconut.kanban_scheduler', level='WARNING'):
             NativeKanban._report_native_disagreements(service)
 
+    def test_a_task_that_survives_the_settle_pass_is_reported(self):
+        # The dispatcher settles before it reports. The archive call here changes nothing, as when it fails.
+        from coconut.kanban_scheduler import ORPHAN_ALERT_SLACK_SECONDS
+        late = self.ago(SETTLE_SECONDS + ORPHAN_ALERT_SLACK_SECONDS + 60)
+        service = self.service([dict(id='late', status='completed', updated_at=late, _native_outcome_id='t_late')],
+                               {'late': dict(id='t_late', status='triage')})
+        NativeKanban._settle_native_orphans(service)
+        NativeKanban._report_native_disagreements(service)
+        service._orphan_report_after = 0
+        NativeKanban._settle_native_orphans(service)
+        with self.assertLogs('coconut.kanban_scheduler', level='WARNING') as logged:
+            NativeKanban._report_native_disagreements(service)
+        self.assertEqual([c['id'] for c in service.calls], ['t_late', 't_late'])
+        self.assertIn('(t_late)', logged.output[0])
+
     def test_a_failed_read_does_not_stop_the_pass(self):
         service = self.service([], {})
         service._native_orphans = MagicMock(side_effect=RuntimeError('store is busy'))
