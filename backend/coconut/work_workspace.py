@@ -1060,7 +1060,11 @@ def discard(root, identity, finished, **options):
     """
     state = {}
     try:
-        return discard_run(root, identity, finished, state, **options)
+        removed = discard_run(root, identity, finished, state, **options)
+        if removed and state.get('dropped'):
+            logging.getLogger(__name__).warning('Coconut discarded the nested repositories %s of worktree %s without an archive.',
+                                                state['dropped'], identity)
+        return removed
     except BaseException:
         if state.get('made_branch'):
             saved = json.loads((Path(root) / 'worktrees.json').read_text()).get(identity) or {}
@@ -1142,7 +1146,8 @@ def discard_run(root, identity, finished, state, *, orphan_age=None, merged=Fals
                 branch = f'{base}-{number}'
             git(repository, 'branch', branch, head)
             state['made_branch'] = branch
-        head, staged, unstaged, entries = discard_snapshot(path)
+        dropped = state.setdefault('dropped', [])
+        head, staged, unstaged, entries = discard_snapshot(path, dropped=dropped)
         # The record names what the archive holds. A leftover checkout that no longer matches it is not removed.
         state['changes'] = snapshot_digest(path, head, staged, unstaged, entries)
         if staged or unstaged or entries:
@@ -1230,7 +1235,7 @@ def prune_discarded_refs(repository):
             git(repository, 'update-ref', '-d', name)
 
 
-def discard_snapshot(path, *, quiet=False):
+def discard_snapshot(path, *, quiet=False, dropped=None):
     """Return HEAD, the staged and unstaged patches, and the (name in the archive, path) entries that a discard archives.
 
     The limits apply here: untracked files and ignored files that are too large, and patches that are too large, stay out.
@@ -1241,11 +1246,10 @@ def discard_snapshot(path, *, quiet=False):
     # Git lists a nested repository as a folder, and it goes without an archive.
     files = [name for name in names if not name.endswith('/')
              and ((path / name).is_symlink() or stat.S_ISREG(os.lstat(path / name).st_mode))]
-    folders = [name for name in names if name.endswith('/')]
-    if folders and not quiet:
-        # A folder that Git lists here is a nested repository or a clone. No archive keeps it. Say so, so that no
-        # deletion is silent, and a person can find what went in the log.
-        log.warning('Coconut discards the nested repositories %s of %s without an archive.', folders, path)
+    if dropped is not None:
+        # A folder that Git lists here is a nested repository or a clone. No archive keeps it. The caller says so in
+        # the log after the removal, so that no deletion is silent, and no entry names a deletion that did not happen.
+        dropped.extend(name for name in names if name.endswith('/'))
     if sum(os.lstat(path / name).st_size for name in files) > UNTRACKED_LIMIT_BYTES:
         if not quiet:
             log.warning('Coconut discards the untracked files of %s. They are larger than the archive limit.', path)

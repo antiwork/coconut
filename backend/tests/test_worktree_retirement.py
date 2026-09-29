@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -776,7 +777,41 @@ class WorktreeRetirementTests(unittest.TestCase):
         git(clone, 'init', '-q')
         with self.assertLogs('coconut.work_workspace', 'WARNING') as logs:
             self.assertEqual(self.retire(), [identity])
-        self.assertTrue(any('nested repositories' in line and 'other-clone' in line for line in logs.output))
+        self.assertTrue(any('discarded the nested repositories' in line and 'other-clone' in line for line in logs.output))
+
+    def test_a_refused_discard_does_not_log_a_dropped_repository(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        clone = path / 'other-clone'
+        clone.mkdir()
+        git(clone, 'init', '-q')
+        real = work_workspace.git
+
+        def refuse(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'remove'):
+                raise ValueError('Git refused the removal.')
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=refuse), self.assertLogs('coconut.work_workspace', 'WARNING') as logs:
+            logging.getLogger('coconut.work_workspace').warning('start')
+            self.retire()
+        self.assertFalse(any('other-clone' in line for line in logs.output))
+
+    def test_the_scratch_recheck_confirms_the_idle_time(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        (self.workspaces / outcome).mkdir()
+        ((self.workspaces / outcome) / 'notes.txt').write_text('scratch\n')
+        real = self.service._finished_outcomes
+        idles = []
+
+        def watched(current, *, timeout=-1, only=None, idle=retirement.WORKTREE_RETIRE_SECONDS, **options):
+            if only == outcome:
+                idles.append(idle)
+            return real(current, timeout=timeout, only=only, idle=idle, **options)
+        with patch.object(self.service, '_finished_outcomes', side_effect=watched):
+            self.retire()
+        # Every re-check of this outcome, also the one before the scratch move, uses the real idle time.
+        self.assertTrue(idles and all(idle == retirement.WORKTREE_RETIRE_SECONDS for idle in idles), idles)
 
     def test_a_second_discard_keeps_the_first_archive(self):
         outcome, identity, path, task = self.outcome()
