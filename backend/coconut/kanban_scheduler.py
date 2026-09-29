@@ -579,14 +579,14 @@ class NativeKanban(NativeOutcomes):
         self._orphan_report_after = time.monotonic() + ORPHAN_ALERT_EVERY_SECONDS
         try:
             late = {native['id'] for _, native in self._native_orphans(ORPHAN_ALERT_SLACK_SECONDS)}
+            unbound = {native['id'] for native in list(self.kanban.tasks.values())
+                       if native.get('unbound') and native['status'] not in ('done', 'archived')}
+            listed, self._orphan_listed = getattr(self, '_orphan_listed', (set(), set())), (late, unbound)
+            late, unbound = sorted(late & listed[0]), sorted(unbound & listed[1])
         except Exception:
             # The report only observes. A failed read must not stop the dispatcher pass around it.
             logging.getLogger(__name__).exception('The disagreement report failed; the next report retries.')
             return
-        unbound = {native['id'] for native in self.kanban.tasks.values()
-                   if native.get('unbound') and native['status'] not in ('done', 'archived')}
-        listed, self._orphan_listed = getattr(self, '_orphan_listed', (set(), set())), (late, unbound)
-        late, unbound = sorted(late & listed[0]), sorted(unbound & listed[1])
         if late or unbound:
             logging.getLogger(__name__).warning(
                 'Coconut and Hermes disagree: %d finished requests keep a waiting native task (%s), %d native tasks have no request (%s).',
