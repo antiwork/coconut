@@ -189,7 +189,8 @@ class NativeKanban(NativeOutcomes):
             state = native_state(context['status'])
             if context['status'] == 'queued':
                 available = not (context.get('_decision_refresh') and refresh_active)
-                state = 'ready' if available and key not in selected and not self._task_paused(task) and task['status'] != 'cancelled' else 'scheduled'
+                state = ('ready' if available and key not in selected and not self._task_paused(task) and not self._store_held(task)
+                         and task['status'] != 'cancelled' else 'scheduled')
                 if state == 'ready':
                     selected.add(key)
                     refresh_active |= bool(context.get('_decision_refresh'))
@@ -296,7 +297,7 @@ class NativeKanban(NativeOutcomes):
             with self.lock:
                 context = contexts.get(row['id'])
                 task = self._get('tasks', context['task_id'] if context else row['id'])
-                if (self._task_paused(task) or self.restart_pending or self.stopping.is_set() or task['status'] == 'cancelled'
+                if (self._task_paused(task) or self._store_held(task) or self.restart_pending or self.stopping.is_set() or task['status'] == 'cancelled'
                         or (context and self._get('contexts', context['id'])['status'] != 'queued')
                         or (not context and task['status'] not in ('queued', 'scheduled'))
                         or row['id'] in self.running or row['id'] in self.context_threads):

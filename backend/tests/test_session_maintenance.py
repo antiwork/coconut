@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import textwrap
+import threading
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
@@ -61,7 +62,7 @@ class SessionSelectionTests(unittest.TestCase):
         [(bot, conversations, outcomes, days)] = self.calls
         self.assertEqual(outcomes, [])
 
-    def test_status_only_and_old_tasks_do_not_select_sessions_and_vacuum_waits_for_a_quiet_bot(self):
+    def test_status_only_and_old_tasks_do_not_select_sessions(self):
         self.task(_execution_session_id='owner-work', _work_status_only=True)
         self.task(_execution_session_id='old-work', updated_at='2026-07-01T10:00:00Z', created_at='2026-07-01T10:00:00Z')
         self.task(_execution_session_id='running-work', status='working', updated_at='2026-07-01T10:00:00Z')
@@ -78,21 +79,100 @@ class SessionSelectionTests(unittest.TestCase):
         self.assertNotIn('old-work', [c['execution_session_id'] for c in conversations])
         # An unfinished conversation keeps its tip at any age.
         self.assertIn('running-work', [c['execution_session_id'] for c in conversations])
-        # A working task keeps its bot from a VACUUM.
-        self.assertEqual(self.vacuums[0], False)
 
-    def test_a_pending_decision_does_not_block_the_vacuum(self):
-        self.task(_execution_session_id='asking', status='needs_you')
+    def pending_vacuum(self, during=None, fail=False):
+        """Make the first pass report a due VACUUM. `during` runs while the second pass has the bot on hold."""
+        def maintain(bot, conversations, outcomes, days, allow_vacuum=False):
+            self.calls.append(bot)
+            self.vacuums.append(allow_vacuum)
+            if not allow_vacuum:
+                return dict(recorded=0, vacuum_pending=True)
+            if during:
+                during()
+            if fail:
+                raise RuntimeError('the store is locked')
+            return dict(vacuumed=True)
+        self.provider.maintain_sessions = maintain
+
+    def run_maintenance(self, current=0):
         with patch.object(self.service, '_finished_outcomes', return_value=set()):
-            self.service.maintain_native_sessions(current=0)
-        self.assertEqual(self.vacuums, [True])
+            return self.service.maintain_native_sessions(current=current)
 
-    def test_a_running_decision_context_blocks_the_vacuum(self):
+    def test_a_due_vacuum_holds_new_turns_of_its_bot_and_only_that_bot(self):
+        queued = self.task(status='queued', conversation_bot_id=self.bot['id'])
+        other = self.service.mutate('POST', '/v1/bots', {'name': 'Tuner', 'role': ''}, str(uuid4()))
+        (self.service.root / 'bots' / other['id'] / 'home').mkdir(parents=True, exist_ok=True)
+        elsewhere = self.task(status='queued', bot_id=other['id'], conversation_bot_id=other['id'])
+        seen = []
+        self.pending_vacuum(during=lambda: seen.append((self.service._dispatch_eligible(queued, 0), self.service._dispatch_eligible(elsewhere, 0),
+                                                        set(self.service._store_hold))))
+        results = self.run_maintenance()
+        # The held bot starts no turn during the rewrite. Another bot is not held.
+        self.assertEqual(seen, [(False, True, {self.bot['id']})])
+        self.assertEqual(self.vacuums[:2], [False, True])
+        self.assertTrue(results[self.bot['id']]['vacuumed'])
+        self.assertFalse(results[self.bot['id']]['vacuum_pending'])
+        # The hold ends with the rewrite.
+        self.assertEqual(self.service._store_hold, set())
+        self.assertTrue(self.service._dispatch_eligible(queued, 0))
+
+    def test_the_hold_ends_when_the_rewrite_fails(self):
+        self.pending_vacuum(fail=True)
+        with self.assertLogs(level='ERROR'):
+            self.run_maintenance()
+        self.assertEqual(self.service._store_hold, set())
+
+    def test_a_turn_that_does_not_end_keeps_the_bot_running_and_maintenance_tries_again_soon(self):
+        task = self.task(status='working')
+        finished = threading.Event()
+        worker = threading.Thread(target=finished.wait, daemon=True)
+        worker.start()
+        self.addCleanup(finished.set)
+        self.service.running[task['id']] = worker
+        self.pending_vacuum()
+        with patch.object(session_maintenance, 'VACUUM_DRAIN_SECONDS', 0):
+            self.run_maintenance(current=1000)
+        self.assertEqual(self.vacuums, [False])
+        self.assertEqual(self.service._store_hold, set())
+        self.assertEqual(self.service._next_session_maintenance, 1000 + session_maintenance.VACUUM_RETRY_SECONDS)
+
+    def test_the_vacuum_waits_for_a_running_turn_to_end(self):
+        task = self.task(status='working')
+        finished = threading.Event()
+        worker = threading.Thread(target=finished.wait, daemon=True)
+        worker.start()
+        self.service.running[task['id']] = worker
+        self.pending_vacuum()
+        threading.Timer(0.3, finished.set).start()
+        with patch.object(session_maintenance, 'VACUUM_DRAIN_SECONDS', 30):
+            self.run_maintenance()
+        self.assertEqual(self.vacuums, [False, True])
+
+    def test_a_running_decision_context_keeps_its_bot_from_the_vacuum(self):
         task = self.task(_execution_session_id='asking', status='needs_you')
-        self.service._put('contexts', dict(id='context', task_id=task['id'], bot_id=self.bot['id'], status='working'))
+        context = dict(id='context', task_id=task['id'], bot_id=self.bot['id'], status='working')
+        self.service._put('contexts', context)
+        finished = threading.Event()
+        worker = threading.Thread(target=finished.wait, daemon=True)
+        worker.start()
+        self.addCleanup(finished.set)
+        self.service.context_threads['context'] = worker
+        self.pending_vacuum()
+        with patch.object(session_maintenance, 'VACUUM_DRAIN_SECONDS', 0):
+            self.run_maintenance()
+        self.assertEqual(self.vacuums, [False])
+
+    def test_a_pending_decision_does_not_keep_its_bot_from_the_vacuum(self):
+        self.task(_execution_session_id='asking', status='needs_you')
+        self.pending_vacuum()
+        self.run_maintenance()
+        self.assertEqual(self.vacuums, [False, True])
+
+    def test_a_pass_without_a_due_vacuum_holds_nothing(self):
         with patch.object(self.service, '_finished_outcomes', return_value=set()):
             self.service.maintain_native_sessions(current=0)
         self.assertEqual(self.vacuums, [False])
+        self.assertEqual(self.service._store_hold, set())
 
     def test_a_live_status_only_turn_keeps_its_owner_session_open(self):
         self.task(_execution_session_id='owner-work')
@@ -310,6 +390,26 @@ class NativeSessionTests(unittest.TestCase):
                     patch.object(native_sessions, 'store_pages', store_pages):
                 result = native_sessions.maintain(request)
             assert result['vacuumed'] and 'locked' in result['vacuum_error'], result
+        ''')
+
+    def test_a_due_store_is_reported_and_not_vacuumed_until_the_service_allows_it(self):
+        self.run_native('''
+            from uuid import uuid4
+            from unittest.mock import patch
+            from hermes_state import SessionDB
+            from coconut import native_sessions
+            bot = dict(id=str(uuid4()), session_id=str(uuid4()))
+            db = SessionDB()
+            db.create_session('one', source='coconut')
+            for _ in range(200):
+                db.append_message('one', 'user', 'x' * 2000)
+            request = dict(bot=bot, conversations=[], outcomes=[], retention_days=365, history_days=365, allow_vacuum=False)
+            with patch('hermes_state_holders.foreign_state_db_holders', return_value=[]), \\
+                    patch.object(native_sessions, 'VACUUM_MIN_BYTES', 1):
+                first = native_sessions.maintain(request)
+                assert first['vacuum_pending'] and not first['vacuumed'], first
+                second = native_sessions.maintain(dict(request, allow_vacuum=True))
+                assert second['vacuumed'] and not second['vacuum_pending'], second
         ''')
 
     def test_a_small_store_is_not_vacuumed_for_its_size(self):

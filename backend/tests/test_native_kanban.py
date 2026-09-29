@@ -879,6 +879,15 @@ for title in ('First defect', 'Second defect'):
         self.assertEqual(projected['work_state'], original['work_state'])
         self.assertEqual(self.service._work_identity(alias), self.service._work_identity(item))
 
+    def test_a_bot_on_hold_for_a_vacuum_gets_no_ready_row_and_no_claim(self):
+        queued = self.task('Continue accepted work')
+        self.assertEqual(next(r['state'] for r in self.service._kanban_rows() if r['id'] == queued['id']), 'ready')
+        self.service._store_hold.add(queued['bot_id'])
+        # The request keeps its place in the queue, but no turn can start while the store is rewritten.
+        self.assertEqual(next(r['state'] for r in self.service._kanban_rows() if r['id'] == queued['id']), 'scheduled')
+        self.service._store_hold.discard(queued['bot_id'])
+        self.assertEqual(next(r['state'] for r in self.service._kanban_rows() if r['id'] == queued['id']), 'ready')
+
     def test_scheduler_reads_active_rows_and_known_terminal_transitions(self):
         queued = self.task('Continue accepted work')
         finished = self.task('Completed input')

@@ -226,6 +226,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self._kanban_dispatching = False
         self._kanban_claiming = 0
         self._kanban_claim_outcomes = set()
+        # Bots whose session store a VACUUM rewrites. A bot in this set starts no new turn (see session_maintenance).
+        self._store_hold = set()
         self._kanban_trimming = False
         self._dependency_unlinking = False
         self._kanban_dispatch_uncertain = False
@@ -3071,7 +3073,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             return False
         if task.get('scheduled_at') and datetime.fromisoformat(task['scheduled_at'].replace('Z', '+00:00')).timestamp() > timestamp:
             return False
-        return not self._task_paused(task) and not self._continuation_blocked(task) and not self._automatic_work_is_paused(task)
+        return (not self._task_paused(task) and not self._store_held(task) and not self._continuation_blocked(task)
+                and not self._automatic_work_is_paused(task))
+
+    def _store_held(self, task):
+        return task['bot_id'] in self._store_hold
 
     def _dispatch_order(self, tasks):
         # Consume results and decisions before starting more work.

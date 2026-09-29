@@ -70,7 +70,7 @@ def maintain(request):
     from hermes_state_holders import foreign_state_db_holders, in_process_state_db_holders
 
     db = SessionDB()
-    result = dict(recorded=0, ended=0, pruned=0, vacuumed=False)
+    result = dict(recorded=0, ended=0, pruned=0, vacuumed=False, vacuum_pending=False)
     try:
         for item in request['conversations']:
             root = session_root(request['bot'], execution=item.get('execution_session_id'), epoch=item.get('epoch'))
@@ -100,11 +100,14 @@ def maintain(request):
         due = not last or time.time() - float(last) >= VACUUM_INTERVAL_SECONDS
         # VACUUM rewrites the whole file under an exclusive lock. Hermes skips it while another process
         # holds the store or a WAL sidecar, and so does Coconut. The next hour tries again.
-        verdict = vacuum_verdict(db) if request.get('allow_vacuum') and due else None
+        verdict = vacuum_verdict(db) if due else None
         if verdict == 'disk':
             # Say why a store that should shrink does not, so an operator can tell.
             result['vacuum_skipped'] = 'The disk cannot hold a second copy of the store.'
-        if (verdict == 'run'
+        if verdict == 'run' and not request.get('allow_vacuum'):
+            # The service stops new turns of the bot and runs this again with allow_vacuum.
+            result['vacuum_pending'] = True
+        elif (verdict == 'run'
                 and not (foreign_state_db_holders(db.db_path) + in_process_state_db_holders(db.db_path, exclude=db))):
             try:
                 db.vacuum()
