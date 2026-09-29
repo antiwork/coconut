@@ -37,7 +37,10 @@ class RoutineIndexTests(unittest.TestCase):
         self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'One', 'role': ''}, str(uuid4()))
 
     def put(self, **fields):
-        row = dict(id=str(uuid4()), bot_id=self.bot['id'], status='queued', created_at='2026-01-01T00:00:00Z')
+        return self.put_with(str(uuid4()), **fields)
+
+    def put_with(self, identity, **fields):
+        row = dict(id=identity, bot_id=self.bot['id'], status='queued', created_at='2026-01-01T00:00:00Z')
         row.update(fields)
         with self.service.transaction():
             self.service._put('tasks', row)
@@ -79,15 +82,55 @@ class RoutineIndexTests(unittest.TestCase):
                 self.service._active_routine_task(routine, index)
         self.assertEqual(reads, ['tasks'])
 
-    def test_the_routine_lookups_use_an_index_and_scan_no_table(self):
-        statements = {
-            'events by task': ('SELECT type,data,created_at FROM events WHERE task_id=? AND bot_id=? ORDER BY seq', ('t', 'b')),
-            'deliveries by receipt': ("SELECT data FROM deliveries WHERE json_extract(data,'$.receipt.task_id')=? ORDER BY rowid DESC", ('t',)),
-        }
-        for name, (statement, values) in statements.items():
+    def test_the_lookups_of_the_continuation_check_use_an_index_and_scan_no_table(self):
+        from coconut import routine_coordinator
+        # The statements that the routine pass runs, not copies of them.
+        statements = {'events of a routine task': routine_coordinator.ROUTINE_EVENTS,
+                      'events of a completion': routine_coordinator.COMPLETION_EVENTS,
+                      'deliveries of a task': routine_coordinator.ROUTINE_DELIVERIES}
+        for name, statement in statements.items():
+            values = ('t', 'b')[:statement.count('?')]
             plan = ' | '.join(row[3] for row in self.service.db.execute('EXPLAIN QUERY PLAN ' + statement, values))
             self.assertIn('USING INDEX', plan, (name, plan))
             self.assertNotIn('SCAN', plan, (name, plan))
+
+    def test_a_queued_continuation_keeps_its_routine_busy_as_the_scan_says(self):
+        from uuid import UUID, uuid5
+        bot_id, identity, source = self.bot['id'], str(uuid4()), self.put()
+        job = dict(id='job1', fire_claim={'by': 'owner1'})
+        routine_id = str(uuid5(UUID(bot_id), 'cron:job1'))
+        text = 'Continue with the report.'
+        self.put_with(identity, status='working', routine_id=routine_id, _native_job=job, _native_job_finished=True,
+                      _native_outcome_id='n1', _native_turn_id='turn1', _self_recovery=dict(previous_task_id=identity),
+                      _bot_messages=[dict(sender_bot_id=bot_id, text=text)])
+        with self.service.transaction():
+            self.service._event('routine.triggered', dict(routine_id=routine_id, task_id=identity), bot_id, identity)
+            self.service._put('deliveries', dict(id=str(uuid4()), receipt=dict(task_id=identity, native_task_id='n1', status='queued'),
+                                                 target_bot_id=bot_id, turn_id='turn1', created_at='2999-01-01T00:00:00Z',
+                                                 source_task_id=source, text=text))
+        task = self.service._get('tasks', identity)
+        self.assertTrue(self.service.native_routine_completion_input(task).get('continuation'), 'The branch under test runs.')
+        expected = reference(self.service, self.service._all('tasks'), routine_id)
+        self.assertEqual(expected['id'], identity)
+        self.assertEqual(self.service._active_routine_task(routine_id, self.service._routine_index())['id'], identity)
+        # Once the continuation is gone, the closed occurrence releases the routine, in both rules.
+        task['status'] = 'completed'
+        with self.service.transaction():
+            self.service._put('tasks', task)
+        self.assertIsNone(reference(self.service, self.service._all('tasks'), routine_id))
+        self.assertIsNone(self.service._active_routine_task(routine_id, self.service._routine_index()))
+
+    def test_a_tick_with_no_due_routine_reads_no_task(self):
+        with self.service.transaction():
+            self.service._put('routines', dict(id='r1', bot_id=self.bot['id'], enabled=True, next_run_at='2999-01-01T00:00:00Z'))
+        reads = []
+        original = Service._all
+        def counted(service, table):
+            reads.append(table)
+            return original(service, table)
+        with patch.object(Service, '_all', counted):
+            self.service.tick_routines()
+        self.assertNotIn('tasks', reads)
 
 
 if __name__ == '__main__':

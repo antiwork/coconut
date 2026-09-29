@@ -1582,13 +1582,14 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         if current.tzinfo is None:
             raise ValueError('Routine ticks require an aware time.')
         with self.transaction():
-            index = self._routine_index()
+            index = None
             for routine in self._all('routines'):
                 if self.stopping.is_set() or routine.get('_deleted') or not routine['enabled'] or not routine.get('next_run_at'):
                     continue
                 scheduled = datetime.fromisoformat(routine['next_run_at'].replace('Z', '+00:00'))
                 bot = self._get('bots', routine['bot_id'])
-                if scheduled > current or bot['archived'] or bot.get('_deleted') or self._active_routine_task(routine['id'], index):
+                # The grouping of the tasks is built for the first due routine. A tick with none due reads no task.
+                if scheduled > current or bot['archived'] or bot.get('_deleted') or self._active_routine_task(routine['id'], index := index or self._routine_index()):
                     continue
                 self._queue_routine(routine, scheduled, current)
 
