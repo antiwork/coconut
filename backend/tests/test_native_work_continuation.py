@@ -1324,10 +1324,16 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='running', current_run_id=7)
             self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
             self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='blocked', block_kind=None)
-            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'), state='completed'))
+            # A receipt that already holds its result is no unknown effect. The poller leaves it alone.
+            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'), state='completed',
+                                                      result={'status': 'completed'}))
             self.service._ended_tool_check_at = 0
             self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
-        self.assertFalse(self.service._get('native_receipts', 'cut-off').get('_process_ended_at'))
+            self.assertFalse(self.service._get('native_receipts', 'cut-off').get('_process_ended_at'))
+            # The same setup with an executing receipt and a quiet card does end.
+            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'), state='executing'))
+            self.service._ended_tool_check_at = 0
+            self.assertEqual(self.service._mark_ended_tool_calls(current=122), ['cut-off'])
 
     def test_the_poller_skips_a_live_worker_a_wait_and_runs_once_a_minute(self):
         owner, coordinator, work, pr = self.audited_requester_pr()
