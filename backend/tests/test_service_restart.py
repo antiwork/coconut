@@ -62,7 +62,9 @@ class ServiceRestartTests(unittest.TestCase):
         self.service.running[self.task['id']] = active
         bot = self.service.mutate('POST', '/v1/bots', {'name': 'Dev'}, str(uuid4()))
         queued = self.service.mutate('POST', f"/v1/bots/{bot['id']}/messages", {'text': 'Review the PR'}, str(uuid4()))
-        with patch('coconut.service_restart.time.monotonic', return_value=100) as clock:
+        # The runner has few processors, and the active turn would fill an automatic limit of one.
+        with patch('coconut.work_capacity.automatic_limit', return_value=5), \
+                patch('coconut.service_restart.time.monotonic', return_value=100) as clock:
             self.request()
             self.service._dispatch_pending()
             self.assertNotIn(queued['id'], self.service.running)

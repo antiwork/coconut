@@ -59,7 +59,11 @@ CONTINUE_SCHEMA = {
 
 
 # These Hermes tools run a local command as a process of the execution.
-LOCAL_COMMAND_TOOLS = ('terminal', 'execute_code')
+# A delegate_task call runs its children inside the worker's own process tree with the worker's
+# COCONUT_WORKSPACE_OUTCOME, so the same proof ends it. A worker that stopped before the call returned leaves no
+# result, and Hermes marks that delegation abandoned. The receipt keeps its executing state and its unknown child
+# effects for the owner's next turn. Only the writer guard reads the ended mark.
+LOCAL_COMMAND_TOOLS = ('terminal', 'execute_code', 'delegate_task')
 
 
 class _NativeSnapshotsNeeded(Exception):
