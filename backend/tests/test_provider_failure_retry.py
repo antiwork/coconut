@@ -60,6 +60,42 @@ class ProviderFailureRetryTests(unittest.TestCase):
             assert board.dispatch.check_respawn_guard(conn, identity) is None
         ''' % TRANSIENT_NATIVE_ERROR)
 
+    def test_a_guarded_ready_task_gets_one_event_per_reason_and_not_one_per_pass(self):
+        self.run_native('''
+            identity, run = claimed('parked')
+            board.dispatch._record_task_failure(conn, identity, 'The model provider reported a billing limit.',
+                outcome='worker_failed', release_claim=True, end_run=True)
+            assert board.dispatch.check_respawn_guard(conn, identity) == 'blocker_auth'
+            row = dict(id='parked', state='ready', input='one', previous_input=None, recovering=False, native_id=None)
+            def events():
+                return conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='respawn_guarded'", (identity,)).fetchone()[0]
+            spawned = []
+            for _ in range(5):
+                result = board._dispatch_ready([row], 1, lambda claim, workspace: spawned.append(claim))
+                assert result.respawn_guarded == [(identity, 'blocker_auth')], result
+            # The dispatcher passes about once a second. The task gets its one event, and no spawn.
+            assert events() == 1 and not spawned, (events(), spawned)
+            # A new reason is news, and the same reason again is not.
+            board._note_respawn_guard(identity, 'active_pr')
+            board._note_respawn_guard(identity, 'active_pr')
+            assert events() == 2, events()
+            # Another event in between makes the same reason news again.
+            kb._append_event(conn, identity, 'commented', {'author': 'default'})
+            board._note_respawn_guard(identity, 'active_pr')
+            assert events() == 3, events()
+        ''')
+
+    def test_a_task_that_the_guard_lets_through_still_spawns(self):
+        self.run_native('''
+            identity, run = claimed('free')
+            assert board.finish(identity, run, 'blocked', 'Hermes could not finish this reply.', 'native_turn_failed')
+            assert board.dispatch.check_respawn_guard(conn, identity) is None
+            row = dict(id='free', state='ready', input='one', previous_input=None, recovering=False, native_id=None)
+            claims = []
+            board._dispatch_ready([row], 1, lambda claim, workspace: claims.append(claim.id))
+            assert claims == [identity], claims
+        ''')
+
     def test_another_failure_still_counts_against_the_breaker(self):
         self.run_native('''
             identity, run = claimed('crash')
