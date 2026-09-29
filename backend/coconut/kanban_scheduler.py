@@ -195,8 +195,8 @@ class NativeKanban(NativeOutcomes):
         # A read-only progress question keeps its own bounded session when work capacity is full.
         if any(self._get('tasks', identity).get('_work_status_only') or self._get('tasks', identity).get('_chat_session') for identity in self.running):
             return
-        for task in self._all('tasks'):
-            if not task.get('_work_status_only') or not self._dispatch_eligible(task, time.time()):
+        for task in self._marked_tasks('_work_status_only'):
+            if not self._dispatch_eligible(task, time.time()):
                 continue
             self._ensure_execution_session(task)
             worker = threading.Thread(target=self._run_task, args=(task['id'],), daemon=True, name='work-status')
