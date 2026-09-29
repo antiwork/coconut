@@ -520,10 +520,14 @@ class NativeKanban(NativeOutcomes):
     def _native_orphans(self, slack=0):
         """Return the native tasks of finished requests that still wait, each with its native task.
 
+        A request is finished when it is completed, cancelled or failed. A decision context that ended counts too. On the
+        mini, 1,807 failed decision contexts and 311 failed tasks kept a blocked native task for good, and the snapshot of
+        every dispatcher pass read each of them.
+
         This is the one rule that the settle pass and the disagreement report both read. `slack` moves the due time
         back, so the report names only the tasks that the settle pass should already have archived.
 
-        A request that Coconut finished (completed or cancelled) can leave its native task in ready, todo, triage or
+        A request that Coconut finished (completed, cancelled or failed) can leave its native task in ready, todo, triage or
         blocked, for example when the worker ended a run without a terminal call and Hermes gave up after two
         failures. Hermes then keeps the task for ever, and every dependent task waits for it.
 
@@ -541,11 +545,14 @@ class NativeKanban(NativeOutcomes):
         with self.lock:
             rows = [json.loads(row[0]) for row in self.db.execute(
                 'SELECT data FROM tasks WHERE id IN (SELECT value FROM json_each(?))', (json.dumps(list(waiting)),))]
+            # A decision context has its own native task, and no outcome, retry or block check.
+            rows += [dict(json.loads(row[0]), _context=True) for row in self.db.execute(
+                'SELECT data FROM contexts WHERE id IN (SELECT value FROM json_each(?))', (json.dumps(list(waiting)),))]
         now = datetime.now(timezone.utc).timestamp()
         cutoff, plain_cutoff = now - SETTLE_SECONDS - slack, now - SETTLE_PLAIN_SECONDS - slack
         candidates = []
         for task in rows:
-            if (task['status'] not in ('completed', 'cancelled') or task['id'] in self.running
+            if (task['status'] not in ('completed', 'cancelled', 'failed') or task['id'] in self.running
                     or task['id'] in self.context_threads or task.get('_block_check')
                     or (task.get('_native_outcome_id') and waiting[task['id']]['status'] == 'ready')):
                 continue
@@ -562,12 +569,12 @@ class NativeKanban(NativeOutcomes):
                 "SELECT json_extract(data,'$.task_id') FROM decisions WHERE json_extract(data,'$.status')='pending' "
                 "AND json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?))",
                 (json.dumps([task['id'] for task in candidates]),))}
-            return [(task, waiting[task['id']]) for task in candidates if task['id'] not in held and not self._task_paused(task)
-                    and not self._automatic_work_is_paused(task)]
+            return [(task, waiting[task['id']]) for task in candidates if task['id'] not in held
+                    and (task.get('_context') or not (self._task_paused(task) or self._automatic_work_is_paused(task)))]
 
     def _settle_native_orphans(self):
         """Archive the native tasks that wait although Coconut finished their request. See `_native_orphans`."""
-        # A cancelled request has a summary too, but its work did not succeed, so only a completed one passes its result.
+        # A cancelled or failed request may have a summary too, but its work did not succeed, so only a completed one passes its result.
         for task, native in self._native_orphans()[:SETTLE_BATCH]:
             self.kanban.call({'op': 'archive_settled', 'id': native['id'], 'summary': (task.get('summary') or None) if task['status'] == 'completed' else None})
 

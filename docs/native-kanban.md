@@ -60,6 +60,8 @@ No migration changes the historical delivery or the failed occurrence.
 ## Disagreement report
 
 Coconut and Hermes each keep a lifecycle for a request. The settle pass archives the native task of a finished request.
+A request is finished when it is completed, cancelled or failed, and so is a decision context that ended. A request without
+an outcome settles after 15 minutes, and an outcome after a day.
 At most once in ten minutes, the dispatcher checks for a task that this pass should already have archived, one hour after its due time.
 It also counts the native tasks that no request owns. A task must stay on the list through two reports, ten minutes apart.
 If either count is not zero then, it logs one warning that starts with
