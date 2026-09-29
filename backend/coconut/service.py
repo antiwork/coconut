@@ -117,10 +117,11 @@ MARKS = ('_return_pending', '_native_reply_pending', '_work_status_only')
 
 
 def marked(field):
-    """The SQL condition of a task that has the field. It is the condition of the index of the same field."""
+    """The SQL condition of a task that has a marker in the field. It is the condition of the index of the same field."""
     if field not in MARKS:
         raise ValueError(field)
-    return f"json_type(data,'$.{field}') IS NOT NULL"
+    # A stored false or null is not a marker. The fields are objects or true.
+    return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
 class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance):

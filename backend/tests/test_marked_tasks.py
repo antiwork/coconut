@@ -34,12 +34,15 @@ class MarkedTaskTests(unittest.TestCase):
         first = self.put(_return_pending={'text': 'a'})
         self.put(_return_pending=None)
         self.put(_return_pending={})
+        self.put(_work_status_only=False)
         self.put()
         second = self.put(_return_pending={'text': 'b'})
         self.put(_native_reply_pending={'text': 'c'})
         self.assertEqual([t['id'] for t in self.service._marked_tasks('_return_pending')], [first, second])
         self.assertEqual(len(self.service._marked_tasks('_native_reply_pending')), 1)
         self.assertEqual(self.service._marked_tasks('_work_status_only'), [])
+        rows = self.service.db.execute(f"SELECT COUNT(*) FROM tasks WHERE {marked('_work_status_only')}").fetchone()[0]
+        self.assertEqual(rows, 0, 'A false marker is not indexed.')
 
     def test_an_unknown_field_is_refused(self):
         with self.assertRaises(ValueError):
@@ -56,21 +59,32 @@ class MarkedTaskTests(unittest.TestCase):
         from types import SimpleNamespace
         base = dict(thread_id='t', session_id='s', exchange_id='e', conversation_bot_id=self.bot['id'], title='Work',
                     created_at='2026-01-01T00:00:00Z', summary='')
+        decision = dict(id=str(uuid4()), task_id='none', status='approved', decided_by='device', decided_at='2026-01-02T00:00:00Z',
+                        created_at='2026-01-01T00:00:00Z')
+        with self.service.transaction():
+            self.service._put('decisions', decision)
         for number in range(6):
             identity = str(uuid4())
             with self.service.transaction():
                 self.service._put('tasks', dict(base, id=identity, bot_id=self.bot['id'], status='queued',
-                                                _self_recovery={'attempt': 1}))
+                                                _self_recovery={'attempt': 1}, _execution_session_id='session'))
                 self.service._put('artifacts', dict(id=str(uuid4()), kind='work', status='working', task_id=identity,
-                                                    bot_id=self.bot['id'], title='Work', created_at='2026-01-01T00:00:00Z'))
+                                                    bot_id=self.bot['id'], title='Work', created_at='2026-01-01T00:00:00Z',
+                                                    paused_by_decision_id=decision['id'], _work_pause_at='2026-01-02T00:00:00Z'))
         self.service.kanban = SimpleNamespace(tasks={}, close=lambda: None)
         reads, original = Counter(), Service._all
         def counted(service, table):
             reads[table] += 1
             return original(service, table)
-        with patch.object(Service, '_all', counted):
+        checks = []
+        direction = Service._work_has_new_direction
+        def watched(service, *arguments):
+            checks.append(arguments[0]['id'])
+            return direction(service, *arguments)
+        with patch.object(Service, '_all', counted), patch.object(Service, '_work_has_new_direction', watched):
             rows = self.service._kanban_rows()
         self.assertEqual(len(rows), 6)
+        self.assertEqual(len(checks), 6, 'Every task reaches the new direction check.')
         self.assertTrue(all(count <= 1 for count in reads.values()), reads)
 
 
