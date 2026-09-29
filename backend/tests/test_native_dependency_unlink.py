@@ -108,6 +108,13 @@ class NativeDependencyUnlinkTests(unittest.TestCase):
                     service._put('tasks', task | {'_native_outcome_id': identity})
                     return identity
                 parent_id, child_id = native(parent), native(child)
+                # Another execution by Dev must not block this exact edge.
+                unrelated_workspace = Path(sys.argv[1]) / 'unrelated-workspace'
+                unrelated_workspace.mkdir()
+                unrelated = kb.create_task(conn, title='Unrelated Dev review', body='Independent work', assignee='default',
+                    tenant=child['bot_id'], workspace_kind='dir', workspace_path=str(unrelated_workspace), initial_status='blocked')
+                assert kb.request_review(conn, unrelated, summary='Independent review')
+                assert kb.claim_review_task(conn, unrelated) is not None
                 other = kb.create_task(conn, title='Other dependency', body='Must remain', assignee='default',
                     tenant=parent['bot_id'], workspace_kind='dir', workspace_path=str(workspace), initial_status='blocked')
                 assert kb.request_review(conn, parent_id, summary='Appearance remains pending')
@@ -144,6 +151,7 @@ class NativeDependencyUnlinkTests(unittest.TestCase):
                 assert [tuple(r) for r in conn.execute('SELECT * FROM task_links')] == [r for r in graph if r[:2] != (parent_id, child_id)]
                 assert kb.get_task(conn, parent_id).status == 'review'
                 assert kb.get_task(conn, child_id).status == 'todo'
+                assert kb.get_task(conn, unrelated).status == 'running'
                 assert (workspace / 'owned.txt').read_text() == 'Unpublished original work'
                 print('missing-epoch-native-service-provider: PASS')
             finally:
@@ -260,6 +268,25 @@ class NativeDependencyUnlinkTests(unittest.TestCase):
                 assert 'active run' in str(error)
             assert conn.execute('SELECT COUNT(*) FROM coconut_unlinks').fetchone()[0] == 0
             print('native-guards: PASS')
+        ''')
+
+    def test_scoped_native_claims_and_incomplete_scope_are_rechecked(self):
+        self.run_native('''
+            peer = task('unrelated-dev', 'dev')
+            assert kb.request_review(conn, peer, summary='Unrelated review')
+            assert kb.claim_review_task(conn, peer) is not None
+            for scope in ([], [parent], [parent, child, peer], [parent, child, 't_ffffffff']):
+                try:
+                    board.unlink_dependency(request | dict(guarded_native_ids=scope))
+                    raise AssertionError('Invalid or active scope accepted')
+                except ValueError as error:
+                    assert 'scope' in str(error) or 'related native work' in str(error)
+            receipt = board.unlink_dependency(request | dict(guarded_native_ids=[parent, child]))
+            assert receipt['status'] == 'unlinked'
+            assert kb.get_task(conn, peer).status == 'running'
+            # A confirmed mutation is still readable after related work starts.
+            assert board.unlink_dependency(request | dict(guarded_native_ids=[parent, child, peer])) == receipt
+            print('scoped-native-claim-revalidation: PASS')
         ''')
 
     def test_existing_native_dispatch_lock_excludes_claims_and_rejects_fail_open(self):

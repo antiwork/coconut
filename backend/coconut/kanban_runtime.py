@@ -242,7 +242,9 @@ class Board:
         # claims. Do not nest a transaction around unlink_tasks: it commits and
         # recomputes readiness itself. Its unlinked event is the mutation receipt.
         parent_id, child_id = request['parent_id'], request['child_id']
-        intent = json.dumps(request, sort_keys=True)
+        # Guard scope is a fresh precondition, not the identity of the mutation.
+        # A saved receipt must remain readable after helper work changes.
+        intent = json.dumps({k: v for k, v in request.items() if k != 'guarded_native_ids'}, sort_keys=True)
         previous = self.conn.execute('SELECT intent,generation,receipt FROM coconut_unlinks WHERE request_id=?',
                                      (request['request_id'],)).fetchone()
         if receipt_only and not previous:
@@ -280,12 +282,22 @@ class Board:
             parent, child = tasks
             if child.status != 'todo' or any(t.status == 'running' or t.current_run_id or t.worker_pid for t in tasks):
                 raise ValueError('The child must be TODO and both native outcomes must have no active run.')
-            # Other native workers in this tenant can use raw kanban_link.
-            active = self.conn.execute("SELECT id FROM tasks WHERE tenant=? AND (status='running' OR current_run_id IS NOT NULL "
-                'OR worker_pid IS NOT NULL) AND id<>? LIMIT 1',
-                (request['child_bot_id'], request.get('source_native_id') or '')).fetchone()
-            if active:
-                raise ValueError('Wait for the child owner’s other native work before unlinking.')
+            guarded = request.get('guarded_native_ids')
+            if guarded is None:
+                # Older service requests retain their conservative tenant guard.
+                active = self.conn.execute("SELECT id FROM tasks WHERE tenant=? AND (status='running' OR current_run_id IS NOT NULL "
+                    'OR worker_pid IS NOT NULL) AND id<>? LIMIT 1',
+                    (request['child_bot_id'], request.get('source_native_id') or '')).fetchone()
+                if active:
+                    raise ValueError('Wait for the child owner’s other native work before unlinking.')
+            else:
+                if (not isinstance(guarded, list) or any(not isinstance(i, str) for i in guarded)
+                        or not {parent_id, child_id}.issubset(guarded)):
+                    raise ValueError('The native unlink guard scope is incomplete.')
+                for identity in guarded:
+                    peer = self.kb.get_task(self.conn, identity)
+                    if not peer or peer.status == 'running' or peer.current_run_id or peer.worker_pid:
+                        raise ValueError('Wait for the related native work before unlinking.')
             if not previous:
                 with self.kb.write_txn(self.conn):
                     self.conn.execute('INSERT INTO coconut_unlinks VALUES (?,?,?,NULL)',
