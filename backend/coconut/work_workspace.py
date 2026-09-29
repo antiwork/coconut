@@ -387,6 +387,17 @@ UNMARKED_KEEP_NAMES = ('tmux', 'screen', 'zellij', 'mosh-server', 'ssh-agent', '
                        'gopls', 'rust-analyzer', 'sourcekit-lsp', 'pyright', 'pylsp', 'ruby-lsp', 'solargraph')
 
 
+def working_folder_inside(pid, folder):
+    """Return True when the working folder of the process is `folder` or inside it."""
+    try:
+        result = subprocess.run(['lsof', '-a', '-p', str(pid), '-d', 'cwd', '-Fn'], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    names = [line[1:] for line in result.stdout.splitlines() if line.startswith('n')]
+    root = os.path.realpath(folder)
+    return any(os.path.realpath(name) == root or os.path.realpath(name).startswith(root + os.sep) for name in names)
+
+
 def environment_names(pid, mark):
     """Return True when the environment of the process contains the `NAME=value` item `mark`."""
     with contextlib.suppress(OSError):
@@ -499,9 +510,12 @@ def stop_orphans(found, outcome, age, *, marked=True, within=None):
     def owned(pid):
         if marked:
             return environment_names(pid, mark)
+        if table[pid][2].rsplit('/', 1)[-1] in UNMARKED_KEEP_NAMES or not within:
+            return False
         line = arguments(pid)
-        return (table[pid][2].rsplit('/', 1)[-1] not in UNMARKED_KEEP_NAMES
-                and bool(within) and line is not None and str(within) in line)
+        # A dev server that a bot started with a relative command, such as `node server.js`, works in the worktree
+        # without naming it. A daemon that holds a file there works from another folder, usually /.
+        return (line is not None and str(within) in line) or working_folder_inside(pid, within)
     stopped = {pid for pid in found if pid in table and pid != os.getpid() and table[pid][0] == 1
                and table[pid][1] >= age and not is_shared(pid) and owned(pid)}
     while stopped:

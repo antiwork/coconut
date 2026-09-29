@@ -310,12 +310,26 @@ class WorktreeRetirementTests(unittest.TestCase):
         with patch.object(work_workspace, 'process_table', return_value=table), \
                 patch.object(work_workspace, 'shared', return_value=False), \
                 patch.object(work_workspace, 'arguments', side_effect=lambda pid: lines[pid]), \
+                patch.object(work_workspace, 'working_folder_inside', side_effect=lambda pid, folder: pid == 15), \
                 patch.object(work_workspace, 'stop', side_effect=lambda pids, sig, seconds: set()) as stop:
-            work_workspace.stop_orphans({10, 11, 12, 13, 14}, 'outcome', 1, marked=False, within=worktree)
+            table[15] = (1, 10 ** 6, '/usr/local/bin/node')
+            lines[15] = 'node server.js'
+            work_workspace.stop_orphans({10, 11, 12, 13, 14, 15}, 'outcome', 1, marked=False, within=worktree)
         stopped = set().union(*(call.args[0] for call in stop.call_args_list))
         # Only the dev server that names the worktree goes. A session program, a daemon that names the worktree, a
         # system daemon that only holds a file, and a program that names another path stay.
-        self.assertEqual(stopped, {11})
+        self.assertEqual(stopped, {11, 15})
+
+    def test_the_working_folder_of_a_process_is_read_from_lsof(self):
+        outside = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], cwd='/')
+        self.addCleanup(outside.kill)
+        _, identity, path, _ = self.outcome()
+        inside = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], cwd=path)
+        self.addCleanup(inside.kill)
+        if not shutil.which('lsof'):
+            self.skipTest('The test needs lsof.')
+        self.assertTrue(work_workspace.working_folder_inside(inside.pid, path))
+        self.assertFalse(work_workspace.working_folder_inside(outside.pid, path))
 
     def test_a_resumed_discard_gets_its_links_back(self):
         outcome, identity, path, _ = self.outcome()

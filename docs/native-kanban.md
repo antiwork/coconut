@@ -137,7 +137,7 @@ too. A detached HEAD gets a branch `wt/<name>-detached` at its commit. The archi
 staged and unstaged patches (up to 200 MB), the untracked files (up to 200 MB), and the ignored files that are not build
 output (up to 200 MB), such as `.env`. Rebuildable folders and nested worktrees go without an archive. Only a locked
 worktree, a worktree of another outcome, or a process that is not an old orphan keeps the worktree. For a discard
-without the outcome variable, an orphan counts only when its command line names the worktree path, and never a
+without the outcome variable, an orphan counts only when its command line names the worktree path or whose working folder is inside it, and never a
 session program or a machine-wide daemon. A nested repository or a clone goes without an archive, and the log names it.
 
 A later turn gets a new checkout of the saved branch, and Coconut puts the archived changes back. When the branch moved,
