@@ -367,8 +367,10 @@ def verify_terminal_contract():
 
 
 def verify_delegation_contract():
+    import os
     import threading
     import time
+    from unittest.mock import patch
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from tools import async_delegation as native
     from .native_processes import delegation_completion
@@ -380,12 +382,22 @@ def verify_delegation_contract():
     with tempfile.TemporaryDirectory(prefix='coconut-delegation-contract-') as temporary:
         token = set_hermes_home_override(temporary)
         release = threading.Event()
+        child = {}
         try:
             def runner():
+                child.update(pid=os.getpid(), outcome=os.environ.get('COCONUT_WORKSPACE_OUTCOME'))
                 release.wait(5)
                 return {'status': 'completed', 'summary': 'Coconut delegation contract'}
-            result = native.dispatch_async_delegation(goal='Check durable delivery', context=None, toolsets=None,
-                        role='general', model=None, session_key='coconut-contract', runner=runner)
+            # Coconut ends an interrupted delegate_task receipt from the worker's process proof. That proof holds only
+            # while a child runs inside the worker process with the worker's COCONUT_WORKSPACE_OUTCOME.
+            with patch.dict(os.environ, {'COCONUT_WORKSPACE_OUTCOME': 'coconut-contract'}):
+                result = native.dispatch_async_delegation(goal='Check durable delivery', context=None, toolsets=None,
+                            role='general', model=None, session_key='coconut-contract', runner=runner)
+                deadline = time.monotonic() + 10
+                while not child and time.monotonic() < deadline:
+                    time.sleep(.05)
+            if child != dict(pid=os.getpid(), outcome='coconut-contract'):
+                raise ValueError('Hermes moved a delegated child out of the worker process or its outcome variable.')
             item = dict(id='receipt', task_id='coconut-contract', delegation_ids=[result['delegation_id']])
             if delegation_completion(item)[0].get('observation') != 'running':
                 raise ValueError('Hermes lost the running delegation.')

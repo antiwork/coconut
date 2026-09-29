@@ -1282,6 +1282,61 @@ class NativeWorkContinuationTests(unittest.TestCase):
                 self.service._busy_tool_calls = {}
         self.assertEqual(self.service._get('native_receipts', 'cut-off')['state'], 'executing')
 
+    def test_an_interrupted_delegation_ends_only_with_every_process_of_its_execution(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = self.ended_branch(coordinator, action='delegate_task')
+        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
+        workspace = self.service.root / 'workspaces' / 'coordinator-branch'
+        workspace.mkdir(parents=True, exist_ok=True)
+        with patch.object(self.service, '_work_chain', side_effect=chains):
+            # A live child process, a child holding the workspace, or an unreadable listing keeps the fence.
+            for outcomes, busy in (({'coordinator-branch'}, set()), (None, set()), (set(), {str(workspace)}),
+                                   (set(), ValueError('no lsof'))):
+                with self.subTest(outcomes=outcomes, busy=busy), \
+                        patch('coconut.work_workspace.process_outcomes', return_value=outcomes), \
+                        patch('coconut.work_workspace.busy_paths', side_effect=[busy]):
+                    self.service._ended_tool_check_at = 0
+                    self.service._busy_tool_calls = {}
+                    self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
+                    with self.assertRaisesRegex(ServiceError, 'another execution'):
+                        self.resume(coordinator)
+            with patch('coconut.work_workspace.process_outcomes', return_value=set()), \
+                    patch('coconut.work_workspace.busy_paths', return_value=set()):
+                self.service._ended_tool_check_at = 0
+                self.service._busy_tool_calls = {}
+                self.assertEqual(self.service._mark_ended_tool_calls(current=0), ['cut-off'])
+            # A live worker of the branch still fences the owner.
+            self.service.running[branch['id']] = Mock(is_alive=Mock(return_value=True))
+            with self.assertRaisesRegex(ServiceError, 'another execution'):
+                self.resume(coordinator)
+            self.service.running.pop(branch['id'])
+            self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
+        # The receipt keeps its state and raw intent. Only the ended mark is new.
+        receipt = self.service._get('native_receipts', 'cut-off')
+        self.assertEqual((receipt['state'], receipt['action']['name']), ('executing', 'delegate_task'))
+        self.assertNotIn('result', receipt)
+
+    def test_an_interrupted_delegation_with_a_result_or_a_live_native_run_never_ends(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        branch = self.ended_branch(coordinator, action='delegate_task')
+        with patch('coconut.work_workspace.process_outcomes', return_value=set()), \
+                patch('coconut.work_workspace.busy_paths', return_value=set()):
+            self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='running', current_run_id=7)
+            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
+            self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='blocked', block_kind=None)
+            # A receipt that already holds its result is no unknown effect. The poller leaves it alone.
+            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'), state='completed',
+                                                      result={'status': 'completed'}))
+            self.service._ended_tool_check_at = 0
+            self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
+            self.assertFalse(self.service._get('native_receipts', 'cut-off').get('_process_ended_at'))
+            # The same setup with an executing receipt and a quiet card does end.
+            interrupted = dict(self.service._get('native_receipts', 'cut-off'), state='executing')
+            interrupted.pop('result')
+            self.service._put('native_receipts', interrupted)
+            self.service._ended_tool_check_at = 0
+            self.assertEqual(self.service._mark_ended_tool_calls(current=122), ['cut-off'])
+
     def test_the_poller_skips_a_live_worker_a_wait_and_runs_once_a_minute(self):
         owner, coordinator, work, pr = self.audited_requester_pr()
         branch = self.ended_branch(coordinator)
