@@ -921,15 +921,19 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertTrue((self.workspaces / young / 'notes.txt').exists())
         self.assertFalse((self.workspaces / old / 'notes.txt').exists())
 
-    def test_a_low_disk_keeps_a_stale_queued_worktree_while_a_claim_is_in_progress(self):
-        _, identity, path, _ = self.outcome(status='queued', updated_at=self.ago(hours=13))
+    def test_a_low_disk_keeps_a_stale_queued_worktree_only_while_its_own_claim_is_in_progress(self):
+        claimed, claimed_identity, claimed_path, _ = self.outcome(status='queued', updated_at=self.ago(hours=13))
+        other, other_identity, other_path, _ = self.outcome(status='queued', updated_at=self.ago(hours=13))
         self.service._kanban_claiming = 1
+        self.service._kanban_claim_outcomes = {claimed}
         with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
-            self.assertEqual(self.retire(), [])
-        self.assertTrue(path.exists())
+            # A claim for another outcome does not delay the space recovery.
+            self.assertEqual(self.retire(), [other_identity])
+        self.assertTrue(claimed_path.exists())
         self.service._kanban_claiming = 0
+        self.service._kanban_claim_outcomes = set()
         with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
-            self.assertEqual(self.retire(), [identity])
+            self.assertEqual(self.retire(), [claimed_identity])
 
     def test_a_low_disk_discards_a_refused_worktree_only_after_two_idle_hours(self):
         _, young, young_path, _ = self.outcome(updated_at=self.ago(hours=1))

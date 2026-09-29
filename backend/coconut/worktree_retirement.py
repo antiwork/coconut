@@ -113,14 +113,14 @@ class WorktreeRetirement:
                 if current - latest < idle:
                     continue
 
-                def starts_soon(task):
+                def starts_soon(task, outcome=outcome):
                     if task['id'] in self.running:
                         return True
                     if task['status'] not in ACTIVE_STATUSES:
                         return False
-                    return not (urgent and task['status'] == 'queued' and not self._kanban_claiming
+                    return not (urgent and task['status'] == 'queued' and outcome not in self._kanban_claim_outcomes
                                 and current - updated[task['id']] >= URGENT_QUEUED_SECONDS)
-                if any(starts_soon(t) for t in tasks):
+                if any(starts_soon(t, outcome) for t in tasks):
                     continue
                 if any((native.get(t['id']) or by_native_id.get(t.get('_native_outcome_id')) or {}).get('status', 'done')
                        not in NATIVE_IDLE_STATUSES for t in tasks):
