@@ -225,6 +225,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.chat_dispatcher: threading.Thread | None = None
         self._kanban_dispatching = False
         self._kanban_claiming = 0
+        self._kanban_trimming = False
         self._dependency_unlinking = False
         self._kanban_dispatch_uncertain = False
         self.pr_poller: threading.Thread | None = None

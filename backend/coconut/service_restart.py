@@ -49,10 +49,11 @@ class ServiceRestart:
             if ((self.restart_deadline is None and not recovery) or self.stopping.is_set()
                     or getattr(self, '_workspace_recovery_hold', False)):
                 return False
-            if any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values()]):
+            active_turns = any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values()])
+            if active_turns or self._kanban_trimming:
                 if not recovery and self.restart_pending and time.monotonic() >= self.restart_deadline:
                     with self.transaction():
-                        self._event('service.restart_deferred', {'reason': 'active_turns', 'dispatch_resumed': True})
+                        self._event('service.restart_deferred', {'reason': 'active_turns' if active_turns else 'worker_cleanup', 'dispatch_resumed': True})
                     self.restart_pending = False
                     self.changed.notify_all()
                 return False

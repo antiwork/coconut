@@ -304,8 +304,9 @@ class NativeKanban(NativeOutcomes):
         self._publish_kanban_changes()
 
     def _idle_kanban(self):
-        if not (self.restart_pending or self.stopping.is_set()) and hasattr(self.provider, 'trim_kanban_workers'):
-            with self.lock:
+        with self.lock:
+            trim = not (self.restart_pending or self.stopping.is_set()) and hasattr(self.provider, 'trim_kanban_workers')
+            if trim:
                 keep = set()
                 for record in self._pending_completion_receipts():
                     if self._get('tasks', record['task_id'])['status'] == 'cancelled':
@@ -313,8 +314,16 @@ class NativeKanban(NativeOutcomes):
                     identity = self._receipt_native_worker_id(record)
                     if identity:
                         keep.add(identity)
-            self.provider.trim_kanban_workers(keep)
-        self._publish_kanban_changes()
+                # Restart must not close the provider after trim removes a worker
+                # from its registry but before that worker has terminated.
+                self._kanban_trimming = True
+        if trim:
+            try:
+                self.provider.trim_kanban_workers(keep)
+            finally:
+                with self.changed:
+                    self._kanban_trimming = False
+                    self.changed.notify_all()
         with self.changed:
             self.changed.wait(.2 if self.restart_pending or self.stopping.is_set() else 1)
 
