@@ -549,8 +549,9 @@ class NativeKanban(NativeOutcomes):
                 (json.dumps([task['id'] for task in candidates]),))}
             settled = [task for task in candidates if task['id'] not in held and not self._task_paused(task)
                        and not self._automatic_work_is_paused(task)]
+        # A cancelled request has a summary too, but its work did not succeed, so only a completed one passes its result.
         for task in settled[:SETTLE_BATCH]:
-            self.kanban.call({'op': 'archive_settled', 'id': waiting[task['id']]['id'], 'summary': task.get('summary') or None})
+            self.kanban.call({'op': 'archive_settled', 'id': waiting[task['id']]['id'], 'summary': (task.get('summary') or None) if task['status'] == 'completed' else None})
 
     def _kanban_finished(self):
         with self.changed:

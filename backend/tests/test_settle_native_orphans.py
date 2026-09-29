@@ -149,6 +149,15 @@ class SettleSchedulerTests(unittest.TestCase):
         # The result of the request goes with the call, so a done task keeps it.
         self.assertEqual(service.calls, [{'op': 'archive_settled', 'id': 't_plain', 'summary': 'Complete.'}])
 
+    def test_a_cancelled_request_is_archived_and_never_completed(self):
+        old = self.ago(SETTLE_SECONDS + 60)
+        service = self.service([dict(id='a', status='cancelled', updated_at=old, summary='Cancelled by you.'),
+                                dict(id='b', status='completed', updated_at=old, summary='Complete.')],
+                               {'a': dict(id='t_a', status='ready'), 'b': dict(id='t_b', status='ready')})
+        self.assertEqual(self.settled(service), ['t_a', 't_b'])
+        summaries = {call['id']: call['summary'] for call in service.calls}
+        self.assertEqual(summaries, {'t_a': None, 't_b': 'Complete.'})
+
     def test_a_paused_request_keeps_its_native_task(self):
         old = self.ago(SETTLE_SECONDS + 60)
         service = self.service([dict(id='a', status='completed', updated_at=old)], {'a': dict(id='t_a', status='ready')}, paused=True)
