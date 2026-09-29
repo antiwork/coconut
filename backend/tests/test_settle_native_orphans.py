@@ -100,6 +100,7 @@ class SettleSchedulerTests(unittest.TestCase):
                 return [(identity,) for identity in held if identity in wanted]
             return [(json.dumps(t),) for t in tasks if t['id'] in wanted]
         service.db.execute.side_effect = execute
+        service._native_orphans = lambda slack=0: NativeKanban._native_orphans(service, slack)
         service.calls = calls
         return service
 
@@ -174,6 +175,78 @@ class SettleSchedulerTests(unittest.TestCase):
         service = self.service([dict(id=n, status='completed', updated_at=old) for n in names],
                                {n: dict(id='t_' + n, status='todo') for n in names})
         self.assertEqual(len(self.settled(service)), SETTLE_BATCH)
+
+
+    def report(self, service):
+        # The first report only lists. A task must stay on the list through a second report.
+        NativeKanban._report_native_disagreements(service)
+        service._orphan_report_after = 0
+        with self.assertLogs('coconut.kanban_scheduler', level='WARNING') as logged:
+            NativeKanban._report_native_disagreements(service)
+        return logged.output[0]
+
+    def test_the_report_names_a_task_the_settle_pass_should_have_archived(self):
+        from coconut.kanban_scheduler import ORPHAN_ALERT_SLACK_SECONDS
+        late = self.ago(SETTLE_SECONDS + ORPHAN_ALERT_SLACK_SECONDS + 60)
+        service = self.service([dict(id='late', status='completed', updated_at=late, _native_outcome_id='t_late'),
+                                dict(id='due', status='completed', updated_at=self.ago(SETTLE_SECONDS + 60), _native_outcome_id='t_due'),
+                                dict(id='held', status='completed', updated_at=late, _native_outcome_id='t_held')],
+                               {'late': dict(id='t_late', status='triage'), 'due': dict(id='t_due', status='triage'),
+                                'held': dict(id='t_held', status='triage'), 'x': dict(id='t_x', status='todo', unbound=True)},
+                               held=['held'])
+        line = self.report(service)
+        # A task that is only due is the work of the next settle pass, and a held card keeps its task.
+        # A task with no request is always reported.
+        self.assertIn('1 finished requests keep a waiting native task (t_late)', line)
+        self.assertIn('1 native tasks have no request (t_x)', line)
+
+    def test_the_report_is_silent_when_both_lifecycles_agree(self):
+        service = self.service([dict(id='a', status='completed', updated_at=self.ago(60))],
+                               {'a': dict(id='t_a', status='triage'), 'b': dict(id='t_b', status='done', unbound=True)})
+        NativeKanban._report_native_disagreements(service)
+        service._orphan_report_after = 0
+        with self.assertNoLogs('coconut.kanban_scheduler', level='WARNING'):
+            NativeKanban._report_native_disagreements(service)
+
+    def test_a_task_that_leaves_before_the_second_report_is_not_reported(self):
+        # The settle pass archived it, or adoption bound it, after the first report.
+        from coconut.kanban_scheduler import ORPHAN_ALERT_SLACK_SECONDS
+        late = self.ago(SETTLE_SECONDS + ORPHAN_ALERT_SLACK_SECONDS + 60)
+        natives = {'late': dict(id='t_late', status='triage'), 'x': dict(id='t_x', status='todo', unbound=True)}
+        service = self.service([dict(id='late', status='completed', updated_at=late, _native_outcome_id='t_late')], natives)
+        NativeKanban._report_native_disagreements(service)
+        natives['late']['status'] = 'archived'
+        natives['x']['status'] = 'done'
+        service._orphan_report_after = 0
+        with self.assertNoLogs('coconut.kanban_scheduler', level='WARNING'):
+            NativeKanban._report_native_disagreements(service)
+
+    def test_a_task_that_survives_the_settle_pass_is_reported(self):
+        # The dispatcher settles before it reports. The archive call here changes nothing, as when it fails.
+        from coconut.kanban_scheduler import ORPHAN_ALERT_SLACK_SECONDS
+        late = self.ago(SETTLE_SECONDS + ORPHAN_ALERT_SLACK_SECONDS + 60)
+        service = self.service([dict(id='late', status='completed', updated_at=late, _native_outcome_id='t_late')],
+                               {'late': dict(id='t_late', status='triage')})
+        NativeKanban._settle_native_orphans(service)
+        NativeKanban._report_native_disagreements(service)
+        service._orphan_report_after = 0
+        NativeKanban._settle_native_orphans(service)
+        with self.assertLogs('coconut.kanban_scheduler', level='WARNING') as logged:
+            NativeKanban._report_native_disagreements(service)
+        self.assertEqual([c['id'] for c in service.calls], ['t_late', 't_late'])
+        self.assertIn('(t_late)', logged.output[0])
+
+    def test_a_failed_read_does_not_stop_the_pass(self):
+        service = self.service([], {})
+        service._native_orphans = MagicMock(side_effect=RuntimeError('store is busy'))
+        with self.assertLogs('coconut.kanban_scheduler', level='ERROR'):
+            NativeKanban._report_native_disagreements(service)
+
+    def test_the_report_runs_once_in_its_interval(self):
+        service = self.service([], {'x': dict(id='t_x', status='todo', unbound=True)})
+        self.report(service)
+        with self.assertNoLogs('coconut.kanban_scheduler', level='WARNING'):
+            NativeKanban._report_native_disagreements(service)
 
 
 if __name__ == '__main__':
