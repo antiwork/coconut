@@ -107,12 +107,14 @@ def maintain(request):
         if verdict == 'run' and not request.get('allow_vacuum'):
             # The service stops new turns of the bot and runs this again with allow_vacuum.
             result['vacuum_pending'] = True
-        elif (verdict == 'run'
-                and not (foreign_state_db_holders(db.db_path) + in_process_state_db_holders(db.db_path, exclude=db))):
+        elif verdict == 'run' and foreign_state_db_holders(db.db_path) + in_process_state_db_holders(db.db_path, exclude=db):
+            # Say why, so the service does not put the bot on hold again at once.
+            result['vacuum_skipped'] = 'Another process holds the store.'
+        elif verdict == 'run':
             try:
                 db.vacuum()
             except Exception as error:
-                # The VACUUM is optional. Keep the tips, ends, and prune of this run, and retry next hour.
+                # The VACUUM is optional. Keep the tips, ends, and prune of this run. The service tries again later.
                 result['vacuum_error'] = str(error)[:500]
             else:
                 db.set_meta(VACUUM_KEY, str(time.time()))

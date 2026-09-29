@@ -122,6 +122,28 @@ class SessionSelectionTests(unittest.TestCase):
             self.run_maintenance()
         self.assertEqual(self.service._store_hold, set())
 
+    def test_a_failure_while_waiting_for_turns_still_ends_the_hold(self):
+        self.pending_vacuum()
+        with patch.object(self.service, '_bot_has_live_turn', side_effect=RuntimeError('unexpected')), \
+                self.assertLogs(level='ERROR'):
+            self.run_maintenance()
+        self.assertEqual(self.service._store_hold, set())
+        self.assertEqual(self.vacuums, [False])
+
+    def test_a_pass_that_ends_without_a_vacuum_waits_long_before_the_next_hold(self):
+        # The second pass finds another process on the store and skips the VACUUM.
+        def maintain(bot, conversations, outcomes, days, allow_vacuum=False):
+            self.vacuums.append(allow_vacuum)
+            return dict(vacuum_pending=True) if not allow_vacuum else dict(vacuumed=False, vacuum_skipped='Another process holds the store.')
+        self.provider.maintain_sessions = maintain
+        first = self.run_maintenance(current=0)
+        self.assertEqual(first[self.bot['id']]['vacuum_skipped'], 'Another process holds the store.')
+        self.run_maintenance(current=3601)
+        # An hour later the first pass reports a due VACUUM again, but the bot does not go on hold.
+        self.assertEqual(self.vacuums, [False, True, False])
+        self.run_maintenance(current=session_maintenance.VACUUM_DEFERRED_SECONDS + 1)
+        self.assertEqual(self.vacuums[3:], [False, True])
+
     def test_a_turn_that_does_not_end_keeps_the_bot_running_and_maintenance_tries_again_soon(self):
         task = self.task(status='working')
         finished = threading.Event()

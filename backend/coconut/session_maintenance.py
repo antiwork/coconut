@@ -22,6 +22,8 @@ TIPS_SETTING = 'sessions.tips-recorded.'
 # its running turns to end. If one is still running, the bot goes on and maintenance tries again after the retry time.
 VACUUM_DRAIN_SECONDS = 120
 VACUUM_RETRY_SECONDS = 15 * 60
+# After a pass that ends without a VACUUM, the bot goes on hold again only after this time.
+VACUUM_DEFERRED_SECONDS = 6 * 60 * 60
 
 
 class SessionMaintenance:
@@ -107,12 +109,21 @@ class SessionMaintenance:
 
         A busy bot never has a quiet moment, and its store can grow for weeks. So the bot goes on hold: it keeps its
         queue, and its running turns finish, but no new one starts. Then the store is rewritten and the hold ends.
-        Only a bot with a due VACUUM goes on hold, and at most VACUUM_DRAIN_SECONDS plus the rewrite.
+        Only a bot with a due VACUUM goes on hold, and at most VACUUM_DRAIN_SECONDS plus the rewrite. A pass that does
+        not end in a VACUUM, for example because another process holds the store, waits VACUUM_DEFERRED_SECONDS before
+        the bot goes on hold again.
         """
-        if not self._hold_bot_turns(bot_id):
-            self._next_session_maintenance = current + VACUUM_RETRY_SECONDS
+        retries = self.__dict__.setdefault('_vacuum_retry_at', {})
+        if current < retries.get(bot_id, 0):
             return first
+        retries[bot_id] = current + VACUUM_DEFERRED_SECONDS
         try:
+            with self.lock:
+                self._store_hold.add(bot_id)
+            if not self._wait_for_turns(bot_id):
+                retries[bot_id] = current + VACUUM_RETRY_SECONDS
+                self._next_session_maintenance = current + VACUUM_RETRY_SECONDS
+                return first
             second = self.provider.maintain_sessions(*arguments, allow_vacuum=True)
         finally:
             with self.changed:
@@ -121,16 +132,11 @@ class SessionMaintenance:
         # The second pass prunes nothing more. Keep the counts of the first and add what the VACUUM did.
         return dict(first, vacuum_pending=False, **{key: second[key] for key in ('vacuumed', 'vacuum_error', 'vacuum_skipped') if key in second})
 
-    def _hold_bot_turns(self, bot_id):
-        """Stop new turns of the bot and wait for its running turns. Return False, without a hold, if one does not end."""
-        with self.lock:
-            self._store_hold.add(bot_id)
+    def _wait_for_turns(self, bot_id):
+        """Wait for the running turns of a bot on hold. Return False if one does not end in time."""
         deadline = time.monotonic() + VACUUM_DRAIN_SECONDS
         while self._bot_has_live_turn(bot_id):
             if time.monotonic() >= deadline or self.stopping.wait(1):
-                with self.changed:
-                    self._store_hold.discard(bot_id)
-                    self.changed.notify_all()
                 return False
         return True
 

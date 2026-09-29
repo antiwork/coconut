@@ -411,7 +411,8 @@ Each outcome has its own work session. Once an hour, with worktree retirement, C
    A busy bot never has a quiet moment, so a due VACUUM puts the bot on hold. It keeps its queue and its running turns finish,
    but no new turn starts, and each of its ready tasks waits as `scheduled`. Coconut waits up to two minutes for the running turns.
    Then it rewrites the store and ends the hold, even if the rewrite fails. If a turn is still running, there is no hold,
-   and maintenance tries again after 15 minutes. No other process may hold the store.
+   and maintenance tries again after 15 minutes. If the pass ends without a VACUUM, for example because another process holds
+   the store, the bot goes on hold again only after six hours. No other process may hold the store.
 
 When an idle outcome resumes, Coconut reopens its session with `reopen_session`. If Hermes has already deleted it,
 Coconut seeds a new session from its own saved messages of every task in that work. The native card keeps the work record.
