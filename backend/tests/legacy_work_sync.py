@@ -1,12 +1,11 @@
 """The legacy builder of automatic Work rows, for tests only.
 
 Production never runs it. With Hermes, a Work row comes from a native outcome, and Service._sync_automatic_work
-returned at once. Fixture mode and many tests still build their rows this way, so the code lives here. Import this
-module in a test that calls Service._sync_automatic_work.
+returned at once. Fixture mode (a demo mode) no longer builds these rows. Many tests still build them this way, so
+the code lives here. Importing this module adds the methods to Service for the whole process. CI runs each test
+file in its own process, so the change stays inside the files that import it.
 """
 from datetime import datetime, timezone
-import json
-import re
 
 from coconut.service import Service
 
