@@ -89,6 +89,20 @@ class FinishAtSourceTests(ArchiveSettledTests):
                 assert kb.get_task(conn, identity).status == 'archived', (name, kb.get_task(conn, identity).status)
         ''')
 
+    def test_a_task_that_returns_to_ready_after_the_done_state_was_synced_is_archived(self):
+        # The sync skips a row whose intent did not change. A dependency wait can move the task back to ready later.
+        self.run_native('''
+            from coconut.kanban_runtime import fingerprint
+            identity = native('turn')
+            row = dict(id='turn', state='done', input='turn', bot_id='care', title='turn', priority=10,
+                       workspace=str(home / 'turn'), workspace_changed=False, native_id=None)
+            conn.execute('UPDATE coconut_bindings SET intent=? WHERE external_id=?',
+                         (fingerprint({'state': 'done', 'input': 'turn'}), 'turn'))
+            assert kb.get_task(conn, identity).status == 'ready'
+            board.sync([row])
+            assert kb.get_task(conn, identity).status == 'archived', kb.get_task(conn, identity).status
+        ''')
+
     def test_an_outcome_a_review_and_a_running_task_stay_as_they_are(self):
         self.run_native('''
             outcome = native('outcome')
