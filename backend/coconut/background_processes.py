@@ -119,8 +119,9 @@ class BackgroundProcesses:
     def _background_pending(self, task_id, *, finishing_task_id=None, excluding_task_ids=(), ignore_settled=False):
         """True while a process, a relay, or a wait of the task, or of a turn of its assignment, has no delivery.
 
-        ignore_settled skips the waits that already have their answer, and a queued turn that carries such an answer.
-        The answer reaches an owner only when the owner runs, so it says nothing about work that runs now.
+        ignore_settled skips the waits that already have their answer, and a queued turn that carries delivered answers
+        of any kind. Such a turn does not run now: the caller holds the dispatch gate, which the dispatcher needs. The
+        answer reaches an owner only when the owner runs, so it says nothing about work that runs now.
         """
         with self.lock:
             turns = [json.loads(row[0]) for row in self.db.execute(

@@ -281,6 +281,22 @@ class DependencyUnlinkTests(unittest.TestCase):
             self.unlink(source)
         self.assertEqual(self.requests, [])
 
+    def test_only_a_wait_with_an_answer_is_settled(self):
+        # Checked on the helper itself, because a running target also blocks the unlink through its own task.
+        child, parent, source = self.setup_edge()
+        target = dict(child, id=str(uuid4()), status='working', _native_outcome_id='t_44444444')
+        target['_execution_session_id'] = target['id']
+        self.service._put('tasks', target)
+        record = self.wait_receipt(child, target)
+        self.assertTrue(self.service._background_pending(child['id'], ignore_settled=True))
+        self.assertTrue(self.service._background_pending(child['id']))
+        self.service._put('tasks', target | {'status': 'failed', 'summary': 'The model provider stopped.'})
+        self.assertFalse(self.service._wait_settled(dict(record, _wait_task_id=None)))
+        self.assertTrue(self.service._wait_settled(record))
+        self.assertFalse(self.service._background_pending(child['id'], ignore_settled=True))
+        # The plain check still counts the undelivered wait.
+        self.assertTrue(self.service._background_pending(child['id']))
+
     def test_a_tool_call_of_an_earlier_turn_does_not_keep_a_queued_owner_busy(self):
         child, parent, source = self.setup_edge()
         child['_native_turn_id'] = 'current-turn'
