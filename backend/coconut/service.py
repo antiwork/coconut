@@ -4003,6 +4003,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         status = 'failed'
                         context['error_code'] = 'decision_refresh_incomplete'
                     context['status'] = status
+                    if status == 'failed':
+                        # The wait before the next check of a card counts from here, not from when the check was queued.
+                        context['_failed_at'] = now()
                     if context_failure:
                         context['error_code'] = context_failure['error_code']
                     self._put('contexts', context)

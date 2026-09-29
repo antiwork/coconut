@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
+from coconut.decision_freshness import age
 
 import test_automatic_work as fixtures
 from coconut.hermes_worker import conversation_input
@@ -83,6 +84,29 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.assertTrue(self.failed_check(decision, 2 * RETRY_SECONDS + 30))
         # Three failures: four times.
         self.assertFalse(self.failed_check(decision, 4 * RETRY_SECONDS - 30))
+
+    def test_a_check_that_ends_without_a_result_saves_its_failure_time(self):
+        decision = self.question()
+        self.service._queue_decision_refreshes()
+        context = self.service._all('contexts')[-1]
+        self.service._start_context(context['id'])
+        self.service.context_threads[context['id']].join(10)
+        saved = self.service._get('contexts', context['id'])
+        self.assertEqual((saved['status'], saved['error_code']), ('failed', 'decision_refresh_incomplete'))
+        self.assertLess(age(saved['_failed_at'], datetime.now(timezone.utc)), 60)
+
+    def test_the_wait_counts_from_the_failure_of_a_long_check(self):
+        from coconut.decision_freshness import RETRY_SECONDS
+        decision = self.question()
+        self.assertTrue(self.failed_check(decision, 10 ** 6))
+        # The check was queued long ago and failed just now, so the wait has barely begun.
+        context = self.service._all('contexts')[-1]
+        context['_failed_at'] = datetime.now(timezone.utc).isoformat()
+        self.service._put('contexts', context)
+        self.assertFalse(self.failed_check(decision, 10 ** 6))
+        context['_failed_at'] = (datetime.now(timezone.utc) - timedelta(seconds=RETRY_SECONDS + 30)).isoformat()
+        self.service._put('contexts', context)
+        self.assertTrue(self.failed_check(decision, 10 ** 6))
 
     def test_new_evidence_starts_the_failure_count_again(self):
         from coconut.decision_freshness import REFRESH_MAX_FAILURES

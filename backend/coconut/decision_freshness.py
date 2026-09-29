@@ -374,16 +374,21 @@ class DecisionFreshness:
 
     @staticmethod
     def _unrecorded_refresh_failures(contexts, chain, fingerprint):
-        """Count the newest checks of a card that failed against this evidence without recording a result."""
-        count = 0
+        """Count the newest checks of a card that failed against this evidence without recording a result.
+
+        Return the count and the time of the newest failure, or None for that time when the check saved none.
+        """
+        count, latest = 0, None
         for context in reversed([c for c in contexts if c['id'] in chain]):
             # A stale check was cancelled for its evidence, so it says nothing about the turn.
             if context['status'] == 'cancelled':
                 continue
             if context['status'] != 'failed' or context.get('_refresh_recorded') or context.get('_evidence_fingerprint') != fingerprint:
                 break
+            if not count:
+                latest = context.get('_failed_at')
             count += 1
-        return count
+        return count, latest
 
     def _queue_decision_refreshes(self):
         from .service import now, uid
@@ -446,8 +451,8 @@ class DecisionFreshness:
                 origin = prior.get('_refresh_origin_id', prior.get('id'))
                 chain = {c['id'] for c in contexts if c.get('_decision_refresh')
                          and c.get('_refresh_origin_id', c['id']) == origin}
-                failures = self._unrecorded_refresh_failures(contexts, chain, fingerprint)
-                if failures and (failures >= REFRESH_MAX_FAILURES or age(previous.get('queued_at'), current)
+                failures, failed_at = self._unrecorded_refresh_failures(contexts, chain, fingerprint)
+                if failures and (failures >= REFRESH_MAX_FAILURES or age(failed_at or previous.get('queued_at'), current)
                                  < min(RETRY_SECONDS * 2 ** (failures - 1), REFRESH_MAX_BACKOFF_SECONDS)):
                     # New evidence changes the fingerprint, and then the count starts again. The card stays open for a person.
                     continue
