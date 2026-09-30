@@ -3311,6 +3311,53 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertFalse((workspace / 'old').exists())
 
+    def test_a_process_that_opens_an_entry_after_the_first_scan_puts_it_back(self):
+        workspace = self.bot_workspace()
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('a turn opens this')
+        self.age(workspace / 'old', 30)
+        # The first scan finds no holder. The scan of the moved entry finds one, as lsof names the new path.
+        holders = MagicMock(side_effect=lambda paths, detail=False: {
+            str(p): ({123} if str(p).endswith(retirement.CHECKING) else set()) for p in paths})
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', holders):
+            self.retire()
+        self.assertEqual((workspace / 'old' / 'notes.md').read_text(), 'a turn opens this')
+        self.assertEqual(list((workspace / work_workspace.SCRATCH_TRASH).iterdir()), [])
+
+    def test_a_failed_scan_of_the_moved_entries_leaves_them_under_the_checking_name(self):
+        workspace = self.bot_workspace()
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('old')
+        self.age(workspace / 'old', 30)
+        calls = []
+
+        def scan(paths, detail=False):
+            calls.append(sorted(paths))
+            if any(str(p).endswith(retirement.CHECKING) for p in paths):
+                raise ValueError('lsof did not list all open files.')
+            return {str(p): set() for p in paths}
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', scan):
+            self.retire()
+        waiting = list((workspace / work_workspace.SCRATCH_TRASH).iterdir())
+        self.assertEqual(len(waiting), 1)
+        self.assertTrue(waiting[0].name.endswith(retirement.CHECKING))
+        self.assertEqual((waiting[0] / 'notes.md').read_text(), 'old')
+
+    def test_an_entry_waiting_under_the_checking_name_stays_while_a_process_holds_it(self):
+        workspace = self.bot_workspace()
+        item = workspace / work_workspace.SCRATCH_TRASH / ('old-1759000000000000000' + retirement.CHECKING)
+        item.mkdir(parents=True)
+        (item / 'notes.md').write_text('a turn uses this')
+        self.age(item, 30)
+        holders = MagicMock(side_effect=lambda paths, detail=False: {str(p): {123} for p in paths})
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', holders):
+            self.retire()
+        self.assertEqual((item / 'notes.md').read_text(), 'a turn uses this')
+        with self.stale_rule():
+            self.retire()
+            self.retire()
+        self.assertFalse(item.exists())
+
     def test_a_bot_workspace_entry_that_a_process_holds_stays(self):
         workspace = self.bot_workspace()
         (workspace / 'busy').mkdir()

@@ -158,9 +158,13 @@ def settle_checking(parent, stale_before):
     trash = parent / work_workspace.SCRATCH_TRASH
     if trash.is_symlink() or not trash.is_dir():
         return
-    for item in sorted(trash.iterdir()):
+    items = [item for item in sorted(trash.iterdir())
+             if item.name.endswith(CHECKING) and MOVED_NAME.fullmatch(item.name[:-len(CHECKING)])]
+    # A turn can open or enter the entry after the first scan, and an open file leaves no change time.
+    held = work_workspace.holders_by_path({str(item) for item in items}) if items else {}
+    for item in items:
         stem = item.name[:-len(CHECKING)]
-        if not (item.name.endswith(CHECKING) and MOVED_NAME.fullmatch(stem)):
+        if held.get(str(item)):
             continue
         try:
             state = stale_tree(item, stale_before, skip_root=True)
@@ -530,7 +534,7 @@ class WorktreeRetirement:
         if not candidates or self.stopping.is_set() or self.restart_pending:
             return
         holders = work_workspace.holders_by_path({str(entry) for entry, _, _ in candidates})
-        removed, freed, repositories_to_prune = [], 0, set()
+        removed, freed, repositories_to_prune, cleared = [], 0, set(), []
         waiting = candidates
         while waiting:
             retry = []
@@ -580,24 +584,41 @@ class WorktreeRetirement:
                         else:
                             logging.getLogger(__name__).warning('Coconut put back %s, because it changed while Coconut moved it (%s).', entry, where)
                         continue
-                    # The walk cleared it. Now the trash sweep may delete it.
-                    try:
-                        released = target.with_name(target.name[:-len(CHECKING)])
-                        os.rename(target, released)
-                    except OSError as error:
-                        # The entry waits under the checking name, and its worktree records stay, so a later put_back
-                        # returns a registered worktree. The next pass walks it again (settle_checking).
-                        logging.getLogger(__name__).warning('Coconut could not release %s for deletion: %s', target, error)
-                        continue
-                    # The entry is out of the way now, and its worktrees go. Their main checkouts forget them.
-                    repositories_to_prune |= linked_repositories(released / folder.relative_to(entry) for folder in checkouts)
-                    target = released
+                    # The walk cleared it. One scan for all moved entries decides the release, after the loop.
+                    cleared.append((entry, target, size, checkouts))
+                    continue
                 removed.append(entry)
                 freed += size
             # A main checkout waits for the worktrees that lie in other stale entries. Try again while entries go.
             if len(retry) == len(waiting):
                 break
             waiting = retry
+        # A turn can open or enter a moved entry after the first scan, and an open file leaves no change time. Scan the
+        # moved entries once more. A held one goes back. An error of the scan leaves them under the checking name,
+        # and the next pass walks them again (settle_checking).
+        if cleared and not (self.stopping.is_set() or self.restart_pending):
+            try:
+                after = work_workspace.holders_by_path({str(target) for _, target, _, _ in cleared})
+            except ValueError as error:
+                logging.getLogger(__name__).warning('Coconut could not check the moved bot workspace entries: %s', error)
+                after = None
+            for entry, target, size, checkouts in cleared if after is not None else ():
+                try:
+                    if after.get(str(target)):
+                        where = put_back(target, entry)
+                        logging.getLogger(__name__).warning('Coconut put back %s, because a process uses it (%s).', entry, where)
+                        continue
+                    released = target.with_name(target.name[:-len(CHECKING)])
+                    os.rename(target, released)
+                except OSError as error:
+                    # The entry waits under the checking name, and its worktree records stay, so a later put_back
+                    # returns a registered worktree. The next pass walks it again (settle_checking).
+                    logging.getLogger(__name__).warning('Coconut could not release %s for deletion: %s', target, error)
+                    continue
+                # The entry is out of the way now, and its worktrees go. Their main checkouts forget them.
+                repositories_to_prune |= linked_repositories(released / folder.relative_to(entry) for folder in checkouts)
+                removed.append(entry)
+                freed += size
         # The deletion runs without the lock.
         for parent in {entry.parent for entry in removed}:
             empty_moved(parent)

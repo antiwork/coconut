@@ -104,6 +104,7 @@ Coconut keeps a Git checkout that has uncommitted files, ignored files that a bu
 It keeps a main checkout while one of its worktrees stays.
 It keeps an entry that a process uses, a tracked worktree, a link, and a name that starts with a dot.
 After it deletes a worktree, it prunes the record from the main checkout.
+Coconut scans for open files again after it moves the entries, and before it releases an entry that a stop left, so a turn that opened an entry after the first scan puts it back.
 It cleans a bot with work in progress too. A turn that only reads an old entry, without an open file during the pass, leaves no sign, so the age and the checks above are the only protection.
 
 Retirement does these steps:
