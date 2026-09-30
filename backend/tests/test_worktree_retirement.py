@@ -3298,7 +3298,7 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertFalse((workspace / 'old').exists())
 
-    def test_a_worktree_record_is_dropped_when_the_release_fails_and_when_a_later_pass_settles_it(self):
+    def test_a_worktree_record_stays_while_its_release_fails_and_goes_when_a_later_pass_settles_it(self):
         workspace = self.bot_workspace()
         main = self.clone(workspace / 'repo')
         linked = workspace / 'pr-1'
@@ -3314,17 +3314,54 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         waiting = list((workspace / work_workspace.SCRATCH_TRASH).iterdir())
         self.assertEqual(len(waiting), 1)
-        self.assertNotIn('pr-1', git(main, 'worktree', 'list'))
-        # A second worktree that only a later pass settles: move it to the trash by hand, as a stop would.
-        other = workspace / 'pr-2'
-        git(main, 'worktree', 'add', '-q', '--detach', str(other))
-        self.age(other, 30)
-        left = workspace / work_workspace.SCRATCH_TRASH / ('pr-2-1759000000000000001' + retirement.CHECKING)
-        os.rename(other, left)
-        self.assertIn('pr-2', git(main, 'worktree', 'list'))
+        # The worktree may still come back, so its record stays.
+        self.assertIn('pr-1', git(main, 'worktree', 'list'))
         with self.stale_rule():
             self.retire()
-        self.assertNotIn('pr-2', git(main, 'worktree', 'list'))
+        self.assertNotIn('pr-1', git(main, 'worktree', 'list'))
+        self.assertEqual(list((workspace / work_workspace.SCRATCH_TRASH).iterdir()), [])
+
+    def test_a_worktree_that_a_later_pass_puts_back_is_still_registered(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'repo')
+        linked = workspace / 'pr-1'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        self.age(linked, 30)
+        real = os.rename
+
+        def fail_the_release(source, target, *args, **kwargs):
+            if str(source).endswith(retirement.CHECKING) and not str(target).endswith(retirement.CHECKING):
+                raise OSError('release failed')
+            return real(source, target, *args, **kwargs)
+        with self.stale_rule(), patch.object(retirement.os, 'rename', fail_the_release):
+            self.retire()
+        (list((workspace / work_workspace.SCRATCH_TRASH).iterdir())[0] / 'new.txt').write_text('changed in between')
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((linked / 'new.txt').exists())
+        self.assertEqual(git(linked, 'rev-parse', '--show-toplevel'), str(linked.resolve()))
+        self.assertIn('pr-1', git(main, 'worktree', 'list'))
+        self.assertNotIn('prunable', git(main, 'worktree', 'list'))
+
+    def test_an_entry_waiting_under_the_checking_name_stays_while_the_bot_has_a_queued_task(self):
+        workspace = self.bot_workspace()
+        item = workspace / work_workspace.SCRATCH_TRASH / ('old-1759000000000000000' + retirement.CHECKING)
+        item.mkdir(parents=True)
+        (item / 'notes.md').write_text('a queued turn will read this')
+        self.age(item, 30)
+        task = dict(id=str(uuid4()), bot_id=self.bot['id'], title='Review', status='queued', summary='', created_at=OLD, updated_at=RECENT)
+        with self.service.transaction():
+            self.service._put('tasks', task)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((item / 'notes.md').exists())
+        task['status'] = 'completed'
+        with self.service.transaction():
+            self.service._put('tasks', task)
+        with self.stale_rule():
+            self.retire()
+            self.retire()
+        self.assertFalse(item.exists())
 
     def test_a_bot_workspace_entry_that_a_process_holds_stays(self):
         workspace = self.bot_workspace()

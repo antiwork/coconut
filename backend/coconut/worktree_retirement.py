@@ -477,6 +477,17 @@ class WorktreeRetirement:
                 with contextlib.suppress(*work_workspace.GIT_ERRORS):
                     work_workspace.git(repository, 'worktree', 'prune', timeout=work_workspace.CHECKOUT_SECONDS)
 
+    def _bot_busy(self, bot_id):
+        """Return True when the bot has a working, queued or scheduled task or context. A waiting one can wait for days."""
+        if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
+            return True
+        try:
+            return any(self.db.execute("SELECT 1 FROM " + table + " WHERE json_extract(data,'$.bot_id')=? "
+                                       "AND json_extract(data,'$.status') IN ('working','queued','scheduled') LIMIT 1",
+                                       (bot_id,)).fetchone() for table in ('tasks', 'contexts'))
+        finally:
+            self.lock.release()
+
     def _clear_stale_bot_workspaces(self, current, saved, low_disk):
         """Delete the entries of bots/<id>/workspace that nothing has changed for BOT_WORKSPACE_STALE_SECONDS.
 
@@ -498,7 +509,9 @@ class WorktreeRetirement:
             try:
                 # A stop between a move and its deletion leaves trash. Empty it first, in the workspace and one level down.
                 for place in (bot, *(child for child in bot.iterdir() if child.is_dir() and not child.is_symlink())):
-                    settle_checking(place, stale_before)
+                    # An entry that waits under the checking name stays while the bot has work, as a fresh entry does.
+                    if not self._bot_busy(bot.parent.name):
+                        settle_checking(place, stale_before)
                     empty_moved(place)
                 pending = [bot]
                 while pending:
@@ -550,10 +563,7 @@ class WorktreeRetirement:
                     if top_changed(entry, stale_before):
                         continue
                     # A turn runs with the workspace as its folder. It can read an old entry, and a read changes no time.
-                    bot_id = entry.relative_to(self.root / 'bots').parts[0]
-                    if any(self.db.execute("SELECT 1 FROM " + table + " WHERE json_extract(data,'$.bot_id')=? "
-                                           "AND json_extract(data,'$.status') IN ('working','queued','scheduled') LIMIT 1",
-                                           (bot_id,)).fetchone() for table in ('tasks', 'contexts')):
+                    if self._bot_busy(entry.relative_to(self.root / 'bots').parts[0]):
                         continue
                     if entry.is_dir() and not entry.is_symlink():
                         trash = entry.parent / work_workspace.SCRATCH_TRASH
@@ -576,10 +586,7 @@ class WorktreeRetirement:
                         unchanged = stale_tree(target, stale_before, skip_root=True) is not None
                     except OSError:
                         unchanged = False
-                    if unchanged:
-                        # Read the worktree records now. The release below can fail, and the next pass deletes the entry.
-                        repositories_to_prune |= linked_repositories(target / folder.relative_to(entry) for folder in checkouts)
-                    else:
+                    if not unchanged:
                         try:
                             where = put_back(target, entry)
                         except OSError as error:
@@ -591,11 +598,14 @@ class WorktreeRetirement:
                     try:
                         released = target.with_name(target.name[:-len(CHECKING)])
                         os.rename(target, released)
-                        target = released
                     except OSError as error:
-                        # The entry waits under the checking name. The next pass walks it again (settle_checking).
+                        # The entry waits under the checking name, and its worktree records stay, so a later put_back
+                        # returns a registered worktree. The next pass walks it again (settle_checking).
                         logging.getLogger(__name__).warning('Coconut could not release %s for deletion: %s', target, error)
                         continue
+                    # The entry is out of the way now, and its worktrees go. Their main checkouts forget them.
+                    repositories_to_prune |= linked_repositories(released / folder.relative_to(entry) for folder in checkouts)
+                    target = released
                 removed.append(entry)
                 freed += size
             # A main checkout waits for the worktrees that lie in other stale entries. Try again while entries go.
@@ -608,7 +618,6 @@ class WorktreeRetirement:
         if removed:
             logging.getLogger(__name__).warning('Coconut cleared %s stale entries of bot workspaces and freed %.1f GiB.',
                                                 len(removed), freed / 1024 ** 3)
-        # An entry whose release failed is gone from its place too, so its main checkout forgets it now.
         prune_repositories(repositories_to_prune)
 
     def _busy_pause(self):
