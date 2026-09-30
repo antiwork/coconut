@@ -423,6 +423,39 @@ def wait_for_agent_unloaded(timeout: float = 10) -> None:
         time.sleep(min(.1, remaining))
 
 
+# The updater waits this long for the running turns before it stops the service. A turn that is still running then loses its
+# tool results, and Coconut fails its task at the next start.
+DRAIN_SECONDS = 600
+
+
+def drain_for_update(timeout: float = DRAIN_SECONDS) -> bool:
+    """Ask a running service to finish its turns, and wait until it says none is left. Return whether it did.
+
+    The request ends by itself, so a failed update cannot leave the service paused. A service that does not say
+    "drain" in its process record is stopped at once, as before.
+    """
+    try:
+        record = json.loads((DEFAULT_DATA / "process.json").read_text())
+    except (OSError, ValueError):
+        return False
+    if record.get("drain") is not True or owned_process() is None:
+        return False
+    request, drained = DEFAULT_DATA / "drain-request", DEFAULT_DATA / "drained"
+    if request.is_symlink() or drained.is_symlink():
+        return False
+    drained.unlink(missing_ok=True)
+    # The service reads this file while it runs. A truncated file must never be visible, so the request replaces the file at once.
+    pending = request.with_name(request.name + ".tmp")
+    pending.write_text(str(time.time() + timeout + 60))
+    os.replace(pending, request)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if drained.exists():
+            return True
+        time.sleep(1)
+    return False
+
+
 def stop_for_update() -> dict:
     path, loaded = owned_agent()
     process = owned_process()

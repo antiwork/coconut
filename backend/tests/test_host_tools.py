@@ -9,6 +9,7 @@ import shutil
 import ssl
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -428,6 +429,52 @@ class HostLifecycleTests(unittest.TestCase):
         with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, printed, '')):
             with self.assertRaisesRegex(SystemExit, 'loaded LaunchAgent does not identify'):
                 host.owned_agent()
+
+    def test_the_update_drains_a_service_that_asks_for_it_and_waits_for_the_idle_mark(self):
+        self.write_process(drain=True)
+        def sleep(seconds):
+            # The service sees the request and says that no turn is left.
+            self.assertTrue((self.data / 'drain-request').is_file())
+            (self.data / 'drained').write_text('1')
+        with patch.object(host, 'owned_process', return_value=(4242, self.options)), patch.object(host.time, 'sleep', side_effect=sleep):
+            self.assertTrue(host.drain_for_update(timeout=30))
+        # The request ends by itself, later than the wait, and no partial file is left behind.
+        self.assertGreater(float((self.data / 'drain-request').read_text()), time.time() + 30)
+        self.assertFalse((self.data / 'drain-request.tmp').exists())
+
+    def test_the_drain_request_appears_whole_or_not_at_all(self):
+        self.write_process(drain=True)
+        seen = []
+        real = host.os.replace
+        def replace(source, target):
+            # Before the swap, the request file that the service reads does not exist yet. The new content is complete.
+            seen.append((Path(target).exists(), float(Path(source).read_text()) > time.time()))
+            return real(source, target)
+        ticks = iter(range(0, 1000))
+        with patch.object(host, 'owned_process', return_value=(4242, self.options)), patch.object(host.time, 'sleep'), \
+             patch.object(host.time, 'monotonic', side_effect=lambda: next(ticks)), patch.object(host.os, 'replace', side_effect=replace):
+            host.drain_for_update(timeout=3)
+        self.assertEqual(seen, [(False, True)])
+
+    def test_the_update_stops_at_once_a_service_that_does_not_drain(self):
+        self.write_process()
+        with patch.object(host, 'owned_process', return_value=(4242, self.options)), patch.object(host.time, 'sleep') as sleep:
+            self.assertFalse(host.drain_for_update(timeout=30))
+        sleep.assert_not_called()
+        self.assertFalse((self.data / 'drain-request').exists())
+
+    def test_the_update_stops_a_service_that_never_reports_idle_after_the_wait(self):
+        self.write_process(drain=True)
+        ticks = iter(range(0, 1000))
+        with patch.object(host, 'owned_process', return_value=(4242, self.options)), patch.object(host.time, 'sleep'), \
+             patch.object(host.time, 'monotonic', side_effect=lambda: next(ticks)):
+            self.assertFalse(host.drain_for_update(timeout=5))
+
+    def test_the_update_does_not_drain_a_service_that_is_not_running(self):
+        self.write_process(drain=True)
+        with patch.object(host, 'owned_process', return_value=None):
+            self.assertFalse(host.drain_for_update(timeout=30))
+        self.assertFalse((self.data / 'drain-request').exists())
 
     def test_unloaded_agent_file_does_not_imply_managed_state(self):
         self.write_agent()

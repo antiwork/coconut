@@ -1,5 +1,8 @@
+from pathlib import Path
+import json
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 from uuid import uuid4
@@ -7,7 +10,7 @@ from uuid import uuid4
 from coconut.providers import FixtureProvider
 from coconut.service import Service, ServiceError
 from coconut.server import APIServer
-from coconut.service_restart import RESTART_DRAIN_SECONDS
+from coconut.service_restart import DRAIN_REQUEST_FILE, DRAINED_FILE, RESTART_DRAIN_SECONDS
 
 
 class ServiceRestartTests(unittest.TestCase):
@@ -46,6 +49,143 @@ class ServiceRestartTests(unittest.TestCase):
             APIServer.service_actions(server)
         self.assertTrue(self.service.stopping.is_set())
         self.assertFalse(self.service.take_service_restart())
+
+    def drain_files(self):
+        return self.service.root / DRAIN_REQUEST_FILE, self.service.root / DRAINED_FILE
+
+    def test_a_drain_request_pauses_new_turns_and_says_when_no_turn_runs(self):
+        request, drained = self.drain_files()
+        request.write_text(str(time.time() + 60))
+        worker = Mock()
+        worker.is_alive.return_value = True
+        self.service.running['active'] = worker
+        self.service.poll_service_drain()
+        # A turn is running: dispatch is paused, and the service does not say it is idle.
+        self.assertTrue(self.service.restart_pending)
+        self.assertFalse(drained.exists())
+        worker.is_alive.return_value = False
+        self.service.poll_service_drain()
+        self.assertTrue(drained.exists())
+        self.assertTrue(self.service.restart_pending)
+
+    def test_a_claim_in_flight_is_a_running_turn_for_the_drain(self):
+        request, drained = self.drain_files()
+        request.write_text(str(time.time() + 60))
+        self.service._kanban_claiming = 1
+        self.service.poll_service_drain()
+        self.assertFalse(drained.exists())
+        self.service._kanban_claiming = 0
+        self.service.poll_service_drain()
+        self.assertTrue(drained.exists())
+
+    def test_an_ended_drain_request_resumes_dispatch_and_clears_its_files(self):
+        request, drained = self.drain_files()
+        request.write_text(str(time.time() + 60))
+        self.service.poll_service_drain()
+        self.assertTrue(self.service.restart_pending and drained.exists())
+        # The updater failed and never removed the request. It ends by itself.
+        request.write_text(str(time.time() - 1))
+        self.service.poll_service_drain()
+        self.assertFalse(self.service.restart_pending)
+        self.assertFalse(request.exists() or drained.exists())
+
+    def test_an_ended_drain_request_leaves_a_restart_that_a_bot_asked_for(self):
+        request, _ = self.drain_files()
+        self.assertEqual(self.request()['status'], 'queued')
+        request.write_text(str(time.time() - 1))
+        self.service.poll_service_drain()
+        self.assertTrue(self.service.restart_pending)
+
+    def test_the_server_clears_an_old_drain_request_before_it_announces_drain_support(self):
+        from coconut import server
+        request, drained = self.drain_files()
+        request.write_text(str(time.time() + 600))
+        drained.write_text('1')
+        record = self.service.root / 'process.json'
+        record.unlink(missing_ok=True)
+        seen = []
+        real = self.service.clear_service_drain
+        def clear():
+            # The record that announces the support does not exist yet when the old request goes.
+            seen.append(record.exists())
+            real()
+        with patch.object(self.service, 'clear_service_drain', clear):
+            server.write_process_record(self.service)
+        self.assertEqual(seen, [False])
+        self.assertFalse(request.exists() or drained.exists())
+        self.assertIs(json.loads(record.read_text())['drain'], True)
+
+    def test_start_does_not_remove_a_drain_request(self):
+        request, _ = self.drain_files()
+        request.write_text(str(time.time() + 600))
+        self.service.start()
+        self.assertTrue(request.exists())
+
+    def test_a_bot_restart_that_is_deferred_during_a_drain_does_not_release_the_pause(self):
+        request, _ = self.drain_files()
+        request.write_text(str(time.time() + 600))
+        self.service.poll_service_drain()
+        self.assertEqual(self.request()['status'], 'queued')
+        worker = Mock()
+        worker.is_alive.return_value = True
+        self.service.running['active'] = worker
+        # The restart deadline passes while a turn still runs.
+        self.service.restart_deadline = time.monotonic() - 1
+        self.assertFalse(self.service.take_service_restart())
+        # The deferral would have released the pause and admitted turns. The drain keeps it.
+        self.assertTrue(self.service.restart_pending)
+
+    def test_a_bot_restart_does_not_restart_the_service_while_an_update_drains_it(self):
+        request, drained = self.drain_files()
+        request.write_text(str(time.time() + 600))
+        self.assertEqual(self.request()['status'], 'queued')
+        self.service.poll_service_drain()
+        # No turn runs, so the drain is complete and the restart would take effect. The update goes first.
+        self.assertTrue(drained.exists())
+        self.assertFalse(self.service.take_service_restart())
+        self.assertFalse(self.service.stopping.is_set())
+        # When the request ends, the restart that the bot asked for goes on.
+        request.write_text(str(time.time() - 1))
+        self.service.poll_service_drain()
+        self.assertTrue(self.service.take_service_restart())
+
+    def test_an_ended_drain_keeps_the_pause_of_a_workspace_recovery(self):
+        request, _ = self.drain_files()
+        request.write_text(str(time.time() + 60))
+        self.service.poll_service_drain()
+        self.service._workspace_recovery_hold = True
+        request.write_text(str(time.time() - 1))
+        self.service.poll_service_drain()
+        self.assertTrue(self.service.restart_pending)
+
+    def test_the_drain_waits_for_worker_cleanup_and_an_uncertain_dispatch(self):
+        request, drained = self.drain_files()
+        request.write_text(str(time.time() + 60))
+        for flag in ('_kanban_trimming', '_kanban_dispatch_uncertain'):
+            setattr(self.service, flag, True)
+            self.service.poll_service_drain()
+            self.assertFalse(drained.exists(), flag)
+            setattr(self.service, flag, False)
+        self.service.poll_service_drain()
+        self.assertTrue(drained.exists())
+
+    def test_an_ended_drain_keeps_the_pause_of_a_restart_that_a_bot_asked_for_during_it(self):
+        request, _ = self.drain_files()
+        request.write_text(str(time.time() + 60))
+        self.service.poll_service_drain()
+        self.assertTrue(self.service.restart_pending)
+        # A running turn asks for a restart while the drain holds dispatch.
+        self.assertEqual(self.request()['status'], 'queued')
+        self.assertIsNotNone(self.service.restart_deadline)
+        request.write_text(str(time.time() - 1))
+        self.service.poll_service_drain()
+        self.assertTrue(self.service.restart_pending)
+
+    def test_the_dispatcher_polls_the_drain_request(self):
+        request, drained = self.drain_files()
+        request.write_text(str(time.time() + 60))
+        self.service._dispatch_pending()
+        self.assertTrue(self.service.restart_pending and drained.exists())
 
     def test_retry_after_restart_does_not_request_another_restart(self):
         self.request()

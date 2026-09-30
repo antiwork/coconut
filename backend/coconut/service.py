@@ -2976,6 +2976,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self.stopping.wait(1)
 
     def _dispatch_pending(self):
+        self.poll_service_drain()
         with self.dispatch_gate:
             if getattr(self, '_workspace_recovery_hold', False):
                 return

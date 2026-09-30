@@ -2,6 +2,10 @@
 import time
 
 RESTART_DRAIN_SECONDS = 60
+# An update stops the service. Turns that are still running would lose their tool results, and Coconut fails such a task at the
+# next start so that it never repeats an action. So the updater first asks the service to drain (see `poll_service_drain`).
+DRAIN_REQUEST_FILE = 'drain-request'
+DRAINED_FILE = 'drained'
 
 RESTART_SCHEMA = {
     'name': 'coconut_restart_service',
@@ -11,6 +15,47 @@ RESTART_SCHEMA = {
 
 
 class ServiceRestart:
+    def poll_service_drain(self):
+        """Pause new turns while the updater asks for it, and say when no turn is running.
+
+        The updater writes the time at which the request ends into `drain-request`. Until then, no new turn starts and the
+        running turns finish. When none is left, this writes `drained`, and the updater stops the service. A request that
+        nobody removes ends by itself, so a failed update cannot leave the service paused.
+        """
+        request, drained = self.root / DRAIN_REQUEST_FILE, self.root / DRAINED_FILE
+        try:
+            until = float(request.read_text()) if request.is_file() else 0.0
+        except (OSError, ValueError):
+            until = 0.0
+        if time.time() >= until:
+            self._draining = False
+            if getattr(self, '_drain_holds_dispatch', False):
+                self._drain_holds_dispatch = False
+                # A restart that a bot asked for, or a workspace recovery, keeps the pause that it also needs.
+                if self.restart_deadline is None and not getattr(self, '_workspace_recovery_hold', False):
+                    self.restart_pending = False
+                with self.changed:
+                    self.changed.notify_all()
+            for path in (request, drained):
+                path.unlink(missing_ok=True)
+            return
+        # While the drain holds, the deferral of a restart that a bot asked for must not release the pause (see
+        # take_service_restart). Otherwise both would switch the pause off and on, and admit turns between.
+        self._draining = True
+        if not self.restart_pending:
+            self._drain_holds_dispatch = True
+            self.restart_pending = True
+        with self.lock:
+            # The same work that keeps a bot's restart from taking effect: turns, claims, uncertain dispatch and worker cleanup.
+            active = (any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values()])
+                      or bool(self._kanban_claiming) or bool(self._kanban_dispatch_uncertain) or bool(self._kanban_trimming))
+        if not active and not drained.exists():
+            drained.write_text('1')
+
+    def clear_service_drain(self):
+        for name in (DRAIN_REQUEST_FILE, DRAINED_FILE):
+            (self.root / name).unlink(missing_ok=True)
+
     def request_service_restart(self, task_id, payload):
         from .service import ServiceError
         if payload != {}:
@@ -38,6 +83,10 @@ class ServiceRestart:
         return {'status': 'deferred', 'detail': 'Work continues. The service will restart when active turns finish. Finish your reply now.'}
 
     def take_service_restart(self):
+        # An update is about to stop the service. A restart now would start a process that removes the drain request,
+        # and the updater would wait for an idle mark that never comes. The update supersedes the restart.
+        if getattr(self, '_draining', False):
+            return False
         # The HTTP accept loop must remain available while another request owns the queue.
         if not self.dispatch_gate.acquire(blocking=False):
             return False
@@ -51,7 +100,8 @@ class ServiceRestart:
                 return False
             active_turns = any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values()])
             if active_turns or self._kanban_trimming:
-                if not recovery and self.restart_pending and time.monotonic() >= self.restart_deadline:
+                if (not recovery and self.restart_pending and time.monotonic() >= self.restart_deadline
+                        and not getattr(self, '_draining', False)):
                     with self.transaction():
                         self._event('service.restart_deferred', {'reason': 'active_turns' if active_turns else 'worker_cleanup', 'dispatch_resumed': True})
                     self.restart_pending = False
