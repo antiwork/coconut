@@ -102,6 +102,39 @@ def holds_tracked(folder, places):
     return any(place == folder or folder in place.parents for place in places)
 
 
+# Coconut names a moved entry <name>-<nanoseconds>. Only such names in a trash folder are its own.
+MOVED_NAME = re.compile(r'.+-\d{16,20}')
+
+
+def empty_moved(parent):
+    """Delete the entries that Coconut moved to the trash folder of parent. A bot's own files in it stay."""
+    trash = parent / work_workspace.SCRATCH_TRASH
+    if trash.is_symlink() or not trash.is_dir():
+        return
+    for item in trash.iterdir():
+        if not MOVED_NAME.fullmatch(item.name):
+            continue
+        try:
+            shutil.rmtree(item) if item.is_dir() and not item.is_symlink() else item.unlink()
+        except OSError as error:
+            logging.getLogger(__name__).warning('Coconut could not delete %s: %s', item, error)
+
+
+def put_back(target, entry):
+    """Undo a move, because the entry changed after the walk. Return the place where it is now."""
+    try:
+        if not os.path.lexists(entry):
+            os.rename(target, entry)
+            return entry
+    except OSError:
+        pass
+    # Something took the old path. Keep the entry where nothing deletes it.
+    kept = entry.parent / '.stale-kept'
+    kept.mkdir(mode=0o700, exist_ok=True)
+    os.rename(target, kept / target.name)
+    return kept / target.name
+
+
 def is_repository(folder):
     """Return True when folder is a Git checkout or a bare repository. Its parts belong together, so nothing judges them apart."""
     return (folder / '.git').exists() or all((folder / name).exists() for name in ('HEAD', 'objects', 'refs'))
@@ -112,8 +145,10 @@ def changed_at(info):
     return max(info.st_mtime, info.st_ctime)
 
 
-def stale_tree(path, stale_before):
+def stale_tree(path, stale_before, skip_root=False):
     """Return (bytes, checkouts) when nothing in the tree changed since stale_before, else None. Never follow a link.
+
+    skip_root leaves the time of path itself out. A rename changes it, and a check after a move needs the files only.
 
     checkouts lists the folders of the tree that hold a Git checkout, and the bare repositories. A fresh file ends the
     walk at once.
@@ -122,7 +157,7 @@ def stale_tree(path, stale_before):
     while stack:
         current = stack.pop()
         info = os.lstat(current)
-        if changed_at(info) >= stale_before:
+        if changed_at(info) >= stale_before and not (skip_root and current == path):
             return None
         total += info.st_blocks * 512
         if stat.S_ISDIR(info.st_mode):
@@ -397,7 +432,7 @@ class WorktreeRetirement:
                 continue
             # A stop between a move and its deletion leaves trash. Empty it first, in the workspace and one level down.
             for place in (bot, *(child for child in bot.iterdir() if child.is_dir() and not child.is_symlink())):
-                work_workspace.empty_scratch_trash(place)
+                empty_moved(place)
             pending = [bot]
             while pending:
                 parent = pending.pop()
@@ -438,23 +473,14 @@ class WorktreeRetirement:
                     continue
                 if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
                     continue
+                target = None
                 try:
                     # A turn starts under this lock. Check the top of the entry again, and move it before the lock goes.
-                    # The full walk ran before, and it can take seconds. A process that works in the entry holds it (see above).
+                    # The full walk ran before, and it can take seconds, so the walk of the moved entry comes after the lock.
                     if top_changed(entry, stale_before):
                         continue
-                    for folder in checkouts:
-                        marker = folder / '.git'
-                        if marker.is_file():
-                            with contextlib.suppress(OSError, IndexError):
-                                line = marker.read_text().strip()
-                                if line.startswith('gitdir: '):
-                                    # A linked worktree names <repository>/.git/worktrees/<name>. A submodule names another place.
-                                    record = (folder / line[len('gitdir: '):]).resolve()
-                                    if record.parent.name == 'worktrees' and record.parent.parent.name == '.git':
-                                        repositories_to_prune.add(record.parent.parent.parent)
                     if entry.is_dir():
-                        work_workspace.move_scratch(entry, keep=False)
+                        target = work_workspace.move_scratch(entry, keep=False)
                     else:
                         entry.unlink()
                 except OSError as error:
@@ -462,6 +488,31 @@ class WorktreeRetirement:
                     continue
                 finally:
                     self.lock.release()
+                if target is not None:
+                    # A worker that does not hold the service lock can write deep in the entry after the first walk.
+                    # Nothing new starts in the moved entry, so one more full walk sees every change that happened.
+                    try:
+                        unchanged = stale_tree(target, stale_before, skip_root=True) is not None
+                    except OSError:
+                        unchanged = False
+                    if not unchanged:
+                        try:
+                            where = put_back(target, entry)
+                        except OSError as error:
+                            logging.getLogger(__name__).warning('Coconut could not put back %s from %s: %s', entry, target, error)
+                        else:
+                            logging.getLogger(__name__).warning('Coconut put back %s, because it changed while Coconut moved it (%s).', entry, where)
+                        continue
+                for folder in checkouts:
+                    marker = (target / folder.relative_to(entry) if target is not None else folder) / '.git'
+                    if marker.is_file():
+                        with contextlib.suppress(OSError, IndexError, ValueError):
+                            line = marker.read_text().strip()
+                            if line.startswith('gitdir: '):
+                                # A linked worktree names <repository>/.git/worktrees/<name>. A submodule names another place.
+                                record = (marker.parent / line[len('gitdir: '):]).resolve()
+                                if record.parent.name == 'worktrees' and record.parent.parent.name == '.git':
+                                    repositories_to_prune.add(record.parent.parent.parent)
                 removed.append(entry)
                 freed += size
             # A main checkout waits for the worktrees that lie in other stale entries. Try again while entries go.
@@ -470,7 +521,7 @@ class WorktreeRetirement:
             waiting = retry
         # The deletion runs without the lock.
         for parent in {entry.parent for entry in removed}:
-            work_workspace.empty_scratch_trash(parent)
+            empty_moved(parent)
         if removed:
             logging.getLogger(__name__).warning('Coconut cleared %s stale entries of bot workspaces and freed %.1f GiB.',
                                                 len(removed), freed / 1024 ** 3)

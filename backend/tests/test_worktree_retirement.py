@@ -3050,11 +3050,12 @@ class WorktreeRetirementTests(unittest.TestCase):
         workspace = self.bot_workspace()
         (workspace / 'reviews').mkdir()
         for place in (workspace, workspace / 'reviews'):
-            (place / work_workspace.SCRATCH_TRASH / 'old-clone-1').mkdir(parents=True)
-            (place / work_workspace.SCRATCH_TRASH / 'old-clone-1' / 'file').write_text('left by a stop')
+            (place / work_workspace.SCRATCH_TRASH / 'old-clone-1759000000000000000').mkdir(parents=True)
+            (place / work_workspace.SCRATCH_TRASH / 'old-clone-1759000000000000000' / 'file').write_text('left by a stop')
+            (place / work_workspace.SCRATCH_TRASH / 'bots-own-notes.txt').write_text('not Coconut\'s')
         self.retire()
-        self.assertEqual(list((workspace / work_workspace.SCRATCH_TRASH).iterdir()), [])
-        self.assertEqual(list((workspace / 'reviews' / work_workspace.SCRATCH_TRASH).iterdir()), [])
+        for place in (workspace, workspace / 'reviews'):
+            self.assertEqual([item.name for item in (place / work_workspace.SCRATCH_TRASH).iterdir()], ['bots-own-notes.txt'])
 
     def test_keeping_one_entry_keeps_the_main_checkout_whose_worktree_lies_in_it_whatever_the_order(self):
         # a-main has a worktree in the folder z. The folder also holds a main checkout with a fresh worktree outside,
@@ -3126,6 +3127,22 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertTrue((main / 'tracked.txt').exists())
         self.assertFalse(other.exists())
+
+    def test_a_file_written_deep_in_an_entry_after_the_walk_puts_the_entry_back(self):
+        workspace = self.bot_workspace()
+        entry = workspace / 'evidence'
+        (entry / 'a' / 'b').mkdir(parents=True)
+        (entry / 'a' / 'b' / 'old.md').write_text('old')
+        self.age(entry, 30)
+        move = work_workspace.move_scratch
+
+        def move_then_write(folder, *, keep=True):
+            target = move(folder, keep=keep)
+            (target / 'a' / 'b' / 'new.md').write_text('a worker wrote this through an open file')
+            return target
+        with self.stale_rule(), patch.object(work_workspace, 'move_scratch', move_then_write):
+            self.retire()
+        self.assertEqual(sorted(path.name for path in (entry / 'a' / 'b').iterdir()), ['new.md', 'old.md'])
 
     def test_a_main_checkout_stays_when_the_worktree_that_needs_it_is_held_by_a_process(self):
         workspace = self.bot_workspace()
