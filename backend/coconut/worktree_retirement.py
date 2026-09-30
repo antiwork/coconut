@@ -484,7 +484,7 @@ class WorktreeRetirement:
         judges the entries inside it, one level down, unless it is a Git repository itself. A Git checkout that holds work
         that no remote has stays (checkout_keeps). A main checkout stays while a worktree of it stays. A process that
         uses an entry, a tracked worktree, the repository of a binding, and a name that starts with a dot stay too.
-        An entry also stays while its bot has a working task or context, and the next pass tries again. Coconut moves a folder to a
+        An entry also stays while its bot has a working, queued or scheduled task or context, and the next pass tries again. Coconut moves a folder to a
         trash folder of its parent first, and deletes it later, outside the lock.
         """
         stale_before = current - (BOT_WORKSPACE_LOW_DISK_STALE_SECONDS if low_disk else BOT_WORKSPACE_STALE_SECONDS)
@@ -552,8 +552,8 @@ class WorktreeRetirement:
                     # A turn runs with the workspace as its folder. It can read an old entry, and a read changes no time.
                     bot_id = entry.relative_to(self.root / 'bots').parts[0]
                     if any(self.db.execute("SELECT 1 FROM " + table + " WHERE json_extract(data,'$.bot_id')=? "
-                                           "AND json_extract(data,'$.status')='working' LIMIT 1", (bot_id,)).fetchone()
-                           for table in ('tasks', 'contexts')):
+                                           "AND json_extract(data,'$.status') IN ('working','queued','scheduled') LIMIT 1",
+                                           (bot_id,)).fetchone() for table in ('tasks', 'contexts')):
                         continue
                     if entry.is_dir() and not entry.is_symlink():
                         trash = entry.parent / work_workspace.SCRATCH_TRASH

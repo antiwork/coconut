@@ -3227,6 +3227,24 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertEqual(list(trash.iterdir()), [])
 
+    def test_a_bot_workspace_stays_while_the_bot_has_a_queued_task_but_not_a_waiting_one(self):
+        workspace = self.bot_workspace()
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('a queued turn will read this')
+        self.age(workspace / 'old', 30)
+        task = dict(id=str(uuid4()), bot_id=self.bot['id'], title='Review', status='queued', summary='', created_at=OLD, updated_at=RECENT)
+        with self.service.transaction():
+            self.service._put('tasks', task)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((workspace / 'old' / 'notes.md').exists())
+        task['status'] = 'waiting'
+        with self.service.transaction():
+            self.service._put('tasks', task)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse((workspace / 'old').exists())
+
     def test_a_bot_workspace_stays_while_the_bot_has_a_working_context(self):
         workspace = self.bot_workspace()
         (workspace / 'old').mkdir()
