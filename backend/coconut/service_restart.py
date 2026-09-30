@@ -30,7 +30,9 @@ class ServiceRestart:
         if time.time() >= until:
             if getattr(self, '_drain_holds_dispatch', False):
                 self._drain_holds_dispatch = False
-                self.restart_pending = False
+                # A restart that a bot asked for after the drain began keeps its own pause and deadline.
+                if self.restart_deadline is None:
+                    self.restart_pending = False
                 with self.changed:
                     self.changed.notify_all()
             for path in (request, drained):

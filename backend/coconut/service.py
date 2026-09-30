@@ -2661,8 +2661,6 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
     def start(self):
         if self.dispatcher or getattr(self, '_workspace_recovery_hold', False):
             return
-        # A drain request belongs to the process that the updater asked. A new process starts without one.
-        self.clear_service_drain()
         self.dispatcher = threading.Thread(target=self._dispatch, name='coconut-dispatch', daemon=True)
         self.dispatcher.start()
         if self.kanban is not None:

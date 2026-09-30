@@ -256,6 +256,9 @@ def main(argv=None):
             server.server_close()
         service.close()
         parser.error(f'The service could not listen: {error}')
+    # A drain request belongs to the process that the updater asked. Remove an old one before this process says that it drains,
+    # so that a request written after the record is never removed.
+    service.clear_service_drain()
     (service.root / 'process.json').write_text(json.dumps({
         'pid': os.getpid(), 'data_dir': str(service.root),
         'project': str(Path(__file__).resolve().parents[2]),

@@ -95,12 +95,30 @@ class ServiceRestartTests(unittest.TestCase):
         self.service.poll_service_drain()
         self.assertTrue(self.service.restart_pending)
 
-    def test_a_new_process_does_not_inherit_a_drain_request(self):
+    def test_the_server_clears_an_old_drain_request_before_it_announces_drain_support(self):
+        import inspect
+        from coconut import server
         request, drained = self.drain_files()
         request.write_text(str(time.time() + 600))
         drained.write_text('1')
-        self.service.start()
+        self.service.clear_service_drain()
         self.assertFalse(request.exists() or drained.exists())
+        # The record that announces the support is written after the clean-up, and start() never removes a request.
+        source = inspect.getsource(server.main)
+        self.assertLess(source.index('service.clear_service_drain()'), source.index("'drain': True"))
+        self.assertNotIn('clear_service_drain', inspect.getsource(Service.start))
+
+    def test_an_ended_drain_keeps_the_pause_of_a_restart_that_a_bot_asked_for_during_it(self):
+        request, _ = self.drain_files()
+        request.write_text(str(time.time() + 60))
+        self.service.poll_service_drain()
+        self.assertTrue(self.service.restart_pending)
+        # A running turn asks for a restart while the drain holds dispatch.
+        self.assertEqual(self.request()['status'], 'queued')
+        self.assertIsNotNone(self.service.restart_deadline)
+        request.write_text(str(time.time() - 1))
+        self.service.poll_service_drain()
+        self.assertTrue(self.service.restart_pending)
 
     def test_the_dispatcher_polls_the_drain_request(self):
         request, drained = self.drain_files()
