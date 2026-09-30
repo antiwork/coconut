@@ -275,6 +275,26 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.assertFalse((self.target / 'docs/old.md').exists())
         self.assertEqual(personal.read_bytes(), b'Keep this local note.\n')
 
+    def test_an_update_lets_the_running_turns_finish_before_it_stops_the_service(self):
+        class DrainingOperations(FakeOperations):
+            def drain(self, root):
+                self.record('drain', root)
+                return {'drained': True}
+        self.receive()
+        operations = DrainingOperations(mode='managed')
+        self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=operations)
+        names = [call[0] for call in operations.calls]
+        # The drain comes first: a stop that interrupts a turn loses its tool results, and its task fails at the next start.
+        self.assertLess(names.index('drain'), names.index('stop'))
+        self.assertEqual(names.count('drain'), 1)
+
+    def test_an_update_without_a_drain_step_still_stops_the_service(self):
+        operations = FakeOperations(mode='managed')
+        self.assertFalse(hasattr(operations, 'drain'))
+        self.receive()
+        self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=operations)
+        self.assertIn('stop', [call[0] for call in operations.calls])
+
     def test_failed_start_restores_owned_code_and_keeps_host_data(self):
         self.receive()
         before = {name: (self.target / name).read_bytes() for name in package_files()}

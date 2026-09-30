@@ -42,6 +42,8 @@ HEALTH_WAIT_SECONDS = 300
 # A probe whose failure is expected, such as the check for an already restored service, waits only this long.
 # This is the earlier wait. With the faster start migrations, a restored service answers well within it.
 PROBE_WAIT_SECONDS = 60
+# The update waits this long for running turns to finish (host.DRAIN_SECONDS) and a little more for the helper.
+DRAIN_WAIT_SECONDS = 600 + 90
 
 
 
@@ -295,7 +297,7 @@ class Operations:
         managed = root / '.runtime/hermes/venv/bin/python'
         return str(managed) if managed.is_file() else sys.executable
 
-    def helper(self, root, operation, state=None, source=None):
+    def helper(self, root, operation, state=None, source=None, timeout=60):
         program = '''import importlib.util,json,sys
 from pathlib import Path
 root=Path(sys.argv[1])
@@ -313,13 +315,17 @@ if sys.argv[2]=='inspect':
     result={'mode':'managed' if loaded else 'manual' if process else 'stopped','project':str(root),'data_dir':str(root/'.runtime/host')}
     if result['mode']=='manual': result['options']=process[1]
 elif sys.argv[2]=='stop': result=module.stop_for_update()
+elif sys.argv[2]=='drain':
+    # An installed host.py from before the drain has no such function. Then the service is stopped at once, as it was.
+    drain=getattr(module,'drain_for_update',None)
+    result={'drained': bool(drain()) if drain else False}
 else: result=module.restore_after_update(state)
 print('COCONUT_HOST_STATE='+json.dumps(result))
 '''
         command = [self.python(root), '-c', program, str(root), operation]
         if source is not None:
             command.append(str(source))
-        output = self.command(command, root, 'Service ' + operation, input_data=canonical(state), timeout=60)
+        output = self.command(command, root, 'Service ' + operation, input_data=canonical(state), timeout=timeout)
         lines = [line for line in output.decode('utf-8', errors='replace').splitlines() if line.startswith('COCONUT_HOST_STATE=')]
         if len(lines) != 1:
             raise DeployError('The service helper returned an invalid state.')
@@ -343,6 +349,10 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
 
     def inspect(self, root):
         return self.helper(root, 'inspect')
+
+    def drain(self, root):
+        """Let the running turns of the service finish before the update stops it. See host.drain_for_update."""
+        return self.helper(root, 'drain', timeout=DRAIN_WAIT_SECONDS)
 
     def stop(self, root):
         return self.helper(root, 'stop')
@@ -783,6 +793,9 @@ def receive(directory, address, stream, *, home=None, operations=None, update_ru
         applied = False
         try:
             if old_names:
+                # Turns that a stop interrupts lose their tool results, and their tasks fail at the next start.
+                if hasattr(operations, 'drain'):
+                    operations.drain(root)
                 stopped = operations.stop(root)
                 if stopped != state:
                     record['service_state'] = stopped

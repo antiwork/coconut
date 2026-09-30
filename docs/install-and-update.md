@@ -136,6 +136,10 @@ python3 scripts/remote.py update
 ```
 
 The updater validates file hashes before changing source files. It stops Coconut during replacement and preserves its previous service mode.
+Before it stops Coconut, the updater asks a running service to drain. The service starts no new turn, and the running turns finish.
+The updater waits up to ten minutes for that, and then it stops the service. A turn that a stop interrupts loses the results of its
+tool calls, and Coconut fails its task at the next start, so that it never repeats an action that may have run. The request ends by
+itself after the wait, so a failed update cannot leave the service paused. A service without this support is stopped at once.
 It retains bot profiles, decisions, events, receipts, artifacts, credentials, and the certificate.
 Normal updates do not require another iPhone pairing.
 

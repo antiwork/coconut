@@ -259,6 +259,8 @@ def main(argv=None):
     (service.root / 'process.json').write_text(json.dumps({
         'pid': os.getpid(), 'data_dir': str(service.root),
         'project': str(Path(__file__).resolve().parents[2]),
+        # The updater drains a service that says so, before it stops it (see Service.poll_service_drain).
+        'drain': True,
     }))
     service.restart_enabled = os.environ.get("COCONUT_MANAGED_SERVICE") == "1"
     service.start()
