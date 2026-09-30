@@ -3186,27 +3186,57 @@ class WorktreeRetirementTests(unittest.TestCase):
         retirement.empty_moved(workspace)
         self.assertEqual((target / 'deep' / 'new.md').read_text(), 'changed after the walk')
 
-    def test_a_cleared_entry_leaves_the_trash_and_a_crash_before_the_walk_loses_nothing(self):
+    def test_a_stop_before_the_second_walk_leaves_an_entry_that_the_next_pass_settles(self):
         workspace = self.bot_workspace()
         (workspace / 'old').mkdir()
         (workspace / 'old' / 'notes.md').write_text('old')
+        (workspace / 'changed').mkdir()
+        (workspace / 'changed' / 'notes.md').write_text('old')
         self.age(workspace / 'old', 30)
+        self.age(workspace / 'changed', 30)
         walk = retirement.stale_tree
 
-        def crash_at_the_second_walk(path, stale_before, skip_root=False):
+        def stop_at_the_second_walk(path, stale_before, skip_root=False):
             if skip_root:
                 raise KeyboardInterrupt
             return walk(path, stale_before, skip_root=skip_root)
-        with self.stale_rule(), patch.object(retirement, 'stale_tree', crash_at_the_second_walk):
+        with self.stale_rule(), patch.object(retirement, 'stale_tree', stop_at_the_second_walk):
             with self.assertRaises(KeyboardInterrupt):
                 self.retire()
-        # The entry waits under the checking name. The next pass empties the trash, and it must keep this entry.
-        waiting = list((workspace / work_workspace.SCRATCH_TRASH).iterdir())
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        waiting = sorted(trash.iterdir())
         self.assertEqual(len(waiting), 1)
         self.assertTrue(waiting[0].name.endswith(retirement.CHECKING))
+        # The moved entry changed while the service was down. The sweep must not delete it.
+        (waiting[0] / 'notes.md').write_text('a worker wrote this')
         with self.stale_rule():
             self.retire()
-        self.assertEqual((waiting[0] / 'notes.md').read_text(), 'old')
+        # The changed entry is back at its old place. The other stale entry went in the same pass.
+        self.assertEqual((workspace / 'changed' / 'notes.md').read_text(), 'a worker wrote this')
+        self.assertFalse((workspace / 'old').exists())
+
+    def test_a_clean_entry_left_under_the_checking_name_is_deleted_by_the_next_pass(self):
+        workspace = self.bot_workspace()
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        item = trash / ('old-1759000000000000000' + retirement.CHECKING)
+        item.mkdir(parents=True)
+        (item / 'notes.md').write_text('old')
+        self.age(item, 30)
+        with self.stale_rule():
+            self.retire()
+            self.retire()
+        self.assertEqual(list(trash.iterdir()), [])
+
+    def test_a_bot_workspace_stays_while_the_bot_has_a_working_context(self):
+        workspace = self.bot_workspace()
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('a decision turn reads this')
+        self.age(workspace / 'old', 30)
+        with self.service.transaction():
+            self.service._put('contexts', dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=str(uuid4()), status='working'))
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((workspace / 'old' / 'notes.md').exists())
 
     def test_an_unreadable_bot_workspace_does_not_stop_the_pass_for_the_others(self):
         broken = self.service.root / 'bots' / '0000-first' / 'workspace'

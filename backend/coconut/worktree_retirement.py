@@ -125,6 +125,31 @@ def empty_moved(parent):
             logging.getLogger(__name__).warning('Coconut could not delete %s: %s', item, error)
 
 
+def settle_checking(parent, stale_before):
+    """Finish the moves that a stop or a failed rename left in the trash folder of parent.
+
+    Walk each entry with the CHECKING name as the second walk does. A clean one gets its plain moved name, so the next
+    sweep deletes it. A changed one goes back to its old place, or to STALE_KEPT.
+    """
+    trash = parent / work_workspace.SCRATCH_TRASH
+    if trash.is_symlink() or not trash.is_dir():
+        return
+    for item in sorted(trash.iterdir()):
+        stem = item.name[:-len(CHECKING)]
+        if not (item.name.endswith(CHECKING) and MOVED_NAME.fullmatch(stem)):
+            continue
+        try:
+            clear = stale_tree(item, stale_before, skip_root=True) is not None
+            if clear:
+                os.rename(item, item.with_name(stem))
+            else:
+                where = put_back(item, parent / stem.rsplit('-', 1)[0])
+                logging.getLogger(__name__).warning('Coconut put back %s, because it changed while Coconut moved it (%s).',
+                                                    parent / stem.rsplit('-', 1)[0], where)
+        except OSError as error:
+            logging.getLogger(__name__).warning('Coconut could not settle %s: %s', item, error)
+
+
 def put_back(target, entry):
     """Undo a move, because the entry changed after the walk. Return the place where it is now.
 
@@ -432,7 +457,7 @@ class WorktreeRetirement:
         judges the entries inside it, one level down, unless it is a Git repository itself. A Git checkout that holds work
         that no remote has stays (checkout_keeps). A main checkout stays while a worktree of it stays. A process that
         uses an entry, a tracked worktree, the repository of a binding, and a name that starts with a dot stay too.
-        An entry also stays while its bot has a working task, and the next pass tries again. Coconut moves a folder to a
+        An entry also stays while its bot has a working task or context, and the next pass tries again. Coconut moves a folder to a
         trash folder of its parent first, and deletes it later, outside the lock.
         """
         stale_before = current - (BOT_WORKSPACE_LOW_DISK_STALE_SECONDS if low_disk else BOT_WORKSPACE_STALE_SECONDS)
@@ -446,6 +471,7 @@ class WorktreeRetirement:
             try:
                 # A stop between a move and its deletion leaves trash. Empty it first, in the workspace and one level down.
                 for place in (bot, *(child for child in bot.iterdir() if child.is_dir() and not child.is_symlink())):
+                    settle_checking(place, stale_before)
                     empty_moved(place)
                 pending = [bot]
                 while pending:
@@ -498,8 +524,9 @@ class WorktreeRetirement:
                         continue
                     # A turn runs with the workspace as its folder. It can read an old entry, and a read changes no time.
                     bot_id = entry.relative_to(self.root / 'bots').parts[0]
-                    if self.db.execute("SELECT 1 FROM tasks WHERE json_extract(data,'$.bot_id')=? "
-                                       "AND json_extract(data,'$.status')='working' LIMIT 1", (bot_id,)).fetchone():
+                    if any(self.db.execute("SELECT 1 FROM " + table + " WHERE json_extract(data,'$.bot_id')=? "
+                                           "AND json_extract(data,'$.status')='working' LIMIT 1", (bot_id,)).fetchone()
+                           for table in ('tasks', 'contexts')):
                         continue
                     if entry.is_dir() and not entry.is_symlink():
                         trash = entry.parent / work_workspace.SCRATCH_TRASH
@@ -536,7 +563,9 @@ class WorktreeRetirement:
                         os.rename(target, released)
                         target = released
                     except OSError as error:
+                        # The entry waits under the checking name. The next pass walks it again (settle_checking).
                         logging.getLogger(__name__).warning('Coconut could not release %s for deletion: %s', target, error)
+                        continue
                 for folder in checkouts:
                     marker = (target / folder.relative_to(entry) if target is not None else folder) / '.git'
                     if marker.is_file():
