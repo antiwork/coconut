@@ -3185,6 +3185,30 @@ class WorktreeRetirementTests(unittest.TestCase):
         retirement.empty_moved(workspace)
         self.assertEqual((trash / 'evidence-1759000000000000000.kept' / 'deep' / 'new.md').read_text(), 'changed after the walk')
 
+    def test_an_unreadable_bot_workspace_does_not_stop_the_pass_for_the_others(self):
+        broken = self.service.root / 'bots' / '0000-first' / 'workspace'
+        broken.mkdir(parents=True)
+        (broken / 'inside').mkdir()
+        workspace = self.bot_workspace()
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('old')
+        self.age(workspace / 'old', 30)
+        broken.chmod(0)
+        self.addCleanup(broken.chmod, 0o700)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse((workspace / 'old').exists())
+
+    def test_an_entry_in_the_keep_folder_ages_out_like_any_other(self):
+        workspace = self.bot_workspace()
+        kept = workspace / retirement.STALE_KEPT
+        (kept / 'evidence-1759000000000000000').mkdir(parents=True)
+        (kept / 'evidence-1759000000000000000' / 'notes.md').write_text('kept')
+        self.age(kept, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse((kept / 'evidence-1759000000000000000').exists())
+
     def test_a_bot_workspace_entry_that_a_process_holds_stays(self):
         workspace = self.bot_workspace()
         (workspace / 'busy').mkdir()

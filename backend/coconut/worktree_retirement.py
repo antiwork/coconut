@@ -102,6 +102,8 @@ def holds_tracked(folder, places):
     return any(place == folder or folder in place.parents for place in places)
 
 
+# put_back leaves an entry that it cannot return in this folder of the parent.
+STALE_KEPT = '.stale-kept'
 # Coconut names a moved entry <name>-<nanoseconds>. Only such names in a trash folder are its own.
 MOVED_NAME = re.compile(r'.+-\d{16,20}')
 
@@ -130,7 +132,7 @@ def put_back(target, entry):
         pass
     # Something took the old path. Keep the entry where nothing deletes it.
     try:
-        kept = entry.parent / '.stale-kept'
+        kept = entry.parent / STALE_KEPT
         kept.mkdir(mode=0o700, exist_ok=True)
         os.rename(target, kept / target.name)
         return kept / target.name
@@ -438,24 +440,29 @@ class WorktreeRetirement:
         for bot in sorted((self.root / 'bots').glob('*/workspace')):
             if bot.is_symlink() or not bot.is_dir():
                 continue
-            # A stop between a move and its deletion leaves trash. Empty it first, in the workspace and one level down.
-            for place in (bot, *(child for child in bot.iterdir() if child.is_dir() and not child.is_symlink())):
-                empty_moved(place)
-            pending = [bot]
-            while pending:
-                parent = pending.pop()
-                for entry in sorted(parent.iterdir()):
-                    if (entry.name.startswith('.') or entry.is_symlink() or holds_tracked(entry, tracked)
-                            or self.stopping.is_set() or self.restart_pending):
-                        continue
-                    try:
-                        state = stale_tree(entry, stale_before)
-                    except OSError:
-                        continue
-                    if state is not None:
-                        found.append((entry, *state))
-                    elif parent == bot and entry.is_dir() and not is_repository(entry):
-                        pending.append(entry)
+            # A folder that Coconut cannot read, or that goes while it reads, must not stop the pass for the other bots.
+            try:
+                # A stop between a move and its deletion leaves trash. Empty it first, in the workspace and one level down.
+                for place in (bot, *(child for child in bot.iterdir() if child.is_dir() and not child.is_symlink())):
+                    empty_moved(place)
+                pending = [bot]
+                while pending:
+                    parent = pending.pop()
+                    for entry in sorted(parent.iterdir()):
+                        # .stale-kept holds the entries that put_back could not return. They age out like any other entry.
+                        if ((entry.name.startswith('.') and entry.name != STALE_KEPT) or entry.is_symlink()
+                                or holds_tracked(entry, tracked) or self.stopping.is_set() or self.restart_pending):
+                            continue
+                        try:
+                            state = stale_tree(entry, stale_before)
+                        except OSError:
+                            continue
+                        if state is not None:
+                            found.append((entry, *state))
+                        elif parent == bot and entry.is_dir() and not is_repository(entry):
+                            pending.append(entry)
+            except OSError as error:
+                logging.getLogger(__name__).warning('Coconut could not read the bot workspace %s: %s', bot, error)
         if not found:
             return
         kept = {}
