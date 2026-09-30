@@ -3043,6 +3043,32 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertTrue((entry / 'report.md').exists() and (entry / 'new.md').exists())
 
+    def test_trash_that_a_stop_left_in_a_bot_workspace_is_emptied(self):
+        workspace = self.bot_workspace()
+        (workspace / 'reviews').mkdir()
+        for place in (workspace, workspace / 'reviews'):
+            (place / work_workspace.SCRATCH_TRASH / 'old-clone-1').mkdir(parents=True)
+            (place / work_workspace.SCRATCH_TRASH / 'old-clone-1' / 'file').write_text('left by a stop')
+        self.retire()
+        self.assertEqual(list((workspace / work_workspace.SCRATCH_TRASH).iterdir()), [])
+        self.assertEqual(list((workspace / 'reviews' / work_workspace.SCRATCH_TRASH).iterdir()), [])
+
+    def test_keeping_one_entry_keeps_the_main_checkout_whose_worktree_lies_in_it_whatever_the_order(self):
+        # a-main has a worktree in the folder z. The folder also holds a main checkout with a fresh worktree outside,
+        # so Coconut keeps z, and then it must keep a-main too, although a-main comes first in the pass.
+        workspace = self.bot_workspace()
+        a_main = self.clone(workspace / 'a-main', 'a')
+        (workspace / 'z').mkdir()
+        git(a_main, 'worktree', 'add', '-q', '--detach', str(workspace / 'z' / 'w'))
+        holder = self.clone(workspace / 'z' / 'n', 'n')
+        git(holder, 'worktree', 'add', '-q', '--detach', str(workspace / 'fresh-wt'))
+        self.age(workspace / 'a-main', 30)
+        self.age(workspace / 'z', 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((workspace / 'a-main' / 'tracked.txt').exists())
+        self.assertTrue((workspace / 'z' / 'w').exists() and (workspace / 'fresh-wt').exists())
+
     def test_a_bot_workspace_entry_that_a_process_holds_stays(self):
         workspace = self.bot_workspace()
         (workspace / 'busy').mkdir()

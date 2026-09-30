@@ -361,6 +361,9 @@ class WorktreeRetirement:
         for bot in sorted((self.root / 'bots').glob('*/workspace')):
             if bot.is_symlink() or not bot.is_dir():
                 continue
+            # A stop between a move and its deletion leaves trash. Empty it first, in the workspace and one level down.
+            for place in (bot, *(child for child in bot.iterdir() if child.is_dir() and not child.is_symlink())):
+                work_workspace.empty_scratch_trash(place)
             pending = [bot]
             while pending:
                 parent = pending.pop()
@@ -384,20 +387,26 @@ class WorktreeRetirement:
             kept[entry] = next((reason for reason in reasons if reason), None)
         # A main checkout stays while a worktree of it stays, because the worktree needs its objects.
         going = {entry for entry in kept if not kept[entry]}
-        for entry, _, checkouts in found:
-            if entry not in going:
-                continue
-            for folder in checkouts:
-                if not (folder / '.git').is_dir():
+        changed = True
+        while changed:
+            # Keeping one entry can keep another, whose worktree lies in the first. Repeat until nothing changes.
+            changed = False
+            for entry, _, checkouts in found:
+                if entry not in going:
                     continue
-                try:
-                    outside = any(path.exists() and not any(path.resolve() == other.resolve() or other.resolve() in path.resolve().parents
-                                                           for other in going) for path in linked_worktrees(folder))
-                except work_workspace.GIT_ERRORS:
-                    # Unknown worktrees keep the main checkout, as a failed Git check keeps any checkout.
-                    outside = True
-                if outside:
-                    going.discard(entry)
+                for folder in checkouts:
+                    if not (folder / '.git').is_dir():
+                        continue
+                    try:
+                        outside = any(path.exists() and not any(path.resolve() == other.resolve() or other.resolve() in path.resolve().parents
+                                                               for other in going) for path in linked_worktrees(folder))
+                    except work_workspace.GIT_ERRORS:
+                        # Unknown worktrees keep the main checkout, as a failed Git check keeps any checkout.
+                        outside = True
+                    if outside:
+                        going.discard(entry)
+                        changed = True
+                        break
         candidates = [item for item in found if item[0] in going]
         if not candidates or self.stopping.is_set() or self.restart_pending:
             return
@@ -419,7 +428,10 @@ class WorktreeRetirement:
                         with contextlib.suppress(OSError, IndexError):
                             line = marker.read_text().strip()
                             if line.startswith('gitdir: '):
-                                repositories_to_prune.add(Path(line[len('gitdir: '):]).parent.parent.parent)
+                                # A linked worktree names <repository>/.git/worktrees/<name>. A submodule names another place.
+                                record = (folder / line[len('gitdir: '):]).resolve()
+                                if record.parent.name == 'worktrees' and record.parent.parent.name == '.git':
+                                    repositories_to_prune.add(record.parent.parent.parent)
                 if entry.is_dir():
                     work_workspace.move_scratch(entry, keep=False)
                 else:
