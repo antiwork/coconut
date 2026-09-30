@@ -37,10 +37,6 @@ TRANSIENT_ERROR_CODES = frozenset('native_' + reason for reason in (
 TRANSIENT_NATIVE_ERROR = 'The model provider stopped this turn. Coconut retries it later.'
 
 
-# The exact text that Coconut stores for each failure. Hermes keeps it as last_failure_error of a task that it parked.
-FAILURE_TEXT = {'native_' + reason: text for reason, text in _FAILURES.items()}
-
-
 def native_failure(result):
     reason = result.get('failure_reason')
     if isinstance(reason, str) and reason in _FAILURES:
