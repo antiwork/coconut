@@ -3291,6 +3291,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     task.setdefault('_reaction_feedback', [] if task.get('_work_status_only') else list(bot.get('_pending_reactions', {}).values()))
                     task.setdefault('_turn_attachment_ids', list(task.get('_attachment_ids', [])))
                     task.pop('error_code', None)
+                    task.pop('_error_detail', None)
                     from .turn_timings import TurnTrace
                     queued_at = datetime.fromisoformat(task['updated_at'].replace('Z', '+00:00'))
                     TurnTrace(task, 'dispatch').mark('dispatch',
@@ -3640,9 +3641,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 known_errors.update({'bot_creation_invalid_request', 'bot_creation_rejected', 'bot_creation_receipt_unconfirmed'})
                 if kind == 'failed' and isinstance(error_code, str) and error_code in known_errors:
                     task['error_code'] = error_code
+                # The class and the place of a worker failure, without its message. It stays on the Mac. A failure that has
+                # none must not keep the place of an earlier one.
                 if kind == 'failed' and isinstance(payload.get('error_detail'), str):
-                    # The class and the place of a worker failure, without its message. It stays on the Mac.
                     task['_error_detail'] = payload['error_detail'][:200]
+                else:
+                    task.pop('_error_detail', None)
                 has_followup = kind == 'completed' and bool(task.get('_steering'))
                 task.update(status='queued' if has_followup else kind, summary='Applying your follow-up at the next safe turn.' if has_followup else str(payload.get('summary', payload.get('text', 'Ready to review.' if kind == 'completed' else 'Work failed.')))[:500], updated_at=now())
                 for decision in self._all('decisions'):
