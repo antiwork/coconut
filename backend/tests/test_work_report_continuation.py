@@ -4,6 +4,9 @@ from uuid import uuid4
 
 from coconut.service import now
 import test_work_status as fixtures
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class WorkReportContinuationTests(unittest.TestCase):

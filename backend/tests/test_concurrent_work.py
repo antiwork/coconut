@@ -7,6 +7,9 @@ from uuid import uuid4
 
 from coconut.providers import FixtureProvider
 from coconut.service import Service
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class BlockingProvider(FixtureProvider):

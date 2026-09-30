@@ -1112,8 +1112,9 @@ class NativeOutcomes:
         return None
 
     def _import_completed_work_history(self):
-        from datetime import datetime, timezone
-        # Import verified results once. Later conversations cannot rewrite completed history.
+        # Save the answer of a finished legacy row once. Later conversations cannot rewrite completed history.
+        # The old reducer wrote the row status itself, so the status is the answer unless its owner is unfinished
+        # or a decision is pending.
         candidates = [json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='work' "
             "AND json_extract(data,'$.status')='completed' AND json_extract(data,'$._native_outcome_id') IS NULL "
@@ -1121,13 +1122,15 @@ class NativeOutcomes:
         candidates = [a for a in candidates if not self._retained_terminal_work(a)]
         if not candidates:
             return
-        projected = [dict(a) for a in candidates]
-        self._project_work_outcomes(projected, {t['id']: t for t in self._all('tasks')},
-            self._pending_completion_receipts(), self._all('decisions'), datetime.now(timezone.utc))
-        for item, outcome in zip(candidates, projected):
-            if outcome['work_state'] != 'completed':
+        waiting = {row[0] for row in self.db.execute(
+            "SELECT json_extract(data,'$.task_id') FROM decisions WHERE json_extract(data,'$.status')='pending' "
+            "AND NOT coalesce(json_extract(data,'$._hidden'),0) AND NOT coalesce(json_extract(data,'$._deleted'),0)")}
+        for item in candidates:
+            owner = self._get('tasks', item['task_id'])
+            if owner['status'] != 'completed' or owner['id'] in waiting:
                 continue
-            item['_completed_history'] = dict(report=self._work_history_key(item), evidence=outcome.get('completion_evidence'))
+            evidence = item.get('completion_evidence') or (None if item.get('_automatic_work') else item.get('activity')) or owner.get('summary')
+            item['_completed_history'] = dict(report=self._work_history_key(item), evidence=evidence)
             self._put('artifacts', item)
             self._event('artifact.updated', self._public(item), item['bot_id'], item['task_id'])
 

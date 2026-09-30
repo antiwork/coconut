@@ -2,6 +2,9 @@ import unittest
 from uuid import uuid4
 from coconut.service import now
 from test_work_followups import WorkFollowupTests
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class WorkBlockerTests(unittest.TestCase):

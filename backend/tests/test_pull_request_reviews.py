@@ -6,6 +6,9 @@ from uuid import uuid4
 
 from coconut.service import Service
 from test_service_pr import Tracker, observation, URL
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class Provider:

@@ -1,9 +1,50 @@
-"""Derive outcome state from attempts, dependencies, and decisions."""
-from datetime import datetime
-from .background_processes import subscription
+"""The legacy reducer of Work state, for tests only.
+
+Production never runs it. With Hermes, every Work row shows the state of its native outcome, or a saved
+terminal answer (Service._native_work_view). Fixture mode and many old tests still build Work rows without
+a native outcome, so the reducer lives here. legacy_work_sync.scope() adds it to Service for a test module.
+"""
+from datetime import datetime, timezone
+
+from coconut.background_processes import subscription
 
 
-class WorkModel:
+class LegacyWorkModel:
+    def _work_projection(self, artifacts):
+        if self.kanban and getattr(self.provider, 'supports_native_outcomes', False):
+            self._native_work_view(artifacts)
+        else:
+            self._project_work_outcomes(artifacts, {t['id']: t for t in self._all('tasks')},
+                                        self._pending_completion_receipts(), self._all('decisions'), datetime.now(timezone.utc))
+        for item in artifacts:
+            item.pop('checkout_recovery_stopped', None)
+            if (item['kind'] == 'work' and item.get('work_outcome_id') in (None, item['id'])
+                    and self._work_identity(item) == 'work:' + item['id']
+                    and self._setting('work.cancelled.work:' + item['id'])):
+                item['checkout_recovery_stopped'] = True
+        return artifacts
+
+    def _work_live(self, task, records, timestamp):
+        worker = self.running.get(task['id'])
+        if worker and worker.is_alive():
+            return True
+        return any(r['task_id'] == task['id'] and subscription(r) and not r.get('_process_delivery')
+                   and (r.get('turn_id') == task.get('_native_turn_id')
+                        or self._can_resume_completion(task, self._get('bots', task['bot_id']), r))
+                   and r.get('_process_status') == 'running' and r.get('_process_observed_at')
+                   and (timestamp - datetime.fromisoformat(r['_process_observed_at'].replace('Z', '+00:00'))).total_seconds() < 45
+                   for r in records)
+
+    def _queue_positions(self, tasks, timestamp):
+        if self.kanban is not None:
+            return self._native_queue_positions(tasks, timestamp)
+        positions = {}
+        for task in self._dispatch_order(list(tasks.values())):
+            if task.get('_work_status_only') or not self._dispatch_eligible(task, timestamp):
+                continue
+            positions[task['id']] = len(positions) + 1
+        return positions
+
     def _work_outcome(self, item, tasks, records, decisions, contexts, timestamp, peers=None, queue_positions=None):
         if item.get('_native_outcome_id'):
             return self._native_outcome_projection(item, tasks, records, decisions, timestamp, queue_positions, peers)
@@ -259,12 +300,12 @@ class WorkModel:
                     activity, description_at = description
         if state == 'working':
             # Process health cannot renew a model's old description of its work.
-            from .worker_activity import FRESH_SECONDS
+            from coconut.worker_activity import FRESH_SECONDS
             processes = [r for r in current_records if subscription(r) and not r.get('_process_delivery')
                          and r.get('_process_status') == 'running'
                          and self._work_live(tasks[r['task_id']], [r], timestamp)]
             if processes:
-                from .worker_activity import progress_label
+                from coconut.worker_activity import progress_label
                 process = max(processes, key=lambda r: (r.get('_worker_progress', {}).get('at', 0), r.get('created_at', '')))
                 activity = progress_label(process, timestamp)
             elif description_at:

@@ -99,7 +99,6 @@ from .worktree_retirement import WorktreeRetirement
 from .session_maintenance import SessionMaintenance
 from .database_maintenance import DatabaseMaintenance
 from .tracked_work import TrackedWork
-from .work_model import WorkModel
 from .work_recovery import WorkRecovery
 from .decision_freshness import DecisionFreshness
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
@@ -124,7 +123,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkModel, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance):
+class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -3092,16 +3091,6 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 return 0
             return 2 if by_id.get(task.get('_assignment_task_id'), task).get('_source_audit_prompt') else 1
         return sorted(tasks, key=priority)
-
-    def _queue_positions(self, tasks, timestamp):
-        if self.kanban is not None:
-            return self._native_queue_positions(tasks, timestamp)
-        positions = {}
-        for task in self._dispatch_order(list(tasks.values())):
-            if task.get('_work_status_only') or not self._dispatch_eligible(task, timestamp):
-                continue
-            positions[task['id']] = len(positions) + 1
-        return positions
 
 
     def _index_message_audience(self):

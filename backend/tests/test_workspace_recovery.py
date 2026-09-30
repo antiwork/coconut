@@ -28,6 +28,9 @@ from coconut.work_workspace import acquire, git, preferred
 from coconut.workspace_recovery import atomic_manifest
 import coconut.workspace_recovery as recovery
 import test_native_kanban as native
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class CheckoutFilterPreflightTests(unittest.TestCase):
