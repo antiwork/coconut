@@ -217,6 +217,59 @@ class ModelSelectionTests(unittest.TestCase):
                 settled()
                 self.assertEqual(len([c for c in calls if c == ('get', True)]), 2)
 
+    def test_a_live_request_during_an_ordinary_refresh_runs_after_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            source.mkdir()
+            catalog = HermesModelCatalog(Path(directory) / 'data', source=source)
+            catalog.root.mkdir(parents=True)
+            (catalog.root / 'config.yaml').write_text('model: first\n')
+            calls, release, started = [], threading.Event(), threading.Event()
+            def call(operation, **payload):
+                calls.append((operation, payload.get('refresh')))
+                if operation == 'get' and payload.get('refresh') is False:
+                    started.set()
+                    release.wait(5)
+                return example_catalog()
+            with patch.object(catalog, '_call', side_effect=call):
+                catalog.get()
+                self.assertTrue(started.wait(5))
+                # The ordinary refresh is running. The live request would be dropped.
+                catalog.refresh_if_old(300)
+                self.assertNotIn(('get', True), calls)
+                release.set()
+                deadline = time.monotonic() + 5
+                while ('get', True) not in calls and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertIn(('get', True), calls)
+                while catalog._refreshing and time.monotonic() < deadline:
+                    time.sleep(0.01)
+
+    def test_a_failed_live_refresh_does_not_hold_back_the_next_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            source.mkdir()
+            catalog = HermesModelCatalog(Path(directory) / 'data', source=source)
+            catalog.root.mkdir(parents=True)
+            (catalog.root / 'config.yaml').write_text('model: first\n')
+            calls = []
+            def call(operation, **payload):
+                calls.append((operation, payload.get('refresh')))
+                if payload.get('refresh') is True:
+                    raise ModelCatalogError('The provider did not answer.')
+                return example_catalog()
+            def settled():
+                deadline = time.monotonic() + 5
+                while catalog._refreshing and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            with patch.object(catalog, '_call', side_effect=call):
+                catalog.refresh_if_old(300)
+                settled()
+                catalog.refresh_if_old(300)
+                settled()
+            # The first look failed, so the second one starts at once.
+            self.assertEqual(len([c for c in calls if c == ('get', True)]), 2)
+
     def test_the_ordinary_refresh_does_not_count_as_a_live_one(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'source'

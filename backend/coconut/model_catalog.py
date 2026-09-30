@@ -117,6 +117,7 @@ class HermesModelCatalog:
         self._cache_key = None
         self._cache_time = float('-inf')
         self._forced_at = float('-inf')
+        self._live_pending = False
         self._lock = threading.RLock()
         self._write_lock = threading.Lock()
         self._refreshing = False
@@ -177,6 +178,9 @@ class HermesModelCatalog:
 
     def _start_refresh(self, refresh):
         if self._refreshing:
+            # A live request must not be lost because an ordinary refresh runs. It starts when that one ends.
+            if refresh:
+                self._live_pending = True
             return
         self._refreshing = True
         if refresh:
@@ -192,18 +196,25 @@ class HermesModelCatalog:
                         self._cache_key = self._signature()
                         self._cache_time = time.monotonic()
             except ModelCatalogError:
-                pass
+                if refresh:
+                    # A failed live look must not hold back the next one for the whole wait.
+                    with self._lock:
+                        self._forced_at = float('-inf')
             finally:
                 with self._lock:
                     if signature == self._cache_key:
                         self._cache_time = time.monotonic()
                     self._refreshing = False
+                    live_again, self._live_pending = self._live_pending, False
                 callback = self.on_change
                 if callback:
                     try:
                         callback()
                     except Exception:
                         pass
+                if live_again:
+                    with self._lock:
+                        self._start_refresh(True)
         threading.Thread(target=update, daemon=True, name='hermes-model-catalog').start()
 
     def resolve(self, selection, catalog=None):
