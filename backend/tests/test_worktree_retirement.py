@@ -3227,35 +3227,6 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertEqual(list(trash.iterdir()), [])
 
-    def test_a_bot_workspace_stays_while_the_bot_has_a_queued_task_but_not_a_waiting_one(self):
-        workspace = self.bot_workspace()
-        (workspace / 'old').mkdir()
-        (workspace / 'old' / 'notes.md').write_text('a queued turn will read this')
-        self.age(workspace / 'old', 30)
-        task = dict(id=str(uuid4()), bot_id=self.bot['id'], title='Review', status='queued', summary='', created_at=OLD, updated_at=RECENT)
-        with self.service.transaction():
-            self.service._put('tasks', task)
-        with self.stale_rule():
-            self.retire()
-        self.assertTrue((workspace / 'old' / 'notes.md').exists())
-        task['status'] = 'waiting'
-        with self.service.transaction():
-            self.service._put('tasks', task)
-        with self.stale_rule():
-            self.retire()
-        self.assertFalse((workspace / 'old').exists())
-
-    def test_a_bot_workspace_stays_while_the_bot_has_a_working_context(self):
-        workspace = self.bot_workspace()
-        (workspace / 'old').mkdir()
-        (workspace / 'old' / 'notes.md').write_text('a decision turn reads this')
-        self.age(workspace / 'old', 30)
-        with self.service.transaction():
-            self.service._put('contexts', dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=str(uuid4()), status='working'))
-        with self.stale_rule():
-            self.retire()
-        self.assertTrue((workspace / 'old' / 'notes.md').exists())
-
     def test_an_unreadable_bot_workspace_does_not_stop_the_pass_for_the_others(self):
         broken = self.service.root / 'bots' / '0000-first' / 'workspace'
         broken.mkdir(parents=True)
@@ -3279,24 +3250,6 @@ class WorktreeRetirementTests(unittest.TestCase):
         with self.stale_rule():
             self.retire()
         self.assertFalse((kept / 'evidence-1759000000000000000').exists())
-
-    def test_a_bot_workspace_stays_while_the_bot_has_a_working_task(self):
-        workspace = self.bot_workspace()
-        (workspace / 'old').mkdir()
-        (workspace / 'old' / 'notes.md').write_text('a turn reads this')
-        self.age(workspace / 'old', 30)
-        task = dict(id=str(uuid4()), bot_id=self.bot['id'], title='Review', status='working', summary='', created_at=OLD, updated_at=RECENT)
-        with self.service.transaction():
-            self.service._put('tasks', task)
-        with self.stale_rule():
-            self.retire()
-        self.assertTrue((workspace / 'old' / 'notes.md').exists())
-        task['status'] = 'completed'
-        with self.service.transaction():
-            self.service._put('tasks', task)
-        with self.stale_rule():
-            self.retire()
-        self.assertFalse((workspace / 'old').exists())
 
     def test_a_worktree_record_stays_while_its_release_fails_and_goes_when_a_later_pass_settles_it(self):
         workspace = self.bot_workspace()
@@ -3343,24 +3296,161 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertIn('pr-1', git(main, 'worktree', 'list'))
         self.assertNotIn('prunable', git(main, 'worktree', 'list'))
 
-    def test_an_entry_waiting_under_the_checking_name_stays_while_the_bot_has_a_queued_task(self):
+    def test_a_bot_with_work_in_progress_is_cleaned_too(self):
+        workspace = self.bot_workspace()
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('old')
+        self.age(workspace / 'old', 30)
+        for status in ('working', 'queued', 'scheduled'):
+            with self.service.transaction():
+                self.service._put('tasks', dict(id=str(uuid4()), bot_id=self.bot['id'], title='Review', status=status,
+                                                summary='', created_at=OLD, updated_at=RECENT))
+        with self.service.transaction():
+            self.service._put('contexts', dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=str(uuid4()), status='working'))
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse((workspace / 'old').exists())
+
+    def test_a_process_that_opens_an_entry_after_the_first_scan_puts_it_back(self):
+        workspace = self.bot_workspace()
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('a turn opens this')
+        self.age(workspace / 'old', 30)
+        # The first scan finds no holder. The scan of the moved entry finds one, as lsof names the new path.
+        holders = MagicMock(side_effect=lambda paths, detail=False: {
+            str(p): ({123} if str(p).endswith(retirement.CHECKING) else set()) for p in paths})
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', holders):
+            self.retire()
+        self.assertEqual((workspace / 'old' / 'notes.md').read_text(), 'a turn opens this')
+        self.assertEqual(list((workspace / work_workspace.SCRATCH_TRASH).iterdir()), [])
+
+    def test_a_main_checkout_goes_back_with_a_worktree_that_the_second_scan_puts_back(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'a-main')
+        linked = workspace / 'z-wt'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        for name in ('a-main', 'z-wt'):
+            self.age(workspace / name, 30)
+        # The first scan finds no holder. The second scan, of the moved entries, finds one in the worktree only.
+        holders = MagicMock(side_effect=lambda paths, detail=False: {
+            str(p): ({123} if retirement.CHECKING in str(p) and Path(str(p)).name.startswith('z-wt-') else set())
+            for p in paths})
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', holders):
+            self.retire()
+        self.assertTrue((linked / '.git').exists() and (main / 'tracked.txt').exists())
+        self.assertEqual(list((workspace / work_workspace.SCRATCH_TRASH).iterdir()), [])
+        self.assertNotIn('prunable', git(main, 'worktree', 'list'))
+
+    def test_a_failed_scan_does_not_stop_the_trash_of_released_entries_from_going(self):
+        workspace = self.bot_workspace()
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        released = trash / 'old-1759000000000000000'
+        waiting = trash / ('other-1759000000000000001' + retirement.CHECKING)
+        for folder in (released, waiting):
+            folder.mkdir(parents=True)
+            (folder / 'notes.md').write_text('old')
+        self.age(waiting, 30)
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', side_effect=ValueError('lsof failed')):
+            self.retire()
+        self.assertFalse(released.exists())
+        self.assertTrue((waiting / 'notes.md').exists())
+
+    def test_a_main_checkout_stays_when_the_release_of_its_worktree_fails(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'a-main')
+        linked = workspace / 'z-wt'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        for name in ('a-main', 'z-wt'):
+            self.age(workspace / name, 30)
+        real = os.rename
+
+        def fail_the_release_of_the_worktree(source, target, *args, **kwargs):
+            if Path(str(source)).name.startswith('z-wt-') and not str(target).endswith(retirement.CHECKING):
+                raise OSError('release failed')
+            return real(source, target, *args, **kwargs)
+        with self.stale_rule(), patch.object(retirement.os, 'rename', fail_the_release_of_the_worktree):
+            self.retire()
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        # The worktree waits under the checking name, and the main checkout is back at its place with its objects.
+        self.assertEqual(len(list(trash.iterdir())), 1)
+        self.assertTrue(list(trash.iterdir())[0].name.startswith('z-wt-'))
+        self.assertTrue((main / 'tracked.txt').exists())
+
+    def test_a_waiting_main_checkout_goes_back_with_a_held_worktree_and_both_go_when_nothing_holds_them(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'a-main')
+        linked = workspace / 'z-wt'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        for name in ('a-main', 'z-wt'):
+            self.age(workspace / name, 30)
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        trash.mkdir()
+        os.rename(main, trash / ('a-main-1759000000000000001' + retirement.CHECKING))
+        os.rename(linked, trash / ('z-wt-1759000000000000002' + retirement.CHECKING))
+        held = MagicMock(side_effect=lambda paths, detail=False: {
+            str(p): ({123} if Path(str(p)).name.startswith('z-wt-') else set()) for p in paths})
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', held):
+            self.retire()
+        # The held worktree is back, so the main checkout is back with it.
+        self.assertTrue((linked / '.git').exists() and (main / 'tracked.txt').exists())
+        self.assertEqual(list(trash.iterdir()), [])
+        with self.stale_rule():
+            self.retire()
+            self.retire()
+        self.assertFalse(linked.exists() or main.exists())
+
+    def test_a_waiting_main_checkout_goes_back_when_a_worktree_of_it_lives(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'a-main')
+        linked = workspace / 'z-wt'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        self.age(workspace / 'a-main', 30)
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        trash.mkdir()
+        os.rename(main, trash / ('a-main-1759000000000000001' + retirement.CHECKING))
+        with self.stale_rule():
+            self.retire()
+        # The worktree is fresh and lives at its place, so the main checkout returns to its place too.
+        self.assertTrue((main / 'tracked.txt').exists())
+        self.assertEqual(list(trash.iterdir()), [])
+
+    def test_an_unrelated_waiting_entry_does_not_keep_a_main_checkout(self):
+        workspace = self.bot_workspace()
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        trash.mkdir()
+        (trash / ('a-main-1759000000000000001' + retirement.CHECKING)).mkdir()
+        self.assertFalse(retirement.waiting_checking(workspace / 'a'))
+        self.assertTrue(retirement.waiting_checking(workspace / 'a-main'))
+
+    def test_a_failed_scan_of_the_moved_entries_leaves_them_under_the_checking_name(self):
+        workspace = self.bot_workspace()
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('old')
+        self.age(workspace / 'old', 30)
+        calls = []
+
+        def scan(paths, detail=False):
+            calls.append(sorted(paths))
+            if any(str(p).endswith(retirement.CHECKING) for p in paths):
+                raise ValueError('lsof did not list all open files.')
+            return {str(p): set() for p in paths}
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', scan):
+            self.retire()
+        waiting = list((workspace / work_workspace.SCRATCH_TRASH).iterdir())
+        self.assertEqual(len(waiting), 1)
+        self.assertTrue(waiting[0].name.endswith(retirement.CHECKING))
+        self.assertEqual((waiting[0] / 'notes.md').read_text(), 'old')
+
+    def test_an_entry_waiting_under_the_checking_name_goes_back_while_a_process_holds_it(self):
         workspace = self.bot_workspace()
         item = workspace / work_workspace.SCRATCH_TRASH / ('old-1759000000000000000' + retirement.CHECKING)
         item.mkdir(parents=True)
-        (item / 'notes.md').write_text('a queued turn will read this')
+        (item / 'notes.md').write_text('a turn uses this')
         self.age(item, 30)
-        task = dict(id=str(uuid4()), bot_id=self.bot['id'], title='Review', status='queued', summary='', created_at=OLD, updated_at=RECENT)
-        with self.service.transaction():
-            self.service._put('tasks', task)
-        with self.stale_rule():
+        holders = MagicMock(side_effect=lambda paths, detail=False: {str(p): {123} for p in paths})
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', holders):
             self.retire()
-        self.assertTrue((item / 'notes.md').exists())
-        task['status'] = 'completed'
-        with self.service.transaction():
-            self.service._put('tasks', task)
-        with self.stale_rule():
-            self.retire()
-            self.retire()
+        self.assertEqual((workspace / 'old' / 'notes.md').read_text(), 'a turn uses this')
         self.assertFalse(item.exists())
 
     def test_a_bot_workspace_entry_that_a_process_holds_stays(self):

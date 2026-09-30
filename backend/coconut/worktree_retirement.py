@@ -158,13 +158,46 @@ def settle_checking(parent, stale_before):
     trash = parent / work_workspace.SCRATCH_TRASH
     if trash.is_symlink() or not trash.is_dir():
         return
-    for item in sorted(trash.iterdir()):
-        stem = item.name[:-len(CHECKING)]
-        if not (item.name.endswith(CHECKING) and MOVED_NAME.fullmatch(stem)):
+    items = [item for item in sorted(trash.iterdir())
+             if item.name.endswith(CHECKING) and MOVED_NAME.fullmatch(item.name[:-len(CHECKING)])]
+    # A turn can open or enter the entry after the first scan, and an open file leaves no change time.
+    try:
+        held = work_workspace.holders_by_path({str(item) for item in items}) if items else {}
+    except ValueError as error:
+        # Without the scan nothing leaves the checking name. The trash of released entries still goes.
+        logging.getLogger(__name__).warning('Coconut could not check the entries that wait in %s: %s', trash, error)
+        return
+    states = {}
+    for item in items:
+        if held.get(str(item)):
+            # A process uses it, so it goes back to its place, as in the pass that moved it.
+            original = parent / item.name[:-len(CHECKING)].rsplit('-', 1)[0]
+            try:
+                where = put_back(item, original)
+                logging.getLogger(__name__).warning('Coconut put back %s, because a process uses it (%s).', original, where)
+            except OSError as error:
+                logging.getLogger(__name__).warning('Coconut could not put back %s from %s: %s', original, item, error)
             continue
         try:
-            state = stale_tree(item, stale_before, skip_root=True)
+            states[item] = stale_tree(item, stale_before, skip_root=True)
+        except OSError as error:
+            logging.getLogger(__name__).warning('Coconut could not settle %s: %s', item, error)
+    # A worktree goes before its main checkout, and a main checkout waits while a worktree of it waits or is back.
+    for item in sorted(states, key=lambda item: states[item] is not None and has_main(item, states[item][1], item)):
+        stem = item.name[:-len(CHECKING)]
+        state = states[item]
+        try:
             if state is not None:
+                if has_main(item, state[1], item):
+                    if worktrees_outside(item, state[1], item, waiting=False):
+                        # A worktree of it lives, and it needs the objects now. Put the main checkout back.
+                        where = put_back(item, parent / stem.rsplit('-', 1)[0])
+                        logging.getLogger(__name__).warning('Coconut put back %s, because a worktree of it is back (%s).',
+                                                            parent / stem.rsplit('-', 1)[0], where)
+                        continue
+                    if worktrees_outside(item, state[1], item):
+                        # A worktree of it waits under the checking name. They leave together, or come back together.
+                        continue
                 # The worktrees in it go, so their main checkouts forget them.
                 repositories = linked_repositories(state[1])
                 os.rename(item, item.with_name(stem))
@@ -242,15 +275,37 @@ def top_changed(path, stale_before):
     return False
 
 
-def worktrees_outside(entry, checkouts):
-    """Return True when a main checkout in entry has a linked worktree that exists outside entry, or when Git cannot tell."""
-    place = entry.resolve()
+def waiting_checking(path):
+    """Return True when an entry that was at path waits in the trash folder of its parent under the CHECKING name."""
+    trash = path.parent / work_workspace.SCRATCH_TRASH
+    if trash.is_symlink() or not trash.is_dir():
+        return False
+    name = re.compile(re.escape(path.name) + r'-\d{16,20}' + re.escape(CHECKING))
+    return any(name.fullmatch(item.name) for item in trash.iterdir())
+
+
+def has_main(entry, checkouts, moved=None):
+    """Return True when a checkout of entry is a main checkout (it has a .git folder). moved is where entry is now."""
+    return any(((moved / folder.relative_to(entry)) if moved is not None else folder).joinpath('.git').is_dir()
+               for folder in checkouts)
+
+
+def worktrees_outside(entry, checkouts, moved=None, waiting=True):
+    """Return True when a main checkout in entry has a linked worktree that exists outside entry, or when Git cannot tell.
+
+    moved is the place where entry is now, when Coconut moved it. Git then runs there. A worktree that waits in the trash
+    under the CHECKING name counts as there, because a put-back or a failed release can leave it needing the objects.
+    """
+    place = (moved or entry).resolve()
     for folder in checkouts:
+        if moved is not None:
+            folder = moved / folder.relative_to(entry)
         if not (folder / '.git').is_dir():
             continue
         try:
             for path in linked_worktrees(folder):
-                if path.exists() and not (path.resolve() == place or place in path.resolve().parents):
+                # Before the move, a worktree in the trash belongs to this pass, and its release comes first.
+                if (path.exists() or (waiting and moved is not None and waiting_checking(path))) and not (path.resolve() == place or place in path.resolve().parents):
                     return True
         except work_workspace.GIT_ERRORS:
             # Unknown worktrees keep the main checkout, as a failed Git check keeps any checkout.
@@ -477,17 +532,6 @@ class WorktreeRetirement:
                 with contextlib.suppress(*work_workspace.GIT_ERRORS):
                     work_workspace.git(repository, 'worktree', 'prune', timeout=work_workspace.CHECKOUT_SECONDS)
 
-    def _bot_busy(self, bot_id):
-        """Return True when the bot has a working, queued or scheduled task or context. A waiting one can wait for days."""
-        if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
-            return True
-        try:
-            return any(self.db.execute("SELECT 1 FROM " + table + " WHERE json_extract(data,'$.bot_id')=? "
-                                       "AND json_extract(data,'$.status') IN ('working','queued','scheduled') LIMIT 1",
-                                       (bot_id,)).fetchone() for table in ('tasks', 'contexts'))
-        finally:
-            self.lock.release()
-
     def _clear_stale_bot_workspaces(self, current, saved, low_disk):
         """Delete the entries of bots/<id>/workspace that nothing has changed for BOT_WORKSPACE_STALE_SECONDS.
 
@@ -495,7 +539,9 @@ class WorktreeRetirement:
         judges the entries inside it, one level down, unless it is a Git repository itself. A Git checkout that holds work
         that no remote has stays (checkout_keeps). A main checkout stays while a worktree of it stays. A process that
         uses an entry, a tracked worktree, the repository of a binding, and a name that starts with a dot stay too.
-        An entry also stays while its bot has a working, queued or scheduled task or context, and the next pass tries again. Coconut moves a folder to a
+        A bot with work in progress is cleaned too: it is busy all day on a busy install, and a rule that skips it would never
+        free its disk. A turn can read an old entry without opening it during the pass, and a read changes no time.
+        The age, the open-file check, and the Git work check are the protection. Coconut moves a folder to a
         trash folder of its parent first, and deletes it later, outside the lock.
         """
         stale_before = current - (BOT_WORKSPACE_LOW_DISK_STALE_SECONDS if low_disk else BOT_WORKSPACE_STALE_SECONDS)
@@ -509,9 +555,7 @@ class WorktreeRetirement:
             try:
                 # A stop between a move and its deletion leaves trash. Empty it first, in the workspace and one level down.
                 for place in (bot, *(child for child in bot.iterdir() if child.is_dir() and not child.is_symlink())):
-                    # An entry that waits under the checking name stays while the bot has work, as a fresh entry does.
-                    if not self._bot_busy(bot.parent.name):
-                        settle_checking(place, stale_before)
+                    settle_checking(place, stale_before)
                     empty_moved(place)
                 pending = [bot]
                 while pending:
@@ -541,7 +585,7 @@ class WorktreeRetirement:
         if not candidates or self.stopping.is_set() or self.restart_pending:
             return
         holders = work_workspace.holders_by_path({str(entry) for entry, _, _ in candidates})
-        removed, freed, repositories_to_prune = [], 0, set()
+        removed, freed, repositories_to_prune, cleared = [], 0, set(), []
         waiting = candidates
         while waiting:
             retry = []
@@ -561,9 +605,6 @@ class WorktreeRetirement:
                     # A turn starts under this lock. Check the top of the entry again, and move it before the lock goes.
                     # The full walk ran before, and it can take seconds, so the walk of the moved entry comes after the lock.
                     if top_changed(entry, stale_before):
-                        continue
-                    # A turn runs with the workspace as its folder. It can read an old entry, and a read changes no time.
-                    if self._bot_busy(entry.relative_to(self.root / 'bots').parts[0]):
                         continue
                     if entry.is_dir() and not entry.is_symlink():
                         trash = entry.parent / work_workspace.SCRATCH_TRASH
@@ -594,24 +635,56 @@ class WorktreeRetirement:
                         else:
                             logging.getLogger(__name__).warning('Coconut put back %s, because it changed while Coconut moved it (%s).', entry, where)
                         continue
-                    # The walk cleared it. Now the trash sweep may delete it.
-                    try:
-                        released = target.with_name(target.name[:-len(CHECKING)])
-                        os.rename(target, released)
-                    except OSError as error:
-                        # The entry waits under the checking name, and its worktree records stay, so a later put_back
-                        # returns a registered worktree. The next pass walks it again (settle_checking).
-                        logging.getLogger(__name__).warning('Coconut could not release %s for deletion: %s', target, error)
-                        continue
-                    # The entry is out of the way now, and its worktrees go. Their main checkouts forget them.
-                    repositories_to_prune |= linked_repositories(released / folder.relative_to(entry) for folder in checkouts)
-                    target = released
+                    # The walk cleared it. One scan for all moved entries decides the release, after the loop.
+                    cleared.append((entry, target, size, checkouts))
+                    continue
                 removed.append(entry)
                 freed += size
             # A main checkout waits for the worktrees that lie in other stale entries. Try again while entries go.
             if len(retry) == len(waiting):
                 break
             waiting = retry
+        # A turn can open or enter a moved entry after the first scan, and an open file leaves no change time. Scan the
+        # moved entries once more. A held one goes back. An error of the scan leaves them under the checking name,
+        # and the next pass walks them again (settle_checking).
+        if cleared and not (self.stopping.is_set() or self.restart_pending):
+            try:
+                after = work_workspace.holders_by_path({str(target) for _, target, _, _ in cleared})
+            except ValueError as error:
+                logging.getLogger(__name__).warning('Coconut could not check the moved bot workspace entries: %s', error)
+                after = None
+            held = []
+            for entry, target, size, checkouts in cleared if after is not None else ():
+                if after.get(str(target)):
+                    held.append((entry, target, size, checkouts))
+            # A held entry goes back first. A main checkout then goes back too when a worktree of it is back, because the
+            # worktree needs its objects. A worktree that goes in this pass no longer exists at its old place.
+            for entry, target, size, checkouts in held:
+                try:
+                    where = put_back(target, entry)
+                    logging.getLogger(__name__).warning('Coconut put back %s, because a process uses it (%s).', entry, where)
+                except OSError as error:
+                    logging.getLogger(__name__).warning('Coconut could not put back %s from %s: %s', entry, target, error)
+            # A worktree goes before its main checkout, so the main checkout sees whether a worktree could not go.
+            for entry, target, size, checkouts in sorted(cleared if after is not None else (), key=lambda c: has_main(c[0], c[3], c[1])):
+                try:
+                    if (entry, target, size, checkouts) in held:
+                        continue
+                    if worktrees_outside(entry, checkouts, moved=target):
+                        where = put_back(target, entry)
+                        logging.getLogger(__name__).warning('Coconut put back %s, because a worktree of it is back (%s).', entry, where)
+                        continue
+                    released = target.with_name(target.name[:-len(CHECKING)])
+                    os.rename(target, released)
+                except OSError as error:
+                    # The entry waits under the checking name, and its worktree records stay, so a later put_back
+                    # returns a registered worktree. The next pass walks it again (settle_checking).
+                    logging.getLogger(__name__).warning('Coconut could not release %s for deletion: %s', target, error)
+                    continue
+                # The entry is out of the way now, and its worktrees go. Their main checkouts forget them.
+                repositories_to_prune |= linked_repositories(released / folder.relative_to(entry) for folder in checkouts)
+                removed.append(entry)
+                freed += size
         # The deletion runs without the lock.
         for parent in {entry.parent for entry in removed}:
             empty_moved(parent)

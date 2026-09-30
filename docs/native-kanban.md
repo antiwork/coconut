@@ -102,8 +102,10 @@ Below the low disk limit, the time is three days (`BOT_WORKSPACE_LOW_DISK_STALE_
 An entry is a file or a folder of the workspace. A folder that has a newer file stays, and Coconut then judges its entries one level down.
 Coconut keeps a Git checkout that has uncommitted files, ignored files that a build does not make again (such as `.env`), commits that no remote has, or a stash. It keeps a bare repository.
 It keeps a main checkout while one of its worktrees stays.
-It keeps an entry that a process uses, an entry of a bot that has a working, queued, or scheduled task or context (a waiting task does not count, because it can wait for days), a tracked worktree, a link, and a name that starts with a dot.
+It keeps an entry that a process uses, a tracked worktree, a link, and a name that starts with a dot.
 After it deletes a worktree, it prunes the record from the main checkout.
+Coconut scans for open files again after it moves the entries, and before it releases an entry that a stop left, so a turn that opened an entry after the first scan puts it back.
+It cleans a bot with work in progress too. A turn that only reads an old entry, without an open file during the pass, leaves no sign, so the age and the checks above are the only protection.
 
 Retirement does these steps:
 
