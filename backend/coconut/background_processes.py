@@ -452,6 +452,7 @@ class BackgroundProcesses:
             fingerprint, work = self._decision_evidence(decision, tasks, records, artifacts)
             task = tasks[context['task_id']]
             context.update(_evidence_fingerprint=fingerprint,
+                           _external_fingerprint=self._decision_evidence(decision, tasks, records, artifacts, own_receipts=False)[0],
                            _human_input_ids=[m['id'] for m in self._decision_human_messages(task)],
                            question=self._decision_refresh_prompt(decision, task, work, self._all('decisions')))
         self._put('contexts', context)
