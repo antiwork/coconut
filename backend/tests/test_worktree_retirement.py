@@ -3209,6 +3209,24 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertFalse((kept / 'evidence-1759000000000000000').exists())
 
+    def test_a_bot_workspace_stays_while_the_bot_has_a_working_task(self):
+        workspace = self.bot_workspace()
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('a turn reads this')
+        self.age(workspace / 'old', 30)
+        task = dict(id=str(uuid4()), bot_id=self.bot['id'], title='Review', status='working', summary='', created_at=OLD, updated_at=RECENT)
+        with self.service.transaction():
+            self.service._put('tasks', task)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((workspace / 'old' / 'notes.md').exists())
+        task['status'] = 'completed'
+        with self.service.transaction():
+            self.service._put('tasks', task)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse((workspace / 'old').exists())
+
     def test_a_bot_workspace_entry_that_a_process_holds_stays(self):
         workspace = self.bot_workspace()
         (workspace / 'busy').mkdir()

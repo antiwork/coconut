@@ -430,7 +430,8 @@ class WorktreeRetirement:
         An entry is a file or a folder of the workspace. A folder that has a newer file is not stale, so Coconut then
         judges the entries inside it, one level down, unless it is a Git repository itself. A Git checkout that holds work
         that no remote has stays (checkout_keeps). A main checkout stays while a worktree of it stays. A process that
-        uses an entry, a tracked worktree, the repository of a binding, and a name that starts with a dot stay too. Coconut moves a folder to a
+        uses an entry, a tracked worktree, the repository of a binding, and a name that starts with a dot stay too.
+        An entry also stays while its bot has a working task, and the next pass tries again. Coconut moves a folder to a
         trash folder of its parent first, and deletes it later, outside the lock.
         """
         stale_before = current - (BOT_WORKSPACE_LOW_DISK_STALE_SECONDS if low_disk else BOT_WORKSPACE_STALE_SECONDS)
@@ -493,6 +494,11 @@ class WorktreeRetirement:
                     # A turn starts under this lock. Check the top of the entry again, and move it before the lock goes.
                     # The full walk ran before, and it can take seconds, so the walk of the moved entry comes after the lock.
                     if top_changed(entry, stale_before):
+                        continue
+                    # A turn runs with the workspace as its folder. It can read an old entry, and a read changes no time.
+                    bot_id = entry.relative_to(self.root / 'bots').parts[0]
+                    if self.db.execute("SELECT 1 FROM tasks WHERE json_extract(data,'$.bot_id')=? "
+                                       "AND json_extract(data,'$.status')='working' LIMIT 1", (bot_id,)).fetchone():
                         continue
                     if entry.is_dir():
                         target = work_workspace.move_scratch(entry, keep=False)
