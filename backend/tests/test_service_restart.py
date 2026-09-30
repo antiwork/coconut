@@ -135,6 +135,29 @@ class ServiceRestartTests(unittest.TestCase):
         # The deferral would have released the pause and admitted turns. The drain keeps it.
         self.assertTrue(self.service.restart_pending)
 
+    def test_a_bot_restart_does_not_restart_the_service_while_an_update_drains_it(self):
+        request, drained = self.drain_files()
+        request.write_text(str(time.time() + 600))
+        self.assertEqual(self.request()['status'], 'queued')
+        self.service.poll_service_drain()
+        # No turn runs, so the drain is complete and the restart would take effect. The update goes first.
+        self.assertTrue(drained.exists())
+        self.assertFalse(self.service.take_service_restart())
+        self.assertFalse(self.service.stopping.is_set())
+        # When the request ends, the restart that the bot asked for goes on.
+        request.write_text(str(time.time() - 1))
+        self.service.poll_service_drain()
+        self.assertTrue(self.service.take_service_restart())
+
+    def test_an_ended_drain_keeps_the_pause_of_a_workspace_recovery(self):
+        request, _ = self.drain_files()
+        request.write_text(str(time.time() + 60))
+        self.service.poll_service_drain()
+        self.service._workspace_recovery_hold = True
+        request.write_text(str(time.time() - 1))
+        self.service.poll_service_drain()
+        self.assertTrue(self.service.restart_pending)
+
     def test_the_drain_waits_for_worker_cleanup_and_an_uncertain_dispatch(self):
         request, drained = self.drain_files()
         request.write_text(str(time.time() + 60))

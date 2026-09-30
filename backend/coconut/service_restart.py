@@ -31,8 +31,8 @@ class ServiceRestart:
             self._draining = False
             if getattr(self, '_drain_holds_dispatch', False):
                 self._drain_holds_dispatch = False
-                # A restart that a bot asked for after the drain began keeps its own pause and deadline.
-                if self.restart_deadline is None:
+                # A restart that a bot asked for, or a workspace recovery, keeps the pause that it also needs.
+                if self.restart_deadline is None and not getattr(self, '_workspace_recovery_hold', False):
                     self.restart_pending = False
                 with self.changed:
                     self.changed.notify_all()
@@ -83,6 +83,10 @@ class ServiceRestart:
         return {'status': 'deferred', 'detail': 'Work continues. The service will restart when active turns finish. Finish your reply now.'}
 
     def take_service_restart(self):
+        # An update is about to stop the service. A restart now would start a process that removes the drain request,
+        # and the updater would wait for an idle mark that never comes. The update supersedes the restart.
+        if getattr(self, '_draining', False):
+            return False
         # The HTTP accept loop must remain available while another request owns the queue.
         if not self.dispatch_gate.acquire(blocking=False):
             return False
