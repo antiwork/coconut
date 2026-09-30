@@ -485,8 +485,10 @@ class PRSourceRefreshTests(unittest.TestCase):
         self.assertEqual(self.service._pending_decision_sources, set())
         self.assertIsNone(self.service._ready_decision_sources)
         self.service.refresh_pull_requests()
-        # The queue starts one check at a time. It takes the first card whose source read has finished, and under load the
-        # newer card can finish first. So the test checks that the failures left the queue usable, not which card goes first.
+        # The queue starts one check at a time. It takes the first card whose source read has finished, and the reads run in
+        # parallel, so under load the newer card can finish first (gating the reads did not make it deterministic: 15 of 96
+        # loaded runs still failed). This test checks that the failures left the queue usable. The oldest-first rule is
+        # checked where the reads are controlled, in check_midpoll_card and the tests that use it.
         queued = [c['decision_id'] for c in self.service._all('contexts')]
         self.assertEqual(len(queued), 1)
         self.assertIn(queued[0], ('older-card', 'newer-card'))
