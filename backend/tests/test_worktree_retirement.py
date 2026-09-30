@@ -3324,6 +3324,23 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual((workspace / 'old' / 'notes.md').read_text(), 'a turn opens this')
         self.assertEqual(list((workspace / work_workspace.SCRATCH_TRASH).iterdir()), [])
 
+    def test_a_main_checkout_goes_back_with_a_worktree_that_the_second_scan_puts_back(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'a-main')
+        linked = workspace / 'z-wt'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        for name in ('a-main', 'z-wt'):
+            self.age(workspace / name, 30)
+        # The first scan finds no holder. The second scan, of the moved entries, finds one in the worktree only.
+        holders = MagicMock(side_effect=lambda paths, detail=False: {
+            str(p): ({123} if retirement.CHECKING in str(p) and Path(str(p)).name.startswith('z-wt-') else set())
+            for p in paths})
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', holders):
+            self.retire()
+        self.assertTrue((linked / '.git').exists() and (main / 'tracked.txt').exists())
+        self.assertEqual(list((workspace / work_workspace.SCRATCH_TRASH).iterdir()), [])
+        self.assertNotIn('prunable', git(main, 'worktree', 'list'))
+
     def test_a_failed_scan_of_the_moved_entries_leaves_them_under_the_checking_name(self):
         workspace = self.bot_workspace()
         (workspace / 'old').mkdir()

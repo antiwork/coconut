@@ -246,10 +246,15 @@ def top_changed(path, stale_before):
     return False
 
 
-def worktrees_outside(entry, checkouts):
-    """Return True when a main checkout in entry has a linked worktree that exists outside entry, or when Git cannot tell."""
-    place = entry.resolve()
+def worktrees_outside(entry, checkouts, moved=None):
+    """Return True when a main checkout in entry has a linked worktree that exists outside entry, or when Git cannot tell.
+
+    moved is the place where entry is now, when Coconut moved it. Git then runs there.
+    """
+    place = (moved or entry).resolve()
     for folder in checkouts:
+        if moved is not None:
+            folder = moved / folder.relative_to(entry)
         if not (folder / '.git').is_dir():
             continue
         try:
@@ -602,11 +607,25 @@ class WorktreeRetirement:
             except ValueError as error:
                 logging.getLogger(__name__).warning('Coconut could not check the moved bot workspace entries: %s', error)
                 after = None
+            held = []
+            for entry, target, size, checkouts in cleared if after is not None else ():
+                if after.get(str(target)):
+                    held.append((entry, target, size, checkouts))
+            # A held entry goes back first. A main checkout then goes back too when a worktree of it is back, because the
+            # worktree needs its objects. A worktree that goes in this pass no longer exists at its old place.
+            for entry, target, size, checkouts in held:
+                try:
+                    where = put_back(target, entry)
+                    logging.getLogger(__name__).warning('Coconut put back %s, because a process uses it (%s).', entry, where)
+                except OSError as error:
+                    logging.getLogger(__name__).warning('Coconut could not put back %s from %s: %s', entry, target, error)
             for entry, target, size, checkouts in cleared if after is not None else ():
                 try:
-                    if after.get(str(target)):
+                    if (entry, target, size, checkouts) in held:
+                        continue
+                    if worktrees_outside(entry, checkouts, moved=target):
                         where = put_back(target, entry)
-                        logging.getLogger(__name__).warning('Coconut put back %s, because a process uses it (%s).', entry, where)
+                        logging.getLogger(__name__).warning('Coconut put back %s, because a worktree of it is back (%s).', entry, where)
                         continue
                     released = target.with_name(target.name[:-len(CHECKING)])
                     os.rename(target, released)
