@@ -798,9 +798,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             raise ServiceError(401, 'Pair this phone with the Mac to continue.')
         return row[0]
 
-    def _model_catalog(self) -> dict | None:
+    def _model_catalog(self, refresh_after=None) -> dict | None:
         if not hasattr(self.provider, 'model_catalog'):
             return None
+        if refresh_after is not None and hasattr(self.provider, 'refresh_model_catalog'):
+            self.provider.refresh_model_catalog(refresh_after)
         return self.provider.model_catalog()
 
     def _validation_model_catalog(self) -> dict | None:

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -184,6 +185,51 @@ class ModelSelectionTests(unittest.TestCase):
                 (catalog.root / 'active_profile').write_text('other')
                 catalog.get()
                 self.assertEqual(call.call_count, 3)
+
+    def test_a_live_refresh_starts_at_most_once_in_the_given_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            source.mkdir()
+            catalog = HermesModelCatalog(Path(directory) / 'data', source=source)
+            catalog.root.mkdir(parents=True)
+            (catalog.root / 'config.yaml').write_text('model: first\n')
+            calls = []
+            def call(operation, **payload):
+                calls.append((operation, payload.get('refresh')))
+                return example_catalog()
+            def settled():
+                deadline = time.monotonic() + 5
+                while catalog._refreshing and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertFalse(catalog._refreshing)
+            with patch.object(catalog, '_call', side_effect=call):
+                catalog.refresh_if_old(300)
+                settled()
+                live = [c for c in calls if c == ('get', True)]
+                self.assertEqual(len(live), 1)
+                # Opened again at once: the cached lists come back, and no second live look starts.
+                catalog.refresh_if_old(300)
+                settled()
+                self.assertEqual(len([c for c in calls if c == ('get', True)]), 1)
+                # Old enough: it looks again.
+                catalog._forced_at -= 301
+                catalog.refresh_if_old(300)
+                settled()
+                self.assertEqual(len([c for c in calls if c == ('get', True)]), 2)
+
+    def test_the_ordinary_refresh_does_not_count_as_a_live_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            source.mkdir()
+            catalog = HermesModelCatalog(Path(directory) / 'data', source=source)
+            catalog.root.mkdir(parents=True)
+            (catalog.root / 'config.yaml').write_text('model: first\n')
+            with patch.object(catalog, '_call', return_value=example_catalog()):
+                catalog.get()
+                deadline = time.monotonic() + 5
+                while catalog._refreshing and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            self.assertEqual(catalog._forced_at, float('-inf'))
 
     def test_legacy_migration_leaves_an_existing_native_profile_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -458,6 +458,19 @@ class StateSyncTests(unittest.TestCase):
             self.assertGreater(build.call_count, count)
         self.assertIsNone(self.service._work_graphs)
 
+    def test_opening_the_settings_asks_for_the_live_model_lists(self):
+        from coconut.state_sync import MODEL_REFRESH_SECONDS
+        asked = []
+        def catalog(refresh_after=None):
+            asked.append(refresh_after)
+        with patch.object(self.service, '_model_catalog', side_effect=catalog):
+            self.service.native_snapshot()
+            asked_by_settings = list(asked)
+            # The content and history reads do not ask for a live look.
+            self.service.snapshot(content_only=True)
+        self.assertEqual(asked_by_settings, [MODEL_REFRESH_SECONDS])
+        self.assertEqual(asked, asked_by_settings)
+
     def test_native_routines_keep_the_recorded_task(self):
         routine = dict(id=str(uuid4()), bot_id=self.bot['id'], last_task_id='recorded-task')
         with self.service.transaction():

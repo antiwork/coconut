@@ -181,6 +181,10 @@ class HermesProvider(FixtureProvider):
                     'models': [], 'available': False, 'default_configured': False,
                     'model_source': 'Hermes', 'default_source': 'Hermes config.yaml', 'error': str(error)}
 
+    def refresh_model_catalog(self, after):
+        """Ask for the live model lists of the providers, at most once in `after` seconds."""
+        self.catalog.refresh_if_old(after)
+
     def validation_model_catalog(self):
         return self.catalog.get_for_validation()
 

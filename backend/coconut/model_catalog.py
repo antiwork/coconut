@@ -116,6 +116,7 @@ class HermesModelCatalog:
         self._cache = None
         self._cache_key = None
         self._cache_time = float('-inf')
+        self._forced_at = float('-inf')
         self._lock = threading.RLock()
         self._write_lock = threading.Lock()
         self._refreshing = False
@@ -162,10 +163,24 @@ class HermesModelCatalog:
                 self._start_refresh(bool(refresh))
             return dict(deepcopy(self._cache), loading=self._refreshing)
 
+    def refresh_if_old(self, after):
+        """Ask Hermes for the live model lists, unless a live refresh started in the last `after` seconds.
+
+        The background refresh reads the lists that Hermes has cached, and Hermes keeps its Codex list until someone asks for a
+        live one. A model that a provider adds later, such as GPT 6.1 Sol, then stays out of the picker. The caller gets the
+        cached catalog at once. The live lists arrive later, and Coconut sends `model_catalog.updated`.
+        """
+        with self._lock:
+            if time.monotonic() - self._forced_at < after:
+                return
+        self.get(refresh=True)
+
     def _start_refresh(self, refresh):
         if self._refreshing:
             return
         self._refreshing = True
+        if refresh:
+            self._forced_at = time.monotonic()
         signature = self._cache_key
 
         def update():
