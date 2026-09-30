@@ -97,9 +97,10 @@ The poller holds the service lock only to read this state. It runs Git outside t
 A bot also keeps its own files in `bots/<id>/workspace`: clones, review checkouts, and evidence.
 Nothing else removes them.
 In the same pass, Coconut deletes an entry when nothing in it changed for 14 days (`BOT_WORKSPACE_STALE_SECONDS`).
+A change is a new modification time or a new change time, so an extract or a copy of old files counts as new.
 Below the low disk limit, the time is three days (`BOT_WORKSPACE_LOW_DISK_STALE_SECONDS`).
 An entry is a file or a folder of the workspace. A folder that has a newer file stays, and Coconut then judges its entries one level down.
-Coconut keeps a Git checkout that has uncommitted files, commits that no remote has, or a stash.
+Coconut keeps a Git checkout that has uncommitted files, commits that no remote has, or a stash. It keeps a bare repository.
 It keeps a main checkout while one of its worktrees stays.
 It keeps an entry that a process uses, a tracked worktree, a link, and a name that starts with a dot.
 After it deletes a worktree, it prunes the record from the main checkout.

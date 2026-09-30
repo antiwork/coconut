@@ -102,39 +102,67 @@ def holds_tracked(folder, places):
     return any(place == folder or folder in place.parents for place in places)
 
 
+def changed_at(info):
+    """Return when a file or folder last changed. ctime moves on an extract, a copy and a rename, and a user cannot set it."""
+    return max(info.st_mtime, info.st_ctime)
+
+
 def stale_tree(path, stale_before):
     """Return (bytes, checkouts) when nothing in the tree changed since stale_before, else None. Never follow a link.
 
-    checkouts lists the folders of the tree that hold a Git checkout. A fresh file ends the walk at once.
+    checkouts lists the folders of the tree that hold a Git checkout, and the bare repositories. A fresh file ends the
+    walk at once.
     """
     total, checkouts, stack = 0, [], [path]
     while stack:
         current = stack.pop()
         info = os.lstat(current)
-        if info.st_mtime >= stale_before:
+        if changed_at(info) >= stale_before:
             return None
         total += info.st_blocks * 512
         if stat.S_ISDIR(info.st_mode):
             with os.scandir(current) as entries:
+                names = set()
                 for entry in entries:
-                    if entry.name == '.git':
-                        checkouts.append(Path(current))
+                    names.add(entry.name)
                     stack.append(entry.path)
+            inside_git = '.git' in str(current)[len(str(path)):].split(os.sep)
+            if '.git' in names or (not inside_git and {'HEAD', 'objects', 'refs'} <= names):
+                checkouts.append(Path(current))
     return total, checkouts
 
 
 def top_changed(path, stale_before):
     """Return True when path or one of its direct entries changed since stale_before. This reads one folder."""
-    if os.lstat(path).st_mtime >= stale_before:
+    if changed_at(os.lstat(path)) >= stale_before:
         return True
     if path.is_dir() and not path.is_symlink():
         with os.scandir(path) as entries:
-            return any(entry.stat(follow_symlinks=False).st_mtime >= stale_before for entry in entries)
+            return any(changed_at(entry.stat(follow_symlinks=False)) >= stale_before for entry in entries)
+    return False
+
+
+def worktrees_outside(entry, checkouts):
+    """Return True when a main checkout in entry has a linked worktree that exists outside entry, or when Git cannot tell."""
+    place = entry.resolve()
+    for folder in checkouts:
+        if not (folder / '.git').is_dir():
+            continue
+        try:
+            for path in linked_worktrees(folder):
+                if path.exists() and not (path.resolve() == place or place in path.resolve().parents):
+                    return True
+        except work_workspace.GIT_ERRORS:
+            # Unknown worktrees keep the main checkout, as a failed Git check keeps any checkout.
+            return True
     return False
 
 
 def checkout_keeps(folder):
     """Return why a Git checkout holds work that a remote does not, or None. A failed Git call also keeps it."""
+    if not (folder / '.git').exists():
+        # A bare repository or a mirror has no remote-tracking branches to compare with.
+        return 'it is a bare repository'
     try:
         # Git can refresh the index of a status call. That would make a stale checkout look fresh, so it may not write.
         if work_workspace.git(folder, '--no-optional-locks', 'status', '--porcelain'):
@@ -385,64 +413,55 @@ class WorktreeRetirement:
         for entry, _, checkouts in found:
             reasons = [checkout_keeps(folder) for folder in checkouts]
             kept[entry] = next((reason for reason in reasons if reason), None)
-        # A main checkout stays while a worktree of it stays, because the worktree needs its objects.
-        going = {entry for entry in kept if not kept[entry]}
-        changed = True
-        while changed:
-            # Keeping one entry can keep another, whose worktree lies in the first. Repeat until nothing changes.
-            changed = False
-            for entry, _, checkouts in found:
-                if entry not in going:
-                    continue
-                for folder in checkouts:
-                    if not (folder / '.git').is_dir():
-                        continue
-                    try:
-                        outside = any(path.exists() and not any(path.resolve() == other.resolve() or other.resolve() in path.resolve().parents
-                                                               for other in going) for path in linked_worktrees(folder))
-                    except work_workspace.GIT_ERRORS:
-                        # Unknown worktrees keep the main checkout, as a failed Git check keeps any checkout.
-                        outside = True
-                    if outside:
-                        going.discard(entry)
-                        changed = True
-                        break
-        candidates = [item for item in found if item[0] in going]
+        candidates = [item for item in found if not kept[item[0]]]
         if not candidates or self.stopping.is_set() or self.restart_pending:
             return
         holders = work_workspace.holders_by_path({str(entry) for entry, _, _ in candidates})
         removed, freed, repositories_to_prune = [], 0, set()
-        for entry, size, checkouts in candidates:
-            if holders.get(str(entry)) or self.stopping.is_set() or self.restart_pending:
-                continue
-            if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
-                continue
-            try:
-                # A turn starts under this lock. Check the top of the entry again, and move it before the lock goes.
-                # The full walk ran before, and it can take seconds. A process that works in the entry holds it (see above).
-                if top_changed(entry, stale_before):
+        waiting = candidates
+        while waiting:
+            retry = []
+            for item in waiting:
+                entry, size, checkouts = item
+                if holders.get(str(entry)) or self.stopping.is_set() or self.restart_pending:
                     continue
-                for folder in checkouts:
-                    marker = folder / '.git'
-                    if marker.is_file():
-                        with contextlib.suppress(OSError, IndexError):
-                            line = marker.read_text().strip()
-                            if line.startswith('gitdir: '):
-                                # A linked worktree names <repository>/.git/worktrees/<name>. A submodule names another place.
-                                record = (folder / line[len('gitdir: '):]).resolve()
-                                if record.parent.name == 'worktrees' and record.parent.parent.name == '.git':
-                                    repositories_to_prune.add(record.parent.parent.parent)
-                if entry.is_dir():
-                    work_workspace.move_scratch(entry, keep=False)
-                else:
-                    entry.unlink()
-            except OSError as error:
-                logging.getLogger(__name__).warning('Coconut could not clear the stale bot workspace entry %s: %s', entry, error)
-                continue
-            finally:
-                self.lock.release()
-            removed.append(entry)
-            freed += size
+                # A main checkout stays while a worktree of it stays, because the worktree needs its objects. The check
+                # runs here, so a worktree that a later filter keeps, or that goes in this pass, counts as it is now.
+                if worktrees_outside(entry, checkouts):
+                    retry.append(item)
+                    continue
+                if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
+                    continue
+                try:
+                    # A turn starts under this lock. Check the top of the entry again, and move it before the lock goes.
+                    # The full walk ran before, and it can take seconds. A process that works in the entry holds it (see above).
+                    if top_changed(entry, stale_before):
+                        continue
+                    for folder in checkouts:
+                        marker = folder / '.git'
+                        if marker.is_file():
+                            with contextlib.suppress(OSError, IndexError):
+                                line = marker.read_text().strip()
+                                if line.startswith('gitdir: '):
+                                    # A linked worktree names <repository>/.git/worktrees/<name>. A submodule names another place.
+                                    record = (folder / line[len('gitdir: '):]).resolve()
+                                    if record.parent.name == 'worktrees' and record.parent.parent.name == '.git':
+                                        repositories_to_prune.add(record.parent.parent.parent)
+                    if entry.is_dir():
+                        work_workspace.move_scratch(entry, keep=False)
+                    else:
+                        entry.unlink()
+                except OSError as error:
+                    logging.getLogger(__name__).warning('Coconut could not clear the stale bot workspace entry %s: %s', entry, error)
+                    continue
+                finally:
+                    self.lock.release()
+                removed.append(entry)
+                freed += size
+            # A main checkout waits for the worktrees that lie in other stale entries. Try again while entries go.
+            if len(retry) == len(waiting):
+                break
+            waiting = retry
         # The deletion runs without the lock.
         for parent in {entry.parent for entry in removed}:
             work_workspace.empty_scratch_trash(parent)

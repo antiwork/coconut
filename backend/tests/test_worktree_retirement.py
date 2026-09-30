@@ -2904,8 +2904,10 @@ class WorktreeRetirementTests(unittest.TestCase):
         return where
 
     def stale_rule(self, days=14, low=False):
+        # os.utime sets the mtime but moves the ctime to now. These tests age entries by mtime, so the age test reads mtime.
         return patch.multiple(retirement, BOT_WORKSPACE_STALE_SECONDS=days * 86400,
                               BOT_WORKSPACE_LOW_DISK_STALE_SECONDS=days * 86400,
+                              changed_at=lambda info: info.st_mtime,
                               **({'LOW_DISK_BYTES': 10 ** 18} if low else {}))
 
     def test_a_bot_workspace_loses_a_stale_file_and_folder_but_keeps_fresh_and_hidden_ones(self):
@@ -2951,7 +2953,8 @@ class WorktreeRetirementTests(unittest.TestCase):
         (workspace / 'four-days').mkdir()
         (workspace / 'four-days' / 'notes.md').write_text('notes')
         self.age(workspace / 'four-days', 4)
-        with patch.multiple(retirement, BOT_WORKSPACE_STALE_SECONDS=14 * 86400, BOT_WORKSPACE_LOW_DISK_STALE_SECONDS=3 * 86400):
+        with patch.multiple(retirement, BOT_WORKSPACE_STALE_SECONDS=14 * 86400, BOT_WORKSPACE_LOW_DISK_STALE_SECONDS=3 * 86400,
+                            changed_at=lambda info: info.st_mtime):
             self.retire()
             self.assertTrue((workspace / 'four-days').exists())
             with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
@@ -3068,6 +3071,48 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertTrue((workspace / 'a-main' / 'tracked.txt').exists())
         self.assertTrue((workspace / 'z' / 'w').exists() and (workspace / 'fresh-wt').exists())
+
+    def test_a_file_that_arrives_with_an_old_mtime_is_not_stale(self):
+        workspace = self.bot_workspace()
+        arrived = workspace / 'unpacked'
+        arrived.mkdir()
+        (arrived / 'report.md').write_text('just unpacked')
+        # An extract or a copy keeps the old mtime, but the change time is now.
+        moment = time.time() - 30 * 86400
+        os.utime(arrived / 'report.md', (moment, moment))
+        os.utime(arrived, (moment, moment))
+        with patch.multiple(retirement, BOT_WORKSPACE_STALE_SECONDS=14 * 86400, BOT_WORKSPACE_LOW_DISK_STALE_SECONDS=14 * 86400):
+            self.retire()
+        self.assertTrue((arrived / 'report.md').exists())
+
+    def test_a_stale_bare_repository_stays(self):
+        workspace = self.bot_workspace()
+        bare = workspace / 'mirror.git'
+        git(workspace, 'init', '-q', '--bare', str(bare))
+        with_submodule = self.clone(workspace / 'with-modules')
+        module = with_submodule / '.git' / 'modules' / 'x'
+        (module / 'objects').mkdir(parents=True)
+        (module / 'refs').mkdir()
+        (module / 'HEAD').write_text('ref: refs/heads/main\n')
+        for name in ('mirror.git', 'with-modules'):
+            self.age(workspace / name, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((bare / 'HEAD').exists())
+        # A module store inside a checkout is part of the checkout. It does not keep a clean checkout.
+        self.assertFalse(with_submodule.exists())
+
+    def test_a_main_checkout_stays_when_the_worktree_that_needs_it_is_held_by_a_process(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'a-main', 'a')
+        linked = workspace / 'z-wt'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        for name in ('a-main', 'z-wt'):
+            self.age(workspace / name, 30)
+        holders = MagicMock(side_effect=lambda paths, detail=False: {str(p): ({123} if str(p).endswith('z-wt') else set()) for p in paths})
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', holders):
+            self.retire()
+        self.assertTrue(linked.exists() and (main / 'tracked.txt').exists())
 
     def test_a_bot_workspace_entry_that_a_process_holds_stays(self):
         workspace = self.bot_workspace()
