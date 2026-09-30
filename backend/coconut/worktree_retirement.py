@@ -102,6 +102,9 @@ def holds_tracked(folder, places):
     return any(place == folder or folder in place.parents for place in places)
 
 
+# An entry waits in the trash folder under this ending until the second walk finds no change. empty_moved never deletes
+# such a name, so a crash or a failed undo cannot lose an entry that the walk did not clear.
+CHECKING = '.checking'
 # put_back leaves an entry that it cannot return in this folder of the parent.
 STALE_KEPT = '.stale-kept'
 # Coconut names a moved entry <name>-<nanoseconds>. Only such names in a trash folder are its own.
@@ -123,7 +126,10 @@ def empty_moved(parent):
 
 
 def put_back(target, entry):
-    """Undo a move, because the entry changed after the walk. Return the place where it is now."""
+    """Undo a move, because the entry changed after the walk. Return the place where it is now.
+
+    target still has the CHECKING name, which empty_moved does not delete. When no rename works, the entry stays there.
+    """
     try:
         if not os.path.lexists(entry):
             os.rename(target, entry)
@@ -131,15 +137,10 @@ def put_back(target, entry):
     except OSError:
         pass
     # Something took the old path. Keep the entry where nothing deletes it.
-    try:
-        kept = entry.parent / STALE_KEPT
-        kept.mkdir(mode=0o700, exist_ok=True)
-        os.rename(target, kept / target.name)
-        return kept / target.name
-    except OSError:
-        # Leave it in the trash folder under a name that empty_moved does not delete.
-        os.rename(target, target.with_name(target.name + '.kept'))
-        raise
+    kept = entry.parent / STALE_KEPT
+    kept.mkdir(mode=0o700, exist_ok=True)
+    os.rename(target, kept / target.name)
+    return kept / target.name
 
 
 def is_repository(folder):
@@ -500,8 +501,13 @@ class WorktreeRetirement:
                     if self.db.execute("SELECT 1 FROM tasks WHERE json_extract(data,'$.bot_id')=? "
                                        "AND json_extract(data,'$.status')='working' LIMIT 1", (bot_id,)).fetchone():
                         continue
-                    if entry.is_dir():
-                        target = work_workspace.move_scratch(entry, keep=False)
+                    if entry.is_dir() and not entry.is_symlink():
+                        trash = entry.parent / work_workspace.SCRATCH_TRASH
+                        if trash.is_symlink():
+                            raise OSError(f'{trash} is a link. Coconut does not move entries through it.')
+                        trash.mkdir(mode=0o700, exist_ok=True)
+                        target = trash / f'{entry.name}-{time.time_ns()}{CHECKING}'
+                        os.rename(entry, target)
                     else:
                         entry.unlink()
                 except OSError as error:
@@ -524,6 +530,13 @@ class WorktreeRetirement:
                         else:
                             logging.getLogger(__name__).warning('Coconut put back %s, because it changed while Coconut moved it (%s).', entry, where)
                         continue
+                    # The walk cleared it. Now the trash sweep may delete it.
+                    try:
+                        released = target.with_name(target.name[:-len(CHECKING)])
+                        os.rename(target, released)
+                        target = released
+                    except OSError as error:
+                        logging.getLogger(__name__).warning('Coconut could not release %s for deletion: %s', target, error)
                 for folder in checkouts:
                     marker = (target / folder.relative_to(entry) if target is not None else folder) / '.git'
                     if marker.is_file():

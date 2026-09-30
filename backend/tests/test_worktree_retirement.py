@@ -3134,13 +3134,14 @@ class WorktreeRetirementTests(unittest.TestCase):
         (entry / 'a' / 'b').mkdir(parents=True)
         (entry / 'a' / 'b' / 'old.md').write_text('old')
         self.age(entry, 30)
-        move = work_workspace.move_scratch
+        walk = retirement.stale_tree
 
-        def move_then_write(folder, *, keep=True):
-            target = move(folder, keep=keep)
-            (target / 'a' / 'b' / 'new.md').write_text('a worker wrote this through an open file')
-            return target
-        with self.stale_rule(), patch.object(work_workspace, 'move_scratch', move_then_write):
+        def write_before_the_second_walk(path, stale_before, skip_root=False):
+            if skip_root:
+                # This is the walk of the moved entry. A worker that held a file writes deep in it.
+                (path / 'a' / 'b' / 'new.md').write_text('a worker wrote this through an open file')
+            return walk(path, stale_before, skip_root=skip_root)
+        with self.stale_rule(), patch.object(retirement, 'stale_tree', write_before_the_second_walk):
             self.retire()
         self.assertEqual(sorted(path.name for path in (entry / 'a' / 'b').iterdir()), ['new.md', 'old.md'])
 
@@ -3177,13 +3178,35 @@ class WorktreeRetirementTests(unittest.TestCase):
         # Something took the old path, and a file blocks the keep folder, so both places fail.
         (workspace / '.stale-kept').write_text('a file')
         trash = workspace / work_workspace.SCRATCH_TRASH
-        target = trash / 'evidence-1759000000000000000'
+        target = trash / ('evidence-1759000000000000000' + retirement.CHECKING)
         (target / 'deep').mkdir(parents=True)
         (target / 'deep' / 'new.md').write_text('changed after the walk')
         with self.assertRaises(OSError):
             retirement.put_back(target, entry)
         retirement.empty_moved(workspace)
-        self.assertEqual((trash / 'evidence-1759000000000000000.kept' / 'deep' / 'new.md').read_text(), 'changed after the walk')
+        self.assertEqual((target / 'deep' / 'new.md').read_text(), 'changed after the walk')
+
+    def test_a_cleared_entry_leaves_the_trash_and_a_crash_before_the_walk_loses_nothing(self):
+        workspace = self.bot_workspace()
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('old')
+        self.age(workspace / 'old', 30)
+        walk = retirement.stale_tree
+
+        def crash_at_the_second_walk(path, stale_before, skip_root=False):
+            if skip_root:
+                raise KeyboardInterrupt
+            return walk(path, stale_before, skip_root=skip_root)
+        with self.stale_rule(), patch.object(retirement, 'stale_tree', crash_at_the_second_walk):
+            with self.assertRaises(KeyboardInterrupt):
+                self.retire()
+        # The entry waits under the checking name. The next pass empties the trash, and it must keep this entry.
+        waiting = list((workspace / work_workspace.SCRATCH_TRASH).iterdir())
+        self.assertEqual(len(waiting), 1)
+        self.assertTrue(waiting[0].name.endswith(retirement.CHECKING))
+        with self.stale_rule():
+            self.retire()
+        self.assertEqual((waiting[0] / 'notes.md').read_text(), 'old')
 
     def test_an_unreadable_bot_workspace_does_not_stop_the_pass_for_the_others(self):
         broken = self.service.root / 'bots' / '0000-first' / 'workspace'
