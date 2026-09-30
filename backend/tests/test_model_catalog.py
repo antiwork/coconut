@@ -212,7 +212,7 @@ class ModelSelectionTests(unittest.TestCase):
                 settled()
                 self.assertEqual(len([c for c in calls if c == ('get', True)]), 1)
                 # Old enough: it looks again.
-                catalog._forced_at -= 301
+                catalog._live_blocked_until = float('-inf')
                 catalog.refresh_if_old(300)
                 settled()
                 self.assertEqual(len([c for c in calls if c == ('get', True)]), 2)
@@ -245,30 +245,77 @@ class ModelSelectionTests(unittest.TestCase):
                 while catalog._refreshing and time.monotonic() < deadline:
                     time.sleep(0.01)
 
-    def test_a_failed_live_refresh_does_not_hold_back_the_next_one(self):
+    def test_a_failed_live_refresh_waits_a_short_time_and_sends_no_update_event(self):
+        from coconut.model_catalog import LIVE_RETRY_SECONDS
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'source'
             source.mkdir()
             catalog = HermesModelCatalog(Path(directory) / 'data', source=source)
             catalog.root.mkdir(parents=True)
             (catalog.root / 'config.yaml').write_text('model: first\n')
-            calls = []
+            calls, events, fail = [], [], [True]
+            catalog.on_change = lambda: events.append(1)
             def call(operation, **payload):
                 calls.append((operation, payload.get('refresh')))
-                if payload.get('refresh') is True:
+                if payload.get('refresh') is True and fail[0]:
                     raise ModelCatalogError('The provider did not answer.')
                 return example_catalog()
             def settled():
                 deadline = time.monotonic() + 5
                 while catalog._refreshing and time.monotonic() < deadline:
                     time.sleep(0.01)
+            live = lambda: len([c for c in calls if c == ('get', True)])
             with patch.object(catalog, '_call', side_effect=call):
                 catalog.refresh_if_old(300)
                 settled()
+                self.assertEqual(live(), 1)
+                # The app reads the settings again on `model_catalog.updated`. A failure must not send it, or the app
+                # and the service would loop for as long as Hermes fails.
+                self.assertEqual(events, [])
                 catalog.refresh_if_old(300)
                 settled()
-            # The first look failed, so the second one starts at once.
-            self.assertEqual(len([c for c in calls if c == ('get', True)]), 2)
+                self.assertEqual(live(), 1)
+                # After the short retry time, the next look starts. It succeeds and sends the event once.
+                self.assertLessEqual(catalog._live_blocked_until - time.monotonic(), LIVE_RETRY_SECONDS)
+                catalog._live_blocked_until = float('-inf')
+                fail[0] = False
+                catalog.refresh_if_old(300)
+                settled()
+                self.assertEqual(live(), 2)
+                self.assertEqual(events, [1])
+
+    def test_two_settings_reads_at_once_start_one_live_refresh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            source.mkdir()
+            catalog = HermesModelCatalog(Path(directory) / 'data', source=source)
+            catalog.root.mkdir(parents=True)
+            (catalog.root / 'config.yaml').write_text('model: first\n')
+            calls, release = [], threading.Event()
+            def call(operation, **payload):
+                calls.append((operation, payload.get('refresh')))
+                if payload.get('refresh') is True:
+                    release.wait(5)
+                return example_catalog()
+            with patch.object(catalog, '_call', side_effect=call):
+                catalog.get()
+                deadline = time.monotonic() + 5
+                while catalog._refreshing and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                barrier = threading.Barrier(8)
+                def open_settings():
+                    barrier.wait()
+                    catalog.refresh_if_old(300)
+                threads = [threading.Thread(target=open_settings) for _ in range(8)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(5)
+                release.set()
+                deadline = time.monotonic() + 5
+                while catalog._refreshing and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            self.assertEqual(len([c for c in calls if c == ('get', True)]), 1)
 
     def test_the_ordinary_refresh_does_not_count_as_a_live_one(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -282,7 +329,7 @@ class ModelSelectionTests(unittest.TestCase):
                 deadline = time.monotonic() + 5
                 while catalog._refreshing and time.monotonic() < deadline:
                     time.sleep(0.01)
-            self.assertEqual(catalog._forced_at, float('-inf'))
+            self.assertEqual(catalog._live_blocked_until, float('-inf'))
 
     def test_legacy_migration_leaves_an_existing_native_profile_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:
