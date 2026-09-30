@@ -1051,6 +1051,17 @@ for title in ('First defect', 'Second defect'):
         self.assertIn('_completed_history', self.service._get('artifacts', item['id']))
         self.assertTrue(self.service._get('artifacts', other['id'])['_native_outcome_id'])
 
+    def test_completed_history_import_keeps_the_owner_summary_when_the_row_has_no_evidence(self):
+        task, item = self.legacy_work('Verified export')
+        self.provider.supports_native_outcomes = True
+        owner = self.service._get('tasks', task['id'])
+        owner.update(status='completed', summary='The owner verified the export.')
+        self.service._put('tasks', owner)
+        item.update(status='completed', completion_evidence=None, activity='', _automatic_work=True)
+        self.service._put('artifacts', item)
+        self.service._migrate_native_work()
+        self.assertEqual(self.service._get('artifacts', item['id'])['_completed_history']['evidence'], 'The owner verified the export.')
+
     def test_completed_report_with_a_pending_decision_migrates_without_completion(self):
         task, item = self.legacy_work()
         self.provider.supports_native_outcomes = True

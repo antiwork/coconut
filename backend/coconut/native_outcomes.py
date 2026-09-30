@@ -1129,7 +1129,8 @@ class NativeOutcomes:
             owner = self._get('tasks', item['task_id'])
             if owner['status'] != 'completed' or owner['id'] in waiting:
                 continue
-            item['_completed_history'] = dict(report=self._work_history_key(item), evidence=item.get('completion_evidence'))
+            evidence = item.get('completion_evidence') or (None if item.get('_automatic_work') else item.get('activity')) or owner.get('summary')
+            item['_completed_history'] = dict(report=self._work_history_key(item), evidence=evidence)
             self._put('artifacts', item)
             self._event('artifact.updated', self._public(item), item['bot_id'], item['task_id'])
 
