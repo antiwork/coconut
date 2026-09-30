@@ -477,17 +477,6 @@ class WorktreeRetirement:
                 with contextlib.suppress(*work_workspace.GIT_ERRORS):
                     work_workspace.git(repository, 'worktree', 'prune', timeout=work_workspace.CHECKOUT_SECONDS)
 
-    def _bot_busy(self, bot_id):
-        """Return True when the bot has a working, queued or scheduled task or context. A waiting one can wait for days."""
-        if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
-            return True
-        try:
-            return any(self.db.execute("SELECT 1 FROM " + table + " WHERE json_extract(data,'$.bot_id')=? "
-                                       "AND json_extract(data,'$.status') IN ('working','queued','scheduled') LIMIT 1",
-                                       (bot_id,)).fetchone() for table in ('tasks', 'contexts'))
-        finally:
-            self.lock.release()
-
     def _clear_stale_bot_workspaces(self, current, saved, low_disk):
         """Delete the entries of bots/<id>/workspace that nothing has changed for BOT_WORKSPACE_STALE_SECONDS.
 
@@ -495,7 +484,9 @@ class WorktreeRetirement:
         judges the entries inside it, one level down, unless it is a Git repository itself. A Git checkout that holds work
         that no remote has stays (checkout_keeps). A main checkout stays while a worktree of it stays. A process that
         uses an entry, a tracked worktree, the repository of a binding, and a name that starts with a dot stay too.
-        An entry also stays while its bot has a working, queued or scheduled task or context, and the next pass tries again. Coconut moves a folder to a
+        A bot with work in progress is cleaned too: it is busy all day on a busy install, and a rule that skips it would never
+        free its disk. A turn can read an old entry without opening it during the pass, and a read changes no time.
+        The age, the open-file check, and the Git work check are the protection. Coconut moves a folder to a
         trash folder of its parent first, and deletes it later, outside the lock.
         """
         stale_before = current - (BOT_WORKSPACE_LOW_DISK_STALE_SECONDS if low_disk else BOT_WORKSPACE_STALE_SECONDS)
@@ -509,9 +500,7 @@ class WorktreeRetirement:
             try:
                 # A stop between a move and its deletion leaves trash. Empty it first, in the workspace and one level down.
                 for place in (bot, *(child for child in bot.iterdir() if child.is_dir() and not child.is_symlink())):
-                    # An entry that waits under the checking name stays while the bot has work, as a fresh entry does.
-                    if not self._bot_busy(bot.parent.name):
-                        settle_checking(place, stale_before)
+                    settle_checking(place, stale_before)
                     empty_moved(place)
                 pending = [bot]
                 while pending:
@@ -561,9 +550,6 @@ class WorktreeRetirement:
                     # A turn starts under this lock. Check the top of the entry again, and move it before the lock goes.
                     # The full walk ran before, and it can take seconds, so the walk of the moved entry comes after the lock.
                     if top_changed(entry, stale_before):
-                        continue
-                    # A turn runs with the workspace as its folder. It can read an old entry, and a read changes no time.
-                    if self._bot_busy(entry.relative_to(self.root / 'bots').parts[0]):
                         continue
                     if entry.is_dir() and not entry.is_symlink():
                         trash = entry.parent / work_workspace.SCRATCH_TRASH

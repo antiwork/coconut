@@ -3227,35 +3227,6 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertEqual(list(trash.iterdir()), [])
 
-    def test_a_bot_workspace_stays_while_the_bot_has_a_queued_task_but_not_a_waiting_one(self):
-        workspace = self.bot_workspace()
-        (workspace / 'old').mkdir()
-        (workspace / 'old' / 'notes.md').write_text('a queued turn will read this')
-        self.age(workspace / 'old', 30)
-        task = dict(id=str(uuid4()), bot_id=self.bot['id'], title='Review', status='queued', summary='', created_at=OLD, updated_at=RECENT)
-        with self.service.transaction():
-            self.service._put('tasks', task)
-        with self.stale_rule():
-            self.retire()
-        self.assertTrue((workspace / 'old' / 'notes.md').exists())
-        task['status'] = 'waiting'
-        with self.service.transaction():
-            self.service._put('tasks', task)
-        with self.stale_rule():
-            self.retire()
-        self.assertFalse((workspace / 'old').exists())
-
-    def test_a_bot_workspace_stays_while_the_bot_has_a_working_context(self):
-        workspace = self.bot_workspace()
-        (workspace / 'old').mkdir()
-        (workspace / 'old' / 'notes.md').write_text('a decision turn reads this')
-        self.age(workspace / 'old', 30)
-        with self.service.transaction():
-            self.service._put('contexts', dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=str(uuid4()), status='working'))
-        with self.stale_rule():
-            self.retire()
-        self.assertTrue((workspace / 'old' / 'notes.md').exists())
-
     def test_an_unreadable_bot_workspace_does_not_stop_the_pass_for_the_others(self):
         broken = self.service.root / 'bots' / '0000-first' / 'workspace'
         broken.mkdir(parents=True)
@@ -3279,24 +3250,6 @@ class WorktreeRetirementTests(unittest.TestCase):
         with self.stale_rule():
             self.retire()
         self.assertFalse((kept / 'evidence-1759000000000000000').exists())
-
-    def test_a_bot_workspace_stays_while_the_bot_has_a_working_task(self):
-        workspace = self.bot_workspace()
-        (workspace / 'old').mkdir()
-        (workspace / 'old' / 'notes.md').write_text('a turn reads this')
-        self.age(workspace / 'old', 30)
-        task = dict(id=str(uuid4()), bot_id=self.bot['id'], title='Review', status='working', summary='', created_at=OLD, updated_at=RECENT)
-        with self.service.transaction():
-            self.service._put('tasks', task)
-        with self.stale_rule():
-            self.retire()
-        self.assertTrue((workspace / 'old' / 'notes.md').exists())
-        task['status'] = 'completed'
-        with self.service.transaction():
-            self.service._put('tasks', task)
-        with self.stale_rule():
-            self.retire()
-        self.assertFalse((workspace / 'old').exists())
 
     def test_a_worktree_record_stays_while_its_release_fails_and_goes_when_a_later_pass_settles_it(self):
         workspace = self.bot_workspace()
@@ -3343,25 +3296,20 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertIn('pr-1', git(main, 'worktree', 'list'))
         self.assertNotIn('prunable', git(main, 'worktree', 'list'))
 
-    def test_an_entry_waiting_under_the_checking_name_stays_while_the_bot_has_a_queued_task(self):
+    def test_a_bot_with_work_in_progress_is_cleaned_too(self):
         workspace = self.bot_workspace()
-        item = workspace / work_workspace.SCRATCH_TRASH / ('old-1759000000000000000' + retirement.CHECKING)
-        item.mkdir(parents=True)
-        (item / 'notes.md').write_text('a queued turn will read this')
-        self.age(item, 30)
-        task = dict(id=str(uuid4()), bot_id=self.bot['id'], title='Review', status='queued', summary='', created_at=OLD, updated_at=RECENT)
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('old')
+        self.age(workspace / 'old', 30)
+        for status in ('working', 'queued', 'scheduled'):
+            with self.service.transaction():
+                self.service._put('tasks', dict(id=str(uuid4()), bot_id=self.bot['id'], title='Review', status=status,
+                                                summary='', created_at=OLD, updated_at=RECENT))
         with self.service.transaction():
-            self.service._put('tasks', task)
+            self.service._put('contexts', dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=str(uuid4()), status='working'))
         with self.stale_rule():
             self.retire()
-        self.assertTrue((item / 'notes.md').exists())
-        task['status'] = 'completed'
-        with self.service.transaction():
-            self.service._put('tasks', task)
-        with self.stale_rule():
-            self.retire()
-            self.retire()
-        self.assertFalse(item.exists())
+        self.assertFalse((workspace / 'old').exists())
 
     def test_a_bot_workspace_entry_that_a_process_holds_stays(self):
         workspace = self.bot_workspace()
