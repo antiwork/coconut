@@ -435,18 +435,6 @@ class WorkStatus:
                 linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
         return linked
 
-    def _work_live(self, task, records, timestamp):
-        from .background_processes import subscription
-        worker = self.running.get(task['id'])
-        if worker and worker.is_alive():
-            return True
-        return any(r['task_id'] == task['id'] and subscription(r) and not r.get('_process_delivery')
-                   and (r.get('turn_id') == task.get('_native_turn_id')
-                        or self._can_resume_completion(task, self._get('bots', task['bot_id']), r))
-                   and r.get('_process_status') == 'running' and r.get('_process_observed_at')
-                   and (timestamp - datetime.fromisoformat(r['_process_observed_at'].replace('Z', '+00:00'))).total_seconds() < 45
-                   for r in records)
-
     def _tracked_work_input(self, task):
         tasks = {t['id']: t for t in self._all('tasks')}
         records = self._work_receipts()
@@ -460,11 +448,7 @@ class WorkStatus:
         return sorted(urls)
 
     def _work_projection(self, artifacts):
-        if self.kanban and getattr(self.provider, 'supports_native_outcomes', False):
-            self._native_work_view(artifacts)
-        else:
-            self._project_work_outcomes(artifacts, {t['id']: t for t in self._all('tasks')},
-                                        self._pending_completion_receipts(), self._all('decisions'), datetime.now(timezone.utc))
+        self._native_work_view(artifacts)
         for item in artifacts:
             item.pop('checkout_recovery_stopped', None)
             if (item['kind'] == 'work' and item.get('work_outcome_id') in (None, item['id'])

@@ -7,6 +7,9 @@ from uuid import uuid4
 from coconut.service import ServiceError, now
 from test_service_pr import PRServiceTests, URL
 from test_background_processes import BackgroundProcessTests
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class WorkStatusTests(unittest.TestCase):

@@ -10,6 +10,7 @@ the code lives here. A test module adds the methods to Service for its own tests
 from datetime import datetime, timedelta, timezone
 
 from coconut.service import Service
+from legacy_work_model import LegacyWorkModel
 
 
 def retry_delay(attempt):
@@ -280,14 +281,14 @@ class LegacyWorkSync:
                 self._event('work.recovery_queued', dict(task_id=task['id'], previous_task_id=owner['id'],
                     work_ids=[a['id'] for a in affected]), bot['id'], task['id'])
 
-NAMES = ('_queue_work_recoveries', '_work_title', '_sync_followup_work', '_resume_tracked_work', '_automatic_work_state', '_sync_automatic_work')
+NAMES = ('_work_projection', '_work_outcome', '_project_work_outcomes', '_project_work_outcomes_inner', '_work_live', '_queue_positions', '_queue_work_recoveries', '_work_title', '_sync_followup_work', '_resume_tracked_work', '_automatic_work_state', '_sync_automatic_work')
 
 
 def scope():
     """Return the setUpModule and tearDownModule of a test module that needs the legacy builder."""
     def set_up():
         for name in NAMES:
-            setattr(Service, name, getattr(LegacyWorkSync, name))
+            setattr(Service, name, getattr(LegacyWorkModel if hasattr(LegacyWorkModel, name) else LegacyWorkSync, name))
 
     def tear_down():
         for name in NAMES:

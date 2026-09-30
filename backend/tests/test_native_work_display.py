@@ -2,6 +2,9 @@
 import unittest
 from unittest.mock import patch
 import test_native_kanban as native
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 @unittest.skipUnless(native.SOURCE and native.PYTHON, 'Set Coconut Hermes paths for native integration checks.')

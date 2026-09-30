@@ -3,6 +3,9 @@ import unittest
 
 from coconut.service import ServiceError
 from test_service_pr import PRServiceTests
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class TrackedWorkTests(unittest.TestCase):

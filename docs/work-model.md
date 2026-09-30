@@ -9,7 +9,9 @@ Coconut reuses four existing records:
 - Native receipts record dependencies and their delivery.
 - Decision cards record questions that require a human answer.
 
-`WorkModel._work_outcome` derives the public state for both general work and pull requests.
+`Service._native_outcome_projection` derives the public state for both general work and pull requests from the native Hermes outcome.
+A row from before native outcomes shows a saved terminal answer if it has one. Otherwise it shows "Status unavailable".
+The older reducer that read attempts and receipts (`LegacyWorkModel`) no longer runs in the product. It lives in `backend/tests/legacy_work_model.py` for the tests that still build such rows.
 
 | State | Evidence | Action |
 | --- | --- | --- |

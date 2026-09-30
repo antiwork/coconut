@@ -1111,26 +1111,6 @@ class NativeOutcomes:
                 completion_evidence=history['evidence'])
         return None
 
-    def _import_completed_work_history(self):
-        from datetime import datetime, timezone
-        # Import verified results once. Later conversations cannot rewrite completed history.
-        candidates = [json.loads(row[0]) for row in self.db.execute(
-            "SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='work' "
-            "AND json_extract(data,'$.status')='completed' AND json_extract(data,'$._native_outcome_id') IS NULL "
-            "AND json_extract(data,'$._same_outcome_as') IS NULL AND NOT coalesce(json_extract(data,'$._hidden'),0)")]
-        candidates = [a for a in candidates if not self._retained_terminal_work(a)]
-        if not candidates:
-            return
-        projected = [dict(a) for a in candidates]
-        self._project_work_outcomes(projected, {t['id']: t for t in self._all('tasks')},
-            self._pending_completion_receipts(), self._all('decisions'), datetime.now(timezone.utc))
-        for item, outcome in zip(candidates, projected):
-            if outcome['work_state'] != 'completed':
-                continue
-            item['_completed_history'] = dict(report=self._work_history_key(item), evidence=outcome.get('completion_evidence'))
-            self._put('artifacts', item)
-            self._event('artifact.updated', self._public(item), item['bot_id'], item['task_id'])
-
     def _retained_pr_candidates(self):
         from .service import now
         groups = {}
@@ -1162,7 +1142,6 @@ class NativeOutcomes:
         if not self.kanban or not getattr(self.provider, 'supports_native_outcomes', False):
             return
         from .service import now
-        self._import_completed_work_history()
         candidates = [json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='work' "
             "AND json_extract(data,'$._native_outcome_id') IS NULL "

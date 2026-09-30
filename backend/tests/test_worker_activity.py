@@ -13,6 +13,9 @@ from unittest.mock import patch
 
 from coconut.worker_activity import instrument, event_phase, progress_label, read_progress
 from test_background_processes import BackgroundProcessTests
+import legacy_work_sync
+
+setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class WorkerActivityTests(unittest.TestCase):
