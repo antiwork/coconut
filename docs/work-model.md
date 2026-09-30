@@ -11,6 +11,7 @@ Coconut reuses four existing records:
 
 `Service._native_outcome_projection` derives the public state for both general work and pull requests from the native Hermes outcome.
 A row from before native outcomes shows a saved terminal answer if it has one. Otherwise it shows "Status unavailable".
+Fixture mode has no native outcomes and builds no Work rows, so it shows none.
 The older reducer that read attempts and receipts (`LegacyWorkModel`) no longer runs in the product. It lives in `backend/tests/legacy_work_model.py` for the tests that still build such rows.
 
 | State | Evidence | Action |
