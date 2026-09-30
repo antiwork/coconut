@@ -245,7 +245,7 @@ class ModelSelectionTests(unittest.TestCase):
                 while catalog._refreshing and time.monotonic() < deadline:
                     time.sleep(0.01)
 
-    def test_a_failed_live_refresh_waits_a_short_time_and_sends_no_update_event(self):
+    def test_a_failed_live_refresh_waits_a_short_time_and_still_sends_the_update_event(self):
         from coconut.model_catalog import LIVE_RETRY_SECONDS
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'source'
@@ -269,9 +269,9 @@ class ModelSelectionTests(unittest.TestCase):
                 catalog.refresh_if_old(300)
                 settled()
                 self.assertEqual(live(), 1)
-                # The app reads the settings again on `model_catalog.updated`. A failure must not send it, or the app
-                # and the service would loop for as long as Hermes fails.
-                self.assertEqual(events, [])
+                # The event goes out even after a failure, so the app stops showing "Loading models". The read that the
+                # app makes on it must not start the next look, or the two would loop for as long as Hermes fails.
+                self.assertEqual(events, [1])
                 catalog.refresh_if_old(300)
                 settled()
                 self.assertEqual(live(), 1)
@@ -282,7 +282,7 @@ class ModelSelectionTests(unittest.TestCase):
                 catalog.refresh_if_old(300)
                 settled()
                 self.assertEqual(live(), 2)
-                self.assertEqual(events, [1])
+                self.assertEqual(events, [1, 1])
 
     def test_two_settings_reads_at_once_start_one_live_refresh(self):
         with tempfile.TemporaryDirectory() as directory:

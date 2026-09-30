@@ -194,10 +194,8 @@ class HermesModelCatalog:
         signature = self._cache_key
 
         def update():
-            answered = False
             try:
                 result = self._call('get', refresh=refresh)
-                answered = True
                 with self._lock:
                     if signature == self._signature():
                         self._cache = result
@@ -206,7 +204,8 @@ class HermesModelCatalog:
             except ModelCatalogError:
                 if refresh:
                     # A failed live look may be tried again soon, but not at once. The app reads the settings again when
-                    # it hears `model_catalog.updated`, so a failure that sent the event would repeat without end.
+                    # it hears `model_catalog.updated`, and that read must not start the next look. The event still goes
+                    # out, because the app shows "Loading models" until it hears one.
                     with self._lock:
                         self._live_blocked_until = min(self._live_blocked_until, time.monotonic() + LIVE_RETRY_SECONDS)
             finally:
@@ -216,7 +215,7 @@ class HermesModelCatalog:
                     self._refreshing = False
                     live_again, self._live_pending = self._live_pending, False
                 callback = self.on_change
-                if callback and answered:
+                if callback:
                     try:
                         callback()
                     except Exception:
