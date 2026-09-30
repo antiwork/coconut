@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
+from coconut.decision_freshness import age
 
 import test_automatic_work as fixtures
 from coconut.hermes_worker import conversation_input
@@ -48,6 +49,106 @@ class DecisionFreshnessTests(unittest.TestCase):
         context = self.service._get('contexts', context['id'])
         context['status'] = 'completed'
         self.service._put('contexts', context)
+
+    def failed_check(self, decision, waited):
+        """Let `waited` seconds pass since the last queued check, run the queue, and fail the check it queues. Return whether it queued one."""
+        saved = self.service._get('decisions', decision['id'])
+        saved['_freshness']['queued_at'] = (datetime.now(timezone.utc) - timedelta(seconds=waited)).isoformat()
+        self.service._put('decisions', saved)
+        before = len(self.service._all('contexts'))
+        self.service._queue_decision_refreshes()
+        contexts = self.service._all('contexts')
+        if len(contexts) == before:
+            return False
+        context = self.service._get('contexts', contexts[-1]['id'])
+        context.update(status='failed', error_code='decision_refresh_incomplete')
+        self.service._put('contexts', context)
+        return True
+
+    def test_a_check_that_keeps_failing_stops_after_its_failure_limit(self):
+        from coconut.decision_freshness import REFRESH_MAX_FAILURES
+        decision = self.question()
+        results = [self.failed_check(decision, 10 ** 6) for _ in range(REFRESH_MAX_FAILURES + 3)]
+        # A very long wait passes every backoff, so only the limit stops the checks.
+        self.assertEqual(results, [True] * REFRESH_MAX_FAILURES + [False] * 3)
+
+    def test_a_failed_check_waits_twice_as_long_after_each_failure(self):
+        from coconut.decision_freshness import RETRY_SECONDS
+        decision = self.question()
+        self.assertTrue(self.failed_check(decision, 10 ** 6))
+        # One failure: the wait is the retry time.
+        self.assertFalse(self.failed_check(decision, RETRY_SECONDS - 30))
+        self.assertTrue(self.failed_check(decision, RETRY_SECONDS + 30))
+        # Two failures: twice the retry time.
+        self.assertFalse(self.failed_check(decision, 2 * RETRY_SECONDS - 30))
+        self.assertTrue(self.failed_check(decision, 2 * RETRY_SECONDS + 30))
+        # Three failures: four times.
+        self.assertFalse(self.failed_check(decision, 4 * RETRY_SECONDS - 30))
+
+    def test_a_check_that_ends_without_a_result_saves_its_failure_time(self):
+        decision = self.question()
+        self.service._queue_decision_refreshes()
+        context = self.service._all('contexts')[-1]
+        self.service._start_context(context['id'])
+        self.service.context_threads[context['id']].join(10)
+        saved = self.service._get('contexts', context['id'])
+        self.assertEqual((saved['status'], saved['error_code']), ('failed', 'decision_refresh_incomplete'))
+        self.assertLess(age(saved['_failed_at'], datetime.now(timezone.utc)), 60)
+
+    def test_the_wait_counts_from_the_failure_of_a_long_check(self):
+        from coconut.decision_freshness import RETRY_SECONDS
+        decision = self.question()
+        self.assertTrue(self.failed_check(decision, 10 ** 6))
+        # The check was queued long ago and failed just now, so the wait has barely begun.
+        context = self.service._all('contexts')[-1]
+        context['_failed_at'] = datetime.now(timezone.utc).isoformat()
+        self.service._put('contexts', context)
+        self.assertFalse(self.failed_check(decision, 10 ** 6))
+        context['_failed_at'] = (datetime.now(timezone.utc) - timedelta(seconds=RETRY_SECONDS + 30)).isoformat()
+        self.service._put('contexts', context)
+        self.assertTrue(self.failed_check(decision, 10 ** 6))
+
+    def test_checks_that_leave_process_receipts_still_stop(self):
+        from coconut.decision_freshness import REFRESH_MAX_FAILURES
+        decision = self.question()
+        task = self.service._get('tasks', self.task['id'])
+        results = []
+        for step in range(REFRESH_MAX_FAILURES + 3):
+            queued = self.failed_check(decision, 10 ** 6)
+            results.append(queued)
+            if queued:
+                # A check that starts a background process leaves a saved receipt on its own turn.
+                context = self.service._all('contexts')[-1]
+                self.service._put('native_receipts', dict(id=f'process-{step}', task_id=task['id'], turn_id=context['id'],
+                    action=dict(name='terminal', arguments={'command': 'run tests'}), state='completed',
+                    completed_at=task['created_at'], created_at=task['created_at'], _process_delivery='delivered',
+                    result=json.dumps(dict(session_id=f'session-{step}', notify_on_complete=True))))
+        # Each receipt changed the full fingerprint of the next check, and only the external evidence counts.
+        checks = [c for c in self.service._all('contexts') if c.get('_decision_refresh')]
+        self.assertEqual(len({c['_evidence_fingerprint'] for c in checks}), len(checks))
+        self.assertEqual(len({c['_external_fingerprint'] for c in checks}), 1)
+        self.assertEqual(results, [True] * REFRESH_MAX_FAILURES + [False] * 3)
+
+    def test_new_evidence_starts_the_failure_count_again(self):
+        from coconut.decision_freshness import REFRESH_MAX_FAILURES
+        decision = self.question()
+        for _ in range(REFRESH_MAX_FAILURES):
+            self.assertTrue(self.failed_check(decision, 10 ** 6))
+        self.assertFalse(self.failed_check(decision, 10 ** 6))
+        task = self.service._get('tasks', self.task['id'])
+        task['summary'] = 'The scope changed again.'
+        self.service._put('tasks', task)
+        self.assertTrue(self.failed_check(decision, 10 ** 6))
+
+    def test_a_stale_check_neither_counts_nor_hides_the_failures_before_it(self):
+        from coconut.decision_freshness import REFRESH_MAX_FAILURES
+        decision = self.question()
+        for _ in range(REFRESH_MAX_FAILURES):
+            self.assertTrue(self.failed_check(decision, 10 ** 6))
+        # A check that a newer state cancelled sits after the failures. The limit still holds.
+        last = self.service._all('contexts')[-1]
+        self.service._put('contexts', dict(last, id='cancelled-check', status='cancelled', _refresh_recorded=False))
+        self.assertFalse(self.failed_check(decision, 10 ** 6))
 
     def test_a_refresh_pass_parses_each_table_once_for_many_questions(self):
         decision = self.question(old=False)

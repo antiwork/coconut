@@ -3897,7 +3897,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
     def _block_uncertain_context(self, context):
         if not self._has_uncertain_receipt(context['task_id'], context['id']):
             return False
-        context.update(status='failed', error_code='tool_result_unknown')
+        context.update(status='failed', error_code='tool_result_unknown', _failed_at=now())
         self._put('contexts', context)
         if not context.get('_decision_refresh'):
             self._message(context['bot_id'],
@@ -4004,6 +4004,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         status = 'failed'
                         context['error_code'] = 'decision_refresh_incomplete'
                     context['status'] = status
+                    if status == 'failed':
+                        # The wait before the next check of a card counts from here, not from when the check was queued.
+                        context['_failed_at'] = now()
                     if context_failure:
                         context['error_code'] = context_failure['error_code']
                     self._put('contexts', context)

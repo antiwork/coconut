@@ -436,6 +436,7 @@ class BackgroundProcesses:
                        _background_completion=[text for _, text in completions])
         context.pop('error_code', None)
         context.pop('_refresh_recorded', None)
+        context.pop('_failed_at', None)
         if context.get('_decision_refresh'):
             context['_refresh_origin_id'] = source.get('_refresh_origin_id', source['id'])
             decision['_freshness'] = dict(decision.get('_freshness', {}), context_id=context['id'], queued_at=now())
@@ -451,6 +452,7 @@ class BackgroundProcesses:
             fingerprint, work = self._decision_evidence(decision, tasks, records, artifacts)
             task = tasks[context['task_id']]
             context.update(_evidence_fingerprint=fingerprint,
+                           _external_fingerprint=self._decision_evidence(decision, tasks, records, artifacts, own_receipts=False)[0],
                            _human_input_ids=[m['id'] for m in self._decision_human_messages(task)],
                            question=self._decision_refresh_prompt(decision, task, work, self._all('decisions')))
         self._put('contexts', context)
