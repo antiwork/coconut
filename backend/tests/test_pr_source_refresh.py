@@ -485,6 +485,24 @@ class PRSourceRefreshTests(unittest.TestCase):
         self.assertEqual(self.service._pending_decision_sources, set())
         self.assertIsNone(self.service._ready_decision_sources)
         self.service.refresh_pull_requests()
+        # The queue starts one check at a time. It takes the first card whose source read has finished, and the reads run in
+        # parallel, so under load the newer card can finish first (gating the reads did not make it deterministic: 15 of 96
+        # loaded runs still failed). This test checks that the failures left the queue usable. It does not check the order when
+        # both cards have finished their reads: test_the_queue_takes_the_older_card_first_when_both_reads_are_done does.
+        queued = [c['decision_id'] for c in self.service._all('contexts')]
+        self.assertEqual(len(queued), 1)
+        self.assertIn(queued[0], ('older-card', 'newer-card'))
+
+    def test_the_queue_takes_the_older_card_first_when_both_reads_are_done(self):
+        self.cards()
+        # Both cards have an unchanged record of their facts. A new head changes the evidence of each, and no read is pending.
+        with self.service.transaction():
+            for artifact in self.service._all('artifacts'):
+                if artifact['kind'] == 'pr':
+                    self.service._put('artifacts', dict(artifact, head_sha='c' * 40))
+        self.service._pending_decision_sources.clear()
+        self.service._ready_decision_sources = None
+        self.service._queue_decision_refreshes()
         self.assertEqual([c['decision_id'] for c in self.service._all('contexts')], ['older-card'])
 
     def test_shutdown_clears_pending_sources_without_late_database_write(self):
