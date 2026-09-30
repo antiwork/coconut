@@ -3114,6 +3114,19 @@ class WorktreeRetirementTests(unittest.TestCase):
         for part in ('HEAD', 'config', 'hooks', 'objects', 'refs'):
             self.assertTrue((bare / part).exists(), part)
 
+    def test_the_repository_of_a_binding_stays_although_its_worktree_is_retired(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'repo')
+        other = self.clone(workspace / 'other', 'other')
+        binding = dict(path=str(self.workspaces / 'gone-worktree'), branch='wt/x', repository=str(main), outcome=str(uuid4()))
+        save_bindings(self.workspaces / 'worktrees.json', {'x-binding': binding})
+        for name in ('repo', 'other'):
+            self.age(workspace / name, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((main / 'tracked.txt').exists())
+        self.assertFalse(other.exists())
+
     def test_a_main_checkout_stays_when_the_worktree_that_needs_it_is_held_by_a_process(self):
         workspace = self.bot_workspace()
         main = self.clone(workspace / 'a-main', 'a')

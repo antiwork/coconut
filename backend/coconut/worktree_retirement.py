@@ -385,11 +385,12 @@ class WorktreeRetirement:
         An entry is a file or a folder of the workspace. A folder that has a newer file is not stale, so Coconut then
         judges the entries inside it, one level down, unless it is a Git repository itself. A Git checkout that holds work
         that no remote has stays (checkout_keeps). A main checkout stays while a worktree of it stays. A process that
-        uses an entry, a tracked worktree, and a name that starts with a dot stay too. Coconut moves a folder to a
+        uses an entry, a tracked worktree, the repository of a binding, and a name that starts with a dot stay too. Coconut moves a folder to a
         trash folder of its parent first, and deletes it later, outside the lock.
         """
         stale_before = current - (BOT_WORKSPACE_LOW_DISK_STALE_SECONDS if low_disk else BOT_WORKSPACE_STALE_SECONDS)
-        tracked = tracked_places(saved)
+        # A retired worktree comes back from the repository of its binding, so that repository stays too.
+        tracked = tracked_places(saved) | {Path(repository).resolve() for repository in repositories(saved) if Path(repository).exists()}
         found = []
         for bot in sorted((self.root / 'bots').glob('*/workspace')):
             if bot.is_symlink() or not bot.is_dir():
