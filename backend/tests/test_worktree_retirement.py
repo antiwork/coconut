@@ -3102,6 +3102,18 @@ class WorktreeRetirementTests(unittest.TestCase):
         # A module store inside a checkout is part of the checkout. It does not keep a clean checkout.
         self.assertFalse(with_submodule.exists())
 
+    def test_a_bare_repository_with_a_fresh_change_keeps_its_old_parts(self):
+        workspace = self.bot_workspace()
+        bare = workspace / 'mirror.git'
+        git(workspace, 'init', '-q', '--bare', str(bare))
+        (bare / 'FETCH_HEAD').write_text('fresh\n')
+        for part in ('HEAD', 'config', 'hooks', 'objects', 'refs'):
+            self.age(bare / part, 30)
+        with self.stale_rule():
+            self.retire()
+        for part in ('HEAD', 'config', 'hooks', 'objects', 'refs'):
+            self.assertTrue((bare / part).exists(), part)
+
     def test_a_main_checkout_stays_when_the_worktree_that_needs_it_is_held_by_a_process(self):
         workspace = self.bot_workspace()
         main = self.clone(workspace / 'a-main', 'a')

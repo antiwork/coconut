@@ -102,6 +102,11 @@ def holds_tracked(folder, places):
     return any(place == folder or folder in place.parents for place in places)
 
 
+def is_repository(folder):
+    """Return True when folder is a Git checkout or a bare repository. Its parts belong together, so nothing judges them apart."""
+    return (folder / '.git').exists() or all((folder / name).exists() for name in ('HEAD', 'objects', 'refs'))
+
+
 def changed_at(info):
     """Return when a file or folder last changed. ctime moves on an extract, a copy and a rename, and a user cannot set it."""
     return max(info.st_mtime, info.st_ctime)
@@ -378,7 +383,7 @@ class WorktreeRetirement:
         """Delete the entries of bots/<id>/workspace that nothing has changed for BOT_WORKSPACE_STALE_SECONDS.
 
         An entry is a file or a folder of the workspace. A folder that has a newer file is not stale, so Coconut then
-        judges the entries inside it, one level down, unless it is a Git checkout itself. A Git checkout that holds work
+        judges the entries inside it, one level down, unless it is a Git repository itself. A Git checkout that holds work
         that no remote has stays (checkout_keeps). A main checkout stays while a worktree of it stays. A process that
         uses an entry, a tracked worktree, and a name that starts with a dot stay too. Coconut moves a folder to a
         trash folder of its parent first, and deletes it later, outside the lock.
@@ -405,7 +410,7 @@ class WorktreeRetirement:
                         continue
                     if state is not None:
                         found.append((entry, *state))
-                    elif parent == bot and entry.is_dir() and not (entry / '.git').exists():
+                    elif parent == bot and entry.is_dir() and not is_repository(entry):
                         pending.append(entry)
         if not found:
             return
