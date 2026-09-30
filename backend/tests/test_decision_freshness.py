@@ -108,22 +108,25 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.service._put('contexts', context)
         self.assertTrue(self.failed_check(decision, 10 ** 6))
 
-    def test_checks_that_change_the_evidence_by_their_own_receipts_still_stop(self):
+    def test_checks_that_leave_process_receipts_still_stop(self):
         from coconut.decision_freshness import REFRESH_MAX_FAILURES
         decision = self.question()
-        original = self.service._decision_evidence
-        turns = []
-        def evidence(*args, own_receipts=True, **kwargs):
-            fingerprint, work = original(*args, own_receipts=own_receipts, **kwargs)
-            # A check that starts a background process leaves a receipt, and the full fingerprint counts it.
-            return (fingerprint + str(len(turns)) if own_receipts else fingerprint), work
-        with patch.object(self.service, '_decision_evidence', evidence):
-            results = []
-            for _ in range(REFRESH_MAX_FAILURES + 3):
-                queued = self.failed_check(decision, 10 ** 6)
-                turns.append(queued)
-                results.append(queued)
-        # Each check changed the full fingerprint, and only the external evidence counts.
+        task = self.service._get('tasks', self.task['id'])
+        results = []
+        for step in range(REFRESH_MAX_FAILURES + 3):
+            queued = self.failed_check(decision, 10 ** 6)
+            results.append(queued)
+            if queued:
+                # A check that starts a background process leaves a saved receipt on its own turn.
+                context = self.service._all('contexts')[-1]
+                self.service._put('native_receipts', dict(id=f'process-{step}', task_id=task['id'], turn_id=context['id'],
+                    action=dict(name='terminal', arguments={'command': 'run tests'}), state='completed',
+                    completed_at=task['created_at'], created_at=task['created_at'], _process_delivery='delivered',
+                    result=json.dumps(dict(session_id=f'session-{step}', notify_on_complete=True))))
+        # Each receipt changed the full fingerprint of the next check, and only the external evidence counts.
+        checks = [c for c in self.service._all('contexts') if c.get('_decision_refresh')]
+        self.assertEqual(len({c['_evidence_fingerprint'] for c in checks}), len(checks))
+        self.assertEqual(len({c['_external_fingerprint'] for c in checks}), 1)
         self.assertEqual(results, [True] * REFRESH_MAX_FAILURES + [False] * 3)
 
     def test_new_evidence_starts_the_failure_count_again(self):
