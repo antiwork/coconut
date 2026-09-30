@@ -3640,6 +3640,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 known_errors.update({'bot_creation_invalid_request', 'bot_creation_rejected', 'bot_creation_receipt_unconfirmed'})
                 if kind == 'failed' and isinstance(error_code, str) and error_code in known_errors:
                     task['error_code'] = error_code
+                if kind == 'failed' and isinstance(payload.get('error_detail'), str):
+                    # The class and the place of a worker failure, without its message. It stays on the Mac.
+                    task['_error_detail'] = payload['error_detail'][:200]
                 has_followup = kind == 'completed' and bool(task.get('_steering'))
                 task.update(status='queued' if has_followup else kind, summary='Applying your follow-up at the next safe turn.' if has_followup else str(payload.get('summary', payload.get('text', 'Ready to review.' if kind == 'completed' else 'Work failed.')))[:500], updated_at=now())
                 for decision in self._all('decisions'):
