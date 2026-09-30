@@ -3355,6 +3355,49 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertFalse(released.exists())
         self.assertTrue((waiting / 'notes.md').exists())
 
+    def test_a_main_checkout_stays_when_the_release_of_its_worktree_fails(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'a-main')
+        linked = workspace / 'z-wt'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        for name in ('a-main', 'z-wt'):
+            self.age(workspace / name, 30)
+        real = os.rename
+
+        def fail_the_release_of_the_worktree(source, target, *args, **kwargs):
+            if Path(str(source)).name.startswith('z-wt-') and not str(target).endswith(retirement.CHECKING):
+                raise OSError('release failed')
+            return real(source, target, *args, **kwargs)
+        with self.stale_rule(), patch.object(retirement.os, 'rename', fail_the_release_of_the_worktree):
+            self.retire()
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        # The worktree waits under the checking name, and the main checkout is back at its place with its objects.
+        self.assertEqual(len(list(trash.iterdir())), 1)
+        self.assertTrue(list(trash.iterdir())[0].name.startswith('z-wt-'))
+        self.assertTrue((main / 'tracked.txt').exists())
+
+    def test_a_waiting_main_checkout_stays_while_a_worktree_of_it_waits_and_both_go_when_it_does_not(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'a-main')
+        linked = workspace / 'z-wt'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        for name in ('a-main', 'z-wt'):
+            self.age(workspace / name, 30)
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        trash.mkdir()
+        os.rename(main, trash / ('a-main-1759000000000000001' + retirement.CHECKING))
+        os.rename(linked, trash / ('z-wt-1759000000000000002' + retirement.CHECKING))
+        held = MagicMock(side_effect=lambda paths, detail=False: {
+            str(p): ({123} if Path(str(p)).name.startswith('z-wt-') else set()) for p in paths})
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', held):
+            self.retire()
+        self.assertEqual(sorted(item.name[:4] for item in trash.iterdir()), ['a-ma', 'z-wt'])
+        self.assertTrue(all(item.name.endswith(retirement.CHECKING) for item in trash.iterdir()))
+        with self.stale_rule():
+            self.retire()
+            self.retire()
+        self.assertEqual(list(trash.iterdir()), [])
+
     def test_a_failed_scan_of_the_moved_entries_leaves_them_under_the_checking_name(self):
         workspace = self.bot_workspace()
         (workspace / 'old').mkdir()

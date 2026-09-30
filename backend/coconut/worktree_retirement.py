@@ -167,13 +167,22 @@ def settle_checking(parent, stale_before):
         # Without the scan nothing leaves the checking name. The trash of released entries still goes.
         logging.getLogger(__name__).warning('Coconut could not check the entries that wait in %s: %s', trash, error)
         return
+    states = {}
     for item in items:
-        stem = item.name[:-len(CHECKING)]
         if held.get(str(item)):
             continue
         try:
-            state = stale_tree(item, stale_before, skip_root=True)
+            states[item] = stale_tree(item, stale_before, skip_root=True)
+        except OSError as error:
+            logging.getLogger(__name__).warning('Coconut could not settle %s: %s', item, error)
+    # A worktree goes before its main checkout, and a main checkout waits while a worktree of it waits or is back.
+    for item in sorted(states, key=lambda item: states[item] is not None and has_main(item, states[item][1], item)):
+        stem = item.name[:-len(CHECKING)]
+        state = states[item]
+        try:
             if state is not None:
+                if has_main(item, state[1], item) and worktrees_outside(item, state[1], item):
+                    continue
                 # The worktrees in it go, so their main checkouts forget them.
                 repositories = linked_repositories(state[1])
                 os.rename(item, item.with_name(stem))
@@ -251,10 +260,26 @@ def top_changed(path, stale_before):
     return False
 
 
+def waiting_checking(path):
+    """Return True when an entry that was at path waits in the trash folder of its parent under the CHECKING name."""
+    trash = path.parent / work_workspace.SCRATCH_TRASH
+    if trash.is_symlink() or not trash.is_dir():
+        return False
+    return any(item.name.startswith(path.name + '-') and item.name.endswith(CHECKING)
+               and MOVED_NAME.fullmatch(item.name[:-len(CHECKING)]) for item in trash.iterdir())
+
+
+def has_main(entry, checkouts, moved=None):
+    """Return True when a checkout of entry is a main checkout (it has a .git folder). moved is where entry is now."""
+    return any(((moved / folder.relative_to(entry)) if moved is not None else folder).joinpath('.git').is_dir()
+               for folder in checkouts)
+
+
 def worktrees_outside(entry, checkouts, moved=None):
     """Return True when a main checkout in entry has a linked worktree that exists outside entry, or when Git cannot tell.
 
-    moved is the place where entry is now, when Coconut moved it. Git then runs there.
+    moved is the place where entry is now, when Coconut moved it. Git then runs there. A worktree that waits in the trash
+    under the CHECKING name counts as there, because a put-back or a failed release can leave it needing the objects.
     """
     place = (moved or entry).resolve()
     for folder in checkouts:
@@ -264,7 +289,8 @@ def worktrees_outside(entry, checkouts, moved=None):
             continue
         try:
             for path in linked_worktrees(folder):
-                if path.exists() and not (path.resolve() == place or place in path.resolve().parents):
+                # Before the move, a worktree in the trash belongs to this pass, and its release comes first.
+                if (path.exists() or (moved is not None and waiting_checking(path))) and not (path.resolve() == place or place in path.resolve().parents):
                     return True
         except work_workspace.GIT_ERRORS:
             # Unknown worktrees keep the main checkout, as a failed Git check keeps any checkout.
@@ -624,7 +650,8 @@ class WorktreeRetirement:
                     logging.getLogger(__name__).warning('Coconut put back %s, because a process uses it (%s).', entry, where)
                 except OSError as error:
                     logging.getLogger(__name__).warning('Coconut could not put back %s from %s: %s', entry, target, error)
-            for entry, target, size, checkouts in cleared if after is not None else ():
+            # A worktree goes before its main checkout, so the main checkout sees whether a worktree could not go.
+            for entry, target, size, checkouts in sorted(cleared if after is not None else (), key=lambda c: has_main(c[0], c[3], c[1])):
                 try:
                     if (entry, target, size, checkouts) in held:
                         continue
