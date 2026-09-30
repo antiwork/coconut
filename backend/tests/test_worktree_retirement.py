@@ -81,7 +81,8 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.holders.start()
         self.addCleanup(self.holders.stop)
         # Most tests check retirement itself. The discard of long idle or low-disk worktrees has its own tests.
-        rules = patch.multiple(retirement, DISCARD_IDLE_SECONDS=10 ** 9, LOW_DISK_BYTES=0)
+        rules = patch.multiple(retirement, DISCARD_IDLE_SECONDS=10 ** 9, LOW_DISK_BYTES=0,
+                               BOT_WORKSPACE_STALE_SECONDS=10 ** 9, BOT_WORKSPACE_LOW_DISK_STALE_SECONDS=10 ** 9)
         rules.start()
         self.addCleanup(rules.stop)
 
@@ -2881,6 +2882,508 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(work_workspace.elapsed_seconds('02:03'), 123)
         self.assertEqual(work_workspace.elapsed_seconds('1:02:03'), 3723)
         self.assertEqual(work_workspace.elapsed_seconds('06-16:25:58'), 6 * 86400 + 16 * 3600 + 25 * 60 + 58)
+
+    # A bot keeps clones, review checkouts and evidence in bots/<id>/workspace. Stale entries go.
+    def bot_workspace(self):
+        folder = self.service.root / 'bots' / self.bot['id'] / 'workspace'
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    @staticmethod
+    def age(path, days):
+        moment = time.time() - days * 86400
+        for place in [path, *path.rglob('*')] if path.is_dir() else [path]:
+            os.utime(place, (moment, moment), follow_symlinks=False)
+
+    def clone(self, where, name='clone'):
+        origin = where.parent / (name + '-origin.git')
+        if not origin.exists():
+            git(where.parent, 'init', '-q', '--bare', '-b', 'main', str(origin))
+            git(self.repo, 'push', '-q', str(origin), 'HEAD:refs/heads/main')
+        git(where.parent, 'clone', '-q', str(origin), str(where))
+        return where
+
+    def stale_rule(self, days=14, low=False):
+        # os.utime sets the mtime but moves the ctime to now. These tests age entries by mtime, so the age test reads mtime.
+        return patch.multiple(retirement, BOT_WORKSPACE_STALE_SECONDS=days * 86400,
+                              BOT_WORKSPACE_LOW_DISK_STALE_SECONDS=days * 86400,
+                              changed_at=lambda info: info.st_mtime,
+                              **({'LOW_DISK_BYTES': 10 ** 18} if low else {}))
+
+    def test_a_bot_workspace_loses_a_stale_file_and_folder_but_keeps_fresh_and_hidden_ones(self):
+        workspace = self.bot_workspace()
+        (workspace / 'old.log').write_text('old\n')
+        (workspace / 'old-evidence').mkdir()
+        (workspace / 'old-evidence' / 'notes.md').write_text('old\n')
+        (workspace / 'fresh-evidence').mkdir()
+        (workspace / 'fresh-evidence' / 'notes.md').write_text('fresh\n')
+        (workspace / '.hidden').mkdir()
+        (workspace / '.hidden' / 'config').write_text('keep\n')
+        for name in ('old.log', 'old-evidence', '.hidden'):
+            self.age(workspace / name, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse((workspace / 'old.log').exists())
+        self.assertFalse((workspace / 'old-evidence').exists())
+        self.assertTrue((workspace / 'fresh-evidence' / 'notes.md').exists())
+        self.assertTrue((workspace / '.hidden' / 'config').exists())
+        self.assertFalse((workspace / work_workspace.SCRATCH_TRASH).exists() and any((workspace / work_workspace.SCRATCH_TRASH).iterdir()))
+
+    def test_a_bot_workspace_judges_the_entries_inside_a_container_that_has_a_fresh_file(self):
+        workspace = self.bot_workspace()
+        container = workspace / 'reviews'
+        for name in ('pr-1', 'pr-2'):
+            (container / name).mkdir(parents=True)
+            (container / name / 'notes.md').write_text(name)
+        self.age(container / 'pr-1', 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse((container / 'pr-1').exists())
+        self.assertTrue((container / 'pr-2' / 'notes.md').exists())
+        # Only one level inside the container: a stale folder deeper in a fresh one stays.
+        (container / 'pr-2' / 'deep').mkdir()
+        (container / 'pr-2' / 'deep' / 'old.txt').write_text('old')
+        self.age(container / 'pr-2' / 'deep', 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((container / 'pr-2' / 'deep' / 'old.txt').exists())
+
+    def test_a_low_disk_uses_the_shorter_stale_time_for_bot_workspaces(self):
+        workspace = self.bot_workspace()
+        (workspace / 'four-days').mkdir()
+        (workspace / 'four-days' / 'notes.md').write_text('notes')
+        self.age(workspace / 'four-days', 4)
+        with patch.multiple(retirement, BOT_WORKSPACE_STALE_SECONDS=14 * 86400, BOT_WORKSPACE_LOW_DISK_STALE_SECONDS=3 * 86400,
+                            changed_at=lambda info: info.st_mtime):
+            self.retire()
+            self.assertTrue((workspace / 'four-days').exists())
+            with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+                self.retire()
+        self.assertFalse((workspace / 'four-days').exists())
+
+    def test_a_stale_checkout_goes_only_when_a_remote_has_all_its_work(self):
+        workspace = self.bot_workspace()
+        clean = self.clone(workspace / 'clean')
+        dirty = self.clone(workspace / 'dirty', 'dirty')
+        (dirty / 'tracked.txt').write_text('changed\n')
+        unpushed = self.clone(workspace / 'unpushed', 'unpushed')
+        (unpushed / 'new.txt').write_text('new\n')
+        git(unpushed, 'add', 'new.txt')
+        self.commit(unpushed, 'Unpushed')
+        for name in ('clean', 'dirty', 'unpushed'):
+            self.age(workspace / name, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse(clean.exists())
+        self.assertEqual((dirty / 'tracked.txt').read_text(), 'changed\n')
+        self.assertTrue((unpushed / 'new.txt').exists())
+
+    def test_a_checkout_inside_a_stale_folder_keeps_the_folder_when_it_has_unpushed_work(self):
+        workspace = self.bot_workspace()
+        folder = workspace / 'evidence'
+        folder.mkdir()
+        (folder / 'report.md').write_text('report')
+        inner = self.clone(folder / 'clone')
+        git(inner, 'checkout', '-q', '-b', 'local-only')
+        (inner / 'work.txt').write_text('work\n')
+        git(inner, 'add', 'work.txt')
+        self.commit(inner, 'Local only')
+        self.age(folder, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((inner / 'work.txt').exists())
+        self.assertTrue((folder / 'report.md').exists())
+
+    def test_a_stale_main_checkout_stays_while_a_worktree_of_it_stays_and_both_go_together(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'repo')
+        linked = workspace / 'pr-1'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        self.age(main, 30)
+        with self.stale_rule():
+            self.retire()
+        # The worktree is fresh, so the main checkout stays for it.
+        self.assertTrue(main.exists() and linked.exists())
+        self.age(linked, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse(linked.exists())
+        self.assertFalse(main.exists())
+
+    def test_a_stale_worktree_goes_and_the_main_checkout_forgets_it(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'repo')
+        linked = workspace / 'pr-1'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        self.age(linked, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse(linked.exists())
+        self.assertTrue(main.exists())
+        self.assertNotIn('pr-1', git(main, 'worktree', 'list'))
+
+    def test_a_main_checkout_stays_when_git_cannot_list_its_worktrees(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'repo')
+        self.age(main, 30)
+        with self.stale_rule(), patch.object(retirement, 'linked_worktrees', side_effect=ValueError('git failed')):
+            self.retire()
+        self.assertTrue((main / 'tracked.txt').exists())
+
+    def test_an_entry_that_changes_after_the_walk_stays(self):
+        workspace = self.bot_workspace()
+        entry = workspace / 'evidence'
+        entry.mkdir()
+        (entry / 'report.md').write_text('report')
+        self.age(entry, 30)
+        walk = retirement.stale_tree
+
+        def walk_then_write(path, stale_before):
+            result = walk(path, stale_before)
+            (path / 'new.md').write_text('a turn wrote this just now')
+            return result
+        with self.stale_rule(), patch.object(retirement, 'stale_tree', walk_then_write):
+            self.retire()
+        self.assertTrue((entry / 'report.md').exists() and (entry / 'new.md').exists())
+
+    def test_trash_that_a_stop_left_in_a_bot_workspace_is_emptied(self):
+        workspace = self.bot_workspace()
+        (workspace / 'reviews').mkdir()
+        for place in (workspace, workspace / 'reviews'):
+            (place / work_workspace.SCRATCH_TRASH / 'old-clone-1759000000000000000').mkdir(parents=True)
+            (place / work_workspace.SCRATCH_TRASH / 'old-clone-1759000000000000000' / 'file').write_text('left by a stop')
+            (place / work_workspace.SCRATCH_TRASH / 'bots-own-notes.txt').write_text('not Coconut\'s')
+        self.retire()
+        for place in (workspace, workspace / 'reviews'):
+            self.assertEqual([item.name for item in (place / work_workspace.SCRATCH_TRASH).iterdir()], ['bots-own-notes.txt'])
+
+    def test_keeping_one_entry_keeps_the_main_checkout_whose_worktree_lies_in_it_whatever_the_order(self):
+        # a-main has a worktree in the folder z. The folder also holds a main checkout with a fresh worktree outside,
+        # so Coconut keeps z, and then it must keep a-main too, although a-main comes first in the pass.
+        workspace = self.bot_workspace()
+        a_main = self.clone(workspace / 'a-main', 'a')
+        (workspace / 'z').mkdir()
+        git(a_main, 'worktree', 'add', '-q', '--detach', str(workspace / 'z' / 'w'))
+        holder = self.clone(workspace / 'z' / 'n', 'n')
+        git(holder, 'worktree', 'add', '-q', '--detach', str(workspace / 'fresh-wt'))
+        self.age(workspace / 'a-main', 30)
+        self.age(workspace / 'z', 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((workspace / 'a-main' / 'tracked.txt').exists())
+        self.assertTrue((workspace / 'z' / 'w').exists() and (workspace / 'fresh-wt').exists())
+
+    def test_a_file_that_arrives_with_an_old_mtime_is_not_stale(self):
+        workspace = self.bot_workspace()
+        arrived = workspace / 'unpacked'
+        arrived.mkdir()
+        (arrived / 'report.md').write_text('just unpacked')
+        # An extract or a copy keeps the old mtime, but the change time is now.
+        moment = time.time() - 30 * 86400
+        os.utime(arrived / 'report.md', (moment, moment))
+        os.utime(arrived, (moment, moment))
+        with patch.multiple(retirement, BOT_WORKSPACE_STALE_SECONDS=14 * 86400, BOT_WORKSPACE_LOW_DISK_STALE_SECONDS=14 * 86400):
+            self.retire()
+        self.assertTrue((arrived / 'report.md').exists())
+
+    def test_a_stale_bare_repository_stays(self):
+        workspace = self.bot_workspace()
+        bare = workspace / 'mirror.git'
+        git(workspace, 'init', '-q', '--bare', str(bare))
+        with_submodule = self.clone(workspace / 'with-modules')
+        module = with_submodule / '.git' / 'modules' / 'x'
+        (module / 'objects').mkdir(parents=True)
+        (module / 'refs').mkdir()
+        (module / 'HEAD').write_text('ref: refs/heads/main\n')
+        for name in ('mirror.git', 'with-modules'):
+            self.age(workspace / name, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((bare / 'HEAD').exists())
+        # A module store inside a checkout is part of the checkout. It does not keep a clean checkout.
+        self.assertFalse(with_submodule.exists())
+
+    def test_a_bare_repository_with_a_fresh_change_keeps_its_old_parts(self):
+        workspace = self.bot_workspace()
+        bare = workspace / 'mirror.git'
+        git(workspace, 'init', '-q', '--bare', str(bare))
+        (bare / 'FETCH_HEAD').write_text('fresh\n')
+        for part in ('HEAD', 'config', 'hooks', 'objects', 'refs'):
+            self.age(bare / part, 30)
+        with self.stale_rule():
+            self.retire()
+        for part in ('HEAD', 'config', 'hooks', 'objects', 'refs'):
+            self.assertTrue((bare / part).exists(), part)
+
+    def test_the_repository_of_a_binding_stays_although_its_worktree_is_retired(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'repo')
+        other = self.clone(workspace / 'other', 'other')
+        binding = dict(path=str(self.workspaces / 'gone-worktree'), branch='wt/x', repository=str(main), outcome=str(uuid4()))
+        save_bindings(self.workspaces / 'worktrees.json', {'x-binding': binding})
+        for name in ('repo', 'other'):
+            self.age(workspace / name, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((main / 'tracked.txt').exists())
+        self.assertFalse(other.exists())
+
+    def test_a_file_written_deep_in_an_entry_after_the_walk_puts_the_entry_back(self):
+        workspace = self.bot_workspace()
+        entry = workspace / 'evidence'
+        (entry / 'a' / 'b').mkdir(parents=True)
+        (entry / 'a' / 'b' / 'old.md').write_text('old')
+        self.age(entry, 30)
+        walk = retirement.stale_tree
+
+        def write_before_the_second_walk(path, stale_before, skip_root=False):
+            if skip_root:
+                # This is the walk of the moved entry. A worker that held a file writes deep in it.
+                (path / 'a' / 'b' / 'new.md').write_text('a worker wrote this through an open file')
+            return walk(path, stale_before, skip_root=skip_root)
+        with self.stale_rule(), patch.object(retirement, 'stale_tree', write_before_the_second_walk):
+            self.retire()
+        self.assertEqual(sorted(path.name for path in (entry / 'a' / 'b').iterdir()), ['new.md', 'old.md'])
+
+    def test_a_main_checkout_stays_when_the_worktree_that_needs_it_is_held_by_a_process(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'a-main', 'a')
+        linked = workspace / 'z-wt'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        for name in ('a-main', 'z-wt'):
+            self.age(workspace / name, 30)
+        holders = MagicMock(side_effect=lambda paths, detail=False: {str(p): ({123} if str(p).endswith('z-wt') else set()) for p in paths})
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', holders):
+            self.retire()
+        self.assertTrue(linked.exists() and (main / 'tracked.txt').exists())
+
+    def test_a_stale_checkout_with_an_ignored_file_that_a_build_does_not_make_again_stays(self):
+        workspace = self.bot_workspace()
+        with_env = self.clone(workspace / 'with-env')
+        (with_env / '.env').write_text('SECRET=1\n')
+        build_only = self.clone(workspace / 'build-only', 'build-only')
+        (build_only / 'node_modules' / 'pkg').mkdir(parents=True)
+        (build_only / 'node_modules' / 'pkg' / 'index.js').write_text('module.exports = 1\n')
+        for name in ('with-env', 'build-only'):
+            self.age(workspace / name, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertEqual((with_env / '.env').read_text(), 'SECRET=1\n')
+        self.assertFalse(build_only.exists())
+
+    def test_an_entry_that_cannot_be_put_back_stays_where_the_trash_sweep_does_not_delete_it(self):
+        workspace = self.bot_workspace()
+        entry = workspace / 'evidence'
+        entry.mkdir()
+        # Something took the old path, and a file blocks the keep folder, so both places fail.
+        (workspace / '.stale-kept').write_text('a file')
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        target = trash / ('evidence-1759000000000000000' + retirement.CHECKING)
+        (target / 'deep').mkdir(parents=True)
+        (target / 'deep' / 'new.md').write_text('changed after the walk')
+        with self.assertRaises(OSError):
+            retirement.put_back(target, entry)
+        retirement.empty_moved(workspace)
+        self.assertEqual((target / 'deep' / 'new.md').read_text(), 'changed after the walk')
+
+    def test_a_stop_before_the_second_walk_leaves_an_entry_that_the_next_pass_settles(self):
+        workspace = self.bot_workspace()
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('old')
+        (workspace / 'changed').mkdir()
+        (workspace / 'changed' / 'notes.md').write_text('old')
+        self.age(workspace / 'old', 30)
+        self.age(workspace / 'changed', 30)
+        walk = retirement.stale_tree
+
+        def stop_at_the_second_walk(path, stale_before, skip_root=False):
+            if skip_root:
+                raise KeyboardInterrupt
+            return walk(path, stale_before, skip_root=skip_root)
+        with self.stale_rule(), patch.object(retirement, 'stale_tree', stop_at_the_second_walk):
+            with self.assertRaises(KeyboardInterrupt):
+                self.retire()
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        waiting = sorted(trash.iterdir())
+        self.assertEqual(len(waiting), 1)
+        self.assertTrue(waiting[0].name.endswith(retirement.CHECKING))
+        # The moved entry changed while the service was down. The sweep must not delete it.
+        (waiting[0] / 'notes.md').write_text('a worker wrote this')
+        with self.stale_rule():
+            self.retire()
+        # The changed entry is back at its old place. The other stale entry went in the same pass.
+        self.assertEqual((workspace / 'changed' / 'notes.md').read_text(), 'a worker wrote this')
+        self.assertFalse((workspace / 'old').exists())
+
+    def test_a_clean_entry_left_under_the_checking_name_is_deleted_by_the_next_pass(self):
+        workspace = self.bot_workspace()
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        item = trash / ('old-1759000000000000000' + retirement.CHECKING)
+        item.mkdir(parents=True)
+        (item / 'notes.md').write_text('old')
+        self.age(item, 30)
+        with self.stale_rule():
+            self.retire()
+            self.retire()
+        self.assertEqual(list(trash.iterdir()), [])
+
+    def test_a_bot_workspace_stays_while_the_bot_has_a_queued_task_but_not_a_waiting_one(self):
+        workspace = self.bot_workspace()
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('a queued turn will read this')
+        self.age(workspace / 'old', 30)
+        task = dict(id=str(uuid4()), bot_id=self.bot['id'], title='Review', status='queued', summary='', created_at=OLD, updated_at=RECENT)
+        with self.service.transaction():
+            self.service._put('tasks', task)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((workspace / 'old' / 'notes.md').exists())
+        task['status'] = 'waiting'
+        with self.service.transaction():
+            self.service._put('tasks', task)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse((workspace / 'old').exists())
+
+    def test_a_bot_workspace_stays_while_the_bot_has_a_working_context(self):
+        workspace = self.bot_workspace()
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('a decision turn reads this')
+        self.age(workspace / 'old', 30)
+        with self.service.transaction():
+            self.service._put('contexts', dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=str(uuid4()), status='working'))
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((workspace / 'old' / 'notes.md').exists())
+
+    def test_an_unreadable_bot_workspace_does_not_stop_the_pass_for_the_others(self):
+        broken = self.service.root / 'bots' / '0000-first' / 'workspace'
+        broken.mkdir(parents=True)
+        (broken / 'inside').mkdir()
+        workspace = self.bot_workspace()
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('old')
+        self.age(workspace / 'old', 30)
+        broken.chmod(0)
+        self.addCleanup(broken.chmod, 0o700)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse((workspace / 'old').exists())
+
+    def test_an_entry_in_the_keep_folder_ages_out_like_any_other(self):
+        workspace = self.bot_workspace()
+        kept = workspace / retirement.STALE_KEPT
+        (kept / 'evidence-1759000000000000000').mkdir(parents=True)
+        (kept / 'evidence-1759000000000000000' / 'notes.md').write_text('kept')
+        self.age(kept, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse((kept / 'evidence-1759000000000000000').exists())
+
+    def test_a_bot_workspace_stays_while_the_bot_has_a_working_task(self):
+        workspace = self.bot_workspace()
+        (workspace / 'old').mkdir()
+        (workspace / 'old' / 'notes.md').write_text('a turn reads this')
+        self.age(workspace / 'old', 30)
+        task = dict(id=str(uuid4()), bot_id=self.bot['id'], title='Review', status='working', summary='', created_at=OLD, updated_at=RECENT)
+        with self.service.transaction():
+            self.service._put('tasks', task)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((workspace / 'old' / 'notes.md').exists())
+        task['status'] = 'completed'
+        with self.service.transaction():
+            self.service._put('tasks', task)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse((workspace / 'old').exists())
+
+    def test_a_worktree_record_stays_while_its_release_fails_and_goes_when_a_later_pass_settles_it(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'repo')
+        linked = workspace / 'pr-1'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        self.age(linked, 30)
+        real = os.rename
+
+        def fail_the_release(source, target, *args, **kwargs):
+            if str(source).endswith(retirement.CHECKING) and not str(target).endswith(retirement.CHECKING):
+                raise OSError('release failed')
+            return real(source, target, *args, **kwargs)
+        with self.stale_rule(), patch.object(retirement.os, 'rename', fail_the_release):
+            self.retire()
+        waiting = list((workspace / work_workspace.SCRATCH_TRASH).iterdir())
+        self.assertEqual(len(waiting), 1)
+        # The worktree may still come back, so its record stays.
+        self.assertIn('pr-1', git(main, 'worktree', 'list'))
+        with self.stale_rule():
+            self.retire()
+        self.assertNotIn('pr-1', git(main, 'worktree', 'list'))
+        self.assertEqual(list((workspace / work_workspace.SCRATCH_TRASH).iterdir()), [])
+
+    def test_a_worktree_that_a_later_pass_puts_back_is_still_registered(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'repo')
+        linked = workspace / 'pr-1'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        self.age(linked, 30)
+        real = os.rename
+
+        def fail_the_release(source, target, *args, **kwargs):
+            if str(source).endswith(retirement.CHECKING) and not str(target).endswith(retirement.CHECKING):
+                raise OSError('release failed')
+            return real(source, target, *args, **kwargs)
+        with self.stale_rule(), patch.object(retirement.os, 'rename', fail_the_release):
+            self.retire()
+        (list((workspace / work_workspace.SCRATCH_TRASH).iterdir())[0] / 'new.txt').write_text('changed in between')
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((linked / 'new.txt').exists())
+        self.assertEqual(git(linked, 'rev-parse', '--show-toplevel'), str(linked.resolve()))
+        self.assertIn('pr-1', git(main, 'worktree', 'list'))
+        self.assertNotIn('prunable', git(main, 'worktree', 'list'))
+
+    def test_an_entry_waiting_under_the_checking_name_stays_while_the_bot_has_a_queued_task(self):
+        workspace = self.bot_workspace()
+        item = workspace / work_workspace.SCRATCH_TRASH / ('old-1759000000000000000' + retirement.CHECKING)
+        item.mkdir(parents=True)
+        (item / 'notes.md').write_text('a queued turn will read this')
+        self.age(item, 30)
+        task = dict(id=str(uuid4()), bot_id=self.bot['id'], title='Review', status='queued', summary='', created_at=OLD, updated_at=RECENT)
+        with self.service.transaction():
+            self.service._put('tasks', task)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((item / 'notes.md').exists())
+        task['status'] = 'completed'
+        with self.service.transaction():
+            self.service._put('tasks', task)
+        with self.stale_rule():
+            self.retire()
+            self.retire()
+        self.assertFalse(item.exists())
+
+    def test_a_bot_workspace_entry_that_a_process_holds_stays(self):
+        workspace = self.bot_workspace()
+        (workspace / 'busy').mkdir()
+        (workspace / 'busy' / 'notes.md').write_text('notes')
+        self.age(workspace / 'busy', 30)
+        holders = MagicMock(side_effect=lambda paths, detail=False: {str(p): {123} for p in paths})
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', holders):
+            self.retire()
+        self.assertTrue((workspace / 'busy' / 'notes.md').exists())
+
+    def test_a_linked_bot_workspace_and_a_linked_entry_move_nothing(self):
+        outside = self.root / 'outside'
+        outside.mkdir()
+        (outside / 'keep.txt').write_text('keep')
+        self.age(outside, 30)
+        workspace = self.bot_workspace()
+        (workspace / 'link').symlink_to(outside, target_is_directory=True)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((outside / 'keep.txt').exists())
+        self.assertTrue((workspace / 'link').is_symlink())
 
 
 def changed_archive_member(member, **fields):
