@@ -125,6 +125,30 @@ def empty_moved(parent):
             logging.getLogger(__name__).warning('Coconut could not delete %s: %s', item, error)
 
 
+def linked_repositories(folders):
+    """Return the main checkouts that own the linked worktrees among folders. Each folder holds a .git file or folder."""
+    found = set()
+    for folder in folders:
+        marker = folder / '.git'
+        if marker.is_file():
+            with contextlib.suppress(OSError, IndexError, ValueError):
+                line = marker.read_text().strip()
+                if line.startswith('gitdir: '):
+                    # A linked worktree names <repository>/.git/worktrees/<name>. A submodule names another place.
+                    record = (folder / line[len('gitdir: '):]).resolve()
+                    if record.parent.name == 'worktrees' and record.parent.parent.name == '.git':
+                        found.add(record.parent.parent.parent)
+    return found
+
+
+def prune_repositories(repositories_to_prune):
+    """Drop the records of the worktrees that went, in each main checkout."""
+    for repository in repositories_to_prune:
+        if repository.is_dir():
+            with contextlib.suppress(*work_workspace.GIT_ERRORS):
+                work_workspace.git(repository, 'worktree', 'prune', timeout=work_workspace.CHECKOUT_SECONDS)
+
+
 def settle_checking(parent, stale_before):
     """Finish the moves that a stop or a failed rename left in the trash folder of parent.
 
@@ -139,9 +163,12 @@ def settle_checking(parent, stale_before):
         if not (item.name.endswith(CHECKING) and MOVED_NAME.fullmatch(stem)):
             continue
         try:
-            clear = stale_tree(item, stale_before, skip_root=True) is not None
-            if clear:
+            state = stale_tree(item, stale_before, skip_root=True)
+            if state is not None:
+                # The worktrees in it go, so their main checkouts forget them.
+                repositories = linked_repositories(state[1])
                 os.rename(item, item.with_name(stem))
+                prune_repositories(repositories)
             else:
                 where = put_back(item, parent / stem.rsplit('-', 1)[0])
                 logging.getLogger(__name__).warning('Coconut put back %s, because it changed while Coconut moved it (%s).',
@@ -549,7 +576,10 @@ class WorktreeRetirement:
                         unchanged = stale_tree(target, stale_before, skip_root=True) is not None
                     except OSError:
                         unchanged = False
-                    if not unchanged:
+                    if unchanged:
+                        # Read the worktree records now. The release below can fail, and the next pass deletes the entry.
+                        repositories_to_prune |= linked_repositories(target / folder.relative_to(entry) for folder in checkouts)
+                    else:
                         try:
                             where = put_back(target, entry)
                         except OSError as error:
@@ -566,16 +596,6 @@ class WorktreeRetirement:
                         # The entry waits under the checking name. The next pass walks it again (settle_checking).
                         logging.getLogger(__name__).warning('Coconut could not release %s for deletion: %s', target, error)
                         continue
-                for folder in checkouts:
-                    marker = (target / folder.relative_to(entry) if target is not None else folder) / '.git'
-                    if marker.is_file():
-                        with contextlib.suppress(OSError, IndexError, ValueError):
-                            line = marker.read_text().strip()
-                            if line.startswith('gitdir: '):
-                                # A linked worktree names <repository>/.git/worktrees/<name>. A submodule names another place.
-                                record = (marker.parent / line[len('gitdir: '):]).resolve()
-                                if record.parent.name == 'worktrees' and record.parent.parent.name == '.git':
-                                    repositories_to_prune.add(record.parent.parent.parent)
                 removed.append(entry)
                 freed += size
             # A main checkout waits for the worktrees that lie in other stale entries. Try again while entries go.
@@ -588,10 +608,8 @@ class WorktreeRetirement:
         if removed:
             logging.getLogger(__name__).warning('Coconut cleared %s stale entries of bot workspaces and freed %.1f GiB.',
                                                 len(removed), freed / 1024 ** 3)
-            for repository in repositories_to_prune:
-                if repository.is_dir():
-                    with contextlib.suppress(*work_workspace.GIT_ERRORS):
-                        work_workspace.git(repository, 'worktree', 'prune', timeout=work_workspace.CHECKOUT_SECONDS)
+        # An entry whose release failed is gone from its place too, so its main checkout forgets it now.
+        prune_repositories(repositories_to_prune)
 
     def _busy_pause(self):
         """Wait BUSY_RETRY_SECONDS. Return True at once when the service stops or a restart is pending."""

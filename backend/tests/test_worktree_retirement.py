@@ -3280,6 +3280,34 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertFalse((workspace / 'old').exists())
 
+    def test_a_worktree_record_is_dropped_when_the_release_fails_and_when_a_later_pass_settles_it(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'repo')
+        linked = workspace / 'pr-1'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        self.age(linked, 30)
+        real = os.rename
+
+        def fail_the_release(source, target, *args, **kwargs):
+            if str(source).endswith(retirement.CHECKING) and not str(target).endswith(retirement.CHECKING):
+                raise OSError('release failed')
+            return real(source, target, *args, **kwargs)
+        with self.stale_rule(), patch.object(retirement.os, 'rename', fail_the_release):
+            self.retire()
+        waiting = list((workspace / work_workspace.SCRATCH_TRASH).iterdir())
+        self.assertEqual(len(waiting), 1)
+        self.assertNotIn('pr-1', git(main, 'worktree', 'list'))
+        # A second worktree that only a later pass settles: move it to the trash by hand, as a stop would.
+        other = workspace / 'pr-2'
+        git(main, 'worktree', 'add', '-q', '--detach', str(other))
+        self.age(other, 30)
+        left = workspace / work_workspace.SCRATCH_TRASH / ('pr-2-1759000000000000001' + retirement.CHECKING)
+        os.rename(other, left)
+        self.assertIn('pr-2', git(main, 'worktree', 'list'))
+        with self.stale_rule():
+            self.retire()
+        self.assertNotIn('pr-2', git(main, 'worktree', 'list'))
+
     def test_a_bot_workspace_entry_that_a_process_holds_stays(self):
         workspace = self.bot_workspace()
         (workspace / 'busy').mkdir()
