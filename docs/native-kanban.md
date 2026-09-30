@@ -68,6 +68,13 @@ If either count is not zero then, it logs one warning that starts with
 `Coconut and Hermes disagree`. The health check of Care reads this line. The settle pass and the report share `_native_orphans`,
 so they cannot use different rules.
 
+## Failure of the worker before its agent exists
+
+If the worker fails before it has an agent, the task fails with `worker_preparation_failed` and the summary "Coconut could not
+prepare this conversation." The exception message can hold a request body or a key, so it is never stored. The worker keeps the
+class of the exception and its last frame (file, line and function) in `error_detail`, and the service saves that on the task as
+`_error_detail`. It stays on the Mac and is not part of the public task. A failure of a turn with an agent records the same detail.
+
 ## Workspaces
 
 `coconut_workspace` calls the native Hermes workspace resolver.

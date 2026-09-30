@@ -11,6 +11,7 @@ import re
 import signal
 import sys
 import threading
+import traceback
 import unicodedata
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse
@@ -912,6 +913,17 @@ def main():
         threading.Thread(target=execute, args=(request, scope), daemon=True, name='native-turn').start()
 
 
+def exception_site(error):
+    """Name the class of an exception and the last frame of its traceback, and nothing else.
+
+    The message of a model library exception can hold a request body or a key, so it never leaves the worker. The class and
+    the place are enough to tell what failed the next time.
+    """
+    frames = traceback.extract_tb(error.__traceback__)
+    where = f'{os.path.basename(frames[-1].filename)}:{frames[-1].lineno} in {frames[-1].name}' if frames else 'unknown place'
+    return f'{type(error).__name__} at {where}'
+
+
 def run_turn(request, emit, request_receipt):
     from turn_timings import TurnTimings, TurnTrace
     timing = TurnTimings(request['task']['id'], 'worker')
@@ -1458,10 +1470,11 @@ def run_turn(request, emit, request_receipt):
         emit('failed', {'summary': 'Hermes stopped before confirming this reply. The execution claim or tool result could not be confirmed.',
                         'error_code': 'native_turn_failed'})
         return 1
-    except Exception:
-        # Model libraries can include request bodies or keys in exception strings.
+    except Exception as error:
+        # Model libraries can include request bodies or keys in exception strings. Only the class and the place are kept.
         summary = 'Coconut could not prepare this conversation.' if agent is None else 'Hermes could not finish this reply.'
-        emit('failed', {'summary': summary, 'error_code': 'worker_preparation_failed' if agent is None else 'native_turn_failed'})
+        emit('failed', {'summary': summary, 'error_code': 'worker_preparation_failed' if agent is None else 'native_turn_failed',
+                        'error_detail': exception_site(error)})
         return 1
     finally:
         if 'model_start' in trace.emitted:
