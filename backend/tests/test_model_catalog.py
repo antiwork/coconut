@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -184,6 +185,151 @@ class ModelSelectionTests(unittest.TestCase):
                 (catalog.root / 'active_profile').write_text('other')
                 catalog.get()
                 self.assertEqual(call.call_count, 3)
+
+    def test_a_live_refresh_starts_at_most_once_in_the_given_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            source.mkdir()
+            catalog = HermesModelCatalog(Path(directory) / 'data', source=source)
+            catalog.root.mkdir(parents=True)
+            (catalog.root / 'config.yaml').write_text('model: first\n')
+            calls = []
+            def call(operation, **payload):
+                calls.append((operation, payload.get('refresh')))
+                return example_catalog()
+            def settled():
+                deadline = time.monotonic() + 5
+                while catalog._refreshing and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertFalse(catalog._refreshing)
+            with patch.object(catalog, '_call', side_effect=call):
+                catalog.refresh_if_old(300)
+                settled()
+                live = [c for c in calls if c == ('get', True)]
+                self.assertEqual(len(live), 1)
+                # Opened again at once: the cached lists come back, and no second live look starts.
+                catalog.refresh_if_old(300)
+                settled()
+                self.assertEqual(len([c for c in calls if c == ('get', True)]), 1)
+                # Old enough: it looks again.
+                catalog._live_blocked_until = float('-inf')
+                catalog.refresh_if_old(300)
+                settled()
+                self.assertEqual(len([c for c in calls if c == ('get', True)]), 2)
+
+    def test_a_live_request_during_an_ordinary_refresh_runs_after_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            source.mkdir()
+            catalog = HermesModelCatalog(Path(directory) / 'data', source=source)
+            catalog.root.mkdir(parents=True)
+            (catalog.root / 'config.yaml').write_text('model: first\n')
+            calls, release, started = [], threading.Event(), threading.Event()
+            def call(operation, **payload):
+                calls.append((operation, payload.get('refresh')))
+                if operation == 'get' and payload.get('refresh') is False:
+                    started.set()
+                    release.wait(5)
+                return example_catalog()
+            with patch.object(catalog, '_call', side_effect=call):
+                catalog.get()
+                self.assertTrue(started.wait(5))
+                # The ordinary refresh is running. The live request would be dropped.
+                catalog.refresh_if_old(300)
+                self.assertNotIn(('get', True), calls)
+                release.set()
+                deadline = time.monotonic() + 5
+                while ('get', True) not in calls and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertIn(('get', True), calls)
+                while catalog._refreshing and time.monotonic() < deadline:
+                    time.sleep(0.01)
+
+    def test_a_failed_live_refresh_waits_a_short_time_and_still_sends_the_update_event(self):
+        from coconut.model_catalog import LIVE_RETRY_SECONDS
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            source.mkdir()
+            catalog = HermesModelCatalog(Path(directory) / 'data', source=source)
+            catalog.root.mkdir(parents=True)
+            (catalog.root / 'config.yaml').write_text('model: first\n')
+            calls, events, fail = [], [], [True]
+            catalog.on_change = lambda: events.append(1)
+            def call(operation, **payload):
+                calls.append((operation, payload.get('refresh')))
+                if payload.get('refresh') is True and fail[0]:
+                    raise ModelCatalogError('The provider did not answer.')
+                return example_catalog()
+            def settled():
+                deadline = time.monotonic() + 5
+                while catalog._refreshing and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            live = lambda: len([c for c in calls if c == ('get', True)])
+            with patch.object(catalog, '_call', side_effect=call):
+                catalog.refresh_if_old(300)
+                settled()
+                self.assertEqual(live(), 1)
+                # The event goes out even after a failure, so the app stops showing "Loading models". The read that the
+                # app makes on it must not start the next look, or the two would loop for as long as Hermes fails.
+                self.assertEqual(events, [1])
+                catalog.refresh_if_old(300)
+                settled()
+                self.assertEqual(live(), 1)
+                # After the short retry time, the next look starts. It succeeds and sends the event once.
+                self.assertLessEqual(catalog._live_blocked_until - time.monotonic(), LIVE_RETRY_SECONDS)
+                catalog._live_blocked_until = float('-inf')
+                fail[0] = False
+                catalog.refresh_if_old(300)
+                settled()
+                self.assertEqual(live(), 2)
+                self.assertEqual(events, [1, 1])
+
+    def test_two_settings_reads_at_once_start_one_live_refresh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            source.mkdir()
+            catalog = HermesModelCatalog(Path(directory) / 'data', source=source)
+            catalog.root.mkdir(parents=True)
+            (catalog.root / 'config.yaml').write_text('model: first\n')
+            calls, release = [], threading.Event()
+            def call(operation, **payload):
+                calls.append((operation, payload.get('refresh')))
+                if payload.get('refresh') is True:
+                    release.wait(5)
+                return example_catalog()
+            with patch.object(catalog, '_call', side_effect=call):
+                catalog.get()
+                deadline = time.monotonic() + 5
+                while catalog._refreshing and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                barrier = threading.Barrier(8)
+                def open_settings():
+                    barrier.wait()
+                    catalog.refresh_if_old(300)
+                threads = [threading.Thread(target=open_settings) for _ in range(8)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(5)
+                release.set()
+                deadline = time.monotonic() + 5
+                while catalog._refreshing and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            self.assertEqual(len([c for c in calls if c == ('get', True)]), 1)
+
+    def test_the_ordinary_refresh_does_not_count_as_a_live_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            source.mkdir()
+            catalog = HermesModelCatalog(Path(directory) / 'data', source=source)
+            catalog.root.mkdir(parents=True)
+            (catalog.root / 'config.yaml').write_text('model: first\n')
+            with patch.object(catalog, '_call', return_value=example_catalog()):
+                catalog.get()
+                deadline = time.monotonic() + 5
+                while catalog._refreshing and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            self.assertEqual(catalog._live_blocked_until, float('-inf'))
 
     def test_legacy_migration_leaves_an_existing_native_profile_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:

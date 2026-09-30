@@ -103,6 +103,10 @@ def resolve_selection(selection, catalog):
             'reasoning_effort': effort if effort is not None else row.get('default_reasoning_effort')}
 
 
+# After a live refresh that failed, the next one may start this many seconds later.
+LIVE_RETRY_SECONDS = 30
+
+
 class HermesModelCatalog:
     def __init__(self, data_dir, python=None, source=None, env=None):
         self.data_dir = Path(data_dir).expanduser().resolve()
@@ -116,6 +120,9 @@ class HermesModelCatalog:
         self._cache = None
         self._cache_key = None
         self._cache_time = float('-inf')
+        # No live refresh starts before this time (see refresh_if_old).
+        self._live_blocked_until = float('-inf')
+        self._live_pending = False
         self._lock = threading.RLock()
         self._write_lock = threading.Lock()
         self._refreshing = False
@@ -162,8 +169,26 @@ class HermesModelCatalog:
                 self._start_refresh(bool(refresh))
             return dict(deepcopy(self._cache), loading=self._refreshing)
 
+    def refresh_if_old(self, after):
+        """Ask Hermes for the live model lists, unless a live refresh started in the last `after` seconds.
+
+        The background refresh reads the lists that Hermes has cached, and Hermes keeps its Codex list until someone asks for a
+        live one. A model that a provider adds later, such as GPT 6.1 Sol, then stays out of the picker. The caller gets the
+        cached catalog at once. The live lists arrive later, and Coconut sends `model_catalog.updated`.
+        """
+        with self._lock:
+            now = time.monotonic()
+            if now < self._live_blocked_until:
+                return
+            # Reserve the wait before the lock ends, so that two settings reads at once start one live refresh.
+            self._live_blocked_until = now + after
+        self.get(refresh=True)
+
     def _start_refresh(self, refresh):
         if self._refreshing:
+            # A live request must not be lost because an ordinary refresh runs. It starts when that one ends.
+            if refresh:
+                self._live_pending = True
             return
         self._refreshing = True
         signature = self._cache_key
@@ -177,18 +202,27 @@ class HermesModelCatalog:
                         self._cache_key = self._signature()
                         self._cache_time = time.monotonic()
             except ModelCatalogError:
-                pass
+                if refresh:
+                    # A failed live look may be tried again soon, but not at once. The app reads the settings again when
+                    # it hears `model_catalog.updated`, and that read must not start the next look. The event still goes
+                    # out, because the app shows "Loading models" until it hears one.
+                    with self._lock:
+                        self._live_blocked_until = min(self._live_blocked_until, time.monotonic() + LIVE_RETRY_SECONDS)
             finally:
                 with self._lock:
                     if signature == self._cache_key:
                         self._cache_time = time.monotonic()
                     self._refreshing = False
+                    live_again, self._live_pending = self._live_pending, False
                 callback = self.on_change
                 if callback:
                     try:
                         callback()
                     except Exception:
                         pass
+                if live_again:
+                    with self._lock:
+                        self._start_refresh(True)
         threading.Thread(target=update, daemon=True, name='hermes-model-catalog').start()
 
     def resolve(self, selection, catalog=None):

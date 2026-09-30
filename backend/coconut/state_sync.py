@@ -1,6 +1,9 @@
 """Read current content separately from native settings and older history."""
 import time
 
+# A person who opens the settings gets a live look at the model lists of the providers, at most this often.
+MODEL_REFRESH_SECONDS = 300
+
 
 class StateSync:
     def _recent_messages(self, visible, limit=60):
@@ -121,7 +124,8 @@ class StateSync:
             for _ in range(3):
                 cursor = view._cursor()
                 bots = [b for b in view._all('bots') if not b.get('_deleted')]
-                catalog = view._model_catalog()
+                # The app asks for these settings when a person opens them. That is the time to look for new models.
+                catalog = view._model_catalog(refresh_after=MODEL_REFRESH_SECONDS)
                 if hasattr(view.provider, 'observe_state'):
                     observed, native = view.provider.observe_state(bots)
                 else:

@@ -11,6 +11,9 @@ Errors use `{error: string}`. UUIDs do not encode host names or filesystem paths
 - `GET /state` returns bots, tasks, messages, decisions, artifacts, routines, cursor, server time, model catalog, and approvals.
 - `GET /state` with `X-Coconut-State: content` omits native settings and returns recent messages with history cursors.
 - `GET /state/settings` returns native bot settings, model catalog, approvals, worker settings, MCP servers, and routines.
+  It also asks Hermes for the live model lists of the providers, at most once in five minutes. The response carries the lists that
+  Hermes has cached. The live lists arrive a moment later, and the service sends `model_catalog.updated`. If the live look fails,
+  the service still sends the event, and it tries again after 30 seconds, when the settings are read next.
 - `GET /updates?after=N&wait=20` returns changed tasks and messages, current decisions and Work, or a content reset.
 - `GET /cards/{id}` returns the current decision, task, conversation bot, owner, and cursor.
 - `GET /history/{bot_id}?before=N` returns an older message page, its referenced tasks, and the next history cursor.
