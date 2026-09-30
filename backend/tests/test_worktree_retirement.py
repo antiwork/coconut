@@ -3376,7 +3376,7 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertTrue(list(trash.iterdir())[0].name.startswith('z-wt-'))
         self.assertTrue((main / 'tracked.txt').exists())
 
-    def test_a_waiting_main_checkout_stays_while_a_worktree_of_it_waits_and_both_go_when_it_does_not(self):
+    def test_a_waiting_main_checkout_goes_back_with_a_held_worktree_and_both_go_when_nothing_holds_them(self):
         workspace = self.bot_workspace()
         main = self.clone(workspace / 'a-main')
         linked = workspace / 'z-wt'
@@ -3391,12 +3391,13 @@ class WorktreeRetirementTests(unittest.TestCase):
             str(p): ({123} if Path(str(p)).name.startswith('z-wt-') else set()) for p in paths})
         with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', held):
             self.retire()
-        self.assertEqual(sorted(item.name[:4] for item in trash.iterdir()), ['a-ma', 'z-wt'])
-        self.assertTrue(all(item.name.endswith(retirement.CHECKING) for item in trash.iterdir()))
+        # The held worktree is back, so the main checkout is back with it.
+        self.assertTrue((linked / '.git').exists() and (main / 'tracked.txt').exists())
+        self.assertEqual(list(trash.iterdir()), [])
         with self.stale_rule():
             self.retire()
             self.retire()
-        self.assertEqual(list(trash.iterdir()), [])
+        self.assertFalse(linked.exists() or main.exists())
 
     def test_a_waiting_main_checkout_goes_back_when_a_worktree_of_it_lives(self):
         workspace = self.bot_workspace()
@@ -3440,7 +3441,7 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertTrue(waiting[0].name.endswith(retirement.CHECKING))
         self.assertEqual((waiting[0] / 'notes.md').read_text(), 'old')
 
-    def test_an_entry_waiting_under_the_checking_name_stays_while_a_process_holds_it(self):
+    def test_an_entry_waiting_under_the_checking_name_goes_back_while_a_process_holds_it(self):
         workspace = self.bot_workspace()
         item = workspace / work_workspace.SCRATCH_TRASH / ('old-1759000000000000000' + retirement.CHECKING)
         item.mkdir(parents=True)
@@ -3449,10 +3450,7 @@ class WorktreeRetirementTests(unittest.TestCase):
         holders = MagicMock(side_effect=lambda paths, detail=False: {str(p): {123} for p in paths})
         with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', holders):
             self.retire()
-        self.assertEqual((item / 'notes.md').read_text(), 'a turn uses this')
-        with self.stale_rule():
-            self.retire()
-            self.retire()
+        self.assertEqual((workspace / 'old' / 'notes.md').read_text(), 'a turn uses this')
         self.assertFalse(item.exists())
 
     def test_a_bot_workspace_entry_that_a_process_holds_stays(self):

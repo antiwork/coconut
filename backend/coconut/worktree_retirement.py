@@ -170,6 +170,13 @@ def settle_checking(parent, stale_before):
     states = {}
     for item in items:
         if held.get(str(item)):
+            # A process uses it, so it goes back to its place, as in the pass that moved it.
+            original = parent / item.name[:-len(CHECKING)].rsplit('-', 1)[0]
+            try:
+                where = put_back(item, original)
+                logging.getLogger(__name__).warning('Coconut put back %s, because a process uses it (%s).', original, where)
+            except OSError as error:
+                logging.getLogger(__name__).warning('Coconut could not put back %s from %s: %s', original, item, error)
             continue
         try:
             states[item] = stale_tree(item, stale_before, skip_root=True)
