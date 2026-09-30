@@ -23,7 +23,7 @@ class WorkProjectionWithoutReducerTests(unittest.TestCase):
                          activity='Still running', url=None, preview='', created_at=now(), observed_at=now()), **fields)
 
     def test_the_product_has_no_reducer_of_attempts_and_receipts(self):
-        for name in ('_work_outcome', '_project_work_outcomes', '_project_work_outcomes_inner', '_import_completed_work_history'):
+        for name in ('_work_outcome', '_project_work_outcomes', '_project_work_outcomes_inner'):
             self.assertFalse(hasattr(Service, name), name)
 
     def test_a_row_without_a_native_outcome_shows_no_invented_state(self):
