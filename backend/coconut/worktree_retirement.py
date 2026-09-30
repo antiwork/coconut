@@ -129,10 +129,15 @@ def put_back(target, entry):
     except OSError:
         pass
     # Something took the old path. Keep the entry where nothing deletes it.
-    kept = entry.parent / '.stale-kept'
-    kept.mkdir(mode=0o700, exist_ok=True)
-    os.rename(target, kept / target.name)
-    return kept / target.name
+    try:
+        kept = entry.parent / '.stale-kept'
+        kept.mkdir(mode=0o700, exist_ok=True)
+        os.rename(target, kept / target.name)
+        return kept / target.name
+    except OSError:
+        # Leave it in the trash folder under a name that empty_moved does not delete.
+        os.rename(target, target.with_name(target.name + '.kept'))
+        raise
 
 
 def is_repository(folder):
@@ -209,6 +214,9 @@ def checkout_keeps(folder):
             return 'it has uncommitted files'
         if work_workspace.git(folder, 'rev-list', '--max-count=1', 'HEAD', '--not', '--remotes'):
             return 'it has commits that no remote has'
+        # Ignored files such as .env or a local report are in no remote. Build folders (node_modules, tmp, log) do not count.
+        if work_workspace.ignored_files(folder):
+            return 'it has ignored files that a build does not make again'
         if (folder / '.git').is_dir():
             # The main checkout holds every branch and the stash. A linked worktree shares them, so only it checks these.
             if work_workspace.git(folder, 'rev-list', '--max-count=1', '--branches', '--not', '--remotes'):

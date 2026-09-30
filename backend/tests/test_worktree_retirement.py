@@ -3156,6 +3156,35 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertTrue(linked.exists() and (main / 'tracked.txt').exists())
 
+    def test_a_stale_checkout_with_an_ignored_file_that_a_build_does_not_make_again_stays(self):
+        workspace = self.bot_workspace()
+        with_env = self.clone(workspace / 'with-env')
+        (with_env / '.env').write_text('SECRET=1\n')
+        build_only = self.clone(workspace / 'build-only', 'build-only')
+        (build_only / 'node_modules' / 'pkg').mkdir(parents=True)
+        (build_only / 'node_modules' / 'pkg' / 'index.js').write_text('module.exports = 1\n')
+        for name in ('with-env', 'build-only'):
+            self.age(workspace / name, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertEqual((with_env / '.env').read_text(), 'SECRET=1\n')
+        self.assertFalse(build_only.exists())
+
+    def test_an_entry_that_cannot_be_put_back_stays_where_the_trash_sweep_does_not_delete_it(self):
+        workspace = self.bot_workspace()
+        entry = workspace / 'evidence'
+        entry.mkdir()
+        # Something took the old path, and a file blocks the keep folder, so both places fail.
+        (workspace / '.stale-kept').write_text('a file')
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        target = trash / 'evidence-1759000000000000000'
+        (target / 'deep').mkdir(parents=True)
+        (target / 'deep' / 'new.md').write_text('changed after the walk')
+        with self.assertRaises(OSError):
+            retirement.put_back(target, entry)
+        retirement.empty_moved(workspace)
+        self.assertEqual((trash / 'evidence-1759000000000000000.kept' / 'deep' / 'new.md').read_text(), 'changed after the walk')
+
     def test_a_bot_workspace_entry_that_a_process_holds_stays(self):
         workspace = self.bot_workspace()
         (workspace / 'busy').mkdir()
