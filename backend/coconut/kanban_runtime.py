@@ -414,12 +414,6 @@ class Board:
                     return True
         return self.kb.archive_task(self.conn, identity)
 
-    def clear_failure_text(self, identity):
-        """Forget the stored failure text of a ready task, so the respawn guard no longer parks it."""
-        with self.kb.write_txn(self.conn):
-            return self.conn.execute("UPDATE tasks SET last_failure_error = NULL WHERE id = ? AND status = 'ready'",
-                                     (identity,)).rowcount == 1
-
     def snapshot(self, external_ids=()):
         result = []
         for binding in self.conn.execute(
@@ -572,8 +566,6 @@ def main():
                                                  request.get('error_code'))}
                 elif request['op'] == 'archive_settled':
                     result = {'ok': board.archive_settled(request['id'], request.get('summary'))}
-                elif request['op'] == 'clear_failure_text':
-                    result = {'ok': board.clear_failure_text(request['id'])}
                 elif request['op'] == 'promote':
                     result = {'id': board.promote(request['row'])}
                 elif request['op'] == 'bind':

@@ -12,7 +12,6 @@ from pathlib import Path
 import subprocess
 import threading
 
-from .native_failure import FAILURE_TEXT, TRANSIENT_ERROR_CODES
 
 
 # The time from the start of one dispatcher pass to the next when nothing wakes it, and the longest rest inside it.
@@ -27,8 +26,6 @@ SETTLE_BATCH = 25
 # The pass only skips a task through a slow start or a bounded batch, so a task this late points at a defect.
 ORPHAN_ALERT_SLACK_SECONDS = 60 * 60
 ORPHAN_ALERT_EVERY_SECONDS = 10 * 60
-# A task whose provider failure is at least this old loses the text that parks it (see _clear_provider_guards).
-PROVIDER_GUARD_SECONDS = 5 * 60
 
 
 class KanbanRequestError(RuntimeError):
@@ -477,7 +474,6 @@ class NativeKanban(NativeOutcomes):
         # The durable Coconut result is the outbox. Retry a lost finish acknowledgement on the next tick.
         for request in finishes:
             self.kanban.call(request)
-        self._clear_provider_guards()
         self._settle_native_orphans()
         self._report_native_disagreements()
         if finishes:
@@ -489,33 +485,6 @@ class NativeKanban(NativeOutcomes):
                         task = json.loads(row[0])
                         if task.get('_native_outcome_id'):
                             self._native_retry(task, native)
-
-    def _clear_provider_guards(self):
-        """Free a ready task that the respawn guard parked for a provider failure that has passed.
-
-        Before the provider failures were booked as infrastructure failures, Hermes stored their text (for example
-        "billing limit") and refused every spawn of the task for good. A task whose last Coconut failure is transient
-        and older than PROVIDER_GUARD_SECONDS gets a clean failure text, and the dispatcher tries it again.
-        """
-        parked = [identity for identity, native in self.kanban.tasks.items()
-                  if native['status'] == 'ready' and native.get('dispatch_blocker') == 'blocker_auth']
-        if not parked:
-            return
-        with self.lock:
-            rows = [json.loads(row[0]) for row in self.db.execute(
-                'SELECT data FROM tasks WHERE id IN (SELECT value FROM json_each(?))', (json.dumps(parked),))]
-        cutoff = datetime.now(timezone.utc).timestamp() - PROVIDER_GUARD_SECONDS
-        for task in rows:
-            try:
-                stopped = datetime.fromisoformat(task['updated_at'].replace('Z', '+00:00')).timestamp()
-            except (KeyError, AttributeError, ValueError):
-                continue
-            native = self.kanban.tasks[task['id']]
-            # Clear only the text of the transient failure. A later failure, for example a credential that Hermes
-            # rejected before any worker started, has other text and stays parked.
-            if (task.get('error_code') in TRANSIENT_ERROR_CODES and stopped <= cutoff
-                    and native.get('last_failure_error') == FAILURE_TEXT[task['error_code']]):
-                self.kanban.call({'op': 'clear_failure_text', 'id': native['id']})
 
     def _native_orphans(self, slack=0):
         """Return the native tasks of finished requests that still wait, each with its native task.
