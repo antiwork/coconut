@@ -249,9 +249,11 @@ def load_host(root):
 class Operations:
     @staticmethod
     def terminate_group(process):
+        # macOS answers "not permitted" for a group whose last process has just exited and waits to be reaped. The group
+        # is gone for our purpose, exactly as when it is not found.
         try:
             os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
         try:
             process.wait(timeout=2)
@@ -259,7 +261,7 @@ class Operations:
             pass
         try:
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
         try:
             process.communicate(timeout=3)

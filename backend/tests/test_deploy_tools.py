@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -562,6 +563,18 @@ class DeploymentLifecycleTests(unittest.TestCase):
 
 
 class DeploymentCommandTests(unittest.TestCase):
+    def test_a_group_that_the_system_calls_not_permitted_is_treated_as_gone(self):
+        # On macOS, killpg answers "not permitted" for a group whose last process has just exited and is not yet reaped.
+        # That surfaced as an error of a deployment command that had already finished, about once in seventy loaded runs.
+        process = subprocess.Popen([sys.executable, '-c', 'pass'], start_new_session=True)
+        process.wait()
+        calls = []
+        def killpg(group, signal_number):
+            calls.append(signal_number)
+            raise PermissionError(1, 'Operation not permitted')
+        with patch.object(deploy.os, 'killpg', side_effect=killpg):
+            deploy.Operations.terminate_group(process)
+        self.assertEqual(calls, [signal.SIGTERM, signal.SIGKILL])
     def assert_descendants_stop(self, *, timeout, parent_exit):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
