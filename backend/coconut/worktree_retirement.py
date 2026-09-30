@@ -161,7 +161,12 @@ def settle_checking(parent, stale_before):
     items = [item for item in sorted(trash.iterdir())
              if item.name.endswith(CHECKING) and MOVED_NAME.fullmatch(item.name[:-len(CHECKING)])]
     # A turn can open or enter the entry after the first scan, and an open file leaves no change time.
-    held = work_workspace.holders_by_path({str(item) for item in items}) if items else {}
+    try:
+        held = work_workspace.holders_by_path({str(item) for item in items}) if items else {}
+    except ValueError as error:
+        # Without the scan nothing leaves the checking name. The trash of released entries still goes.
+        logging.getLogger(__name__).warning('Coconut could not check the entries that wait in %s: %s', trash, error)
+        return
     for item in items:
         stem = item.name[:-len(CHECKING)]
         if held.get(str(item)):

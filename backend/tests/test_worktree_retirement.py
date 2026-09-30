@@ -3341,6 +3341,20 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(list((workspace / work_workspace.SCRATCH_TRASH).iterdir()), [])
         self.assertNotIn('prunable', git(main, 'worktree', 'list'))
 
+    def test_a_failed_scan_does_not_stop_the_trash_of_released_entries_from_going(self):
+        workspace = self.bot_workspace()
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        released = trash / 'old-1759000000000000000'
+        waiting = trash / ('other-1759000000000000001' + retirement.CHECKING)
+        for folder in (released, waiting):
+            folder.mkdir(parents=True)
+            (folder / 'notes.md').write_text('old')
+        self.age(waiting, 30)
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', side_effect=ValueError('lsof failed')):
+            self.retire()
+        self.assertFalse(released.exists())
+        self.assertTrue((waiting / 'notes.md').exists())
+
     def test_a_failed_scan_of_the_moved_entries_leaves_them_under_the_checking_name(self):
         workspace = self.bot_workspace()
         (workspace / 'old').mkdir()
