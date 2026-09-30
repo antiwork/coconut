@@ -123,6 +123,16 @@ def stale_tree(path, stale_before):
     return total, checkouts
 
 
+def top_changed(path, stale_before):
+    """Return True when path or one of its direct entries changed since stale_before. This reads one folder."""
+    if os.lstat(path).st_mtime >= stale_before:
+        return True
+    if path.is_dir() and not path.is_symlink():
+        with os.scandir(path) as entries:
+            return any(entry.stat(follow_symlinks=False).st_mtime >= stale_before for entry in entries)
+    return False
+
+
 def checkout_keeps(folder):
     """Return why a Git checkout holds work that a remote does not, or None. A failed Git call also keeps it."""
     try:
@@ -378,11 +388,16 @@ class WorktreeRetirement:
             if entry not in going:
                 continue
             for folder in checkouts:
-                with contextlib.suppress(*work_workspace.GIT_ERRORS):
-                    if (folder / '.git').is_dir() and any(
-                            path.exists() and not any(path.resolve() == other.resolve() or other.resolve() in path.resolve().parents
-                                                      for other in going) for path in linked_worktrees(folder)):
-                        going.discard(entry)
+                if not (folder / '.git').is_dir():
+                    continue
+                try:
+                    outside = any(path.exists() and not any(path.resolve() == other.resolve() or other.resolve() in path.resolve().parents
+                                                           for other in going) for path in linked_worktrees(folder))
+                except work_workspace.GIT_ERRORS:
+                    # Unknown worktrees keep the main checkout, as a failed Git check keeps any checkout.
+                    outside = True
+                if outside:
+                    going.discard(entry)
         candidates = [item for item in found if item[0] in going]
         if not candidates or self.stopping.is_set() or self.restart_pending:
             return
@@ -394,8 +409,9 @@ class WorktreeRetirement:
             if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
                 continue
             try:
-                # A turn starts under this lock. Check again, and move the entry before the lock goes.
-                if stale_tree(entry, stale_before) is None:
+                # A turn starts under this lock. Check the top of the entry again, and move it before the lock goes.
+                # The full walk ran before, and it can take seconds. A process that works in the entry holds it (see above).
+                if top_changed(entry, stale_before):
                     continue
                 for folder in checkouts:
                     marker = folder / '.git'

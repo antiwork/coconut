@@ -3019,6 +3019,30 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertTrue(main.exists())
         self.assertNotIn('pr-1', git(main, 'worktree', 'list'))
 
+    def test_a_main_checkout_stays_when_git_cannot_list_its_worktrees(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'repo')
+        self.age(main, 30)
+        with self.stale_rule(), patch.object(retirement, 'linked_worktrees', side_effect=ValueError('git failed')):
+            self.retire()
+        self.assertTrue((main / 'tracked.txt').exists())
+
+    def test_an_entry_that_changes_after_the_walk_stays(self):
+        workspace = self.bot_workspace()
+        entry = workspace / 'evidence'
+        entry.mkdir()
+        (entry / 'report.md').write_text('report')
+        self.age(entry, 30)
+        walk = retirement.stale_tree
+
+        def walk_then_write(path, stale_before):
+            result = walk(path, stale_before)
+            (path / 'new.md').write_text('a turn wrote this just now')
+            return result
+        with self.stale_rule(), patch.object(retirement, 'stale_tree', walk_then_write):
+            self.retire()
+        self.assertTrue((entry / 'report.md').exists() and (entry / 'new.md').exists())
+
     def test_a_bot_workspace_entry_that_a_process_holds_stays(self):
         workspace = self.bot_workspace()
         (workspace / 'busy').mkdir()
