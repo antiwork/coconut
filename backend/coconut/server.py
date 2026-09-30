@@ -213,6 +213,20 @@ def create_pairing_code(data_dir: str | Path, lifetime: int = 300) -> str:
     return code
 
 
+def write_process_record(service):
+    """Write the record that identifies this process and says that it drains before an update stops it.
+
+    A drain request belongs to the process that the updater asked. An old one is removed first, so that a request written
+    after the record is never removed (see Service.poll_service_drain).
+    """
+    service.clear_service_drain()
+    (service.root / 'process.json').write_text(json.dumps({
+        'pid': os.getpid(), 'data_dir': str(service.root),
+        'project': str(Path(__file__).resolve().parents[2]),
+        'drain': True,
+    }))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Run Coconut on this Mac.')
     parser.add_argument('--data-dir', type=Path, required=True)
@@ -256,15 +270,7 @@ def main(argv=None):
             server.server_close()
         service.close()
         parser.error(f'The service could not listen: {error}')
-    # A drain request belongs to the process that the updater asked. Remove an old one before this process says that it drains,
-    # so that a request written after the record is never removed.
-    service.clear_service_drain()
-    (service.root / 'process.json').write_text(json.dumps({
-        'pid': os.getpid(), 'data_dir': str(service.root),
-        'project': str(Path(__file__).resolve().parents[2]),
-        # The updater drains a service that says so, before it stops it (see Service.poll_service_drain).
-        'drain': True,
-    }))
+    write_process_record(service)
     service.restart_enabled = os.environ.get("COCONUT_MANAGED_SERVICE") == "1"
     service.start()
     print(f'Coconut is listening on {args.host}:{args.port}. Provider: {args.provider}.', flush=True)

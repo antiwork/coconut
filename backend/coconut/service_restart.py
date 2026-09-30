@@ -28,6 +28,7 @@ class ServiceRestart:
         except (OSError, ValueError):
             until = 0.0
         if time.time() >= until:
+            self._draining = False
             if getattr(self, '_drain_holds_dispatch', False):
                 self._drain_holds_dispatch = False
                 # A restart that a bot asked for after the drain began keeps its own pause and deadline.
@@ -38,12 +39,16 @@ class ServiceRestart:
             for path in (request, drained):
                 path.unlink(missing_ok=True)
             return
+        # While the drain holds, the deferral of a restart that a bot asked for must not release the pause (see
+        # take_service_restart). Otherwise both would switch the pause off and on, and admit turns between.
+        self._draining = True
         if not self.restart_pending:
             self._drain_holds_dispatch = True
             self.restart_pending = True
         with self.lock:
+            # The same work that keeps a bot's restart from taking effect: turns, claims, uncertain dispatch and worker cleanup.
             active = (any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values()])
-                      or bool(self._kanban_claiming) or bool(getattr(self, '_kanban_dispatching', False)))
+                      or bool(self._kanban_claiming) or bool(self._kanban_dispatch_uncertain) or bool(self._kanban_trimming))
         if not active and not drained.exists():
             drained.write_text('1')
 
@@ -91,7 +96,8 @@ class ServiceRestart:
                 return False
             active_turns = any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values()])
             if active_turns or self._kanban_trimming:
-                if not recovery and self.restart_pending and time.monotonic() >= self.restart_deadline:
+                if (not recovery and self.restart_pending and time.monotonic() >= self.restart_deadline
+                        and not getattr(self, '_draining', False)):
                     with self.transaction():
                         self._event('service.restart_deferred', {'reason': 'active_turns' if active_turns else 'worker_cleanup', 'dispatch_resumed': True})
                     self.restart_pending = False
