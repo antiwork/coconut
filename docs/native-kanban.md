@@ -94,6 +94,16 @@ Its tasks have had no update for `WORKTREE_RETIRE_SECONDS` (six hours).
 A failed outcome, a pending decision, and a blocked native task do not keep the worktree.
 A turn restores the worktree before it starts, so work that resumes gets its files back.
 The poller holds the service lock only to read this state. It runs Git outside the service lock.
+A bot also keeps its own files in `bots/<id>/workspace`: clones, review checkouts, and evidence.
+Nothing else removes them.
+In the same pass, Coconut deletes an entry when nothing in it changed for 14 days (`BOT_WORKSPACE_STALE_SECONDS`).
+Below the low disk limit, the time is three days (`BOT_WORKSPACE_LOW_DISK_STALE_SECONDS`).
+An entry is a file or a folder of the workspace. A folder that has a newer file stays, and Coconut then judges its entries one level down.
+Coconut keeps a Git checkout that has uncommitted files, commits that no remote has, or a stash.
+It keeps a main checkout while one of its worktrees stays.
+It keeps an entry that a process uses, a tracked worktree, a link, and a name that starts with a dot.
+After it deletes a worktree, it prunes the record from the main checkout.
+
 Retirement does these steps:
 
 1. It validates the binding and the Git worktree record.

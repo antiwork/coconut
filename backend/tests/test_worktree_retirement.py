@@ -81,7 +81,8 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.holders.start()
         self.addCleanup(self.holders.stop)
         # Most tests check retirement itself. The discard of long idle or low-disk worktrees has its own tests.
-        rules = patch.multiple(retirement, DISCARD_IDLE_SECONDS=10 ** 9, LOW_DISK_BYTES=0)
+        rules = patch.multiple(retirement, DISCARD_IDLE_SECONDS=10 ** 9, LOW_DISK_BYTES=0,
+                               BOT_WORKSPACE_STALE_SECONDS=10 ** 9, BOT_WORKSPACE_LOW_DISK_STALE_SECONDS=10 ** 9)
         rules.start()
         self.addCleanup(rules.stop)
 
@@ -2881,6 +2882,164 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual(work_workspace.elapsed_seconds('02:03'), 123)
         self.assertEqual(work_workspace.elapsed_seconds('1:02:03'), 3723)
         self.assertEqual(work_workspace.elapsed_seconds('06-16:25:58'), 6 * 86400 + 16 * 3600 + 25 * 60 + 58)
+
+    # A bot keeps clones, review checkouts and evidence in bots/<id>/workspace. Stale entries go.
+    def bot_workspace(self):
+        folder = self.service.root / 'bots' / self.bot['id'] / 'workspace'
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    @staticmethod
+    def age(path, days):
+        moment = time.time() - days * 86400
+        for place in [path, *path.rglob('*')] if path.is_dir() else [path]:
+            os.utime(place, (moment, moment), follow_symlinks=False)
+
+    def clone(self, where, name='clone'):
+        origin = where.parent / (name + '-origin.git')
+        if not origin.exists():
+            git(where.parent, 'init', '-q', '--bare', '-b', 'main', str(origin))
+            git(self.repo, 'push', '-q', str(origin), 'HEAD:refs/heads/main')
+        git(where.parent, 'clone', '-q', str(origin), str(where))
+        return where
+
+    def stale_rule(self, days=14, low=False):
+        return patch.multiple(retirement, BOT_WORKSPACE_STALE_SECONDS=days * 86400,
+                              BOT_WORKSPACE_LOW_DISK_STALE_SECONDS=days * 86400,
+                              **({'LOW_DISK_BYTES': 10 ** 18} if low else {}))
+
+    def test_a_bot_workspace_loses_a_stale_file_and_folder_but_keeps_fresh_and_hidden_ones(self):
+        workspace = self.bot_workspace()
+        (workspace / 'old.log').write_text('old\n')
+        (workspace / 'old-evidence').mkdir()
+        (workspace / 'old-evidence' / 'notes.md').write_text('old\n')
+        (workspace / 'fresh-evidence').mkdir()
+        (workspace / 'fresh-evidence' / 'notes.md').write_text('fresh\n')
+        (workspace / '.hidden').mkdir()
+        (workspace / '.hidden' / 'config').write_text('keep\n')
+        for name in ('old.log', 'old-evidence', '.hidden'):
+            self.age(workspace / name, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse((workspace / 'old.log').exists())
+        self.assertFalse((workspace / 'old-evidence').exists())
+        self.assertTrue((workspace / 'fresh-evidence' / 'notes.md').exists())
+        self.assertTrue((workspace / '.hidden' / 'config').exists())
+        self.assertFalse((workspace / work_workspace.SCRATCH_TRASH).exists() and any((workspace / work_workspace.SCRATCH_TRASH).iterdir()))
+
+    def test_a_bot_workspace_judges_the_entries_inside_a_container_that_has_a_fresh_file(self):
+        workspace = self.bot_workspace()
+        container = workspace / 'reviews'
+        for name in ('pr-1', 'pr-2'):
+            (container / name).mkdir(parents=True)
+            (container / name / 'notes.md').write_text(name)
+        self.age(container / 'pr-1', 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse((container / 'pr-1').exists())
+        self.assertTrue((container / 'pr-2' / 'notes.md').exists())
+        # Only one level inside the container: a stale folder deeper in a fresh one stays.
+        (container / 'pr-2' / 'deep').mkdir()
+        (container / 'pr-2' / 'deep' / 'old.txt').write_text('old')
+        self.age(container / 'pr-2' / 'deep', 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((container / 'pr-2' / 'deep' / 'old.txt').exists())
+
+    def test_a_low_disk_uses_the_shorter_stale_time_for_bot_workspaces(self):
+        workspace = self.bot_workspace()
+        (workspace / 'four-days').mkdir()
+        (workspace / 'four-days' / 'notes.md').write_text('notes')
+        self.age(workspace / 'four-days', 4)
+        with patch.multiple(retirement, BOT_WORKSPACE_STALE_SECONDS=14 * 86400, BOT_WORKSPACE_LOW_DISK_STALE_SECONDS=3 * 86400):
+            self.retire()
+            self.assertTrue((workspace / 'four-days').exists())
+            with patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+                self.retire()
+        self.assertFalse((workspace / 'four-days').exists())
+
+    def test_a_stale_checkout_goes_only_when_a_remote_has_all_its_work(self):
+        workspace = self.bot_workspace()
+        clean = self.clone(workspace / 'clean')
+        dirty = self.clone(workspace / 'dirty', 'dirty')
+        (dirty / 'tracked.txt').write_text('changed\n')
+        unpushed = self.clone(workspace / 'unpushed', 'unpushed')
+        (unpushed / 'new.txt').write_text('new\n')
+        git(unpushed, 'add', 'new.txt')
+        self.commit(unpushed, 'Unpushed')
+        for name in ('clean', 'dirty', 'unpushed'):
+            self.age(workspace / name, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse(clean.exists())
+        self.assertEqual((dirty / 'tracked.txt').read_text(), 'changed\n')
+        self.assertTrue((unpushed / 'new.txt').exists())
+
+    def test_a_checkout_inside_a_stale_folder_keeps_the_folder_when_it_has_unpushed_work(self):
+        workspace = self.bot_workspace()
+        folder = workspace / 'evidence'
+        folder.mkdir()
+        (folder / 'report.md').write_text('report')
+        inner = self.clone(folder / 'clone')
+        git(inner, 'checkout', '-q', '-b', 'local-only')
+        (inner / 'work.txt').write_text('work\n')
+        git(inner, 'add', 'work.txt')
+        self.commit(inner, 'Local only')
+        self.age(folder, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((inner / 'work.txt').exists())
+        self.assertTrue((folder / 'report.md').exists())
+
+    def test_a_stale_main_checkout_stays_while_a_worktree_of_it_stays_and_both_go_together(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'repo')
+        linked = workspace / 'pr-1'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        self.age(main, 30)
+        with self.stale_rule():
+            self.retire()
+        # The worktree is fresh, so the main checkout stays for it.
+        self.assertTrue(main.exists() and linked.exists())
+        self.age(linked, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse(linked.exists())
+        self.assertFalse(main.exists())
+
+    def test_a_stale_worktree_goes_and_the_main_checkout_forgets_it(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'repo')
+        linked = workspace / 'pr-1'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        self.age(linked, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse(linked.exists())
+        self.assertTrue(main.exists())
+        self.assertNotIn('pr-1', git(main, 'worktree', 'list'))
+
+    def test_a_bot_workspace_entry_that_a_process_holds_stays(self):
+        workspace = self.bot_workspace()
+        (workspace / 'busy').mkdir()
+        (workspace / 'busy' / 'notes.md').write_text('notes')
+        self.age(workspace / 'busy', 30)
+        holders = MagicMock(side_effect=lambda paths, detail=False: {str(p): {123} for p in paths})
+        with self.stale_rule(), patch.object(work_workspace, 'holders_by_path', holders):
+            self.retire()
+        self.assertTrue((workspace / 'busy' / 'notes.md').exists())
+
+    def test_a_linked_bot_workspace_and_a_linked_entry_move_nothing(self):
+        outside = self.root / 'outside'
+        outside.mkdir()
+        (outside / 'keep.txt').write_text('keep')
+        self.age(outside, 30)
+        workspace = self.bot_workspace()
+        (workspace / 'link').symlink_to(outside, target_is_directory=True)
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue((outside / 'keep.txt').exists())
+        self.assertTrue((workspace / 'link').is_symlink())
 
 
 def changed_archive_member(member, **fields):
