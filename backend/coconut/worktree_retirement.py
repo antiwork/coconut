@@ -181,8 +181,16 @@ def settle_checking(parent, stale_before):
         state = states[item]
         try:
             if state is not None:
-                if has_main(item, state[1], item) and worktrees_outside(item, state[1], item):
-                    continue
+                if has_main(item, state[1], item):
+                    if worktrees_outside(item, state[1], item, waiting=False):
+                        # A worktree of it lives, and it needs the objects now. Put the main checkout back.
+                        where = put_back(item, parent / stem.rsplit('-', 1)[0])
+                        logging.getLogger(__name__).warning('Coconut put back %s, because a worktree of it is back (%s).',
+                                                            parent / stem.rsplit('-', 1)[0], where)
+                        continue
+                    if worktrees_outside(item, state[1], item):
+                        # A worktree of it waits under the checking name. They leave together, or come back together.
+                        continue
                 # The worktrees in it go, so their main checkouts forget them.
                 repositories = linked_repositories(state[1])
                 os.rename(item, item.with_name(stem))
@@ -265,8 +273,8 @@ def waiting_checking(path):
     trash = path.parent / work_workspace.SCRATCH_TRASH
     if trash.is_symlink() or not trash.is_dir():
         return False
-    return any(item.name.startswith(path.name + '-') and item.name.endswith(CHECKING)
-               and MOVED_NAME.fullmatch(item.name[:-len(CHECKING)]) for item in trash.iterdir())
+    name = re.compile(re.escape(path.name) + r'-\d{16,20}' + re.escape(CHECKING))
+    return any(name.fullmatch(item.name) for item in trash.iterdir())
 
 
 def has_main(entry, checkouts, moved=None):
@@ -275,7 +283,7 @@ def has_main(entry, checkouts, moved=None):
                for folder in checkouts)
 
 
-def worktrees_outside(entry, checkouts, moved=None):
+def worktrees_outside(entry, checkouts, moved=None, waiting=True):
     """Return True when a main checkout in entry has a linked worktree that exists outside entry, or when Git cannot tell.
 
     moved is the place where entry is now, when Coconut moved it. Git then runs there. A worktree that waits in the trash
@@ -290,7 +298,7 @@ def worktrees_outside(entry, checkouts, moved=None):
         try:
             for path in linked_worktrees(folder):
                 # Before the move, a worktree in the trash belongs to this pass, and its release comes first.
-                if (path.exists() or (moved is not None and waiting_checking(path))) and not (path.resolve() == place or place in path.resolve().parents):
+                if (path.exists() or (waiting and moved is not None and waiting_checking(path))) and not (path.resolve() == place or place in path.resolve().parents):
                     return True
         except work_workspace.GIT_ERRORS:
             # Unknown worktrees keep the main checkout, as a failed Git check keeps any checkout.

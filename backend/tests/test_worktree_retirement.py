@@ -3398,6 +3398,29 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertEqual(list(trash.iterdir()), [])
 
+    def test_a_waiting_main_checkout_goes_back_when_a_worktree_of_it_lives(self):
+        workspace = self.bot_workspace()
+        main = self.clone(workspace / 'a-main')
+        linked = workspace / 'z-wt'
+        git(main, 'worktree', 'add', '-q', '--detach', str(linked))
+        self.age(workspace / 'a-main', 30)
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        trash.mkdir()
+        os.rename(main, trash / ('a-main-1759000000000000001' + retirement.CHECKING))
+        with self.stale_rule():
+            self.retire()
+        # The worktree is fresh and lives at its place, so the main checkout returns to its place too.
+        self.assertTrue((main / 'tracked.txt').exists())
+        self.assertEqual(list(trash.iterdir()), [])
+
+    def test_an_unrelated_waiting_entry_does_not_keep_a_main_checkout(self):
+        workspace = self.bot_workspace()
+        trash = workspace / work_workspace.SCRATCH_TRASH
+        trash.mkdir()
+        (trash / ('a-main-1759000000000000001' + retirement.CHECKING)).mkdir()
+        self.assertFalse(retirement.waiting_checking(workspace / 'a'))
+        self.assertTrue(retirement.waiting_checking(workspace / 'a-main'))
+
     def test_a_failed_scan_of_the_moved_entries_leaves_them_under_the_checking_name(self):
         workspace = self.bot_workspace()
         (workspace / 'old').mkdir()
