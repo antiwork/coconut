@@ -438,8 +438,23 @@ class HostLifecycleTests(unittest.TestCase):
             (self.data / 'drained').write_text('1')
         with patch.object(host, 'owned_process', return_value=(4242, self.options)), patch.object(host.time, 'sleep', side_effect=sleep):
             self.assertTrue(host.drain_for_update(timeout=30))
-        # The request ends by itself, later than the wait.
+        # The request ends by itself, later than the wait, and no partial file is left behind.
         self.assertGreater(float((self.data / 'drain-request').read_text()), time.time() + 30)
+        self.assertFalse((self.data / 'drain-request.tmp').exists())
+
+    def test_the_drain_request_appears_whole_or_not_at_all(self):
+        self.write_process(drain=True)
+        seen = []
+        real = host.os.replace
+        def replace(source, target):
+            # Before the swap, the request file that the service reads does not exist yet. The new content is complete.
+            seen.append((Path(target).exists(), float(Path(source).read_text()) > time.time()))
+            return real(source, target)
+        ticks = iter(range(0, 1000))
+        with patch.object(host, 'owned_process', return_value=(4242, self.options)), patch.object(host.time, 'sleep'), \
+             patch.object(host.time, 'monotonic', side_effect=lambda: next(ticks)), patch.object(host.os, 'replace', side_effect=replace):
+            host.drain_for_update(timeout=3)
+        self.assertEqual(seen, [(False, True)])
 
     def test_the_update_stops_at_once_a_service_that_does_not_drain(self):
         self.write_process()

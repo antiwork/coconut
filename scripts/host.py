@@ -444,7 +444,10 @@ def drain_for_update(timeout: float = DRAIN_SECONDS) -> bool:
     if request.is_symlink() or drained.is_symlink():
         return False
     drained.unlink(missing_ok=True)
-    request.write_text(str(time.time() + timeout + 60))
+    # The service reads this file while it runs. A truncated file must never be visible, so the request replaces the file at once.
+    pending = request.with_name(request.name + ".tmp")
+    pending.write_text(str(time.time() + timeout + 60))
+    os.replace(pending, request)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if drained.exists():
