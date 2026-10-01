@@ -130,6 +130,8 @@ class NativeExecution:
                             and result.get('task_id') == identity and result.get('comment_id') is not None):
                         task['_source_native_ids'] = sorted(set(task.get('_source_native_ids', [])) | {identity})
                         self._put('tasks', task)
+                if record['action']['name'] == 'kanban_complete' and not context:
+                    self._capture_occurrence(task, record)
                 for decision in self._all('decisions'):
                     if decision['task_id'] == task_id and decision['status'] == 'approved' and decision.get('_action_hash') == record['action_hash']:
                         try:

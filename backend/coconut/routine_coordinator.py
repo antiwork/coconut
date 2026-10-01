@@ -9,6 +9,9 @@ from uuid import UUID, uuid5
 ROUTINE_EVENTS = 'SELECT type,data,created_at FROM events WHERE task_id=? AND bot_id=? ORDER BY seq'
 COMPLETION_EVENTS = 'SELECT type,data FROM events WHERE task_id=? AND bot_id=? ORDER BY seq'
 ROUTINE_DELIVERIES = "SELECT data FROM deliveries WHERE json_extract(data,'$.receipt.task_id')=? ORDER BY rowid DESC"
+# Open intake of a waiting occurrence. Any of these means that the occurrence still works or has input to take.
+OPEN_INTAKE = ('_steering', '_live_messages', '_blocked_followup', '_native_reply_pending', '_return_pending',
+               '_resume_decision', '_background_completion', '_pr_review', '_work_resume', '_routine_pending_bot_result')
 
 
 class NativeRoutines:
@@ -103,6 +106,158 @@ class NativeRoutines:
                         return {}
                     succeeded = True
         return dict(job_id=job['id'], owner=owner, success=True) if triggered and succeeded else {}
+
+    def _capture_occurrence(self, task, record):
+        """Keep the card and run that ended this occurrence. A later turn overwrites _kanban_claim with its own."""
+        from .routine_reports import value
+        claim, result = task.get('_kanban_claim') or {}, value(record)
+        if ((task.get('_native_job') or {}).get('id') and not task.get('_native_job_finished')
+                and not task.get('_native_occurrence') and record.get('turn_id')
+                and result.get('ok') is True and claim.get('external_id') == task['id']
+                and result.get('task_id') == claim.get('native_id') and result.get('run_id') == claim.get('run_id')
+                and task.get('_native_outcome_id') in (None, claim.get('native_id'))):
+            task['_native_occurrence'] = dict(native_id=claim['native_id'], run_id=claim['run_id'],
+                                              turn_id=record['turn_id'], receipt_id=record['id'], input=claim.get('input'))
+            self._put('tasks', task)
+
+    def _occurrence_candidates(self, task):
+        """The cards that this waiting occurrence reported done, from Coconut's own records. Native state is not read here.
+
+        The claim of the task names its latest turn, so it cannot say which card ended the occurrence. The receipt of
+        the tool call can: it is saved with the task, the turn, the native card and its run. Any guard that keeps
+        the occurrence active, or any doubt about its history, gives no candidate.
+        """
+        from .routine_reports import kanban_completions
+        job = task.get('_native_job') or {}
+        owner = (job.get('fire_claim') or {}).get('by')
+        if (task['status'] != 'waiting' or not owner or not job.get('id') or task.get('_native_job_finished')
+                or task.get('routine_id') != str(uuid5(UUID(task['bot_id']), 'cron:' + job['id']))
+                or task.get('_assignment_task_id') or self._task_paused(task)
+                or any(task.get(key) for key in OPEN_INTAKE)
+                or (task.get('_self_recovery') or {}).get('unknown_tools')):
+            return []
+        worker = self.running.get(task['id'])
+        if worker and worker.is_alive():
+            return []
+        triggered = False
+        for kind, raw in self.db.execute(COMPLETION_EVENTS, (task['id'], task['bot_id'])):
+            data = json.loads(raw)
+            if kind == 'routine.triggered':
+                if triggered or data != dict(routine_id=task['routine_id'], task_id=task['id']):
+                    return []
+                triggered = True
+            if kind == 'task.updated' and triggered and data.get('status') in ('failed', 'cancelled'):
+                return []
+        if not triggered:
+            return []
+        receipts = self._native_task_receipts(task['id'])
+        if any(r.get('state') == 'executing' for r in receipts):
+            return []
+        turns = {}
+        for receipt, result in kanban_completions([r for r in receipts if r.get('state') == 'completed']):
+            if (isinstance(result.get('task_id'), str) and result['task_id'] and receipt.get('turn_id')
+                    and type(result.get('run_id')) is int):
+                found = turns.setdefault((result['task_id'], result['run_id']), {})
+                found.setdefault(receipt['turn_id'], receipt['id'])
+        saved = task.get('_native_occurrence')
+        if saved:
+            turns = {key: found for key, found in turns.items() if key == (saved.get('native_id'), saved.get('run_id'))
+                     and found.get(saved.get('turn_id')) == saved.get('receipt_id')}
+        # A card that two turns claim to have ended is not an unambiguous completion.
+        candidates = [dict(native_id=key[0], run_id=key[1], turn_id=next(iter(found)), receipt_id=next(iter(found.values())))
+                      for key, found in turns.items() if len(found) == 1]
+        if (self._background_pending(task['id'])
+                or self.db.execute("SELECT 1 FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working') "
+                                   "AND json_extract(data,'$.task_id')=? LIMIT 1", (task['id'],)).fetchone()
+                or self.db.execute("SELECT 1 FROM decisions WHERE json_extract(data,'$.task_id')=? "
+                                   "AND json_extract(data,'$.status')='pending' LIMIT 1", (task['id'],)).fetchone()):
+            return []
+        return candidates
+
+    def _authenticate_occurrence(self, task, candidates):
+        """The one candidate that native state confirms. Run this without the service lock.
+
+        The card is read by its native id, because Coconut's binding may now name a successor. It must be the
+        card that Coconut created for this task and tenant, finished by exactly the run in the receipt, with no
+        later run or live worker. Anything else, including an adapter that cannot answer, confirms nothing.
+        """
+        if not getattr(self, 'kanban', None) or len(candidates) > 4:
+            return None
+        # A card that stays unproven, or an adapter that stays silent, is asked again with growing pauses, not every tick.
+        # The pause belongs to the exact candidates of the task, so a new receipt is read at once.
+        probes = self.__dict__.setdefault('_release_probes', {})
+        key = tuple((c['native_id'], c['run_id'], c['receipt_id']) for c in candidates)
+        probe = probes.get(task['id'])
+        if probe and probe['key'] == key and time.monotonic() < probe['due']:
+            return None
+        proof = self._read_occurrence_proof(task, candidates)
+        if proof:
+            probes.pop(task['id'], None)
+        else:
+            failures = probe['failures'] + 1 if probe and probe['key'] == key else 1
+            probes[task['id']] = dict(key=key, failures=failures, due=time.monotonic() + min(15 * 2 ** failures, 900))
+        return proof
+
+    def _read_occurrence_proof(self, task, candidates):
+        proven = []
+        for candidate in candidates:
+            try:
+                card = self.kanban.call({'op': 'completion', 'id': candidate['native_id']}).get('card') or {}
+            except Exception:
+                continue
+            runs = card.get('runs')
+            if (card.get('id') == candidate['native_id'] and card.get('tenant') == task['bot_id']
+                    and card.get('idempotency_key') == 'coconut:' + task['id'] and card.get('status') == 'done'
+                    and not card.get('current_run_id') and not card.get('worker_pid')
+                    and card.get('input_id') in (None, candidate['turn_id'])
+                    and isinstance(runs, list) and all(isinstance(r, dict) and r.get('ended') for r in runs)
+                    and [r.get('id') for r in runs if r.get('outcome') == 'completed'] == [candidate['run_id']]):
+                proven.append(candidate)
+        return proven[0] if len(proven) == 1 else None
+
+    def _settle_release(self, task):
+        """Ask the native job what became of a release that was tried. True when this pass is done with the occurrence.
+
+        Hermes may have cleared the claim before the answer was lost, and new intake may since have made the occurrence
+        look unfinished. Only the native job and its receipts say. A claim that is still ours is no release, so the
+        pass goes on. Hermes' confirmed completion of this exact job and owner always ends the tracking. A claim that is
+        gone or owned by another, with no such confirmation, ends it only for the occurrence that still is the one that
+        ended natively, as the heartbeat does. Any other occurrence is active, and the normal pass decides its fate.
+        A refreshed job that is missing says nothing about the claim, so the pass goes on.
+        """
+        job, tried = task['_native_job'], task.get('_native_release_tried')
+        owner = (job.get('fire_claim') or {}).get('by')
+        if not tried or not owner or (tried.get('job_id'), tried.get('owner')) != (job['id'], owner):
+            return False
+        routine = next((r for r in self._all('routines') if r.get('_native_id') == job['id'] and r['bot_id'] == task['bot_id']), None)
+        native = (routine or {}).get('_job') or {}
+        # Either record of Hermes names this exact job and owner. Which outcome it holds is its own business.
+        confirmed = any(isinstance(proof, dict) and (proof.get('job_id'), proof.get('owner')) == (job['id'], owner)
+                        for proof in (task.get('_native_job_completion_receipt'), native.get('_coconut_completion')))
+        if not confirmed and (not native or (native.get('fire_claim') or {}).get('by') == owner
+                              or not self._ended_occurrence(task)):
+            return False
+        with self.transaction():
+            self._end_native_claim(task, confirmed)
+        return True
+
+    def _ended_occurrence(self, task):
+        """Whether the occurrence is still the one whose ended card was authenticated for a release that was tried.
+
+        New intake, or a card that the attempt did not authenticate, makes it a normal active occurrence again.
+        """
+        tried = task.get('_native_release_tried') or {}
+        return any(all(tried.get(key) == candidate[key] for key in candidate)
+                   for candidate in self._occurrence_candidates(task))
+
+    def _end_native_claim(self, task, confirmed):
+        """Stop reconciling this occurrence with Hermes. Nothing about the task itself changes."""
+        first = not task.get('_native_finish_unconfirmed')
+        task['_native_job_finished'] = True
+        task['_native_finish_unconfirmed'] = not confirmed
+        self._put('tasks', task)
+        if not confirmed and first:
+            self._event('routine.reconciliation_required', {'routine_id': task['routine_id'], 'message': 'Hermes no longer holds this routine claim, and did not confirm its completion.'}, task['bot_id'], task['id'])
 
     def _migrate_native_routine_prompts(self):
         tasks = {task['id']: task for task in self._all('tasks')
@@ -247,6 +402,7 @@ class NativeRoutines:
         self._native_cron_next = time.monotonic() + 15
         callbacks = []
         finished = set()
+        awaiting = set()
         try:
             self.refresh_native_routines()
             with self.lock:
@@ -254,6 +410,20 @@ class NativeRoutines:
             for candidate in tasks:
                 if not candidate.get('_native_job') or candidate.get('_native_job_finished'):
                     continue
+                proof = None
+                with self.lock:
+                    task = self._get('tasks', candidate['id'])
+                    if not task.get('_native_job') or task.get('_native_job_finished'):
+                        continue
+                    # A release that was tried is settled by native state first, whatever the task looks like now.
+                    if self._settle_release(task):
+                        finished.add(task['routine_id'])
+                        continue
+                    candidates = self._occurrence_candidates(task)
+                if candidates:
+                    awaiting.add(task['id'])
+                    # Native state is read without the service lock, as the adapter can wait for it.
+                    proof = self._authenticate_occurrence(task, candidates)
                 with self.lock:
                     task = self._get('tasks', candidate['id'])
                     job = task.get('_native_job')
@@ -261,23 +431,49 @@ class NativeRoutines:
                         continue
                     bot = self._get('bots', task['bot_id'])
                     args = dict(bot_id=bot['id'], native_id=job['id'], owner=job['fire_claim']['by'])
-                    active = task['status'] in self.ACTIVE
+                    # The occurrence ended itself natively and now only waits. Its checks run again with the lock held, and the
+                    # saved intent lets a continuation that starts during the native call treat the claim as released.
+                    closing = bool(proof) and proof in self._occurrence_candidates(task)
+                    if closing:
+                        with self.transaction():
+                            task['_native_release'] = dict(proof, job_id=job['id'], owner=args['owner'])
+                            task['_native_release_tried'] = dict(proof, job_id=job['id'], owner=args['owner'])
+                            self._put('tasks', task)
+                    elif task.get('_native_release'):
+                        # An earlier attempt was abandoned, and its proof no longer holds. Nothing is being released.
+                        with self.transaction():
+                            task.pop('_native_release')
+                            self._put('tasks', task)
+                    active = task['status'] in self.ACTIVE and not closing
                     if not active:
                         finished.add(task['routine_id'])
                         output = '\n\n'.join(m['text'] for m in self._all('messages') if m.get('task_id') == task['id'] and m['role'] == 'assistant' and m['kind'] == 'text')
+                succeeded = closing or task['status'] == 'completed'
                 # Native locks can wait for tool receipts that need the service lock.
                 if active:
                     result = self.provider.native_settings('routine_heartbeat', [bot], **args)
                 else:
-                    result = self.provider.native_settings('routine_finish', [bot], **args, success=task['status'] == 'completed',
-                                                          output='' if task.get('_routine_silent') else output or task.get('summary', ''), failure=task.get('summary') if task['status'] != 'completed' else None)
+                    result = self.provider.native_settings('routine_finish', [bot], **args, success=succeeded,
+                                                          output='' if task.get('_routine_silent') else output or ('' if closing else task.get('summary', '')), failure=None if succeeded else task.get('summary'))
                 with self.transaction():
                     current = self._get('tasks', task['id'])
-                    if current.get('_native_job') != job or current.get('_native_job_finished') or current['status'] != task['status']:
+                    if current.get('_native_job') != job or current.get('_native_job_finished'):
+                        continue
+                    # A continuation can queue while Hermes releases the claim. Confirmed release is recorded regardless.
+                    if closing and not result['ok'] and current.get('_native_release'):
+                        # Hermes did not confirm, so nothing is being released. The next pass reads native state to see whether the
+                        # claim is still held, and the intent waits for a pass that proves it again.
+                        current.pop('_native_release')
+                        self._put('tasks', current)
+                    if current['status'] != task['status'] and not (closing and result['ok']):
                         continue
                     task = current
                     if active:
-                        if not result['ok']:
+                        if not result['ok'] and self._ended_occurrence(task):
+                            # The occurrence still is the one that ended natively, so it is retained Work. Hermes lost the claim, which is the routine's loss.
+                            self._end_native_claim(task, False)
+                            finished.add(task['routine_id'])
+                        elif not result['ok']:
                             self._cancel(task, callbacks)
                             task = self._get('tasks', task['id'])
                             task.update(status='failed', summary='The routine lost its native execution claim.', _native_job_finished=True)
@@ -289,6 +485,9 @@ class NativeRoutines:
                             self._event('routine.reconciliation_required', {'routine_id': task['routine_id'], 'message': 'Hermes did not confirm this routine completion.'}, bot['id'], task['id'])
                         task['_native_finish_unconfirmed'] = not result['ok']
                         self._put('tasks', task)
+            probes = getattr(self, '_release_probes', {})
+            for identity in set(probes) - awaiting:
+                del probes[identity]
             with self.transaction():
                 # One grouping of the tasks serves every routine. A task that a claim adds belongs to its own routine,
                 # so it cannot change the result for another routine.

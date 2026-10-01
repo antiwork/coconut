@@ -414,6 +414,18 @@ class Board:
                     return True
         return self.kb.archive_task(self.conn, identity)
 
+    def completion(self, identity):
+        """The native facts that prove how one card ended. A card that Coconut rebound to a successor stays readable here."""
+        task = self.kb.get_task(self.conn, identity)
+        if task is None:
+            return None
+        accepted = self.conn.execute('SELECT input_id FROM coconut_outcomes WHERE native_id=?', (identity,)).fetchone()
+        runs = [dict(id=row[0], status=row[1], outcome=row[2], ended=row[3] is not None) for row in self.conn.execute(
+            'SELECT id,status,outcome,ended_at FROM task_runs WHERE task_id=? ORDER BY id', (identity,))]
+        return dict(id=task.id, tenant=task.tenant, idempotency_key=task.idempotency_key, status=task.status,
+                    current_run_id=task.current_run_id, worker_pid=task.worker_pid,
+                    input_id=accepted[0] or None if accepted else None, runs=runs)
+
     def snapshot(self, external_ids=()):
         result = []
         for binding in self.conn.execute(
@@ -577,6 +589,8 @@ def main():
                     result = board.unlink_dependency(request)
                 elif request['op'] == 'snapshot':
                     result = {'tasks': board.snapshot(request.get('external_ids', []))}
+                elif request['op'] == 'completion':
+                    result = {'card': board.completion(request['id'])}
                 else:
                     raise ValueError('Unknown Kanban operation.')
             send({'result': result})

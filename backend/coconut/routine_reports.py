@@ -17,6 +17,12 @@ def value(receipt):
         return {}
 
 
+def kanban_completions(receipts):
+    """The successful kanban_complete receipts with their parsed results. Each ended one native run."""
+    return [(r, value(r)) for r in receipts
+            if (r.get('action') or {}).get('name') == 'kanban_complete' and value(r).get('ok') is True]
+
+
 def delivered(deliveries, source, target):
     return [d for d in deliveries if d.get('source_task_id') == source['id']
             and d.get('target_bot_id') == target['bot_id'] and not d.get('_progress_only')
@@ -196,12 +202,10 @@ def project(service, proof, tasks, snapshots, deliveries, caller):
         return None
     # The reporter explicitly ended this occurrence, even if Coconut retained
     # its report wait. Claim.input can predate _native_turn_id on legacy inputs.
-    if not any((r.get('action') or {}).get('name') == 'kanban_complete'
-               and value(r).get('ok') is True
-               and value(r).get('task_id') == reporter['_kanban_claim']['native_id']
-               and value(r).get('run_id') == reporter['_kanban_claim']['run_id']
-               for r in service._native_task_receipts(reporter['id'],
-                    turn_id=reporter.get('_native_turn_id'), state='completed')):
+    if not any(result.get('task_id') == reporter['_kanban_claim']['native_id']
+               and result.get('run_id') == reporter['_kanban_claim']['run_id']
+               for _, result in kanban_completions(service._native_task_receipts(
+                   reporter['id'], turn_id=reporter.get('_native_turn_id'), state='completed'))):
         return None
     producer = tasks.get(coordinator.get('_result_task_id'), coordinator)
     if (producer['status'] != 'completed' or not native_done(producer, snapshots)

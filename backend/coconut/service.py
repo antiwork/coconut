@@ -1756,6 +1756,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             task = owner
             task.setdefault('_bot_messages', []).append(dict(bot_message,
                 _return_source_task_id=source['id'], _return_delivery_id=delivery_id, _returning=returning))
+            if task.get('_native_job') and not task.get('_native_job_finished') and task['status'] != 'working':
+                # A blocked owner can remain waiting even though a new result arrived.
+                # Historical _bot_messages stay saved, so track pending input separately.
+                task['_routine_pending_bot_result'] = delivery_id
             if not progress_only:
                 task['_waiting_on'] = [identity for identity in task.get('_waiting_on', []) if identity != dependency_id]
             native = self.kanban.tasks.get(task['id'], {})
@@ -3298,6 +3302,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     task = self._get('tasks', task_id)
                     if task['status'] != 'working' or self.stopping.is_set():
                         return
+                    if task.pop('_routine_pending_bot_result', None):
+                        # This exact snapshot supplies the bot messages to the provider.
+                        # A later delivery writes its own pending marker under the same lock.
+                        self._put('tasks', task)
                     history = self._history(bot['id'])
                     visible_replies = ({identity: self._get('messages', identity).get('_visible_reply_context')
                                         for identity in task.get('_turn_message_ids', [])}
@@ -3325,7 +3333,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     provider_task['_pr_review'] = task['_pr_review']
                 if task.get('_native_job'):
                     provider_task['_native_job'] = task['_native_job']
-                    provider_task['_native_job_finished'] = task.get('_native_job_finished', False)
+                    # A release in progress counts as finished. If Hermes clears the claim during this turn, the
+                    # bridge then confirms the native completion instead of pausing the turn.
+                    release = task.get('_native_release') or {}
+                    provider_task['_native_job_finished'] = task.get('_native_job_finished', False) or (
+                        release.get('job_id') == task['_native_job'].get('id')
+                        and release.get('owner') == (task['_native_job'].get('fire_claim') or {}).get('by'))
                     with self.lock:
                         provider_task['_native_job_completion'] = self.native_routine_completion_input(task)
                 with self.lock:
