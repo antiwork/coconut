@@ -163,14 +163,16 @@ class WorkReadCostTests(unittest.TestCase):
         parent['source_task_id'] = child['id']
         self.service._put('tasks', parent)
         self.service._put('tasks', child)
-        pause = dict(id='pause', created_at=now())
+        pause = dict(id='pause', created_at='2100-01-01T00:00:00Z')
         original = self.service._all
         def bounded(table):
             self.assertNotIn(table, ('tasks', 'messages'))
             return original(table)
         with patch.object(self.service, '_all', side_effect=bounded):
             self.assertFalse(self.service._work_has_new_direction(child, pause, item))
-            self.service._message(self.bot['id'], 'Resume', task_id=parent['id'], role='user', human_authored=True)
+            message = self.service._message(self.bot['id'], 'Resume', task_id=parent['id'], role='user')
+            message.update(_human_device_id='person', created_at='2101-01-01T00:00:00Z')
+            self.service._put('messages', message)
             self.assertTrue(self.service._work_has_new_direction(child, pause, item))
             parent['_work_status_only'] = True
             self.service._put('tasks', parent)
