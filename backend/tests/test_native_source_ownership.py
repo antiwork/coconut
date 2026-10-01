@@ -57,6 +57,20 @@ print(identity)
             self.assertEqual(state['missing'], [])
             self.assertIn(identity, state['native_links'][self.item['id']]['task_ids'])
             self.assertEqual(len(self.service._all('tasks')), count)
+        delegate = dict(task, id='completed-delegate', parent_task_id=origin)
+        delegate.pop('_source_assignment', None)
+        delegate.pop('_source_audit_prompt', None)
+        self.service._put('tasks', delegate)
+        task.pop('_source_native_ids')
+        self.service._put('tasks', task)
+        state['native_links'][self.item['id']]['task_ids'] = ['older-missing-native']
+        self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                                ('work-source:assigned', json.dumps(state)))
+        self.service.kanban.call({'op': 'snapshot'})
+        state = self.audit()
+        self.assertEqual(state['missing'], [])
+        self.assertEqual(state['native_links'][self.item['id']]['task_ids'], [identity])
+        self.assertEqual(len(self.service._all('tasks')), count + 1)
         self.item['updated_at'] = '2026-09-18T13:00:00Z'
         self.assertNotEqual(self.audit()['task_id'], origin)
 
@@ -262,3 +276,23 @@ print(board.kb.create_task(board.conn, title='Source follow-up', body='Verify',
             self.audit()
         snapshots = [call.args[0] for call in calls.call_args_list if call.args[0]['op'] == 'snapshot']
         self.assertEqual([call['native_ids'] for call in snapshots], [['current-native']])
+
+    def test_snapshot_lookup_follows_delegates_even_with_an_older_saved_link(self):
+        origin = self.source()
+        task = self.service._get('tasks', origin)
+        task.update(status='completed')
+        self.service._put('tasks', task)
+        delegate = dict(task, id='delegate', parent_task_id=origin, _source_native_ids=['new-native'])
+        delegate.pop('_source_assignment', None)
+        delegate.pop('_source_audit_prompt', None)
+        self.service._put('tasks', delegate)
+        with self.service.transaction():
+            state = self.service._setting('work-source:assigned')
+            state['native_links'] = {self.item['id']: dict(updated_at=self.item['updated_at'],
+                                                         task_ids=['older-native'], decision_ids=[])}
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                                    ('work-source:assigned', json.dumps(state)))
+        with patch.object(self.service.kanban, 'call', wraps=self.service.kanban.call) as calls:
+            self.audit()
+        snapshots = [call.args[0] for call in calls.call_args_list if call.args[0]['op'] == 'snapshot']
+        self.assertEqual([call['native_ids'] for call in snapshots], [['new-native', 'older-native']])

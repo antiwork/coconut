@@ -83,8 +83,8 @@ def answered_decisions(item, source, tasks, decisions, *, sole_source=False):
 
 
 def native_bindings(items, bindings, tasks, native_tasks, decisions, source, *, sole_source):
-    """Derive source links from saved origins. Hermes owns their lifecycle."""
-    native_ids = {task['id'] for task in native_tasks.values()}
+    """Derive source links from saved origins. None requests IDs for later native verification."""
+    native_ids = {task['id'] for task in native_tasks.values()} if native_tasks is not None else None
     children = {}
     for task in tasks.values():
         for field in ('parent_task_id', '_assignment_task_id'):
@@ -115,10 +115,12 @@ def native_bindings(items, bindings, tasks, native_tasks, decisions, source, *, 
                 continue
             seen.add(identity)
             task = tasks.get(identity, {})
-            native_id = identity if identity in native_ids else task.get('_native_outcome_id')
-            if native_id in native_ids:
+            native_id = task.get('_native_outcome_id')
+            if (native_ids is None and identity not in tasks) or (native_ids is not None and identity in native_ids):
+                native_id = identity
+            if native_id and (native_ids is None or native_id in native_ids):
                 linked.add(native_id)
-            linked.update(key for key in task.get('_source_native_ids', []) if key in native_ids)
+            linked.update(key for key in task.get('_source_native_ids', []) if native_ids is None or key in native_ids)
             pending.extend(children.get(identity, []))
         decision_ids = {decision['id'] for decision in decisions.values()
                         if decision.get('status') == 'pending' and (
@@ -274,27 +276,19 @@ class WorkSources:
                         bindings[identity] = binding
                 native = None
                 if self.kanban and getattr(self.provider, 'supports_native_outcomes', False):
+                    with self.lock:
+                        lookup_tasks = {task['id']: task for task in self._all('tasks')}
+                        pending = {d['id']: d for d in (json.loads(row[0]) for row in self.db.execute(
+                            "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending'"))}
+                    requested = {identity: dict(binding) for identity, binding in bindings.items()}
+                    native_bindings(items, requested, lookup_tasks, None, pending, source,
+                                    sole_source=sum(s['bot_id'] == bot['id'] for s in sources) == 1)
                     needed = {item['id']: item['updated_at'] for item in items}
-                    needed.update({identity: binding['updated_at'] for identity, binding in bindings.items()
+                    needed.update({identity: binding['updated_at'] for identity, binding in requested.items()
                                    if identity not in needed and binding.get('decision_ids')})
-                    linked = {identity: binding for identity, binding in bindings.items()
-                              if identity in needed and binding.get('updated_at') == needed[identity]
-                              and binding.get('task_ids')}
-                    native_ids = {key for binding in linked.values() for key in binding['task_ids']}
-                    lookup = {identity: revision for identity, revision in needed.items() if identity not in linked}
-                    if lookup:
-                        with self.lock:
-                            origins = [json.loads(row[0]) for row in self.db.execute(
-                                "SELECT data FROM tasks WHERE json_extract(data,'$.bot_id')=? "
-                                "AND json_type(data,'$._source_native_ids')='array' AND ("
-                                "json_extract(data,'$._source_assignment.id') IN (SELECT value FROM json_each(?)) "
-                                "OR json_type(data,'$._source_assignment') IS NULL)", (bot['id'], json.dumps(list(lookup))))]
-                        sole_source = sum(s['bot_id'] == bot['id'] for s in sources) == 1
-                        for task in origins:
-                            origin = audit_item(task)
-                            if (origin.get('id') in lookup and origin.get('updated_at') == lookup[origin['id']]
-                                    and (origin.get('source_id') == source['id'] or (sole_source and not origin.get('source_id')))):
-                                native_ids.update(task['_source_native_ids'])
+                    native_ids = {key for identity, binding in requested.items()
+                                  if identity in needed and binding.get('updated_at') == needed[identity]
+                                  for key in binding.get('task_ids', [])}
                     native = dict(self.kanban.tasks)
                     if native_ids:
                         snapshot_rows = self.kanban.call({'op': 'snapshot', 'native_ids': sorted(native_ids)})['tasks']
