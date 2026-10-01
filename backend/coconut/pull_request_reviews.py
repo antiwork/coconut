@@ -120,6 +120,7 @@ class PullRequestReviews:
                     linked.update(self._work_chain(owner, tasks, records, include_continuations=True))
         # The request to offer this card cannot require the card's own answer first.
         decision_tasks = {task['id'], self._assignment(task)['id']}
+        inert = self._pr_inert_waits(url, tasks, records, decision_tasks)
         for owner, _ in linked.values():
             if (owner['status'] == 'cancelled' or self._assignment(owner)['status'] == 'cancelled'
                     or self._get('exchanges', owner['exchange_id']).get('cancelled')):
@@ -128,10 +129,130 @@ class PullRequestReviews:
             waiting = [identity for identity in owner.get('_waiting_on', [])
                        if identity != resolved and identity not in decision_tasks]
             if self._background_pending(owner['id'], finishing_task_id=task['id'],
-                                        excluding_task_ids=decision_tasks) or waiting:
+                                        excluding_task_ids=decision_tasks, ignored_receipt_ids=inert) or waiting:
                 raise ServiceError(400, 'The PR review still has a pending worker or delegated result. '
                     'Read its result before offering a merge decision.')
         return requested_at
+
+    def _pr_inert_waits(self, url, tasks, records, keep):
+        """The undelivered explicit waits that cannot hold a result of this pull request.
+
+        A shared intake root links the work of every PR it receives, and a person's decision can keep a task from
+        reading a finished wait. Only that wait is skipped, never its owner: any other receipt, process, relay,
+        queued answer, or wait of the owner still gates. A wait qualifies only when all of these hold:
+        - it is a completed coconut_wait on a task, and its target finished with the saved result;
+        - its owner needs a person and has its own pending decision, so nothing can deliver the result now;
+        - no record ties the owner, or the target and its work chain, or their executions to this PR: no PR record,
+          claim, current review, or merge card;
+        - the target is not work that serves this PR. That work starts at every task tied to this PR, except a
+          human-origin intake that also holds provider-observed records of other PRs and has no recorded review of
+          this PR. A recorded review is a current `_pr_review`, or reviewed heads saved on the PR record of the
+          task's bot when the task owns that record or the record's owner has moved by a recorded transfer. The work
+          includes everything delegated from there, and every task that its saved waits name, so the owner is in it
+          whenever the target is. A worker's own execution, claims, or lineage never leave it;
+        - every PR that does tie the owner is a provider-observed record of its bot, and one such record was
+          created by the owner's own recorded lineage. A claim alone, or the bot tracking that PR, is not enough;
+        - the target is the owner's own delegation, or has provider-observed PR records of its own.
+        """
+        candidates = [r for r in records if r.get('_wait_task_id') and not r.get('_process_delivery')
+                      and r.get('state') == 'completed' and (r.get('action') or {}).get('name') == 'coconut_wait'
+                      and not (r.get('_relay_task_id') or r.get('_wait_process_receipt') or r.get('_wait_decision_id'))
+                      and r['task_id'] not in keep and r['task_id'] in tasks and r['_wait_task_id'] in tasks]
+        if not candidates:
+            return set()
+        url = url.lower()
+        artifacts = [a for a in self._all('artifacts') if a['kind'] == 'pr' and a.get('url')]
+        observed = {(a['bot_id'], a['url'].lower()) for a in artifacts if a.get('observed_at')}
+        decisions = self._all('decisions')
+        executions = {identity: self._work_execution_owner(task, tasks)['id'] for identity, task in tasks.items()}
+        def named(task_ids):
+            """The PR URLs that records tie to these tasks."""
+            found = set()
+            for artifact in artifacts:
+                if task_ids.intersection(artifact.get(f) for f in ('task_id', '_review_task_id', '_activity_task_id')):
+                    found.add(artifact['url'].lower())
+            for identity in task_ids:
+                task = tasks[identity]
+                for value in [*task.get('_reported_pr_urls', []), (task.get('_pr_review') or {}).get('url')]:
+                    if value:
+                        found.add(value.lower())
+            found.update(d['merge_pr_url'].lower() for d in decisions
+                         if d['task_id'] in task_ids and d.get('merge_pr_url'))
+            return found
+        def family(task):
+            return {identity for identity, owner in executions.items() if owner == executions[task['id']]} | {task['id']}
+        def lineage(task):
+            seen, pending = set(), [task['id']]
+            while pending:
+                identity = pending.pop()
+                if identity in seen or identity not in tasks:
+                    continue
+                seen.add(identity)
+                pending.extend(tasks[identity].get(f) for f in ('source_task_id', 'parent_task_id', '_execution_session_id'))
+            return seen
+        target = set()
+        for artifact in artifacts:
+            if artifact['url'].lower() == url:
+                target.update(artifact.get(f) for f in ('task_id', '_review_task_id', '_activity_task_id'))
+        target.update(identity for identity, task in tasks.items()
+                      if url in (value.lower() for value in task.get('_reported_pr_urls', []))
+                      or ((task.get('_pr_review') or {}).get('url') or '').lower() == url)
+        target.update(d['task_id'] for d in decisions if (d.get('merge_pr_url') or '').lower() == url)
+        target_executions = {executions[identity] for identity in target if identity in executions}
+        def tied(task):
+            return task['id'] in target or executions[task['id']] in target_executions
+        def reviewing(identity):
+            # The monitor records a review of this PR on the review owner: its current request, or the heads it saved
+            # on the owner's PR record. The request clears at the next turn. A transfer or a continuation moves the
+            # owner. A record that lists every owner it has had names the tasks that reviewed. A record without that
+            # list that has moved, or whose list is not consistent, has lost its earlier owners, so each task of the
+            # record's bot that tracks this PR may have been one of them.
+            task = tasks[identity]
+            def named(a):
+                owners = self._review_owner_history(a)
+                if owners is None:
+                    return (a.get('_review_task_id') == identity or bool(a.get('_review_ownership_at'))
+                            or bool(a.get('_review_history_unknown')))
+                return identity in owners or a.get('_review_task_id') == identity
+            return (((task.get('_pr_review') or {}).get('url') or '').lower() == url
+                    or any(a['url'].lower() == url and a['bot_id'] == task['bot_id'] and self._pr_reviewed_heads(a)
+                           and named(a) for a in artifacts))
+        def shared_intake(identity):
+            # Only a task that a person started, that holds records of other PRs, and that no review of this PR
+            # names serves several PRs at once. A recorded review of this PR makes it target work.
+            task = tasks[identity]
+            others = named({identity}) - {url}
+            return (not task.get('source_task_id') and not task.get('parent_task_id') and bool(others)
+                    and all((task['bot_id'], value) in observed for value in others) and not reviewing(identity))
+        scope = {}
+        for seed in sorted(identity for identity in target if identity in tasks and not shared_intake(identity)):
+            if seed not in scope:
+                scope.update(self._work_chain(tasks[seed], tasks, records, include_continuations=True))
+        inert = set()
+        for record in candidates:
+            owner, source = tasks[record['task_id']], tasks[record['_wait_task_id']]
+            if (owner['status'] != 'needs_you' or source['status'] != 'completed' or tied(owner)
+                    or source['id'] in scope
+                    or not self._wait_settled(record)
+                    or not any(d['task_id'] == owner['id'] and d['status'] == 'pending' for d in decisions)):
+                continue
+            chain = self._work_chain(source, tasks, records, include_continuations=True)
+            if any(tied(member) for member, _ in chain.values()):
+                continue
+            claims = named(family(owner))
+            ancestry = lineage(owner)
+            if (not claims or any((owner['bot_id'], value) not in observed for value in claims)
+                    or not any(a['bot_id'] == owner['bot_id'] and a.get('observed_at') and a['url'].lower() in claims
+                               and a.get('task_id') in ancestry for a in artifacts)):
+                continue
+            # The target must be the owner's own delegation or carry provider-observed records of its own.
+            own = source.get('source_task_id') == owner['id'] and source.get('_requester_reply_task_id') == owner['id']
+            claims = named(family(source))
+            if (any((source['bot_id'], value) not in observed for value in claims)
+                    or not (claims or own)):
+                continue
+            inert.add(record['id'])
+        return inert
 
     def _resolve_merged_pr_decisions(self):
         from .service import now
@@ -207,13 +328,45 @@ class PullRequestReviews:
                     return True
         return False
 
+    @staticmethod
+    def _set_review_owner(artifact, identity):
+        """Move a PR record to a new review owner and keep every owner it has had, in order.
+
+        A record that predates the list keeps none, so its earlier owners stay unknown. A record that Coconut
+        creates starts the list with its first owner (see _register_pr_artifact), so the list is complete. A list
+        that is not consistent with the owner before this move has lost an owner, and a new entry would hide that
+        loss, so the list is dropped. Whenever an owner leaves a record whose history is unknown, the record is
+        marked so that the history stays unknown and later moves cannot make it look complete or unmoved.
+        """
+        owners, current = artifact.get('_review_owners'), artifact.get('_review_task_id')
+        if owners is None or PullRequestReviews._review_owner_history(artifact) is None:
+            artifact.pop('_review_owners', None)
+            if current and current != identity:
+                artifact['_review_history_unknown'] = True
+        elif identity and (not owners or owners[-1] != identity):
+            owners.append(identity)
+        artifact['_review_task_id'] = identity
+
+    @staticmethod
+    def _review_owner_history(artifact):
+        """The ordered owners of a PR record, or None when the record does not hold a complete, consistent list.
+
+        The list is trusted only when each entry is a task ID and its last entry is the record's current owner, so
+        an owner written by a path that did not record it, or a changed list, leaves the history unknown.
+        """
+        owners, current = artifact.get('_review_owners'), artifact.get('_review_task_id')
+        if (not isinstance(owners, list) or not all(isinstance(identity, str) and identity for identity in owners)
+                or (current and (not owners or owners[-1] != current))):
+            return None
+        return owners
+
     def _bind_pr_review(self, artifact, task, *, transfer=False):
         # A late report cannot replace an explicit resume from the person.
         if task and not transfer and self._pr_report_superseded(artifact, task):
             return
         if task and (transfer or not self._pr_review_source_current(artifact)) and artifact.get('_review_task_id') != task['id']:
             with self.transaction():
-                artifact['_review_task_id'] = task['id']
+                self._set_review_owner(artifact, task['id'])
                 if transfer:
                     from .service import now
                     artifact['_review_ownership_at'] = now()
@@ -247,7 +400,7 @@ class PullRequestReviews:
             return
         # A new execution can continue a finished review. Status callbacks keep its return address.
         from .service import now
-        artifact['_review_task_id'] = owner['id']
+        self._set_review_owner(artifact, owner['id'])
         artifact['_review_ownership_at'] = now()
 
     def _pr_review_owner(self, peers):
@@ -289,7 +442,7 @@ class PullRequestReviews:
                     continue
                 owner = self._pr_review_source(artifact['bot_id'], artifact['_review_task_id'], tasks=tasks)
                 if owner['id'] != artifact['_review_task_id']:
-                    artifact['_review_task_id'] = owner['id']
+                    self._set_review_owner(artifact, owner['id'])
                     self._put('artifacts', artifact)
             bot_ids = {a['bot_id'] for a in self._all('artifacts') if a['kind'] == 'pr' and a.get('_review_task_id')
                        and (artifact_ids is None or a['id'] in artifact_ids)}

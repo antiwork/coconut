@@ -642,12 +642,13 @@ class WorkStatus:
             selected = next((p for p in peers if p['bot_id'] == task['bot_id']), None)
             if selected is None:
                 source = max(peers, key=lambda p: p.get('observed_at') or p['created_at'])
-                selected = dict(source, id=uid(), bot_id=task['bot_id'], task_id=task['id'])
+                selected = dict(source, id=uid(), bot_id=task['bot_id'], task_id=task['id'], _review_owners=[], _review_task_id=None,
+                                _review_history_unknown=False)
                 peers.append(selected)
                 self._put('artifacts', selected)
                 self._event('artifact.created', self._public(selected), task['bot_id'], task['id'])
             for peer in peers:
-                peer['_review_task_id'] = task['id'] if peer['id'] == selected['id'] else None
+                self._set_review_owner(peer, task['id'] if peer['id'] == selected['id'] else None)
                 if reset_heads:
                     peer['_reviewed_heads'] = []
                     peer.pop('_reviewed_head', None)
