@@ -552,15 +552,36 @@ class WorktreeRetirement:
         # checks identify these live dependencies. Keep configured paths and their
         # containing entries, including bindings that have not been written yet.
         sources_path = self.root / 'work-sources.json'
-        if sources_path.exists():
-            for source in json.loads(sources_path.read_text()):
-                workspace = self.root / 'bots' / source['bot_id'] / 'workspace'
-                for value in [*source['command'], source['bindings']]:
-                    if not isinstance(value, str) or not value or value.startswith('-'):
-                        continue
-                    path = Path(value)
-                    path = path if path.is_absolute() else workspace / path
-                    tracked.update((path.absolute(), path.resolve()))
+        try:
+            if sources_path.exists():
+                sources = json.loads(sources_path.read_text())
+                if not isinstance(sources, list):
+                    raise ValueError('Expected a list of work sources.')
+                for source in sources:
+                    if (not isinstance(source, dict) or not isinstance(source.get('bot_id'), str)
+                            or not isinstance(source.get('bindings'), str)
+                            or not isinstance(source.get('command'), list)
+                            or not all(isinstance(token, str) for token in source['command'])):
+                        raise ValueError('Invalid work source configuration.')
+                    workspace = self.root / 'bots' / source['bot_id'] / 'workspace'
+                    paths = [workspace / source['bindings']]
+                    for index, value in enumerate(source['command']):
+                        if not value or value.startswith('-'):
+                            continue
+                        # A bare executable is searched on PATH, not in the workspace.
+                        # Other bare arguments protect only files that actually exist.
+                        path = Path(value)
+                        if '/' not in value and (index == 0 or not (workspace / path).is_file()):
+                            continue
+                        paths.append(path if path.is_absolute() else workspace / path)
+                    for path in paths:
+                        tracked.update((path.parent.resolve() / path.name, path.resolve()))
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            # Fail closed for bot files when their dependencies cannot be read, but
+            # allow the caller to continue ordinary worktree retirement in this pass.
+            logging.getLogger(__name__).warning('Skipping bot workspace cleanup: work sources could not be read (%s).',
+                                               type(error).__name__)
+            return
         found = []
         for bot in sorted((self.root / 'bots').glob('*/workspace')):
             if bot.is_symlink() or not bot.is_dir():

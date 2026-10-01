@@ -2957,6 +2957,34 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertFalse(reader.exists())
         self.assertFalse((workspace / 'coverage').exists())
 
+    def test_bare_source_executable_does_not_protect_unrelated_workspace_directory(self):
+        workspace = self.bot_workspace()
+        (workspace / 'python3').mkdir()
+        (workspace / 'python3' / 'old.txt').write_text('old')
+        (workspace / 'reader.py').write_text('reader')
+        self.age(workspace, 30)
+        (self.service.root / 'work-sources.json').write_text(json.dumps([
+            dict(bot_id=self.bot['id'], command=['python3', 'reader.py'], bindings='coverage.json')]))
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse((workspace / 'python3').exists())
+        self.assertTrue((workspace / 'reader.py').exists())
+
+    def test_invalid_work_sources_keep_bot_files_without_interrupting_worktree_retirement(self):
+        workspace = self.bot_workspace()
+        (workspace / 'reader.py').write_text('reader')
+        self.age(workspace, 30)
+        for content in ('{', '{}', '[{}]', '[null]', '[{"bot_id": 1}]'):
+            with self.subTest(content=content):
+                (self.service.root / 'work-sources.json').write_text(content)
+                with self.stale_rule(), self.assertLogs('coconut.worktree_retirement', level='WARNING'):
+                    self.service._clear_stale_bot_workspaces(time.time(), {}, False)
+                self.assertTrue((workspace / 'reader.py').exists())
+        with self.stale_rule(), patch.object(Path, 'read_text', side_effect=FileNotFoundError), \
+                self.assertLogs('coconut.worktree_retirement', level='WARNING'):
+            self.service._clear_stale_bot_workspaces(time.time(), {}, False)
+        self.assertTrue((workspace / 'reader.py').exists())
+
     def test_a_bot_workspace_judges_the_entries_inside_a_container_that_has_a_fresh_file(self):
         workspace = self.bot_workspace()
         container = workspace / 'reviews'
