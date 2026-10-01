@@ -144,6 +144,10 @@ class PullRequestReviews:
         - its owner needs a person and has its own pending decision, so nothing can deliver the result now;
         - no record ties the owner, or the target and its work chain, or their executions to this PR: no PR record,
           claim, current review, or merge card;
+        - the target is not work that serves this PR. That work starts at every task tied to this PR, except a
+          human-origin intake that also holds provider-observed records of other PRs, and it includes everything
+          delegated from there, and every task that its saved waits name, so the owner is in it whenever the target
+          is. A worker's own execution, claims, or lineage never leave it;
         - every PR that does tie the owner is a provider-observed record of its bot, and one such record was
           created by the owner's own recorded lineage. A claim alone, or the bot tracking that PR, is not enough;
         - the target is the owner's own delegation, or has provider-observed PR records of its own.
@@ -195,10 +199,21 @@ class PullRequestReviews:
         target_executions = {executions[identity] for identity in target if identity in executions}
         def tied(task):
             return task['id'] in target or executions[task['id']] in target_executions
+        def shared_intake(identity):
+            # Only a task that a person started, and that holds records of other PRs, serves several PRs at once.
+            task = tasks[identity]
+            others = named({identity}) - {url}
+            return (not task.get('source_task_id') and not task.get('parent_task_id') and bool(others)
+                    and all((task['bot_id'], value) in observed for value in others))
+        scope = {}
+        for seed in sorted(identity for identity in target if identity in tasks and not shared_intake(identity)):
+            if seed not in scope:
+                scope.update(self._work_chain(tasks[seed], tasks, records, include_continuations=True))
         inert = set()
         for record in candidates:
             owner, source = tasks[record['task_id']], tasks[record['_wait_task_id']]
             if (owner['status'] != 'needs_you' or source['status'] != 'completed' or tied(owner)
+                    or source['id'] in scope
                     or not self._wait_settled(record)
                     or not any(d['task_id'] == owner['id'] and d['status'] == 'pending' for d in decisions)):
                 continue

@@ -517,5 +517,156 @@ class MergeGateNativeReceiptBoundaryTests(unittest.TestCase):
         self.assertEqual([d['id'] for d in self.service._all('decisions') if d.get('merge_pr_url') == TARGET], [decision['id']])
 
 
+class MergeGateTargetDelegationTests(unittest.TestCase):
+    """A worker that the target review delegated to has its own execution and may claim a sibling PR.
+
+    It still works for the target review. Neither its own claim nor a lineage that also reaches the sibling work
+    through the mixed intake can make its unread wait inert. Only the shared human-origin intake is not target work.
+    """
+
+    write = MergeGatePullRequestScopeTests.write
+    patch = MergeGatePullRequestScopeTests.patch
+    receipt = MergeGatePullRequestScopeTests.receipt
+    saved = MergeGatePullRequestScopeTests.saved
+    validate = MergeGatePullRequestScopeTests.validate
+    assertOpen = MergeGatePullRequestScopeTests.assertOpen
+    assertBlocked = MergeGatePullRequestScopeTests.assertBlocked
+    tearDown = MergeGatePullRequestScopeTests.tearDown
+    raw = MergeGateNativeReceiptBoundaryTests.raw
+    bytes_of = MergeGateNativeReceiptBoundaryTests.bytes_of
+    call = MergeGateNativeReceiptBoundaryTests.call
+    ask = MergeGateNativeReceiptBoundaryTests.ask
+    assertCreated = MergeGateNativeReceiptBoundaryTests.assertCreated
+
+    def setUp(self):
+        MergeGateNativeReceiptBoundaryTests.setUp(self)
+
+    def assertRefusedCard(self, receipt_id):
+        try:
+            self.ask(receipt_id)
+        except YieldForDecision:
+            self.fail('The provider boundary created the merge card while a target delegate holds an unread wait.')
+        except ServiceError as error:
+            self.assertEqual(error.status, 400)
+            self.assertRegex(str(error), PENDING)
+        else:
+            self.fail('The native question did not pause for a decision.')
+
+    def delegate(self, identity, source, status='completed', **fields):
+        """A task with its own execution that its delegator created, as a native relay does."""
+        task = copy.deepcopy(self.service._get('tasks', 'f21ea9d7'))
+        task.update(id=identity, source_task_id=source, parent_task_id=source, _requester_reply_task_id=source,
+                    _execution_session_id=identity, _native_relay=True, _is_return=False, status=status,
+                    _reported_pr_urls=[], _waiting_on=[], created_at='2026-10-01T15:30:00.000000Z')
+        for key in ('_assignment_task_id', '_relay_callback_owner', '_resolved_dependency_id', '_pr_review'):
+            task.pop(key, None)
+        task.update(fields)
+        self.service._put('tasks', task)
+        return task
+
+    def hold(self, identity, helper='target-helper'):
+        """The worker needs a person and holds a finished, unread wait on its own helper."""
+        self.delegate(helper, identity, bot_id=self.service._get('tasks', identity)['bot_id'])
+        self.service._put('decisions', dict(self.sibling_decision, id='hold-' + identity, task_id=identity))
+        return self.receipt('wait-' + identity, identity, _wait_task_id=helper)
+
+    def worker(self, identity='target-worker', source='f21ea9d7', claims=(SIBLING,), **fields):
+        return self.delegate(identity, source, status='needs_you', _reported_pr_urls=list(claims), **fields)
+
+    def test_the_saved_shared_intake_keeps_the_historical_positive_beside_a_delegated_worker(self):
+        self.assertOpen()
+        self.worker()
+        self.hold('target-worker')
+        self.assertBlocked()
+        # Reading the target worker's result opens the gate again, and the unrelated sibling wait stays exempt.
+        self.service._put('native_receipts', dict(self.service._get('native_receipts', 'wait-target-worker'),
+                                                  _process_delivery='consumed'))
+        self.assertOpen()
+        self.assertNotIn('_process_delivery', self.service._get('native_receipts', 'sibling-wait'))
+
+    def test_the_lineage_of_a_target_delegate_reaches_the_sibling_creator_but_is_not_enough(self):
+        worker = self.worker()
+        tasks = {t['id']: t for t in self.service._all('tasks')}
+        lineage, pending = set(), [worker['id']]
+        while pending:
+            identity = pending.pop()
+            if identity not in lineage and identity in tasks:
+                lineage.add(identity)
+                pending.extend(tasks[identity].get(f) for f in ('source_task_id', 'parent_task_id', '_execution_session_id'))
+        self.assertIn('a43e8fe6', lineage)
+        self.hold('target-worker')
+        self.assertBlocked()
+
+    def test_an_intermediate_worker_that_claims_only_the_sibling_does_not_waive_the_target_delegation(self):
+        self.worker('intermediate')
+        self.worker('target-worker', source='intermediate')
+        self.hold('target-worker')
+        self.assertBlocked()
+
+    def test_a_delegated_worker_that_claims_both_prs_makes_its_own_delegates_target_work(self):
+        # The mixed worker came from the sibling side, so only its own target claim ties its delegates to this PR.
+        self.worker('mixed-worker', source='a43e8fe6', claims=(SIBLING, TARGET))
+        self.worker('target-worker', source='mixed-worker')
+        self.hold('target-worker')
+        self.assertBlocked()
+
+    def test_a_shared_intake_with_an_unobserved_claim_is_ambiguous_and_keeps_gating(self):
+        self.assertOpen()
+        self.patch(ROOT, _reported_pr_urls=[SIBLING, TARGET, 'https://github.com/example/other/pull/9'])
+        self.assertBlocked()
+
+    def test_a_wait_on_a_target_delegate_with_a_sibling_claim_still_gates(self):
+        self.assertOpen()
+        self.delegate('target-helper', 'f21ea9d7', bot_id=self.bots['Gumroad Dev']['id'], _reported_pr_urls=[SIBLING])
+        self.receipt('sibling-wait', SETUP, _wait_task_id='target-helper')
+        self.assertBlocked()
+
+    def test_a_task_that_a_target_delegate_waits_on_is_target_work_whatever_its_own_claims(self):
+        self.assertOpen()
+        self.worker()
+        # The helper came from the sibling side and has its own observed sibling record. The wait still names it.
+        self.delegate('sibling-helper', SETUP, bot_id=self.bots['Gumroad Dev']['id'], _reported_pr_urls=[SIBLING])
+        self.service._put('decisions', dict(self.sibling_decision, id='hold-target-worker', task_id='target-worker'))
+        self.receipt('wait-target-worker', 'target-worker', _wait_task_id='sibling-helper')
+        self.assertBlocked()
+
+    def test_a_delegate_of_a_human_origin_task_that_only_serves_this_pr_still_gates(self):
+        self.assertOpen()
+        # A person started the target review itself. Having no other PR record, it is not a shared intake.
+        self.patch('f21ea9d7', source_task_id=None, parent_task_id=None)
+        self.worker()
+        self.hold('target-worker')
+        self.assertBlocked()
+
+    def test_a_delegate_of_an_unlinked_human_origin_target_task_still_gates(self):
+        self.assertOpen()
+        # The intake hangs from sibling work, so no other task tied to this PR leads to its delegate.
+        self.delegate('target-intake', 'a43e8fe6', source_task_id=None, parent_task_id=None,
+                      _reported_pr_urls=[TARGET], _requester_reply_task_id='a43e8fe6')
+        self.worker(source='target-intake', parent_task_id='a43e8fe6')
+        self.hold('target-worker')
+        self.assertBlocked()
+
+    def test_the_native_receipt_route_refuses_a_card_while_a_target_delegate_holds_an_unread_wait(self):
+        self.worker()
+        self.hold('target-worker')
+        call = self.call()
+        before = {name: self.bytes_of(name) for name in ('tasks', 'native_receipts', 'decisions', 'artifacts')}
+        self.assertRefusedCard(call['id'])
+        self.assertEqual({name: self.bytes_of(name) for name in before}, before)
+        self.assertEqual(self.service._get('native_receipts', call['id'])['state'], 'executing')
+        self.assertEqual(self.service._get('tasks', CALLER)['status'], 'working')
+        # The sibling decision, its undelivered wait, and its status are the same as before the request.
+        self.assertEqual(self.service._get('decisions', 'xcode-decision'), self.sibling_decision)
+        self.assertNotIn('_process_delivery', self.service._get('native_receipts', 'sibling-wait'))
+        self.assertEqual(self.service._get('tasks', SETUP)['status'], 'needs_you')
+        # The same receipt creates the card once the target worker reads its result.
+        self.service._put('native_receipts', dict(self.service._get('native_receipts', 'wait-target-worker'),
+                                                  _process_delivery='consumed'))
+        decision = self.assertCreated(call['id'])
+        self.assertEqual((decision['merge_pr_url'], decision['status']), (TARGET, 'pending'))
+        self.assertEqual(self.service._get('decisions', 'xcode-decision'), self.sibling_decision)
+
+
 if __name__ == '__main__':
     unittest.main()
