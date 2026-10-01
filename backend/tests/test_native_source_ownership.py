@@ -35,6 +35,18 @@ print(board.kb.create_task(board.conn, title='Finish the accepted issue', body='
             self.service._put('tasks', task)
         return identity
 
+    def test_new_source_audits_store_labels_and_schedule_by_urgency(self):
+        self.source()
+        self.items = [dict(self.item, id=self.item['id'] + str(index), labels=[label])
+                      for index, label in enumerate(('priority/high', 'priority/medium'))]
+        self.audit()
+        priorities = {row['id']: row['priority'] for row in self.service._kanban_rows()}
+        tasks = {task.get('_source_assignment', {}).get('id'): task for task in self.service._all('tasks')}
+        for item, expected in zip(self.items, (10, 5)):
+            task = tasks[item['id']]
+            self.assertEqual(task['_source_assignment']['labels'], item['labels'])
+            self.assertEqual(priorities[task['id']], expected)
+
     def test_native_pause_and_completion_do_not_restart_an_assignment_audit(self):
         origin = self.source()
         identity = self.outcome(origin)

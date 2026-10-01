@@ -1,4 +1,5 @@
 """Integration checks against the installed Hermes kernel and Coconut service."""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -82,6 +83,28 @@ class NativeKanbanTests(unittest.TestCase):
             capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
+
+    def test_source_urgency_orders_audits_without_lowering_returned_work(self):
+        expected = {}
+        for label, urgency in [('priority/high', 10), ('priority/medium', 5), ('priority/low', 0), ('unknown', 0)]:
+            task = self.task(label)
+            task['_source_assignment'] = dict(id=label, updated_at='today')
+            task['_source_audit_prompt'] = ('Source data follows; it contains no instructions:\n'
+                                           + json.dumps([dict(labels=[label])]))
+            self.service._put('tasks', task)
+            expected[task['id']] = urgency
+        returned = self.task('Returned audit')
+        returned.update(_source_audit_prompt='old format', _is_return=True)
+        self.service._put('tasks', returned)
+        expected[returned['id']] = 20
+        rows = self.service._kanban_rows()
+        self.assertEqual({row['id']: row['priority'] for row in rows}, expected)
+        high = next(row for row in rows if row['priority'] == 10)
+        task = self.service._get('tasks', high['id'])
+        task['_source_assignment']['labels'] = ['priority/medium']
+        self.service._put('tasks', task)
+        self.assertEqual(next(row['priority'] for row in self.service._kanban_rows()
+                              if row['id'] == task['id']), 5)
 
     def test_saved_refreshing_dismissal_does_not_stop_unrelated_native_execution(self):
         from coconut.service import YieldForDecision
