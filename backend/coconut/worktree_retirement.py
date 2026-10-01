@@ -538,7 +538,8 @@ class WorktreeRetirement:
         An entry is a file or a folder of the workspace. A folder that has a newer file is not stale, so Coconut then
         judges the entries inside it, one level down, unless it is a Git repository itself. A Git checkout that holds work
         that no remote has stays (checkout_keeps). A main checkout stays while a worktree of it stays. A process that
-        uses an entry, a tracked worktree, the repository of a binding, and a name that starts with a dot stay too.
+        uses an entry, a tracked worktree, the repository of a binding, configured work-source files, and a name
+        that starts with a dot stay too.
         A bot with work in progress is cleaned too: it is busy all day on a busy install, and a rule that skips it would never
         free its disk. A turn can read an old entry without opening it during the pass, and a read changes no time.
         The age, the open-file check, and the Git work check are the protection. Coconut moves a folder to a
@@ -547,6 +548,19 @@ class WorktreeRetirement:
         stale_before = current - (BOT_WORKSPACE_LOW_DISK_STALE_SECONDS if low_disk else BOT_WORKSPACE_STALE_SECONDS)
         # A retired worktree comes back from the repository of its binding, so that repository stays too.
         tracked = tracked_places(saved) | {Path(repository).resolve() for repository in repositories(saved) if Path(repository).exists()}
+        # Readers are usually idle between polls, so neither file age nor open-file
+        # checks identify these live dependencies. Keep configured paths and their
+        # containing entries, including bindings that have not been written yet.
+        sources_path = self.root / 'work-sources.json'
+        if sources_path.exists():
+            for source in json.loads(sources_path.read_text()):
+                workspace = self.root / 'bots' / source['bot_id'] / 'workspace'
+                for value in [*source['command'], source['bindings']]:
+                    if not isinstance(value, str) or not value or value.startswith('-'):
+                        continue
+                    path = Path(value)
+                    path = path if path.is_absolute() else workspace / path
+                    tracked.update((path.absolute(), path.resolve()))
         found = []
         for bot in sorted((self.root / 'bots').glob('*/workspace')):
             if bot.is_symlink() or not bot.is_dir():

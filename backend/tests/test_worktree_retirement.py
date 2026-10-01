@@ -2929,6 +2929,34 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertTrue((workspace / '.hidden' / 'config').exists())
         self.assertFalse((workspace / work_workspace.SCRATCH_TRASH).exists() and any((workspace / work_workspace.SCRATCH_TRASH).iterdir()))
 
+    def test_configured_source_reader_and_bindings_survive_stale_cleanup(self):
+        workspace = self.bot_workspace()
+        for name in ('reader', 'coverage', 'unrelated'):
+            (workspace / name).mkdir()
+            (workspace / name / 'old.txt').write_text('old')
+            self.age(workspace / name, 30)
+        reader = workspace / 'reader' / 'old.txt'
+        sources = [dict(bot_id=self.bot['id'], command=['python3', str(reader)],
+                        bindings='coverage/not-written-yet.json')]
+        (self.service.root / 'work-sources.json').write_text(json.dumps(sources))
+        with self.stale_rule(low=True):
+            self.retire()
+        self.assertTrue(reader.exists())
+        self.assertTrue((workspace / 'coverage' / 'old.txt').exists())
+        self.assertFalse((workspace / 'unrelated').exists())
+        # Relative reader paths are also rooted in the bot workspace.
+        sources[0]['command'][1] = 'reader/old.txt'
+        (self.service.root / 'work-sources.json').write_text(json.dumps(sources))
+        with self.stale_rule():
+            self.retire()
+        self.assertTrue(reader.exists())
+        # Removing a source releases its files for ordinary cleanup.
+        (self.service.root / 'work-sources.json').write_text('[]')
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse(reader.exists())
+        self.assertFalse((workspace / 'coverage').exists())
+
     def test_a_bot_workspace_judges_the_entries_inside_a_container_that_has_a_fresh_file(self):
         workspace = self.bot_workspace()
         container = workspace / 'reviews'
