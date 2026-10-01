@@ -158,6 +158,54 @@ class WaitingOccurrenceTests(unittest.TestCase):
         self.assertNotIn('_native_release', self.stored())
 
     # The saved shape.
+    def test_return_held_by_paused_sibling_blocks_release_until_dispatched(self):
+        owner = self.build()
+        service = self.service
+        helper = service.mutate('POST', '/v1/bots', {'name': 'Helper', 'role': ''}, str(uuid4()))
+        source = service.mutate('POST', f"/v1/bots/{helper['id']}/messages", {'text': 'Result'}, str(uuid4()))
+        source = service._get('tasks', source['id'])
+        source.update(status='completed', source_bot_id=self.bot['id'], _reply_to_task_id=self.task_id,
+                      conversation_bot_id=self.bot['id'], thread_id=owner['thread_id'], exchange_id=owner['exchange_id'])
+        service._put('tasks', source)
+        sibling = dict(owner, id=str(uuid4()), status='paused', _assignment_task_id=self.task_id)
+        sibling.pop('_native_job')
+        sibling.pop('routine_id')
+        service._put('tasks', sibling)
+        service.kanban.tasks[self.task_id] = dict(id='t_succ', status='scheduled')
+        service._store_bot_message(source['id'], dict(target_bot_id=self.bot['id'], text='New helper result'), returning=True)
+        self.assertEqual(self.stored()['status'], 'waiting')
+        self.tick()
+        self.assert_held()
+        self.assertTrue(self.stored()['_routine_pending_bot_result'])
+        service._put('tasks', dict(sibling, status='completed'))
+        self.update(status='queued', _native_turn_id='result-turn')
+        seen = []
+        def start(task, bot, history, emit):
+            seen.extend(task['_bot_messages'])
+            self.assertNotIn('_routine_pending_bot_result', self.stored())
+        with patch.object(service.provider, 'start_task', start):
+            service._run_task(self.task_id)
+        self.assertEqual(seen[-1]['text'], 'New helper result')
+        self.assertNotIn('_routine_pending_bot_result', self.stored())
+
+    def test_historical_bot_messages_do_not_keep_completed_intake_alive(self):
+        self.build(_bot_messages=[dict(text='Already processed result', sender_bot_id=self.bot['id'])])
+        self.tick()
+        self.assert_released()
+
+    def test_occurrence_guards_use_indexed_queries_without_materializing_tables(self):
+        task = self.build()
+        queries = []
+        self.service.db.set_trace_callback(queries.append)
+        with patch.object(self.service, '_all', side_effect=AssertionError('full table read')):
+            self.assertTrue(self.service._occurrence_candidates(task))
+        self.service.db.set_trace_callback(None)
+        for table in ('contexts', 'decisions'):
+            query = next(q for q in queries if q.startswith('SELECT 1 FROM ' + table))
+            plan = ' '.join(str(row) for row in self.service.db.execute('EXPLAIN QUERY PLAN ' + query))
+            self.assertIn('USING INDEX', plan)
+            self.assertNotIn('SCAN ' + table, plan)
+
     def test_overwritten_claim_of_a_waiting_occurrence_is_released_by_the_native_finish(self):
         task = self.build(capture=False)
         self.assertEqual(task['_kanban_claim']['native_id'], 't_succ')

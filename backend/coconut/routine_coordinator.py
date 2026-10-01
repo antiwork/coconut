@@ -11,7 +11,7 @@ COMPLETION_EVENTS = 'SELECT type,data FROM events WHERE task_id=? AND bot_id=? O
 ROUTINE_DELIVERIES = "SELECT data FROM deliveries WHERE json_extract(data,'$.receipt.task_id')=? ORDER BY rowid DESC"
 # Open intake of a waiting occurrence. Any of these means that the occurrence still works or has input to take.
 OPEN_INTAKE = ('_steering', '_live_messages', '_blocked_followup', '_native_reply_pending', '_return_pending',
-               '_resume_decision', '_background_completion', '_pr_review', '_work_resume')
+               '_resume_decision', '_background_completion', '_pr_review', '_work_resume', '_routine_pending_bot_result')
 
 
 class NativeRoutines:
@@ -167,8 +167,10 @@ class NativeRoutines:
         candidates = [dict(native_id=key[0], run_id=key[1], turn_id=next(iter(found)), receipt_id=next(iter(found.values())))
                       for key, found in turns.items() if len(found) == 1]
         if (self._background_pending(task['id'])
-                or any(c['task_id'] == task['id'] and c['status'] in ('queued', 'working') for c in self._all('contexts'))
-                or any(d['task_id'] == task['id'] and d['status'] == 'pending' for d in self._all('decisions'))):
+                or self.db.execute("SELECT 1 FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working') "
+                                   "AND json_extract(data,'$.task_id')=? LIMIT 1", (task['id'],)).fetchone()
+                or self.db.execute("SELECT 1 FROM decisions WHERE json_extract(data,'$.task_id')=? "
+                                   "AND json_extract(data,'$.status')='pending' LIMIT 1", (task['id'],)).fetchone()):
             return []
         return candidates
 
