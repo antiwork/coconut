@@ -393,8 +393,10 @@ board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the expo
                 task_id=alias['id'], _same_outcome_as=item['id']))
             owners.append((owner['id'], alias['id']))
         self.provider.supports_native_outcomes = True
-        with patch.object(self.service, '_all', wraps=self.service._all) as reads:
+        with patch.object(self.service, '_all', wraps=self.service._all) as reads, \
+                patch.object(self.service, '_work_links', wraps=self.service._work_links) as graphs:
             self.service._migrate_native_work()
+        self.assertEqual(graphs.call_count, 1)
         self.assertEqual(sum(call.args == ('tasks',) for call in reads.call_args_list), 1)
         for identity, alias in owners:
             self.assertNotIn('_native_outcome_id', self.service._get('tasks', identity))

@@ -205,3 +205,16 @@ class WorkReadCostTests(unittest.TestCase):
             plan = [r[3] for r in self.service.db.execute('EXPLAIN QUERY PLAN ' + query)]
             self.assertTrue(any(index in step for step in plan), plan)
             self.assertFalse(any(step.startswith('SCAN ' + table) for step in plan), plan)
+
+    def test_shared_migration_receipts_refresh_after_new_and_consumed_results(self):
+        with self.service._shared_reads():
+            before = self.service._shared_work_receipts()
+            self.assertIs(before, self.service._shared_work_receipts())
+            receipt = dict(id='new-executing', task_id=self.task['id'], state='executing',
+                action={'name': 'terminal', 'arguments': {}}, result='{}')
+            self.service._put('native_receipts', receipt)
+            current = self.service._shared_work_receipts()
+            self.assertIsNot(before, current)
+            self.assertIn(receipt['id'], {r['id'] for r in current})
+            self.service._put('native_receipts', dict(receipt, state='completed'))
+            self.assertNotIn(receipt['id'], {r['id'] for r in self.service._shared_work_receipts()})

@@ -1201,7 +1201,7 @@ class NativeOutcomes:
             waiting = pending or self._background_pending(owner['id']) or bool(owner.get('_waiting_on'))
             waiting = waiting or owner['status'] in ('scheduled', 'paused')
             tasks = self._task_map()
-            records = self._work_receipts()
+            records = self._shared_work_receipts()
             attempts = {owner['id'], *(peer['task_id'] for peer in peers)}
             for previous in [item, *peers, *pr_reports]:
                 attempts.update(previous.get('_work_previous_task_ids', []))
