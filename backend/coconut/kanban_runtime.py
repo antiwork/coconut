@@ -426,7 +426,7 @@ class Board:
                     current_run_id=task.current_run_id, worker_pid=task.worker_pid,
                     input_id=accepted[0] or None if accepted else None, runs=runs)
 
-    def snapshot(self, external_ids=()):
+    def snapshot(self, external_ids=(), native_ids=()):
         result = []
         for binding in self.conn.execute(
                 "SELECT coalesce(b.external_id,'outcome:' || t.id),t.id FROM tasks t "
@@ -434,8 +434,9 @@ class Board:
                 'WHERE t.id IN (SELECT native_id FROM coconut_outcomes) OR (b.external_id IS NOT NULL AND '
                 "(t.status NOT IN ('done','archived') OR b.rowid IN "
                 '(SELECT rowid FROM coconut_bindings ORDER BY rowid DESC LIMIT 32))) '
-                'OR b.external_id IN (SELECT value FROM json_each(?)) ORDER BY t.created_at,t.rowid',
-                (json.dumps(external_ids),)):
+                'OR b.external_id IN (SELECT value FROM json_each(?)) '
+                'OR (b.external_id IS NOT NULL AND t.id IN (SELECT value FROM json_each(?))) ORDER BY t.created_at,t.rowid',
+                (json.dumps(external_ids), json.dumps(native_ids))):
             task = self.kb.get_task(self.conn, binding[1])
             blocker = self.dispatch.check_respawn_guard(self.conn, task.id) if task.status == 'ready' else None
             progress = self.conn.execute(
@@ -588,7 +589,7 @@ def main():
                 elif request['op'] == 'unlink_dependency':
                     result = board.unlink_dependency(request)
                 elif request['op'] == 'snapshot':
-                    result = {'tasks': board.snapshot(request.get('external_ids', []))}
+                    result = {'tasks': board.snapshot(request.get('external_ids', []), request.get('native_ids', []))}
                 elif request['op'] == 'completion':
                     result = {'card': board.completion(request['id'])}
                 else:

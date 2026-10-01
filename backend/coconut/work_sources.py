@@ -272,6 +272,17 @@ class WorkSources:
                 for identity, binding in imported.items():
                     if identity not in bindings or (binding.get('updated_at') or '') > (bindings[identity].get('updated_at') or ''):
                         bindings[identity] = binding
+                native = None
+                if self.kanban and getattr(self.provider, 'supports_native_outcomes', False):
+                    native_ids = {identity for binding in bindings.values() for identity in binding.get('task_ids', [])}
+                    with self.lock:
+                        for row in self.db.execute(
+                                "SELECT json_extract(data,'$._source_native_ids') FROM tasks "
+                                "WHERE json_extract(data,'$.bot_id')=? "
+                                "AND json_type(data,'$._source_native_ids')='array'", (bot['id'],)):
+                            native_ids.update(json.loads(row[0]))
+                    snapshot_rows = self.kanban.call({'op': 'snapshot', 'native_ids': sorted(native_ids)})['tasks']
+                    native = {task['external_id']: task for task in snapshot_rows}
                 with self.transaction():
                     if self.stopping.is_set() or self.restart_pending:
                         return
@@ -287,7 +298,6 @@ class WorkSources:
                         if item.get('id') and item.get('updated_at'):
                             audit_owners.setdefault((item['id'], item['updated_at']), []).append(task['id'])
                     current = datetime.now(timezone.utc)
-                    native = self.kanban.tasks if self.kanban and getattr(self.provider, 'supports_native_outcomes', False) else None
                     if native is not None:
                         native_bindings(items, bindings, tasks, native, decisions, source,
                             sole_source=sum(s['bot_id'] == source['bot_id'] for s in sources) == 1)

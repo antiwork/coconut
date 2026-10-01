@@ -35,6 +35,31 @@ print(board.kb.create_task(board.conn, title='Finish the accepted issue', body='
             self.service._put('tasks', task)
         return identity
 
+    def test_completed_audit_keeps_coverage_after_native_snapshot_window_moves(self):
+        origin = self.source()
+        identity = self.native_program("""
+rows = [dict(id=external, bot_id=sys.argv[2], title='Reconciled assignment',
+    state='done', input=external, priority=10, workspace=sys.argv[1], summary='Verified')
+    for external in [sys.argv[3], *('later-' + str(index) for index in range(40))]]
+board.sync(rows)
+identity = board.conn.execute('SELECT native_id FROM coconut_bindings WHERE external_id=?', (sys.argv[3],)).fetchone()[0]
+print(identity)
+""", self.bot['id'], origin)
+        task = self.service._get('tasks', origin)
+        task.update(status='completed', _source_native_ids=[identity])
+        self.service._put('tasks', task)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.assertNotIn(identity, {row['id'] for row in self.service.kanban.tasks.values()})
+        count = len(self.service._all('tasks'))
+        for _ in range(2):
+            self.service.kanban.call({'op': 'snapshot'})
+            state = self.audit()
+            self.assertEqual(state['missing'], [])
+            self.assertIn(identity, state['native_links'][self.item['id']]['task_ids'])
+            self.assertEqual(len(self.service._all('tasks')), count)
+        self.item['updated_at'] = '2026-09-18T13:00:00Z'
+        self.assertNotEqual(self.audit()['task_id'], origin)
+
     def test_new_source_audits_store_labels_and_schedule_by_urgency(self):
         self.source()
         self.items = [dict(self.item, id=self.item['id'] + str(index), labels=[label])
@@ -195,3 +220,13 @@ print(board.kb.create_task(board.conn, title='Finish the accepted issue', body='
         self.assertEqual(state['missing'], [])
         self.assertEqual(state['native_links'][self.item['id']]['updated_at'], self.item['updated_at'])
         self.assertIsNone(state['error'])
+
+    def test_requested_unbound_native_task_is_not_duplicated(self):
+        identity = self.native_program("""
+print(board.kb.create_task(board.conn, title='Source follow-up', body='Verify',
+    assignee='default', tenant=sys.argv[2], initial_status='blocked'))
+""", self.bot['id'])
+        result = self.service.kanban.call({'op': 'snapshot', 'native_ids': [identity, 'missing']})
+        matches = [task for task in result['tasks'] if task['id'] == identity]
+        self.assertEqual(len(matches), 1)
+        self.assertTrue(matches[0]['unbound'])
