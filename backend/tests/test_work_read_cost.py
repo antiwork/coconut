@@ -155,3 +155,47 @@ class WorkReadCostTests(unittest.TestCase):
                     view._work_chain(tasks[task['id']], tasks, view._work_receipts(), include_continuations=True)
                     self.assertEqual(tasks[task['id']]['_waiting_on'], ['new-dependency'])
                     self.assertEqual(links.call_count, 2)
+
+    def test_pause_direction_reads_only_ancestors_and_their_messages(self):
+        item = self.track()
+        parent = self.service._get('tasks', self.task['id'])
+        child = dict(parent, id='child', parent_task_id=parent['id'])
+        parent['source_task_id'] = child['id']
+        self.service._put('tasks', parent)
+        self.service._put('tasks', child)
+        pause = dict(id='pause', created_at=now())
+        original = self.service._all
+        def bounded(table):
+            self.assertNotIn(table, ('tasks', 'messages'))
+            return original(table)
+        with patch.object(self.service, '_all', side_effect=bounded):
+            self.assertFalse(self.service._work_has_new_direction(child, pause, item))
+            self.service._message(self.bot['id'], 'Resume', task_id=parent['id'], role='user', human_authored=True)
+            self.assertTrue(self.service._work_has_new_direction(child, pause, item))
+            parent['_work_status_only'] = True
+            self.service._put('tasks', parent)
+            self.assertFalse(self.service._work_has_new_direction(child, pause, item))
+
+    def test_queue_selection_uses_indexes_and_retains_terminal_native_rows_once(self):
+        from types import SimpleNamespace
+        task = self.service._get('tasks', self.task['id'])
+        task['status'] = 'completed'
+        self.service._put('tasks', task)
+        retained = dict(task, id='retained')
+        self.service._put('tasks', retained)
+        queued = dict(task, id='queued', status='queued')
+        self.service._put('tasks', queued)
+        self.service.kanban = SimpleNamespace(close=lambda: None, tasks={
+            retained['id']: dict(id='native-retained', status='scheduled'),
+            queued['id']: dict(id='native-queued', status='ready')})
+        self.addCleanup(setattr, self.service, 'kanban', None)
+        queries = []
+        self.service.db.set_trace_callback(queries.append)
+        rows = self.service._kanban_rows()
+        self.service.db.set_trace_callback(None)
+        self.assertEqual([row['id'] for row in rows], ['retained', 'queued'])
+        for table, index in [('tasks', 'tasks_status'), ('contexts', 'contexts_status')]:
+            query = next(q for q in queries if q.startswith(f'SELECT data FROM {table} WHERE rowid IN'))
+            plan = [r[3] for r in self.service.db.execute('EXPLAIN QUERY PLAN ' + query)]
+            self.assertTrue(any(index in step for step in plan), plan)
+            self.assertFalse(any(step.startswith('SCAN ' + table) for step in plan), plan)

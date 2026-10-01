@@ -1162,6 +1162,10 @@ class NativeOutcomes:
         return candidates
 
     def _migrate_native_work(self):
+        with self._shared_reads():
+            return self._migrate_native_work_shared()
+
+    def _migrate_native_work_shared(self):
         if not self.kanban or not getattr(self.provider, 'supports_native_outcomes', False):
             return
         from .service import now
@@ -1193,10 +1197,10 @@ class NativeOutcomes:
             pr_reports = [self._get('artifacts', i) for i in item.get('_pr_migration_reports', [])]
             pr_urls = {p['url'].lower() for p in pr_reports}
             pending = any(d['status'] == 'pending' and (d['task_id'] == owner['id']
-                or (d.get('merge_pr_url') or '').lower() in pr_urls) for d in self._all('decisions'))
+                or (d.get('merge_pr_url') or '').lower() in pr_urls) for d in self._all_shared('decisions'))
             waiting = pending or self._background_pending(owner['id']) or bool(owner.get('_waiting_on'))
             waiting = waiting or owner['status'] in ('scheduled', 'paused')
-            tasks = {t['id']: t for t in self._all('tasks')}
+            tasks = self._task_map()
             records = self._work_receipts()
             attempts = {owner['id'], *(peer['task_id'] for peer in peers)}
             for previous in [item, *peers, *pr_reports]:
@@ -1213,8 +1217,8 @@ class NativeOutcomes:
             if (any((i not in waiters and tasks[i]['status'] in self.ACTIVE)
                     or self._background_pending(i, excluding_task_ids={owner['id']} if i in waiters else ())
                     for i in related if i in tasks)
-                    or any(d['task_id'] in related and d['status'] == 'pending' for d in self._all('decisions'))
-                    or any(c['task_id'] in attempts and c['status'] in ('queued', 'working') for c in self._all('contexts'))):
+                    or any(d['task_id'] in related and d['status'] == 'pending' for d in self._all_shared('decisions'))
+                    or any(c['task_id'] in attempts and c['status'] in ('queued', 'working') for c in self._all_shared('contexts'))):
                 continue
             unknown = list({r['id']: r for r in (owner.get('_self_recovery') or {}).get('unknown_tools', [])
                 + [r for r in records if r['task_id'] in attempts and r['state'] == 'executing']}.values())

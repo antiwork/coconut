@@ -381,6 +381,30 @@ board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the expo
         self.assertIn('The export passes its tests.', native['body'])
         self.assertEqual(len(self.service._all('tasks')), 1)
 
+    def test_migration_shares_history_reads_and_refreshes_after_writes(self):
+        owners = []
+        for title in ('First export', 'Second export'):
+            task, item = self.legacy_work(title)
+            alias = self.task('Read ' + title)
+            owner = self.service._get('tasks', task['id'])
+            owner['status'] = 'completed'
+            self.service._put('tasks', owner)
+            self.service._put('artifacts', dict(item, id=str(uuid4()),
+                task_id=alias['id'], _same_outcome_as=item['id']))
+            owners.append((owner['id'], alias['id']))
+        self.provider.supports_native_outcomes = True
+        with patch.object(self.service, '_all', wraps=self.service._all) as reads:
+            self.service._migrate_native_work()
+        self.assertEqual(sum(call.args == ('tasks',) for call in reads.call_args_list), 1)
+        for identity, alias in owners:
+            self.assertNotIn('_native_outcome_id', self.service._get('tasks', identity))
+            task = self.service._get('tasks', alias)
+            task['status'] = 'completed'
+            self.service._put('tasks', task)
+        self.service._migrate_native_work()
+        for identity, alias in owners:
+            self.assertIn('_native_outcome_id', self.service._get('tasks', identity))
+
     def test_migration_preserves_cancelled_work_and_pending_alias_result(self):
         task, item = self.legacy_work()
         self.provider.supports_native_outcomes = True

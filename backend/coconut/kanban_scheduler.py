@@ -167,8 +167,9 @@ class NativeKanban(NativeOutcomes):
         known = self.kanban.tasks
         retained = json.dumps([i for i, task in known.items() if task.get('status') not in ('done', 'archived')])
         tasks = [json.loads(row[0]) for row in self.db.execute(
-            "SELECT data FROM tasks WHERE json_extract(data,'$.status') IN (SELECT value FROM json_each(?)) "
-            "OR id IN (SELECT value FROM json_each(?)) ORDER BY rowid", (json.dumps(sorted(self.ACTIVE)), retained))]
+            "SELECT data FROM tasks WHERE rowid IN ("
+            "SELECT rowid FROM tasks WHERE json_extract(data,'$.status') IN (SELECT value FROM json_each(?)) "
+            "UNION SELECT rowid FROM tasks WHERE id IN (SELECT value FROM json_each(?))) ORDER BY rowid", (json.dumps(sorted(self.ACTIVE)), retained))]
         active_keys = {execution_key(self._get('tasks', identity)) for identity in self.running}
         active_keys.update(execution_key(self._get('tasks', self._get('contexts', identity)['task_id']))
                            for identity in self.context_threads)
@@ -176,8 +177,9 @@ class NativeKanban(NativeOutcomes):
         refresh_active = any(self._get('contexts', i).get('_decision_refresh') for i in self.context_threads)
         rows = []
         for context in (json.loads(row[0]) for row in self.db.execute(
-                "SELECT data FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working') "
-                "OR id IN (SELECT value FROM json_each(?)) ORDER BY rowid", (retained,))):
+                "SELECT data FROM contexts WHERE rowid IN ("
+                "SELECT rowid FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working') "
+                "UNION SELECT rowid FROM contexts WHERE id IN (SELECT value FROM json_each(?))) ORDER BY rowid", (retained,))):
             if context['status'] not in ('queued', 'working') and known.get(context['id'], {}).get('status', 'done') in ('done', 'archived'):
                 continue
             task = self._get('tasks', context['task_id'])
