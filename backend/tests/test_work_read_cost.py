@@ -187,6 +187,10 @@ class WorkReadCostTests(unittest.TestCase):
         self.service._put('tasks', retained)
         queued = dict(task, id='queued', status='queued')
         self.service._put('tasks', queued)
+        with self.service.transaction():
+            for index in range(1000):
+                self.service._put('tasks', dict(task, id=f'history-{index}'))
+        self.service.db.execute('ANALYZE')
         self.service.kanban = SimpleNamespace(close=lambda: None, tasks={
             retained['id']: dict(id='native-retained', status='scheduled'),
             queued['id']: dict(id='native-queued', status='ready')})
