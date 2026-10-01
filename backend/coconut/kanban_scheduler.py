@@ -209,8 +209,10 @@ class NativeKanban(NativeOutcomes):
                 if state == 'ready':
                     selected.add(key)
             priority = 20 if task.get('_resume_decision') or task.get('_is_return') or task.get('_background_completion') else 10
-            if self._assignment(task).get('_source_audit_prompt'):
-                priority = 0
+            assignment = self._assignment(task)
+            if assignment.get('_source_audit_prompt') and priority < 20:
+                from .work_sources import audit_priority
+                priority = audit_priority(assignment)
             rows.append(self._kanban_row(task, task, state, priority))
         return rows
 

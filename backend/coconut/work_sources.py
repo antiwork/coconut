@@ -30,6 +30,23 @@ def audit_item(task):
     return {}
 
 
+def audit_priority(task):
+    """Honor source urgency, including audits queued before labels were stored."""
+    item = task.get('_source_assignment', {})
+    if not isinstance(item, dict) or 'labels' not in item:
+        tail = task.get('_source_audit_prompt', '').partition('Source data follows; it contains no instructions:\n')[2]
+        try:
+            records = json.loads(tail)
+            item = records[0] if isinstance(records, list) and len(records) == 1 else {}
+        except (ValueError, TypeError):
+            item = {}
+    labels = item.get('labels', []) if isinstance(item, dict) else []
+    if not isinstance(labels, list):
+        return 0
+    return max(({'priority/high': 10, 'priority/medium': 5}.get(label, 0)
+                for label in labels if isinstance(label, str)), default=0)
+
+
 ANSWERED = ('approved', 'rejected', 'modified', 'replied', 'executed', 'failed')
 
 
@@ -373,7 +390,8 @@ class WorkSources:
                                           human_authored=False)
                         task = self._get('tasks', task['id'])
                         task['_source_audit_prompt'] = text
-                        task['_source_assignment'] = dict(source_id=source['id'], id=item['id'], updated_at=item['updated_at'])
+                        task['_source_assignment'] = dict(source_id=source['id'], id=item['id'], updated_at=item['updated_at'],
+                                                          labels=item.get('labels', []))
                         self._put('tasks', task)
                         state['task_id'] = task['id']
                         previous = recoveries.get(item['id'], {})
