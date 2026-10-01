@@ -197,7 +197,7 @@ class WorkReadCostTests(unittest.TestCase):
         self.service.db.set_trace_callback(None)
         self.assertEqual([row['id'] for row in rows], ['retained', 'queued'])
         for table, index in [('tasks', 'tasks_status'), ('contexts', 'contexts_status')]:
-            query = next(q for q in queries if q.startswith(f'SELECT data FROM {table} WHERE rowid IN'))
+            query = next(q for q in queries if q.startswith(f'SELECT data FROM {table} WHERE ') and 'json_each' in q)
             plan = [r[3] for r in self.service.db.execute('EXPLAIN QUERY PLAN ' + query)]
             self.assertTrue(any(index in step for step in plan), plan)
             self.assertFalse(any(step.startswith('SCAN ' + table) for step in plan), plan)
