@@ -35,6 +35,45 @@ print(board.kb.create_task(board.conn, title='Finish the accepted issue', body='
             self.service._put('tasks', task)
         return identity
 
+    def test_completed_audit_keeps_coverage_after_native_snapshot_window_moves(self):
+        origin = self.source()
+        identity = self.native_program("""
+rows = [dict(id=external, bot_id=sys.argv[2], title='Reconciled assignment',
+    state='done', input=external, priority=10, workspace=sys.argv[1], summary='Verified')
+    for external in [sys.argv[3], *('later-' + str(index) for index in range(40))]]
+board.sync(rows)
+identity = board.conn.execute('SELECT native_id FROM coconut_bindings WHERE external_id=?', (sys.argv[3],)).fetchone()[0]
+print(identity)
+""", self.bot['id'], origin)
+        task = self.service._get('tasks', origin)
+        task.update(status='completed', _source_native_ids=[identity])
+        self.service._put('tasks', task)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.assertNotIn(identity, {row['id'] for row in self.service.kanban.tasks.values()})
+        count = len(self.service._all('tasks'))
+        for _ in range(2):
+            self.service.kanban.call({'op': 'snapshot'})
+            state = self.audit()
+            self.assertEqual(state['missing'], [])
+            self.assertIn(identity, state['native_links'][self.item['id']]['task_ids'])
+            self.assertEqual(len(self.service._all('tasks')), count)
+        delegate = dict(task, id='completed-delegate', parent_task_id=origin)
+        delegate.pop('_source_assignment', None)
+        delegate.pop('_source_audit_prompt', None)
+        self.service._put('tasks', delegate)
+        task.pop('_source_native_ids')
+        self.service._put('tasks', task)
+        state['native_links'][self.item['id']]['task_ids'] = ['older-missing-native']
+        self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                                ('work-source:assigned', json.dumps(state)))
+        self.service.kanban.call({'op': 'snapshot'})
+        state = self.audit()
+        self.assertEqual(state['missing'], [])
+        self.assertEqual(state['native_links'][self.item['id']]['task_ids'], [identity])
+        self.assertEqual(len(self.service._all('tasks')), count + 1)
+        self.item['updated_at'] = '2026-09-18T13:00:00Z'
+        self.assertNotEqual(self.audit()['task_id'], origin)
+
     def test_new_source_audits_store_labels_and_schedule_by_urgency(self):
         self.source()
         self.items = [dict(self.item, id=self.item['id'] + str(index), labels=[label])
@@ -195,3 +234,65 @@ print(board.kb.create_task(board.conn, title='Finish the accepted issue', body='
         self.assertEqual(state['missing'], [])
         self.assertEqual(state['native_links'][self.item['id']]['updated_at'], self.item['updated_at'])
         self.assertIsNone(state['error'])
+
+    def test_requested_unbound_native_task_is_not_duplicated(self):
+        identity = self.native_program("""
+print(board.kb.create_task(board.conn, title='Source follow-up', body='Verify',
+    assignee='default', tenant=sys.argv[2], initial_status='blocked'))
+""", self.bot['id'])
+        result = self.service.kanban.call({'op': 'snapshot', 'native_ids': [identity, 'missing']})
+        matches = [task for task in result['tasks'] if task['id'] == identity]
+        self.assertEqual(len(matches), 1)
+        self.assertTrue(matches[0]['unbound'])
+
+    def test_adapter_failure_retains_coverage_and_does_not_stop_other_source(self):
+        origin = self.source()
+        task = self.service._get('tasks', origin)
+        task.update(status='completed', _source_native_ids=['unavailable-native-task'])
+        self.service._put('tasks', task)
+        sources = [self.source_config, dict(self.source_config, id='other', bindings='other.json')]
+        (self.root / 'work-sources.json').write_text(json.dumps(sources))
+        before = self.service._setting('work-source:assigned')
+        with patch.object(self.service.kanban, 'call', side_effect=RuntimeError('Adapter unavailable')):
+            state = self.audit()
+        self.assertEqual(state['error'], 'RuntimeError')
+        self.assertEqual(state['task_id'], before['task_id'])
+        self.assertEqual(state['checked_at'], before['checked_at'])
+        other = self.service._setting('work-source:other')
+        self.assertIsNone(other['error'])
+        self.assertNotEqual(other['task_id'], origin)
+
+    def test_requested_native_ids_exclude_other_sources_and_closed_assignments(self):
+        origin = self.source()
+        task = self.service._get('tasks', origin)
+        task.update(status='completed', _source_native_ids=['current-native'])
+        self.service._put('tasks', task)
+        for identity, assignment in [
+                ('closed', dict(task['_source_assignment'], id='https://github.com/example/repo/issues/closed')),
+                ('other', dict(task['_source_assignment'], source_id='another-source'))]:
+            self.service._put('tasks', dict(task, id=identity, _source_assignment=assignment,
+                                           _source_native_ids=[identity + '-native']))
+        with patch.object(self.service.kanban, 'call', wraps=self.service.kanban.call) as calls:
+            self.audit()
+        snapshots = [call.args[0] for call in calls.call_args_list if call.args[0]['op'] == 'snapshot']
+        self.assertEqual([call['native_ids'] for call in snapshots], [['current-native']])
+
+    def test_snapshot_lookup_follows_delegates_even_with_an_older_saved_link(self):
+        origin = self.source()
+        task = self.service._get('tasks', origin)
+        task.update(status='completed')
+        self.service._put('tasks', task)
+        delegate = dict(task, id='delegate', parent_task_id=origin, _source_native_ids=['new-native'])
+        delegate.pop('_source_assignment', None)
+        delegate.pop('_source_audit_prompt', None)
+        self.service._put('tasks', delegate)
+        with self.service.transaction():
+            state = self.service._setting('work-source:assigned')
+            state['native_links'] = {self.item['id']: dict(updated_at=self.item['updated_at'],
+                                                         task_ids=['older-native'], decision_ids=[])}
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                                    ('work-source:assigned', json.dumps(state)))
+        with patch.object(self.service.kanban, 'call', wraps=self.service.kanban.call) as calls:
+            self.audit()
+        snapshots = [call.args[0] for call in calls.call_args_list if call.args[0]['op'] == 'snapshot']
+        self.assertEqual([call['native_ids'] for call in snapshots], [['new-native', 'older-native']])

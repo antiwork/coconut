@@ -83,8 +83,8 @@ def answered_decisions(item, source, tasks, decisions, *, sole_source=False):
 
 
 def native_bindings(items, bindings, tasks, native_tasks, decisions, source, *, sole_source):
-    """Derive source links from saved origins. Hermes owns their lifecycle."""
-    native_ids = {task['id'] for task in native_tasks.values()}
+    """Derive source links from saved origins. None requests IDs for later native verification."""
+    native_ids = {task['id'] for task in native_tasks.values()} if native_tasks is not None else None
     children = {}
     for task in tasks.values():
         for field in ('parent_task_id', '_assignment_task_id'):
@@ -115,10 +115,12 @@ def native_bindings(items, bindings, tasks, native_tasks, decisions, source, *, 
                 continue
             seen.add(identity)
             task = tasks.get(identity, {})
-            native_id = identity if identity in native_ids else task.get('_native_outcome_id')
-            if native_id in native_ids:
+            native_id = task.get('_native_outcome_id')
+            if (native_ids is None and identity not in tasks) or (native_ids is not None and identity in native_ids):
+                native_id = identity
+            if native_id and (native_ids is None or native_id in native_ids):
                 linked.add(native_id)
-            linked.update(key for key in task.get('_source_native_ids', []) if key in native_ids)
+            linked.update(key for key in task.get('_source_native_ids', []) if native_ids is None or key in native_ids)
             pending.extend(children.get(identity, []))
         decision_ids = {decision['id'] for decision in decisions.values()
                         if decision.get('status') == 'pending' and (
@@ -272,6 +274,25 @@ class WorkSources:
                 for identity, binding in imported.items():
                     if identity not in bindings or (binding.get('updated_at') or '') > (bindings[identity].get('updated_at') or ''):
                         bindings[identity] = binding
+                native = None
+                if self.kanban and getattr(self.provider, 'supports_native_outcomes', False):
+                    with self.lock:
+                        lookup_tasks = {task['id']: task for task in self._all('tasks')}
+                        pending = {d['id']: d for d in (json.loads(row[0]) for row in self.db.execute(
+                            "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending'"))}
+                    requested = {identity: dict(binding) for identity, binding in bindings.items()}
+                    native_bindings(items, requested, lookup_tasks, None, pending, source,
+                                    sole_source=sum(s['bot_id'] == bot['id'] for s in sources) == 1)
+                    needed = {item['id']: item['updated_at'] for item in items}
+                    needed.update({identity: binding['updated_at'] for identity, binding in requested.items()
+                                   if identity not in needed and binding.get('decision_ids')})
+                    native_ids = {key for identity, binding in requested.items()
+                                  if identity in needed and binding.get('updated_at') == needed[identity]
+                                  for key in binding.get('task_ids', [])}
+                    native = dict(self.kanban.tasks)
+                    if native_ids:
+                        snapshot_rows = self.kanban.call({'op': 'snapshot', 'native_ids': sorted(native_ids)})['tasks']
+                        native = {task['external_id']: task for task in snapshot_rows}
                 with self.transaction():
                     if self.stopping.is_set() or self.restart_pending:
                         return
@@ -287,7 +308,6 @@ class WorkSources:
                         if item.get('id') and item.get('updated_at'):
                             audit_owners.setdefault((item['id'], item['updated_at']), []).append(task['id'])
                     current = datetime.now(timezone.utc)
-                    native = self.kanban.tasks if self.kanban and getattr(self.provider, 'supports_native_outcomes', False) else None
                     if native is not None:
                         native_bindings(items, bindings, tasks, native, decisions, source,
                             sole_source=sum(s['bot_id'] == source['bot_id'] for s in sources) == 1)
@@ -411,7 +431,7 @@ class WorkSources:
                     state.update(checked_at=current.isoformat(), missing=[item['id'] for item in gaps], error=None,
                                  next_check=time.time() + max(60, source.get('interval_seconds', 600)))
                     self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(state)))
-            except (OSError, ValueError, subprocess.SubprocessError) as error:
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 # Retain prior coverage on failed reads. Never turn a partial fetch into an empty Plate.
                 with self.transaction():
                     state.update(error=type(error).__name__, next_check=time.time() + 60,
