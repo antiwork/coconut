@@ -145,9 +145,11 @@ class PullRequestReviews:
         - no record ties the owner, or the target and its work chain, or their executions to this PR: no PR record,
           claim, current review, or merge card;
         - the target is not work that serves this PR. That work starts at every task tied to this PR, except a
-          human-origin intake that also holds provider-observed records of other PRs, and it includes everything
-          delegated from there, and every task that its saved waits name, so the owner is in it whenever the target
-          is. A worker's own execution, claims, or lineage never leave it;
+          human-origin intake that also holds provider-observed records of other PRs and has no recorded review of
+          this PR. A recorded review is a current `_pr_review`, or reviewed heads saved on the PR record of the
+          task's bot when the task owns that record or the record's owner has moved by a recorded transfer. The work
+          includes everything delegated from there, and every task that its saved waits name, so the owner is in it
+          whenever the target is. A worker's own execution, claims, or lineage never leave it;
         - every PR that does tie the owner is a provider-observed record of its bot, and one such record was
           created by the owner's own recorded lineage. A claim alone, or the bot tracking that PR, is not enough;
         - the target is the owner's own delegation, or has provider-observed PR records of its own.
@@ -199,12 +201,23 @@ class PullRequestReviews:
         target_executions = {executions[identity] for identity in target if identity in executions}
         def tied(task):
             return task['id'] in target or executions[task['id']] in target_executions
+        def reviewing(identity):
+            # The monitor records a review of this PR on the review owner: its current request, or the heads it saved
+            # on the owner's PR record. The request clears at the next turn. A transfer or a continuation moves the
+            # owner and records the move, but the record keeps its heads and forgets every earlier owner, so after a
+            # recorded move each task of the record's bot that tracks this PR may have been one of them.
+            task = tasks[identity]
+            return (((task.get('_pr_review') or {}).get('url') or '').lower() == url
+                    or any(a['url'].lower() == url and a['bot_id'] == task['bot_id'] and self._pr_reviewed_heads(a)
+                           and (a.get('_review_task_id') == identity or a.get('_review_ownership_at'))
+                           for a in artifacts))
         def shared_intake(identity):
-            # Only a task that a person started, and that holds records of other PRs, serves several PRs at once.
+            # Only a task that a person started, that holds records of other PRs, and that no review of this PR
+            # names serves several PRs at once. A recorded review of this PR makes it target work.
             task = tasks[identity]
             others = named({identity}) - {url}
             return (not task.get('source_task_id') and not task.get('parent_task_id') and bool(others)
-                    and all((task['bot_id'], value) in observed for value in others))
+                    and all((task['bot_id'], value) in observed for value in others) and not reviewing(identity))
         scope = {}
         for seed in sorted(identity for identity in target if identity in tasks and not shared_intake(identity)):
             if seed not in scope:
