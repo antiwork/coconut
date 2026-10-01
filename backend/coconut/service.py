@@ -1739,7 +1739,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     owner = self._pr_review_owner(peers)
                     if not owner or owner['_review_task_id'] not in related_ids:
                         continue
-                    artifact.update(_review_task_id=task['id'], _review_ownership_at=now())
+                    self._set_review_owner(artifact, task['id'])
+                    artifact['_review_ownership_at'] = now()
                     self._put('artifacts', artifact)
                     self._event('artifact.updated', self._public(artifact), artifact['bot_id'], artifact.get('task_id'))
             self._put('tasks', continuation_owner)
@@ -2729,8 +2730,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self.pr_refresh_requested.set()
                 return self._public(existing)
             artifact = dict(id=uid(), bot_id=task['bot_id'], task_id=task_id, title=(observation.title or 'Pull request')[:200], kind='pr', status=observation.state, preview=observation.detail, url=url, created_at=now(), checked_at=observation.checked_at, observed_at=observation.checked_at, head_sha=observation.head_sha, refresh_error=None, pr_state=observation.pr_state, draft=observation.draft, checks_state=observation.checks_state, required_checks_state=observation.required_checks_state, review_checks=observation.review_checks, check_failures=observation.check_failures)
+            # The list of owners starts with the first one, so this record knows every owner it will have.
+            artifact['_review_owners'] = []
             if review_task:
-                artifact['_review_task_id'] = review_task['id']
+                self._set_review_owner(artifact, review_task['id'])
             self._set_work_activity(artifact, task, payload)
             self._put('artifacts', artifact)
             if task_id:

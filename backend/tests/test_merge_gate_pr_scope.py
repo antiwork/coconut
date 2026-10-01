@@ -7,6 +7,8 @@ from uuid import uuid4
 from coconut.providers import FixtureProvider
 from coconut.service import Service, ServiceError, YieldForDecision
 
+import legacy_work_sync
+import test_targeted_bot_continuation as continuation_fixtures
 from saved_pr_scope_topology import ARTIFACTS, TASKS
 
 TARGET = 'https://github.com/example/target/pull/3170'
@@ -1003,6 +1005,436 @@ class MergeGateReviewTransferTests(unittest.TestCase):
         # The resumed owner's own unread work still gates the card.
         self.receipt('resumed-wait', after['_review_task_id'], _wait_task_id=EXPERT)
         self.assertBlocked()
+
+
+class MergeGateReviewHistoryTests(unittest.TestCase):
+    """The PR record lists every owner it has had, from its first one, so a transfer names who reviewed.
+
+    The records here are created by the service's own registration, not written by the test. A record that lists
+    its owners names exactly them. A record without that list, or with one that is not consistent, has lost its
+    earlier owners and keeps gating every task of its bot that tracks the PR.
+    """
+
+    write = MergeGatePullRequestScopeTests.write
+    patch = MergeGatePullRequestScopeTests.patch
+    receipt = MergeGatePullRequestScopeTests.receipt
+    saved = MergeGatePullRequestScopeTests.saved
+    validate = MergeGatePullRequestScopeTests.validate
+    assertOpen = MergeGatePullRequestScopeTests.assertOpen
+    assertBlocked = MergeGatePullRequestScopeTests.assertBlocked
+    tearDown = MergeGatePullRequestScopeTests.tearDown
+    raw = MergeGateNativeReceiptBoundaryTests.raw
+    bytes_of = MergeGateNativeReceiptBoundaryTests.bytes_of
+    call = MergeGateNativeReceiptBoundaryTests.call
+    ask = MergeGateNativeReceiptBoundaryTests.ask
+    assertCreated = MergeGateNativeReceiptBoundaryTests.assertCreated
+    assertRefused = MergeGateNativeReceiptBoundaryTests.assertRefused
+    delegate = MergeGateTargetDelegationTests.delegate
+    hold = MergeGateTargetDelegationTests.hold
+    worker = MergeGateTargetDelegationTests.worker
+    assertRefusedCard = MergeGateTargetDelegationTests.assertRefusedCard
+    record = MergeGateReviewTransferTests.record
+    transfer_review = MergeGateReviewTransferTests.transfer_review
+    second_owner = MergeGateReviewTransferTests.second_owner
+    pass_to_the_third_owner = MergeGateReviewTransferTests.pass_to_the_third_owner
+    person_started_review = MergeGateTargetReviewIdentityTests.person_started_review
+
+    def setUp(self):
+        from coconut.pr_tracking import PRObservation
+        MergeGateNativeReceiptBoundaryTests.setUp(self)
+        observation = PRObservation('pending', 'a' * 40, 'Change', TARGET, 'open', '2026-10-01T15:00:00Z', True, 'open',
+                                    False, 'pending')
+        self.service.pr_tracker = type('Tracker', (), {
+            'observe': lambda _, url: observation, 'observe_discussion': lambda _, url: None,
+            'observe_issue': lambda _, url: dict(updated_at=SOURCE_REVISION)})()
+        # Replace the saved Gumroad record of the target with the one that registration creates for the same review.
+        with self.service.transaction():
+            self.service.db.execute('DELETE FROM artifacts WHERE id=?', (self.record()['id'],))
+        self.patch('f21ea9d7', status='working')
+        self.service._register_pr_artifact('f21ea9d7', dict(url=TARGET))
+        self.patch('f21ea9d7', status='completed')
+        for artifact in self.service._all('artifacts'):
+            if artifact['url'] == TARGET and artifact['bot_id'] == self.bots['Gumroad Dev']['id']:
+                self.service._put('artifacts', dict(artifact, _reviewed_head='a' * 40, _reviewed_heads=['a' * 40]))
+
+    def set_record(self, **fields):
+        self.service._put('artifacts', dict(self.record(), **fields))
+
+    def shared_intake(self):
+        """A person-started task of the review's own bot that tracks both PRs and never owned the review."""
+        gumroad = self.bots['Gumroad Dev']['id']
+        self.delegate('shared-intake', 'a43e8fe6', source_task_id=None, parent_task_id=None, _native_relay=False,
+                      _requester_reply_task_id='a43e8fe6', bot_id=gumroad, _reported_pr_urls=[SIBLING, TARGET])
+        self.service._put('artifacts', dict(
+            id='intake-sibling', bot_id=gumroad, task_id='shared-intake', _review_task_id='shared-intake', kind='pr',
+            url=SIBLING, title='Change', status='open', pr_state='open', head_sha='a' * 40,
+            created_at='2026-10-01T14:00:00.000000Z', observed_at='2026-10-01T15:00:00.000000Z'))
+        self.worker('intake-worker', source='shared-intake')
+        self.hold('intake-worker', helper='intake-helper')
+
+    def test_registration_starts_the_history_with_the_first_owner(self):
+        self.assertEqual(self.record().get('_review_owners'), ['f21ea9d7'])
+        self.assertEqual(self.record()['_review_task_id'], 'f21ea9d7')
+
+    def test_the_history_starts_with_the_review_owner_and_not_the_task_that_reported(self):
+        gumroad = self.bots['Gumroad Dev']['id']
+        self.delegate('exec-owner', 'a43e8fe6', bot_id=gumroad, _native_outcome_id='t_exec-owner')
+        self.delegate('exec-turn', 'a43e8fe6', status='working', bot_id=gumroad, _execution_session_id='exec-owner')
+        other = 'https://github.com/example/target/pull/3171'
+        self.service._register_pr_artifact('exec-turn', dict(url=other))
+        record = next(a for a in self.service._all('artifacts') if a['url'] == other)
+        self.assertEqual((record['task_id'], record['_review_task_id']), ('exec-turn', 'exec-owner'))
+        self.assertEqual(record.get('_review_owners'), ['exec-owner'])
+
+    def test_every_move_of_the_owner_is_appended_in_order(self):
+        self.transfer_review()
+        self.assertEqual(self.record().get('_review_owners'), ['f21ea9d7', 'review-owner'])
+        self.service._register_pr_artifact(None, dict(url=TARGET, review_task_id='f21ea9d7'), bot_id=self.bots['Gumroad Dev']['id'])
+        self.assertEqual(self.record().get('_review_owners'), ['f21ea9d7', 'review-owner', 'f21ea9d7'])
+        # A repeated report by the same owner adds nothing.
+        self.patch('f21ea9d7', status='working')
+        self.service._register_pr_artifact('f21ea9d7', dict(url=TARGET))
+        self.assertEqual(self.record().get('_review_owners'), ['f21ea9d7', 'review-owner', 'f21ea9d7'])
+
+    def test_a_continuation_through_the_progress_path_is_appended(self):
+        held = {table: self.service._get(table, identity) for table, identity in
+                (('decisions', 'xcode-decision'), ('native_receipts', 'sibling-wait'), ('tasks', SETUP))}
+        self.service._put('decisions', dict(held['decisions'], status='dismissed'))
+        self.service._put('native_receipts', dict(held['native_receipts'], _process_delivery='delivered'))
+        self.patch(SETUP, status='completed')
+        self.patch(CALLER, status='completed')
+        continuation = self.delegate('review-continuation', 'a43e8fe6', status='working', source_task_id=None,
+                                     parent_task_id=None, _requester_reply_task_id=None, _native_relay=False,
+                                     bot_id=self.bots['Gumroad Dev']['id'])
+        record = self.record()
+        self.service._bind_pr_progress(record, continuation)
+        self.service._put('artifacts', record)
+        self.assertEqual(self.record().get('_review_owners'), ['f21ea9d7', 'review-continuation'])
+
+    def test_a_resume_appends_the_resumed_task_and_a_new_bot_record_starts_its_own_history(self):
+        record = self.record()
+        self.write(f"/v1/work/items/{record['id']}/cancel", {})
+        self.write(f"/v1/work/items/{record['id']}/resume", {})
+        record = self.record()
+        owners = record.get('_review_owners') or []
+        self.assertEqual((owners[:1], owners[-1:], len(owners)), (['f21ea9d7'], [record['_review_task_id']], 2))
+
+    def test_a_same_bot_shared_intake_that_never_owned_the_review_stays_exempt_after_a_transfer(self):
+        self.shared_intake()
+        self.transfer_review()
+        self.assertOpen()
+
+    def test_the_card_is_created_through_the_native_receipt_route_while_that_intake_waits_unread(self):
+        self.shared_intake()
+        self.transfer_review()
+        call = self.call()
+        before = {table: self.bytes_of(table) for table in ('native_receipts', 'decisions')}
+        decision = self.assertCreated(call['id'])
+        self.assertEqual((decision['merge_pr_url'], decision['status'], decision['task_id']), (TARGET, 'pending', CALLER))
+        # Neither the intake's unread wait, its worker, nor the sibling decision and wait changed.
+        for identity in ('wait-intake-worker', 'sibling-wait'):
+            self.assertEqual(self.raw('native_receipts', identity), before['native_receipts'][identity])
+        self.assertEqual(self.service._get('decisions', 'xcode-decision'), self.sibling_decision)
+        self.assertEqual(self.service._get('tasks', 'intake-worker')['status'], 'needs_you')
+        self.assertEqual(self.service._get('tasks', SETUP)['status'], 'needs_you')
+
+    def test_a_former_reviewer_stays_gated_after_repeated_transfers_through_the_native_receipt_route(self):
+        self.shared_intake()
+        self.second_owner()
+        self.pass_to_the_third_owner()
+        self.assertBlocked()
+        call = self.call()
+        before = {name: self.bytes_of(name) for name in ('tasks', 'native_receipts', 'decisions', 'artifacts')}
+        self.assertRefusedCard(call['id'])
+        self.assertEqual({name: self.bytes_of(name) for name in before}, before)
+        self.assertEqual(self.service._get('native_receipts', call['id'])['state'], 'executing')
+        self.assertEqual(self.service._get('tasks', CALLER)['status'], 'working')
+        self.assertEqual(self.service._get('decisions', 'xcode-decision'), self.sibling_decision)
+        self.assertNotIn('_process_delivery', self.service._get('native_receipts', 'sibling-wait'))
+        # Once the former reviewer's worker reads its result, only the intake's unread wait is left, and it is exempt.
+        self.service._put('native_receipts', dict(self.service._get('native_receipts', 'wait-b-worker'),
+                                                  _process_delivery='consumed'))
+        self.assertEqual(self.assertCreated(call['id'])['merge_pr_url'], TARGET)
+        self.assertEqual(self.record().get('_review_owners'), ['f21ea9d7', 'review-b', 'review-c'])
+
+    def test_the_first_owner_stays_gated_after_a_transfer(self):
+        self.shared_intake()
+        self.transfer_review()
+        self.assertOpen()
+        self.worker()
+        self.hold('target-worker')
+        self.assertBlocked()
+
+    def test_the_current_owner_stays_gated(self):
+        self.shared_intake()
+        self.transfer_review()
+        self.worker('owner-worker', source='review-owner')
+        self.hold('owner-worker', helper='owner-helper')
+        self.assertBlocked()
+
+    def test_unknown_or_inconsistent_history_fails_closed(self):
+        self.shared_intake()
+        self.transfer_review()
+        self.assertOpen()
+        cases = {
+            'a record that predates the list': {'_review_owners': None},
+            'a list that is not a list': {'_review_owners': 'f21ea9d7,review-owner'},
+            'an empty list with an owner': {'_review_owners': []},
+            'a list whose last owner is not the current one': {'_review_owners': ['f21ea9d7', 'review-c']},
+            'a list with an entry that is not a task ID': {'_review_owners': ['f21ea9d7', None, 'review-owner']},
+        }
+        for name, fields in cases.items():
+            with self.subTest(name):
+                original = self.record()
+                record = {k: v for k, v in original.items() if k != '_review_owners'}
+                if fields['_review_owners'] is not None:
+                    record.update(fields)
+                self.service._put('artifacts', record)
+                self.assertBlocked()
+                self.service._put('artifacts', original)
+                self.assertOpen()
+
+    def test_an_owner_written_without_the_list_makes_the_history_unknown(self):
+        self.shared_intake()
+        self.transfer_review()
+        self.assertOpen()
+        # A move that did not append to the list leaves its last entry behind the current owner.
+        self.set_record(_review_task_id='someone-else')
+        self.assertBlocked()
+
+    def test_a_record_that_moved_without_a_list_gates_every_task_of_its_bot(self):
+        self.shared_intake()
+        self.service._put('artifacts', {k: v for k, v in self.record().items() if k != '_review_owners'})
+        self.transfer_review()
+        self.assertNotIn('_review_owners', self.record())
+        self.assertBlocked()
+
+    def test_the_history_does_not_reach_another_bot(self):
+        self.shared_intake()
+        self.transfer_review()
+        self.assertOpen()
+        self.assertEqual(self.service._get('decisions', 'xcode-decision'), self.sibling_decision)
+
+    def test_caller_binding_and_receipt_rollback_hold_beside_the_history(self):
+        self.shared_intake()
+        self.transfer_review()
+        call = self.call()
+        self.patch('f21ea9d7', status='working')
+        before = {name: self.bytes_of(name) for name in ('tasks', 'native_receipts', 'decisions')}
+        self.assertRefused(call['id'], 409, 'does not match this tool call', caller='f21ea9d7')
+        self.assertRefused('no-such-receipt', 404, '.')
+        self.patch('f21ea9d7', status='completed')
+        self.patch(CALLER, status='needs_you')
+        self.assertRefused(call['id'], 409, 'cannot execute a tool now')
+        self.patch(CALLER, status='working')
+        self.assertEqual(self.service._get('native_receipts', call['id'])['state'], 'executing')
+        self.assertEqual(self.service._get('decisions', 'xcode-decision'), self.sibling_decision)
+        self.assertCreated(call['id'])
+
+    def person_started_owner(self, identity):
+        """A person-started task of the review's bot that tracks both PRs, with its own sibling record."""
+        gumroad = self.bots['Gumroad Dev']['id']
+        self.delegate(identity, 'a43e8fe6', source_task_id=None, parent_task_id=None, _native_relay=False,
+                      _requester_reply_task_id='a43e8fe6', bot_id=gumroad, _reported_pr_urls=[SIBLING, TARGET])
+        self.service._put('artifacts', dict(
+            id=identity + '-sibling', bot_id=gumroad, task_id=identity, _review_task_id=identity, kind='pr',
+            url=SIBLING, title='Change', status='open', pr_state='open', head_sha='a' * 40,
+            created_at='2026-10-01T14:00:00.000000Z', observed_at='2026-10-01T15:00:00.000000Z'))
+
+    def move_to(self, identity):
+        """A real supported transfer to a task that did not review before."""
+        gumroad = self.bots['Gumroad Dev']['id']
+        self.delegate(identity, 'a43e8fe6', status='working', source_task_id=None, parent_task_id=None,
+                      _requester_reply_task_id=None, _native_relay=False, bot_id=gumroad)
+        self.service._register_pr_artifact(None, dict(url=TARGET, review_task_id=identity), bot_id=gumroad)
+
+    def assert_history_unknown(self):
+        record = self.record()
+        self.assertNotIn('_review_owners', record)
+        self.assertTrue(record.get('_review_history_unknown'))
+
+    def test_a_stale_list_is_not_repaired_by_the_next_move(self):
+        self.shared_intake()
+        self.second_owner()
+        # An owner is written without the list, which no supported writer does: C owns, and the list stops at B.
+        self.person_started_owner('review-c')
+        self.set_record(_review_task_id='review-c')
+        self.worker('c-worker', source='review-c')
+        self.hold('c-worker', helper='c-helper')
+        self.service._put('native_receipts', dict(self.service._get('native_receipts', 'wait-b-worker'), _process_delivery='consumed'))
+        self.assertBlocked()
+        # Two real moves later, C is still not in a list that looks complete, so the gate must still hold.
+        for later in ('review-d', 'review-e'):
+            self.move_to(later)
+            self.assertBlocked()
+        self.assert_history_unknown()
+        self.assertEqual(self.record()['_review_task_id'], 'review-e')
+
+    def test_an_empty_list_is_not_repaired_by_the_next_move(self):
+        self.shared_intake()
+        # The first owner is a person-started task, so only a list that names it can exempt its delegate.
+        self.person_started_review()
+        self.set_record(_review_owners=[])
+        self.worker()
+        self.hold('target-worker')
+        self.assertBlocked()
+        for later in ('review-d', 'review-e'):
+            self.move_to(later)
+            self.assertBlocked()
+        self.assert_history_unknown()
+
+    def test_a_list_that_is_not_trusted_is_dropped_by_the_next_move(self):
+        for name, owners in {'not a list': 'f21ea9d7', 'entry that is not a task ID': ['f21ea9d7', None]}.items():
+            with self.subTest(name):
+                self.set_record(_review_owners=owners, _review_task_id='f21ea9d7')
+                self.move_to('review-' + name.split()[0])
+                self.assert_history_unknown()
+                self.service._put('artifacts', {k: v for k, v in self.record().items()
+                                                if k not in ('_review_history_unknown',)} | dict(_review_owners=['f21ea9d7'],
+                                                                                              _review_task_id='f21ea9d7'))
+
+    def test_a_progress_move_does_not_repair_an_inconsistent_list(self):
+        self.person_started_review()
+        self.set_record(_review_owners=[])
+        held = {table: self.service._get(table, identity) for table, identity in
+                (('decisions', 'xcode-decision'), ('native_receipts', 'sibling-wait'), ('tasks', SETUP))}
+        self.service._put('decisions', dict(held['decisions'], status='dismissed'))
+        self.service._put('native_receipts', dict(held['native_receipts'], _process_delivery='delivered'))
+        self.patch(SETUP, status='completed')
+        self.patch(CALLER, status='completed')
+        continuation = self.delegate('review-continuation', 'a43e8fe6', status='working', source_task_id=None,
+                                     parent_task_id=None, _requester_reply_task_id=None, _native_relay=False,
+                                     bot_id=self.bots['Gumroad Dev']['id'])
+        record = self.record()
+        self.service._bind_pr_progress(record, continuation)
+        self.service._put('artifacts', record)
+        self.assertEqual(self.record()['_review_task_id'], 'review-continuation')
+        # The first owner lost its place in the list, and its delegate still gates once the sibling work holds again.
+        for table, record in held.items():
+            self.service._put(table, record)
+        self.patch(CALLER, status='working')
+        self.worker()
+        self.hold('target-worker')
+        self.assertBlocked()
+        self.assert_history_unknown()
+
+    def test_the_native_receipt_route_refuses_a_card_for_a_former_reviewer_of_an_unknown_history(self):
+        self.shared_intake()
+        self.second_owner()
+        self.person_started_owner('review-c')
+        self.set_record(_review_task_id='review-c')
+        self.worker('c-worker', source='review-c')
+        self.hold('c-worker', helper='c-helper')
+        self.move_to('review-d')
+        self.move_to('review-e')
+        for identity in ('wait-b-worker', 'wait-intake-worker'):
+            self.service._put('native_receipts', dict(self.service._get('native_receipts', identity), _process_delivery='consumed'))
+        call = self.call()
+        before = {name: self.bytes_of(name) for name in ('tasks', 'native_receipts', 'decisions', 'artifacts')}
+        self.assertRefusedCard(call['id'])
+        self.assertEqual({name: self.bytes_of(name) for name in before}, before)
+        self.assertEqual(self.service._get('native_receipts', call['id'])['state'], 'executing')
+        self.assertEqual(self.service._get('tasks', CALLER)['status'], 'working')
+        self.assertEqual(self.service._get('decisions', 'xcode-decision'), self.sibling_decision)
+        self.assertNotIn('_process_delivery', self.service._get('native_receipts', 'sibling-wait'))
+        # Unknown history gates every task of the bot, so the card waits until the former reviewer's result is read.
+        self.service._put('native_receipts', dict(self.service._get('native_receipts', 'wait-c-worker'), _process_delivery='consumed'))
+        self.assertEqual(self.assertCreated(call['id'])['merge_pr_url'], TARGET)
+
+    def test_a_complete_history_still_exempts_the_intake_after_repeated_moves(self):
+        self.shared_intake()
+        self.move_to('review-d')
+        self.move_to('review-e')
+        self.assertEqual(self.record().get('_review_owners'), ['f21ea9d7', 'review-d', 'review-e'])
+        self.assertNotIn('_review_history_unknown', self.record())
+        self.assertOpen()
+
+    def test_a_record_marked_unknown_gates_every_task_of_its_bot_without_a_recorded_transfer(self):
+        self.shared_intake()
+        self.assertOpen()
+        # A move that was not a transfer, such as a replacement or a resume, marks the record and leaves no transfer time.
+        record = {k: v for k, v in self.record().items() if k not in ('_review_owners', '_review_ownership_at')}
+        self.service._put('artifacts', dict(record, _review_history_unknown=True))
+        self.assertNotIn('_review_ownership_at', self.record())
+        self.assertBlocked()
+
+    def test_a_detached_record_keeps_its_history_and_a_rebind_continues_it(self):
+        desk = next(a for a in self.service._all('artifacts') if a['url'] == TARGET and a['bot_id'] == self.bots['Desk']['id'])
+        self.write(f"/v1/work/items/{desk['id']}/cancel", {})
+        self.write(f"/v1/work/items/{desk['id']}/resume", {})
+        record = self.record()
+        # The resumed task belongs to the Desk bot, so the Gumroad record is detached and keeps its complete list.
+        self.assertIsNone(record['_review_task_id'])
+        self.assertEqual(record.get('_review_owners'), ['f21ea9d7'])
+        self.assertNotIn('_review_history_unknown', record)
+        self.move_to('review-d')
+        self.assertEqual(self.record().get('_review_owners'), ['f21ea9d7', 'review-d'])
+        self.assertNotIn('_review_history_unknown', self.record())
+
+    def test_a_record_without_a_list_is_marked_when_its_owner_leaves(self):
+        self.service._put('artifacts', {k: v for k, v in self.record().items() if k != '_review_owners'})
+        self.move_to('review-d')
+        record = self.record()
+        self.assertNotIn('_review_owners', record)
+        self.assertTrue(record.get('_review_history_unknown'))
+        self.assertEqual(record['_review_task_id'], 'review-d')
+
+
+class MergeGateNativeContinuationHistoryTests(unittest.TestCase):
+    """A native continuation of a finished review moves the PR record's owner, and the history records the move."""
+
+    setUpClass = classmethod(lambda cls: legacy_work_sync.scope()[0]())
+    tearDownClass = classmethod(lambda cls: legacy_work_sync.scope()[1]())
+    setUp = continuation_fixtures.TargetedBotContinuationTests.setUp
+    tearDown = continuation_fixtures.TargetedBotContinuationTests.tearDown
+    write = continuation_fixtures.TargetedBotContinuationTests.write
+    prepare = continuation_fixtures.TargetedBotContinuationTests.prepare
+    send = continuation_fixtures.TargetedBotContinuationTests.send
+
+    def test_the_continuation_is_appended_after_the_first_owner(self):
+        from dataclasses import replace
+        from test_service_pr import Tracker, observation
+        previous, source = self.prepare()
+        self.service.pr_tracker = Tracker(replace(observation(), pr_state='open', draft=False, checks_state='running'))
+        self.service._put('tasks', dict(previous, status='working'))
+        artifact = self.service.emit(previous['id'], 'artifact', dict(kind='pr', url=observation().url))
+        self.service._put('tasks', previous)
+        self.assertEqual(self.service._get('artifacts', artifact['id']).get('_review_owners'), [previous['id']])
+        _, receipt = self.send(source, previous)
+        continued = self.service._get('tasks', receipt['task_id'])
+        record = self.service._get('artifacts', artifact['id'])
+        self.assertEqual((record['_review_task_id'], record.get('_review_owners')), (continued['id'], [previous['id'], continued['id']]))
+        self.assertTrue(record.get('_review_ownership_at'))
+
+    def register(self):
+        from dataclasses import replace
+        from test_service_pr import Tracker, observation
+        previous, source = self.prepare()
+        self.service.pr_tracker = Tracker(replace(observation(), pr_state='open', draft=False, checks_state='running'))
+        self.service._put('tasks', dict(previous, status='working'))
+        artifact = self.service.emit(previous['id'], 'artifact', dict(kind='pr', url=observation().url))
+        self.service._put('tasks', previous)
+        return previous, source, artifact['id']
+
+    def test_a_continuation_does_not_repair_an_inconsistent_list(self):
+        previous, source, identity = self.register()
+        # A list that lost an owner: it is empty while the record has an owner.
+        self.service._put('artifacts', dict(self.service._get('artifacts', identity), _review_owners=[]))
+        _, receipt = self.send(source, previous)
+        continued = self.service._get('tasks', receipt['task_id'])
+        record = self.service._get('artifacts', identity)
+        self.assertEqual(record['_review_task_id'], continued['id'])
+        self.assertNotIn('_review_owners', record)
+        self.assertTrue(record.get('_review_history_unknown'))
+
+    def test_a_continuation_of_a_record_without_a_list_marks_the_history_unknown(self):
+        previous, source, identity = self.register()
+        self.service._put('artifacts', {k: v for k, v in self.service._get('artifacts', identity).items() if k != '_review_owners'})
+        _, receipt = self.send(source, previous)
+        record = self.service._get('artifacts', identity)
+        self.assertEqual(record['_review_task_id'], receipt['task_id'])
+        self.assertNotIn('_review_owners', record)
+        self.assertTrue(record.get('_review_history_unknown'))
 
 
 if __name__ == '__main__':

@@ -204,13 +204,19 @@ class PullRequestReviews:
         def reviewing(identity):
             # The monitor records a review of this PR on the review owner: its current request, or the heads it saved
             # on the owner's PR record. The request clears at the next turn. A transfer or a continuation moves the
-            # owner and records the move, but the record keeps its heads and forgets every earlier owner, so after a
-            # recorded move each task of the record's bot that tracks this PR may have been one of them.
+            # owner. A record that lists every owner it has had names the tasks that reviewed. A record without that
+            # list that has moved, or whose list is not consistent, has lost its earlier owners, so each task of the
+            # record's bot that tracks this PR may have been one of them.
             task = tasks[identity]
+            def named(a):
+                owners = self._review_owner_history(a)
+                if owners is None:
+                    return (a.get('_review_task_id') == identity or bool(a.get('_review_ownership_at'))
+                            or bool(a.get('_review_history_unknown')))
+                return identity in owners or a.get('_review_task_id') == identity
             return (((task.get('_pr_review') or {}).get('url') or '').lower() == url
                     or any(a['url'].lower() == url and a['bot_id'] == task['bot_id'] and self._pr_reviewed_heads(a)
-                           and (a.get('_review_task_id') == identity or a.get('_review_ownership_at'))
-                           for a in artifacts))
+                           and named(a) for a in artifacts))
         def shared_intake(identity):
             # Only a task that a person started, that holds records of other PRs, and that no review of this PR
             # names serves several PRs at once. A recorded review of this PR makes it target work.
@@ -322,13 +328,45 @@ class PullRequestReviews:
                     return True
         return False
 
+    @staticmethod
+    def _set_review_owner(artifact, identity):
+        """Move a PR record to a new review owner and keep every owner it has had, in order.
+
+        A record that predates the list keeps none, so its earlier owners stay unknown. A record that Coconut
+        creates starts the list with its first owner (see _register_pr_artifact), so the list is complete. A list
+        that is not consistent with the owner before this move has lost an owner, and a new entry would hide that
+        loss, so the list is dropped. Whenever an owner leaves a record whose history is unknown, the record is
+        marked so that the history stays unknown and later moves cannot make it look complete or unmoved.
+        """
+        owners, current = artifact.get('_review_owners'), artifact.get('_review_task_id')
+        if owners is None or PullRequestReviews._review_owner_history(artifact) is None:
+            artifact.pop('_review_owners', None)
+            if current and current != identity:
+                artifact['_review_history_unknown'] = True
+        elif identity and (not owners or owners[-1] != identity):
+            owners.append(identity)
+        artifact['_review_task_id'] = identity
+
+    @staticmethod
+    def _review_owner_history(artifact):
+        """The ordered owners of a PR record, or None when the record does not hold a complete, consistent list.
+
+        The list is trusted only when each entry is a task ID and its last entry is the record's current owner, so
+        an owner written by a path that did not record it, or a changed list, leaves the history unknown.
+        """
+        owners, current = artifact.get('_review_owners'), artifact.get('_review_task_id')
+        if (not isinstance(owners, list) or not all(isinstance(identity, str) and identity for identity in owners)
+                or (current and (not owners or owners[-1] != current))):
+            return None
+        return owners
+
     def _bind_pr_review(self, artifact, task, *, transfer=False):
         # A late report cannot replace an explicit resume from the person.
         if task and not transfer and self._pr_report_superseded(artifact, task):
             return
         if task and (transfer or not self._pr_review_source_current(artifact)) and artifact.get('_review_task_id') != task['id']:
             with self.transaction():
-                artifact['_review_task_id'] = task['id']
+                self._set_review_owner(artifact, task['id'])
                 if transfer:
                     from .service import now
                     artifact['_review_ownership_at'] = now()
@@ -362,7 +400,7 @@ class PullRequestReviews:
             return
         # A new execution can continue a finished review. Status callbacks keep its return address.
         from .service import now
-        artifact['_review_task_id'] = owner['id']
+        self._set_review_owner(artifact, owner['id'])
         artifact['_review_ownership_at'] = now()
 
     def _pr_review_owner(self, peers):
@@ -404,7 +442,7 @@ class PullRequestReviews:
                     continue
                 owner = self._pr_review_source(artifact['bot_id'], artifact['_review_task_id'], tasks=tasks)
                 if owner['id'] != artifact['_review_task_id']:
-                    artifact['_review_task_id'] = owner['id']
+                    self._set_review_owner(artifact, owner['id'])
                     self._put('artifacts', artifact)
             bot_ids = {a['bot_id'] for a in self._all('artifacts') if a['kind'] == 'pr' and a.get('_review_task_id')
                        and (artifact_ids is None or a['id'] in artifact_ids)}
