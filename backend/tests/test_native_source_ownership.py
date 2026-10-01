@@ -230,3 +230,35 @@ print(board.kb.create_task(board.conn, title='Source follow-up', body='Verify',
         matches = [task for task in result['tasks'] if task['id'] == identity]
         self.assertEqual(len(matches), 1)
         self.assertTrue(matches[0]['unbound'])
+
+    def test_adapter_failure_retains_coverage_and_does_not_stop_other_source(self):
+        origin = self.source()
+        task = self.service._get('tasks', origin)
+        task.update(status='completed', _source_native_ids=['unavailable-native-task'])
+        self.service._put('tasks', task)
+        sources = [self.source_config, dict(self.source_config, id='other', bindings='other.json')]
+        (self.root / 'work-sources.json').write_text(json.dumps(sources))
+        before = self.service._setting('work-source:assigned')
+        with patch.object(self.service.kanban, 'call', side_effect=RuntimeError('Adapter unavailable')):
+            state = self.audit()
+        self.assertEqual(state['error'], 'RuntimeError')
+        self.assertEqual(state['task_id'], before['task_id'])
+        self.assertEqual(state['checked_at'], before['checked_at'])
+        other = self.service._setting('work-source:other')
+        self.assertIsNone(other['error'])
+        self.assertNotEqual(other['task_id'], origin)
+
+    def test_requested_native_ids_exclude_other_sources_and_closed_assignments(self):
+        origin = self.source()
+        task = self.service._get('tasks', origin)
+        task.update(status='completed', _source_native_ids=['current-native'])
+        self.service._put('tasks', task)
+        for identity, assignment in [
+                ('closed', dict(task['_source_assignment'], id='https://github.com/example/repo/issues/closed')),
+                ('other', dict(task['_source_assignment'], source_id='another-source'))]:
+            self.service._put('tasks', dict(task, id=identity, _source_assignment=assignment,
+                                           _source_native_ids=[identity + '-native']))
+        with patch.object(self.service.kanban, 'call', wraps=self.service.kanban.call) as calls:
+            self.audit()
+        snapshots = [call.args[0] for call in calls.call_args_list if call.args[0]['op'] == 'snapshot']
+        self.assertEqual([call['native_ids'] for call in snapshots], [['current-native']])

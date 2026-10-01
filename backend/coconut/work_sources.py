@@ -274,15 +274,31 @@ class WorkSources:
                         bindings[identity] = binding
                 native = None
                 if self.kanban and getattr(self.provider, 'supports_native_outcomes', False):
-                    native_ids = {identity for binding in bindings.values() for identity in binding.get('task_ids', [])}
-                    with self.lock:
-                        for row in self.db.execute(
-                                "SELECT json_extract(data,'$._source_native_ids') FROM tasks "
-                                "WHERE json_extract(data,'$.bot_id')=? "
-                                "AND json_type(data,'$._source_native_ids')='array'", (bot['id'],)):
-                            native_ids.update(json.loads(row[0]))
-                    snapshot_rows = self.kanban.call({'op': 'snapshot', 'native_ids': sorted(native_ids)})['tasks']
-                    native = {task['external_id']: task for task in snapshot_rows}
+                    needed = {item['id']: item['updated_at'] for item in items}
+                    needed.update({identity: binding['updated_at'] for identity, binding in bindings.items()
+                                   if identity not in needed and binding.get('decision_ids')})
+                    linked = {identity: binding for identity, binding in bindings.items()
+                              if identity in needed and binding.get('updated_at') == needed[identity]
+                              and binding.get('task_ids')}
+                    native_ids = {key for binding in linked.values() for key in binding['task_ids']}
+                    lookup = {identity: revision for identity, revision in needed.items() if identity not in linked}
+                    if lookup:
+                        with self.lock:
+                            origins = [json.loads(row[0]) for row in self.db.execute(
+                                "SELECT data FROM tasks WHERE json_extract(data,'$.bot_id')=? "
+                                "AND json_type(data,'$._source_native_ids')='array' AND ("
+                                "json_extract(data,'$._source_assignment.id') IN (SELECT value FROM json_each(?)) "
+                                "OR json_type(data,'$._source_assignment') IS NULL)", (bot['id'], json.dumps(list(lookup))))]
+                        sole_source = sum(s['bot_id'] == bot['id'] for s in sources) == 1
+                        for task in origins:
+                            origin = audit_item(task)
+                            if (origin.get('id') in lookup and origin.get('updated_at') == lookup[origin['id']]
+                                    and (origin.get('source_id') == source['id'] or (sole_source and not origin.get('source_id')))):
+                                native_ids.update(task['_source_native_ids'])
+                    native = dict(self.kanban.tasks)
+                    if native_ids:
+                        snapshot_rows = self.kanban.call({'op': 'snapshot', 'native_ids': sorted(native_ids)})['tasks']
+                        native = {task['external_id']: task for task in snapshot_rows}
                 with self.transaction():
                     if self.stopping.is_set() or self.restart_pending:
                         return
@@ -421,7 +437,7 @@ class WorkSources:
                     state.update(checked_at=current.isoformat(), missing=[item['id'] for item in gaps], error=None,
                                  next_check=time.time() + max(60, source.get('interval_seconds', 600)))
                     self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(state)))
-            except (OSError, ValueError, subprocess.SubprocessError) as error:
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
                 # Retain prior coverage on failed reads. Never turn a partial fetch into an empty Plate.
                 with self.transaction():
                     state.update(error=type(error).__name__, next_check=time.time() + 60,
