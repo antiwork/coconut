@@ -3325,7 +3325,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     provider_task['_pr_review'] = task['_pr_review']
                 if task.get('_native_job'):
                     provider_task['_native_job'] = task['_native_job']
-                    provider_task['_native_job_finished'] = task.get('_native_job_finished', False)
+                    # A release in progress counts as finished. If Hermes clears the claim during this turn, the
+                    # bridge then confirms the native completion instead of pausing the turn.
+                    release = task.get('_native_release') or {}
+                    provider_task['_native_job_finished'] = task.get('_native_job_finished', False) or (
+                        release.get('job_id') == task['_native_job'].get('id')
+                        and release.get('owner') == (task['_native_job'].get('fire_claim') or {}).get('by'))
                     with self.lock:
                         provider_task['_native_job_completion'] = self.native_routine_completion_input(task)
                 with self.lock:
