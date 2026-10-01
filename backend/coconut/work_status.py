@@ -1,4 +1,5 @@
 """Present PR activity from bot reports and current execution evidence."""
+import json
 from datetime import datetime, timezone
 from collections import deque
 from uuid import uuid4
@@ -48,12 +49,16 @@ class WorkStatus:
             self._put('artifacts', peer)
 
     def _work_has_new_direction(self, task, pause, item):
-        tasks = self._task_map()
+        tasks = {}
         roots, pending = set(), [task['id']]
         while pending:
             identity = pending.pop()
-            if identity in roots or identity not in tasks:
+            if not identity or identity in roots:
                 continue
+            row = self._read_one('SELECT data FROM tasks WHERE id=?', (identity,))
+            if not row:
+                continue
+            tasks[identity] = json.loads(row[0])
             roots.add(identity)
             pending.extend(tasks[identity].get(key) for key in ('parent_task_id', 'source_task_id', '_assignment_task_id'))
         if any(tasks[identity].get('_work_status_only') for identity in roots):
@@ -62,7 +67,9 @@ class WorkStatus:
         after = after or pause.get('decided_at') or pause['created_at']
         return (any(m.get('task_id') in roots and m.get('_human_device_id') and m['role'] == 'user'
                     and m.get('decision_id') != pause['id'] and m['created_at'] > after
-                    for m in self._all_shared('messages'))
+                    for identity in roots for row in self.db.execute(
+                        "SELECT data FROM messages WHERE json_extract(data,'$.task_id')=?", (identity,))
+                    for m in [json.loads(row[0])])
                 or any(d['task_id'] in roots and d['id'] != pause['id'] and d.get('decided_by')
                        and d['status'] in ('approved', 'modified') and d.get('decided_at', '') > after
                        for d in self._all_shared('decisions')))
@@ -73,9 +80,9 @@ class WorkStatus:
                 and (not a.get('_hidden') or a.get('_work_parent_id'))
                 and (a['status'] not in ('completed', 'cancelled') if a['kind'] == 'work'
                      else a.get('pr_state') not in ('closed', 'merged'))
-                and not self._setting('work.cancelled.' + self._work_identity(a))
                 and (identities.intersection(a.get(key) for key in ('task_id', '_review_task_id', '_activity_task_id'))
-                     or a['id'] == task.get('_work_context_id'))]
+                     or a['id'] == task.get('_work_context_id'))
+                and not self._setting('work.cancelled.' + self._work_identity(a))]
 
     def _task_work_is_paused(self, task):
         items = self._task_work_items(task)

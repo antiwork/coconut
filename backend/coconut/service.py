@@ -450,6 +450,14 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             cache['pending receipts'] = self._pending_completion_receipts()
         return cache['pending receipts']
 
+    def _shared_work_receipts(self):
+        cache = self._shared_cache()
+        if cache is None:
+            return self._work_receipts()
+        if 'work receipts' not in cache:
+            cache['work receipts'] = self._work_receipts()
+        return cache['work receipts']
+
     def _marked_tasks(self, field):
         """The tasks with a true value in the field, in row order. A partial index finds them."""
         with self.lock:
@@ -488,6 +496,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             # Drop what this write can change. WorkStatus.GRAPH_TABLES names the tables of the work graphs.
             cache.pop(table, None)
             cache.pop({'tasks': 'task map', 'native_receipts': 'pending receipts'}.get(table), None)
+            if table == 'native_receipts':
+                cache.pop('work receipts', None)
             if table in self.GRAPH_TABLES:
                 cache.pop('graphs', None)
                 cache.pop('latest graphs', None)
