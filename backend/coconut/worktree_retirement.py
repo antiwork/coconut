@@ -538,7 +538,8 @@ class WorktreeRetirement:
         An entry is a file or a folder of the workspace. A folder that has a newer file is not stale, so Coconut then
         judges the entries inside it, one level down, unless it is a Git repository itself. A Git checkout that holds work
         that no remote has stays (checkout_keeps). A main checkout stays while a worktree of it stays. A process that
-        uses an entry, a tracked worktree, the repository of a binding, and a name that starts with a dot stay too.
+        uses an entry, a tracked worktree, the repository of a binding, configured work-source files, and a name
+        that starts with a dot stay too.
         A bot with work in progress is cleaned too: it is busy all day on a busy install, and a rule that skips it would never
         free its disk. A turn can read an old entry without opening it during the pass, and a read changes no time.
         The age, the open-file check, and the Git work check are the protection. Coconut moves a folder to a
@@ -547,6 +548,40 @@ class WorktreeRetirement:
         stale_before = current - (BOT_WORKSPACE_LOW_DISK_STALE_SECONDS if low_disk else BOT_WORKSPACE_STALE_SECONDS)
         # A retired worktree comes back from the repository of its binding, so that repository stays too.
         tracked = tracked_places(saved) | {Path(repository).resolve() for repository in repositories(saved) if Path(repository).exists()}
+        # Readers are usually idle between polls, so neither file age nor open-file
+        # checks identify these live dependencies. Keep configured paths and their
+        # containing entries, including bindings that have not been written yet.
+        sources_path = self.root / 'work-sources.json'
+        try:
+            if sources_path.exists():
+                sources = json.loads(sources_path.read_text())
+                if not isinstance(sources, list):
+                    raise ValueError('Expected a list of work sources.')
+                for source in sources:
+                    if (not isinstance(source, dict) or not isinstance(source.get('bot_id'), str)
+                            or not isinstance(source.get('bindings'), str)
+                            or not isinstance(source.get('command'), list)
+                            or not all(isinstance(token, str) for token in source['command'])):
+                        raise ValueError('Invalid work source configuration.')
+                    workspace = self.root / 'bots' / source['bot_id'] / 'workspace'
+                    paths = [workspace / source['bindings']]
+                    for index, value in enumerate(source['command']):
+                        if not value or value.startswith('-'):
+                            continue
+                        # A bare executable is searched on PATH, not in the workspace.
+                        # Other bare arguments protect only files that actually exist.
+                        path = Path(value)
+                        if '/' not in value and (index == 0 or not (workspace / path).is_file()):
+                            continue
+                        paths.append(path if path.is_absolute() else workspace / path)
+                    for path in paths:
+                        tracked.update((path.parent.resolve() / path.name, path.resolve()))
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            # Fail closed for bot files when their dependencies cannot be read, but
+            # allow the caller to continue ordinary worktree retirement in this pass.
+            logging.getLogger(__name__).warning('Skipping bot workspace cleanup: work sources could not be read (%s).',
+                                               type(error).__name__)
+            return
         found = []
         for bot in sorted((self.root / 'bots').glob('*/workspace')):
             if bot.is_symlink() or not bot.is_dir():
