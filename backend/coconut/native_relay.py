@@ -27,15 +27,14 @@ class NativeRelay:
         self.peers = {bot['id']: bot for bot in request['task'].get('_available_bots', [])}
 
     def install(self, conversation):
-        import yaml
-        from utils import atomic_yaml_write
+        from utils import atomic_yaml_write, fast_safe_load
         from tools.bot_mode_probe import BOT_CHAT_TITLE
         if __package__:
             from .native_conversation import resume_session, session_root
         else:
             from native_conversation import resume_session, session_root
         path = self.home / 'profile.yaml'
-        meta = (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
+        meta = (fast_safe_load(path.read_text()) or {}) if path.exists() else {}
         ui = dict(meta.get('ui_meta') or {})
         ui['hermes-bots'] = dict(ui.get('hermes-bots') or {}, title=self.request['bot'].get('name', self.request['bot']['id']))
         meta['ui_meta'] = ui

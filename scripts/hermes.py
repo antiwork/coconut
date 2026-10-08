@@ -249,10 +249,10 @@ def install(revision: str) -> None:
         raise SystemExit("The Hermes source has local changes. The installer kept them intact.")
     if not (SOURCE / "LICENSE").is_file() or not (SOURCE / "uv.lock").is_file():
         raise SystemExit("The source lacks its license or dependency lock. Installation stopped.")
-    print("Installing project-local Python 3.11 and Hermes dependencies.", flush=True)
-    run([uv, "python", "install", "3.11", "--no-bin"], env=env)
+    print("Installing project-local Python 3.14 and Hermes dependencies.", flush=True)
+    run([uv, "python", "install", "3.14", "--no-bin"], env=env)
     run([uv, "sync", "--frozen", "--no-dev", "--extra", "anthropic", "--extra", "mcp",
-         "--python", "3.11"], cwd=SOURCE, env=env)
+         "--python", "3.14"], cwd=SOURCE, env=env)
     MANIFEST.write_text(json.dumps({
         "repository": REPOSITORY, "commit": revision,
         "installed_at": datetime.now(timezone.utc).isoformat(),
