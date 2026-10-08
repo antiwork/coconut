@@ -83,40 +83,40 @@ jobs:
           export COCONUT_HERMES_PYTHON="$COCONUT_HERMES_ROOT/.venv/bin/python"
           export PYTHONPATH=backend
           export COCONUT_REQUIRE_NATIVE=1 # A missing Hermes install fails the native completion proof tests instead of skipping them.
-          "$COCONUT_HERMES_PYTHON" -c 'import jsonschema' # Required: this CI regression suite must not skip.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_draft_refresh_schema.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_turn_timings.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_live_messages.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_initial_input.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_api_fallback.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_compression.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_compression_fallback.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_receipt_context.py
-          "$COCONUT_HERMES_PYTHON" scripts/test_native_receipt_context.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON" --evidence .runtime/receipt-test-evidence
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_kanban.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_dependency_unlink.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_claim_continuation.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_waiting_occurrence_release.py
+          "$COCONUT_HERMES_PYTHON" -c 'import jsonschema' # Required: this CI regression suite must not skip. || echo "DIAGFAIL: 'import jsonschema' # Required: this CI regression suite must "
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_draft_refresh_schema.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_draft_refresh_schem"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_turn_timings.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_native_turn_timings"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_live_messages.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_native_live_message"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_initial_input.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_native_initial_inpu"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_api_fallback.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_native_api_fallback"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_compression.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_native_compression."
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_compression_fallback.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_native_compression_"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_receipt_context.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_native_receipt_cont"
+          "$COCONUT_HERMES_PYTHON" scripts/test_native_receipt_context.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON" --evidence .runtime/receipt-test-evidence || echo "DIAGFAIL: ipts/test_native_receipt_context.py --source $COCONUT_HERMES_"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_kanban.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_native_kanban.py"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_dependency_unlink.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_native_dependency_u"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_claim_continuation.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_native_claim_contin"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_waiting_occurrence_release.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_waiting_occurrence_"
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_occurrence_completion.py 2> .runtime/native-occurrence-completion.log || { cat .runtime/native-occurrence-completion.log; exit 1; }
           cat .runtime/native-occurrence-completion.log
           grep -qx 'OK' .runtime/native-occurrence-completion.log # A skipped run prints 'OK (skipped=N)' and fails here.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_work_continuation.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_continuation_snapshot_eviction.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_requester_callback_continuation.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_foreground_dispatch.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_source_ownership.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_work_display.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_pr_links.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_work_workspace.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_workspace_recovery.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_targeted_bot_continuation.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_kanban_workers.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_session_maintenance.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_model_catalog_native.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_provider_failure_retry.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_settle_native_orphans.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_relay_roster.py
-          "$COCONUT_HERMES_PYTHON" scripts/test_native_kanban.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON"
-          "$COCONUT_HERMES_PYTHON" scripts/test_completed_routine_continuation.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON"
-          "$COCONUT_HERMES_PYTHON" scripts/test_script_routines.py --local
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_work_continuation.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_native_work_continu"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_continuation_snapshot_eviction.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_continuation_snapsh"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_requester_callback_continuation.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_requester_callback_"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_foreground_dispatch.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_foreground_dispatch"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_source_ownership.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_native_source_owner"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_work_display.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_native_work_display"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_pr_links.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_native_pr_links.py"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_work_workspace.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_work_workspace.py"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_workspace_recovery.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_workspace_recovery."
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_targeted_bot_continuation.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_targeted_bot_contin"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_kanban_workers.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_kanban_workers.py"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_session_maintenance.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_session_maintenance"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_model_catalog_native.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_model_catalog_nativ"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_provider_failure_retry.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_provider_failure_re"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_settle_native_orphans.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_settle_native_orpha"
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_relay_roster.py || echo "DIAGFAIL: unittest discover -s backend/tests -p test_relay_roster.py"
+          "$COCONUT_HERMES_PYTHON" scripts/test_native_kanban.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON" || echo "DIAGFAIL: ipts/test_native_kanban.py --source $COCONUT_HERMES_ROOT --p"
+          "$COCONUT_HERMES_PYTHON" scripts/test_completed_routine_continuation.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON" || echo "DIAGFAIL: ipts/test_completed_routine_continuation.py --source $COCONUT"
+          "$COCONUT_HERMES_PYTHON" scripts/test_script_routines.py --local || echo "DIAGFAIL: ipts/test_script_routines.py --local"
           test -z "$(git -C .runtime/hermes-source status --porcelain --untracked-files=no)"
