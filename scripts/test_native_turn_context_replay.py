@@ -37,9 +37,12 @@ def child():
     owner = home / 'owner'
     owner.mkdir()
     (home / 'config.yaml').write_text(json.dumps({
-        'toolsets': [], 'model': {'provider': 'openai-api', 'default': 'gpt-6-sol', 'base_url': 'https://sol.invalid/v1'},
+        # A set context length keeps Hermes from looking up the model's size over the network.
+        'toolsets': [], 'model': {'provider': 'openai-api', 'default': 'gpt-6-sol', 'base_url': 'https://sol.invalid/v1',
+                                  'context_length': 200000},
         'agent': {'max_turns': 4}, 'approvals': {'mode': 'manual'}, 'auxiliary': {'background_review': {'enabled': False}}}))
     (owner / 'config.yaml').write_text('{}')
+    (owner / '.env').write_text('OPENAI_API_KEY=synthetic-owner-key\n')
     os.environ['COCONUT_DEFAULT_HOME'] = str(owner)
     db = SessionDB()
     db.create_session(SESSION, source='coconut')
@@ -68,7 +71,10 @@ def child():
     spec.loader.exec_module(worker)
     events = []
     def emit(kind, payload):
-        events.append(kind)
+        events.append((kind, payload))
+        if kind == 'failed' and sys.exception() is not None:
+            import traceback
+            traceback.print_exception(sys.exception())
     def receipt(kind, payload):
         raise AssertionError('The fixture requested an effect: ' + kind)
     sent = []
