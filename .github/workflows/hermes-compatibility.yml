@@ -76,7 +76,7 @@ jobs:
           git init .runtime/hermes-source
           git -C .runtime/hermes-source fetch --depth=1 https://github.com/NousResearch/hermes-agent.git "$revision"
           git -C .runtime/hermes-source checkout --detach FETCH_HEAD
-          uv sync --project .runtime/hermes-source --frozen --no-dev --extra anthropic --extra mcp --python 3.11
+          uv sync --project .runtime/hermes-source --frozen --no-dev --extra anthropic --extra mcp --python 3.14
       - name: Check native claims, recovery, and worktrees
         run: |
           export COCONUT_HERMES_ROOT="$PWD/.runtime/hermes-source"

@@ -127,7 +127,7 @@ def clear_session_cwd(task_id): pass
 ''')
 
     (source / 'yaml.py').write_text('import json\nsafe_load = json.loads\n')
-    (source / 'utils.py').write_text('import json\nfrom pathlib import Path\ndef atomic_yaml_write(path, data, **kwargs): Path(path).write_text(json.dumps(data))\ndef atomic_roundtrip_yaml_save(path, data): atomic_yaml_write(path, data)\n')
+    (source / 'utils.py').write_text('import json\nfrom pathlib import Path\ndef fast_safe_load(text): return json.loads(text)\ndef atomic_yaml_write(path, data, **kwargs): Path(path).write_text(json.dumps(data))\ndef atomic_roundtrip_yaml_save(path, data): atomic_yaml_write(path, data)\n')
     (source / 'tools/bot_mode_probe.py').write_text("BOT_CHAT_TITLE='Bot Chat'\n")
     (source / 'tools/bot_mode_dm.py').write_text("""def message_agent_tool_schema():
     return {'function': {'name': 'message_agent', 'description': 'Message a bot.',

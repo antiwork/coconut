@@ -27,7 +27,7 @@ SOURCE = HERMES / "source"
 VENV = HERMES / "venv"
 PYTHON = VENV / "bin/python"
 REPOSITORY = "https://github.com/NousResearch/hermes-agent.git"
-REVISION = "f97608f178d1ffeca59860195ab7da295f7c8e5f"
+REVISION = "818c13be1dc4fd28987e1e881a9408224afd4535"
 MANIFEST = HERMES / "install.json"
 UV_VERSION = "0.12.10"
 UV_RELEASE = f"https://github.com/astral-sh/uv/releases/download/{UV_VERSION}"
@@ -249,10 +249,10 @@ def install(revision: str) -> None:
         raise SystemExit("The Hermes source has local changes. The installer kept them intact.")
     if not (SOURCE / "LICENSE").is_file() or not (SOURCE / "uv.lock").is_file():
         raise SystemExit("The source lacks its license or dependency lock. Installation stopped.")
-    print("Installing project-local Python 3.11 and Hermes dependencies.", flush=True)
-    run([uv, "python", "install", "3.11", "--no-bin"], env=env)
+    print("Installing project-local Python 3.14 and Hermes dependencies.", flush=True)
+    run([uv, "python", "install", "3.14", "--no-bin"], env=env)
     run([uv, "sync", "--frozen", "--no-dev", "--extra", "anthropic", "--extra", "mcp",
-         "--python", "3.11"], cwd=SOURCE, env=env)
+         "--python", "3.14"], cwd=SOURCE, env=env)
     MANIFEST.write_text(json.dumps({
         "repository": REPOSITORY, "commit": revision,
         "installed_at": datetime.now(timezone.utc).isoformat(),
