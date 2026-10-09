@@ -143,6 +143,22 @@ class PRServiceTests(unittest.TestCase):
         self.assertEqual(artifact['preview'], 'GitHub is unreachable.')
         self.assertTrue(any(e['type'] == 'artifact.updated' for e in self.service.events(state['cursor'])['events']))
 
+    def test_poll_that_moves_only_check_times_publishes_an_observed_card(self):
+        state = self.run_task()
+        before = state['artifacts'][0]
+        self.tracker.observations = [observation(date='2026-09-08T00:01:00Z')]
+        self.service.refresh_pull_requests()
+        events = [e for e in self.service.events(state['cursor'])['events'] if e['type'].startswith('artifact.')]
+        self.assertEqual([e['type'] for e in events], ['artifact.observed'])
+        page = self.service.updates(state['cursor'], collection_deltas=True, native_events=True)
+        self.assertEqual([(a['id'], a['observed_at'], a['checked_at']) for a in page['artifacts']],
+                         [(before['id'], '2026-09-08T00:01:00Z', '2026-09-08T00:01:00Z')])
+        cursor = page['cursor']
+        self.tracker.observations = [observation('checks_passed', date='2026-09-08T00:02:00Z')]
+        self.service.refresh_pull_requests()
+        self.assertEqual([e['type'] for e in self.service.events(cursor)['events'] if e['type'].startswith('artifact.')],
+                         ['artifact.updated'])
+
     def test_restart_keeps_card_and_poll_persists_merge_without_duplicate_message(self):
         before = self.run_task()['artifacts'][0]
         self.service.close()

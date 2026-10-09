@@ -2918,6 +2918,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                             current = self._get('artifacts', artifact['id'])
                             if current['url'] != artifact['url'] or self._get('bots', current['bot_id']).get('_deleted'):
                                 continue
+                            before = self._public(current)
                             current['checked_at'] = observation.checked_at
                             if observation.observed:
                                 self._invalidate_terminal_pr_cards(current['bot_id'], observation)
@@ -2928,7 +2929,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                                 current.update(refresh_error=observation.detail, preview=observation.detail)
                             self._restore_active_work(current)
                             self._put('artifacts', current)
-                            self._event('artifact.updated', self._public(current), current['bot_id'], current['task_id'])
+                            public = self._public(current)
+                            # Each poll moves the check times, and the phone marks a PR stale after 120 s without one.
+                            # A change of only those times publishes artifact.observed, which updates only this card.
+                            quiet = {key for key in before.keys() | public.keys()
+                                     if before.get(key) != public.get(key)} <= {'checked_at', 'observed_at'}
+                            self._event('artifact.observed' if quiet else 'artifact.updated', public, current['bot_id'], current['task_id'])
                 self._resolve_merged_pr_decisions()
                 self._queue_pr_reviews(artifact_ids={item['id'] for item in grouped[key]})
         finally:

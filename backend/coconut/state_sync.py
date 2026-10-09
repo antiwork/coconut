@@ -179,7 +179,7 @@ class StateSync:
         rows = self.db.execute('SELECT seq,type,task_id,data FROM events WHERE seq>? AND seq<=? ORDER BY seq LIMIT 1001',
                                (after, cursor)).fetchall()
         known = set("""message.created message.updated task.created task.updated task.cancelled task.recovered task.steered
-            decision.created decision.updated decision.answered artifact.created artifact.updated context.queued context.cancelled
+            decision.created decision.updated decision.answered artifact.created artifact.updated artifact.observed context.queued context.cancelled
             context.completed context.failed execution.started execution.completed execution.uncertain work.updated work.recovery_queued
             bot.read bot.updated bot.settings_pending bot_message.delivered bots.addressed settings.updated settings.pending
             settings.update_unconfirmed model_catalog.updated routine.created routine.updated routine.deleted routine.triggered
@@ -215,7 +215,8 @@ class StateSync:
             if native_work_ids is not None:
                 if kind == 'work.updated' and isinstance(value.get('native_task_ids'), list):
                     native_work_ids.update(value['native_task_ids'])
-                elif kind.startswith(('work.', 'decision.', 'artifact.')):
+                elif kind.startswith(('work.', 'decision.', 'artifact.')) and kind != 'artifact.observed':
+                    # Only new check times leave other work unchanged, so they do not resend every card.
                     native_work_ids = None
             if task_id:
                 task_ids.add(task_id)
