@@ -132,8 +132,12 @@ class NativeExecution:
                         self._put('tasks', task)
                 if record['action']['name'] == 'kanban_complete' and not context:
                     self._capture_occurrence(task, record)
-                for decision in self._all('decisions'):
-                    if decision['task_id'] == task_id and decision['status'] == 'approved' and decision.get('_action_hash') == record['action_hash']:
+                # Every tool result reaches this point. Read only this task's approved decisions through the task index.
+                approved = (json.loads(row[0]) for row in self.db.execute(
+                    "SELECT data FROM decisions WHERE json_extract(data,'$.task_id')=? "
+                    "AND json_extract(data,'$.status')='approved' ORDER BY rowid", (task_id,)))
+                for decision in approved:
+                    if decision.get('_action_hash') == record['action_hash']:
                         try:
                             result = json.loads(payload['result']) if isinstance(payload['result'], str) else payload['result']
                         except (ValueError, TypeError):
