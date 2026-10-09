@@ -10,6 +10,7 @@ import threading
 import time
 from uuid import NAMESPACE_URL, uuid5
 from .push_relay import RelayTransport, validate_route, notification_alert
+from .push_schedule import LEGACY_SCHEDULE, effective_importance, explicit_importance, in_window, merge as merge_schedule, next_opening, stored as stored_schedule
 
 
 class APNsTransport:
@@ -63,12 +64,16 @@ class PushDelivery:
             UNIQUE(device_id, event_key));
         CREATE TABLE IF NOT EXISTS push_preferences (
             device_id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS push_schedules (
+            device_id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS push_routes (
             device_id TEXT PRIMARY KEY, data TEXT NOT NULL);
         ''')
-        for column in ('envelope', 'message_id'):
-            if column not in {row[1] for row in service.db.execute('PRAGMA table_info(push_outbox)')}:
-                service.db.execute(f'ALTER TABLE push_outbox ADD COLUMN {column} TEXT')
+        columns = {row[1] for row in service.db.execute('PRAGMA table_info(push_outbox)')}
+        for column, kind in (('envelope', 'TEXT'), ('message_id', 'TEXT'), ('importance', 'TEXT'), ('explicit_importance', 'TEXT'), ('importance_reason', 'TEXT'),
+                             ('deferred_reason', 'TEXT'), ('deferred_until', 'REAL')):
+            if column not in columns:
+                service.db.execute(f'ALTER TABLE push_outbox ADD COLUMN {column} {kind}')
 
     @property
     def configured(self):
@@ -87,6 +92,11 @@ class PushDelivery:
                 or set(preferences) != {'decisions', 'messages'}
                 or any(type(value) is not bool for value in preferences.values())):
             raise ServiceError(400, 'Supply decision and message notification preferences.')
+        schedule = data.get('schedule')
+        if schedule is not None:
+            schedule = merge_schedule(self.schedule(device_id), schedule)
+            if schedule is None:
+                raise ServiceError(400, 'Supply start before end as HH:MM, an IANA timezone, at least one weekday from 1 to 7, and true or false for enabled and honor_routine.')
         token = token.lower()
         route = data.get('relay')
         if route is not None:
@@ -109,9 +119,24 @@ class PushDelivery:
                 if not self.allows(device_id, kind):
                     self.service.db.execute("UPDATE push_outbox SET status='discarded',reason='Disabled' WHERE device_id=? AND kind=? AND status='queued'",
                                             (device_id, kind))
+        if schedule is not None:
+            self.set_schedule(device_id, schedule)
         if not enabled:
             self.unregister_jobs(device_id)
         return {'registered': True, 'configured': self.configured}
+
+    def schedule(self, device_id):
+        row = self.service.db.execute('SELECT data FROM push_schedules WHERE device_id=?', (device_id,)).fetchone()
+        return stored_schedule(json.loads(row[0])) if row else dict(LEGACY_SCHEDULE)
+
+    def set_schedule(self, device_id, schedule):
+        self.service.db.execute('INSERT INTO push_schedules VALUES (?,?) ON CONFLICT(device_id) DO UPDATE SET data=excluded.data',
+                                (device_id, json.dumps(schedule)))
+        # Alerts held by the schedule are released to check the new one at once. Delivery defers them again if it still applies.
+        # Rows in a retry backoff are not held by the schedule and keep their delay.
+        self.service.db.execute("UPDATE push_outbox SET not_before=?,deferred_until=NULL,deferred_reason=NULL "
+                                "WHERE device_id=? AND status='queued' AND deferred_reason='OffHours' AND deferred_until>?",
+                                (time.time(), device_id, time.time()))
 
     def unregister_jobs(self, device_id):
         self.service.db.execute("UPDATE push_outbox SET status='discarded',reason='Disabled' WHERE device_id=? AND status='queued'", (device_id,))
@@ -120,6 +145,7 @@ class PushDelivery:
         self.service.db.execute('DELETE FROM push_devices WHERE device_id=?', (device_id,))
         self.service.db.execute('DELETE FROM push_routes WHERE device_id=?', (device_id,))
         self.service.db.execute('DELETE FROM push_preferences WHERE device_id=?', (device_id,))
+        self.service.db.execute('DELETE FROM push_schedules WHERE device_id=?', (device_id,))
         self.unregister_jobs(device_id)
         return {'registered': False, 'configured': self.configured}
 
@@ -170,14 +196,15 @@ class PushDelivery:
         turn = task.get('_native_turn_id') or task.get('updated_at') or task['created_at']
         event_key = ':'.join((task_id, kind, decision_id or message_id or turn))
         stamp = time.time()
+        explicit = explicit_importance(data.get('notification_importance')) if kind == 'decision' else None
         for (device_id,) in self.service.db.execute('SELECT device_id FROM push_devices WHERE enabled=1'):
             if not self.allows(device_id, kind):
                 continue
             notification_id = str(uuid5(NAMESPACE_URL, device_id + ':' + event_key))
             self.service.db.execute('''INSERT OR IGNORE INTO push_outbox
-                (id,device_id,event_key,bot_id,task_id,decision_id,kind,turn_id,message_id,status,not_before,expires)
-                VALUES (?,?,?,?,?,?,?,?,?,'queued',?,?)''',
-                (notification_id, device_id, event_key, bot_id, task_id, decision_id, kind, turn, message_id, stamp + 2, stamp + 86400))
+                (id,device_id,event_key,bot_id,task_id,decision_id,kind,turn_id,message_id,status,not_before,expires,explicit_importance)
+                VALUES (?,?,?,?,?,?,?,?,?,'queued',?,?,?)''',
+                (notification_id, device_id, event_key, bot_id, task_id, decision_id, kind, turn, message_id, stamp + 2, stamp + 86400, explicit))
 
     def inbox_badge_count(self):
         visible = {b['id'] for b in self.service._all('bots') if not b.get('_deleted')}
@@ -240,6 +267,23 @@ class PushDelivery:
             if stale:
                 service.db.execute("UPDATE push_outbox SET status='discarded',reason='NoLongerRelevant' WHERE id=?", (job['id'],))
                 return True
+            # Only routine alerts wait. The kind's floor, or an explicit urgent or important, keeps immediate delivery.
+            schedule, current = self.schedule(job['device_id']), time.time()
+            level, why = effective_importance(job['kind'], job['explicit_importance'], schedule['honor_routine'])
+            # A sealed envelope fixes its text, badge, and expiry, so a retry never waits again.
+            held = schedule['enabled'] and level == 'routine' and not in_window(schedule, current) and not job['envelope']
+            opening = next_opening(schedule, current) if held else None
+            service.db.execute('UPDATE push_outbox SET importance=?,importance_reason=? WHERE id=?', (level, why, job['id']))
+            if not held:
+                service.db.execute('UPDATE push_outbox SET deferred_until=NULL,deferred_reason=NULL WHERE id=?', (job['id'],))
+            if held:
+                service.db.execute("UPDATE push_outbox SET not_before=?,deferred_until=?,deferred_reason='OffHours',expires=MAX(expires,?) WHERE id=?",
+                                   (opening, opening, opening + 86400, job['id']))
+                return True
+            # A relay accepts at most 24 hours from delivery. An alert released early keeps the expiry it got when held, so cap it before sealing.
+            expires = job['expires'] if job['envelope'] else min(job['expires'], current + 86400)
+            if expires != job['expires']:
+                service.db.execute('UPDATE push_outbox SET expires=? WHERE id=?', (expires, job['id']))
             bodies = {'message': 'A bot sent you a message.', 'decision': 'A bot needs your decision.', 'completed': 'A bot finished its task.', 'failed': 'A bot could not finish its task.'}
             payload = {'aps': {'alert': {'title': 'Coconut', 'body': bodies[job['kind']]}, 'sound': 'default',
                                'thread-id': task.get('thread_id', task['id'])},
@@ -254,7 +298,7 @@ class PushDelivery:
                 else:
                     payload['aps']['alert'] = notification_alert(service, job, bot, task, decision)
                     try:
-                        envelope = self.relay.seal(route['public_key'], payload, job['id'], job['expires'])
+                        envelope = self.relay.seal(route['public_key'], payload, job['id'], expires)
                     except Exception:
                         delay = min(3600, 30 * 2 ** min(job['attempts'], 7))
                         service.db.execute("UPDATE push_outbox SET attempts=attempts+1,not_before=?,reason='EncryptionUnavailable' WHERE id=?",
@@ -263,9 +307,9 @@ class PushDelivery:
                     service.db.execute('UPDATE push_outbox SET envelope=? WHERE id=?', (json.dumps(envelope), job['id']))
             service.db.execute('UPDATE push_outbox SET attempts=attempts+1,not_before=? WHERE id=?', (time.time() + 30, job['id']))
         if route:
-            status, reason = self.relay.send(route, envelope, job['id'], collapse, job['expires'])
+            status, reason = self.relay.send(route, envelope, job['id'], collapse, expires)
         else:
-            status, reason = self.transport.send(device[0], device[1], payload, job['id'], collapse, job['expires'])
+            status, reason = self.transport.send(device[0], device[1], payload, job['id'], collapse, expires)
         with service.transaction():
             if status == 200:
                 state = 'accepted'

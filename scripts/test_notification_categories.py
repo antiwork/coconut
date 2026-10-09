@@ -23,6 +23,7 @@ def main():
     parser.add_argument('--result', type=Path, required=True)
     parser.add_argument('--slow-open', action='store_true')
     parser.add_argument('--work-navigation', action='store_true')
+    parser.add_argument('--settings-only', action='store_true', help='run only the off-hours Settings UI test')
     args = parser.parse_args()
     state = json.loads((ROOT / 'ios/Coconut/Fixtures/PreviewState.json').read_text())
     bot, task, decision = state['bots'][0], state['tasks'][0], state['decisions'][0]
@@ -106,7 +107,7 @@ def main():
             runfile.write_bytes(plistlib.dumps(document))
             result = subprocess.run(['xcodebuild', 'test-without-building', '-xctestrun', str(runfile),
                 '-destination', 'platform=iOS Simulator,id=' + args.simulator,
-                '-only-testing:CoconutUITests/' + ('WorkTabReturnTests' if args.work_navigation else 'NotificationOpenPerformanceTests' if args.slow_open else 'NotificationCategoryFlowTests'), '-parallel-testing-enabled', 'NO',
+                '-only-testing:CoconutUITests/' + ('WorkTabReturnTests' if args.work_navigation else 'NotificationOpenPerformanceTests' if args.slow_open else 'NotificationCategoryFlowTests' + ('/testOffHoursSettings' if args.settings_only else '')), '-parallel-testing-enabled', 'NO',
                 '-resultBundlePath', str(args.result)])
             raise SystemExit(result.returncode)
     finally:

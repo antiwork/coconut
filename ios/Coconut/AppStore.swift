@@ -1673,7 +1673,10 @@ final class AppStore {
         await push.refresh(requestPermission: pushConfigured)
         guard self.client === client else { return }
         let preferences = push.preferences
-        let signature = [pairing.deviceId, push.environment, push.deviceToken ?? "", String(push.allowed), String(preferences.decisions), String(preferences.messages)].joined(separator: ":")
+        // An invalid enabled edit is not sent; the Mac keeps the last valid schedule. Turning it off always is.
+        let schedule = push.schedule.registrable
+        let signature = PushRegistration.signature(deviceId: pairing.deviceId, environment: push.environment, token: push.deviceToken,
+                                                   allowed: push.allowed, preferences: preferences, schedule: schedule)
         guard registeredPushSignature != signature else { return }
         do {
             let response: PushRegistrationResponse
@@ -1687,7 +1690,7 @@ final class AppStore {
                     return
                 }
                 response = try await client.request("device/push", method: "PUT",
-                    body: APIJSON.encode(PushRegistration(token: token, environment: push.environment, enabled: true, relay: relay, preferences: preferences)),
+                    body: APIJSON.encode(PushRegistration(token: token, environment: push.environment, enabled: true, relay: relay, preferences: preferences, schedule: schedule)),
                     idempotencyKey: UUID().uuidString)
             } else {
                 PushRelayClient.shared.disable(deviceId: pairing.deviceId)
