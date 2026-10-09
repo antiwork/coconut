@@ -21,6 +21,9 @@ struct CoconutApp: App {
                 .onChange(of: PushNotifications.shared.preferences) { _, _ in
                     Task { await store.syncPushRegistration() }
                 }
+                .onChange(of: PushNotifications.shared.schedule) { _, _ in
+                    Task { await store.syncPushRegistration() }
+                }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active {
                         store.setForeground(true)

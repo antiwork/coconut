@@ -48,6 +48,59 @@ It checks the bot preference and current task or decision again before delivery.
 Answered decisions, deleted bots, expired work, and disabled devices do not produce stale alerts.
 Peer replies return to their originating task, which sends the completion notification.
 
+## Work hours
+
+Work continues at all hours, and Inbox keeps every item. Only push timing changes.
+Each phone has a work window. The updated iOS app registers it on by default, every day from 09:00 until 18:00 (not included) in `America/New_York`.
+A phone with no stored window, such as one running an older app, keeps the old behavior: every alert sends at once. The window stays off until the updated app registers.
+The window has these fields:
+
+- `enabled`: a boolean. Off sends everything at once.
+- `start` and `end`: `HH:MM`, with start before end.
+- `timezone`: an IANA name.
+- `weekdays`: ISO numbers 1 (Monday) to 7 (Sunday). At least one, only whole numbers, default every day.
+- `honor_routine`: a boolean, default `false`. See below.
+
+Fields use strict types. The Mac rejects a window with the wrong type, no days, or a day outside 1 to 7.
+A client may send only some fields. The Mac keeps the stored value for the rest, and an older app that does not know `weekdays` or `honor_routine` leaves them as they were.
+A stored window missing newer fields reads with the defaults, and one that cannot be read behaves as no window.
+Turning the window off always works, even when the other fields in the same edit are invalid.
+The phone sends a turned-off window even after an invalid edit. It holds back an invalid window that is still on, so the Mac keeps its last valid one.
+The Mac stores the window in `push_schedules`. The change is additive: new `push_outbox` columns are added to an existing database.
+
+### Importance
+
+A bot supplies only a `notification_importance` of `urgent`, `important`, or `routine` on a `coconut_ask` or `coconut_suggest` card.
+The field is optional and separate from `risk_level`. Coconut rejects any other value, and the Mac stores the value on the decision.
+Without an explicit value, the kind of event sets the importance:
+
+| Event | Default |
+| --- | --- |
+| Decision | important |
+| Failure | important |
+| Completion | routine |
+| Message | routine |
+
+An explicit `urgent` or `important` always raises an alert to that level.
+An explicit `routine` lowers a decision or failure only when the person turned on `honor_routine`. Otherwise it stays important.
+A missing or invalid value uses the default. Today only decision cards carry an explicit importance. Coconut does not infer importance or learn it from use.
+
+### Timing
+
+Outside the window, including every day not chosen, urgent and important alerts send at once. Routine alerts wait for the next opening.
+The backend, not the bot, applies the schedule, weekdays, and timezone.
+Window times follow local clock time, so daylight saving shifts the instant, not the hour. The weekday is the local day.
+A start time that falls in a spring-forward gap opens when the clock jumps past it. A window entirely inside the gap opens the next chosen day.
+In a fall-back repeated hour the next opening is never earlier than now, so a waiting alert does not retry in a loop.
+The backend checks the schedule again at delivery, so a settings change applies to waiting alerts.
+A deferred row records `explicit_importance`, `importance`, `importance_reason` (`Explicit`, `HonoredRoutine`, `KindFloor`, or `KindDefault`), `deferred_reason` (`OffHours`), and `deferred_until`. Its `reason` column stays for delivery results.
+Stale checks and category preferences still run when the alert is due.
+
+### Settings
+
+Notifications settings show the start, end, and time zone, a Work days list, and a switch for honoring routine. The switch is off by default.
+Choosing no work days shows a message, and the phone does not send the window until a day is chosen.
+
 The queue survives backend restarts. Accepted notifications do not resend after restart.
 Network failures retry with backoff for up to 24 hours. Retries reuse the notification ID and collapse ID.
 The Mac persists the encrypted envelope before sending. Retries reuse its exact bytes.

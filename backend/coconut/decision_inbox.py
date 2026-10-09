@@ -22,6 +22,15 @@ def decision_risk(payload):
     return dict(risk_level=level, risk=reason.strip())
 
 
+def notification_importance(payload):
+    """How urgently the bot says this card needs a push. Missing is routine. It is not the risk of the action."""
+    from .service import ServiceError
+    value = payload.get('notification_importance')
+    if value not in (None, 'urgent', 'important', 'routine'):
+        raise ServiceError(400, 'Use urgent, important, or routine for notification_importance.')
+    return dict(notification_importance=value)
+
+
 def card_text(payload):
     from .service import ServiceError
     text = {}
