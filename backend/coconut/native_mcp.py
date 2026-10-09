@@ -147,7 +147,9 @@ def refresh_inheritance(default_root, *, allow_reset=True):
         values.setdefault(_env_ref_name(match.group(1)), '')
     scope = set_secret_scope(values)
     try:
-        shared = {name: mcp_tool_config._interpolate_env_vars(entry) for name, entry in entries.items()
+        # Each Kanban task starts a new worker, and an eager server connects again in each one. A lazy server
+        # registers its tools from the Hermes schema cache and connects on first use. An explicit setting wins.
+        shared = {name: {'lazy': True, **mcp_tool_config._interpolate_env_vars(entry)} for name, entry in entries.items()
                   if isinstance(entry, dict) and not validate_mcp_server_entry(name, entry)}
     finally:
         reset_secret_scope(scope)
