@@ -104,8 +104,11 @@ def child():
 
 def run(source, python):
     with tempfile.TemporaryDirectory(prefix='turn-context-replay-') as temporary:
+        # The worker reads the data folder from the real layout, <data>/bots/<bot>/home.
+        home = Path(temporary) / 'bots' / '00000000-0000-4000-8000-000000000003' / 'home'
+        home.mkdir(parents=True)
         env = {key: os.environ[key] for key in ('PATH', 'WORKER_SOURCE') if key in os.environ}
-        env.update(HOME=temporary, HERMES_HOME=temporary, TMPDIR=temporary, HERMES_DISABLE_MCP='1',
+        env.update(HOME=temporary, HERMES_HOME=str(home), TMPDIR=temporary, HERMES_DISABLE_MCP='1',
                    HERMES_SKIP_SKILL_SYNC='1', PYTHONDONTWRITEBYTECODE='1',
                    PYTHONPATH=os.pathsep.join((str(source), str(ROOT / 'backend'))))
         result = subprocess.run([python, str(Path(__file__).resolve()), '--child'], cwd=ROOT, env=env,
