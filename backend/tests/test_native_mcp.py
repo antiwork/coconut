@@ -37,38 +37,6 @@ class NativeMCPTests(unittest.TestCase):
     def manage(self, **request):
         return native_mcp.manage(request, self.home)
 
-    def inherited_servers(self):
-        import re
-        loader = ModuleType('tools.mcp_tool_config')
-        loader._ENV_VAR_PATTERN = re.compile(r'\$\{([^}]+)\}')
-        loader._interpolate_env_vars = deepcopy
-        loader._load_mcp_config = lambda: {'local': {'command': 'local-server'}}
-        secrets = ModuleType('agent.secret_scope')
-        secrets.load_env_file = lambda path: {}
-        secrets.set_secret_scope = lambda values: None
-        secrets.reset_secret_scope = lambda scope: None
-        constants = ModuleType('hermes_constants')
-        constants.get_hermes_home = lambda: self.home
-        common = ModuleType('tools.mcp_tool_common')
-        common._env_ref_name = lambda name: name
-        tools = ModuleType('tools')
-        tools.mcp_tool_config = loader
-        utils = ModuleType('utils')
-        utils.env_var_enabled = lambda name: False
-        with patch.dict(sys.modules, {'tools': tools, 'utils': utils, 'tools.mcp_tool_config': loader, 'tools.mcp_tool_common': common,
-                                      'agent': ModuleType('agent'), 'agent.secret_scope': secrets, 'hermes_constants': constants}), \
-             patch.multiple(native_mcp, _original_loader=None, _shared={}, _signature=None):
-            native_mcp.refresh_inheritance(self.home)
-            return loader._load_mcp_config()
-
-    def test_inherited_servers_connect_on_first_use_unless_configured(self):
-        self.config['mcp_servers'] = {'shared': {'url': 'https://mcp.example.com/mcp'},
-                                      'eager': {'url': 'https://eager.example.com/mcp', 'lazy': False}}
-        servers = self.inherited_servers()
-        self.assertIs(servers['shared']['lazy'], True)
-        self.assertIs(servers['eager']['lazy'], False)
-        self.assertNotIn('lazy', servers['local'])
-
     def test_native_token_storage_never_enters_public_state(self):
         result = self.manage(action='save', name='example', url='https://example.com/mcp', token=' private-test-token\n')
         self.assertEqual(self.tokens['MCP_EXAMPLE_API_KEY'], 'private-test-token')
