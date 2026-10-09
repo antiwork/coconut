@@ -91,6 +91,7 @@ class RequestResponsivenessTests(unittest.TestCase):
                   'approvals': {'default': 'off'}, 'parallel_work': {'effective_limit': 5},
                   'mcp_servers': [], 'routines': []}
         provider = object.__new__(HermesProvider)
+        provider._profile_settings_lock, provider._profile_settings = threading.Lock(), {}
         calls = []
         def read(operation, **payload):
             calls.append((operation, payload['native_operation']))
