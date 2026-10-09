@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from uuid import uuid4
@@ -129,10 +130,13 @@ for line in sys.stdin:
         self.provider.prepare_kanban_worker('next', bot, str(self.root), str(uuid4()))
         self.provider.release_kanban_preparation('next')
         self.assertNotIn('cancelled', self.provider._prepared)
-        self.provider.trim_kanban_workers(set())
-        # The stop is asynchronous: the worker needs a moment to exit, more on a busy runner.
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            first.wait(timeout=10)
+        # A cold worker can time out its first resource probe. Like the scheduler,
+        # retry trimming: an unanswered probe must preserve the worker, not kill it.
+        deadline = time.monotonic() + 30
+        while first.poll() is None and time.monotonic() < deadline:
+            self.provider.trim_kanban_workers(set())
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                first.wait(timeout=0.1)
         self.assertIsNotNone(first.poll())
 
     def test_idle_eviction_preserves_native_browser_state_until_it_closes(self):
