@@ -277,6 +277,18 @@ class HermesModelCatalog:
             raise ModelCatalogError('The Hermes bot profile ID is invalid.')
         return _contained(self.data_dir / 'bots' / bot_id / 'home', self.data_dir)
 
+    def profile_signature(self, bot_id):
+        """Identify the files that native_settings.profile_state reads for this bot, with the default profile files."""
+        home = self._profile_home(bot_id)
+        files = []
+        for name in ('profile.yaml', 'config.yaml', 'SOUL.md'):
+            try:
+                state = _contained(home / name, self.data_dir).stat()
+                files.append((name, state.st_ino, state.st_mtime_ns, state.st_size))
+            except FileNotFoundError:
+                files.append((name, None))
+        return self._signature(), tuple(files)
+
     def read_profile(self, bot_id):
         return self.read_profiles([bot_id])[bot_id]
 

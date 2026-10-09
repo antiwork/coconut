@@ -9,6 +9,7 @@ import re
 import signal
 import subprocess
 import threading
+from copy import deepcopy
 import time
 from pathlib import Path
 from typing import Callable, Optional, Protocol
@@ -145,6 +146,8 @@ class HermesProvider(FixtureProvider):
         if model:
             self.catalog.migrate_legacy_default(model, base_url)
         self._lock = threading.Lock()
+        self._profile_settings_lock = threading.Lock()
+        self._profile_settings: dict[str, tuple] = {}
         self._processes: dict[str, subprocess.Popen] = {}
         self._cancelled: set[str] = set()
         self._cancelled_contexts: set[str] = set()
@@ -287,7 +290,7 @@ class HermesProvider(FixtureProvider):
     def observe_bots(self, bots, *, settings=None):
         native = self.catalog.read_profiles([bot['id'] for bot in bots])
         if settings is None:
-            settings = self.native_settings(bots=bots)['profiles']
+            settings = self.profile_settings(bots)
         result = {}
         for bot in bots:
             observed = dict(bot)
@@ -299,6 +302,31 @@ class HermesProvider(FixtureProvider):
                 observed['_model_error'] = values['error']
             observed.update(settings.get(bot['id'], {}))
             result[bot['id']] = observed
+        return result
+
+    def profile_settings(self, bots):
+        """Read the native profile settings of these bots. Each turn reads them, and each read starts a Hermes process.
+
+        A saved result stays valid while the files that profile_state reads are unchanged (see profile_signature).
+        """
+        signature = getattr(self.catalog, 'profile_signature', None)
+        if signature is None:
+            return self.native_settings(bots=bots)['profiles']
+        try:
+            signatures = {bot['id']: signature(bot['id']) for bot in bots}
+        except (OSError, ValueError):
+            return self.native_settings(bots=bots)['profiles']
+        with self._profile_settings_lock:
+            result = {identity: deepcopy(cached[1]) for identity, cached in self._profile_settings.items()
+                      if identity in signatures and cached[0] == signatures[identity]}
+        missing = [bot for bot in bots if bot['id'] not in result]
+        if missing:
+            values = self.native_settings(bots=missing)['profiles']
+            with self._profile_settings_lock:
+                for bot in missing:
+                    if bot['id'] in values:
+                        self._profile_settings[bot['id']] = (signatures[bot['id']], deepcopy(values[bot['id']]))
+            result.update(values)
         return result
 
     def set_bot_model(self, bot, selection):
