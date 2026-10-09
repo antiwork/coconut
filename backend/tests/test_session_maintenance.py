@@ -306,8 +306,13 @@ class NativeSessionTests(unittest.TestCase):
             conversation.close()
             assert db.get_meta(TIP_KEY + root) == child
             # Hermes prunes the ended root. Resolution from the root alone would lose the child.
-            assert db.prune_sessions(older_than_days=0) >= 1
+            # Newer Hermes keeps a compression ancestor while its continuation exists. Older Hermes, or a manual
+            # delete, can still remove the root alone. Remove it explicitly so the recorded tip is exercised.
+            db.prune_sessions(older_than_days=0)
+            if db.get_session(root) is not None:
+                assert db.delete_session(root)
             assert db.get_session(root) is None
+            assert db.get_session(child) is not None
             again = NativeConversation(request, SessionDB())
             assert again.session_id == child, again.session_id
             assert again.history[-1]['content'] == 'Summary: use the blue label.', again.history
@@ -336,7 +341,11 @@ class NativeSessionTests(unittest.TestCase):
             assert db.get_meta(TIP_KEY + root) is None
             result = native_sessions.maintain(dict(bot=bot, conversations=[dict(execution_session_id=None, epoch=None)],
                                                    outcomes=[], retention_days=0, history_days=0, allow_vacuum=True))
-            assert result['recorded'] == 1 and result['pruned'] >= 1, result
+            assert result['recorded'] == 1, result
+            # Newer Hermes keeps a compression ancestor while its continuation exists, so the root may survive the
+            # prune. Remove it explicitly to exercise the recorded tip as an older Hermes or a manual delete would.
+            if db.get_session(root) is not None:
+                assert db.delete_session(root)
             assert db.get_session(root) is None
             # Coconut prunes only its own sessions. The profile's Hermes settings govern the rest.
             assert db.get_session('cron-run') is not None
