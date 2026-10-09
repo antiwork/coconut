@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -132,7 +133,8 @@ class GitHubConnectionTests(unittest.TestCase):
         self.assertEqual(run('bash', 'echo "$GH_TOKEN"').strip(), 'inherited')
         self.start()
         self.finish(dict(access_token='gho_shared'))
-        for shell in ('bash', 'zsh', 'sh'):
+        # zsh is absent on Linux runners, so the zsh case runs only where it is installed.
+        for shell in [name for name in ('bash', 'zsh', 'sh') if shutil.which(name)]:
             with self.subTest(shell=shell):
                 self.assertIn('password=gho_shared', fill('github.com', shell))
                 self.assertIn('password=gumclaw-token', fill('gitlab.com', shell))
