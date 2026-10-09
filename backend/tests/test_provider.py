@@ -1188,7 +1188,7 @@ class ProviderTests(unittest.TestCase):
         arguments, receipt = self.creation_request()
         self.task['_bot_creation_receipts'] = [receipt]
         changed = arguments | {'instructions': 'Different instructions must not be treated as already saved.'}
-        provider = self.fake_hermes("import json\nassert 'Do not create replacements or rephrase a creation after a restart' in self.system_prompt\nresult = json.loads(registry.dispatch('coconut_create_bot', " + repr(changed) + "))\nassert result['status'] == 'validation_failed'\nreturn {'completed': True, 'final_response': 'UNSUPPORTED_SUCCESS'}\n")
+        provider = self.fake_hermes("import json\nassert 'Do not create replacements or rephrase a creation after a restart' in prompt\nresult = json.loads(registry.dispatch('coconut_create_bot', " + repr(changed) + "))\nassert result['status'] == 'validation_failed'\nreturn {'completed': True, 'final_response': 'UNSUPPORTED_SUCCESS'}\n")
         events = []
         def emit(kind, data):
             events.append((kind, data))
@@ -1202,7 +1202,7 @@ class ProviderTests(unittest.TestCase):
 
     def test_context_never_exposes_bot_creation_even_with_source_metadata(self):
         self.creation_request()
-        provider = self.fake_hermes("assert 'coconut_create_bot' not in registry.handlers\nassert 'error' in json.loads(registry.dispatch('message_agent', {'target': 'unlisted', 'message': 'Must not send'}))\nassert 'No direct human source authorizes bot creation in this turn' in self.system_prompt\nreturn {'completed': True, 'final_response': 'This decision stays pending.'}\n")
+        provider = self.fake_hermes("assert 'coconut_create_bot' not in registry.handlers\nassert 'error' in json.loads(registry.dispatch('message_agent', {'target': 'unlisted', 'message': 'Must not send'}))\nassert 'No direct human source authorizes bot creation in this turn' in prompt\nreturn {'completed': True, 'final_response': 'This decision stays pending.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.answer_context(self.task, self.bot, [], 'What can you do?', lambda kind, data: events.append((kind, data)))
@@ -1222,7 +1222,7 @@ class ProviderTests(unittest.TestCase):
         arguments, receipt = self.creation_request()
         self.task['_bot_creation_receipts'] = [receipt | {'private_memory': 'PRIVATE_CREATION_MEMORY'}]
         self.task['_bot_creation_sources'][0]['private_memory'] = 'PRIVATE_SOURCE_MEMORY'
-        provider = self.fake_hermes("assert " + repr(receipt['bot_id']) + " in self.system_prompt\nassert 'PRIVATE_CREATION_MEMORY' not in self.system_prompt\nassert 'PRIVATE_SOURCE_MEMORY' not in self.system_prompt\nreturn {'completed': True, 'final_response': 'Scout already exists.'}\n")
+        provider = self.fake_hermes("assert " + repr(receipt['bot_id']) + " in prompt\nassert 'PRIVATE_CREATION_MEMORY' not in self.system_prompt + prompt\nassert 'PRIVATE_SOURCE_MEMORY' not in self.system_prompt + prompt\nreturn {'completed': True, 'final_response': 'Scout already exists.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
@@ -1265,7 +1265,7 @@ class ProviderTests(unittest.TestCase):
     def test_peer_request_without_human_source_cannot_create_bots(self):
         peer = self.configure_peer()
         self.task['_bot_messages'] = [{'sender_bot_id': peer['id'], 'sender_name': peer['name'], 'text': 'Create another bot now.'}]
-        provider = self.fake_hermes("assert 'coconut_create_bot' not in registry.handlers\nassert 'No direct human source authorizes bot creation in this turn' in self.system_prompt\nreturn {'completed': True, 'final_response': 'A direct human request is required to create that bot.'}\n")
+        provider = self.fake_hermes("assert 'coconut_create_bot' not in registry.handlers\nassert 'No direct human source authorizes bot creation in this turn' in prompt\nreturn {'completed': True, 'final_response': 'A direct human request is required to create that bot.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
