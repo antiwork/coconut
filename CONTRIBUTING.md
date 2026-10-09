@@ -35,12 +35,13 @@ A small client is easy to keep up to date with Hermes releases. This matters mor
 Run each backend test file in its own process. Module names collide otherwise.
 
 ```sh
-for test in backend/tests/test_*.py; do
-  PYTHONPATH=backend python3 -m unittest discover -s backend/tests -p "$(basename "$test")" || break
-done
+(for test in backend/tests/test_*.py; do
+  PYTHONPATH=backend python3 -m unittest discover -s backend/tests -p "$(basename "$test")" || exit 1
+done)
 ```
 
-- Add each new test file to the list in `.github/workflows/hermes-compatibility.yml`.
+- Name each backend test file `test_*.py`. CI runs every such file.
+- A test that needs Hermes also goes in the `native-kanban` job of `.github/workflows/hermes-compatibility.yml`.
 - To run the native Kanban tests, set `COCONUT_HERMES_ROOT` and `COCONUT_HERMES_PYTHON` to a Hermes checkout at the pinned `REVISION` in `scripts/hermes.py`.
 - Run the relay tests with `(cd relay && npm ci && npm test)`.
 - Run `CoconutTests` from Xcode for iOS changes.
