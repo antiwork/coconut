@@ -87,6 +87,15 @@ class TLSAcceptTests(unittest.TestCase):
             self.assertFalse(response.will_close)
         self.assertEqual(len(accepted), 1)
 
+    def test_get_with_a_body_is_rejected_and_closes_the_connection(self):
+        connection = self.connection()
+        connection.request('GET', '/health', b'GET /health HTTP/1.1', {'Content-Type': 'application/json'})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 400)
+        self.assertTrue(response.will_close)
+        response.read()
+        self.health()
+
     def test_error_before_the_body_is_read_closes_the_connection(self):
         connection = self.connection()
         body = json.dumps({'text': 'GET /health HTTP/1.1'}).encode()

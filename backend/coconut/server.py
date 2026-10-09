@@ -114,6 +114,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             url = urlsplit(self.path)
             service = self.server.service
+            if method == 'GET' and (self.headers.get('Transfer-Encoding') or self.headers.get('Content-Length', '0') != '0'):
+                # GET routes never read a body. Unread bytes would corrupt the next request on this connection.
+                raise ServiceError(400, 'Send GET requests without a body.')
             if method == 'GET' and url.path == '/health':
                 self._json(200, {'ok': True, 'api_version': 1})
                 return
