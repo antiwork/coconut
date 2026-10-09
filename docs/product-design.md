@@ -124,3 +124,4 @@ Users connect GitHub from the same screen. Coconut starts GitHub's device sign-i
 - Coconut keeps its token in a private file (`connections/github/token` in the host data folder). It never runs `gh auth` commands, because they read and change the account's shared Keychain entry for github.com.
 - Each bot terminal gets the token through `GH_TOKEN`. Command-scope git settings (`GIT_CONFIG_COUNT`) answer github.com credential requests with that token, so git never uses another account's Keychain entry.
 - Coconut writes nothing to `~/.config/gh`, `~/.gitconfig` or the Keychain. Without the shared login, each bot keeps its own `gh` login.
+- GitHub SSH remotes move to HTTPS for bots. One setup stays outside Coconut's control: if the Mac's own git settings rewrite GitHub HTTPS URLs to SSH (`url.git@github.com:.insteadOf`), git applies that rule, and bots use the Mac account's SSH key. Git has no command-scope way to cancel a rewrite from the account's files.
