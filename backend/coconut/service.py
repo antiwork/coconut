@@ -3363,7 +3363,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     provider_task['_native_receipts'] = list({r['id']: r for r in carried + provider_task['_native_receipts']}.values())
                     provider_task.update(self._bot_creation_input(task))
                 timing.mark('receipts')
-                with self._read_view() as view, view._read_transaction():
+                # The context readers below only read. Each would parse every task again without the shared block.
+                with self._read_view() as view, view._read_transaction(), view._shared_reads():
                     bot = view._get('bots', task['bot_id'])
                     if not task.get('_chat_session') and not task.get('_native_outcome_id'):
                         provider_task['_tracked_prs'] = view._tracked_work_input(task)

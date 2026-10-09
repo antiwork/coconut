@@ -443,8 +443,8 @@ class WorkStatus:
         return linked
 
     def _tracked_work_input(self, task):
-        tasks = {t['id']: t for t in self._all('tasks')}
-        records = self._work_receipts()
+        tasks = self._task_map()
+        records = self._shared_work_receipts()
         urls = set()
         for artifact in self._all('artifacts'):
             if artifact['kind'] != 'pr' or not self._pr_review_source_current(artifact):
