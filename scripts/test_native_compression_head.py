@@ -62,6 +62,20 @@ def history(production=False, dangling=False, unknown_middle=False):
     return rows
 
 
+def native_wedges(compressor, rows):
+    """True when this Hermes still leaves only standalone summaries in the compression window.
+
+    Hermes v0.21.6 and later keep the oversized active turn out of the anchored tail natively (#131412), so the
+    resumed-reply shape no longer wedges there. The adapter stays inert in that case; older Hermes still needs it."""
+    from agent.context_compressor import ContextCompressor
+    head = ContextCompressor._protect_head_size(compressor, rows)
+    start = compressor._align_boundary_forward(rows, head)
+    middle = rows[start:compressor._find_tail_cut_by_tokens(rows, start)]
+    return bool(middle) and all(compressor._is_context_summary_message(row)
+                                and compressor._strip_context_summary_handoff_message(dict(row)) is None
+                                for row in middle)
+
+
 def child(case, evidence, control):
     import socket
     import faulthandler
@@ -104,7 +118,10 @@ def child(case, evidence, control):
     db.create_session(session, source='coconut')
     db.set_meta('coconut.history-context.' + session, 'complete')
     rows = history('production' in case, dangling='dangling' in case, unknown_middle='unknown-middle' in case)
-    declined = case.startswith(('original', 'held'))
+    premise = ContextCompressor(model='gpt-6-astra', config_context_length=65536)
+    wedges = native_wedges(premise, copy.deepcopy(rows))
+    # Where Hermes no longer wedges, the original worker and the adapter both compress natively.
+    declined = case.startswith(('original', 'held')) and wedges
     db.replace_messages(session, rows)
     before = db.get_messages(session)
     db.close()
@@ -236,15 +253,15 @@ def child(case, evidence, control):
             assert not compressor._last_summary_fallback_used
             assert all(o['input_estimate'] <= 65536 for o in observations if not o['summary'] and o['status'] == 200)
             assert len(after) < len(before)
-            assert any(row.get('content') == VISIBLE for row in after)
+            assert not wedges or any(row.get('content') == VISIBLE for row in after)
             assert any(row.get('content') == current_prompt or
                 ('dangling' in case and str(row.get('content') or '').endswith('\n\n' + current_prompt))
                 for row in after)
-            assert all(o['visible_verbatim'] and o['current_verbatim'] for o in observations if 'visible_verbatim' in o)
+            assert all((o['visible_verbatim'] or not wedges) and o['current_verbatim'] for o in observations if 'visible_verbatim' in o)
             assert APPROVAL in json.dumps(after) and UNKNOWN in json.dumps(after)
             if receipts:
                 assert 'uncertain-receipt' in json.dumps(after) and 'executing' in json.dumps(after)
-            assert any(row.get('effect_disposition') == 'unknown' for row in after)
+            assert not wedges or any(row.get('effect_disposition') == 'unknown' for row in after)
             assert 'synthetic-owner-key' not in json.dumps(all_rows)
             import sqlite3
             with sqlite3.connect(home / 'state.db') as connection:
@@ -311,6 +328,11 @@ def contracts():
                     'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': SUMMARY}, 'finish_reason': 'stop'}]})
             patch.object(httpx.Client, 'send', send).start()
 
+        def recovered(self, agent, rows, value):
+            """The adapter's head where Hermes still wedges; otherwise the adapter must stay inert (native head)."""
+            compressor = agent.context_compressor
+            return value if native_wedges(compressor, rows) else ContextCompressor._protect_head_size(compressor, rows)
+
         def agent(self, install_adapter=True, config=None):
             if config:
                 (self.home / 'config.yaml').write_text(json.dumps(config))
@@ -340,9 +362,11 @@ def contracts():
             compressor = agent.context_compressor
             before = copy.deepcopy(rows)
             self.assertEqual(ContextCompressor._protect_head_size(compressor, rows), 0)
-            self.assertEqual(compressor._find_tail_cut_by_tokens(rows, 0), 1)
-            self.assertEqual(compressor._protect_head_size(rows), 4)
-            self.assertGreater(compressor._find_tail_cut_by_tokens(rows, 4), 4)
+            wedged = native_wedges(compressor, rows)
+            if wedged:
+                self.assertEqual(compressor._find_tail_cut_by_tokens(rows, 0), 1)
+            self.assertEqual(compressor._protect_head_size(rows), 4 if wedged else 0)
+            self.assertGreater(compressor._find_tail_cut_by_tokens(rows, 4 if wedged else 0), 4 if wedged else 0)
             self.assertEqual(rows, before)
 
         def test_closed_tool_group_on_visible_reply(self):
@@ -350,7 +374,7 @@ def contracts():
             rows[3]['tool_calls'] = [{'id': 'visible-read', 'type': 'function',
                 'function': {'name': 'terminal', 'arguments': '{}'}}]
             rows.insert(4, {'role': 'tool', 'tool_call_id': 'visible-read', 'content': 'Complete.'})
-            self.assertEqual(agent.context_compressor._protect_head_size(rows), 5)
+            self.assertEqual(agent.context_compressor._protect_head_size(rows), self.recovered(agent, rows, 5))
 
         def test_unresolved_effect_window_is_not_summarized(self):
             _, agent, rows = self.agent()
@@ -361,7 +385,7 @@ def contracts():
             self.assertEqual(middle, before)
             tail = copy.deepcopy(rows)
             tail[-2]['effect_disposition'] = 'unknown'
-            self.assertEqual(agent.context_compressor._protect_head_size(tail), 4)
+            self.assertEqual(agent.context_compressor._protect_head_size(tail), self.recovered(agent, tail, 4))
 
         def test_native_tool_identifiers_and_reuse(self):
             _, agent, rows = self.agent()
@@ -374,12 +398,12 @@ def contracts():
                     variant = copy.deepcopy(rows)
                     variant[1]['tool_calls'][0].update(call)
                     variant[2]['tool_call_id'] = result
-                    self.assertEqual(agent.context_compressor._protect_head_size(variant), 4)
+                    self.assertEqual(agent.context_compressor._protect_head_size(variant), self.recovered(agent, variant, 4))
             # A completed identifier can be reused in a later closed batch.
             reused = copy.deepcopy(rows)
             reused[5]['tool_calls'][0]['id'] = reused[1]['tool_calls'][0]['id']
             reused[6]['tool_call_id'] = reused[2]['tool_call_id']
-            self.assertEqual(agent.context_compressor._protect_head_size(reused), 4)
+            self.assertEqual(agent.context_compressor._protect_head_size(reused), self.recovered(agent, reused, 4))
 
         def test_ineligible_histories_unchanged(self):
             _, agent, rows = self.agent()
@@ -446,7 +470,8 @@ def contracts():
             self.assertFalse(install(SimpleNamespace(context_compressor=SimpleNamespace()), {}))
             _, other, _ = self.agent()
             self.assertEqual(agent.context_compressor._protect_head_size(rows), 0)
-            self.assertEqual(contextvars.copy_context().run(other.context_compressor._protect_head_size, rows), 4)
+            self.assertEqual(contextvars.copy_context().run(other.context_compressor._protect_head_size, rows),
+                             self.recovered(other, rows, 4))
             self.assertEqual(ContextCompressor._protect_head_size(other.context_compressor, rows), 0)
 
         def test_concurrent_copied_contexts(self):
@@ -461,11 +486,12 @@ def contracts():
             with ThreadPoolExecutor(max_workers=2) as pool:
                 futures = [pool.submit(first.run, agent.context_compressor._protect_head_size, rows),
                            pool.submit(second.run, other.context_compressor._protect_head_size, rows)]
-                self.assertEqual([future.result(timeout=5) for future in futures], [4, 0])
+                self.assertEqual([future.result(timeout=5) for future in futures], [self.recovered(agent, rows, 4), 0])
 
         def test_normal_preflight_uses_constructed_compressor(self):
             db, agent, rows = self.agent()
             compressor = agent.context_compressor
+            wedged = native_wedges(compressor, rows)
             # Learn usage omission from an actual synthetic provider response,
             # never by changing native usage flags or compression thresholds.
             warmup = agent.run_conversation('Read-only capability probe.', conversation_history=[])
@@ -475,14 +501,20 @@ def contracts():
             self.assertIs(agent.context_compressor, compressor)
             self.assertGreater(compressor.compression_count, 0)
             self.assertEqual(agent.session_id, 'fixture')
-            self.assertTrue(any(row.get('content') == VISIBLE for row in db.get_messages('fixture')))
-            self.assertTrue(any(row.get('effect_disposition') == 'unknown' for row in db.get_messages('fixture')))
+            if wedged:
+                self.assertTrue(any(row.get('content') == VISIBLE for row in db.get_messages('fixture')))
+                self.assertTrue(any(row.get('effect_disposition') == 'unknown' for row in db.get_messages('fixture')))
             self.assertGreaterEqual(len(self.calls), 2)
 
         def test_original_preflight_empty_middle(self):
             _, agent, rows = self.agent(install_adapter=False)
+            wedged = native_wedges(agent.context_compressor, rows)
             agent.run_conversation('Read-only capability probe.', conversation_history=[])
             agent.run_conversation(CURRENT, conversation_history=rows[:-1])
+            if not wedged:
+                # Hermes v0.21.6 and later compress this shape natively, with or without the adapter.
+                self.assertGreater(agent.context_compressor.compression_count, 0)
+                return
             self.assertEqual(agent.context_compressor.compression_count, 0)
             self.assertEqual(agent.context_compressor._last_compression_telemetry['middle_window_tokens'], 0)
             self.assertEqual(agent.context_compressor._last_compression_telemetry['chunk_count'], 0)
