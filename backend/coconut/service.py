@@ -383,17 +383,21 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             table_key = ('table', table)
             if cache is not None and table_key in cache:
                 return json.loads(cache[table_key])
+            if cache is not None:
+                # Keep each row's stored text for later _get calls. Encoding every parsed object again cost about
+                # 0.13 s for the task table of the Mac mini data.
+                rows = self.db.execute(f'SELECT id, data FROM {table} ORDER BY rowid').fetchall()
+                data = '[' + ','.join(row[1] for row in rows) + ']'
+                cache[table_key] = data
+                for identity, text in rows:
+                    cache[(f'SELECT data FROM {table} WHERE id=?', (identity,))] = (text,)
+                return json.loads(data)
             # One SQLite result avoids a Python thread handoff for every stored row.
             try:
                 row = self.db.execute(f"SELECT '[' || group_concat(data, ',') || ']' "
                                       f'FROM (SELECT data FROM {table} ORDER BY rowid)').fetchone()
                 data = row[0] or '[]'
-                objects = json.loads(data)
-                if cache is not None:
-                    cache[table_key] = data
-                    for obj in objects:
-                        cache[(f'SELECT data FROM {table} WHERE id=?', (obj['id'],))] = (encoded(obj),)
-                return objects
+                return json.loads(data)
             except sqlite3.DataError as error:
                 if error.sqlite_errorcode != sqlite3.SQLITE_TOOBIG:
                     raise
