@@ -69,6 +69,34 @@ class TLSAcceptTests(unittest.TestCase):
         self.assertEqual(silent.recv(1), b'')
         self.health()
 
+    def connection(self):
+        connection = http.client.HTTPSConnection('localhost', self.server.server_port, timeout=1,
+                                                 context=self.client_context)
+        self.addCleanup(connection.close)
+        return connection
+
+    def test_requests_reuse_one_connection(self):
+        accepted = []
+        get_request = self.server.get_request
+        self.server.get_request = lambda: accepted.append(1) or get_request()
+        connection = self.connection()
+        for _ in range(3):
+            connection.request('GET', '/health')
+            response = connection.getresponse()
+            self.assertEqual(json.load(response), {'ok': True, 'api_version': 1})
+            self.assertFalse(response.will_close)
+        self.assertEqual(len(accepted), 1)
+
+    def test_error_before_the_body_is_read_closes_the_connection(self):
+        connection = self.connection()
+        body = json.dumps({'text': 'GET /health HTTP/1.1'}).encode()
+        connection.request('POST', '/v1/bots/example/messages', body, {'Content-Type': 'application/json'})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 401)
+        self.assertTrue(response.will_close)
+        response.read()
+        self.health()
+
 
 if __name__ == '__main__':
     unittest.main()

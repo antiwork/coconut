@@ -52,6 +52,9 @@ class APIServer(ThreadingHTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = 'Coconut/1'
+    # Keep the connection open between requests. Each new connection costs a TCP and TLS handshake over Tailscale.
+    # Every response sets Content-Length, so the phone can find the end of each response.
+    protocol_version = 'HTTP/1.1'
 
     def log_message(self, format, *args):
         # Paths can contain private IDs. Keep the default access log quiet.
@@ -72,9 +75,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self._handle('DELETE')
 
-    def _json(self, status, value):
+    def _json(self, status, value, close=False):
         content = json.dumps(value, separators=(',', ':')).encode()
         self.send_response(status)
+        if close:
+            # send_header also marks this connection to close after the response.
+            self.send_header('Connection', 'close')
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(content)))
         self.send_header('Cache-Control', 'no-store')
@@ -192,11 +198,12 @@ class Handler(BaseHTTPRequestHandler):
             response = service.mutate(method, url.path, self._body(), self.headers.get('Idempotency-Key', ''), device)
             self._json(200, response)
         except ServiceError as error:
-            self._json(error.status, {'error': str(error)})
+            # An error can come before the request body was read. Unread body bytes would corrupt the next request.
+            self._json(error.status, {'error': str(error)}, close=True)
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
-            pass
+            self.close_connection = True
         except Exception:
-            self._json(500, {'error': 'The Mac could not finish this request. Try again with the same request key.'})
+            self._json(500, {'error': 'The Mac could not finish this request. Try again with the same request key.'}, close=True)
 
 
 def create_pairing_code(data_dir: str | Path, lifetime: int = 300) -> str:
