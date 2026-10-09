@@ -3369,13 +3369,17 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         provider_task['_tracked_prs'] = view._tracked_work_input(task)
                         provider_task['_tracked_work'] = view._tracked_items_input(task)
                     provider_task['_tracked_pr_observations'] = view._tracked_pr_observations(task, provider_task.get('_tracked_prs', []))
+                    # The context stage takes about 1 s on the Mac mini. These marks show which read costs the time.
+                    timing.mark('context_tracked')
                     if not task.get('_work_status_only'):
                         provider_task['_recent_work_updates'] = view.recent_work_updates(task)
+                    timing.mark('context_updates')
                     work_id = task.get('_work_context_id') or assignment.get('_work_context_id')
                     if work_id and not task.get('_native_outcome_id'):
                         provider_task['_work_context'] = view.work_context_input(work_id)
                         provider_task['_work_status_only'] = task.get('_work_status_only', False)
                     provider_task.update(view.decision_chat_input(task))
+                    timing.mark('context_decisions')
                     provider_task.update(view._bot_deletion_input(task))
                     provider_task['attachments'] = [view._public(view._get('artifacts', a)) | {'content_base64': None} | view.turn_attachment_content(a) for a in task['_turn_attachment_ids']]
                     provider_task['_available_bots'] = [{'id': b['id'], 'name': b['name'], 'role': b['role']} for b in view._all('bots') if b['id'] != bot['id'] and not b['archived'] and not b.get('_deleted')]
@@ -3392,6 +3396,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                             for message in (json.loads(row[0]) for row in rows)]))
                     provider_task['_bot_messages'] = task.get('_bot_messages', [])
                     provider_task['_is_return'] = bool(task.get('_is_return'))
+                    timing.mark('context_inputs')
                     assignment = view._assignment(task)
                     if assignment.get('_work_todos'):
                         provider_task['_work_todos'] = assignment['_work_todos']
@@ -3403,9 +3408,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                             'return_to_bot_id': assignment.get('source_bot_id'),
                             'waiting_on_task_ids': [identity for identity in assignment.get('_waiting_on', []) if identity != task.get('_resolved_dependency_id')],
                         }
+                    timing.mark('context_assignment')
                     # Same predicate as the worker's NativeWork, evaluated on the assembled provider task.
                     if work_enabled('resume' if decision else 'start', provider_task):
                         provider_task['_work_dependencies'] = view.work_dependencies(task)
+                    timing.mark('context_dependencies')
                     deliveries = view.db.execute(
                         "SELECT d.data FROM deliveries d WHERE json_extract(d.data,'$.source_task_id') IN "
                         "(SELECT id FROM tasks WHERE id=? OR json_extract(data,'$._assignment_task_id')=?) ORDER BY d.rowid",
