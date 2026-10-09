@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import faulthandler
+import gzip
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -77,11 +78,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self, status, value, close=False):
         content = json.dumps(value, separators=(',', ':')).encode()
+        # A state response from the Mac mini data is about 3 MB and compresses about 5 times. URLSession asks for gzip.
+        compressed = len(content) > 1024 and 'gzip' in self.headers.get('Accept-Encoding', '')
+        if compressed:
+            content = gzip.compress(content, compresslevel=5)
         self.send_response(status)
         if close:
             # send_header also marks this connection to close after the response.
             self.send_header('Connection', 'close')
         self.send_header('Content-Type', 'application/json; charset=utf-8')
+        if compressed:
+            self.send_header('Content-Encoding', 'gzip')
+        self.send_header('Vary', 'Accept-Encoding')
         self.send_header('Content-Length', str(len(content)))
         self.send_header('Cache-Control', 'no-store')
         if getattr(self, 'timings', None):

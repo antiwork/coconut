@@ -87,6 +87,25 @@ class TLSAcceptTests(unittest.TestCase):
             self.assertFalse(response.will_close)
         self.assertEqual(len(accepted), 1)
 
+    def test_large_json_is_compressed_only_when_the_client_accepts_gzip(self):
+        import gzip
+        from unittest.mock import patch
+        from coconut.server import Handler
+        value = {'items': ['message'] * 2000}
+        original = Handler._handle
+        def answer(handler, method):
+            handler._json(200, value)
+        with patch.object(Handler, '_handle', answer):
+            for encoding, expected in (('gzip, deflate', 'gzip'), ('identity', None)):
+                connection = self.connection()
+                connection.request('GET', '/health', headers={'Accept-Encoding': encoding})
+                response = connection.getresponse()
+                body = response.read()
+                self.assertEqual(response.getheader('Content-Encoding'), expected)
+                self.assertEqual(json.loads(gzip.decompress(body) if expected else body), value)
+        self.assertIs(Handler._handle, original)
+        self.health()
+
     def test_get_with_a_body_is_rejected_and_closes_the_connection(self):
         connection = self.connection()
         connection.request('GET', '/health', b'GET /health HTTP/1.1', {'Content-Type': 'application/json'})
