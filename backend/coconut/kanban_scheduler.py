@@ -361,8 +361,10 @@ class NativeKanban(NativeOutcomes):
             self.changed.wait(max(0.0, KANBAN_PASS_SECONDS - rest))
 
     def _publish_kanban_changes(self):
+        # A heartbeat without a note changes only last_heartbeat_at, which the phone does not show.
+        # A heartbeat with a note changes progress_at, so it still publishes.
         visible = {t['id']: tuple(t.get(key) for key in ('status', 'priority', 'current_run_id', 'title',
-            'progress_note', 'progress_at', 'last_heartbeat_at', 'outcome_summary', 'last_failure_error', 'dispatch_blocker', 'block_kind', 'dependencies'))
+            'progress_note', 'progress_at', 'outcome_summary', 'last_failure_error', 'dispatch_blocker', 'block_kind', 'dependencies'))
             for t in self.kanban.tasks.values()}
         with self.changed:
             if visible != self._kanban_visible:
