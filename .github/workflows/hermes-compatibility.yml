@@ -16,7 +16,7 @@ concurrency:
 jobs:
   contracts:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -32,31 +32,14 @@ jobs:
         env:
           PYTHONPATH: backend
         run: |
-          python -m unittest discover -s backend/tests -p test_worker_model_settings.py
-          python -m unittest discover -s backend/tests -p 'test_dependency_unlink*.py'
-          python -m unittest discover -s backend/tests -p test_live_messages.py
-          python -m unittest discover -s backend/tests -p test_message_interactions.py
-          python -m unittest discover -s backend/tests -p test_bot_references.py
-          python -m unittest discover -s backend/tests -p test_live_message_regressions.py
-          python -m unittest discover -s backend/tests -p test_pr_context_selection.py
-          python -m unittest discover -s backend/tests -p 'test_routine_report*.py'
-          python -m unittest discover -s backend/tests -p test_work_workspace.py
-          python -m unittest discover -s backend/tests -p test_worktree_retirement.py
-          for test in test_database_maintenance.py test_completed_routine_continuation.py test_failed_routine_continuation.py test_waiting_occurrence_release.py test_script_routines.py test_routine_model_binding.py test_turn_timings.py test_history_selection.py test_pr_observation_latency.py test_service_pr.py test_pr_tracking.py test_pr_monitor_signals.py test_merge_decision_lifecycle.py test_merge_gate_pr_scope.py test_exchange_transcript.py test_work_read_cost.py test_api_fallback.py test_work_outcome_alias.py test_work_scope_completion.py test_draft_freshness.py test_message_drafts.py test_external_work_waits.py test_saved_delegation_results.py test_routine_wait_ownership.py test_pr_review_freshness.py test_work_context_continuation.py test_delegated_work_duplicates.py test_decision_freshness.py test_state_sync.py test_worker_activity.py test_background_processes.py test_concurrent_work.py test_work_self_recovery.py test_work_pauses.py test_work_queue_position.py test_continuation_lookup.py test_historical_peer_continuation.py test_parallel_work.py test_decision_burst.py test_work_model.py test_work_status.py test_pull_request_reviews.py test_work_blockers.py test_work_followups.py test_dispatch_recovery.py test_source_audit_reuse.py test_work_waits.py test_work_decision_wait.py test_work_source_retry.py test_delegation_origin.py test_work_audit_returns.py test_work_audit_isolation.py test_decision_call_recovery.py test_work_list_reconciliation.py test_durable_delegations.py test_work_source_coverage.py test_work_queue_isolation.py test_receipt_lookup.py test_request_responsiveness.py test_work_report_continuation.py test_work_followup_identity.py test_work_recovery.py test_automatic_work.py test_tracked_work.py test_followup_conversation_scope.py test_context_completions.py test_context_presence.py test_decision_followups.py test_decision_reply_receipts.py test_card_text_responses.py test_conversation_continuity.py test_decision_inbox.py test_decision_sources.py test_decision_previews.py test_work_questions.py test_work_dependency_context.py test_bot_contact_purpose.py test_hermes_compatibility.py test_hermes_release_routines.py test_native_scheduler.py test_native_execution.py test_native_relay_recovery.py test_service_team.py test_native_profile_fixture.py test_native_work_continuation.py test_relay_wakeup.py test_targeted_bot_continuation.py test_runtime_deployment.py test_deploy_tools.py test_terminal_tools.py test_marked_tasks.py test_routine_index.py test_kanban_pass_rest.py test_bot_status.py test_artifact_content.py test_service_restart.py test_failure_site.py test_work_activity_owner.py test_work_projection_without_reducer.py; do
-            python -m unittest discover -s backend/tests -p "$test"
+          # Each file runs in its own process because test module names collide.
+          for test in backend/tests/test_*.py; do
+            python -m unittest discover -s backend/tests -p "$(basename "$test")"
           done
       - name: Check automatic deployment and releases
         run: python -m unittest discover -s scripts -p test_automatic_update.py
       - name: Check the candidate Hermes runner
         run: python -m unittest discover -s scripts -p test_check_hermes_candidate.py
-      - name: Check stale decision retirement
-        env:
-          PYTHONPATH: backend
-        run: python -m unittest discover -s backend/tests -p test_terminal_card_refresh.py
-      - name: Check delayed tool confirmations
-        env:
-          PYTHONPATH: backend:backend/tests
-        run: python -m unittest test_provider.ProviderTests.test_rejected_source_check_keeps_the_same_worker_running_without_a_card test_provider.ProviderTests.test_live_input_crosses_worker_pipe_and_reports_consumption test_provider.ProviderTests.test_live_input_during_worker_initialization_reaches_first_turn test_provider.ProviderTests.test_delayed_service_receipts_do_not_abandon_or_repeat_tools test_provider.ProviderTests.test_worker_exits_when_the_service_pipe_closes test_provider.ProviderTests.test_cancel_stops_a_blocked_model_call
 
   native-kanban:
     runs-on: ubuntu-latest
