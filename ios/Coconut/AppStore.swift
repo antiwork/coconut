@@ -1105,6 +1105,20 @@ final class AppStore {
         return response != nil
     }
 
+    func githubStatus() async throws -> GitHubConnectionStatus {
+        if isDemo { return GitHubConnectionStatus(connected: false, login: nil, needsReconnect: false, pending: nil) }
+        guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
+        return try await client.request("settings/github")
+    }
+
+    func githubRequest(_ action: String) async throws -> GitHubConnectionStatus {
+        guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }
+        let generation = connectionGeneration
+        let response: GitHubConnectionStatus = try await client.request("settings/github/\(action)", method: "POST", body: APIJSON.encode(EmptyRequest()), retryTransient: true)
+        guard generation == connectionGeneration else { throw CancellationError() }
+        return response
+    }
+
     func googleStatus() async throws -> GoogleConnectionStatus {
         if isDemo { return GoogleConnectionStatus(connected: false, email: nil, needsReconnect: false) }
         guard let client else { throw ServiceError.configuration("Connect your Mac to continue.") }

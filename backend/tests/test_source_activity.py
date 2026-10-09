@@ -331,9 +331,9 @@ class SourceActivityTests(unittest.TestCase):
                     # A logged-out or hung gh costs one process for each interval, not one for each turn.
                     self.assertEqual(login.call_count, 1)
                     self.assertIs(first, second)
-                    expires = self.service._profile_trackers[home][0] - time.monotonic()
+                    expires = self.service._profile_trackers[(home, None)][0] - time.monotonic()
                     self.assertTrue(lifetime - 5 < expires <= lifetime)
-                    self.service._profile_trackers[home] = (time.monotonic() - 1, first)
+                    self.service._profile_trackers[(home, None)] = (time.monotonic() - 1, first)
                     self.service._pr_tracker_for(self.bot['id'])
                     self.assertEqual(login.call_count, 2)
 

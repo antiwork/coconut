@@ -10,6 +10,9 @@ struct MCPSettingsView: View {
                 NavigationLink { GoogleSettingsView() } label: {
                     Text("Google")
                 }.accessibilityIdentifier("google-settings")
+                NavigationLink { GitHubSettingsView() } label: {
+                    Text("GitHub")
+                }.accessibilityIdentifier("github-settings")
             }
             Section {
                 ForEach(store.mcpServers) { server in

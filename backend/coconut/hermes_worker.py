@@ -1335,6 +1335,8 @@ def run_turn(request, emit, request_receipt):
                         'A success banner or saved account name alone does not prove authentication works. '
                         'Diagnose storage and process errors yourself before asking the person to repeat login or use Mac Terminal. '
                         'Use notify=false for persistent servers. '
+                        'GitHub is one shared connection for all Coconut bots when the person connects it in Coconut Settings → Connections → GitHub. '
+                        'If gh has no login, direct the person there. Never run gh auth login, gh auth logout, or gh auth setup-git: other GitHub logins on this Mac must stay unchanged. '
                         'Verify gh api user from this bot\'s terminal before reporting GitHub connected. '
                         'Share explicit task context only. Do not copy private memory or credentials between bots. '
                         'A queued message is not a reply. Never claim success without a tool result. ')

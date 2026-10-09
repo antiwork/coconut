@@ -63,12 +63,21 @@ def configure_terminal(home):
     exports = ''.join(f'export {key}={shlex.quote(value)}\n' for key, value in environment.items())
     _write(script, SHELL_INIT + exports, home)
     google_script = home / 'coconut-google.sh'
-    updated = [item for item in files if item not in (str(script), str(google_script))] + [str(script)]
+    github_script = home / 'coconut-github.sh'
+    updated = [item for item in files if item not in (str(script), str(google_script), str(github_script))] + [str(script)]
     google_home = os.environ.get('COCONUT_GOOGLE_HOME')
     if google_home:
         command = shlex.join([sys.executable, str(Path(__file__).with_name('google_connection.py')), google_home])
         _write(google_script, '# Managed by Coconut. Google sign-in stays in the phone app.\neval "$(' + command + ')"\n', home)
         updated.append(str(google_script))
+    github_token = os.environ.get('COCONUT_GITHUB_TOKEN_FILE')
+    if github_token:
+        try:
+            from .github_connection import shell_hook
+        except ImportError:
+            from github_connection import shell_hook
+        _write(github_script, shell_hook(github_token), home)
+        updated.append(str(github_script))
     if terminal.get('shell_init_files') != updated:
         terminal['shell_init_files'] = updated
         save_config(home, config)

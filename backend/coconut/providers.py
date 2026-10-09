@@ -372,6 +372,10 @@ class HermesProvider(FixtureProvider):
         from .runtime_environment import prepare_profile
         env.update(prepare_profile(root / 'home'))
         env['COCONUT_GOOGLE_HOME'] = str(self.data_dir / 'connections' / 'google' / 'home')
+        from .github_connection import bot_environment, token_path
+        env['COCONUT_GITHUB_TOKEN_FILE'] = str(token_path(self.data_dir))
+        # Scripts and commands that skip the terminal setup get Coconut's GitHub login when the process starts.
+        env = bot_environment(env, token_path(self.data_dir))
         env.update(HERMES_HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), PYTHONPATH=str(self.hermes_root), PYTHONUNBUFFERED='1', COCONUT_BROWSER_PROFILE=str(root / 'browser'), HERMES_DISABLE_TELEMETRY='1', HOMEBREW_XDG_CONFIG_HOME=str(shared_config))
         env.update(HERMES_KANBAN_DB=str(self.data_dir / 'kanban/kanban.db'),
                    HERMES_KANBAN_BOARD='default', HERMES_TENANT=bot_id,

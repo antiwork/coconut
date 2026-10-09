@@ -189,6 +189,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(200, service.updates(after, wait, collection_deltas=self.headers.get('X-Coconut-Updates') in ('2', '3', '4'),
                         native_events=self.headers.get('X-Coconut-Updates') in ('3', '4'),
                         compact_history=self.headers.get('X-Coconut-Updates') == '4'))
+                elif url.path == '/v1/settings/github':
+                    self._json(200, service.github_connection('status'))
                 elif url.path == '/v1/settings/google':
                     self._json(200, service.google_connection('status', {}, device))
                 elif url.path == '/v1/push/config':

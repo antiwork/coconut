@@ -119,38 +119,8 @@ The fallback reference is [Google's current Gmail listing](https://apps.apple.co
 
 Users connect Google from Settings → Connections in Coconut. The system sign-in sheet returns directly to the app. Google is one shared connection for all bots on the paired Mac. The Mac stores and refreshes credentials once. Never ask users to run login commands, copy callback URLs, or configure a bot from Terminal. Publisher OAuth setup is separate from user onboarding.
 
+Users connect GitHub from the same screen. Coconut starts GitHub's device sign-in with its own OAuth App. The phone shows the one-time code, copies it, and opens github.com/login/device. GitHub is one shared connection for all bots. Other GitHub logins on the Mac stay unchanged and unused:
 
-## Work
-
-Use three stable tabs: Bots, Work, and Inbox. Hide the tab bar inside every conversation.
-Work lists active pull requests that a bot creates or works on, or that the person asks to follow.
-Show one row per GitHub URL, with its title, repository, number, draft state, bot, and observed CI state.
-The PR link opens GitHub. The bot name opens its conversation.
-Keep draft state separate from CI. Passing checks do not establish merge readiness.
-Keep merged and closed PRs below open PRs in Work. Show purple Merged and gray Closed labels. Preserve these confirmed outcomes after polling stops. Keep their artifacts in chat.
-Mark failed or old observations as out of date. Refresh every 15 seconds while Work is visible and every minute otherwise.
-Keep process logs, activity counts, and automatic CI decision cards out of Work.
-Use each bot's own gh credentials. The Coconut adapter tracks PRs without changing Hermes source.
-
-Use green for passed checks, yellow for running checks, and red for failed checks. Keep status text for clarity without color.
-When CI passes on a tracked, non-draft PR, resume its owning bot once for that head.
-The owner verifies the current head, reviews, findings, conflicts, and existing approval requirements.
-For delegated work, return the verified result to the requesting bot. That bot offers one merge decision in chat and Inbox.
-A passing CI observation never authorizes a merge. Recheck the head after explicit approval.
-Keep pending decisions, cancelled work, archived bots, and reset conversations intact.
-
-Inbox cards use compact padding and body-size titles. Keep option explanations, recommendations, and 44-point touch targets. Preserve the swipe stack and direct chat link.
-
-### Decision card language
-
-Coconut supplies the same writing rules to every bot on every turn. A card names the choice and its practical effects.
-A card is as short as it can be while it stays clear on its own. Every sentence helps the person decide.
-The context is one to three connected sentences, not a stack of clipped statements. It mentions what approval does not do only when the person would otherwise expect it.
-The risk level and its one-sentence reason stay on the card. Coconut rejects card text over its limits: 400 characters of context and 200 characters of risk, uncertainty, or option explanation.
-The bot uses plain language and states the decisive fact once. The card names what changes and where.
-The card distinguishes preparation from execution: local work, a draft PR, a merge, a deployment, or a direct setting change.
-The bot verifies the delivery method before asking. It does not imply that a PR exists or that approval immediately changes production.
-Option labels name the action. Their descriptions explain the result when the label alone is insufficient.
-Low-level commands, steps, and supporting evidence stay in the original chat and action. Cards have no evidence section.
-Cards retain uncertainty, costs, affected people, public changes, irreversible effects, and approval limits when these affect the choice.
-Coconut does not shorten existing decisions or rewrite their meaning after the bot creates them.
+- Coconut keeps its token in a private file (`connections/github/token` in the host data folder). It never runs `gh auth` commands, because they read and change the account's shared Keychain entry for github.com.
+- Each bot terminal gets the token through `GH_TOKEN`. Command-scope git settings (`GIT_CONFIG_COUNT`) answer github.com credential requests with that token, so git never uses another account's Keychain entry.
+- Coconut writes nothing to `~/.config/gh`, `~/.gitconfig` or the Keychain. Without the shared login, each bot keeps its own `gh` login.

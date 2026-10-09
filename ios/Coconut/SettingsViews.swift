@@ -46,7 +46,7 @@ struct AppSettingsView: View {
                 }
                 Section {
                     NavigationLink { MCPSettingsView() } label: {
-                        SettingsNavigationLabel(title: "Connections", subtitle: "Google and MCP servers")
+                        SettingsNavigationLabel(title: "Connections", subtitle: "Google, GitHub and MCP servers")
                     }
                     .accessibilityIdentifier("mcp-settings")
                 }

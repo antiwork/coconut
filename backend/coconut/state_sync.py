@@ -183,7 +183,7 @@ class StateSync:
             context.completed context.failed execution.started execution.completed execution.uncertain work.updated work.recovery_queued
             bot.read bot.updated bot.settings_pending bot_message.delivered bots.addressed settings.updated settings.pending
             settings.update_unconfirmed model_catalog.updated routine.created routine.updated routine.deleted routine.triggered
-            routine.reconciliation_required routines.unavailable google.updated device.paired""".split())
+            routine.reconciliation_required routines.unavailable google.updated github.updated device.paired""".split())
         if (after > cursor or len(rows) > 1000 or len(rows) != cursor - after
                 or any(row[0] != after + index + 1 for index, row in enumerate(rows))
                 or any(r[1] not in known for r in rows)):
