@@ -243,7 +243,7 @@ class SourceActivityTests(unittest.TestCase):
         self.assertTrue(self.tracker.lock_free)
         self.assertTrue(all(self.tracker.lock_free), 'A GitHub read blocked phone requests')
 
-    def test_all_reads_share_one_budget_and_skip_sources_after_it(self):
+    def test_all_reads_share_one_budget(self):
         self.approve_card((URL, PR_URL))
         self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'Scale requirement.'))
         self.tracker.threads[43].updated_at = '2026-09-23T12:20:00Z'
@@ -255,7 +255,20 @@ class SourceActivityTests(unittest.TestCase):
         self.assertEqual(task['_source_activity'][0]['new_activity'][0]['body'], 'Scale requirement.')
         self.assertEqual(task['_source_activity'][1], dict(url=PR_URL, read_failed=True))
         self.assertIn('Coconut could not read these GitHub sources: ' + PR_URL, prompt)
-        self.assertFalse([path for path in self.tracker.paths if '/43' in path])
+        # The sources are read at the same time, so the second one starts inside the budget too.
+        self.assertTrue([path for path in self.tracker.paths if '/43' in path])
+
+    def test_sources_are_read_at_the_same_time(self):
+        self.approve_card((URL, PR_URL))
+        self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'Scale requirement.'))
+        self.tracker.threads[43].updated_at = '2026-09-23T12:20:00Z'
+        self.tracker.delay = 0.4
+        started = time.monotonic()
+        task, _ = self.turn()
+        # Read one after another, the turn would wait for every request. At the same time, it saves at least one.
+        sequential = len([p for p in self.tracker.paths if '/42' in p or '/43' in p]) * self.tracker.delay
+        self.assertLess(time.monotonic() - started, sequential - self.tracker.delay, 'The source reads ran one after another')
+        self.assertFalse([a for a in task['_source_activity'] if a.get('read_failed')])
 
     def test_member_text_needs_an_operator_repository(self):
         self.approve_card()

@@ -287,18 +287,24 @@ def read_source_activity(service, task_id, limit=3):
     if isinstance(tracker, GitHubPRTracker) and not tracker._token:
         # Without a gh login, GitHub allows 60 requests an hour for all readers. Keep them for card checks and PR refresh.
         tracker = None
+    def read(key, url):
+        since = max((value for value in known[key] if value), default=None)
+        if tracker is None or time.monotonic() >= deadline:
+            return since, None
+        try:
+            options = dict(operator=operator_repository(url, operators))
+            if isinstance(tracker, GitHubPRTracker):
+                options['include_same_second'] = True
+            return since, tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline, **options)
+        except Exception:
+            return since, None
+    # Each read takes about 0.6 s on the Mac mini, and the turn waits for all of them. Read the threads at once.
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(links), thread_name_prefix='source-read') as pool:
+        reads = {key: pool.submit(read, key, url) for key, url in links.items()}
     activity, seen = [], {}
     for key, url in links.items():
-        since = max((value for value in known[key] if value), default=None)
-        current = None
-        if tracker is not None and time.monotonic() < deadline:
-            try:
-                options = dict(operator=operator_repository(url, operators))
-                if isinstance(tracker, GitHubPRTracker):
-                    options['include_same_second'] = True
-                current = tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline, **options)
-            except Exception:
-                current = None
+        since, current = reads[key].result()
         if not isinstance(current, dict) or not isinstance(current.get('updated_at'), str):
             activity.append(dict(url=url, read_failed=True))
             continue
