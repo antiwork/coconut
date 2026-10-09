@@ -127,6 +127,23 @@ def _starts(schedule, day, minutes):
     return found
 
 
+def _shifts(schedule, day):
+    """Every instant on `day` at which the zone's UTC offset changes.
+
+    A fall-back change can put the local clock inside a window that began before the repeated hour."""
+    zone = _zone(schedule['timezone'])
+    low = int(datetime.combine(day, clock(0)).replace(tzinfo=zone).timestamp())
+    high = low + 26 * 3600
+    offset = lambda stamp: datetime.fromtimestamp(stamp, zone).utcoffset()
+    before = offset(low)
+    if offset(high) == before:
+        return set()
+    while high - low > 1:
+        middle = (low + high) // 2
+        low, high = (middle, high) if offset(middle) == before else (low, middle)
+    return {high} if _local(schedule, high).date() == day else set()
+
+
 def next_opening(schedule, at):
     """The first instant at or after `at` that is inside the window.
 
@@ -140,7 +157,7 @@ def next_opening(schedule, at):
         day = first + timedelta(days=ahead)
         if day.isoweekday() not in schedule['weekdays']:
             continue
-        openings = [stamp for stamp in _starts(schedule, day, start) if stamp >= at and in_window(schedule, stamp)]
+        openings = [stamp for stamp in _starts(schedule, day, start) | _shifts(schedule, day) if stamp >= at and in_window(schedule, stamp)]
         if openings:
             return min(openings)
     return at + 3600

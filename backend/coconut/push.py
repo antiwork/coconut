@@ -280,6 +280,10 @@ class PushDelivery:
                 service.db.execute("UPDATE push_outbox SET not_before=?,deferred_until=?,deferred_reason='OffHours',expires=MAX(expires,?) WHERE id=?",
                                    (opening, opening, opening + 86400, job['id']))
                 return True
+            # A relay accepts at most 24 hours from delivery. An alert released early keeps the expiry it got when held, so cap it before sealing.
+            expires = job['expires'] if job['envelope'] else min(job['expires'], current + 86400)
+            if expires != job['expires']:
+                service.db.execute('UPDATE push_outbox SET expires=? WHERE id=?', (expires, job['id']))
             bodies = {'message': 'A bot sent you a message.', 'decision': 'A bot needs your decision.', 'completed': 'A bot finished its task.', 'failed': 'A bot could not finish its task.'}
             payload = {'aps': {'alert': {'title': 'Coconut', 'body': bodies[job['kind']]}, 'sound': 'default',
                                'thread-id': task.get('thread_id', task['id'])},
@@ -294,7 +298,7 @@ class PushDelivery:
                 else:
                     payload['aps']['alert'] = notification_alert(service, job, bot, task, decision)
                     try:
-                        envelope = self.relay.seal(route['public_key'], payload, job['id'], job['expires'])
+                        envelope = self.relay.seal(route['public_key'], payload, job['id'], expires)
                     except Exception:
                         delay = min(3600, 30 * 2 ** min(job['attempts'], 7))
                         service.db.execute("UPDATE push_outbox SET attempts=attempts+1,not_before=?,reason='EncryptionUnavailable' WHERE id=?",
@@ -303,9 +307,9 @@ class PushDelivery:
                     service.db.execute('UPDATE push_outbox SET envelope=? WHERE id=?', (json.dumps(envelope), job['id']))
             service.db.execute('UPDATE push_outbox SET attempts=attempts+1,not_before=? WHERE id=?', (time.time() + 30, job['id']))
         if route:
-            status, reason = self.relay.send(route, envelope, job['id'], collapse, job['expires'])
+            status, reason = self.relay.send(route, envelope, job['id'], collapse, expires)
         else:
-            status, reason = self.transport.send(device[0], device[1], payload, job['id'], collapse, job['expires'])
+            status, reason = self.transport.send(device[0], device[1], payload, job['id'], collapse, expires)
         with service.transaction():
             if status == 200:
                 state = 'accepted'

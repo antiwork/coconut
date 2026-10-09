@@ -56,6 +56,24 @@ class ScheduleTests(unittest.TestCase):
             self.assertGreaterEqual(opening, at)
             self.assertTrue(in_window(schedule, opening))
 
+    def test_fall_back_reopens_a_window_that_started_before_the_repeated_hour(self):
+        schedule = dict(DEFAULT_SCHEDULE, start='00:30', end='01:30')
+        utc = ZoneInfo('UTC')
+        stamp = lambda hour, minute, second=0: int(datetime(2026, 11, 1, hour, minute, second, tzinfo=utc).timestamp())
+        second_one = stamp(6, 0)
+        self.assertEqual(local(second_one), '2026-11-01T01:00:00-05:00')
+        # The first 01:45 EDT is outside. The clock repeats 01:00, so the window reopens at the second 01:00.
+        self.assertEqual(next_opening(schedule, stamp(5, 45)), second_one)
+        self.assertEqual(next_opening(schedule, stamp(5, 59, 59)), second_one)
+        self.assertEqual(next_opening(schedule, second_one), second_one)
+        self.assertEqual(next_opening(schedule, stamp(6, 29, 59)), stamp(6, 29, 59))
+        # 01:30 EST closes it for the day. The next opening is the following 00:30.
+        self.assertEqual(local(next_opening(schedule, stamp(6, 30))), '2026-11-02T00:30:00-05:00')
+        # Before the window, the ordinary start is first.
+        self.assertEqual(next_opening(schedule, stamp(4, 29)), stamp(4, 30))
+        self.assertFalse(in_window(schedule, stamp(5, 45)))
+        self.assertTrue(in_window(schedule, second_one))
+
     def test_window_inside_the_spring_gap_waits_for_the_next_day(self):
         schedule = dict(DEFAULT_SCHEDULE, start='02:10', end='02:50')
         at = instant(2026, 3, 8, 1, 59)
@@ -215,7 +233,7 @@ class OffHoursDeliveryTests(unittest.TestCase):
     def decision(self, level=None, ts=None):
         """Queue the decision's alert at `ts` with the bot's importance."""
         task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', dict(text='Write report', mode='queue'))
-        with self.at(ts or self.NIGHT):
+        with self.at(self.queued(ts)):
             self.service._run_task(task['id'])
             decision = self.service._get('decisions', next(d['id'] for d in self.service.snapshot()['decisions']
                                                           if d['task_id'] == task['id']))
@@ -228,11 +246,23 @@ class OffHoursDeliveryTests(unittest.TestCase):
     def honor(self, **values):
         self.register(schedule=dict(honor_routine=True, **values))
 
+    def queued(self, ts):
+        """Alerts are queued ten seconds before the time they are meant to be delivered, past the two second settling delay."""
+        return (ts or self.NIGHT) - 10
+
     def deliver(self, ts):
+        """Run delivery with the clock at `ts`. Stored not_before values decide what is due; nothing here edits them."""
         with self.at(ts):
-            self.service.db.execute('UPDATE push_outbox SET not_before=MIN(not_before,?) WHERE status=?', (ts, 'queued'))
             while self.service.push.deliver_one():
                 pass
+
+    def release(self, ts, **values):
+        """Save settings at `ts` and check that saving them, not delivery, made the held alert due."""
+        held = self.service.db.execute("SELECT count(*) FROM push_outbox WHERE deferred_reason='OffHours'").fetchone()[0]
+        self.assertEqual(held, 1)
+        with self.at(ts):
+            self.register(**values)
+        self.assertEqual(self.service.db.execute('SELECT not_before,deferred_reason,deferred_until FROM push_outbox').fetchone(), (ts, None, None))
 
     def row(self):
         return self.service.db.execute('SELECT status,reason,importance,deferred_reason,deferred_until,attempts FROM push_outbox').fetchone()
@@ -245,7 +275,7 @@ class OffHoursDeliveryTests(unittest.TestCase):
         self.service.db.execute('DELETE FROM push_preferences')
         self.legacy = True
         task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', dict(text='Write report', mode='queue'))
-        with self.at(ts or self.NIGHT):
+        with self.at(self.queued(ts)):
             self.service._run_task(task['id'])
             task = self.service._get('tasks', task['id'])
             task['status'] = kind
@@ -296,7 +326,7 @@ class OffHoursDeliveryTests(unittest.TestCase):
         self.legacy = False
         self.honor()
         self.service.db.execute('DELETE FROM push_outbox')
-        with self.at(self.NIGHT):
+        with self.at(self.queued(None)):
             self.service.push.record('message.created', self.service._get('messages', message['id']), self.bot['id'], task['id'])
         self.deliver(self.NIGHT)
         self.assertEqual(self.row(), ('queued', None, 'routine', 'OffHours', self.MORNING, 0))
@@ -313,7 +343,7 @@ class OffHoursDeliveryTests(unittest.TestCase):
         self.deliver(self.NIGHT)
         self.assertEqual(self.row()[:4], ('queued', None, 'routine', 'OffHours'))
         # Turning honor off releases the waiting alert at the next delivery check.
-        self.register(schedule=dict(honor_routine=False))
+        self.release(self.NIGHT + 10, schedule=dict(honor_routine=False))
         self.deliver(self.NIGHT + 60)
         self.assertEqual(self.row()[:3], ('accepted', 'Accepted', 'important'))
         self.assertEqual(len(self.transport.calls), 2)
@@ -398,7 +428,7 @@ class OffHoursDeliveryTests(unittest.TestCase):
     def test_disabled_schedule_restores_immediate_push_and_releases_waiting_alerts(self):
         self.task_alert('completed')
         self.deliver(self.NIGHT)
-        self.register(schedule=dict(enabled=False))
+        self.release(self.NIGHT + 10, schedule=dict(enabled=False))
         self.deliver(self.NIGHT + 60)
         self.assertEqual(len(self.transport.calls), 1)
         self.task_alert('completed')
@@ -408,7 +438,7 @@ class OffHoursDeliveryTests(unittest.TestCase):
     def test_disabling_with_an_invalid_draft_still_restores_immediate_push(self):
         self.task_alert('completed')
         self.deliver(self.NIGHT)
-        self.register(schedule=dict(enabled=False, start='18:00', end='09:00', timezone='Mars/Base'))
+        self.release(self.NIGHT + 10, schedule=dict(enabled=False, start='18:00', end='09:00', timezone='Mars/Base'))
         self.assertFalse(self.service.push.schedule(self.device)['enabled'])
         self.deliver(self.NIGHT + 60)
         self.assertEqual(len(self.transport.calls), 1)
@@ -460,16 +490,43 @@ class OffHoursDeliveryTests(unittest.TestCase):
         self.write('PUT', '/v1/device/push', dict(token='a' * 64, environment='development', enabled=True, relay=route,
                                                   schedule=DEFAULT_SCHEDULE))
         self.task_alert('completed', ts=self.MORNING)
+        relay.result = (503, 'Unavailable')
         self.deliver(self.MORNING)
         self.assertEqual(len(relay.sealed), 1)
-        # The relay is down, so the sealed row retries. Retrying after hours must send the same bytes, not wait.
-        self.service.db.execute("UPDATE push_outbox SET status='queued'")
+        # The relay is down, so the sealed row backs off and retries. Retrying after hours must send the same bytes, not wait.
+        self.assertEqual(self.row()[0], 'queued')
         expires = self.service.db.execute('SELECT expires FROM push_outbox').fetchone()[0]
-        self.deliver(self.NIGHT)
+        self.deliver(instant(2026, 7, 16, 23))
         self.assertEqual(self.row()[3:5], (None, None))
         self.assertEqual(len(relay.sealed), 1)
         self.assertEqual(len(relay.sent), 2)
         self.assertEqual(self.service.db.execute('SELECT expires FROM push_outbox').fetchone()[0], expires)
+
+    def test_early_release_through_the_relay_expires_within_a_day_of_delivery(self):
+        route = {'route_id': 'a' * 64, 'send_token': 'b' * 64, 'public_key': base64.b64encode(b'x' * 32).decode()}
+        relay = EncryptedTransport()
+        self.service.push.relay = relay
+        self.write('PUT', '/v1/device/push', dict(token='a' * 64, environment='development', enabled=True, relay=route,
+                                                  schedule=DEFAULT_SCHEDULE))
+        self.task_alert('completed')
+        self.deliver(self.NIGHT)
+        self.assertEqual(self.row()[3:5], ('OffHours', self.MORNING))
+        held = self.service.db.execute('SELECT expires FROM push_outbox').fetchone()[0]
+        self.assertGreater(held, self.NIGHT + 86400)
+        self.release(self.NIGHT + 10, relay=route, schedule=dict(enabled=False))
+        sent_at = self.NIGHT + 20
+        self.deliver(sent_at)
+        self.assertEqual(len(relay.sent), 1)
+        expires = relay.sent[0][4]
+        # The relay rejects an expiry that is not in the future or is more than 24 hours past the send (relay/src/device.js).
+        self.assertTrue(sent_at < expires <= sent_at + 86400, expires - sent_at)
+        self.assertEqual(self.service.db.execute('SELECT expires FROM push_outbox').fetchone()[0], expires)
+        # A retry of the sealed envelope keeps that expiry.
+        relay.result = (503, 'Unavailable')
+        self.service.db.execute("UPDATE push_outbox SET status='queued',not_before=0")
+        self.deliver(sent_at + 3600)
+        self.assertEqual(relay.sent[1][4], expires)
+        self.assertEqual(len(relay.sealed), 1)
 
     def test_deferred_alert_survives_restart_and_sends_once(self):
         self.task_alert('completed')
@@ -477,7 +534,10 @@ class OffHoursDeliveryTests(unittest.TestCase):
         self.service.close()
         self.start()
         self.assertEqual(self.service.push.schedule(self.device), DEFAULT_SCHEDULE)
+        # The stored not_before alone keeps the alert waiting.
+        self.assertEqual(self.service.db.execute('SELECT not_before FROM push_outbox').fetchone()[0], self.MORNING)
         self.deliver(self.NIGHT + 60)
+        self.deliver(self.MORNING - 1)
         self.assertEqual(self.transport.calls, [])
         self.deliver(self.MORNING)
         self.deliver(self.MORNING + 60)
@@ -486,9 +546,11 @@ class OffHoursDeliveryTests(unittest.TestCase):
     def test_deferred_alert_after_restart_follows_a_schedule_changed_before_it(self):
         self.task_alert('completed')
         self.deliver(self.NIGHT)
-        self.register(schedule=dict(start='10:00', end='11:00'))
+        self.release(self.NIGHT + 10, schedule=dict(start='10:00', end='11:00'))
         self.service.close()
         self.start()
+        self.deliver(self.NIGHT + 20)
+        self.assertEqual(self.row()[3:5], ('OffHours', instant(2026, 7, 16, 10)))
         self.deliver(self.MORNING)
         self.assertEqual(self.transport.calls, [])
         self.assertEqual(self.row()[4], instant(2026, 7, 16, 10))
