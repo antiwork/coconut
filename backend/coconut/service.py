@@ -3793,11 +3793,14 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             self._put('bots', bot)
         tasks = self._all('tasks')
         for task in tasks:
+            before = dict(task)
             task.pop('workflow', None)
             task.pop('_permission_ancestors', None)
             if task['status'] == 'paused' and not self._task_paused(task):
                 task['status'] = 'queued'
-            self._put('tasks', task)
+            # Writing every unchanged task took about 0.8 s at each start on the Mac mini.
+            if task != before:
+                self._put('tasks', task)
         changed = False
         for task in tasks:
             if not task.get('thread_id') or 'conversation_bot_id' not in task or 'exchange_id' not in task:
