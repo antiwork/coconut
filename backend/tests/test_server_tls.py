@@ -96,7 +96,7 @@ class TLSAcceptTests(unittest.TestCase):
         def answer(handler, method):
             handler._json(200, value)
         with patch.object(Handler, '_handle', answer):
-            for encoding, expected in (('gzip, deflate', 'gzip'), ('identity', None)):
+            for encoding, expected in (('gzip, deflate', 'gzip'), ('identity', None), ('gzip;q=0, identity', None), ('br;q=1, GZIP;q=0.5', 'gzip')):
                 connection = self.connection()
                 connection.request('GET', '/health', headers={'Accept-Encoding': encoding})
                 response = connection.getresponse()

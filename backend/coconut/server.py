@@ -51,6 +51,20 @@ class APIServer(ThreadingHTTPServer):
         super().process_request_thread(request, client_address)
 
 
+def accepts_gzip(header):
+    """Return True when Accept-Encoding names gzip with a quality above zero (RFC 9110, section 12.5.3)."""
+    for item in header.split(','):
+        name, *parameters = (part.strip() for part in item.split(';'))
+        if name.lower() != 'gzip':
+            continue
+        quality = next((value[2:] for value in parameters if value.lower().startswith('q=')), '1')
+        try:
+            return float(quality) > 0
+        except ValueError:
+            return False
+    return False
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = 'Coconut/1'
     # Keep the connection open between requests. Each new connection costs a TCP and TLS handshake over Tailscale.
@@ -79,7 +93,7 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, status, value, close=False):
         content = json.dumps(value, separators=(',', ':')).encode()
         # A state response from the Mac mini data is about 3 MB and compresses about 5 times. URLSession asks for gzip.
-        compressed = len(content) > 1024 and 'gzip' in self.headers.get('Accept-Encoding', '')
+        compressed = len(content) > 1024 and accepts_gzip(self.headers.get('Accept-Encoding', ''))
         if compressed:
             content = gzip.compress(content, compresslevel=5)
         self.send_response(status)
