@@ -294,6 +294,35 @@ def bot_creation_context(request):
                  'An exact retry must keep the same source, name, role, and instructions:\n' + json.dumps(receipts))
     return text
 
+def turn_context(request):
+    """Return the text that changes from turn to turn. It goes after the turn's message, not in the system prompt.
+
+    Hermes places the system prompt before the saved conversation. A change in it makes the provider read the whole
+    conversation again instead of its cache.
+    """
+    task = request['task']
+    text = ''
+    if task.get('_tracked_prs'):
+        text += ('\nWork already tracks these PRs for this assignment and its callbacks: '
+                 + json.dumps(task['_tracked_prs']) + '. Reuse the existing tracking and task.')
+    if task.get('_tracked_pr_observations'):
+        text += ('\nLatest saved GitHub observations for these PRs: '
+            + json.dumps(task['_tracked_pr_observations'])
+            + '. Compare checked_at with earlier messages. Newer observations replace older check status reports. '
+            'A refresh error means the current state is unconfirmed. Verify the current head before a merge decision. '
+            'Use the existing worker result and review for that head. Do not request another readiness audit '
+            'unless a specific finding, changed head, or missing result requires it.')
+    if not task.get('_native_outcome') and task.get('_tracked_work'):
+        text += ('\nRetain existing work and its owner, decisions, files, and saved waits. '
+            'Use coconut_track_work only to update these retained items until Coconut migrates them. '
+            'Do not create a native replacement or repeat completed steps. '
+            'Use native kanban tasks for new outcomes. Existing work for this bot: '
+            + json.dumps(task['_tracked_work']))
+    if task.get('_native_outcome'):
+        text += '\nNative kanban task:\n' + task['_native_outcome']['context']
+    return text + bot_creation_context(request) + bot_deletion_context(request)
+
+
 def bot_directory(request, profile_home=None):
     current_id = request.get('bot', {}).get('id')
     contacts = [
@@ -1316,27 +1345,6 @@ def run_turn(request, emit, request_receipt):
         else:
             instructions += ('Use terminal notify=true for background work that must return a result. '
                              'Coconut resumes this task when Hermes reports completion. ')
-        # The system prompt must stay the same in each turn. Hermes places it before the saved conversation,
-        # so a change in it makes the provider read the whole conversation again instead of its cache.
-        # Text that changes from turn to turn goes in turn_context, after the turn's message.
-        turn_context = ''
-        if request['task'].get('_tracked_prs'):
-            turn_context += ('\nWork already tracks these PRs for this assignment and its callbacks: '
-                             + json.dumps(request['task']['_tracked_prs'])
-                             + '. Reuse the existing tracking and task.')
-        if request['task'].get('_tracked_pr_observations'):
-            turn_context += ('\nLatest saved GitHub observations for these PRs: '
-                + json.dumps(request['task']['_tracked_pr_observations'])
-                + '. Compare checked_at with earlier messages. Newer observations replace older check status reports. '
-                'A refresh error means the current state is unconfirmed. Verify the current head before a merge decision. '
-                'Use the existing worker result and review for that head. Do not request another readiness audit '
-                'unless a specific finding, changed head, or missing result requires it.')
-        if not request['task'].get('_native_outcome') and request['task'].get('_tracked_work'):
-            turn_context += ('\nRetain existing work and its owner, decisions, files, and saved waits. '
-                'Use coconut_track_work only to update these retained items until Coconut migrates them. '
-                'Do not create a native replacement or repeat completed steps. '
-                'Use native kanban tasks for new outcomes. Existing work for this bot: '
-                + json.dumps(request['task']['_tracked_work']))
         instructions += DECISION_INSTRUCTIONS
         if work.enabled:
             instructions += WORK_INSTRUCTIONS
@@ -1348,7 +1356,6 @@ def run_turn(request, emit, request_receipt):
         if request['task'].get('_native_outcome'):
             from native_outcomes import WORK_INSTRUCTIONS as NATIVE_WORK_INSTRUCTIONS
             instructions += NATIVE_WORK_INSTRUCTIONS
-            turn_context += '\nNative kanban task:\n' + request['task']['_native_outcome']['context']
         instructions += CONVERSATION_INSTRUCTIONS
         instructions += BOT_ROLE_INSTRUCTIONS
         instructions += '\nYour current identity, confirmed by the service:\n' + json.dumps({
@@ -1357,7 +1364,7 @@ def run_turn(request, emit, request_receipt):
         if directory:
             instructions += '\nAvailable bots, as contact metadata only:\n' + json.dumps(directory)
         instructions += BOT_CREATION_INSTRUCTIONS + BOT_DELETION_INSTRUCTIONS
-        turn_context += bot_creation_context(request) + bot_deletion_context(request)
+        changing = turn_context(request)
         config = execution_configuration(request['model'], request.get('base_url'), provider=request.get('provider'),
                                          runtime_config=request.get('runtime_config'))
         if request.get('runtime_config') is None and not config.get('api_key'):
@@ -1374,7 +1381,7 @@ def run_turn(request, emit, request_receipt):
         routine_scope = job_context(request, config, profile_config)
         routine_prompt = routine_scope.__enter__()
         if routine_prompt:
-            turn_context += '\nScheduled assignment with native skills and prior run context:\n' + routine_prompt
+            changing += '\nScheduled assignment with native skills and prior run context:\n' + routine_prompt
         from hermes_cli.tools_config import _get_platform_tools
         from agent.skill_utils import parse_config_string_list
         toolsets = sorted(_get_platform_tools(profile_config, 'cli'))
@@ -1429,7 +1436,7 @@ def run_turn(request, emit, request_receipt):
         work.restore(agent)
         bridge.install(registry)
         prompt, _ = conversation_input(request)
-        prompt += turn_context
+        prompt += changing
         current = current_message(request) if operation == 'start' else None
         timing.mark('agent')
         raw_emit('turn_timing', timing.payload())

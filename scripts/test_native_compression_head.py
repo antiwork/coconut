@@ -209,6 +209,8 @@ def child(case, evidence, control):
         'model': 'gpt-6-sol', 'provider': 'openai-api',
         'runtime_config': {'provider': 'openai-api', 'api_mode': 'chat_completions', 'base_url': 'https://sol.invalid/v1', 'api_key': 'synthetic-sol-key'}}
     current_prompt, _ = worker.conversation_input(request)
+    # The current worker sends the turn's changing context after its message. The original PR87 worker has none.
+    current_prompt += getattr(worker, 'turn_context', lambda request: '')(request)
     assert CURRENT in current_prompt
     def receipt(kind, payload):
         raise AssertionError('Read-only fixture unexpectedly requested an effect: ' + kind)
