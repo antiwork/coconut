@@ -284,7 +284,7 @@ class WorkSources:
                     native_bindings(items, requested, lookup_tasks, None, pending, source,
                                     sole_source=sum(s['bot_id'] == bot['id'] for s in sources) == 1)
                     needed = {item['id']: item['updated_at'] for item in items}
-                    needed.update({identity: binding['updated_at'] for identity, binding in requested.items()
+                    needed.update({identity: binding.get('updated_at') for identity, binding in requested.items()
                                    if identity not in needed and binding.get('decision_ids')})
                     native_ids = {key for identity, binding in requested.items()
                                   if identity in needed and binding.get('updated_at') == needed[identity]
@@ -312,7 +312,8 @@ class WorkSources:
                         native_bindings(items, bindings, tasks, native, decisions, source,
                             sole_source=sum(s['bot_id'] == source['bot_id'] for s in sources) == 1)
                         native_ids = {n['id'] for n in native.values()}
-                        state['native_links'] = {identity: dict(updated_at=value['updated_at'],
+                        # The bot writes the imported links. A link without a revision must not stop the audit.
+                        state['native_links'] = {identity: dict(updated_at=value.get('updated_at'),
                             task_ids=value.get('task_ids', []), decision_ids=value.get('decision_ids', []))
                             for identity, value in bindings.items()
                             if value.get('decision_ids') or any(key in native_ids for key in value.get('task_ids', []))}

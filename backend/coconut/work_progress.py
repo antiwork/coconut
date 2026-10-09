@@ -153,10 +153,10 @@ class WorkProgress:
 
     def _exchange_peers(self, task):
         """Read tasks in this exchange and the assignment's recorded Work history."""
-        tasks = {t['id']: t for t in self._all('tasks')}
+        tasks = self._task_map()
         linked = set()
         assignment = self._assignment(task)
-        records = self._pending_completion_receipts()
+        records = self._shared_pending_receipts()
         linked.update(self._work_chain(assignment, tasks, records, include_continuations=True))
         work_id = task.get('_work_context_id') or assignment.get('_work_context_id')
         if work_id:
@@ -311,8 +311,8 @@ class WorkProgress:
         """Expose existing owners before a bot can start duplicate work."""
         # A listing is read-only. The wait-registration guard applies only to an explicit coconut_wait.
         with self.lock:
-            tasks = {t['id']: t for t in self._all('tasks')}
-            records = self._work_receipts()
+            tasks = self._task_map()
+            records = self._shared_work_receipts()
             dependencies = []
             for target in self._exchange_peers(task).values():
                 pending = self._background_pending(target['id'])

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import faulthandler
+import gzip
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -50,8 +51,25 @@ class APIServer(ThreadingHTTPServer):
         super().process_request_thread(request, client_address)
 
 
+def accepts_gzip(header):
+    """Return True when Accept-Encoding names gzip with a quality above zero (RFC 9110, section 12.5.3)."""
+    for item in header.split(','):
+        name, *parameters = (part.strip() for part in item.split(';'))
+        if name.lower() != 'gzip':
+            continue
+        quality = next((value[2:] for value in parameters if value.lower().startswith('q=')), '1')
+        try:
+            return float(quality) > 0
+        except ValueError:
+            return False
+    return False
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = 'Coconut/1'
+    # Keep the connection open between requests. Each new connection costs a TCP and TLS handshake over Tailscale.
+    # Every response sets Content-Length, so the phone can find the end of each response.
+    protocol_version = 'HTTP/1.1'
 
     def log_message(self, format, *args):
         # Paths can contain private IDs. Keep the default access log quiet.
@@ -72,10 +90,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self._handle('DELETE')
 
-    def _json(self, status, value):
+    def _json(self, status, value, close=False):
         content = json.dumps(value, separators=(',', ':')).encode()
+        # A state response from the Mac mini data is about 3 MB and compresses about 5 times. URLSession asks for gzip.
+        compressed = len(content) > 1024 and accepts_gzip(self.headers.get('Accept-Encoding', ''))
+        if compressed:
+            content = gzip.compress(content, compresslevel=5)
         self.send_response(status)
+        if close:
+            # send_header also marks this connection to close after the response.
+            self.send_header('Connection', 'close')
         self.send_header('Content-Type', 'application/json; charset=utf-8')
+        if compressed:
+            self.send_header('Content-Encoding', 'gzip')
+        self.send_header('Vary', 'Accept-Encoding')
         self.send_header('Content-Length', str(len(content)))
         self.send_header('Cache-Control', 'no-store')
         if getattr(self, 'timings', None):
@@ -108,6 +136,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             url = urlsplit(self.path)
             service = self.server.service
+            if method == 'GET' and (self.headers.get('Transfer-Encoding') or self.headers.get('Content-Length', '0') != '0'):
+                # GET routes never read a body. Unread bytes would corrupt the next request on this connection.
+                raise ServiceError(400, 'Send GET requests without a body.')
             if method == 'GET' and url.path == '/health':
                 self._json(200, {'ok': True, 'api_version': 1})
                 return
@@ -192,11 +223,12 @@ class Handler(BaseHTTPRequestHandler):
             response = service.mutate(method, url.path, self._body(), self.headers.get('Idempotency-Key', ''), device)
             self._json(200, response)
         except ServiceError as error:
-            self._json(error.status, {'error': str(error)})
+            # An error can come before the request body was read. Unread body bytes would corrupt the next request.
+            self._json(error.status, {'error': str(error)}, close=True)
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
-            pass
+            self.close_connection = True
         except Exception:
-            self._json(500, {'error': 'The Mac could not finish this request. Try again with the same request key.'})
+            self._json(500, {'error': 'The Mac could not finish this request. Try again with the same request key.'}, close=True)
 
 
 def create_pairing_code(data_dir: str | Path, lifetime: int = 300) -> str:

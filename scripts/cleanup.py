@@ -34,8 +34,10 @@ def main() -> None:
     targets = [RUNTIME]
     if args.keep_deployment:
         targets = [path for path in sorted(RUNTIME.iterdir()) if path.name not in DEPLOYMENT_FILES] if RUNTIME.exists() else []
-        if RUNTIME / 'hermes' not in targets:
-            targets.append(RUNTIME / 'hermes')
+        # The runtime lease creates this lock after the listing above.
+        for name in ('hermes', 'hermes-update.lock'):
+            if RUNTIME / name not in targets:
+                targets.append(RUNTIME / name)
     if args.builds:
         targets.extend([ROOT / "ios/.build", ROOT / "ios/DerivedData", ROOT / ".build"])
     for target in targets:

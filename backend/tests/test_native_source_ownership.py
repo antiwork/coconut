@@ -235,6 +235,19 @@ print(identity)
         self.assertEqual(state['native_links'][self.item['id']]['updated_at'], self.item['updated_at'])
         self.assertIsNone(state['error'])
 
+    def test_imported_link_without_a_revision_does_not_stop_the_audit(self):
+        origin = self.source()
+        identity = self.outcome(origin)
+        self.audit()
+        (self.root / 'coverage.json').write_text(json.dumps({
+            'https://github.com/example/repo/pull/9': dict(task_ids=[identity], reason='Own draft, no review request'),
+            'https://github.com/example/repo/pull/10': dict(decision_ids=['unknown-card']),
+        }))
+        state = self.audit()
+        self.assertIsNone(state['error'])
+        self.assertEqual(state['missing'], [])
+        self.assertIsNone(state['native_links']['https://github.com/example/repo/pull/9']['updated_at'])
+
     def test_requested_unbound_native_task_is_not_duplicated(self):
         identity = self.native_program("""
 print(board.kb.create_task(board.conn, title='Source follow-up', body='Verify',

@@ -117,6 +117,8 @@ class WorkerModelProcessTests(unittest.TestCase):
                         assert kwargs == {'conversation_history': []}
                         assert set(json.loads(prompt)) == {'source', 'preferences', 'earlier_sources', 'later_sources'}
                         return {'completed': True, 'final_response': '{"no_change":true}'}
+                    with open(os.environ['WORKER_CAPTURE'] + '.prompts', 'a') as handle:
+                        handle.write(json.dumps(prompt) + '\\n')
                     kwargs['stream_callback']('Ready.')
                     return {'completed': True, 'final_response': 'Ready.'}
         '''))
@@ -167,6 +169,8 @@ class WorkerModelProcessTests(unittest.TestCase):
             for pipe in (process.stdin, process.stdout, process.stderr):
                 pipe.close()
         records = [json.loads(line) for line in capture.read_text().splitlines()] if capture.exists() else []
+        prompts = Path(str(capture) + '.prompts')
+        self.prompts = [json.loads(line) for line in prompts.read_text().splitlines()] if prompts.exists() else []
         self.assertNotIn('private-test-token', json.dumps(events) + stderr)
         self.assertNotIn('ambient-test-key', json.dumps(events) + stderr)
         return code, events, records, home
@@ -226,7 +230,25 @@ class WorkerModelProcessTests(unittest.TestCase):
         code, events, records, _ = self.run_worker('start', effort=None, extract=False,
             task_context={'_tracked_pr_observations': [observation]})
         self.assertEqual(code, 0, events)
-        self.assertIn(json.dumps([observation]), records[0]['ephemeral_system_prompt'])
+        self.assertIn(json.dumps([observation]), self.prompts[0])
+        self.assertNotIn(observation['checked_at'], records[0]['ephemeral_system_prompt'])
+
+    def test_system_prompt_stays_the_same_when_turn_context_changes(self):
+        # Hermes puts the system prompt before the saved conversation. A change in it loses the provider's prompt cache.
+        systems = []
+        for turn in range(2):
+            source = {'id': f'message-{turn}', 'text': f'Request {turn}'}
+            observation = {'url': 'https://github.com/example/project/pull/42', 'head_sha': str(turn) * 40,
+                           'required_checks_state': 'pending', 'checked_at': f'2099-01-0{turn + 1}T00:00:00Z', 'refresh_error': None}
+            code, events, records, _ = self.run_worker('start', effort=None, extract=False, task_context={
+                '_bot_creation_sources': [source], '_bot_deletion_sources': [source],
+                '_tracked_prs': [observation['url']], '_tracked_pr_observations': [observation],
+                '_tracked_work': [{'id': f'work-{turn}', 'title': f'Work {turn}'}]})
+            self.assertEqual(code, 0, events)
+            systems.append(records[0]['ephemeral_system_prompt'])
+            for value in (source['text'], observation['checked_at'], f'work-{turn}'):
+                self.assertIn(value, self.prompts[0])
+        self.assertEqual(systems[0], systems[1])
 
     def test_task_context_and_resumes_share_native_route_effort_and_memory(self):
         cases = [('start', None, 'executed'), ('context', 'none', 'executed'),

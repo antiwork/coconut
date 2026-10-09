@@ -424,8 +424,8 @@ class TrackedWork:
     def _tracked_items_input(self, task):
         items = [a for a in self._all('artifacts') if a['kind'] == 'work'
                  and (not a.get('_hidden') or a.get('_work_parent_id'))]
-        tasks = {t['id']: t for t in self._all('tasks')}
-        records = self._work_receipts()
+        tasks = self._task_map()
+        records = self._shared_work_receipts()
         owned = {a['id'] for a in items if a.get('task_id') in tasks
                  and task['id'] in self._work_report_chain(a, tasks, records)}
         items = [a for a in items if a['bot_id'] == task['bot_id']

@@ -98,8 +98,8 @@ class BotDeletionProviderTests(unittest.TestCase):
         self.task['_deletable_bots'] = []
         self.task['_bot_deletion_receipts'] = [receipt | {'private_data': 'SECRET'}]
         events = self.run_worker(f'''
-            assert 'Cleanup may still need confirmation' in self.system_prompt
-            assert 'SECRET' not in self.system_prompt
+            assert 'Cleanup may still need confirmation' in prompt
+            assert 'SECRET' not in self.system_prompt + prompt
             result = json.loads(registry.dispatch('coconut_delete_bot', {payload!r}))
             assert result['status'] == 'duplicate'
             return {{'completed': True, 'final_response': 'Lin is deleted.'}}
@@ -154,7 +154,7 @@ class BotDeletionProviderTests(unittest.TestCase):
         self.request()
         events = self.run_worker('''
             assert 'coconut_delete_bot' not in registry.handlers
-            assert 'No direct human source authorizes deletion in this turn' in self.system_prompt
+            assert 'No direct human source authorizes deletion in this turn' in prompt
             return {'completed': True, 'final_response': 'The decision stays pending.'}
         ''', None, operation='context')
         self.assertEqual([kind for kind, _ in events], ['text_delta'])

@@ -69,6 +69,62 @@ class TLSAcceptTests(unittest.TestCase):
         self.assertEqual(silent.recv(1), b'')
         self.health()
 
+    def connection(self):
+        connection = http.client.HTTPSConnection('localhost', self.server.server_port, timeout=1,
+                                                 context=self.client_context)
+        self.addCleanup(connection.close)
+        return connection
+
+    def test_requests_reuse_one_connection(self):
+        accepted = []
+        get_request = self.server.get_request
+        self.server.get_request = lambda: accepted.append(1) or get_request()
+        connection = self.connection()
+        for _ in range(3):
+            connection.request('GET', '/health')
+            response = connection.getresponse()
+            self.assertEqual(json.load(response), {'ok': True, 'api_version': 1})
+            self.assertFalse(response.will_close)
+        self.assertEqual(len(accepted), 1)
+
+    def test_large_json_is_compressed_only_when_the_client_accepts_gzip(self):
+        import gzip
+        from unittest.mock import patch
+        from coconut.server import Handler
+        value = {'items': ['message'] * 2000}
+        original = Handler._handle
+        def answer(handler, method):
+            handler._json(200, value)
+        with patch.object(Handler, '_handle', answer):
+            for encoding, expected in (('gzip, deflate', 'gzip'), ('identity', None), ('gzip;q=0, identity', None), ('br;q=1, GZIP;q=0.5', 'gzip')):
+                connection = self.connection()
+                connection.request('GET', '/health', headers={'Accept-Encoding': encoding})
+                response = connection.getresponse()
+                body = response.read()
+                self.assertEqual(response.getheader('Content-Encoding'), expected)
+                self.assertEqual(json.loads(gzip.decompress(body) if expected else body), value)
+        self.assertIs(Handler._handle, original)
+        self.health()
+
+    def test_get_with_a_body_is_rejected_and_closes_the_connection(self):
+        connection = self.connection()
+        connection.request('GET', '/health', b'GET /health HTTP/1.1', {'Content-Type': 'application/json'})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 400)
+        self.assertTrue(response.will_close)
+        response.read()
+        self.health()
+
+    def test_error_before_the_body_is_read_closes_the_connection(self):
+        connection = self.connection()
+        body = json.dumps({'text': 'GET /health HTTP/1.1'}).encode()
+        connection.request('POST', '/v1/bots/example/messages', body, {'Content-Type': 'application/json'})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 401)
+        self.assertTrue(response.will_close)
+        response.read()
+        self.health()
+
 
 if __name__ == '__main__':
     unittest.main()

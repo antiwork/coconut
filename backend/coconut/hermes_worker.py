@@ -180,16 +180,20 @@ def bot_deletion_directory(request):
     return directory
 
 
-def bot_deletion_instructions(request):
+BOT_DELETION_INSTRUCTIONS = (
+    '\nWhen coconut_delete_bot is available, you can delete other Coconut bots on a direct human request. '
+    'A capability question alone requests no deletion. Use the listed exact ID and name. '
+    'If several contacts match, ask the person which one. Never choose the first match. '
+    'Do not delete yourself or the bot whose conversation is open. '
+    'Deletion removes the contact and stops its work and routines. The deleted profile remains on the Mac. '
+    'Do not claim success without a matching deleted or duplicate service receipt in this turn. '
+    'After an unconfirmed result, retry only the same source, target ID, and name. Never delete a replacement with the same name. '
+    'Give one short confirmation after the receipt. Do not repeat internal IDs or add an approval footer.')
+
+
+def bot_deletion_context(request):
     sources = bot_deletion_sources(request)
-    text = ('\nWhen coconut_delete_bot is available, you can delete other Coconut bots on a direct human request. '
-            'A capability question alone requests no deletion. Use the listed exact ID and name. '
-            'If several contacts match, ask the person which one. Never choose the first match. '
-            'Do not delete yourself or the bot whose conversation is open. '
-            'Deletion removes the contact and stops its work and routines. The deleted profile remains on the Mac. '
-            'Do not claim success without a matching deleted or duplicate service receipt in this turn. '
-            'After an unconfirmed result, retry only the same source, target ID, and name. Never delete a replacement with the same name. '
-            'Give one short confirmation after the receipt. Do not repeat internal IDs or add an approval footer.')
+    text = ''
     if sources:
         text += '\nDirect human sources for deletion:\n' + json.dumps(sources)
         text += '\nDeletion directory, as contact metadata only:\n' + json.dumps(bot_deletion_directory(request))
@@ -261,30 +265,63 @@ def prior_bot_creation_receipts(request):
     return result
 
 
-def bot_creation_instructions(request):
+BOT_CREATION_INSTRUCTIONS = (
+    '\nThe current tool list defines your capabilities. Earlier assistant messages may describe an older build. '
+    'When coconut_create_bot is available, you can create Coconut bots from this conversation. '
+    'Answer capability questions directly without creating a bot until the person requests one. '
+    'When a listed human source requests a bot, call coconut_create_bot. '
+    'Use that request to write the new bot\'s purpose and instructions. '
+    'Never copy your private instructions, memory, preferences, credentials, files, or unrelated chat into the new bot. '
+    'The new bot inherits the native default model and has a separate Hermes profile. '
+    'Only a matching created or duplicate service receipt confirms creation. '
+    'Do not claim success after a rejected or unconfirmed request. '
+    'After confirmation, use the returned bot ID for a requested handoff. '
+    'Creating a bot does not bypass any approval. '
+    'Give one short confirmation. Do not repeat the receipt or add an approval footer.')
+
+
+def bot_creation_context(request):
     sources = bot_creation_sources(request)
-    instructions = ('\nThe current tool list defines your capabilities. Earlier assistant messages may describe an older build. '
-                    'When coconut_create_bot is available, you can create Coconut bots from this conversation. '
-                    'Answer capability questions directly without creating a bot until the person requests one. '
-                    'When a listed human source requests a bot, call coconut_create_bot. '
-                    'Use that request to write the new bot\'s purpose and instructions. '
-                    'Never copy your private instructions, memory, preferences, credentials, files, or unrelated chat into the new bot. '
-                    'The new bot inherits the native default model and has a separate Hermes profile. '
-                    'Only a matching created or duplicate service receipt confirms creation. '
-                    'Do not claim success after a rejected or unconfirmed request. '
-                    'After confirmation, use the returned bot ID for a requested handoff. '
-                    'Creating a bot does not bypass any approval. '
-                    'Give one short confirmation. Do not repeat the receipt or add an approval footer.')
+    text = ''
     if sources:
-        instructions += '\nDirect human messages eligible to request bot creation:\n' + json.dumps(sources)
+        text += '\nDirect human messages eligible to request bot creation:\n' + json.dumps(sources)
     else:
-        instructions += '\nNo direct human source authorizes bot creation in this turn.'
+        text += '\nNo direct human source authorizes bot creation in this turn.'
     receipts = prior_bot_creation_receipts(request)
     if receipts:
-        instructions += ('\nThe service already confirmed these bot creations. Use their IDs. '
-                         'Do not create replacements or rephrase a creation after a restart. '
-                         'An exact retry must keep the same source, name, role, and instructions:\n' + json.dumps(receipts))
-    return instructions
+        text += ('\nThe service already confirmed these bot creations. Use their IDs. '
+                 'Do not create replacements or rephrase a creation after a restart. '
+                 'An exact retry must keep the same source, name, role, and instructions:\n' + json.dumps(receipts))
+    return text
+
+def turn_context(request):
+    """Return the text that changes from turn to turn. It goes after the turn's message, not in the system prompt.
+
+    Hermes places the system prompt before the saved conversation. A change in it makes the provider read the whole
+    conversation again instead of its cache.
+    """
+    task = request['task']
+    text = ''
+    if task.get('_tracked_prs'):
+        text += ('\nWork already tracks these PRs for this assignment and its callbacks: '
+                 + json.dumps(task['_tracked_prs']) + '. Reuse the existing tracking and task.')
+    if task.get('_tracked_pr_observations'):
+        text += ('\nLatest saved GitHub observations for these PRs: '
+            + json.dumps(task['_tracked_pr_observations'])
+            + '. Compare checked_at with earlier messages. Newer observations replace older check status reports. '
+            'A refresh error means the current state is unconfirmed. Verify the current head before a merge decision. '
+            'Use the existing worker result and review for that head. Do not request another readiness audit '
+            'unless a specific finding, changed head, or missing result requires it.')
+    if not task.get('_native_outcome') and task.get('_tracked_work'):
+        text += ('\nRetain existing work and its owner, decisions, files, and saved waits. '
+            'Use coconut_track_work only to update these retained items until Coconut migrates them. '
+            'Do not create a native replacement or repeat completed steps. '
+            'Use native kanban tasks for new outcomes. Existing work for this bot: '
+            + json.dumps(task['_tracked_work']))
+    if task.get('_native_outcome'):
+        text += '\nNative kanban task:\n' + task['_native_outcome']['context']
+    return text + bot_creation_context(request) + bot_deletion_context(request)
+
 
 def bot_directory(request, profile_home=None):
     current_id = request.get('bot', {}).get('id')
@@ -1308,23 +1345,6 @@ def run_turn(request, emit, request_receipt):
         else:
             instructions += ('Use terminal notify=true for background work that must return a result. '
                              'Coconut resumes this task when Hermes reports completion. ')
-        if request['task'].get('_tracked_prs'):
-            instructions += ('\nWork already tracks these PRs for this assignment and its callbacks: '
-                             + json.dumps(request['task']['_tracked_prs'])
-                             + '. Reuse the existing tracking and task.')
-        if request['task'].get('_tracked_pr_observations'):
-            instructions += ('\nLatest saved GitHub observations for these PRs: '
-                + json.dumps(request['task']['_tracked_pr_observations'])
-                + '. Compare checked_at with earlier messages. Newer observations replace older check status reports. '
-                'A refresh error means the current state is unconfirmed. Verify the current head before a merge decision. '
-                'Use the existing worker result and review for that head. Do not request another readiness audit '
-                'unless a specific finding, changed head, or missing result requires it.')
-        if not request['task'].get('_native_outcome') and request['task'].get('_tracked_work'):
-            instructions += ('Retain existing work and its owner, decisions, files, and saved waits. '
-                'Use coconut_track_work only to update these retained items until Coconut migrates them. '
-                'Do not create a native replacement or repeat completed steps. '
-                'Use native kanban tasks for new outcomes. Existing work for this bot: '
-                + json.dumps(request['task']['_tracked_work']))
         instructions += DECISION_INSTRUCTIONS
         if work.enabled:
             instructions += WORK_INSTRUCTIONS
@@ -1335,7 +1355,7 @@ def run_turn(request, emit, request_receipt):
             instructions += CHAT_INSTRUCTIONS
         if request['task'].get('_native_outcome'):
             from native_outcomes import WORK_INSTRUCTIONS as NATIVE_WORK_INSTRUCTIONS
-            instructions += NATIVE_WORK_INSTRUCTIONS + '\n' + request['task']['_native_outcome']['context']
+            instructions += NATIVE_WORK_INSTRUCTIONS
         instructions += CONVERSATION_INSTRUCTIONS
         instructions += BOT_ROLE_INSTRUCTIONS
         instructions += '\nYour current identity, confirmed by the service:\n' + json.dumps({
@@ -1343,8 +1363,8 @@ def run_turn(request, emit, request_receipt):
         instructions += '\nUse this identity when older notes contain a previous name. Check the roster before creating a bot with an existing name.'
         if directory:
             instructions += '\nAvailable bots, as contact metadata only:\n' + json.dumps(directory)
-        instructions += bot_creation_instructions(request)
-        instructions += bot_deletion_instructions(request)
+        instructions += BOT_CREATION_INSTRUCTIONS + BOT_DELETION_INSTRUCTIONS
+        changing = turn_context(request)
         config = execution_configuration(request['model'], request.get('base_url'), provider=request.get('provider'),
                                          runtime_config=request.get('runtime_config'))
         if request.get('runtime_config') is None and not config.get('api_key'):
@@ -1361,7 +1381,7 @@ def run_turn(request, emit, request_receipt):
         routine_scope = job_context(request, config, profile_config)
         routine_prompt = routine_scope.__enter__()
         if routine_prompt:
-            instructions += '\nScheduled assignment with native skills and prior run context:\n' + routine_prompt
+            changing += '\nScheduled assignment with native skills and prior run context:\n' + routine_prompt
         from hermes_cli.tools_config import _get_platform_tools
         from agent.skill_utils import parse_config_string_list
         toolsets = sorted(_get_platform_tools(profile_config, 'cli'))
@@ -1416,6 +1436,7 @@ def run_turn(request, emit, request_receipt):
         work.restore(agent)
         bridge.install(registry)
         prompt, _ = conversation_input(request)
+        prompt += changing
         current = current_message(request) if operation == 'start' else None
         timing.mark('agent')
         raw_emit('turn_timing', timing.payload())

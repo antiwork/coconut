@@ -22,7 +22,7 @@ CHAT_INSTRUCTIONS = (
     'Use coconut_ask only for a concrete decision. Ordinary local setup and planning need no card. '
 )
 WORK_INSTRUCTIONS = (
-    'The native kanban task below owns this outcome. Its comments and previous attempts are the work record. '
+    'The native kanban task in the current message owns this outcome. Its comments and previous attempts are the work record. '
     'Use kanban_heartbeat for a short progress description at phase changes. '
     'Use kanban_complete only after verifying every accepted outcome. A reply or plan does not complete the task. '
     'A question about a decision does not complete its unfinished outcome. Answer it and retain the remaining work. '
