@@ -283,7 +283,15 @@ class HermesProvider(FixtureProvider):
     def observe_bot(self, bot):
         return self.observe_bots([bot])[bot['id']]
 
+    def forget_profile_settings(self, bots):
+        """Drop the saved settings of every bot that is not in this complete list, such as a deleted bot."""
+        keep = {bot['id'] for bot in bots}
+        with self._profile_settings_lock:
+            for identity in [identity for identity in self._profile_settings if identity not in keep]:
+                del self._profile_settings[identity]
+
     def observe_state(self, bots):
+        self.forget_profile_settings(bots)
         settings = self.native_settings('snapshot_read', bots)
         return self.observe_bots(bots, settings=settings['profiles']), settings
 
@@ -317,8 +325,11 @@ class HermesProvider(FixtureProvider):
         except (OSError, ValueError):
             return self.native_settings(bots=bots)['profiles']
         with self._profile_settings_lock:
-            result = {identity: deepcopy(cached[1]) for identity, cached in self._profile_settings.items()
-                      if identity in signatures and cached[0] == signatures[identity]}
+            result = {}
+            for identity, current in signatures.items():
+                cached = self._profile_settings.get(identity)
+                if cached and cached[0] == current:
+                    result[identity] = deepcopy(cached[1])
         missing = [bot for bot in bots if bot['id'] not in result]
         if missing:
             values = self.native_settings(bots=missing)['profiles']

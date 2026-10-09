@@ -55,6 +55,30 @@ class ProfileSettingsCacheTests(unittest.TestCase):
         self.provider.profile_settings([self.bot])
         self.assertEqual(len(self.reads), 4)
 
+    def test_a_bot_that_is_no_longer_observed_loses_its_saved_settings(self):
+        other = {'id': str(uuid4())}
+        (self.root / 'bots' / other['id'] / 'home').mkdir(parents=True)
+        self.provider.profile_settings([self.bot, other])
+        self.assertEqual(set(self.provider._profile_settings), {self.bot['id'], other['id']})
+        # A lookup for one bot keeps the others, so a turn for one bot does not cost the rest a new read.
+        self.provider.profile_settings([self.bot])
+        self.assertEqual(set(self.provider._profile_settings), {self.bot['id'], other['id']})
+        # The full state of the remaining bots drops the deleted one.
+        self.provider.observe_state([self.bot])
+        self.assertEqual(set(self.provider._profile_settings), {self.bot['id']})
+        self.provider.observe_state([])
+        self.assertEqual(self.provider._profile_settings, {})
+
+    def test_a_lookup_reads_only_the_requested_bots(self):
+        others = [{'id': str(uuid4())} for _ in range(50)]
+        for bot in others:
+            (self.root / 'bots' / bot['id'] / 'home').mkdir(parents=True)
+        self.provider.profile_settings([self.bot, *others])
+        with patch.object(self.provider, '_profile_settings', wraps=self.provider._profile_settings) as saved:
+            self.provider.profile_settings([self.bot])
+            saved.items.assert_not_called()
+        self.assertEqual(len(self.reads), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
