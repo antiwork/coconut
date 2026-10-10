@@ -1777,13 +1777,14 @@ def unpack(binding, checked, *, retry_failure=None):
         raise
 
 
-def restore(binding, checked, *, retry_duplicates=False):
+def restore(binding, checked, *, retry_duplicates=False, keep_archive=False):
     """Recreate a retired worktree at its saved path. Hold the registry lock.
 
     `checked` comes from compare_checkouts before the lock. Without an entry for the binding,
     unpack compares a checkout that already exists at the path while it holds the lock.
 
-    After a successful restore, the worktree holds every archived change, so Coconut deletes the archive.
+    After a successful restore, the worktree holds every archived change, so Coconut deletes the archive,
+    unless keep_archive is set.
     A failed restore keeps the archive and marks the binding `restore_failed`. Only an
     explicit same-owner acquire can retry a proven legacy identical-duplicate collision
     or its proven post-PR92 intent-to-add mismatch into a missing or empty path.
@@ -1869,14 +1870,66 @@ def restore(binding, checked, *, retry_duplicates=False):
         else:
             binding.pop('retired')
             validate_binding(binding)
-            Path(archive).unlink(missing_ok=True)
+            if not keep_archive:
+                Path(archive).unlink(missing_ok=True)
             return
     raise ValueError(f'Coconut retired this worktree and could not restore it: {failure["error"]} '
                      f'The archive {archive} holds its uncommitted changes. The branch {binding["branch"]} '
                      'holds its commits. Ask the operator to restore it.')
 
 
-def acquire(root, outcome, repository, existing_worktree=None):
+def hand_off(saved, identity, outcome, repository, requested, target, successor):
+    """Return the retired binding of another outcome at `target`, moved to `outcome` and restored. Hold the registry lock.
+
+    Return None when no retired binding of another outcome names the path. Then the usual one-owner rules apply.
+    `successor(binding)` proves from native records that this turn continues that outcome, or raises ValueError.
+    A failure changes no binding. The archive always stays.
+    """
+    owners = [(name, b) for name, b in saved.items()
+              if isinstance(b, dict) and isinstance(b.get('path'), str) and Path(b['path']).resolve() == target]
+    if len(owners) != 1 or owners[0][1].get('outcome') == outcome or not owners[0][1].get('retired'):
+        return None
+    name, old = owners[0]
+    refused = 'Another outcome owns this worktree, and Coconut cannot hand it to this work item: '
+    retired = old['retired']
+    if old.get('repository') != str(repository):
+        raise ValueError(refused + 'it belongs to another repository.')
+    # Name the saved path exactly. A link or another spelling of the path does not count.
+    if str(requested) != old['path'] or str(target) != old['path'] or name != old['outcome'] + '-' + identity[len(outcome) + 1:]:
+        raise ValueError(refused + 'the path does not match its saved binding.')
+    if retired.get('done') or retired.get('restore_failed'):
+        raise ValueError(refused + 'its earlier restore failed or it was discarded. Ask the operator to inspect it.')
+    archive = Path(retired.get('archive') or '')
+    if archive.is_symlink() or not archive.is_file():
+        raise ValueError(refused + f'its archive {archive} is missing.')
+    try:
+        with tarfile.open(archive) as tar:
+            metadata = json.loads(tar.extractfile('retirement.json').read())
+    except RESTORE_ERRORS as error:
+        raise ValueError(refused + f'its archive {archive} cannot be read: {error}') from None
+    if (any(metadata.get(key) != old[key] for key in ('outcome', 'repository', 'path', 'branch'))
+            or metadata.get('head') != retired.get('head')):
+        raise ValueError(refused + 'its archive belongs to another owner, branch, or commit.')
+    if git(repository, 'rev-parse', '--verify', 'refs/heads/' + old['branch']) != retired['head']:
+        raise ValueError(refused + 'its branch moved after retirement.')
+    proof = successor(dict(old))
+    # A process of the old outcome can still write. Without a full process scan, nothing proves that it ended.
+    found = process_outcomes()
+    if found is None or old['outcome'] in found:
+        raise ValueError(refused + 'a process of its outcome may still run.')
+    moved = dict(old, outcome=outcome)
+    try:
+        restore(moved, {}, keep_archive=True)
+    except ValueError as error:
+        raise ValueError(refused + str(error)) from None
+    moved['handoff'] = dict(proof, outcome=old['outcome'], archive=str(archive), head=retired['head'],
+                            at=stamp(datetime.now(timezone.utc)))
+    del saved[name]
+    saved[identity] = moved
+    return moved
+
+
+def acquire(root, outcome, repository, existing_worktree=None, *, successor=None):
     root = Path(root)
     repository = Path(repository).expanduser()
     if not repository.is_absolute():
@@ -1914,6 +1967,11 @@ def acquire(root, outcome, repository, existing_worktree=None):
         target = repository
         if existing_worktree:
             target = Path(existing_worktree).expanduser().resolve()
+            moved = successor and hand_off(saved, identity, outcome, repository, Path(existing_worktree).expanduser(),
+                                           target, successor)
+            if moved:
+                save_bindings(manifest, saved)
+                return moved
             if target == repository or not (target / '.git').is_file():
                 raise ValueError('Only a linked worktree can be adopted.')
             if Path(git(target, 'rev-parse', '--path-format=absolute', '--git-common-dir')).resolve() != common:

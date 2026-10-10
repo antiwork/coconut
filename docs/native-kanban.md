@@ -246,6 +246,22 @@ New work for the outcome continues without the worktree. `coconut_workspace` ret
 To try the restore again, an operator removes `restore_failed` from the binding in `workspaces/worktrees.json`.
 A path hint for native dispatch returns the saved path. It does not restore the worktree.
 Coconut does not delete an archive that a `retired` binding names, also when the binding has `restore_failed`.
+
+A worktree has one outcome. A native successor can take over a retired worktree of an earlier outcome when it passes
+the saved path as `existing_worktree`. The worker reads the proof from its native claim and from the Kanban database,
+never from tool arguments. Under the registry lock, Coconut hands over the binding only when all of these hold:
+
+- The turn holds the native claim it names: the task is running with the same claim lock, run, tenant, and Coconut request.
+- The native task is a direct child of exactly one task that Coconut created for the old outcome
+  (idempotency key `coconut:<outcome>`, or its `:<input>` and follow-up forms), in the same tenant, at the same path.
+  No other parent names the path.
+- No native task of the old outcome is unfinished or holds a run or a worker, and no process of the old outcome runs.
+- The repository, the exact saved path, the archive, and its owner, branch, and commit match the binding.
+  The branch still points at the archived commit.
+
+Coconut then moves the binding to the new outcome and restores it as above, on the same path and branch.
+It keeps the archive, and the binding records the handoff. A refusal or a failed restore changes no binding and keeps the archive.
+A live worktree of another outcome is never handed over.
 Native delegated workers also default to `delegation.worktree_isolation: true`.
 An explicit profile setting takes precedence.
 
