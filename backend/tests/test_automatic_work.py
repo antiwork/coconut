@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import test_service_pr as fixtures
 import legacy_work_sync
 from coconut.service import ServiceError
+from coconut.tracked_work import TRACK_WORK_SCHEMA
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
 
@@ -91,7 +92,9 @@ class AutomaticWorkTests(unittest.TestCase):
 
     def test_retained_legacy_key_updates_but_new_invalid_keys_are_rejected(self):
         task = self.start()
-        key = 'retained-pr:' + fixtures.URL
+        key = 'retained-pr:https://github.com/' + 'o' * 39 + '/' + 'r' * 100 + '/pull/42'
+        self.assertGreater(len(key), 80)
+        self.assertGreaterEqual(TRACK_WORK_SCHEMA['parameters']['properties']['key']['maxLength'], len(key))
         with self.service.transaction():
             self.service._put('artifacts', dict(id='retained-work', bot_id=task['bot_id'], task_id=task['id'], kind='work',
                 title='Finish the PR', status='waiting', activity='Waiting for review', url=None, preview='',
@@ -100,7 +103,7 @@ class AutomaticWorkTests(unittest.TestCase):
         updated = self.service._register_work(task['id'], dict(report, key=key))
         self.assertEqual((updated['id'], updated['key']), ('retained-work', key))
         self.assertEqual(self.service._get('artifacts', 'retained-work')['activity'], 'Addressing review')
-        for invalid in ('retained-pr:https://github.com/antiwork/coconut/pull/999', 'new work'):
+        for invalid in ('retained-pr:https://github.com/antiwork/coconut/pull/999', 'new work', 'a' * 81):
             with self.assertRaises(ServiceError) as error:
                 self.service._register_work(task['id'], dict(report, key=invalid))
             self.assertEqual(error.exception.status, 400)

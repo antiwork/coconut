@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 
 
 WORK_STATES = ('working', 'waiting', 'ready', 'blocked', 'completed', 'cancelled')
+NEW_WORK_KEY_LIMIT = 80
+RETAINED_WORK_KEY_LIMIT = 500
 TRACK_WORK_SCHEMA = {
     'name': 'coconut_track_work',
     'description': 'Track a substantial task in Work when you start it or the person asks to follow it. '
@@ -12,7 +14,8 @@ TRACK_WORK_SCHEMA = {
         'Use coconut_track_pr for PRs. Do not track quick replies, routine checks, or every delegated step. '
         'Reuse the same key for updates. This reports progress; it does not start work or grant permission.',
     'parameters': {'type': 'object', 'additionalProperties': False, 'properties': {
-        'key': {'type': 'string', 'maxLength': 80, 'description': 'A stable key for this bot, such as account-export. Reuse it across turns.'},
+        'key': {'type': 'string', 'maxLength': RETAINED_WORK_KEY_LIMIT,
+            'description': 'A stable key for this bot, such as account-export. Reuse it across turns. New keys may use at most 80 simple characters; longer values only match retained keys.'},
         'same_outcome_as': {'type': 'string', 'description': 'Existing parent Work ID when this delegated report tracks the same requested outcome. Keep distinct diagnostic outcomes separate.'},
         'title': {'type': 'string', 'maxLength': 120, 'description': 'The intended result in plain words.'},
         'activity': {'type': 'string', 'maxLength': 80, 'description': 'One short current activity or verified result. No counts, hashes, or jargon.'},
@@ -294,7 +297,7 @@ class TrackedWork:
 
     def _register_work(self, task_id, payload):
         from .service import ServiceError, YieldForDecision, now, require_text, uid
-        key = require_text(payload, 'key', 80)
+        key = require_text(payload, 'key', RETAINED_WORK_KEY_LIMIT)
         title = require_text(payload, 'title', 120)
         activity = require_text(payload, 'activity', 80)
         state = payload.get('status')
@@ -308,7 +311,7 @@ class TrackedWork:
             item = next((a for a in self._all('artifacts') if a['kind'] == 'work'
                          and a['bot_id'] == bot['id'] and a.get('_work_key') == key), None)
             # Retained legacy keys may predate the simple format; new keys must use it.
-            if item is None and not re.fullmatch(r'[a-zA-Z0-9_-]+', key):
+            if item is None and (len(key) > NEW_WORK_KEY_LIMIT or not re.fullmatch(r'[a-zA-Z0-9_-]+', key)):
                 raise ServiceError(400, 'Use a stable work key, single-line text, and a supported work status.')
             if item is not None:
                 item = self._canonical_work(item)
