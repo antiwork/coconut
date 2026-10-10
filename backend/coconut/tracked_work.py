@@ -298,7 +298,7 @@ class TrackedWork:
         title = require_text(payload, 'title', 120)
         activity = require_text(payload, 'activity', 80)
         state = payload.get('status')
-        if not re.fullmatch(r'[a-zA-Z0-9_-]+', key) or any('\n' in v or '\r' in v for v in (title, activity)) or state not in WORK_STATES:
+        if any('\n' in v or '\r' in v for v in (title, activity)) or state not in WORK_STATES:
             raise ServiceError(400, 'Use a stable work key, single-line text, and a supported work status.')
         with self.transaction():
             task = self._get('tasks', task_id)
@@ -307,6 +307,9 @@ class TrackedWork:
                 raise YieldForDecision('This task no longer accepts provider output.')
             item = next((a for a in self._all('artifacts') if a['kind'] == 'work'
                          and a['bot_id'] == bot['id'] and a.get('_work_key') == key), None)
+            # Retained legacy keys may predate the simple format; new keys must use it.
+            if item is None and not re.fullmatch(r'[a-zA-Z0-9_-]+', key):
+                raise ServiceError(400, 'Use a stable work key, single-line text, and a supported work status.')
             if item is not None:
                 item = self._canonical_work(item)
                 key = item['_work_key']
