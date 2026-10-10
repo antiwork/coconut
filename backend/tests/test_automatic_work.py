@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 import test_service_pr as fixtures
 import legacy_work_sync
+from coconut.service import ServiceError
+from coconut.tracked_work import TRACK_WORK_SCHEMA
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
 
@@ -87,6 +89,26 @@ class AutomaticWorkTests(unittest.TestCase):
         self.assertEqual(reported['id'], item['id'])
         self.assertEqual(len(self.sync()), 1)
         self.assertEqual(self.sync()[0]['activity'], 'Checking the logs')
+
+    def test_retained_legacy_key_updates_but_new_invalid_keys_are_rejected(self):
+        task = self.start()
+        key = 'retained-pr:https://github.com/' + 'o' * 39 + '/' + 'r' * 100 + '/pull/1234567890/'
+        self.assertGreater(len(key), 80)
+        with self.service.transaction():
+            self.service._put('artifacts', dict(id='retained-work', bot_id=task['bot_id'], task_id=task['id'], kind='work',
+                title='Finish the PR', status='waiting', activity='Waiting for review', url=None, preview='',
+                created_at=task['created_at'], observed_at=task['created_at'], _work_key=key))
+        report = dict(title='Finish the PR', activity='Addressing review', status='working')
+        updated = self.service._register_work(task['id'], dict(report, key=key))
+        self.assertEqual((updated['id'], updated['key']), ('retained-work', key))
+        self.assertEqual(self.service._get('artifacts', 'retained-work')['activity'], 'Addressing review')
+        self.assertEqual(TRACK_WORK_SCHEMA['parameters']['properties']['key']['maxLength'], len(key))
+        for invalid in ('retained-pr:https://github.com/antiwork/coconut/pull/999', 'new work', 'a' * 81,
+                        key.replace('1234567890', '1234567891'), key + 'x'):
+            with self.assertRaises(ServiceError) as error:
+                self.service._register_work(task['id'], dict(report, key=invalid))
+            self.assertEqual(error.exception.status, 400)
+        self.assertEqual([a['id'] for a in self.service._all('artifacts') if a['kind'] == 'work'], ['retained-work'])
 
     def test_existing_pr_prevents_duplicate_automatic_work(self):
         self.start()
