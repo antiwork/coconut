@@ -128,6 +128,23 @@ class WorkspaceHandoffTests(unittest.TestCase):
         self.assertEqual(acquire(self.workspaces, self.new, str(self.repo))['path'], str(self.path))
         self.assertTrue(retire(self.workspaces, self.new_identity, lambda wait: True).is_file())
 
+    def test_a_promoted_parent_restores_its_retired_worktree(self):
+        work = str(uuid4())
+        self.sql('UPDATE tasks SET idempotency_key=?, current_run_id=? WHERE id=?',
+                 'coconut-outcome:' + work, 9, PARENT)
+        self.sql('INSERT INTO coconut_bindings VALUES (?,?,?)', self.old, PARENT, 'migration')
+        self.assert_refused('native work in progress')
+        self.sql('UPDATE tasks SET current_run_id=NULL WHERE id=?', PARENT)
+
+        binding = self.hand_off()
+        assert isinstance(binding, dict)
+        assert self.archive is not None
+
+        self.assertEqual(binding['outcome'], self.new)
+        self.assertEqual(binding['handoff']['parent_native_id'], PARENT)
+        self.assertEqual(git(self.path, 'rev-parse', 'HEAD'), self.head)
+        self.assertTrue(self.archive.is_file())
+
     def test_a_third_outcome_cannot_take_the_handed_worktree(self):
         self.hand_off()
         with self.assertRaisesRegex(ValueError, 'Another outcome owns this worktree'):
@@ -140,6 +157,9 @@ class WorkspaceHandoffTests(unittest.TestCase):
         self.sql('UPDATE tasks SET created_by=? WHERE id=?', 'default', PARENT)
         self.assert_refused('No native parent')
         self.sql('UPDATE tasks SET created_by=? WHERE id=?', 'coconut', PARENT)
+        self.sql('UPDATE tasks SET idempotency_key=? WHERE id=?', 'coconut-outcome:' + str(uuid4()), PARENT)
+        self.assert_refused('No native parent')
+        self.sql('UPDATE tasks SET idempotency_key=? WHERE id=?', 'coconut:' + self.old, PARENT)
         self.sql('DELETE FROM task_links WHERE parent_id=? AND child_id=?', PARENT, CHILD)
         self.assert_refused('No native parent')
 

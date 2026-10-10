@@ -39,7 +39,10 @@ def native_successor(database, claim, task_id, native_id, tenant):
                 raise ValueError('This turn does not hold the native claim that it names.')
             parents = db.execute(f'SELECT {", ".join("t." + c for c in columns.split(","))} FROM task_links l '
                                  'JOIN tasks t ON t.id=l.parent_id WHERE l.child_id=?', (native_id,)).fetchall()
-            matches = [p for p in parents if p[2] == tenant and p[4] == 'coconut' and names_owner(p[3], owner)]
+            bound_owners = {row[0] for row in db.execute(
+                'SELECT native_id FROM coconut_bindings WHERE external_id=?', (owner,)).fetchall()}
+            matches = [p for p in parents if p[2] == tenant and p[4] == 'coconut'
+                       and (names_owner(p[3], owner) or p[0] in bound_owners)]
             # Another native parent at this path, or two parents of the owner, leave the ancestry ambiguous.
             others = [p for p in parents if p not in matches and p[5] == path]
             if not matches:
@@ -52,10 +55,10 @@ def native_successor(database, claim, task_id, native_id, tenant):
             exact, prefix, followup = owner_keys(owner)
             active = db.execute(
                 'SELECT 1 FROM tasks WHERE tenant=? AND (idempotency_key=? OR substr(idempotency_key,1,?)=? '
-                'OR substr(idempotency_key,1,?)=?) AND (status NOT IN (\'done\',\'archived\') '
+                'OR substr(idempotency_key,1,?)=? OR id=?) AND (status NOT IN (\'done\',\'archived\') '
                 'OR current_run_id IS NOT NULL OR worker_pid IS NOT NULL '
                 'OR EXISTS (SELECT 1 FROM task_runs r WHERE r.task_id=tasks.id AND r.ended_at IS NULL)) LIMIT 1',
-                (tenant, exact, len(prefix), prefix, len(followup), followup)).fetchone()
+                (tenant, exact, len(prefix), prefix, len(followup), followup, parent[0])).fetchone()
             if active or parent[1] not in ('done', 'archived'):
                 raise ValueError('The outcome that owns the worktree still has native work in progress.')
         return dict(native_id=native_id, parent_native_id=parent[0])
