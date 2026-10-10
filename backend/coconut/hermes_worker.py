@@ -1267,8 +1267,17 @@ def run_turn(request, emit, request_receipt):
             from work_workspace import SCHEMA as workspace_schema, acquire as acquire_workspace
             def workspace(arguments, **kwargs):
                 try:
+                    # A native claim can prove that this turn continues the retired worktree of an earlier outcome.
+                    # The proof comes from the claim and the native database, never from tool arguments.
+                    claim, successor = request['task'].get('_native_outcome'), None
+                    if (claim and os.environ.get('HERMES_KANBAN_DB')
+                            and os.environ.get('HERMES_TENANT') == request['bot']['id']):
+                        from workspace_handoff import native_successor
+                        successor = native_successor(os.environ['HERMES_KANBAN_DB'], claim, request['task']['id'],
+                                                     request['task'].get('_native_outcome_id'), request['bot']['id'])
                     binding = acquire_workspace(os.environ['COCONUT_WORKSPACE_ROOT'],
-                        os.environ['COCONUT_WORKSPACE_OUTCOME'], **arguments)
+                        os.environ['COCONUT_WORKSPACE_OUTCOME'], successor=successor,
+                        **{k: v for k, v in arguments.items() if k in ('repository', 'existing_worktree')})
                     from tools.terminal_tool import register_task_env_overrides
                     register_task_env_overrides(request['task']['id'], {'cwd': binding['path']})
                     return json.dumps(binding)
