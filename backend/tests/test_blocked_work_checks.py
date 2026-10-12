@@ -28,6 +28,12 @@ class BlockedWorkCheckTests(unittest.TestCase):
             self.service._native_block_check(self.service._get('tasks', self.task_id), native)
         return self.service._get('tasks', self.task_id)
 
+    def state(self, status):
+        with self.service.transaction():
+            task = self.service._get('tasks', self.task_id)
+            task['status'] = status
+            self.service._put('tasks', task)
+
     def blocked(self, kind='capability'):
         return dict(id='t_build', status='blocked', block_kind=kind)
 
@@ -235,6 +241,29 @@ class BlockedWorkCheckTests(unittest.TestCase):
         self.check(self.blocked(), 0)
         with patch.object(self.service, '_task_work_is_paused', return_value=True):
             self.assertEqual(self.check(self.blocked(), 10 ** 9)['status'], 'completed')
+
+    def test_controlling_declined_answer_is_recorded_on_the_existing_work_item(self):
+        # The check must link a controlling answer to Work before blocking, or Coconut queues the check again.
+        for text in ('coconut_track_work', 'existing Work key', 'status blocked', 'paused_by_decision_id', 'Before calling kanban_block',
+                     'does not control this block does not pause'):
+            self.assertIn(text, BLOCKED_WORK_INSTRUCTIONS)
+        payload = dict(key='build-record', title='Build the record', activity='Waiting for build space', status='waiting')
+        self.state('working')
+        item = self.service._register_work(self.task_id, payload)
+        self.state('completed')
+        with self.service.transaction():
+            self.service._put('decisions', dict(id='declined', task_id=self.task_id, bot_id='b', status='rejected',
+                                                decided_by='person', title='Free 8 GB?', options=[], revision=1))
+        self.check(self.blocked(), 0)
+        # A declined card alone does not pause the outcome.
+        queued = self.check(self.blocked(), 10 ** 9)
+        self.assertEqual(queued['status'], 'queued')
+        self.state('working')
+        self.service._register_work(self.task_id, payload | dict(status='blocked', activity='Paused by the declined request',
+                                                                 paused_by_decision_id='declined'))
+        self.assertEqual(self.service._get('artifacts', item['id'])['paused_by_decision_id'], 'declined')
+        self.state('completed')
+        self.assertEqual(self.check(self.blocked(), 2 * 10 ** 9)['status'], 'completed')
 
     def test_only_the_check_turn_requires_a_card_or_a_recheck(self):
         self.check(self.blocked(), 0)
