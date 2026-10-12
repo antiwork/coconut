@@ -35,7 +35,9 @@ BLOCKED_WORK_INSTRUCTIONS = (
     'If a person can clear it, call coconut_ask once. Name the exact action the person must take, the verified facts, and choices such as "Retry after I free space" and "Stop this work". '
     'If it will clear without a person, schedule a bounded recheck with native Hermes scheduling and finish. '
     'If a recorded human decision pauses this outcome, report blocked with paused_by_decision_id and stop. '
-    'If the person already declined the action this block needs, record that answer as a pause with paused_by_decision_id; do not ask again. '
+    'If the person already declined the action this block needs, that answer controls this outcome; do not ask again. '
+    'Before calling kanban_block, call coconut_track_work with the existing Work key, status blocked, activity, and paused_by_decision_id set to that decision ID. '
+    'A declined card that does not control this block does not pause the outcome. '
     'Otherwise, do not end this turn blocked without a card or a scheduled recheck.'
 )
 
