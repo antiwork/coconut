@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from coconut.hermes_worker import conversation_input
 from coconut.providers import FixtureProvider
-from coconut.service import Service, ServiceError
+from coconut.service import Service, ServiceError, now
 from coconut.work_recovery import BLOCKED_WORK_INSTRUCTIONS, block_check_delay
 
 
@@ -269,7 +269,7 @@ class BlockedWorkCheckTests(unittest.TestCase):
         # A human declined the action this block needs. The check turn is running.
         with self.service.transaction():
             self.service._put('decisions', dict(id='declined', task_id=decision_task or self.task_id, bot_id='b',
-                                                status='rejected', decided_by='person', decided_at='2026-10-06T23:24:39Z',
+                                                status='rejected', decided_by='person', decided_at=now(),
                                                 title='Clear the payout pause?', options=[], revision=1))
         self.check(self.blocked('needs_input'), 0)
         queued = self.check(self.blocked('needs_input'), 10 ** 9)
@@ -324,7 +324,7 @@ class BlockedWorkCheckTests(unittest.TestCase):
         with self.assertRaisesRegex(ServiceError, 'Only the check'):
             self.service.emit(self.task_id, 'block_pause', {'decision_id': 'declined'})
 
-    def test_new_direction_or_a_later_block_ends_the_pause(self):
+    def test_new_direction_ends_the_pause(self):
         self.declined_check()
         self.service.emit(self.task_id, 'block_pause', {'decision_id': 'declined'})
         armed = self.finish_blocked(2 * 10 ** 9)['_block_check']
@@ -335,14 +335,28 @@ class BlockedWorkCheckTests(unittest.TestCase):
         queued = self.check(self.blocked('needs_input'), armed['next_at'])
         self.assertEqual(queued['status'], 'queued')
         self.assertNotIn('paused_by_decision_id', queued['_block_check'])
-        # A block from a turn that did not record the pause gets its own check.
-        self.state('working')
+
+    def test_a_block_from_a_later_turn_gets_its_own_check(self):
+        self.declined_check()
         self.service.emit(self.task_id, 'block_pause', {'decision_id': 'declined'})
         with self.service.transaction():
             saved = self.service._get('tasks', self.task_id)
             saved['_native_turn_id'] = 'later-turn'
             self.service._put('tasks', saved)
         armed = self.finish_blocked(3 * 10 ** 9)['_block_check']
+        self.assertNotIn('paused_by_decision_id', armed)
+        self.assertEqual(self.check(self.blocked('needs_input'), armed['next_at'])['status'], 'queued')
+
+    def test_message_during_the_check_cannot_be_overruled_by_an_old_answer(self):
+        # A person's message that arrives while the check runs is new direction, even before the pause is recorded.
+        self.declined_check()
+        with self.service.transaction():
+            task = self.service._get('tasks', self.task_id)
+            message = self.service._message(task['bot_id'], 'Use the other account.', role='user', task_id=self.task_id)
+            self.service._put('messages', dict(message, _human_device_id='phone'))
+        with self.assertRaisesRegex(ServiceError, 'new direction'):
+            self.service.emit(self.task_id, 'block_pause', {'decision_id': 'declined'})
+        armed = self.finish_blocked(2 * 10 ** 9)['_block_check']
         self.assertNotIn('paused_by_decision_id', armed)
         self.assertEqual(self.check(self.blocked('needs_input'), armed['next_at'])['status'], 'queued')
 

@@ -5,7 +5,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from coconut.providers import FixtureProvider, HermesProvider
-from coconut.service import Service
+from coconut.service import Service, now
 from coconut.work_recovery import block_check_delay
 import test_provider as fixtures
 
@@ -55,8 +55,7 @@ class BlockCheckPauseProviderTests(unittest.TestCase):
                 preview='', url=None, created_at='2026-10-06T15:27:19Z', _work_key='gp3298-kinkyevents-flag',
                 _native_outcome_id='t_14ed0a56', _work_previous_task_ids=[task['id']], _hidden=False))
             self.service._put('decisions', dict(id='9b3a046e-5f42-4b97-b614-94b7de7c66f3', task_id=task['id'],
-                bot_id=bot['id'], status='rejected', decided_by='person', decided_at='2026-10-06T23:24:39Z',
-                created_at='2026-10-06T15:39:12Z', title='Clear the payout pause?', options=[], revision=1))
+                bot_id=bot['id'], status='rejected', decided_by='person', decided_at=now(), created_at=now(), title='Clear the payout pause?', options=[], revision=1))
             saved = self.service._get('tasks', task['id'])
             saved.update(status='completed', _native_outcome_id='t_14ed0a56', _execution_session_id=task['id'],
                          _work_context_id='work-3298', _source_audit_prompt=AUDIT_PROMPT,

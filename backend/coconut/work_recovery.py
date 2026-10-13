@@ -52,7 +52,7 @@ BLOCK_PAUSE_SCHEMA = {
         'decision_id': {'type': 'string', 'description': 'ID of the answered decision from the saved check context.'}},
         'required': ['decision_id']},
 }
-BLOCK_PAUSE_FIELDS = ('paused_by_decision_id', 'pause_turn', 'paused_at')
+BLOCK_PAUSE_FIELDS = ('paused_by_decision_id', 'pause_turn')
 
 
 class WorkRecovery:

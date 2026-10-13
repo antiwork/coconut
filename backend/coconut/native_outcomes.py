@@ -1374,19 +1374,27 @@ class NativeOutcomes:
             if not recovery.get('unknown_tools'):
                 task.pop('_self_recovery', None)
 
+    def _block_check_related(self, task):
+        # Without an execution session, execution_key falls back to the bot. Keep the check to this outcome.
+        session = task.get('_execution_session_id')
+        return {t['id'] for t in self._all('tasks') if session and t.get('_execution_session_id') == session} | {task['id']}
+
+    def _block_pause_holds(self, decision, related):
+        # Any later message or approval from the person, including one sent during the check, is new direction.
+        from .work_status import PAUSE_DECISION_STATES
+        return bool(decision and decision.get('decided_by') and decision['status'] in PAUSE_DECISION_STATES
+                    and not self._human_direction_after(related, decision.get('decided_at') or decision['created_at'], decision))
+
     def _block_check_paused(self, task, check, related):
         # The check turn recorded the human answer that controls this block. Another turn or new direction ends it.
-        from .work_status import PAUSE_DECISION_STATES
         identity = check.get('paused_by_decision_id')
         if not identity or check.get('pause_turn') != task.get('_native_turn_id'):
             return False
         row = self._read_one('SELECT data FROM decisions WHERE id=?', (identity,))
-        pause = json.loads(row[0]) if row else None
-        return bool(pause and pause.get('decided_by') and pause['status'] in PAUSE_DECISION_STATES
-                    and not self._human_direction_after(related, check['paused_at'], pause))
+        return self._block_pause_holds(json.loads(row[0]) if row else None, related)
 
     def record_block_pause(self, task_id, payload):
-        from .service import ServiceError, YieldForDecision, now, require_text
+        from .service import ServiceError, YieldForDecision, require_text
         from .work_status import PAUSE_DECISION_STATES
         identity = require_text(payload, 'decision_id', 100)
         with self.transaction():
@@ -1404,8 +1412,10 @@ class NativeOutcomes:
             decision = json.loads(row[0]) if row else None
             if not decision or not decision.get('decided_by') or decision['status'] not in PAUSE_DECISION_STATES:
                 raise ServiceError(409, 'Choose an answered human decision from this check context.')
+            if not self._block_pause_holds(decision, self._block_check_related(task)):
+                raise ServiceError(409, 'The person gave new direction after this answer. Follow it instead of pausing.')
             if check.get('paused_by_decision_id') != identity or check.get('pause_turn') != turn:
-                task['_block_check'] = dict(check, paused_by_decision_id=identity, pause_turn=turn, paused_at=now())
+                task['_block_check'] = dict(check, paused_by_decision_id=identity, pause_turn=turn)
                 self._put('tasks', task)
         return dict(status='recorded', decision_id=identity)
 
@@ -1459,9 +1469,7 @@ class NativeOutcomes:
         if (not self._process_observation_current(task, self._get('bots', task['bot_id']))
                 or self._task_paused(task) or self._background_pending(task['id'])):
             return defer()
-        # Without an execution session, execution_key falls back to the bot. Keep the check to this outcome.
-        session = task.get('_execution_session_id')
-        related = {t['id'] for t in self._all('tasks') if session and t.get('_execution_session_id') == session} | {task['id']}
+        related = self._block_check_related(task)
         decisions = [d for d in self._all('decisions') if d['task_id'] in related]
         if (self._task_work_is_paused(task) or self._automatic_work_is_paused(task)
                 or any(d['status'] == 'pending' for d in decisions)
