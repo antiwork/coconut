@@ -105,13 +105,6 @@ def child(case, evidence, control):
          'api_mode': 'chat_completions', 'key_env': 'OPENAI_API_KEY'}]}))
     (owner / '.env').write_text('OPENAI_API_KEY=synthetic-owner-key\n')
     os.environ['COCONUT_DEFAULT_HOME'] = str(owner)
-    # A profile in use already has its synced skills and their index snapshot. Without them, the first Hermes
-    # build hides environment-gated skills and later builds from the snapshot list them, so Hermes v0.21.7 and
-    # later append a skills-change note to the current message, which a used profile never receives.
-    from tools.skills_sync import sync_skills
-    from agent.prompt_builder import build_skills_system_prompt
-    sync_skills(quiet=True)
-    build_skills_system_prompt()
     session = '00000000-0000-4000-8000-000000000001'
     task_id = '00000000-0000-4000-8000-000000000002'
     receipts = ([{'id': 'uncertain-receipt', 'task_id': task_id, 'state': 'executing',
