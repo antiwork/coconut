@@ -65,12 +65,16 @@ class WorkStatus:
             return False
         after = max((p.get('_work_pause_at', '') for p in self._work_pause_peers(item, shared=True)), default='')
         after = after or pause.get('decided_at') or pause['created_at']
-        return (any(m.get('task_id') in roots and m.get('_human_device_id') and m['role'] == 'user'
+        return self._human_direction_after(roots, after, pause)
+
+    def _human_direction_after(self, task_ids, after, pause):
+        # A person's message or approval after the pause is new direction, unless it answers the pausing card.
+        return (any(m.get('_human_device_id') and m['role'] == 'user'
                     and m.get('decision_id') != pause['id'] and m['created_at'] > after
-                    for identity in roots for row in self.db.execute(
+                    for identity in task_ids for row in self.db.execute(
                         "SELECT data FROM messages WHERE json_extract(data,'$.task_id')=?", (identity,))
                     for m in [json.loads(row[0])])
-                or any(d['task_id'] in roots and d['id'] != pause['id'] and d.get('decided_by')
+                or any(d['task_id'] in task_ids and d['id'] != pause['id'] and d.get('decided_by')
                        and d['status'] in ('approved', 'modified') and d.get('decided_at', '') > after
                        for d in self._all_shared('decisions')))
 

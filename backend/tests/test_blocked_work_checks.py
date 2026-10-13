@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from coconut.hermes_worker import conversation_input
 from coconut.providers import FixtureProvider
-from coconut.service import Service
+from coconut.service import Service, ServiceError, now
 from coconut.work_recovery import BLOCKED_WORK_INSTRUCTIONS, block_check_delay
 
 
@@ -243,8 +243,8 @@ class BlockedWorkCheckTests(unittest.TestCase):
             self.assertEqual(self.check(self.blocked(), 10 ** 9)['status'], 'completed')
 
     def test_controlling_declined_answer_is_recorded_on_the_existing_work_item(self):
-        # The check must link a controlling answer to Work before blocking, or Coconut queues the check again.
-        for text in ('coconut_track_work', 'existing Work key', 'status blocked', 'paused_by_decision_id', 'Before calling kanban_block',
+        # The check records a controlling answer before blocking, or Coconut queues the check again.
+        for text in ('coconut_record_pause', 'that decision ID', 'then call kanban_block',
                      'does not control this block does not pause'):
             self.assertIn(text, BLOCKED_WORK_INSTRUCTIONS)
         payload = dict(key='build-record', title='Build the record', activity='Waiting for build space', status='waiting')
@@ -264,6 +264,111 @@ class BlockedWorkCheckTests(unittest.TestCase):
         self.assertEqual(self.service._get('artifacts', item['id'])['paused_by_decision_id'], 'declined')
         self.state('completed')
         self.assertEqual(self.check(self.blocked(), 2 * 10 ** 9)['status'], 'completed')
+
+    def declined_check(self, decision_task=None):
+        # A human declined the action this block needs. The check turn is running.
+        with self.service.transaction():
+            self.service._put('decisions', dict(id='declined', task_id=decision_task or self.task_id, bot_id='b',
+                                                status='rejected', decided_by='person', decided_at=now(),
+                                                title='Clear the payout pause?', options=[], revision=1))
+        self.check(self.blocked('needs_input'), 0)
+        queued = self.check(self.blocked('needs_input'), 10 ** 9)
+        self.assertEqual(queued['status'], 'queued')
+        self.state('working')
+        return queued
+
+    def finish_blocked(self, clock):
+        # The check turn ran as the native claim, then blocked the task again.
+        self.check(dict(id='t_build', status='running', current_run_id=7), clock)
+        self.state('completed')
+        return self.check(self.blocked('needs_input'), clock + 1)
+
+    def test_recorded_controlling_answer_stops_the_next_check(self):
+        self.declined_check()
+        receipt = self.service.emit(self.task_id, 'block_pause', {'decision_id': 'declined'})
+        self.assertEqual(receipt, dict(status='recorded', decision_id='declined'))
+        armed = self.finish_blocked(2 * 10 ** 9)['_block_check']
+        self.assertEqual(armed['paused_by_decision_id'], 'declined')
+        due = armed['next_at']
+        deferred = self.check(self.blocked('needs_input'), due)
+        self.assertEqual(deferred['status'], 'completed')
+        self.assertEqual(deferred['_block_check']['next_at'], due + block_check_delay(deferred['_block_check']['attempt']))
+        self.assertEqual(self.check(self.blocked('needs_input'), 4 * 10 ** 9)['status'], 'completed')
+
+    def test_only_an_answered_decision_of_this_check_can_pause_it(self):
+        other = self.service.mutate('POST', f"/v1/bots/{self.service._get('tasks', self.task_id)['bot_id']}/messages",
+                                    {'text': 'Unrelated request', 'mode': 'queue'}, str(uuid4()))
+        with self.service.transaction():
+            saved = self.service._get('tasks', self.task_id)
+            saved.pop('_execution_session_id', None)
+            self.service._put('tasks', saved)
+            self.service._put('decisions', dict(id='unrelated', task_id=other['id'], bot_id='b', status='rejected',
+                                                decided_by='person', title='Another card?', options=[], revision=1))
+            self.service._put('decisions', dict(id='unanswered', task_id=self.task_id, bot_id='b', status='rejected',
+                                                title='Closed without a person?', options=[], revision=1))
+        self.declined_check()
+        for identity in ('unrelated', 'unanswered', 'missing'):
+            with self.subTest(identity=identity), self.assertRaisesRegex(ServiceError, 'answered human decision'):
+                self.service.emit(self.task_id, 'block_pause', {'decision_id': identity})
+        self.assertNotIn('paused_by_decision_id', self.service._get('tasks', self.task_id)['_block_check'])
+        # A declined card alone does not pause the outcome.
+        armed = self.finish_blocked(2 * 10 ** 9)['_block_check']
+        self.assertEqual(self.check(self.blocked('needs_input'), armed['next_at'])['status'], 'queued')
+
+    def test_only_the_check_turn_can_record_a_pause(self):
+        self.declined_check()
+        with self.service.transaction():
+            saved = self.service._get('tasks', self.task_id)
+            saved['_native_turn_id'] = 'later-turn'
+            self.service._put('tasks', saved)
+        with self.assertRaisesRegex(ServiceError, 'Only the check'):
+            self.service.emit(self.task_id, 'block_pause', {'decision_id': 'declined'})
+
+    def test_new_direction_ends_the_pause(self):
+        self.declined_check()
+        self.service.emit(self.task_id, 'block_pause', {'decision_id': 'declined'})
+        armed = self.finish_blocked(2 * 10 ** 9)['_block_check']
+        with self.service.transaction():
+            task = self.service._get('tasks', self.task_id)
+            message = self.service._message(task['bot_id'], 'The pause is cleared now.', role='user', task_id=self.task_id)
+            self.service._put('messages', dict(message, _human_device_id='phone'))
+        queued = self.check(self.blocked('needs_input'), armed['next_at'])
+        self.assertEqual(queued['status'], 'queued')
+        self.assertNotIn('paused_by_decision_id', queued['_block_check'])
+
+    def test_a_block_from_a_later_turn_gets_its_own_check(self):
+        self.declined_check()
+        self.service.emit(self.task_id, 'block_pause', {'decision_id': 'declined'})
+        with self.service.transaction():
+            saved = self.service._get('tasks', self.task_id)
+            saved['_native_turn_id'] = 'later-turn'
+            self.service._put('tasks', saved)
+        armed = self.finish_blocked(3 * 10 ** 9)['_block_check']
+        self.assertNotIn('paused_by_decision_id', armed)
+        self.assertEqual(self.check(self.blocked('needs_input'), armed['next_at'])['status'], 'queued')
+
+    def test_message_during_the_check_cannot_be_overruled_by_an_old_answer(self):
+        # A person's message that arrives while the check runs is new direction, even before the pause is recorded.
+        self.declined_check()
+        with self.service.transaction():
+            task = self.service._get('tasks', self.task_id)
+            message = self.service._message(task['bot_id'], 'Use the other account.', role='user', task_id=self.task_id)
+            self.service._put('messages', dict(message, _human_device_id='phone'))
+        with self.assertRaisesRegex(ServiceError, 'new direction'):
+            self.service.emit(self.task_id, 'block_pause', {'decision_id': 'declined'})
+        armed = self.finish_blocked(2 * 10 ** 9)['_block_check']
+        self.assertNotIn('paused_by_decision_id', armed)
+        self.assertEqual(self.check(self.blocked('needs_input'), armed['next_at'])['status'], 'queued')
+
+    def test_a_later_approval_ends_the_pause(self):
+        self.declined_check()
+        self.service.emit(self.task_id, 'block_pause', {'decision_id': 'declined'})
+        armed = self.finish_blocked(2 * 10 ** 9)['_block_check']
+        with self.service.transaction():
+            self.service._put('decisions', dict(id='new-direction', task_id=self.task_id, bot_id='b', status='approved',
+                                                decided_by='person', decided_at='9999-01-01T00:00:00Z',
+                                                title='Use the other payout account?', options=[], revision=1))
+        self.assertEqual(self.check(self.blocked('needs_input'), armed['next_at'])['status'], 'queued')
 
     def test_only_the_check_turn_requires_a_card_or_a_recheck(self):
         self.check(self.blocked(), 0)

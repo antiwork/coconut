@@ -34,12 +34,25 @@ BLOCKED_WORK_INSTRUCTIONS = (
     'If the block cleared, continue the approved work. '
     'If a person can clear it, call coconut_ask once. Name the exact action the person must take, the verified facts, and choices such as "Retry after I free space" and "Stop this work". '
     'If it will clear without a person, schedule a bounded recheck with native Hermes scheduling and finish. '
-    'If a recorded human decision pauses this outcome, report blocked with paused_by_decision_id and stop. '
-    'If the person already declined the action this block needs, that answer controls this outcome; do not ask again. '
-    'Before calling kanban_block, call coconut_track_work with the existing Work key, status blocked, activity, and paused_by_decision_id set to that decision ID. '
+    'If a recorded human decision pauses this outcome, or the person already declined the action this block needs, that answer controls this block; do not ask again. '
+    'Call coconut_record_pause with that decision ID, then call kanban_block and stop. '
     'A declined card that does not control this block does not pause the outcome. '
     'Otherwise, do not end this turn blocked without a card or a scheduled recheck.'
 )
+
+# Only the block check turn receives this tool. Native outcomes have no Work tool, so the pause belongs to the check.
+BLOCK_PAUSE_SCHEMA = {
+    'name': 'coconut_record_pause',
+    'description': (
+        'Record that an answered human decision controls this block, for example the person declined the action it needs. '
+        'Coconut then stops repeating this check until the block clears, another turn blocks the task, or the person gives new direction. '
+        'Use only a decision from the saved check context. This does not change the decision or approve anything. '
+        'Call kanban_block after it.'),
+    'parameters': {'type': 'object', 'additionalProperties': False, 'properties': {
+        'decision_id': {'type': 'string', 'description': 'ID of the answered decision from the saved check context.'}},
+        'required': ['decision_id']},
+}
+BLOCK_PAUSE_FIELDS = ('paused_by_decision_id', 'pause_turn')
 
 
 class WorkRecovery:
