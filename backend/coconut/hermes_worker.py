@@ -24,6 +24,7 @@ if __package__:
     from .pull_request_reviews import PR_REVIEW_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS
     from .work_progress import NativeWork, WORK_INSTRUCTIONS
     from .tracked_work import TRACK_WORK_SCHEMA
+    from .work_recovery import BLOCK_PAUSE_SCHEMA
     from .silent_responses import is_silent_response
     from .worker_protocol import MAX_EVENT_CHARACTERS, event_frame
     from .native_receipt_context import receipt_prompt, receipt_reader, SCHEMA as RECEIPT_SCHEMA
@@ -35,6 +36,7 @@ else:
     from pull_request_reviews import PR_REVIEW_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS
     from work_progress import NativeWork, WORK_INSTRUCTIONS
     from tracked_work import TRACK_WORK_SCHEMA
+    from work_recovery import BLOCK_PAUSE_SCHEMA
     from silent_responses import is_silent_response
     from worker_protocol import MAX_EVENT_CHARACTERS, event_frame
     from native_receipt_context import receipt_prompt, receipt_reader, SCHEMA as RECEIPT_SCHEMA
@@ -1245,7 +1247,6 @@ def run_turn(request, emit, request_receipt):
                                   handler=lambda arguments, **kwargs: json.dumps(request_receipt('artifact', dict(arguments, kind='work'))))
                 allowed.add(TRACK_WORK_SCHEMA['name'])
             if block_check_turn(request):
-                from work_recovery import BLOCK_PAUSE_SCHEMA
                 registry.register(name=BLOCK_PAUSE_SCHEMA['name'], toolset='coconut', schema=BLOCK_PAUSE_SCHEMA,
                                   handler=lambda arguments, **kwargs: json.dumps(request_receipt('block_pause', arguments)))
                 allowed.add(BLOCK_PAUSE_SCHEMA['name'])
