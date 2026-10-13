@@ -294,6 +294,13 @@ def bot_creation_context(request):
                  'An exact retry must keep the same source, name, role, and instructions:\n' + json.dumps(receipts))
     return text
 
+def block_check_turn(request):
+    """Return whether this turn is Coconut's check of a blocked native task."""
+    blocked = (request['task'].get('_self_recovery') or {}).get('blocked') or {}
+    # An answered card resumes the same turn. Its answer replaces the check instructions.
+    return bool(blocked) and blocked.get('turn') == request['task'].get('_native_turn_id') and request['operation'] != 'resume'
+
+
 def turn_context(request):
     """Return the text that changes from turn to turn. It goes after the turn's message, not in the system prompt.
 
@@ -616,9 +623,7 @@ def conversation_input(request):
         else:
             from work_recovery import RECOVERY_INSTRUCTIONS
         recovery = RECOVERY_INSTRUCTIONS + '\nSaved recovery context:\n' + json.dumps(request['task']['_self_recovery'])
-        blocked = request['task']['_self_recovery'].get('blocked') or {}
-        # An answered card resumes the same turn. Its answer replaces the check instructions.
-        if blocked and blocked.get('turn') == request['task'].get('_native_turn_id') and request['operation'] != 'resume':
+        if block_check_turn(request):
             if __package__:
                 from .work_recovery import BLOCKED_WORK_INSTRUCTIONS
             else:
@@ -1239,6 +1244,11 @@ def run_turn(request, emit, request_receipt):
                 registry.register(name=TRACK_WORK_SCHEMA['name'], toolset='coconut', schema=TRACK_WORK_SCHEMA,
                                   handler=lambda arguments, **kwargs: json.dumps(request_receipt('artifact', dict(arguments, kind='work'))))
                 allowed.add(TRACK_WORK_SCHEMA['name'])
+            if block_check_turn(request):
+                from work_recovery import BLOCK_PAUSE_SCHEMA
+                registry.register(name=BLOCK_PAUSE_SCHEMA['name'], toolset='coconut', schema=BLOCK_PAUSE_SCHEMA,
+                                  handler=lambda arguments, **kwargs: json.dumps(request_receipt('block_pause', arguments)))
+                allowed.add(BLOCK_PAUSE_SCHEMA['name'])
         if operation != 'context':
             wait_schema = {'name': 'coconut_wait', 'description':
                 'Wait for existing work. Call without arguments to list tasks, decisions, and background processes in this exchange. '

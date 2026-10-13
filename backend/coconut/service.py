@@ -3538,6 +3538,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             return self._deliver_live_messages(task_id)
         if kind == 'dependency_unlink':
             return self.unlink_native_dependency(task_id, payload)
+        if kind == 'block_pause':
+            return self.record_block_pause(task_id, payload)
         if kind == 'work_continue':
             return self.continue_native_work(task_id, payload)
         if kind == 'work_wait':
