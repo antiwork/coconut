@@ -803,6 +803,26 @@ final class AppStore {
         }
     }
 
+    /// Archive idle Hermes tasks of one bot. Hermes archives only tasks that still wait for someone to act.
+    @discardableResult
+    func archiveIdleWork(botId: String, items: [TrackedWorkItem]) async -> String? {
+        let identities = items.compactMap(\.artifact.nativeTaskId)
+        guard !identities.isEmpty else { return nil }
+        if isDemo {
+            let archived = Set(identities)
+            for index in artifacts.indices where artifacts[index].nativeTaskId.map(archived.contains) == true {
+                artifacts[index].workState = "cancelled"
+                artifacts[index].activity = "Stopped"
+            }
+            return nil
+        }
+        var failure: String?
+        let response = await write("bots/\(botId)/work/archive-idle", payload: ArchiveIdleRequest(nativeTaskIds: identities),
+                                   as: ArchiveIdleResponse.self, refreshInBackground: true,
+                                   onFailure: { failure = $0.localizedDescription })
+        return response == nil ? failure ?? "The Mac did not confirm the archive. Try again." : nil
+    }
+
     @discardableResult
     func cancelWork(_ item: TrackedWorkItem) async -> String? {
         if isDemo {
@@ -1913,6 +1933,8 @@ private struct PairRequest: Encodable { let code: String; let deviceName: String
 private struct PairResponse: Decodable, Sendable { let token: String; let deviceId: String }
 private struct EmptyRequest: Encodable {}
 private struct Acknowledgement: Decodable, Sendable { let ok: Bool }
+private struct ArchiveIdleRequest: Encodable { let nativeTaskIds: [String] }
+private struct ArchiveIdleResponse: Decodable, Sendable { let archived: [String] }
 private struct BotRequest: Encodable { let name: String; let role: String; let avatar: String; let color: String; let instructions: String; let memory: String; let pinned: Bool? }
 private struct PinRequest: Encodable { let pinned: Bool }
 private struct InstructionsRequest: Encodable { let instructions: String }

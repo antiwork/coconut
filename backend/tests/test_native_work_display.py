@@ -41,6 +41,27 @@ print(board.kb.create_task(board.conn, title='Fix the accepted defect', body='Ve
         self.assertIsNone(projected['activity_observed_at'])
         self.assertEqual(self.service.kanban.tasks[item['task_id']]['id'], identity)
 
+    def test_idle_work_shows_hermes_diagnostics_and_archives_only_the_bots_idle_tasks(self):
+        identity, item = self.outcome()
+        # Hermes reports a task blocked for a day without a comment as stuck.
+        self.native_program("board.kb.block_task(board.conn, sys.argv[2], reason='Waiting for review', kind='capability')", identity)
+        self.native_program("board.conn.execute('UPDATE task_events SET created_at=created_at-90000 WHERE task_id=?',(sys.argv[2],)); "
+                            "board.conn.execute('UPDATE tasks SET created_at=created_at-90000 WHERE id=?',(sys.argv[2],)); board.conn.commit()", identity)
+        projected = self.project(item)
+        self.assertEqual(projected['native_status'], 'blocked')
+        self.assertIn('stuck_in_blocked', [d['kind'] for d in projected['native_diagnostics']])
+        self.assertTrue(projected['native_last_activity_at'].endswith('Z'))
+        idle_since = projected['native_last_activity_at']
+        # Another bot cannot archive this task, and a running task is not idle.
+        other = self.write('/v1/bots', {'name': 'Other', 'role': 'Test'})
+        self.assertEqual(self.service.archive_idle_work(other['id'], {'native_task_ids': [identity]}), {'archived': []})
+        self.assertEqual(self.service.archive_idle_work(self.bot['id'], {'native_task_ids': [identity]}), {'archived': [identity]})
+        projected = self.project(item)
+        self.assertEqual((projected['native_status'], projected['work_state'], projected['native_diagnostics']), ('archived', 'cancelled', []))
+        # Archiving is not activity, so the archived task does not return to the recent list.
+        self.assertEqual(projected['native_last_activity_at'], idle_since)
+        self.assertEqual(self.service.archive_idle_work(self.bot['id'], {'native_task_ids': [identity]}), {'archived': []})
+
     def test_blocked_work_does_not_present_an_old_summary_as_current_activity(self):
         identity, item = self.outcome()
         self.native_program("board.kb.block_task(board.conn, sys.argv[2], reason='Tests failed on old commit abc123', kind='capability')", identity)

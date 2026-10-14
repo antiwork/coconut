@@ -21,6 +21,9 @@ def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+# Hermes states that wait for someone to act: specify, finish a parent, unblock, review, or reach a scheduled time.
+IDLE_STATUSES = ('triage', 'todo', 'blocked', 'review', 'scheduled')
+
 class Board:
     def __init__(self, home):
         home = Path(home).resolve()
@@ -39,6 +42,7 @@ class Board:
         from hermes_cli import kanban_db, kanban_db_connect, kanban_db_dispatch, kanban_db_workspace
         self.kb, self.dispatch, self.workspace = kanban_db, kanban_db_dispatch, kanban_db_workspace
         self.conn = kanban_db_connect.connect()
+        self._diagnostics = {}
         self.conn.execute('CREATE TABLE IF NOT EXISTS coconut_bindings '
                           '(external_id TEXT PRIMARY KEY, native_id TEXT NOT NULL UNIQUE, intent TEXT NOT NULL)')
         self.conn.execute('CREATE TABLE IF NOT EXISTS coconut_unlinks '
@@ -426,6 +430,37 @@ class Board:
                     current_run_id=task.current_run_id, worker_pid=task.worker_pid,
                     input_id=accepted[0] or None if accepted else None, runs=runs)
 
+    def activity(self, task):
+        """Return when the task last changed, and Hermes' own diagnostics for a task that waits for someone.
+
+        The diagnostics read the task's events and runs, so they are computed again only after the task changes, and
+        at least once an hour, because some rules depend on how long a task waits.
+        """
+        # Archiving is housekeeping, not work. An archived idle task keeps the time it last changed.
+        last = next((created for created, kind in self.conn.execute(
+            'SELECT created_at, kind FROM task_events WHERE task_id=? ORDER BY created_at DESC, id DESC LIMIT 3', (task.id,))
+            if kind not in ('archived', 'archive_worker_termination')), None)
+        last = max((value for value in (last, task.created_at, task.started_at, task.completed_at) if value), default=None)
+        if task.status not in IDLE_STATUSES:
+            self._diagnostics.pop(task.id, None)
+            return last, []
+        key = (task.status, last, int(time.time() // 3600))
+        cached = self._diagnostics.get(task.id)
+        if cached is None or cached[0] != key:
+            from hermes_cli.kanban_diagnostics import compute_task_diagnostics
+            found = compute_task_diagnostics(task, self.kb.list_events(self.conn, task.id), self.kb.list_runs(self.conn, task.id))
+            cached = self._diagnostics[task.id] = (key, [dict(kind=d.kind, severity=d.severity, title=d.title) for d in found])
+        return last, cached[1]
+
+    def archive_idle(self, tenant, identities):
+        """Archive the person's idle tasks of one bot. A task that changed state since the phone listed it stays."""
+        archived = []
+        for identity in identities:
+            task = self.kb.get_task(self.conn, identity)
+            if task is not None and task.tenant == tenant and task.status in IDLE_STATUSES and self.kb.archive_task(self.conn, identity):
+                archived.append(identity)
+        return archived
+
     def snapshot(self, external_ids=(), native_ids=()):
         result = []
         for binding in self.conn.execute(
@@ -444,7 +479,9 @@ class Board:
                 "AND kind='heartbeat' AND json_extract(payload,'$.note') IS NOT NULL ORDER BY id DESC LIMIT 1",
                 (task.id, task.current_run_id)).fetchone()
             accepted = self.conn.execute('SELECT input_id FROM coconut_outcomes WHERE native_id=?', (task.id,)).fetchone()
+            last_activity_at, diagnostics = self.activity(task)
             result.append(dict(external_id=binding[0], dispatch_blocker=blocker, input_id=accepted[0] if accepted else None,
+                last_activity_at=last_activity_at, diagnostics=diagnostics,
                 claim_source_status=self.kb._retry_status_for_run(self.conn, task.id) if task.status == 'running' else None,
                 progress_note=progress[0] if progress and 0 <= time.time() - progress[1] < 120 else None,
                 progress_at=progress[1] if progress else None, outcome_summary=self.kb.latest_summary(self.conn, task.id), **asdict(task)))
@@ -577,6 +614,8 @@ def main():
                 elif request['op'] == 'finish':
                     result = {'ok': board.finish(request['id'], request['run_id'], request['state'], request['summary'],
                                                  request.get('error_code'))}
+                elif request['op'] == 'archive_idle':
+                    result = {'archived': board.archive_idle(request['tenant'], request['ids'])}
                 elif request['op'] == 'archive_settled':
                     result = {'ok': board.archive_settled(request['id'], request.get('summary'))}
                 elif request['op'] == 'promote':

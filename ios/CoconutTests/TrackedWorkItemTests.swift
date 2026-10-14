@@ -635,4 +635,33 @@ final class TrackedWorkItemTests: XCTestCase {
         for _ in 0..<20 { await Task.yield() }
         XCTAssertEqual(TrackedWorkItem.tracked(in: store.artifacts).count, 1)
     }
+
+    func testIdleNativeWorkUsesHermesActivityAndFinishedWorkStaysForAWeek() throws {
+        var waiting = item(status: "waiting")
+        waiting.workState = "waiting"
+        waiting.nativeTaskId = "native-export"
+        waiting.nativeStatus = "blocked"
+        waiting.nativeLastActivityAt = "2026-09-01T00:00:00Z"
+        waiting.nativeDiagnostics = [NativeDiagnostic(kind: "stuck_in_blocked", severity: "warning", title: "Blocked with no comment")]
+        let start = try XCTUnwrap("2026-09-01T00:00:00Z".apiDate)
+        let row = TrackedWorkItem(artifact: waiting, pullRequests: [])
+        XCTAssertFalse(row.isIdle(at: start.addingTimeInterval(6 * 86_400)))
+        XCTAssertTrue(row.isIdle(at: start.addingTimeInterval(9 * 86_400)))
+        XCTAssertEqual(row.idleLabel(at: start.addingTimeInterval(9 * 86_400)), "Idle 9 days · Blocked with no comment")
+        waiting.nativeStatus = "running"
+        XCTAssertFalse(TrackedWorkItem(artifact: waiting, pullRequests: []).isIdle(at: start.addingTimeInterval(9 * 86_400)))
+        waiting.nativeStatus = "todo"
+        waiting.nativeTaskId = nil
+        XCTAssertFalse(TrackedWorkItem(artifact: waiting, pullRequests: []).isIdle(at: start.addingTimeInterval(9 * 86_400)))
+
+        var finished = item(status: "completed")
+        finished.workState = "completed"
+        finished.nativeTaskId = "native-export"
+        finished.nativeStatus = "blocked"
+        finished.nativeLastActivityAt = "2026-09-01T00:00:00Z"
+        let done = TrackedWorkItem(artifact: finished, pullRequests: [])
+        XCTAssertFalse(done.isIdle(at: start.addingTimeInterval(9 * 86_400)))
+        XCTAssertTrue(done.isRecent(at: start.addingTimeInterval(6 * 86_400)))
+        XCTAssertFalse(done.isRecent(at: start.addingTimeInterval(8 * 86_400)))
+    }
 }

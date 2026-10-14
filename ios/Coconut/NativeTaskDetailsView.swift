@@ -271,11 +271,70 @@ struct NativeTaskDetailsView: View {
     @State private var stoppingRecovery = false
     @State private var stopPendingConfirmation: CheckoutRecoveryConfirmation?
     @State private var stopConfirmationMessage: String?
+    @State private var idleToArchive: [TrackedWorkItem]?
+    @State private var archiving = false
+    @State private var showingOlder = false
+    @State private var now = Date()
 
     private var items: [TrackedWorkItem] {
         TrackedWorkItem.nativeTasks(in: store.artifacts, botId: botId, tasks: store.tasks, includeDismissed: true)
     }
 
+    private struct Groups {
+        var active: [TrackedWorkItem] = [], idle: [TrackedWorkItem] = [], recent: [TrackedWorkItem] = [], older: [TrackedWorkItem] = []
+
+        /// Only the bot's own tasks count as idle, because the Mac archives only those.
+        init(_ items: [TrackedWorkItem], botId: String, at date: Date) {
+            for item in items {
+                let waits = item.artifact.botId == botId && item.isIdle(at: date)
+                if item.canOfferCheckoutRecovery || (!item.isFinished && !waits) { active.append(item) }
+                else if !item.isFinished { idle.append(item) }
+                else if item.isRecent(at: date) { recent.append(item) }
+                else { older.append(item) }
+            }
+            recent.sort { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
+            older.sort { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
+        }
+    }
+
+    @ViewBuilder private func row(_ item: TrackedWorkItem) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(item.artifact.title).font(.headline)
+            TimelineView(.periodic(from: .now, by: 10)) { context in
+                Text(item.activity(at: context.date)).foregroundStyle(.secondary)
+            }
+            ForEach(item.pullRequests) { request in
+                Link("\(request.repository) #\(request.number)", destination: request.url)
+            }
+            if let evidence = item.artifact.completionEvidence, item.isFinished {
+                Text(evidence).font(.footnote).foregroundStyle(.secondary)
+            }
+            if !item.isFinished {
+                Button(cancelling.contains(item.id) ? "Stopping…" : "Stop task", role: .destructive) {
+                    taskToStop = item
+                }
+                .disabled(cancelling.contains(item.id))
+                .accessibilityIdentifier("task-stop-" + item.artifact.id)
+            }
+            if item.canOfferCheckoutRecovery {
+                Button(recovering.contains(item.id) ? "Checking…" : "Recover checkout") {
+                    recovering.insert(item.id)
+                    Task {
+                        do { recovery = try await store.checkoutRecoveryPreview(item) }
+                        catch {
+                            self.error = NativeTaskDetailsError(origin: .preview, message: error.localizedDescription)
+                        }
+                        recovering.remove(item.id)
+                    }
+                }
+                .disabled(recovering.contains(item.id) || confirming || confirmation != nil)
+                .accessibilityIdentifier("task-recover-" + item.artifact.id)
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("task-detail-" + item.artifact.id)
+    }
     private var confirmation: CheckoutRecoveryConfirmation? { store.checkoutConfirmation }
     private var canRetryError: Bool { error?.allowsRecoveryRetry(with: confirmation) == true }
 
@@ -322,43 +381,44 @@ struct NativeTaskDetailsView: View {
             if items.isEmpty {
                 Text("No tasks").foregroundStyle(.secondary)
             }
-            ForEach(items) { item in
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(item.artifact.title).font(.headline)
-                    TimelineView(.periodic(from: .now, by: 10)) { context in
-                        Text(item.activity(at: context.date)).foregroundStyle(.secondary)
-                    }
-                    ForEach(item.pullRequests) { request in
-                        Link("\(request.repository) #\(request.number)", destination: request.url)
-                    }
-                    if let evidence = item.artifact.completionEvidence, item.isFinished {
-                        Text(evidence).font(.footnote).foregroundStyle(.secondary)
-                    }
-                    if !item.isFinished {
-                        Button(cancelling.contains(item.id) ? "Stopping…" : "Stop task", role: .destructive) {
-                            taskToStop = item
+            let groups = Groups(items, botId: botId, at: now)
+            ForEach(groups.active) { item in row(item) }
+            if !groups.idle.isEmpty {
+                Section {
+                    ForEach(groups.idle) { item in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(item.artifact.title).font(.headline)
+                            Text(item.idleLabel(at: now)).font(.subheadline).foregroundStyle(.secondary)
                         }
-                        .disabled(cancelling.contains(item.id))
-                        .accessibilityIdentifier("task-stop-" + item.artifact.id)
+                        .padding(.vertical, 4)
+                        .accessibilityIdentifier("task-idle-" + item.artifact.id)
                     }
-                    if item.canOfferCheckoutRecovery {
-                        Button(recovering.contains(item.id) ? "Checking…" : "Recover checkout") {
-                            recovering.insert(item.id)
-                            Task {
-                                do { recovery = try await store.checkoutRecoveryPreview(item) }
-                                catch {
-                                    self.error = NativeTaskDetailsError(origin: .preview, message: error.localizedDescription)
-                                }
-                                recovering.remove(item.id)
-                            }
-                        }
-                        .disabled(recovering.contains(item.id) || confirming || confirmation != nil)
-                        .accessibilityIdentifier("task-recover-" + item.artifact.id)
+                    Button(archiving ? "Archiving…" : "Archive \(groups.idle.count) idle task\(groups.idle.count == 1 ? "" : "s")",
+                           role: .destructive) { idleToArchive = groups.idle }
+                        .disabled(archiving)
+                        .accessibilityIdentifier("archive-idle-tasks")
+                } header: {
+                    Text("Idle for a week or more")
+                } footer: {
+                    Text("These tasks wait in Hermes for someone to act. Archiving closes them in Hermes.")
+                }
+            }
+            if !groups.recent.isEmpty || !groups.older.isEmpty {
+                Section("Finished") {
+                    ForEach(groups.recent) { item in row(item) }
+                    if showingOlder {
+                        ForEach(groups.older) { item in row(item) }
+                    } else if !groups.older.isEmpty {
+                        Button("Show \(groups.older.count) older") { showingOlder = true }
+                            .accessibilityIdentifier("show-older-tasks")
                     }
                 }
-                .padding(.vertical, 4)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("task-detail-" + item.artifact.id)
+            }
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                now = Date()
             }
         }
         .navigationTitle("Task details")
@@ -380,6 +440,20 @@ struct NativeTaskDetailsView: View {
             }.accessibilityIdentifier("confirm-stop-pending-checkout-recovery")
         } message: { pending in
             Text("Stop targets:\n\(pending.targetSummary)\n\nThis sends a fresh Stop for the original Work. If recovery already resumed, it stops that Work. Check recovery status afterward; Stop never confirms a new recovery.")
+        }
+        .alert("Archive idle tasks?", isPresented: Binding(
+            get: { idleToArchive != nil }, set: { if !$0 { idleToArchive = nil } }),
+            presenting: idleToArchive) { items in
+            Button("Cancel", role: .cancel) { idleToArchive = nil }
+            Button("Archive \(items.count)", role: .destructive) {
+                archiving = true
+                Task {
+                    error = (await store.archiveIdleWork(botId: botId, items: items)).map { NativeTaskDetailsError(origin: .stopTask, message: $0) }
+                    archiving = false
+                }
+            }.accessibilityIdentifier("confirm-archive-idle-tasks")
+        } message: { items in
+            Text("Hermes archives \(items.count) task\(items.count == 1 ? "" : "s") that have waited a week or more. A task that started again is not archived.")
         }
         .alert("Stop this task?", isPresented: Binding(
             get: { taskToStop != nil }, set: { if !$0 { taskToStop = nil } }),

@@ -1581,6 +1581,22 @@ class NativeOutcomes:
                     item['work_dismissal_id'] = self._setting('work.dismissed.' + self._work_identity(root))
         return artifacts
 
+    def archive_idle_work(self, bot_id, data):
+        """Archive Hermes tasks of one bot that wait for someone to act, after the person confirms them on the phone."""
+        from .service import ServiceError
+        identities = data.get('native_task_ids') if isinstance(data, dict) else None
+        if (not isinstance(identities, list) or not identities or len(identities) > 500
+                or not all(isinstance(identity, str) and identity for identity in identities)):
+            raise ServiceError(400, 'List the idle tasks to archive.')
+        if not self.kanban:
+            raise ServiceError(409, 'Hermes Kanban is not available.')
+        with self.lock:
+            self._get('bots', bot_id)
+        archived = self.kanban.call({'op': 'archive_idle', 'tenant': bot_id, 'ids': identities})['archived']
+        self.kanban.call({'op': 'snapshot'})
+        self._publish_kanban_changes()
+        return {'archived': archived}
+
     def _native_outcome_projection(self, item, tasks, records, decisions, timestamp, queue_positions, peers=None):
         native = next((n for n in self.kanban.tasks.values() if n['id'] == item['_native_outcome_id']), None) if self.kanban else None
         owner = tasks.get(item.get('task_id'), {})
@@ -1628,4 +1644,7 @@ class NativeOutcomes:
             work_dependencies=[dict(id=parent['id'], title=parent['title'], state=parent['status']) for parent in dependencies],
             activity_bot_id=owner.get('bot_id', item['bot_id']),
             activity_observed_at=self.kanban.observed_at if self.kanban else None,
+            native_last_activity_at=(datetime.fromtimestamp(native['last_activity_at'], timezone.utc).isoformat().replace('+00:00', 'Z')
+                                     if native and native.get('last_activity_at') else None),
+            native_diagnostics=native.get('diagnostics', []) if native and not terminal else [],
             activity_state={'needs_decision': 'waiting', 'queued': 'waiting'}.get(state, state))

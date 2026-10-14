@@ -369,6 +369,20 @@ Failed checks retry after the existing delay. Source failures retain the last kn
 The check cannot approve a choice. Human replies and current card revisions take priority.
 Other sources still use the configured intake routines and their recorded evidence.
 
+## Idle Work in Task details
+
+Task details groups a bot's Work into active, idle and finished items. Hermes supplies the facts:
+each native outcome carries `native_last_activity_at`, the time of the task's last Hermes event, and
+`native_diagnostics`, the output of Hermes' `compute_task_diagnostics` for a task in triage, todo,
+blocked, review or scheduled. An archive event does not count as activity.
+
+A task in one of those states without activity for 7 days is idle. The phone lists idle tasks with
+their age and first diagnostic, and offers one archive button behind a confirmation.
+`POST /v1/bots/{bot_id}/work/archive-idle` takes `native_task_ids` (at most 500) and calls Hermes'
+`archive_task` only for that bot's tasks that are still in a waiting state. A task that started
+again stays. Finished Work from the last 7 days shows by default; older Work stays behind
+**Show older**.
+
 ## Archived Work with divergent checkout histories
 
 `POST /v1/maintenance/checkout-recovery` is a separate paired-device, managed-service
