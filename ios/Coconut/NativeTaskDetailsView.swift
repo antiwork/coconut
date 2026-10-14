@@ -302,6 +302,8 @@ struct NativeTaskDetailsView: View {
         return count == 1 ? "Archive 1 idle task" : "Archive \(count) idle tasks"
     }
 
+    private func olderTitle(_ count: Int) -> String { "Show \(count) older" }
+
     @ViewBuilder private func row(_ item: TrackedWorkItem, idleLabel: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(item.artifact.title).font(.headline)
@@ -358,63 +360,70 @@ struct NativeTaskDetailsView: View {
         }
     }
 
+    @ViewBuilder private var pendingRecovery: some View {
+        if confirmation?.isUncertain == true {
+            Text("The Mac may have accepted this checkout recovery. Check recovery status using the same saved confirmation and key; do not start a new recovery.")
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("uncertain-checkout-recovery")
+        }
+        if confirmation != nil {
+            if let confirmation {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Pending checkout recovery target").font(.headline)
+                    Text(confirmation.targetSummary).font(.subheadline)
+                }
+                .accessibilityIdentifier("pending-checkout-recovery-target")
+            }
+            Button("Check recovery status") { retryConfirmation() }
+                .disabled(confirming)
+                .accessibilityIdentifier("retry-checkout-recovery")
+            if let confirmation, confirmation.workItemId != nil {
+                Button(stoppingRecovery ? "Stopping…" : "Stop recovery", role: .destructive) {
+                    stopPendingConfirmation = confirmation
+                }
+                .disabled(stoppingRecovery)
+                .accessibilityIdentifier("stop-pending-checkout-recovery")
+            }
+            if let stopConfirmationMessage {
+                Text(stopConfirmationMessage).font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private func taskSections(_ groups: Groups) -> some View {
+        if items.isEmpty {
+            Text("No tasks").foregroundStyle(.secondary)
+        }
+        ForEach(groups.active) { item in row(item) }
+        if !groups.idle.isEmpty {
+            Section {
+                ForEach(groups.idle) { item in row(item, idleLabel: item.idleLabel(at: now)) }
+                Button(archiveTitle(groups.idle.count), role: .destructive) { idleToArchive = groups.idle }
+                    .disabled(archiving)
+                    .accessibilityIdentifier("archive-idle-tasks")
+            } header: {
+                Text("Idle for a week or more")
+            } footer: {
+                Text("These tasks wait in Hermes for someone to act. Archiving closes them in Hermes.")
+            }
+        }
+        if !groups.recent.isEmpty || !groups.older.isEmpty {
+            Section("Finished") {
+                ForEach(groups.recent) { item in row(item) }
+                if showingOlder {
+                    ForEach(groups.older) { item in row(item) }
+                } else if !groups.older.isEmpty {
+                    Button(olderTitle(groups.older.count)) { showingOlder = true }
+                        .accessibilityIdentifier("show-older-tasks")
+                }
+            }
+        }
+    }
+
     var body: some View {
         List {
-            if confirmation?.isUncertain == true {
-                Text("The Mac may have accepted this checkout recovery. Check recovery status using the same saved confirmation and key; do not start a new recovery.")
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("uncertain-checkout-recovery")
-            }
-            if confirmation != nil {
-                if let confirmation {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Pending checkout recovery target").font(.headline)
-                        Text(confirmation.targetSummary).font(.subheadline)
-                    }
-                    .accessibilityIdentifier("pending-checkout-recovery-target")
-                }
-                Button("Check recovery status") { retryConfirmation() }
-                    .disabled(confirming)
-                    .accessibilityIdentifier("retry-checkout-recovery")
-                if let confirmation, confirmation.workItemId != nil {
-                    Button(stoppingRecovery ? "Stopping…" : "Stop recovery", role: .destructive) {
-                        stopPendingConfirmation = confirmation
-                    }
-                    .disabled(stoppingRecovery)
-                    .accessibilityIdentifier("stop-pending-checkout-recovery")
-                }
-                if let stopConfirmationMessage {
-                    Text(stopConfirmationMessage).font(.footnote).foregroundStyle(.secondary)
-                }
-            }
-            if items.isEmpty {
-                Text("No tasks").foregroundStyle(.secondary)
-            }
-            let groups = Groups(items, botId: botId, at: now)
-            ForEach(groups.active) { item in row(item) }
-            if !groups.idle.isEmpty {
-                Section {
-                    ForEach(groups.idle) { item in row(item, idleLabel: item.idleLabel(at: now)) }
-                    Button(archiveTitle(groups.idle.count), role: .destructive) { idleToArchive = groups.idle }
-                        .disabled(archiving)
-                        .accessibilityIdentifier("archive-idle-tasks")
-                } header: {
-                    Text("Idle for a week or more")
-                } footer: {
-                    Text("These tasks wait in Hermes for someone to act. Archiving closes them in Hermes.")
-                }
-            }
-            if !groups.recent.isEmpty || !groups.older.isEmpty {
-                Section("Finished") {
-                    ForEach(groups.recent) { item in row(item) }
-                    if showingOlder {
-                        ForEach(groups.older) { item in row(item) }
-                    } else if !groups.older.isEmpty {
-                        Button("Show \(groups.older.count) older") { showingOlder = true }
-                            .accessibilityIdentifier("show-older-tasks")
-                    }
-                }
-            }
+            pendingRecovery
+            taskSections(Groups(items, botId: botId, at: now))
         }
         .task {
             while !Task.isCancelled {
