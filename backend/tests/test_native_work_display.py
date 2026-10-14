@@ -1,5 +1,6 @@
 """Work displays current native state, without renewing old narrative."""
 import unittest
+from uuid import uuid4
 from unittest.mock import patch
 import test_native_kanban as native
 import legacy_work_sync
@@ -40,6 +41,33 @@ print(board.kb.create_task(board.conn, title='Fix the accepted defect', body='Ve
         self.assertEqual(projected['work_state'], 'waiting')
         self.assertIsNone(projected['activity_observed_at'])
         self.assertEqual(self.service.kanban.tasks[item['task_id']]['id'], identity)
+
+    def test_idle_work_shows_hermes_diagnostics_and_archives_only_the_bots_idle_tasks(self):
+        identity, item = self.outcome()
+        # Hermes reports a task blocked for a day without a comment as stuck.
+        self.native_program("board.kb.block_task(board.conn, sys.argv[2], reason='Waiting for review', kind='capability')", identity)
+        # A task with recent activity is not idle, even when the phone lists it as idle.
+        self.assertEqual(self.service.archive_idle_work(self.bot['id'], {'native_task_ids': [identity]}), {'archived': []})
+        self.native_program("board.conn.execute('UPDATE task_events SET created_at=created_at-691200 WHERE task_id=?',(sys.argv[2],)); "
+                            "board.conn.execute('UPDATE tasks SET created_at=created_at-691200 WHERE id=?',(sys.argv[2],)); board.conn.commit()", identity)
+        projected = self.project(item)
+        self.assertEqual(projected['native_status'], 'blocked')
+        self.assertIn('stuck_in_blocked', [d['kind'] for d in projected['native_diagnostics']])
+        self.assertTrue(projected['native_last_activity_at'].endswith('Z'))
+        idle_since = projected['native_last_activity_at']
+        # Another bot cannot archive this task, and a running task is not idle.
+        other = self.write('/v1/bots', {'name': 'Other', 'role': 'Test'})
+        self.assertEqual(self.service.archive_idle_work(other['id'], {'native_task_ids': [identity]}), {'archived': []})
+        card = dict(id=str(uuid4()), task_id=item['task_id'], bot_id=self.bot['id'], status='pending', title='Approve the fix?')
+        self.service._put('decisions', card)
+        self.assertEqual(self.service.archive_idle_work(self.bot['id'], {'native_task_ids': [identity]}), {'archived': [identity]})
+        # The archived task asks nothing more, so its open card closes.
+        self.assertEqual(self.service._get('decisions', card['id'])['status'], 'rejected')
+        projected = self.project(item)
+        self.assertEqual((projected['native_status'], projected['work_state'], projected['native_diagnostics']), ('archived', 'cancelled', []))
+        # Archiving is not activity, so the archived task does not return to the recent list.
+        self.assertEqual(projected['native_last_activity_at'], idle_since)
+        self.assertEqual(self.service.archive_idle_work(self.bot['id'], {'native_task_ids': [identity]}), {'archived': []})
 
     def test_blocked_work_does_not_present_an_old_summary_as_current_activity(self):
         identity, item = self.outcome()

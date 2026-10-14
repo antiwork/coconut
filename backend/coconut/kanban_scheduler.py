@@ -12,6 +12,8 @@ from pathlib import Path
 import subprocess
 import threading
 
+from .kanban_runtime import IDLE_STATUSES
+
 
 
 # The time from the start of one dispatcher pass to the next when nothing wakes it, and the longest rest inside it.
@@ -363,8 +365,10 @@ class NativeKanban(NativeOutcomes):
     def _publish_kanban_changes(self):
         # A heartbeat without a note changes only last_heartbeat_at, which the phone does not show.
         # A heartbeat with a note changes progress_at, so it still publishes.
+        # The phone reads the last activity only of a waiting task, which has few events.
         visible = {t['id']: tuple(t.get(key) for key in ('status', 'priority', 'current_run_id', 'title',
-            'progress_note', 'progress_at', 'outcome_summary', 'last_failure_error', 'dispatch_blocker', 'block_kind', 'dependencies'))
+            'progress_note', 'progress_at', 'outcome_summary', 'last_failure_error', 'dispatch_blocker', 'block_kind', 'dependencies',
+            'diagnostics')) + ((t.get('last_activity_at'),) if t.get('status') in IDLE_STATUSES else ())
             for t in self.kanban.tasks.values()}
         with self.changed:
             if visible != self._kanban_visible:

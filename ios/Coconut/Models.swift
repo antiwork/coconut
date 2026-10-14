@@ -458,6 +458,16 @@ struct Artifact: Codable, Identifiable, Equatable, Sendable {
     var workQueuePosition: Int? = nil
     var completionCondition: String? = nil
     var completionEvidence: String? = nil
+    var nativeStatus: String? = nil
+    var nativeLastActivityAt: String? = nil
+    var nativeDiagnostics: [NativeDiagnostic]? = nil
+}
+
+/// A distress signal that Hermes computes for a Kanban task, such as a task blocked for a day without a comment.
+struct NativeDiagnostic: Codable, Equatable, Sendable {
+    var kind: String
+    var severity: String
+    var title: String
 }
 
 

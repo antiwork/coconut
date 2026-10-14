@@ -1035,6 +1035,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     self.pr_last_request = time.monotonic()
                     self.pr_refresh_requested.set()
             return {'ok': True}
+        if method == 'POST' and path.startswith('/v1/bots/') and path.endswith('/work/archive-idle') and path.count('/') == 5:
+            return self.archive_idle_work(path.split('/')[3], data)
         if method == 'POST' and path.startswith('/v1/settings/google/'):
             return self.google_connection(path.rsplit('/', 1)[1], data, device_id, key)
         if method == 'PUT' and path == '/v1/settings/api-fallback' and hasattr(self.provider, 'native_settings'):

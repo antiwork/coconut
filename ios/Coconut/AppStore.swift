@@ -803,6 +803,31 @@ final class AppStore {
         }
     }
 
+    /// Archive idle Hermes tasks of one bot. Hermes archives only tasks that still wait for someone to act.
+    @discardableResult
+    func archiveIdleWork(botId: String, items: [TrackedWorkItem]) async -> String? {
+        let identities = items.compactMap(\.artifact.nativeTaskId)
+        guard !identities.isEmpty else { return nil }
+        if isDemo {
+            let archived = Set(identities)
+            for index in artifacts.indices where artifacts[index].nativeTaskId.map(archived.contains) == true {
+                artifacts[index].workState = "cancelled"
+                artifacts[index].activity = "Stopped"
+            }
+            return nil
+        }
+        // The Mac accepts at most 500 tasks in one request.
+        for start in stride(from: 0, to: identities.count, by: 500) {
+            var failure: String?
+            let batch = Array(identities[start..<min(start + 500, identities.count)])
+            let response = await write("bots/\(botId)/work/archive-idle", payload: ArchiveIdleRequest(nativeTaskIds: batch),
+                                       as: ArchiveIdleResponse.self, refreshInBackground: true,
+                                       onFailure: { failure = $0.localizedDescription })
+            if response == nil { return failure ?? "The Mac did not confirm the archive. Try again." }
+        }
+        return nil
+    }
+
     @discardableResult
     func cancelWork(_ item: TrackedWorkItem) async -> String? {
         if isDemo {
@@ -1913,6 +1938,8 @@ private struct PairRequest: Encodable { let code: String; let deviceName: String
 private struct PairResponse: Decodable, Sendable { let token: String; let deviceId: String }
 private struct EmptyRequest: Encodable {}
 private struct Acknowledgement: Decodable, Sendable { let ok: Bool }
+private struct ArchiveIdleRequest: Encodable { let nativeTaskIds: [String] }
+private struct ArchiveIdleResponse: Decodable, Sendable { let archived: [String] }
 private struct BotRequest: Encodable { let name: String; let role: String; let avatar: String; let color: String; let instructions: String; let memory: String; let pinned: Bool? }
 private struct PinRequest: Encodable { let pinned: Bool }
 private struct InstructionsRequest: Encodable { let instructions: String }

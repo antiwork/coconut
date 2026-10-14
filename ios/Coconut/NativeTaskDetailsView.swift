@@ -271,11 +271,81 @@ struct NativeTaskDetailsView: View {
     @State private var stoppingRecovery = false
     @State private var stopPendingConfirmation: CheckoutRecoveryConfirmation?
     @State private var stopConfirmationMessage: String?
+    @State private var idleToArchive: [TrackedWorkItem]?
+    @State private var archiving = false
+    @State private var showingOlder = false
+    @State private var now = Date()
 
     private var items: [TrackedWorkItem] {
         TrackedWorkItem.nativeTasks(in: store.artifacts, botId: botId, tasks: store.tasks, includeDismissed: true)
     }
 
+    private struct Groups {
+        var active: [TrackedWorkItem] = [], idle: [TrackedWorkItem] = [], recent: [TrackedWorkItem] = [], older: [TrackedWorkItem] = []
+
+        /// Only the bot's own tasks count as idle, because the Mac archives only those.
+        init(_ items: [TrackedWorkItem], botId: String, at date: Date) {
+            for item in items {
+                let waits = item.artifact.botId == botId && item.isIdle(at: date)
+                if item.canOfferCheckoutRecovery || (!item.isFinished && !waits) { active.append(item) }
+                else if !item.isFinished { idle.append(item) }
+                else if item.isRecent(at: date) { recent.append(item) }
+                else { older.append(item) }
+            }
+            recent.sort { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
+            older.sort { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
+        }
+    }
+
+    private func archiveTitle(_ count: Int) -> String {
+        if archiving { return "Archiving…" }
+        return count == 1 ? "Archive 1 idle task" : "Archive \(count) idle tasks"
+    }
+
+    private func olderTitle(_ count: Int) -> String { "Show \(count) older" }
+
+    @ViewBuilder private func row(_ item: TrackedWorkItem, idleLabel: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(item.artifact.title).font(.headline)
+            if let idleLabel {
+                Text(idleLabel).font(.subheadline).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("task-idle-" + item.artifact.id)
+            }
+            TimelineView(.periodic(from: .now, by: 10)) { context in
+                Text(item.activity(at: context.date)).foregroundStyle(.secondary)
+            }
+            ForEach(item.pullRequests) { request in
+                Link("\(request.repository) #\(request.number)", destination: request.url)
+            }
+            if let evidence = item.artifact.completionEvidence, item.isFinished {
+                Text(evidence).font(.footnote).foregroundStyle(.secondary)
+            }
+            if !item.isFinished {
+                Button(cancelling.contains(item.id) ? "Stopping…" : "Stop task", role: .destructive) {
+                    taskToStop = item
+                }
+                .disabled(cancelling.contains(item.id))
+                .accessibilityIdentifier("task-stop-" + item.artifact.id)
+            }
+            if item.canOfferCheckoutRecovery {
+                Button(recovering.contains(item.id) ? "Checking…" : "Recover checkout") {
+                    recovering.insert(item.id)
+                    Task {
+                        do { recovery = try await store.checkoutRecoveryPreview(item) }
+                        catch {
+                            self.error = NativeTaskDetailsError(origin: .preview, message: error.localizedDescription)
+                        }
+                        recovering.remove(item.id)
+                    }
+                }
+                .disabled(recovering.contains(item.id) || confirming || confirmation != nil)
+                .accessibilityIdentifier("task-recover-" + item.artifact.id)
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("task-detail-" + item.artifact.id)
+    }
     private var confirmation: CheckoutRecoveryConfirmation? { store.checkoutConfirmation }
     private var canRetryError: Bool { error?.allowsRecoveryRetry(with: confirmation) == true }
 
@@ -290,75 +360,75 @@ struct NativeTaskDetailsView: View {
         }
     }
 
+    @ViewBuilder private var pendingRecovery: some View {
+        if confirmation?.isUncertain == true {
+            Text("The Mac may have accepted this checkout recovery. Check recovery status using the same saved confirmation and key; do not start a new recovery.")
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("uncertain-checkout-recovery")
+        }
+        if confirmation != nil {
+            if let confirmation {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Pending checkout recovery target").font(.headline)
+                    Text(confirmation.targetSummary).font(.subheadline)
+                }
+                .accessibilityIdentifier("pending-checkout-recovery-target")
+            }
+            Button("Check recovery status") { retryConfirmation() }
+                .disabled(confirming)
+                .accessibilityIdentifier("retry-checkout-recovery")
+            if let confirmation, confirmation.workItemId != nil {
+                Button(stoppingRecovery ? "Stopping…" : "Stop recovery", role: .destructive) {
+                    stopPendingConfirmation = confirmation
+                }
+                .disabled(stoppingRecovery)
+                .accessibilityIdentifier("stop-pending-checkout-recovery")
+            }
+            if let stopConfirmationMessage {
+                Text(stopConfirmationMessage).font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private func taskSections(_ groups: Groups) -> some View {
+        if items.isEmpty {
+            Text("No tasks").foregroundStyle(.secondary)
+        }
+        ForEach(groups.active) { item in row(item) }
+        if !groups.idle.isEmpty {
+            Section {
+                ForEach(groups.idle) { item in row(item, idleLabel: item.idleLabel(at: now)) }
+                Button(archiveTitle(groups.idle.count), role: .destructive) { idleToArchive = groups.idle }
+                    .disabled(archiving)
+                    .accessibilityIdentifier("archive-idle-tasks")
+            } header: {
+                Text("Idle for a week or more")
+            } footer: {
+                Text("These tasks wait in Hermes for someone to act. Archiving closes them in Hermes.")
+            }
+        }
+        if !groups.recent.isEmpty || !groups.older.isEmpty {
+            Section("Finished") {
+                ForEach(groups.recent) { item in row(item) }
+                if showingOlder {
+                    ForEach(groups.older) { item in row(item) }
+                } else if !groups.older.isEmpty {
+                    Button(olderTitle(groups.older.count)) { showingOlder = true }
+                        .accessibilityIdentifier("show-older-tasks")
+                }
+            }
+        }
+    }
+
     var body: some View {
         List {
-            if confirmation?.isUncertain == true {
-                Text("The Mac may have accepted this checkout recovery. Check recovery status using the same saved confirmation and key; do not start a new recovery.")
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("uncertain-checkout-recovery")
-            }
-            if confirmation != nil {
-                if let confirmation {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Pending checkout recovery target").font(.headline)
-                        Text(confirmation.targetSummary).font(.subheadline)
-                    }
-                    .accessibilityIdentifier("pending-checkout-recovery-target")
-                }
-                Button("Check recovery status") { retryConfirmation() }
-                    .disabled(confirming)
-                    .accessibilityIdentifier("retry-checkout-recovery")
-                if let confirmation, confirmation.workItemId != nil {
-                    Button(stoppingRecovery ? "Stopping…" : "Stop recovery", role: .destructive) {
-                        stopPendingConfirmation = confirmation
-                    }
-                    .disabled(stoppingRecovery)
-                    .accessibilityIdentifier("stop-pending-checkout-recovery")
-                }
-                if let stopConfirmationMessage {
-                    Text(stopConfirmationMessage).font(.footnote).foregroundStyle(.secondary)
-                }
-            }
-            if items.isEmpty {
-                Text("No tasks").foregroundStyle(.secondary)
-            }
-            ForEach(items) { item in
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(item.artifact.title).font(.headline)
-                    TimelineView(.periodic(from: .now, by: 10)) { context in
-                        Text(item.activity(at: context.date)).foregroundStyle(.secondary)
-                    }
-                    ForEach(item.pullRequests) { request in
-                        Link("\(request.repository) #\(request.number)", destination: request.url)
-                    }
-                    if let evidence = item.artifact.completionEvidence, item.isFinished {
-                        Text(evidence).font(.footnote).foregroundStyle(.secondary)
-                    }
-                    if !item.isFinished {
-                        Button(cancelling.contains(item.id) ? "Stopping…" : "Stop task", role: .destructive) {
-                            taskToStop = item
-                        }
-                        .disabled(cancelling.contains(item.id))
-                        .accessibilityIdentifier("task-stop-" + item.artifact.id)
-                    }
-                    if item.canOfferCheckoutRecovery {
-                        Button(recovering.contains(item.id) ? "Checking…" : "Recover checkout") {
-                            recovering.insert(item.id)
-                            Task {
-                                do { recovery = try await store.checkoutRecoveryPreview(item) }
-                                catch {
-                                    self.error = NativeTaskDetailsError(origin: .preview, message: error.localizedDescription)
-                                }
-                                recovering.remove(item.id)
-                            }
-                        }
-                        .disabled(recovering.contains(item.id) || confirming || confirmation != nil)
-                        .accessibilityIdentifier("task-recover-" + item.artifact.id)
-                    }
-                }
-                .padding(.vertical, 4)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("task-detail-" + item.artifact.id)
+            pendingRecovery
+            taskSections(Groups(items, botId: botId, at: now))
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                now = Date()
             }
         }
         .navigationTitle("Task details")
@@ -380,6 +450,20 @@ struct NativeTaskDetailsView: View {
             }.accessibilityIdentifier("confirm-stop-pending-checkout-recovery")
         } message: { pending in
             Text("Stop targets:\n\(pending.targetSummary)\n\nThis sends a fresh Stop for the original Work. If recovery already resumed, it stops that Work. Check recovery status afterward; Stop never confirms a new recovery.")
+        }
+        .alert("Archive idle tasks?", isPresented: Binding(
+            get: { idleToArchive != nil }, set: { if !$0 { idleToArchive = nil } }),
+            presenting: idleToArchive) { items in
+            Button("Cancel", role: .cancel) { idleToArchive = nil }
+            Button("Archive \(items.count)", role: .destructive) {
+                archiving = true
+                Task {
+                    error = (await store.archiveIdleWork(botId: botId, items: items)).map { NativeTaskDetailsError(origin: .stopTask, message: $0) }
+                    archiving = false
+                }
+            }.accessibilityIdentifier("confirm-archive-idle-tasks")
+        } message: { items in
+            Text("Hermes archives the tasks that still wait without activity for a week. A task that changed since this list loaded stays.")
         }
         .alert("Stop this task?", isPresented: Binding(
             get: { taskToStop != nil }, set: { if !$0 { taskToStop = nil } }),

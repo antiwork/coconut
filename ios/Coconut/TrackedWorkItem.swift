@@ -38,6 +38,34 @@ struct TrackedWorkItem: Identifiable {
     }
     var canOfferCheckoutRecovery: Bool { checkoutRecoveryWork != nil }
 
+    /// Hermes states that wait for someone to act. A task there without activity for a week counts as idle.
+    static let idleStatuses: Set<String> = ["triage", "todo", "blocked", "review", "scheduled"]
+    static let idleAge: TimeInterval = 7 * 86_400
+    /// Finished work stays on the task list for a week. Older finished work stays behind Show older.
+    static let finishedWindow: TimeInterval = 7 * 86_400
+
+    var lastActivity: Date? {
+        (artifact.nativeLastActivityAt ?? artifact.observedAt ?? artifact.checkedAt ?? artifact.createdAt).apiDate
+    }
+
+    func isIdle(at date: Date) -> Bool {
+        guard !isFinished, artifact.nativeTaskId != nil, let status = artifact.nativeStatus, Self.idleStatuses.contains(status),
+              let last = artifact.nativeLastActivityAt?.apiDate else { return false }
+        return date.timeIntervalSince(last) >= Self.idleAge
+    }
+
+    func isRecent(at date: Date) -> Bool {
+        guard let last = lastActivity else { return true }
+        return date.timeIntervalSince(last) < Self.finishedWindow
+    }
+
+    func idleLabel(at date: Date) -> String {
+        let days = max(1, Int(date.timeIntervalSince(lastActivity ?? date) / 86_400))
+        let idle = days == 1 ? "Idle 1 day" : "Idle \(days) days"
+        guard let diagnostic = artifact.nativeDiagnostics?.first else { return idle }
+        return idle + " · " + diagnostic.title
+    }
+
     static func nativeTasks(in artifacts: [Artifact], botId: String, tasks: [AgentTask] = [],
                             includeDismissed: Bool = false) -> [Self] {
         let conversationTasks = Set(tasks.filter { $0.conversationBotId == botId }.map(\.id))

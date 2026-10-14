@@ -45,6 +45,12 @@ def verify_contract():
         require_keywords(operation, {'conn', 'task_id', 'expected_run_id'})
     require_keywords(kanban_db_workspace.resolve_workspace, {'task'})
     assert callable(kanban_db_connect.connect) and callable(kanban_db.reopen_review_task)
+    # The phone shows Hermes' own diagnostics and archives idle tasks with Hermes' archive.
+    from hermes_cli.kanban_diagnostics import compute_task_diagnostics
+    require_keywords(compute_task_diagnostics, {'task', 'events', 'runs'})
+    require_keywords(kanban_db.archive_task, {'conn', 'task_id'})
+    require_keywords(kanban_db.list_events, {'conn', 'task_id'})
+    require_keywords(kanban_db.list_runs, {'conn', 'task_id'})
     from hermes_cli.mcp_config import _probe_single_server, _save_bearer_auth_token
     from tools.mcp_tool_config import _load_mcp_config
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
