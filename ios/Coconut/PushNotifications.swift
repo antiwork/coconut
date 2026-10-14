@@ -293,8 +293,9 @@ final class PushNotifications {
             catch { self.error = "iOS could not enable notifications. Try again in Settings." }
             settings = await center.notificationSettings()
         }
-        authorization = settings.authorizationStatus
-        badgesAllowed = settings.badgeSetting == .enabled
+        // The app refreshes after each update. Unchanged values must not redraw the screens that read them.
+        if authorization != settings.authorizationStatus { authorization = settings.authorizationStatus }
+        if badgesAllowed != (settings.badgeSetting == .enabled) { badgesAllowed = settings.badgeSetting == .enabled }
         await PushRelayClient.shared.flushRevocations()
         if allowed { UIApplication.shared.registerForRemoteNotifications() }
     }
@@ -308,8 +309,9 @@ final class PushNotifications {
     }
 
     func registered(_ token: Data) {
-        deviceToken = token.map { String(format: "%02x", $0) }.joined()
-        error = nil
+        let value = token.map { String(format: "%02x", $0) }.joined()
+        if deviceToken != value { deviceToken = value }
+        if error != nil { error = nil }
     }
 
     func openSystemSettings() {
