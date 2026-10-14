@@ -19,7 +19,11 @@ final class AppStore {
     var decisions: [Decision] = []
     var answeringDecisionIds: Set<String> = []
     var decisionReplyDrafts: [String: String] = [:]
-    var artifacts: [Artifact] = []
+    var artifacts: [Artifact] = [] {
+        didSet { assign(\.transcriptArtifacts, artifacts.filter { $0.kind == "task" }) }
+    }
+    /// Only saved task answers change a transcript. Work cards change on most updates, so conversations do not read them.
+    private(set) var transcriptArtifacts: [Artifact] = []
     var checkoutConfirmation: CheckoutRecoveryConfirmation?
     var workVisibility: [String: Bool] = [:]
     var workUndo: [WorkDismissal] = []
@@ -616,15 +620,16 @@ final class AppStore {
         }
         let represented = Set(messages.filter { $0.kind == "decision" }.compactMap(\.decisionId))
         let missing = decisions.filter {
-            conversationBotId(for: $0) == botId && ($0.isPending || $0.isRefreshing || $0.id == focusDecisionId)
-                && !represented.contains($0.id)
+            // Check the cheap state first. Finding the conversation scans every task.
+            ($0.isPending || $0.isRefreshing || $0.id == focusDecisionId) && !represented.contains($0.id)
+                && conversationBotId(for: $0) == botId
         }.map { decision in
             Message(id: decision.id, botId: botId, taskId: decision.taskId, role: "assistant", kind: "decision",
                     text: "", decisionId: decision.id, artifactId: nil, createdAt: decision.createdAt, streaming: false)
         }
         // Cards can outlive the loaded history page. Keep their original place in the transcript.
         let timeline = (messages + missing).sorted { $0.createdAt < $1.createdAt }
-        return TranscriptPresentation.visibleMessages(timeline, artifacts: artifacts, decisions: decisions)
+        return TranscriptPresentation.visibleMessages(timeline, artifacts: transcriptArtifacts, decisions: decisions)
             .filter { $0.kind != "activity" }
     }
 
@@ -1973,9 +1978,9 @@ private struct InstructionsRequest: Encodable { let instructions: String }
 private struct PreferenceRequest: Encodable { let text: String }
 private struct RoutineRequest: Encodable { let name: String; let prompt: String; let cron: String; let timezone: String; let enabled: Bool }
 private struct ArchiveRequest: Encodable { let archived: Bool }
-struct MessageRequest: Codable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String]; var replyToMessageId: String? = nil; var mentionedBotIds: [String]? = nil; var workArtifactId: String? = nil; var workStatusOnly: Bool? = nil }
+struct MessageRequest: Codable, Equatable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String]; var replyToMessageId: String? = nil; var mentionedBotIds: [String]? = nil; var workArtifactId: String? = nil; var workStatusOnly: Bool? = nil }
 private struct ReactionRequest: Encodable { let emoji: String; let active: Bool }
-struct OutgoingMessage: Codable, Identifiable {
+struct OutgoingMessage: Codable, Identifiable, Equatable {
     enum Status: String, Codable { case sending, accepted, failed, rejected }
     let id: String
     let botId: String
@@ -2000,7 +2005,7 @@ struct OutgoingMessage: Codable, Identifiable {
     }
 }
 private struct OutgoingCache: Codable { let deviceId: String; let messages: [OutgoingMessage]; var answers: [OutgoingAnswer]? = nil }
-struct OutgoingAnswer: Codable, Identifiable {
+struct OutgoingAnswer: Codable, Identifiable, Equatable {
     let id: String
     let decisionId: String
     let botId: String
@@ -2015,7 +2020,7 @@ struct OutgoingAnswer: Codable, Identifiable {
                 streaming: false, clientRequestId: id, replyTo: replyTo)
     }
 }
-struct AnswerRequest: Codable { let choice: String; let revision: Int; let correction: String?; let optionId: String?; let draftHash: String?; let previewsHash: String? }
+struct AnswerRequest: Codable, Equatable { let choice: String; let revision: Int; let correction: String?; let optionId: String?; let draftHash: String?; let previewsHash: String? }
 private struct DraftEditRequest: Encodable { let revision: Int; let draft: MessageDraft }
 private struct InboxRequest: Encodable { let action: String; let revision: Int; let swipeId: String? }
 private struct ReplyRequest: Encodable { let text: String; let attachmentIds: [String]; let decisionId: String?; let mentionedBotIds: [String] }
