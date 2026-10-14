@@ -297,9 +297,18 @@ struct NativeTaskDetailsView: View {
         }
     }
 
-    @ViewBuilder private func row(_ item: TrackedWorkItem) -> some View {
+    private func archiveTitle(_ count: Int) -> String {
+        if archiving { return "Archiving…" }
+        return count == 1 ? "Archive 1 idle task" : "Archive \(count) idle tasks"
+    }
+
+    @ViewBuilder private func row(_ item: TrackedWorkItem, idleLabel: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(item.artifact.title).font(.headline)
+            if let idleLabel {
+                Text(idleLabel).font(.subheadline).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("task-idle-" + item.artifact.id)
+            }
             TimelineView(.periodic(from: .now, by: 10)) { context in
                 Text(item.activity(at: context.date)).foregroundStyle(.secondary)
             }
@@ -385,16 +394,8 @@ struct NativeTaskDetailsView: View {
             ForEach(groups.active) { item in row(item) }
             if !groups.idle.isEmpty {
                 Section {
-                    ForEach(groups.idle) { item in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(item.artifact.title).font(.headline)
-                            Text(item.idleLabel(at: now)).font(.subheadline).foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 4)
-                        .accessibilityIdentifier("task-idle-" + item.artifact.id)
-                    }
-                    Button(archiving ? "Archiving…" : "Archive \(groups.idle.count) idle task\(groups.idle.count == 1 ? "" : "s")",
-                           role: .destructive) { idleToArchive = groups.idle }
+                    ForEach(groups.idle) { item in row(item, idleLabel: item.idleLabel(at: now)) }
+                    Button(archiveTitle(groups.idle.count), role: .destructive) { idleToArchive = groups.idle }
                         .disabled(archiving)
                         .accessibilityIdentifier("archive-idle-tasks")
                 } header: {
@@ -453,7 +454,7 @@ struct NativeTaskDetailsView: View {
                 }
             }.accessibilityIdentifier("confirm-archive-idle-tasks")
         } message: { items in
-            Text("Hermes archives \(items.count) task\(items.count == 1 ? "" : "s") that have waited a week or more. A task that started again is not archived.")
+            Text("Hermes archives the tasks that still wait without activity for a week. A task that changed since this list loaded stays.")
         }
         .alert("Stop this task?", isPresented: Binding(
             get: { taskToStop != nil }, set: { if !$0 { taskToStop = nil } }),

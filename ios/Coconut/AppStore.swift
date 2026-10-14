@@ -816,11 +816,16 @@ final class AppStore {
             }
             return nil
         }
-        var failure: String?
-        let response = await write("bots/\(botId)/work/archive-idle", payload: ArchiveIdleRequest(nativeTaskIds: identities),
-                                   as: ArchiveIdleResponse.self, refreshInBackground: true,
-                                   onFailure: { failure = $0.localizedDescription })
-        return response == nil ? failure ?? "The Mac did not confirm the archive. Try again." : nil
+        // The Mac accepts at most 500 tasks in one request.
+        for start in stride(from: 0, to: identities.count, by: 500) {
+            var failure: String?
+            let batch = Array(identities[start..<min(start + 500, identities.count)])
+            let response = await write("bots/\(botId)/work/archive-idle", payload: ArchiveIdleRequest(nativeTaskIds: batch),
+                                       as: ArchiveIdleResponse.self, refreshInBackground: true,
+                                       onFailure: { failure = $0.localizedDescription })
+            if response == nil { return failure ?? "The Mac did not confirm the archive. Try again." }
+        }
+        return nil
     }
 
     @discardableResult

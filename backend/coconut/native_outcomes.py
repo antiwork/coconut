@@ -1594,6 +1594,20 @@ class NativeOutcomes:
             self._get('bots', bot_id)
         archived = self.kanban.call({'op': 'archive_idle', 'tenant': bot_id, 'ids': identities})['archived']
         self.kanban.call({'op': 'snapshot'})
+        if archived:
+            # An archived task asks nothing more, so its open cards close, as they do when a task stops.
+            from .service import now
+            gone = set(archived)
+            with self.transaction():
+                owners = ({external for external, native in self.kanban.tasks.items() if native['id'] in gone}
+                          | {t['id'] for t in self._all('tasks') if t.get('_native_outcome_id') in gone})
+                for decision in self._all('decisions'):
+                    if (decision.get('_execution_task_id', decision['task_id']) in owners
+                            and decision['status'] in ('pending', 'approved')):
+                        decision.update(status='rejected', decided_at=now(), decided_by='archive', decided_by_name='Idle task archive',
+                                        outcome='Task archived.')
+                        self._put('decisions', decision)
+                        self._event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
         self._publish_kanban_changes()
         return {'archived': archived}
 

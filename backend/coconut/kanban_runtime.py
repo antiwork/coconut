@@ -23,6 +23,8 @@ def fingerprint(value):
 
 # Hermes states that wait for someone to act: specify, finish a parent, unblock, review, or reach a scheduled time.
 IDLE_STATUSES = ('triage', 'todo', 'blocked', 'review', 'scheduled')
+# A waiting task without a Hermes event for this long is idle. The phone uses the same age.
+IDLE_AGE = 7 * 86400
 
 class Board:
     def __init__(self, home):
@@ -453,11 +455,14 @@ class Board:
         return last, cached[1]
 
     def archive_idle(self, tenant, identities):
-        """Archive the person's idle tasks of one bot. A task that changed state since the phone listed it stays."""
+        """Archive the person's idle tasks of one bot. A task that changed since the phone listed it stays."""
         archived = []
         for identity in identities:
             task = self.kb.get_task(self.conn, identity)
-            if task is not None and task.tenant == tenant and task.status in IDLE_STATUSES and self.kb.archive_task(self.conn, identity):
+            if task is None or task.tenant != tenant or task.status not in IDLE_STATUSES:
+                continue
+            last, _ = self.activity(task)
+            if last and time.time() - last >= IDLE_AGE and self.kb.archive_task(self.conn, identity):
                 archived.append(identity)
         return archived
 
