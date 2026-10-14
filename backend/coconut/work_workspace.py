@@ -1029,7 +1029,7 @@ def free_rebuildable(root, identity, finished):
                 moved.append((name, target))
     for name, target in moved:
         try:
-            shutil.rmtree(target)
+            delete_tree(target)
         except OSError as error:
             # The folder is out of the worktree now. The next sweep tries again.
             logging.getLogger(__name__).warning('Coconut could not delete build folder %s of %s from %s: %s', name, path, target, error)
@@ -1340,13 +1340,73 @@ def move_scratch(folder, *, keep=True):
     return target
 
 
+def delete_tree(path):
+    """Delete a file, a link or a folder that Coconut moved to a trash folder. Never follow a link.
+
+    Some tools make their files read-only: Go writes its module cache with folders 0555 and files 0444. No one can
+    delete an entry of a folder without owner write, so on a refusal give the owner full access to the folder that
+    holds the entry, and try again. Only a real folder inside path changes its mode, never a link or what a link names.
+    """
+    path = Path(path)
+    if path.is_symlink() or not path.is_dir():
+        path.unlink()
+        return
+    top = os.path.realpath(path)
+
+    def opened(folder):
+        # True when folder is a real folder inside top that lacked owner access and has it now. realpath finds a link
+        # anywhere in the path, so the change never reaches a place outside top.
+        if (folder != top and not folder.startswith(top + os.sep)) or os.path.realpath(folder) != folder:
+            return False
+        try:
+            mode = os.lstat(folder).st_mode
+        except OSError:
+            return False
+        if not stat.S_ISDIR(mode) or mode & stat.S_IRWXU == stat.S_IRWXU:
+            return False
+        mode = stat.S_IMODE(mode) | stat.S_IRWXU
+        if os.chmod in os.supports_follow_symlinks:
+            os.chmod(folder, mode, follow_symlinks=False)
+        elif hasattr(os, 'O_PATH') and os.path.isdir('/proc/self/fd'):
+            # Linux has no lchmod. Open the folder itself without following a link, and change that exact folder.
+            # O_PATH needs no read access, so it also opens a folder that the owner cannot read.
+            descriptor = os.open(folder, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.chmod(f'/proc/self/fd/{descriptor}', mode)
+            finally:
+                os.close(descriptor)
+        else:
+            return False
+        return True
+
+    def retry(function, name, error):
+        if isinstance(error, FileNotFoundError):
+            # Something else deleted it first, or a retry below deleted the whole folder.
+            return
+        if isinstance(error, PermissionError):
+            if function in (os.unlink, os.remove, os.rmdir) and opened(os.path.dirname(name)):
+                function(name)
+                return
+            # A folder that the owner cannot read or enter. rmtree does not go into it again, so delete it here.
+            if function in (os.open, os.scandir, os.lstat) and (opened(os.path.dirname(name)) | opened(name)):
+                delete_tree(name)
+                return
+        raise error
+
+    # Python 3.12 renamed onerror to onexc, and passes the exception instead of sys.exc_info().
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(top, onexc=retry)
+    else:
+        shutil.rmtree(top, onerror=lambda function, name, info: retry(function, name, info[1]))
+
+
 def empty_scratch_trash(root):
     """Delete the scratch workspaces that move_scratch moved, also those that a stop left."""
     trash = Path(root) / SCRATCH_TRASH
     if trash.is_dir() and not trash.is_symlink():
         for item in trash.iterdir():
             try:
-                shutil.rmtree(item) if item.is_dir() and not item.is_symlink() else item.unlink()
+                delete_tree(item)
             except OSError as error:
                 logging.getLogger(__name__).warning('Coconut could not delete %s: %s', item, error)
 
@@ -1374,7 +1434,7 @@ def sweep_temporary(root):
     trash = Path(root) / TRASH
     if trash.is_dir() and not trash.is_symlink():
         try:
-            shutil.rmtree(trash)
+            delete_tree(trash)
         except OSError as error:
             logging.getLogger(__name__).warning('Coconut could not empty %s: %s', trash, error)
     trim_nested_archives(root)
