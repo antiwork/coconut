@@ -237,6 +237,26 @@ class StateSyncTests(unittest.TestCase):
         self.assertEqual([a['id'] for a in page['artifacts']], ['retained'])
         self.assertNotIn('bots', page)
 
+    def test_native_update_in_a_new_activity_interval_sends_only_changed_and_timed_work(self):
+        from types import SimpleNamespace
+        self.service.provider.supports_native_outcomes = True
+        task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Retained work'})
+        retained = dict(id='retained', kind='work', task_id=task['id'], bot_id=self.bot['id'],
+            status='working', title='Retained work', created_at='2026-09-18T00:00:00Z')
+        with self.service.transaction():
+            self.service._put('artifacts', retained)
+            self.service._put('artifacts', dict(retained, id='native', _native_outcome_id='t_unchanged'))
+        cursor = self.service._cursor()
+        with self.service.transaction():
+            self.service._event('task.updated', self.service._public(self.service._get('tasks', task['id'])),
+                                self.bot['id'], task['id'])
+        # The last event is in an earlier 15-second interval, so retained work is due for a new projection.
+        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={}, observed_at='2099-01-01T00:00:00Z')), \
+             patch('coconut.service.now', return_value='2099-01-01T00:00:00Z'), \
+             patch.object(Service, '_work_projection', side_effect=lambda items: items):
+            page = self.service.updates(cursor, collection_deltas=True, native_events=True)
+        self.assertEqual([a['id'] for a in page['artifacts']], ['retained'])
+
     def test_native_work_event_refreshes_an_idle_delta(self):
         cursor = self.service._cursor()
         with self.service.transaction():

@@ -207,7 +207,9 @@ class StateSync:
         visible = {b['id'] for b in bots}
         result = dict(after=after, cursor=cursor, server_time=server_time, bots=bots, **freshness)
         task_ids, message_ids, decision_ids, artifact_ids = set(), set(), set(), set()
-        native_work_ids = set() if native and collection_deltas and not refresh_activity else None
+        native_work_ids = set() if native and collection_deltas else None
+        # Time alone changes only retained legacy work. Native rows change through events.
+        timed_ids = {a['id'] for a in retained} if refresh_activity else set()
         if collection_deltas:
             result['collection_deltas'] = True
         for _, kind, task_id, data in rows:
@@ -267,7 +269,7 @@ class StateSync:
                 return visible_row(value) and (not value.get('task_id') or value['task_id'] in tasks)
             stored_artifacts = self._all('artifacts')
             def changed_artifact(artifact):
-                if artifact['id'] in artifact_ids or not collection_deltas:
+                if artifact['id'] in artifact_ids or artifact['id'] in timed_ids or not collection_deltas:
                     return True
                 if artifact['kind'] not in ('pr', 'work'):
                     return False
