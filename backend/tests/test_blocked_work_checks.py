@@ -6,7 +6,7 @@ from uuid import uuid4
 from coconut.hermes_worker import conversation_input
 from coconut.providers import FixtureProvider
 from coconut.service import Service, ServiceError, now
-from coconut.work_recovery import BLOCKED_WORK_INSTRUCTIONS, block_check_delay
+from coconut.work_recovery import BLOCKED_WORK_INSTRUCTIONS, WORK_PAUSE_INSTRUCTIONS, block_check_delay
 
 
 class BlockedWorkCheckTests(unittest.TestCase):
@@ -94,6 +94,25 @@ class BlockedWorkCheckTests(unittest.TestCase):
     def test_repeated_block_in_native_triage_still_gets_checks(self):
         self.check(dict(self.blocked(), status='triage'), 0)
         self.assertEqual(self.check(dict(self.blocked(), status='triage'), 10 ** 9)['status'], 'queued')
+
+    def test_check_turn_that_ends_in_native_triage_waits_for_the_person(self):
+        # Hermes moves a task to triage when it blocks again with the same kind. A person must act.
+        triage = dict(self.blocked('needs_input'), status='triage')
+        self.check(triage, 0)
+        self.assertEqual(self.check(triage, 10 ** 9)['status'], 'queued')
+        self.state('working')
+        armed = self.finish_blocked(2 * 10 ** 9, triage)['_block_check']
+        for clock in (armed['next_at'], 10 ** 10):
+            deferred = self.check(triage, clock)
+            self.assertEqual(deferred['status'], 'completed')
+        self.assertEqual(deferred['_block_check']['attempt'], 1)
+        # A message from the person is new input. When that turn blocks again, it gets a check.
+        with self.service.transaction():
+            self.service._reply(self.service._get('tasks', self.task_id), {'text': 'Use the other payout account.'})
+        self.assertNotEqual(self.service._get('tasks', self.task_id)['_native_turn_id'], deferred['_native_turn_id'])
+        self.state('working')
+        armed = self.finish_blocked(2 * 10 ** 10, triage)['_block_check']
+        self.assertEqual(self.check(triage, armed['next_at'])['status'], 'queued')
 
     def test_deferred_check_moves_its_due_time(self):
         self.check(self.blocked(), 0)
@@ -277,11 +296,11 @@ class BlockedWorkCheckTests(unittest.TestCase):
         self.state('working')
         return queued
 
-    def finish_blocked(self, clock):
-        # The check turn ran as the native claim, then blocked the task again.
+    def finish_blocked(self, clock, native=None):
+        # The turn ran as the native claim, then blocked the task again.
         self.check(dict(id='t_build', status='running', current_run_id=7), clock)
         self.state('completed')
-        return self.check(self.blocked('needs_input'), clock + 1)
+        return self.check(native or self.blocked('needs_input'), clock + 1)
 
     def test_recorded_controlling_answer_stops_the_next_check(self):
         self.declined_check()
@@ -375,9 +394,13 @@ class BlockedWorkCheckTests(unittest.TestCase):
         task = self.check(self.blocked(), 10 ** 9)
         prompt = conversation_input(dict(operation='start', task=task, history=[]))[0]
         self.assertIn(BLOCKED_WORK_INSTRUCTIONS, prompt)
+        # The check records a pause before it blocks. The Work pause rule would skip that record.
+        self.assertNotIn(WORK_PAUSE_INSTRUCTIONS, prompt)
         # A later message rotates the turn ID, so it is not treated as a check.
         later = dict(task, _native_turn_id='new-human-input')
-        self.assertNotIn(BLOCKED_WORK_INSTRUCTIONS, conversation_input(dict(operation='start', task=later, history=[]))[0])
+        later_prompt = conversation_input(dict(operation='start', task=later, history=[]))[0]
+        self.assertNotIn(BLOCKED_WORK_INSTRUCTIONS, later_prompt)
+        self.assertIn(WORK_PAUSE_INSTRUCTIONS, later_prompt)
         # An answer to the check's card resumes the same turn without the check instructions.
         answer = dict(operation='resume', task=task, history=[], decision=dict(id='d', title='Free space?', status='approved', action_type='question', options=[]))
         self.assertNotIn(BLOCKED_WORK_INSTRUCTIONS, conversation_input(answer)[0])
