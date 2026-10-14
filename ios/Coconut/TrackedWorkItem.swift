@@ -44,13 +44,19 @@ struct TrackedWorkItem: Identifiable {
     /// Finished work stays on the task list for a week. Older finished work stays behind Show older.
     static let finishedWindow: TimeInterval = 7 * 86_400
 
+    /// A pull request row shows the newest copy of the PR, which can belong to another bot. Its Work item owns the Hermes task.
+    private var ownerWork: Artifact { recoveryWork ?? artifact }
+    /// Hermes keeps each task under the bot of its Work item. Without that Work item, the owner is unknown.
+    var nativeTaskId: String? { recoveryWork?.nativeTaskId }
+    var nativeOwnerBotId: String? { recoveryWork?.botId }
+
     var lastActivity: Date? {
-        (artifact.nativeLastActivityAt ?? artifact.observedAt ?? artifact.checkedAt ?? artifact.createdAt).apiDate
+        (ownerWork.nativeLastActivityAt ?? ownerWork.observedAt ?? ownerWork.checkedAt ?? ownerWork.createdAt).apiDate
     }
 
     func isIdle(at date: Date) -> Bool {
-        guard !isFinished, artifact.nativeTaskId != nil, let status = artifact.nativeStatus, Self.idleStatuses.contains(status),
-              let last = artifact.nativeLastActivityAt?.apiDate else { return false }
+        guard !isFinished, let work = recoveryWork, work.nativeTaskId != nil, let status = work.nativeStatus,
+              Self.idleStatuses.contains(status), let last = work.nativeLastActivityAt?.apiDate else { return false }
         return date.timeIntervalSince(last) >= Self.idleAge
     }
 
@@ -62,8 +68,27 @@ struct TrackedWorkItem: Identifiable {
     func idleLabel(at date: Date) -> String {
         let days = max(1, Int(date.timeIntervalSince(lastActivity ?? date) / 86_400))
         let idle = days == 1 ? "Idle 1 day" : "Idle \(days) days"
-        guard let diagnostic = artifact.nativeDiagnostics?.first else { return idle }
+        guard let diagnostic = ownerWork.nativeDiagnostics?.first else { return idle }
         return idle + " · " + diagnostic.title
+    }
+
+    /// Task details shows active Work first, then Work idle for a week, then finished Work.
+    struct Groups {
+        var active: [TrackedWorkItem] = [], idle: [TrackedWorkItem] = [], recent: [TrackedWorkItem] = [], older: [TrackedWorkItem] = []
+
+        /// Work that the bot delegated counts as idle too. Each task's own bot archives it.
+        init(_ items: [TrackedWorkItem], at date: Date) {
+            for item in items {
+                // A stopped checkout stays on top for a week. After that its recovery stays with finished Work.
+                let recoverable = item.canOfferCheckoutRecovery && item.isRecent(at: date)
+                if recoverable || (!item.isFinished && !item.isIdle(at: date)) { active.append(item) }
+                else if !item.isFinished { idle.append(item) }
+                else if item.isRecent(at: date) { recent.append(item) }
+                else { older.append(item) }
+            }
+            recent.sort { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
+            older.sort { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
+        }
     }
 
     static func nativeTasks(in artifacts: [Artifact], botId: String, tasks: [AgentTask] = [],

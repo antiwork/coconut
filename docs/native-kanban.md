@@ -379,12 +379,15 @@ each native outcome carries `native_last_activity_at`, the time of the task's la
 `native_diagnostics`, the output of Hermes' `compute_task_diagnostics` for a task in triage, todo,
 blocked, review or scheduled. An archive event does not count as activity.
 
-A task in one of those states without activity for 7 days is idle. The phone lists idle tasks with
-their age and first diagnostic, and offers one archive button behind a confirmation.
-`POST /v1/bots/{bot_id}/work/archive-idle` takes `native_task_ids` (at most 500) and calls Hermes'
-`archive_task` only for that bot's tasks that are still in a waiting state. A task that started
+A task in one of those states without activity for 7 days is idle. The phone reads the state from the
+Work item that owns the Hermes task, also for a pull request row and for Work that the bot delegated.
+The phone lists idle tasks with their age and first diagnostic, and offers one archive button behind a
+confirmation. `POST /v1/bots/{bot_id}/work/archive-idle` takes `native_task_ids` (at most 500) and calls
+Hermes' `archive_task` only for that bot's tasks that are still in a waiting state. Hermes keeps each task
+under the bot of its Work item, so the phone sends each task to that bot's route. A task that started
 again stays. Finished Work from the last 7 days shows by default; older Work stays behind
-**Show older**.
+**Show older**. A stopped checkout that offers recovery stays at the top for 7 days, then moves to
+finished Work with its recovery button.
 
 ## Archived Work with divergent checkout histories
 
