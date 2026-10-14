@@ -715,4 +715,41 @@ final class TrackedWorkItemTests: XCTestCase {
         XCTAssertEqual(TrackedWorkItem.Groups(recoverable, at: created.addingTimeInterval(86_400)).active.count, 1)
         XCTAssertEqual(TrackedWorkItem.Groups(recoverable, at: created.addingTimeInterval(8 * 86_400)).older.count, 1)
     }
+
+    func testIdleArchiveSendsEachTaskToItsOwnerAndContinuesAfterAFailure() async throws {
+        func work(_ id: String, bot: String) -> TrackedWorkItem {
+            var artifact = item(status: "waiting")
+            artifact.id = id; artifact.botId = bot; artifact.nativeTaskId = "native-" + id
+            return TrackedWorkItem(artifact: artifact, pullRequests: [])
+        }
+        var linkedCopy = item(status: "waiting")
+        linkedCopy.id = "pr"; linkedCopy.kind = "pr"; linkedCopy.botId = "delegate"; linkedCopy.nativeTaskId = "native-linked"
+        var linkedWork = item(status: "waiting")
+        linkedWork.id = "linked"; linkedWork.botId = "desk"; linkedWork.nativeTaskId = "native-linked"
+        // The PR row repeats the Work row's task. The orphan PR copy has no Work item, so no owner.
+        var orphan = linkedCopy
+        orphan.id = "orphan"; orphan.nativeTaskId = "native-orphan"
+        let items = [work("a", bot: "delegate"), TrackedWorkItem(artifact: linkedCopy, pullRequests: [], recoveryWork: linkedWork),
+                     TrackedWorkItem(artifact: linkedWork, pullRequests: []), TrackedWorkItem(artifact: orphan, pullRequests: [])]
+            + (0..<501).map { work(String(format: "bulk-%03d", $0), bot: "bulk") }
+        var requests: [(String, [String])] = []
+        let error = await AppStore.archiveIdleRequests(items) { botId, batch in
+            requests.append((botId, batch))
+            return botId == "bulk" ? "The Mac is offline." : nil
+        }
+        // The first failed batch stops only that bot. The other bots still archive.
+        XCTAssertEqual(error, "The Mac is offline.")
+        XCTAssertEqual(requests.map(\.0), ["bulk", "delegate", "desk"])
+        XCTAssertEqual(requests[0].1.count, 500)
+        XCTAssertEqual(requests[1].1, ["native-a"])
+        XCTAssertEqual(requests[2].1, ["native-linked"])
+        requests = []
+        let success = await AppStore.archiveIdleRequests(items) { botId, batch in
+            requests.append((botId, batch))
+            return nil
+        }
+        XCTAssertNil(success)
+        XCTAssertEqual(requests.map(\.0), ["bulk", "bulk", "delegate", "desk"])
+        XCTAssertEqual(requests.map(\.1.count), [500, 1, 1, 1])
+    }
 }
