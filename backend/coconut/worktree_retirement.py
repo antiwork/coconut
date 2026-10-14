@@ -120,7 +120,7 @@ def empty_moved(parent):
         if not MOVED_NAME.fullmatch(item.name):
             continue
         try:
-            shutil.rmtree(item) if item.is_dir() and not item.is_symlink() else item.unlink()
+            work_workspace.delete_tree(item)
         except OSError as error:
             logging.getLogger(__name__).warning('Coconut could not delete %s: %s', item, error)
 

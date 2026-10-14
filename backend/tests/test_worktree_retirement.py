@@ -3531,6 +3531,139 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertTrue((outside / 'keep.txt').exists())
         self.assertTrue((workspace / 'link').is_symlink())
 
+    def test_a_read_only_build_folder_is_deleted_from_the_trash(self):
+        identity, path = self.refused_with_build_folders()
+        ReadOnlyTrashTests.go_module_cache(path / 'tmp' / 'cache' / 'go')
+        self.addCleanup(ReadOnlyTrashTests.writable, self.workspaces)
+        freed = work_workspace.free_rebuildable(self.workspaces, identity, lambda wait: True)
+        self.assertIn('tmp', freed)
+        self.assertFalse((path / 'tmp').exists())
+        self.assertEqual(list((self.workspaces / work_workspace.TRASH).iterdir()), [])
+
+
+class ReadOnlyTrashTests(unittest.TestCase):
+    """Go writes its module cache read-only: folders 0555 and files 0444. The trash sweeps must still delete it."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.addCleanup(self.writable, self.root)
+        self.outside = self.root / 'outside'
+        self.outside.mkdir()
+        (self.outside / 'keep.txt').write_text('keep\n')
+        os.chmod(self.outside / 'keep.txt', 0o444)
+        os.chmod(self.outside, 0o555)
+
+    @staticmethod
+    def writable(root):
+        # A failed test must not leave folders that the temporary directory cannot delete.
+        for folder, names, _ in os.walk(root):
+            for name in names:
+                if not os.path.islink(os.path.join(folder, name)):
+                    os.chmod(os.path.join(folder, name), 0o700)
+        if os.path.isdir(root):
+            os.chmod(root, 0o700)
+
+    @staticmethod
+    def go_module_cache(top, outside=None):
+        """Write a tree in the shape of a Go module cache, then make it read-only as Go does."""
+        module = top / 'modules' / 'github.com' / 'mattn' / 'go-runewidth@v0.0.16'
+        (module / 'testdata').mkdir(parents=True)
+        (module / 'runewidth.go').write_text('package runewidth\n')
+        (module / 'testdata' / 'table.txt').write_text('table\n')
+        (top / 'cache' / 'download').mkdir(parents=True)
+        (top / 'cache' / 'download' / 'list').write_text('v0.0.16\n')
+        if outside is not None:
+            # A link out of the trash. Its target must not change.
+            (module / 'outside-folder').symlink_to(outside, target_is_directory=True)
+            (module / 'outside-file').symlink_to(outside / 'keep.txt')
+        for folder, names, files in os.walk(top, topdown=False):
+            for name in files:
+                if not os.path.islink(os.path.join(folder, name)):
+                    os.chmod(os.path.join(folder, name), 0o444)
+            os.chmod(folder, 0o555)
+
+    def assert_outside_unchanged(self):
+        self.assertEqual((self.outside / 'keep.txt').read_text(), 'keep\n')
+        self.assertEqual(stat_mode(self.outside), 0o555)
+        self.assertEqual(stat_mode(self.outside / 'keep.txt'), 0o444)
+        self.assertEqual(sorted(p.name for p in self.outside.iterdir()), ['keep.txt'])
+
+    def test_empty_moved_deletes_a_read_only_go_module_cache(self):
+        trash = self.root / 'workspace' / work_workspace.SCRATCH_TRASH
+        trash.mkdir(parents=True, mode=0o700)
+        entry = trash / '2630-evidence-1790797162801517000'
+        self.go_module_cache(entry / 'tooling-dbf7e61a', outside=self.outside)
+        # A bot's own read-only folder in the trash is not a moved entry, so it stays.
+        mine = trash / 'mine'
+        self.go_module_cache(mine)
+        retirement.empty_moved(self.root / 'workspace')
+        self.assertFalse(os.path.lexists(entry))
+        self.assertTrue((mine / 'cache' / 'download' / 'list').is_file())
+        self.assert_outside_unchanged()
+
+    def test_the_scratch_trash_sweep_deletes_a_read_only_go_module_cache(self):
+        trash = self.root / 'workspaces' / work_workspace.SCRATCH_TRASH
+        trash.mkdir(parents=True, mode=0o700)
+        entry = trash / 'scratch-1790797162801517000'
+        self.go_module_cache(entry / 'go', outside=self.outside)
+        (trash / 'top-link-1790797162801517001').symlink_to(self.outside, target_is_directory=True)
+        work_workspace.empty_scratch_trash(self.root / 'workspaces')
+        self.assertEqual(list(trash.iterdir()), [])
+        self.assert_outside_unchanged()
+
+    def test_a_folder_that_the_owner_cannot_read_or_enter_is_deleted(self):
+        entry = self.root / 'entry'
+        (entry / 'closed' / 'inner').mkdir(parents=True)
+        (entry / 'closed' / 'inner' / 'file').write_text('x')
+        (entry / 'blind' / 'inner').mkdir(parents=True)
+        (entry / 'blind' / 'inner' / 'file').write_text('x')
+        os.chmod(entry / 'closed', 0o000)
+        os.chmod(entry / 'blind', 0o300)
+        work_workspace.delete_tree(entry)
+        self.assertFalse(os.path.lexists(entry))
+
+    def test_a_link_to_a_read_only_folder_outside_is_deleted_without_a_change_to_its_target(self):
+        link = self.root / 'link'
+        link.symlink_to(self.outside, target_is_directory=True)
+        work_workspace.delete_tree(link)
+        self.assertFalse(os.path.lexists(link))
+        self.assert_outside_unchanged()
+
+    def test_an_entry_that_a_link_replaces_after_the_check_is_refused_and_its_target_stays(self):
+        link = self.root / 'entry-1790797162801517000'
+        link.symlink_to(self.outside, target_is_directory=True)
+        is_symlink = Path.is_symlink
+        # The check sees a folder, and then a link takes its place before the deletion starts.
+        with patch.object(Path, 'is_symlink', lambda self: False if self == link else is_symlink(self)):
+            with self.assertRaises(OSError):
+                work_workspace.delete_tree(link)
+        self.assertTrue(link.is_symlink())
+        self.assert_outside_unchanged()
+
+    def test_a_refusal_that_a_mode_change_does_not_fix_is_logged_and_the_entry_stays(self):
+        trash = self.root / 'workspace' / work_workspace.SCRATCH_TRASH
+        trash.mkdir(parents=True, mode=0o700)
+        entry = trash / 'locked-1790797162801517000'
+        entry.mkdir()
+        (entry / 'file').write_text('x')
+        unlink = os.unlink
+
+        def refuse(name, *args, **kwargs):
+            if os.path.basename(name) == 'file':
+                raise PermissionError(errno.EPERM, 'Operation not permitted', name)
+            return unlink(name, *args, **kwargs)
+        with patch('os.unlink', side_effect=refuse), \
+                self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            retirement.empty_moved(self.root / 'workspace')
+        self.assertTrue((entry / 'file').is_file())
+        self.assertTrue(any('could not delete' in line and 'Operation not permitted' in line for line in logs.output))
+
+
+def stat_mode(path):
+    return os.lstat(path).st_mode & 0o7777
+
 
 def changed_archive_member(member, **fields):
     member = copy.deepcopy(member)
