@@ -3631,6 +3631,17 @@ class ReadOnlyTrashTests(unittest.TestCase):
         self.assertFalse(os.path.lexists(link))
         self.assert_outside_unchanged()
 
+    def test_an_entry_that_a_link_replaces_after_the_check_is_refused_and_its_target_stays(self):
+        link = self.root / 'entry-1790797162801517000'
+        link.symlink_to(self.outside, target_is_directory=True)
+        is_symlink = Path.is_symlink
+        # The check sees a folder, and then a link takes its place before the deletion starts.
+        with patch.object(Path, 'is_symlink', lambda self: False if self == link else is_symlink(self)):
+            with self.assertRaises(OSError):
+                work_workspace.delete_tree(link)
+        self.assertTrue(link.is_symlink())
+        self.assert_outside_unchanged()
+
     def test_a_refusal_that_a_mode_change_does_not_fix_is_logged_and_the_entry_stays(self):
         trash = self.root / 'workspace' / work_workspace.SCRATCH_TRASH
         trash.mkdir(parents=True, mode=0o700)

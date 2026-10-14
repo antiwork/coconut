@@ -1351,7 +1351,8 @@ def delete_tree(path):
     if path.is_symlink() or not path.is_dir():
         path.unlink()
         return
-    top = os.path.realpath(path)
+    # Resolve only the parent. A link that replaces the entry after the check above stays a link, and rmtree refuses it.
+    top = os.path.join(os.path.realpath(path.parent), path.name)
 
     def opened(folder):
         # True when folder is a real folder inside top that lacked owner access and has it now. realpath finds a link

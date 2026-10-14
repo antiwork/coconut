@@ -1,0 +1,49 @@
+name: Backend on macOS
+
+# Coconut runs on a Mac. The trash deletion changes folder modes with lchmod there, and Linux has no lchmod, so the
+# Linux contracts job cannot check that path.
+on:
+  pull_request:
+    paths:
+      - 'backend/coconut/work_workspace.py'
+      - 'backend/coconut/worktree_retirement.py'
+      - 'backend/tests/test_worktree_retirement.py'
+      - '.github/workflows/backend-macos.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'backend/coconut/work_workspace.py'
+      - 'backend/coconut/worktree_retirement.py'
+      - 'backend/tests/test_worktree_retirement.py'
+      - '.github/workflows/backend-macos.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-macos-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  read-only-trash:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.14']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Check the trash deletion of read-only folders
+        env:
+          PYTHONPATH: backend
+        run: |
+          # The mode checks mean nothing for root, which ignores folder modes.
+          test "$(id -u)" != 0
+          python -c 'import os, sys; sys.exit(os.chmod not in os.supports_follow_symlinks)'
+          python -m unittest discover -v -s backend/tests -p test_worktree_retirement.py \
+            -k ReadOnlyTrashTests -k test_a_read_only_build_folder_is_deleted_from_the_trash
