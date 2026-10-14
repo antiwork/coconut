@@ -664,4 +664,55 @@ final class TrackedWorkItemTests: XCTestCase {
         XCTAssertTrue(done.isRecent(at: start.addingTimeInterval(6 * 86_400)))
         XCTAssertFalse(done.isRecent(at: start.addingTimeInterval(8 * 86_400)))
     }
+
+    func testTaskDetailsGroupDelegatedAndLinkedWorkByTheirHermesTask() throws {
+        let start = try XCTUnwrap("2026-09-01T00:00:00Z".apiDate)
+        let later = start.addingTimeInterval(9 * 86_400)
+        func waiting(_ id: String, bot: String, status: String) -> Artifact {
+            var work = item(status: "waiting")
+            work.id = id; work.botId = bot; work.workState = "waiting"; work.nativeTaskId = "native-" + id
+            work.nativeStatus = status; work.nativeLastActivityAt = "2026-09-01T00:00:00Z"
+            return work
+        }
+        // Desk delegated this Work. Hermes keeps its task under the delegate.
+        var delegated = waiting("delegated", bot: "delegate", status: "triage")
+        delegated.taskId = "owner"
+        let owner = AgentTask(id: "owner", botId: "delegate", sessionId: "session", title: "Export account data",
+                              status: "completed", summary: "", createdAt: "", updatedAt: "", threadId: "thread",
+                              conversationBotId: "desk", sourceBotId: "desk")
+        // Desk owns this Work and its Hermes task, but the newest copy of its PR belongs to the delegate.
+        let linked = waiting("linked", bot: "desk", status: "blocked")
+        var deskCopy = linked
+        // The Mac copies the Work item's native state onto each PR copy.
+        deskCopy.id = "pr-desk"; deskCopy.kind = "pr"; deskCopy.workOutcomeId = linked.id
+        deskCopy.url = "https://github.com/example/project/pull/42"; deskCopy.observedAt = "2026-09-01T00:00:00Z"
+        var delegateCopy = deskCopy
+        delegateCopy.id = "pr-delegate"; delegateCopy.botId = "delegate"; delegateCopy.observedAt = "2026-09-02T00:00:00Z"
+        let rows = TrackedWorkItem.nativeTasks(in: [delegated, linked, deskCopy, delegateCopy], botId: "desk", tasks: [owner])
+        XCTAssertEqual(rows.count, 2)
+        let pullRequestRow = try XCTUnwrap(rows.first { $0.pullRequest != nil })
+        XCTAssertEqual(pullRequestRow.artifact.botId, "delegate")
+        XCTAssertEqual(pullRequestRow.nativeOwnerBotId, "desk")
+        XCTAssertEqual(pullRequestRow.nativeTaskId, "native-linked")
+        XCTAssertEqual(rows.first { $0.pullRequest == nil }?.nativeOwnerBotId, "delegate")
+        let groups = TrackedWorkItem.Groups(rows, at: later)
+        XCTAssertTrue(groups.active.isEmpty)
+        XCTAssertEqual(Set(groups.idle.map(\.id)), Set(rows.map(\.id)))
+        XCTAssertTrue(TrackedWorkItem.Groups(rows, at: start.addingTimeInterval(6 * 86_400)).idle.isEmpty)
+        // Without its Work item, a PR copy cannot name the bot that owns the Hermes task, so it stays active.
+        let orphan = TrackedWorkItem.nativeTasks(in: [deskCopy, delegateCopy], botId: "desk")
+        XCTAssertEqual(orphan.count, 1)
+        XCTAssertNil(orphan.first?.nativeOwnerBotId)
+        XCTAssertEqual(TrackedWorkItem.Groups(orphan, at: later).active.count, 1)
+
+        // A stopped checkout stays on top for a week. After that its recovery stays with older finished Work.
+        var stopped = item(status: "cancelled")
+        stopped.nativeTaskId = "native-export"; stopped.taskId = "owner"; stopped.workState = "cancelled"
+        stopped.checkoutRecoveryStopped = true
+        let recoverable = TrackedWorkItem.nativeTasks(in: [stopped], botId: "bot", tasks: [self.owner(status: "cancelled")])
+        XCTAssertEqual(recoverable.first?.canOfferCheckoutRecovery, true)
+        let created = try XCTUnwrap(stopped.createdAt.apiDate)
+        XCTAssertEqual(TrackedWorkItem.Groups(recoverable, at: created.addingTimeInterval(86_400)).active.count, 1)
+        XCTAssertEqual(TrackedWorkItem.Groups(recoverable, at: created.addingTimeInterval(8 * 86_400)).older.count, 1)
+    }
 }
