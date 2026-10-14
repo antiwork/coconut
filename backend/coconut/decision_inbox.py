@@ -113,29 +113,23 @@ class DecisionInbox:
             return {}
         return dict(previous_decision_id=previous_id)
 
-    def decision_origin(self, task, *, messages=None):
-        seen = set()
-        cache = getattr(self, '_read_cache', None) if messages is None else None
-        key = ('decision_sources', task['bot_id'])
-        if cache is not None and key in cache:
-            by_task, by_id = cache[key]
-        else:
-            if messages is None:
-                messages = self._history(task['bot_id'])
-            by_task, by_id = {}, {}
-            for index, message in enumerate(messages):
-                if (message['role'] != 'user' or message['kind'] != 'text' or message.get('sender_bot_id')
-                        or message.get('decision_id') or message.get('_hidden') or message.get('_deleted')):
-                    continue
-                source = (index, message)
-                by_task.setdefault(message.get('task_id'), source)
-                by_id[message['id']] = source
-            if cache is not None:
-                cache[key] = (by_task, by_id)
+    def decision_origin(self, task):
+        # Read only the messages of each task in the chain, in the history order of the first task's bot.
+        # Reading the whole history of the bot cost about 0.1 s for each bot with a card.
+        # Cards of one read share the chains of their parent tasks.
+        bot_id, seen, cache = task['bot_id'], set(), getattr(self, '_read_cache', None)
         while task and task['id'] not in seen:
             seen.add(task['id'])
-            candidates = [by_task.get(task['id']), *[by_id.get(i) for i in task.get('_shared_message_ids', [])]]
-            source = min((entry for entry in candidates if entry is not None), default=(0, None), key=lambda entry: entry[0])[1]
+            key = ('decision_origin', bot_id, task['id'])
+            if cache is not None and key in cache:
+                source = cache[key]
+            else:
+                source = next((m for m in self._history(bot_id, task_id=task['id'],
+                                                        shared_message_ids=task.get('_shared_message_ids', []))
+                               if m['role'] == 'user' and m['kind'] == 'text' and not m.get('sender_bot_id')
+                               and not m.get('decision_id')), None)
+                if cache is not None:
+                    cache[key] = source
             if source:
                 return dict(request_text=source['text'][:4000], request_message_id=source['id'],
                             request_bot_id=source['bot_id'], request_created_at=source['created_at'])

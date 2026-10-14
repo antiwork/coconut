@@ -413,7 +413,7 @@ class StateSyncTests(unittest.TestCase):
         with self.assertRaises(ServiceError):
             self.service.card(decision['id'])
 
-    def test_card_origins_share_one_history_read_and_refresh_after_changes(self):
+    def test_card_origins_read_only_their_task_messages_and_refresh_after_changes(self):
         task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Original request'})
         with self.service.transaction():
             for _ in range(5):
@@ -421,12 +421,12 @@ class StateSyncTests(unittest.TestCase):
                     task_id=task['id'], status='pending', revision=1))
         original = Service._history
         calls = []
-        def read(view, bot_id):
-            calls.append(bot_id)
-            return original(view, bot_id)
+        def read(view, bot_id, *, task_id=None, shared_message_ids=()):
+            calls.append((bot_id, task_id))
+            return original(view, bot_id, task_id=task_id, shared_message_ids=shared_message_ids)
         with patch.object(Service, '_history', read):
             state = self.service.snapshot(content_only=True)
-        self.assertEqual(calls, [self.bot['id']])
+        self.assertEqual(set(calls), {(self.bot['id'], task['id'])})
         self.assertEqual({d['request_text'] for d in state['decisions']}, {'Original request'})
         with self.service.transaction():
             source = self.service._get('messages', state['decisions'][0]['request_message_id'])
