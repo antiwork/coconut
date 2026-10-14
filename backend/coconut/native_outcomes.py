@@ -1423,7 +1423,7 @@ class NativeOutcomes:
         # An explicit native block keeps its reason, but nothing else resumes it.
         # Queue one owner check, then back off, until a card or recheck takes over.
         from .service import now, uid
-        from .work_recovery import BLOCK_PAUSE_FIELDS, block_check_delay
+        from .work_recovery import BLOCK_PAUSE_FIELDS, block_check_delay, block_check_task
         check = task.get('_block_check')
         idle = (task['status'] in ('completed', 'failed', 'waiting', 'cancelled') and not native.get('current_run_id')
                 and not native.get('worker_pid'))
@@ -1458,6 +1458,11 @@ class NativeOutcomes:
                 # The check turn that recorded the pause blocked the task again. A later turn's block gets a new check.
                 task['_block_check'].update({key: check[key] for key in BLOCK_PAUSE_FIELDS})
             self._put('tasks', task)
+            return
+        # Hermes moves a task to triage when it blocks again with the same kind, so that a person acts.
+        # When the check turn itself ended there, another check only repeats the loop, so wait for the person.
+        # A message from the person starts a new turn and ends the check context. The next block then gets a check.
+        if native['status'] == 'triage' and block_check_task(task):
             return
         # Read the tables only when a check is due. Reconcile runs every second.
         if clock < check['next_at']:

@@ -1233,6 +1233,47 @@ print(board.kb.create_task(board.conn, title='Build the customer record', body='
         # Starting the check turn unblocks the task. The backoff survives until the turn ends.
         self.assertEqual(self.service._get('tasks', owner['id'])['_block_check']['attempt'], 1)
 
+    def test_check_turn_that_hermes_sends_to_triage_gets_no_new_check(self):
+        origin = self.task('Fix the payout destinations')
+        identity = self.native_program("""
+print(board.kb.create_task(board.conn, title='Fix the payout destinations', body='Retain the approved scope', assignee='default',
+    tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked'))
+""", self.bot['id'], origin['id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._adopt_native_outcomes()
+        owner = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])',
+                            json.dumps(self.service._kanban_row(owner, owner, 'ready', priority=10)))
+        # Hermes moves a task to triage when it blocks again with the same kind after an unblock.
+        self.native_program("""
+for _ in range(2):
+    board.kb.unblock_task(board.conn, sys.argv[2])
+    board.kb.block_task(board.conn, sys.argv[2], reason='paused_by_decision_id=other: resume only after a human reversal', kind='needs_input')
+""", identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        native = self.service.kanban.tasks[owner['id']]
+        self.assertEqual((native['status'], native['block_kind'], native['block_recurrences']), ('triage', 'needs_input', 2))
+        # The check turn ended with this block.
+        with self.service.transaction():
+            owner = self.service._get('tasks', owner['id'])
+            owner.update(status='completed', _conversation_epoch=self.service._setting('conversation_epoch'),
+                         _native_turn_id='check-turn', _self_recovery=dict(blocked=dict(kind='needs_input', turn='check-turn')))
+            self.service._put('tasks', owner)
+        self.service._reconcile_kanban()
+        # Each pass is past the due time. A deferred check is due again 30 minutes later.
+        for hours in (1, 2, 3):
+            with patch('coconut.native_outcomes.time.time', return_value=time.time() + 3600 * hours):
+                self.service._reconcile_kanban()
+            self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'completed')
+        # A later turn is not the check, so its block in the same triage state gets a check.
+        with self.service.transaction():
+            owner = self.service._get('tasks', owner['id'])
+            owner['_native_turn_id'] = 'message-turn'
+            self.service._put('tasks', owner)
+        with patch('coconut.native_outcomes.time.time', return_value=time.time() + 3600 * 4):
+            self.service._reconcile_kanban()
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'queued')
+
     def test_native_work_status_does_not_follow_conversation_activity(self):
         origin = self.task('Discuss a pending outcome')
         identity = self.native_program("""

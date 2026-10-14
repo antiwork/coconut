@@ -24,7 +24,7 @@ if __package__:
     from .pull_request_reviews import PR_REVIEW_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS
     from .work_progress import NativeWork, WORK_INSTRUCTIONS
     from .tracked_work import TRACK_WORK_SCHEMA
-    from .work_recovery import BLOCK_PAUSE_SCHEMA
+    from .work_recovery import BLOCK_PAUSE_SCHEMA, block_check_task
     from .silent_responses import is_silent_response
     from .worker_protocol import MAX_EVENT_CHARACTERS, event_frame
     from .native_receipt_context import receipt_prompt, receipt_reader, SCHEMA as RECEIPT_SCHEMA
@@ -36,7 +36,7 @@ else:
     from pull_request_reviews import PR_REVIEW_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS
     from work_progress import NativeWork, WORK_INSTRUCTIONS
     from tracked_work import TRACK_WORK_SCHEMA
-    from work_recovery import BLOCK_PAUSE_SCHEMA
+    from work_recovery import BLOCK_PAUSE_SCHEMA, block_check_task
     from silent_responses import is_silent_response
     from worker_protocol import MAX_EVENT_CHARACTERS, event_frame
     from native_receipt_context import receipt_prompt, receipt_reader, SCHEMA as RECEIPT_SCHEMA
@@ -298,9 +298,8 @@ def bot_creation_context(request):
 
 def block_check_turn(request):
     """Return whether this turn is Coconut's check of a blocked native task."""
-    blocked = (request['task'].get('_self_recovery') or {}).get('blocked') or {}
     # An answered card resumes the same turn. Its answer replaces the check instructions.
-    return bool(blocked) and blocked.get('turn') == request['task'].get('_native_turn_id') and request['operation'] != 'resume'
+    return block_check_task(request['task']) and request['operation'] != 'resume'
 
 
 def turn_context(request):
@@ -621,15 +620,12 @@ def conversation_input(request):
                      'Leave pending decisions unchanged unless the person explicitly answers that decision.')
     if request['task'].get('_self_recovery'):
         if __package__:
-            from .work_recovery import RECOVERY_INSTRUCTIONS
+            from .work_recovery import BLOCKED_WORK_INSTRUCTIONS, recovery_instructions
         else:
-            from work_recovery import RECOVERY_INSTRUCTIONS
-        recovery = RECOVERY_INSTRUCTIONS + '\nSaved recovery context:\n' + json.dumps(request['task']['_self_recovery'])
-        if block_check_turn(request):
-            if __package__:
-                from .work_recovery import BLOCKED_WORK_INSTRUCTIONS
-            else:
-                from work_recovery import BLOCKED_WORK_INSTRUCTIONS
+            from work_recovery import BLOCKED_WORK_INSTRUCTIONS, recovery_instructions
+        check = block_check_turn(request)
+        recovery = recovery_instructions(check) + '\nSaved recovery context:\n' + json.dumps(request['task']['_self_recovery'])
+        if check:
             recovery += '\n' + BLOCKED_WORK_INSTRUCTIONS
         prompt += '\n' + recovery
         if request['task'].get('_work_context'):
