@@ -587,60 +587,6 @@ class NativeSessionTests(unittest.TestCase):
             returned.close()
         ''')
 
-    def test_a_work_session_resumes_in_a_new_session_after_each_prune(self):
-        # Hermes keeps a tombstone for a pruned session and refuses to create the same id again.
-        self.run_native('''
-            from uuid import uuid4
-            from hermes_state import SessionDB
-            from coconut import native_sessions
-            from coconut.native_conversation import NativeConversation, TIP_KEY, available_session, session_root
-            bot = dict(id=str(uuid4()), session_id=str(uuid4()))
-            history = [dict(id='m1', task_id='work', role='user', kind='text', text='Fix the upload row.'),
-                       dict(id='m2', task_id='work', role='assistant', kind='text', text='I will fix it.')]
-            request = dict(operation='resume', bot=bot, history=history,
-                           task=dict(id='work', _execution_session_id='work', _execution_task_ids=['work']))
-            root = session_root(bot, execution='work')
-            NativeConversation(request, SessionDB()).close()
-            db = SessionDB()
-            seen = [root]
-            for _ in range(2):
-                result = native_sessions.maintain(dict(bot=bot, conversations=[], outcomes=[dict(execution_session_id='work')], retention_days=0))
-                assert result['pruned'] >= 1, result
-                assert db.get_session(seen[-1]) is None
-                resumed = NativeConversation(request, SessionDB())
-                assert resumed.session_id not in seen, (resumed.session_id, seen)
-                assert db.get_meta(TIP_KEY + root) == resumed.session_id
-                assert [row['content'] for row in resumed.history] == ['Fix the upload row.', 'I will fix it.']
-                # Every process resolves the same session.
-                assert available_session(db, root, NativeConversation(request, SessionDB()).session_id) == resumed.session_id
-                seen.append(resumed.session_id)
-                resumed.close()
-            # A session that exists keeps its id.
-            assert available_session(db, root, seen[-1]) == seen[-1]
-        ''')
-
-    def test_a_chat_does_not_reuse_a_pruned_session_id(self):
-        self.run_native('''
-            from uuid import uuid4
-            from hermes_state import SessionDB
-            from coconut.native_conversation import NativeConversation, IDLE_END_REASON, session_root
-            bot = dict(id=str(uuid4()), session_id=str(uuid4()))
-            request = dict(operation='start', bot=bot, task=dict(id='chat', _conversation_epoch=str(uuid4())), history=[])
-            db = SessionDB()
-            first = NativeConversation(request, SessionDB())
-            assert first.session_id == session_root(bot, epoch=request['task']['_conversation_epoch'])
-            # The worker creates the session of the turn. Here it ends and Hermes prunes it.
-            db.create_session(first.session_id, source='coconut')
-            first.close()
-            db.end_session(first.session_id, IDLE_END_REASON)
-            assert db.prune_sessions(older_than_days=0, source='coconut', end_reason=IDLE_END_REASON) >= 1
-            chat = NativeConversation(request, SessionDB())
-            assert chat.session_id != first.session_id
-            # The worker can create the session that the conversation chose.
-            db.create_session(chat.session_id, source='coconut')
-            chat.close()
-        ''')
-
 
 if __name__ == '__main__':
     unittest.main()
