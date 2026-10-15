@@ -128,7 +128,14 @@ struct HistoryPage: Decodable, Sendable {
     let messages: [Message]
     let tasks: [AgentTask]?
     let decisions: [Decision]?
+    /// The cards that older messages show. Recent content leaves out old finished Work.
+    let artifacts: [Artifact]?
     let before: Int?
+}
+
+struct OlderWorkPage: Decodable, Sendable {
+    let artifacts: [Artifact]
+    let tasks: [AgentTask]
 }
 
 struct CardSnapshot: Decodable, Sendable {

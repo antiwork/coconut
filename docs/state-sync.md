@@ -29,6 +29,12 @@ History reads cannot replace newer records already present in the app. Search st
 Confirmed send IDs travel separately from messages, so pagination cannot leave accepted sends waiting.
 The conversation keeps its position after earlier messages load.
 
+Content leaves out Work that finished more than 7 days ago. Task details shows the same 7 days of finished Work by
+default. Its **Show older** button loads the rest for that bot. The loaded Work stays in the display cache until the next
+content reset. The Mac lists the bots that have such Work, so a bot without older Work shows no button.
+A message in the content keeps the card it shows, and an older history page brings the cards of its messages.
+A content reset from `/updates` has no routines, because the app keeps the routines of its native settings.
+
 Native settings load separately. The app retries failed settings reads while content remains usable.
 Confirmed settings writes update the app from their response. A failed refresh does not turn a saved change into a failed mutation.
 Native routine results retain their recorded task links.

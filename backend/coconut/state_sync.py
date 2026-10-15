@@ -1,11 +1,116 @@
 """Read current content separately from native settings and older history."""
 import time
+from datetime import datetime, timedelta, timezone
 
 # A person who opens the settings gets a live look at the model lists of the providers, at most this often.
 MODEL_REFRESH_SECONDS = 300
+# Task details lists finished Work of the last 7 days (TrackedWorkItem.finishedWindow in the app) and loads older
+# finished Work on request. The extra hour covers a phone clock that runs behind the Mac.
+FINISHED_WORK_WINDOW = timedelta(days=7, hours=1)
+
+
+def work_items(cards):
+    """Group the Work cards that Task details can show as one item: the copies of a Work item or of a pull request.
+
+    The keys follow Artifact.workIdentity in the app: the Work outcome, or the URL of a pull request.
+    """
+    parent = {}
+    def root(key):
+        while parent.setdefault(key, key) != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+    keys = {}
+    for card in cards:
+        outcome = card.get('work_outcome_id')
+        keys[card['id']] = (['work:' + (outcome or card['id'])] if card['kind'] == 'work' or outcome else []) + (
+            [card['url'].lower()] if card.get('url') else []) or [card['id']]
+        for key in keys[card['id']][1:]:
+            parent[root(key)] = root(keys[card['id']][0])
+    items = {}
+    for card in cards:
+        items.setdefault(root(keys[card['id']][0]), []).append(card)
+    return list(items.values())
+
+
+def finished_before(item, cutoff):
+    """Return True when every card of a Work item finished and none changed after the cutoff.
+
+    The time follows TrackedWorkItem.lastActivity in the app, which reads only the Work card of the item.
+    """
+    for card in item:
+        if card.get('work_state') not in ('completed', 'cancelled'):
+            return False
+        try:
+            last = datetime.fromisoformat((card.get('native_last_activity_at') or card.get('observed_at')
+                                           or card.get('checked_at') or card['created_at']).replace('Z', '+00:00'))
+        except (TypeError, ValueError):
+            return False
+        if (last if last.tzinfo else last.replace(tzinfo=timezone.utc)) >= cutoff:
+            return False
+    return True
 
 
 class StateSync:
+    @staticmethod
+    def _visible(row, visible, task_ids=None):
+        """Return True when the phone shows a row: its bots exist, it is not hidden, and its task is visible."""
+        return (row['bot_id'] in visible and row.get('conversation_bot_id', row['bot_id']) in visible
+                and not row.get('_deleted') and not row.get('_hidden')
+                and (task_ids is None or not row.get('task_id') or row['task_id'] in task_ids))
+
+    def _visible_task_ids(self, visible, among=None):
+        """Return the IDs of the tasks whose bots exist, from all tasks or from the IDs in `among`."""
+        import json
+        query = ("SELECT id FROM tasks WHERE json_extract(data,'$.bot_id') IN (SELECT value FROM json_each(?)) "
+                 "AND json_extract(data,'$.conversation_bot_id') IN (SELECT value FROM json_each(?))")
+        values = (json.dumps(sorted(visible)),) * 2
+        if among is not None:
+            query += ' AND id IN (SELECT value FROM json_each(?))'
+            values += (json.dumps(sorted(among)),)
+        return {row[0] for row in self.db.execute(query, values)}
+
+    def _older_work_items(self, artifacts):
+        """Return each Work item that finished before the window, with the bots whose Task details list it."""
+        import json
+        cutoff = datetime.now(timezone.utc) - FINISHED_WORK_WINDOW
+        older = [item for item in work_items([a for a in artifacts if a['kind'] in ('work', 'pr')]) if finished_before(item, cutoff)]
+        conversations = dict(self.db.execute("SELECT id,json_extract(data,'$.conversation_bot_id') FROM tasks "
+            "WHERE id IN (SELECT value FROM json_each(?))",
+            (json.dumps(sorted({c['task_id'] for item in older for c in item if c.get('task_id')})),)))
+        # Task details lists the native Work of a bot and of the tasks that started in its conversation.
+        return [(item, {bot for c in item if c.get('native_task_id') for bot in (c['bot_id'], conversations.get(c.get('task_id')))} - {None})
+                for item in older]
+
+    def _current_work(self, artifacts, messages):
+        """Leave out Work that finished more than a week ago, except the cards that the messages show.
+
+        Also return the bots whose Task details can load the Work that is left out.
+        """
+        shown = {m.get('artifact_id') for m in messages}
+        older = [(item, bots) for item, bots in self._older_work_items(artifacts) if not any(c['id'] in shown for c in item)]
+        left_out = {card['id'] for item, _ in older for card in item}
+        return [a for a in artifacts if a['id'] not in left_out], sorted(set().union(*(bots for _, bots in older)))
+
+    def older_work(self, bot_id):
+        """Return the Work of one bot's Task details that the recent state leaves out, with its tasks."""
+        import json
+        from .service import ServiceError
+        with self._read_view() as view, view._read_transaction():
+            if view._get('bots', bot_id).get('_deleted'):
+                raise ServiceError(404, 'This bot was removed.')
+            visible = {b['id'] for b in view._all('bots') if not b.get('_deleted')}
+            task_ids = view._visible_task_ids(visible)
+            # Reading the whole table caches each row for the outcome lookups of the projection.
+            cards = [a for a in view._all('artifacts') if a['kind'] in ('work', 'pr') and view._visible(a, visible, task_ids)]
+            shown = [card for item, bots in view._older_work_items([view._public(a) for a in view._work_projection(cards)])
+                     if bot_id in bots for card in item]
+            tasks = [view._public(json.loads(row[0])) for row in view.db.execute(
+                "SELECT data FROM tasks WHERE id IN (SELECT value FROM json_each(?)) AND NOT coalesce(json_extract(data,'$._hidden'),0) "
+                "AND NOT coalesce(json_extract(data,'$._deleted'),0) ORDER BY rowid",
+                (json.dumps(sorted({c['task_id'] for c in shown if c.get('task_id')})),))]
+            return dict(artifacts=shown, tasks=tasks, cursor=view._cursor())
+
     def _recent_messages(self, visible, limit=60):
         messages, before = {}, {}
         for bot_id in sorted(visible):
@@ -82,6 +187,12 @@ class StateSync:
             identities = {m.get('task_id') for m in page['messages'] + page['decisions']} - {None}
             page['tasks'] = [view._public(json.loads(row[0])) for row in view.db.execute(
                 'SELECT data FROM tasks WHERE id IN (SELECT value FROM json_each(?))', (json.dumps(sorted(identities)),))]
+            # Older messages can show cards that the recent state leaves out.
+            cards = [json.loads(row[0]) for row in view.db.execute(
+                'SELECT data FROM artifacts WHERE id IN (SELECT value FROM json_each(?)) ORDER BY rowid',
+                (json.dumps(sorted({m['artifact_id'] for m in page['messages'] if m.get('artifact_id')})),))]
+            task_ids = view._visible_task_ids(visible, {c['task_id'] for c in cards if c.get('task_id')}) if cards else set()
+            page['artifacts'] = [view._public(a) for a in view._work_projection([c for c in cards if view._visible(c, visible, task_ids)])]
             return page
 
     def search_conversations(self, query):
@@ -153,7 +264,7 @@ class StateSync:
         from .service import ServiceError
         raise ServiceError(503, 'Settings changed during this request. Try again.')
 
-    def updates(self, after, wait=0, *, collection_deltas=False, native_events=False, compact_history=False):
+    def updates(self, after, wait=0, *, collection_deltas=False, native_events=False, compact_history=False, recent_work=False):
         from .service import ServiceError
         if after < 0:
             raise ServiceError(400, 'The event cursor must be zero or greater.')
@@ -168,7 +279,10 @@ class StateSync:
                 result = view._replay_changes(after, collection_deltas=collection_deltas, native_events=native_events)
             if result is not None:
                 return result
-            state = view._snapshot(content_only=True, compact_history=compact_history)
+            state = view._snapshot(content_only=True, compact_history=compact_history, recent_work=recent_work)
+            if compact_history:
+                # Every app of update version 4 keeps the routines of its native settings over a reset (AppStore.apply).
+                del state['routines']
             return dict(after=after, cursor=state['cursor'], server_time=state['server_time'], reset=state)
 
     def _replay_changes(self, after, *, collection_deltas=False, native_events=False):

@@ -10,13 +10,22 @@ Errors use `{error: string}`. UUIDs do not encode host names or filesystem paths
 - `GET /health` outside `/v1` reports service health.
 - `GET /state` returns bots, tasks, messages, decisions, artifacts, routines, cursor, server time, model catalog, and approvals.
 - `GET /state` with `X-Coconut-State: content` omits native settings and returns recent messages with history cursors.
+- `GET /state` and `GET /updates` with `X-Coconut-Work: recent` leave out the Work items whose cards all finished more than
+  7 days ago, and the tasks that only those cards name. An item stays when a message in the response shows one of its
+  cards. The response lists in `older_work_bot_ids` the bots whose Task details can load such Work. Older servers ignore
+  the header and send all Work.
+- `GET /bots/{id}/work/older` returns `{artifacts, tasks, cursor}`: the Work that the recent state leaves out for the bot's
+  Task details, with its tasks. Task details lists a bot's native Work and the native Work of tasks that started in its
+  conversation.
 - `GET /state/settings` returns native bot settings, model catalog, approvals, worker settings, MCP servers, and routines.
   It also asks Hermes for the live model lists of the providers, at most once in five minutes. The response carries the lists that
   Hermes has cached. The live lists arrive a moment later, and the service sends `model_catalog.updated`. If the live look fails,
   the service still sends the event, and it tries again after 30 seconds, when the settings are read next.
 - `GET /updates?after=N&wait=20` returns changed tasks and messages, current decisions and Work, or a content reset.
+  With `X-Coconut-Updates: 4`, the reset has no routines. The app keeps the routines of its native settings.
 - `GET /cards/{id}` returns the current decision, task, conversation bot, owner, and cursor.
-- `GET /history/{bot_id}?before=N` returns an older message page, its referenced tasks, and the next history cursor.
+- `GET /history/{bot_id}?before=N` returns an older message page, its referenced tasks and cards, and the next history
+  cursor.
 - `GET /search?q=text` searches stored message text and returns matching bot IDs.
 - `GET /events?after=N&wait=20` returns ordered events, a cursor, and server time.
 - `GET /artifacts/{id}/content` returns authenticated artifact bytes.
