@@ -1,5 +1,68 @@
 # App performance
 
+## Measurements from October 14, 2026
+
+The September fixture was much smaller than the real data. It had 818 messages, one task, no work cards, and an older
+synchronization protocol, so it could not show the costs below. The October measurements use a consistent copy of the
+Mac mini database: 27,885 messages, 1,321 cards, 13,767 tasks, and 2,042 work cards. The largest conversation has
+14,991 messages with replies of about 900 characters. The recent state that the phone loads is 3.7 MB of JSON.
+
+The app ran on an iPhone 17 Pro simulator with iOS 27.0, in a Debug build with `-O` optimization. The real backend served
+the copy with a stub Hermes Kanban and an `artifact.observed` event every 3 seconds. Each value is the median of five
+samples after XCTest's warmup iteration. Both builds ran in the same session against the original server code.
+
+| Measurement | App CPU, original | App CPU, new | CPU | Instructions |
+| --- | ---: | ---: | ---: | ---: |
+| Reading a conversation for 20 s while updates arrive | 0.473 s | 0.300 s | −37% | −62% |
+| Loading one older page | 0.287 s | 0.188 s | −34% | −43% |
+| Opening and closing the long conversation | 0.569 s | 0.517 s | −9% | −22% |
+| Four scroll gestures in the long conversation | 1.421 s | 1.437 s | no change | −25% |
+| Opening a conversation and switching tabs | 1.218 s | 1.088 s | −11% | −11% |
+| Typing one sentence | 0.312 s | 0.307 s | no change | no change |
+
+Launch to the first responsive frame took 2.62 s with both builds. Simulator start-up dominates it.
+CPU time of the scroll test varied between runs: the original app measured 1.68 s in an earlier session.
+The count of retired instructions varies less, so it is the better signal for scrolling.
+
+`scripts/test_app_performance.py` reproduces this data shape with synthetic records. On the same simulator it measured:
+
+| Measurement | CPU | Instructions |
+| --- | ---: | ---: |
+| Reading a conversation for 20 s while updates arrive | −41% | −63% |
+| Opening and closing the long conversation | −8% | −10% |
+| Loading one older page | −7% | −13% |
+| Four scroll gestures in the long conversation | −2% | −13% |
+| Opening a conversation and switching tabs | −4% | −8% |
+| Typing one sentence | no change | no change |
+
+The app changes:
+
+- An update assigns a store property only when its value changes. Observation notifies the readers of a property on
+  every assignment, so each update used to redraw the open conversation.
+- The saved state is written at most every 10 seconds while updates arrive, and at once when the app leaves the
+  foreground. Encoding the 3 MB state was the largest cost of each update.
+- The conversation keeps its transcript until the store changes. Scrolling changes view state several times per swipe,
+  and each change rebuilt the transcript.
+- The transcript filter reads each message once. It used to copy and lowercase the full text of every reply, and to
+  scan all messages for each completion label.
+- A conversation reads only the saved task answers, not every work card. Work cards change on most updates.
+
+The server changes, measured on the same copy with a laptop. The Mac mini is about 2 to 3 times slower.
+
+| Measurement | Original server | New server | Change |
+| --- | ---: | ---: | ---: |
+| JSON for the last 2,000 events, one update for each event | 1,174 MB | 328 MB | −72% |
+| Updates that resend all 1,581 work cards | 565 of 2,000 | 95 of 2,000 | −83% |
+| Build of the recent state | 656 ms | 420 ms | −36% |
+| Card read when a person opens a notification | 270 ms | 23 ms | −91% |
+
+- An update in a new 15-second interval resent every work card. It now adds only retained legacy work, whose activity
+  depends on time. Native work cards change only through events.
+- A card finds its original request in the messages of its task. It used to read the whole history of the bot.
+- An index on `decision_id` finds the messages of a card.
+
+Not kept: a separate observation time for native work cards gave no measurable gain on its own, so it was removed.
+
 ## Measurements from September 13, 2026
 
 The first measurements use commit `1edcac0c0be3136db9f2f4f1227ca66937bb6ec5` plus the new performance tests.
@@ -37,7 +100,7 @@ Simulator measurements do not establish performance on an iPhone.
 
 ```sh
 python3 scripts/test_app_performance.py \
-  --xctestrun .build/speed/Build/Products/Coconut_iphonesimulator26.5-arm64.xctestrun \
+  --xctestrun .build/speed/Build/Products/Coconut_iphonesimulator27.0-arm64.xctestrun \
   --simulator <simulator-uuid> \
   --result /tmp/coconut-performance.xcresult
 ```
@@ -45,15 +108,20 @@ python3 scripts/test_app_performance.py \
 3. Compare repeated runs on the same simulator and build configuration.
 4. Keep other builds and benchmarks idle during measurement.
 
-The fixture uses a local HTTP server. The test cannot send a real message or invoke a bot.
-XCTest skips the suite when the fixture URL is absent.
+The fixture generates synthetic records with the counts and text lengths of the October data. It contains no private
+messages. It serves the recent state, older history pages, and an update every 3 seconds. The test cannot send a real
+message or invoke a bot. XCTest skips the suite when the fixture URL is absent.
+
+To measure a copy of real data, run the backend on a consistent dump of the database and set
+`COCONUT_PERFORMANCE_TEST_URL` and `COCONUT_PERFORMANCE_CONVERSATION` (the accessibility identifier of the conversation
+row) in the `.xctestrun` file. Every pairing code must return one device for the suite to pair before each test.
 
 ## Further investigation
 
-Use Instruments on an iPhone to locate CPU work and missed frames during a slow interaction.
-Check conversation opening, typing, and scrolling while messages stream from a connected Mac.
-Compare short conversations with long conversations and long exchanges between bots.
-Measure the same interaction before and after each proposed change.
-Only keep changes that improve the measured result and preserve conversation behavior.
+- Decision and work-card events still resend every work card. They are about 5% of updates and most of the remaining bytes.
+- Each structural update decodes the whole task table on the server, about 0.4 s on the laptop.
+- A reset after more than 1,000 events sends the full 3.7 MB state. Most of it is old finished work for Task details.
+- Opening and scrolling a conversation spends most of its time in SwiftUI layout of Markdown rows.
+- Use Instruments on an iPhone to confirm these results on a device.
 
 Apple documents the launch measurement in [XCTApplicationLaunchMetric](https://developer.apple.com/documentation/xctest/xctapplicationlaunchmetric).
