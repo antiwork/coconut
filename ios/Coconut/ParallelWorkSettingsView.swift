@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct ParallelWorkSettings: Codable, Sendable {
+struct ParallelWorkSettings: Codable, Equatable, Sendable {
     var limit: Int?
     let effectiveLimit: Int
     let automaticLimit: Int

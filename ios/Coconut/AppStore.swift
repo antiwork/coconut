@@ -19,7 +19,11 @@ final class AppStore {
     var decisions: [Decision] = []
     var answeringDecisionIds: Set<String> = []
     var decisionReplyDrafts: [String: String] = [:]
-    var artifacts: [Artifact] = []
+    var artifacts: [Artifact] = [] {
+        didSet { assign(\.transcriptArtifacts, artifacts.filter { $0.kind == "task" }) }
+    }
+    /// Only saved task answers change a transcript. Work cards change on most updates, so conversations do not read them.
+    private(set) var transcriptArtifacts: [Artifact] = []
     var checkoutConfirmation: CheckoutRecoveryConfirmation?
     var workVisibility: [String: Bool] = [:]
     var workUndo: [WorkDismissal] = []
@@ -64,6 +68,8 @@ final class AppStore {
     @ObservationIgnored private var networkAvailable: Bool?
     @ObservationIgnored private var cachedState: StateSnapshot?
     @ObservationIgnored private var cacheTask: Task<Void, Never>?
+    @ObservationIgnored private var pendingCache: SnapshotCache?
+    @ObservationIgnored private var cacheWrittenAt = Date.distantPast
     @ObservationIgnored private let cacheQueue = DispatchQueue(label: "coconut.display-cache", qos: .utility)
     @ObservationIgnored private var nativeSettingsTask: Task<Void, Never>?
     @ObservationIgnored private var nativeSettingsReadAt: Date?
@@ -290,6 +296,8 @@ final class AppStore {
         PushNotifications.shared.target = nil
         stopPolling()
         cacheTask?.cancel()
+        cacheTask = nil
+        pendingCache = nil
         cachedState = nil
         syncIssue = nil
         client = nil
@@ -612,15 +620,16 @@ final class AppStore {
         }
         let represented = Set(messages.filter { $0.kind == "decision" }.compactMap(\.decisionId))
         let missing = decisions.filter {
-            conversationBotId(for: $0) == botId && ($0.isPending || $0.isRefreshing || $0.id == focusDecisionId)
-                && !represented.contains($0.id)
+            // Check the cheap state first. Finding the conversation scans every task.
+            ($0.isPending || $0.isRefreshing || $0.id == focusDecisionId) && !represented.contains($0.id)
+                && conversationBotId(for: $0) == botId
         }.map { decision in
             Message(id: decision.id, botId: botId, taskId: decision.taskId, role: "assistant", kind: "decision",
                     text: "", decisionId: decision.id, artifactId: nil, createdAt: decision.createdAt, streaming: false)
         }
         // Cards can outlive the loaded history page. Keep their original place in the transcript.
         let timeline = (messages + missing).sorted { $0.createdAt < $1.createdAt }
-        return TranscriptPresentation.visibleMessages(timeline, artifacts: artifacts, decisions: decisions)
+        return TranscriptPresentation.visibleMessages(timeline, artifacts: transcriptArtifacts, decisions: decisions)
             .filter { $0.kind != "activity" }
     }
 
@@ -1535,8 +1544,7 @@ final class AppStore {
                         if epoch == self.snapshotEpoch, let state = self.cachedState, let next = page.applying(to: state) {
                             if page.reset != nil || page.removedMessages?.isEmpty == false { self.snapshotEpoch = UUID() }
                             self.apply(next, persist: page.reset != nil || page.cursor > page.after)
-                            self.connection = .connected
-                            self.syncIssue = nil
+                            self.markConnected()
                             failures = 0
                             self.refreshNativeSettings(using: client, force: page.settingsChanged == true || page.reset != nil)
                             Task { await self.syncPushRegistration() }
@@ -1556,8 +1564,7 @@ final class AppStore {
                         } else { try await self.refresh(using: client) }
                     }
                     self.lastSync = Date()
-                    self.connection = .connected
-                    self.syncIssue = nil
+                    self.markConnected()
                     self.scheduleDelivery()
                     Task { await self.syncPushRegistration() }
                     failures = 0
@@ -1589,8 +1596,7 @@ final class AppStore {
                 if let cachedState, let next = page.applying(to: cachedState) {
                     if page.reset != nil || page.removedMessages?.isEmpty == false { snapshotEpoch = UUID() }
                     apply(next, persist: true)
-                    connection = .connected
-                    syncIssue = nil
+                    markConnected()
                     refreshNativeSettings(using: client, force: page.settingsChanged == true || page.reset != nil)
                     Task { await self.syncPushRegistration() }
                     return
@@ -1620,8 +1626,7 @@ final class AppStore {
         guard self.client === client, connectionGeneration == generation else { throw CancellationError() }
         guard request.epoch == snapshotEpoch else { return }
         if snapshot.cursor >= cursor { apply(snapshot, persist: true) }
-        connection = .connected
-        syncIssue = nil
+        markConnected()
         Task { await syncPushRegistration() }
         refreshNativeSettings(using: client)
     }
@@ -1656,42 +1661,67 @@ final class AppStore {
             outgoingMessages.removeAll { confirmed.contains($0.id) }
             try? saveOutgoing()
         }
-        if bots != snapshot.bots { bots = snapshot.bots }
-        if tasks != snapshot.tasks { tasks = snapshot.tasks }
-        if messages != snapshot.messages { messages = snapshot.messages }
-        if decisions != snapshot.decisions { decisions = snapshot.decisions }
-        if artifacts != snapshot.artifacts { artifacts = snapshot.artifacts }
-        approvals = snapshot.approvals
-        workCapacity = snapshot.workCapacity
-        parallelWork = snapshot.parallelWork
-        apiFallback = snapshot.apiFallback
-        if isDemo && apiFallback == nil { apiFallback = APIFallbackSettings(enabled: false, available: true, model: "gpt-6-astra", canEnable: true) }
-        if isDemo && workCapacity == nil { workCapacity = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4) }
-        if isDemo && parallelWork == nil { parallelWork = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4) }
-        mcpServers = snapshot.mcpServers ?? []
-        if routines != snapshot.routines ?? [] { routines = snapshot.routines ?? [] }
+        assign(\.bots, snapshot.bots)
+        assign(\.tasks, snapshot.tasks)
+        assign(\.messages, snapshot.messages)
+        assign(\.decisions, snapshot.decisions)
+        assign(\.artifacts, snapshot.artifacts)
+        assign(\.approvals, snapshot.approvals)
+        let previewLimit = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4)
+        assign(\.workCapacity, snapshot.workCapacity ?? (isDemo ? previewLimit : nil))
+        assign(\.parallelWork, snapshot.parallelWork ?? (isDemo ? previewLimit : nil))
+        assign(\.apiFallback, snapshot.apiFallback ?? (isDemo ? APIFallbackSettings(enabled: false, available: true, model: "gpt-6-astra", canEnable: true) : nil))
+        assign(\.mcpServers, snapshot.mcpServers ?? [])
+        assign(\.routines, snapshot.routines ?? [])
         if foreground { scheduleDelivery() }
         cursor = snapshot.cursor
-        provider = snapshot.provider
-        model = snapshot.model
-        modelBaseURL = snapshot.baseUrl ?? ""
-        modelConfigured = snapshot.modelConfigured
-        modelCatalog = snapshot.modelCatalog
-        pushConfigured = snapshot.pushConfigured ?? false
+        assign(\.provider, snapshot.provider)
+        assign(\.model, snapshot.model)
+        assign(\.modelBaseURL, snapshot.baseUrl ?? "")
+        assign(\.modelConfigured, snapshot.modelConfigured)
+        assign(\.modelCatalog, snapshot.modelCatalog)
+        assign(\.pushConfigured, snapshot.pushConfigured ?? false)
         lastSync = Date()
         cachedState = snapshot
         if persist { saveCache(snapshot) }
     }
 
+    /// Observation notifies the readers of a property on every assignment, also of an equal value.
+    /// Assign only a changed value, so a routine update does not redraw every screen.
+    private func assign<Value: Equatable>(_ property: ReferenceWritableKeyPath<AppStore, Value>, _ value: Value) {
+        if self[keyPath: property] != value { self[keyPath: property] = value }
+    }
+
+    private func markConnected() {
+        assign(\.connection, .connected)
+        assign(\.syncIssue, nil)
+    }
+
+    /// Encoding the saved state costs about as much as decoding an update. While updates stream, write it at most
+    /// every 10 seconds. Leaving the foreground writes it at once, so a relaunch replays at most a few updates.
     private func saveCache(_ snapshot: StateSnapshot, immediately: Bool = false) {
-        cacheTask?.cancel()
-        let cache = SnapshotCache(snapshot: snapshot, syncedAt: lastSync ?? Date())
-        let queue = cacheQueue
-        cacheTask = Task {
-            if !immediately { try? await Task.sleep(for: .milliseconds(300)) }
-            guard !Task.isCancelled else { return }
-            queue.async { try? ProtectedCache.write(cache, name: "snapshot.json") }
+        pendingCache = SnapshotCache(snapshot: snapshot, syncedAt: lastSync ?? Date())
+        if immediately {
+            cacheTask?.cancel()
+            cacheTask = nil
+            writeCache()
+            return
         }
+        guard cacheTask == nil else { return }
+        let delay = max(0.3, 10 - Date().timeIntervalSince(cacheWrittenAt))
+        cacheTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            self.cacheTask = nil
+            self.writeCache()
+        }
+    }
+
+    private func writeCache() {
+        guard let cache = pendingCache else { return }
+        pendingCache = nil
+        cacheWrittenAt = Date()
+        cacheQueue.async { try? ProtectedCache.write(cache, name: "snapshot.json") }
     }
 
     private func recordSyncFailure(_ failure: Error) {
@@ -1794,28 +1824,30 @@ final class AppStore {
                 guard !Task.isCancelled, self.client === client, generation == self.connectionGeneration else { return }
                 guard native.cursor >= self.nativeSettingsRequiredCursor else { self.nativeSettingsPending = true; return }
                 let values = Dictionary(uniqueKeysWithValues: native.bots.map { ($0.id, $0) })
-                for index in self.bots.indices {
-                    guard let bot = values[self.bots[index].id] else { continue }
-                    self.bots[index].name = bot.name
-                    self.bots[index].role = bot.role
-                    self.bots[index].instructions = bot.instructions
-                    self.bots[index].modelOverride = bot.modelOverride
-                    self.bots[index].effectiveModel = bot.effectiveModel
-                    self.bots[index].approvalOverride = bot.approvalOverride
-                    self.bots[index].effectiveApproval = bot.effectiveApproval
-                    self.bots[index].workerLimit = bot.workerLimit
-                    self.bots[index].modelError = bot.modelError
+                var bots = self.bots
+                for index in bots.indices {
+                    guard let bot = values[bots[index].id] else { continue }
+                    bots[index].name = bot.name
+                    bots[index].role = bot.role
+                    bots[index].instructions = bot.instructions
+                    bots[index].modelOverride = bot.modelOverride
+                    bots[index].effectiveModel = bot.effectiveModel
+                    bots[index].approvalOverride = bot.approvalOverride
+                    bots[index].effectiveApproval = bot.effectiveApproval
+                    bots[index].workerLimit = bot.workerLimit
+                    bots[index].modelError = bot.modelError
                 }
-                self.modelCatalog = native.modelCatalog
-                self.model = native.modelCatalog?.defaults.model ?? ""
-                self.modelBaseURL = native.modelCatalog?.defaults.baseUrl ?? ""
-                self.modelConfigured = native.modelConfigured
-                self.approvals = native.approvals
-                self.parallelWork = native.parallelWork
-                self.apiFallback = native.apiFallback
-                self.mcpServers = native.mcpServers ?? []
-                self.routines = native.routines ?? []
-                if let configured = native.pushConfigured { self.pushConfigured = configured }
+                self.assign(\.bots, bots)
+                self.assign(\.modelCatalog, native.modelCatalog)
+                self.assign(\.model, native.modelCatalog?.defaults.model ?? "")
+                self.assign(\.modelBaseURL, native.modelCatalog?.defaults.baseUrl ?? "")
+                self.assign(\.modelConfigured, native.modelConfigured)
+                self.assign(\.approvals, native.approvals)
+                self.assign(\.parallelWork, native.parallelWork)
+                self.assign(\.apiFallback, native.apiFallback)
+                self.assign(\.mcpServers, native.mcpServers ?? [])
+                self.assign(\.routines, native.routines ?? [])
+                if let configured = native.pushConfigured { self.assign(\.pushConfigured, configured) }
                 self.nativeSettingsReadAt = Date()
                 if var state = self.cachedState {
                     state.bots = self.bots
@@ -1964,9 +1996,9 @@ private struct InstructionsRequest: Encodable { let instructions: String }
 private struct PreferenceRequest: Encodable { let text: String }
 private struct RoutineRequest: Encodable { let name: String; let prompt: String; let cron: String; let timezone: String; let enabled: Bool }
 private struct ArchiveRequest: Encodable { let archived: Bool }
-struct MessageRequest: Codable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String]; var replyToMessageId: String? = nil; var mentionedBotIds: [String]? = nil; var workArtifactId: String? = nil; var workStatusOnly: Bool? = nil }
+struct MessageRequest: Codable, Equatable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String]; var replyToMessageId: String? = nil; var mentionedBotIds: [String]? = nil; var workArtifactId: String? = nil; var workStatusOnly: Bool? = nil }
 private struct ReactionRequest: Encodable { let emoji: String; let active: Bool }
-struct OutgoingMessage: Codable, Identifiable {
+struct OutgoingMessage: Codable, Identifiable, Equatable {
     enum Status: String, Codable { case sending, accepted, failed, rejected }
     let id: String
     let botId: String
@@ -1991,7 +2023,7 @@ struct OutgoingMessage: Codable, Identifiable {
     }
 }
 private struct OutgoingCache: Codable { let deviceId: String; let messages: [OutgoingMessage]; var answers: [OutgoingAnswer]? = nil }
-struct OutgoingAnswer: Codable, Identifiable {
+struct OutgoingAnswer: Codable, Identifiable, Equatable {
     let id: String
     let decisionId: String
     let botId: String
@@ -2006,7 +2038,7 @@ struct OutgoingAnswer: Codable, Identifiable {
                 streaming: false, clientRequestId: id, replyTo: replyTo)
     }
 }
-struct AnswerRequest: Codable { let choice: String; let revision: Int; let correction: String?; let optionId: String?; let draftHash: String?; let previewsHash: String? }
+struct AnswerRequest: Codable, Equatable { let choice: String; let revision: Int; let correction: String?; let optionId: String?; let draftHash: String?; let previewsHash: String? }
 private struct DraftEditRequest: Encodable { let revision: Int; let draft: MessageDraft }
 private struct InboxRequest: Encodable { let action: String; let revision: Int; let swipeId: String? }
 private struct ReplyRequest: Encodable { let text: String; let attachmentIds: [String]; let decisionId: String?; let mentionedBotIds: [String] }

@@ -7,7 +7,7 @@ struct ConversationView: View {
     var focusDecisionId: String? = nil
     var focusMessageId: String? = nil
     private var focusTarget: String? { focusDecisionId ?? focusMessageId.map { store.displayedMessageId(for: $0) } }
-    private var focusTargetExists: Bool {
+    private func focusTargetExists(in messages: [Message]) -> Bool {
         if let focusDecisionId { return store.decisions.contains { $0.id == focusDecisionId } }
         if focusMessageId != nil, let focusTarget { return messages.contains { $0.id == focusTarget } }
         return false
@@ -27,6 +27,7 @@ struct ConversationView: View {
     @State private var userScrolling = false
     @State private var footerScroll = ConversationFooterScroll()
     @State private var isVisible = false
+    @State private var transcript = TranscriptCache()
     @FocusState private var composerFocused: Bool
 
     init(botId: String, focusDecisionId: String? = nil, focusMessageId: String? = nil, attachedWork: WorkReference? = nil) {
@@ -37,8 +38,8 @@ struct ConversationView: View {
     }
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
-    private var messages: [Message] {
-        store.conversationTranscript(for: botId, focusDecisionId: focusDecisionId)
+    private var current: (messages: [Message], entries: [TranscriptEntry]) {
+        transcript.current(in: store, botId: botId, focusDecisionId: focusDecisionId)
     }
     private var showsActivity: Bool { store.isConversationResponding(botId) }
     private var activeTask: AgentTask? {
@@ -59,21 +60,21 @@ struct ConversationView: View {
     }
 
     var body: some View {
-        let messages = messages
+        let (messages, entries) = current
         Group {
             if let bot {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 10) {
-                            conversationHeader(bot: bot)
+                            conversationHeader(bot: bot, messages: messages)
                             if store.hasOlderMessages(botId) {
                                 Button {
-                                    let anchor = TranscriptEntry.grouped(messages, botId: botId).first?.message.id
+                                    let anchor = entries.first?.message.id
                                     nearBottom = false
                                     Task {
                                         await store.loadOlderMessages(botId)
                                         await Task.yield()
-                                        if let anchor, let entry = TranscriptEntry.grouped(self.messages, botId: botId).first(where: { $0.messages.contains { $0.id == anchor } }) {
+                                        if let anchor, let entry = current.entries.first(where: { $0.messages.contains { $0.id == anchor } }) {
                                             let target = entry.message.kind == "decision" ? (entry.message.decisionId ?? entry.id) : entry.id
                                             proxy.scrollTo(target, anchor: .top)
                                         }
@@ -97,7 +98,7 @@ struct ConversationView: View {
                                     }.buttonStyle(.plain)
                                 }
                             }
-                            ForEach(TranscriptEntry.grouped(messages, botId: botId)) { entry in
+                            ForEach(entries) { entry in
                                 let message = entry.message
                                 Group {
                                 if entry.isExchange {
@@ -172,12 +173,12 @@ struct ConversationView: View {
                     .task { await store.markRead(bot) }
                     .task(id: "\(focusMessageId ?? ""):\(store.connection.rawValue):\(store.hasOlderMessages(botId))") {
                         guard store.connection == .connected || store.isDemo else { return }
-                        while focusMessageId != nil && !focusTargetExists && store.hasOlderMessages(botId) && !Task.isCancelled {
+                        while focusMessageId != nil && !focusTargetExists(in: current.messages) && store.hasOlderMessages(botId) && !Task.isCancelled {
                             if !(await store.loadOlderMessages(botId)) { break }
                         }
                     }
-                    .task(id: focusTargetExists) {
-                        guard let focusTarget, !didFocusDecision, focusTargetExists else { return }
+                    .task(id: focusTargetExists(in: messages)) {
+                        guard let focusTarget, !didFocusDecision, focusTargetExists(in: current.messages) else { return }
                         nearBottom = false
                         await Task.yield()
                         guard !Task.isCancelled else { return }
@@ -253,7 +254,7 @@ struct ConversationView: View {
     }
 
     @ViewBuilder
-    private func conversationHeader(bot: Bot) -> some View {
+    private func conversationHeader(bot: Bot, messages: [Message]) -> some View {
         VStack(spacing: 6) {
             if let error = store.error {
                 ErrorBanner(message: error) { store.error = nil }
@@ -286,6 +287,38 @@ struct ConversationView: View {
             replyTo = store.messageReference(for: message)
             composerFocused = true
         })
+    }
+}
+
+/// Scrolling changes the conversation's own state several times per swipe, and each change redraws it.
+/// The transcript changes only with the store, so a redraw reuses it. Comparing the inputs still reads them,
+/// so the redraw keeps observing the store.
+@MainActor
+private final class TranscriptCache {
+    private struct Inputs: Equatable {
+        let botId: String
+        let focusDecisionId: String?
+        let messages: [Message]
+        let outgoingMessages: [OutgoingMessage]
+        let outgoingAnswers: [OutgoingAnswer]
+        let decisions: [Decision]
+        let artifacts: [Artifact]
+        let tasks: [AgentTask]
+    }
+
+    private var inputs: Inputs?
+    private var value: (messages: [Message], entries: [TranscriptEntry]) = ([], [])
+
+    func current(in store: AppStore, botId: String, focusDecisionId: String?) -> (messages: [Message], entries: [TranscriptEntry]) {
+        let latest = Inputs(botId: botId, focusDecisionId: focusDecisionId, messages: store.messages,
+                            outgoingMessages: store.outgoingMessages, outgoingAnswers: store.outgoingAnswers,
+                            decisions: store.decisions, artifacts: store.transcriptArtifacts, tasks: store.tasks)
+        if latest != inputs {
+            inputs = latest
+            let messages = store.conversationTranscript(for: botId, focusDecisionId: focusDecisionId)
+            value = (messages, TranscriptEntry.grouped(messages, botId: botId))
+        }
+        return value
     }
 }
 
