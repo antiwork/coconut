@@ -51,13 +51,14 @@ The server changes, measured on the same copy with a laptop. The Mac mini is abo
 
 | Measurement | Original server | New server | Change |
 | --- | ---: | ---: | ---: |
-| JSON for the last 2,000 events, one update for each event | 1,174 MB | 328 MB | −72% |
-| Updates that resend all 1,581 work cards | 565 of 2,000 | 95 of 2,000 | −83% |
+| JSON for the last 2,000 events, one update for each event | 1,226 MB | 352 MB | −71% |
+| Updates that resend all 1,581 work cards | 593 of 2,000 | 107 of 2,000 | −82% |
 | Build of the recent state | 656 ms | 420 ms | −36% |
 | Card read when a person opens a notification | 270 ms | 23 ms | −91% |
 
 - An update in a new 15-second interval resent every work card. It now adds only retained legacy work, whose activity
-  depends on time. Native work cards change only through events.
+  depends on time. Native work cards change only through events. A task event also sends the work of that task,
+  because a card shows the status of its tasks.
 - A card finds its original request in the messages of its task. It used to read the whole history of the bot.
 - An index on `decision_id` finds the messages of a card.
 
