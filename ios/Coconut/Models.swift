@@ -505,6 +505,8 @@ struct StateSnapshot: Codable, Sendable {
     var contentOnly: Bool? = nil
     var historyBefore: [String: Int]? = nil
     var confirmedRequestIds: [String]? = nil
+    /// Bots whose Task details can load finished Work that the Mac left out. The phone removes a bot when it loads it.
+    var olderWorkBotIds: [String]? = nil
     var bots: [Bot]
     var tasks: [AgentTask]
     var messages: [Message]

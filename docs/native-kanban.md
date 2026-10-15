@@ -386,7 +386,8 @@ confirmation. `POST /v1/bots/{bot_id}/work/archive-idle` takes `native_task_ids`
 Hermes' `archive_task` only for that bot's tasks that are still in a waiting state. Hermes keeps each task
 under the bot of its Work item, so the phone sends each task to that bot's route. A task that started
 again stays. Finished Work from the last 7 days shows by default; older Work stays behind
-**Show older**. A stopped checkout that offers recovery stays at the top for 7 days, then moves to
+**Show older**. The phone's recent state leaves that older Work out, and **Show older** loads it
+from `GET /v1/bots/{bot_id}/work/older`. A stopped checkout that offers recovery stays at the top for 7 days, then moves to
 finished Work with its recovery button.
 
 ## Archived Work with divergent checkout histories

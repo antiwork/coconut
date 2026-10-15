@@ -131,6 +131,12 @@ class Handler(BaseHTTPRequestHandler):
             raise ServiceError(400, 'Send a JSON object.')
         return value
 
+    @property
+    def recent_work(self):
+        """A phone that loads older finished Work on request asks the recent state to leave out Work that finished
+        more than 7 days ago."""
+        return self.headers.get('X-Coconut-Work') == 'recent'
+
     def _handle(self, method):
         self.connection.settimeout(35)
         try:
@@ -165,11 +171,13 @@ class Handler(BaseHTTPRequestHandler):
                         url.path.removeprefix('/v1/tasks/').removesuffix('/checkout-recovery'), device))
                 elif url.path == '/v1/state':
                     self._json(200, service.snapshot(timings=self.timings, content_only=self.headers.get('X-Coconut-State') in ('content', 'recent'),
-                        compact_history=self.headers.get('X-Coconut-State') == 'recent'))
+                        compact_history=self.headers.get('X-Coconut-State') == 'recent', recent_work=self.recent_work))
                 elif url.path == '/v1/search':
                     self._json(200, service.search_conversations(parse_qs(url.query).get('q', [''])[0]))
                 elif url.path == '/v1/state/settings':
                     self._json(200, service.native_snapshot())
+                elif url.path.startswith('/v1/bots/') and url.path.endswith('/work/older'):
+                    self._json(200, service.older_work(url.path.removeprefix('/v1/bots/').removesuffix('/work/older')))
                 elif url.path.startswith('/v1/cards/'):
                     self._json(200, service.card(url.path.removeprefix('/v1/cards/')))
                 elif url.path.startswith('/v1/history/'):
@@ -188,7 +196,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ServiceError(400, 'after and wait must contain numbers.')
                     self._json(200, service.updates(after, wait, collection_deltas=self.headers.get('X-Coconut-Updates') in ('2', '3', '4'),
                         native_events=self.headers.get('X-Coconut-Updates') in ('3', '4'),
-                        compact_history=self.headers.get('X-Coconut-Updates') == '4'))
+                        compact_history=self.headers.get('X-Coconut-Updates') == '4', recent_work=self.recent_work))
                 elif url.path == '/v1/settings/google':
                     self._json(200, service.google_connection('status', {}, device))
                 elif url.path == '/v1/push/config':

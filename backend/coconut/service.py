@@ -879,11 +879,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             self._work_graphs = previous_graphs
             self.db.execute('ROLLBACK')
 
-    def snapshot(self, *, timings=None, content_only=False, compact_history=False) -> dict:
+    def snapshot(self, *, timings=None, content_only=False, compact_history=False, recent_work=False) -> dict:
         with self._read_view() as view:
-            return view._snapshot(timings=timings, content_only=content_only, compact_history=compact_history)
+            return view._snapshot(timings=timings, content_only=content_only, compact_history=compact_history, recent_work=recent_work)
 
-    def _snapshot(self, *, timings=None, content_only=False, compact_history=False) -> dict:
+    def _snapshot(self, *, timings=None, content_only=False, compact_history=False, recent_work=False) -> dict:
         started = time.perf_counter()
         def measured(name):
             nonlocal started
@@ -920,10 +920,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 data_started = time.perf_counter()
                 bots = [self._bot_view(dict(b, **{key: value for key, value in observed.get(b['id'], {}).items() if key in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'worker_limit', 'model_override', '_native_effective_model', '_model_error')}), catalog) for b in self._all('bots') if not b.get('_deleted')]
                 visible = {b['id'] for b in bots}
-                visible_task_ids = {row[0] for row in self.db.execute(
-                    "SELECT id FROM tasks WHERE json_extract(data,'$.bot_id') IN (SELECT value FROM json_each(?)) "
-                    "AND json_extract(data,'$.conversation_bot_id') IN (SELECT value FROM json_each(?))",
-                    (json.dumps(sorted(visible)), json.dumps(sorted(visible))))}
+                visible_task_ids = self._visible_task_ids(visible)
                 state = {'bots': bots, 'work_capacity': capacity_state(self._setting('work_capacity'))}
                 for table in self.TABLES[1:]:
                     if content_only and table == 'tasks':
@@ -933,7 +930,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         state['history_before'] = history
                         continue
                     source = self._page_decisions(state['messages'], pending=True) if content_only and compact_history and table == 'decisions' else self._all(table)
-                    state[table] = [self._public(o) for o in source if o['bot_id'] in visible and o.get('conversation_bot_id', o['bot_id']) in visible and not o.get('_deleted') and not o.get('_hidden') and (table not in ('decisions', 'artifacts') or not o.get('task_id') or o['task_id'] in visible_task_ids)]
+                    state[table] = [self._public(o) for o in source if self._visible(o, visible, visible_task_ids if table in ('decisions', 'artifacts') else None)]
+                work_started = time.perf_counter()
+                state['artifacts'] = [self._public(a) for a in self._work_projection([self._get('artifacts', a['id']) for a in state['artifacts']])]
+                if content_only and recent_work:
+                    state['artifacts'], state['older_work_bot_ids'] = self._current_work(state['artifacts'], state['messages'])
+                work_finished = time.perf_counter()
                 if content_only:
                     referenced = {o.get('task_id') for name in ('messages', 'decisions', 'artifacts') for o in state[name]}
                     state['tasks'] = [self._public(task) for task in (json.loads(row[0]) for row in self.db.execute(
@@ -946,8 +948,6 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     state['routines'] = [dict(self._public(r), last_task_id=previous.get(r['id']))
                                          for r in routines if r['bot_id'] in visible and not r.get('_deleted')]
                 rows_finished = time.perf_counter()
-                state['artifacts'] = [self._public(a) for a in self._work_projection([self._get('artifacts', a['id']) for a in state['artifacts']])]
-                work_finished = time.perf_counter()
                 replying = {c['decision_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working') and not c.get('_decision_refresh')}
                 for decision in state['decisions']:
                     decision['reply_pending'] = decision['id'] in replying
@@ -972,9 +972,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     state['api_fallback'] = native.get('api_fallback')
                     state['mcp_servers'] = native.get('mcp_servers', [])
                 if timings is not None:
-                    timings.update(data_rows=(rows_finished - data_started) * 1000,
-                        data_work=(work_finished - rows_finished) * 1000,
-                        data_decisions=(time.perf_counter() - work_finished) * 1000)
+                    timings.update(data_rows=(rows_finished - data_started - (work_finished - work_started)) * 1000,
+                        data_work=(work_finished - work_started) * 1000,
+                        data_decisions=(time.perf_counter() - rows_finished) * 1000)
             break
         else:
             raise ServiceError(503, 'Settings changed during this request. Try again.')

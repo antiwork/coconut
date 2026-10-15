@@ -374,7 +374,8 @@ struct NativeTaskDetailsView: View {
     }
 
     @ViewBuilder private func taskSections(_ groups: TrackedWorkItem.Groups) -> some View {
-        if items.isEmpty {
+        let olderOnMac = store.olderWorkBotIds.contains(botId)
+        if items.isEmpty && !olderOnMac {
             Text("No tasks").foregroundStyle(.secondary)
         }
         ForEach(groups.active) { item in row(item) }
@@ -390,12 +391,21 @@ struct NativeTaskDetailsView: View {
                 Text("These tasks wait in Hermes for someone to act. Archiving closes them in Hermes.")
             }
         }
-        if !groups.recent.isEmpty || !groups.older.isEmpty {
+        if !groups.recent.isEmpty || !groups.older.isEmpty || olderOnMac {
             Section("Finished") {
                 ForEach(groups.recent) { item in row(item) }
                 if showingOlder {
                     ForEach(groups.older) { item in row(item) }
-                } else if !groups.older.isEmpty {
+                }
+                if olderOnMac {
+                    // The Mac sends finished Work of the last week. Older finished Work loads on request.
+                    Button(store.olderWorkLoading.contains(botId) ? "Loading…" : "Show older") {
+                        showingOlder = true
+                        Task { await store.loadOlderWork(botId) }
+                    }
+                    .disabled(store.olderWorkLoading.contains(botId))
+                    .accessibilityIdentifier("load-older-tasks")
+                } else if !showingOlder && !groups.older.isEmpty {
                     Button(olderTitle(groups.older.count)) { showingOlder = true }
                         .accessibilityIdentifier("show-older-tasks")
                 }
