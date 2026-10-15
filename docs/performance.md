@@ -5,7 +5,7 @@
 These measurements use a new consistent copy of the Mac mini database: 13,976 tasks (64 MB of JSON), 2,103 work and
 file rows, 1,341 cards, and 4,107 contexts. A stub Hermes Kanban serves the 1,032 task rows of a copy of the live
 Kanban database. The bench replays the last 2,000 events one at a time, as a phone that keeps up: it caps the event
-cursor at each event and sets the clock to 0.3 s after the event. "Before" is the server of the October 14 changes.
+cursor at each event and sets the clock to 0.3 s after the event. "Before" is the server after the October 14 changes.
 The times come from a laptop with no other load. The Mac mini is about 2 to 3 times slower.
 
 | Measurement | Before | After | Change |
@@ -14,12 +14,11 @@ The times come from a laptop with no other load. The Mac mini is about 2 to 3 ti
 | Compressed size (gzip level 5) | 81.6 MB | 34.8 MB | −57% |
 | Updates that resend all work cards | 82 | 0 | |
 | Work cards in the 82 decision and Work item updates | 131,774 | 284 | |
-| Server time for the 2,000 updates | 947.5 s | 31.6 s | −97% |
-| Server time of one update, median | 496 ms | 18 ms | −96% |
-| Server time of one update, 90th percentile | 565 ms | 25 ms | −96% |
-| Slowest update | 980 ms | 71 ms | −93% |
+| Server time for the 2,000 updates | 734.8 s | 21.4 s | −97% |
+| Server time of one update, median | 379 ms | 12 ms | −97% |
+| Server time of one update, 90th percentile | 424 ms | 21 ms | −95% |
+| Slowest update | 602 ms | 53 ms | −91% |
 
-Without the last two changes below, the total was 52.9 s and the median update took 34 ms.
 Each update still sends about 64 KB of bots. That is now most of a typical update.
 
 The bench applies each update as `StateUpdates.applying` does and compares the complete phone state after each of
