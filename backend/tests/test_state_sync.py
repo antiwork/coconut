@@ -241,11 +241,12 @@ class StateSyncTests(unittest.TestCase):
         from types import SimpleNamespace
         self.service.provider.supports_native_outcomes = True
         task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Retained work'})
+        unchanged = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Native work'})
         retained = dict(id='retained', kind='work', task_id=task['id'], bot_id=self.bot['id'],
             status='working', title='Retained work', created_at='2026-09-18T00:00:00Z')
         with self.service.transaction():
             self.service._put('artifacts', retained)
-            self.service._put('artifacts', dict(retained, id='native', _native_outcome_id='t_unchanged'))
+            self.service._put('artifacts', dict(retained, id='native', task_id=unchanged['id'], _native_outcome_id='t_unchanged'))
         cursor = self.service._cursor()
         with self.service.transaction():
             self.service._event('task.updated', self.service._public(self.service._get('tasks', task['id'])),
@@ -256,6 +257,28 @@ class StateSyncTests(unittest.TestCase):
              patch.object(Service, '_work_projection', side_effect=lambda items: items):
             page = self.service.updates(cursor, collection_deltas=True, native_events=True)
         self.assertEqual([a['id'] for a in page['artifacts']], ['retained'])
+
+    def test_native_update_resends_work_whose_task_changed(self):
+        from types import SimpleNamespace
+        self.service.provider.supports_native_outcomes = True
+        task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Native work'})
+        other = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Other work'})
+        with self.service.transaction():
+            for identity, outcome in ((task['id'], 't_changed'), (other['id'], 't_unchanged')):
+                stored = self.service._get('tasks', identity)
+                stored['_native_outcome_id'] = outcome
+                self.service._put('tasks', stored)
+                self.service._put('artifacts', dict(id=outcome, kind='work', task_id=identity, bot_id=self.bot['id'],
+                    status='working', title='Native work', created_at='2026-09-18T00:00:00Z', _native_outcome_id=outcome))
+        cursor = self.service._cursor()
+        with self.service.transaction():
+            self.service._event('task.updated', self.service._public(self.service._get('tasks', task['id'])),
+                                self.bot['id'], task['id'])
+        # A task status shows in the attempts of its native work, so only that work is sent again.
+        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={}, observed_at='2099-01-01T00:00:00Z')), \
+             patch.object(Service, '_work_projection', side_effect=lambda items: items):
+            page = self.service.updates(cursor, collection_deltas=True, native_events=True)
+        self.assertEqual([a['id'] for a in page['artifacts']], ['t_changed'])
 
     def test_native_work_event_refreshes_an_idle_delta(self):
         cursor = self.service._cursor()

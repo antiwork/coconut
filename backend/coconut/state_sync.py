@@ -244,6 +244,9 @@ class StateSync:
             for identity in sorted(task_ids):
                 row = self._read_one('SELECT data FROM tasks WHERE id=?', (identity,))
                 value = json.loads(row[0]) if row else None
+                # A task's status shows in the attempts of its native work.
+                if value and native_work_ids is not None and value.get('_native_outcome_id'):
+                    native_work_ids.add(value['_native_outcome_id'])
                 if visible_row(value):
                     tasks.append(self._public(value))
             messages, removed = [], []
@@ -273,8 +276,9 @@ class StateSync:
                     return True
                 if artifact['kind'] not in ('pr', 'work'):
                     return False
-                return (native_work_ids is None
-                    or self._work_outcome_artifact(artifact).get('_native_outcome_id') in native_work_ids)
+                outcome = self._work_outcome_artifact(artifact)
+                return (native_work_ids is None or outcome.get('_native_outcome_id') in native_work_ids
+                    or outcome.get('task_id') in task_ids)
             artifacts = [a for a in stored_artifacts if visible_owned(a) and changed_artifact(a)]
             if collection_deltas:
                 present = {a['id'] for a in stored_artifacts if visible_owned(a)}
