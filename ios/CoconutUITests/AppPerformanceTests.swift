@@ -117,6 +117,9 @@ final class AppPerformanceTests: XCTestCase {
             let loaded = expectation(for: NSPredicate { _, _ in !(earlier.exists && !earlier.isEnabled) }, evaluatedWith: nil)
             wait(for: [loaded], timeout: 15)
             stopMeasuring()
+            // A failed request also ends the loading state. A loaded page moves the button far above the screen.
+            XCTAssertFalse(app.descendants(matching: .any)["action-error"].exists, "The older page must load.")
+            XCTAssertFalse(earlier.exists && earlier.isHittable, "The older page must appear above the conversation.")
         }
     }
 

@@ -425,6 +425,47 @@ class ModelSelectionTests(unittest.TestCase):
                 catalog.read_profiles(bots)
             self.assertEqual(calls, [set(bots), {bots[0]}, set(bots)])
 
+    def test_a_failed_profile_read_is_retried_after_a_short_wait(self):
+        from uuid import uuid4
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = HermesModelCatalog(directory, source=Path(directory) / 'source')
+            catalog.root.mkdir(parents=True)
+            (catalog.root / 'config.yaml').write_text('model: first\n')
+            bot = str(uuid4())
+            home = catalog._profile_home(bot)
+            home.mkdir(parents=True)
+            (home / 'config.yaml').write_text('{}\n')
+            calls = []
+            def call(operation, homes):
+                calls.append(operation)
+                if len(calls) == 1:
+                    raise ModelCatalogError('Hermes model discovery timed out. Try refreshing the list.')
+                return {key: {'model_override': None, 'effective_model': None} for key in homes}
+            now = [1000.0]
+            with patch.object(catalog, '_call', side_effect=call), \
+                    patch.object(model_catalog.time, 'monotonic', side_effect=lambda: now[0]):
+                self.assertIn('error', catalog.read_profile(bot))
+                # The failure stays briefly, so a burst of reads does not start a process each time.
+                self.assertIn('error', catalog.read_profile(bot))
+                self.assertEqual(len(calls), 1)
+                now[0] += 60
+                self.assertEqual(catalog.read_profile(bot), {'model_override': None, 'effective_model': None})
+                # A successful read stays until a file changes.
+                now[0] += 3600
+                catalog.read_profile(bot)
+            self.assertEqual(calls, ['read_profiles', 'read_profiles'])
+
+    def test_profile_reads_allow_a_slow_settings_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            source.mkdir()
+            (source / 'run_agent.py').touch()
+            catalog = HermesModelCatalog(directory, source=source, python=sys.executable)
+            with patch.object(model_catalog.subprocess, 'run',
+                              return_value=subprocess.CompletedProcess([], 0, json.dumps({'result': {}}), '')) as run:
+                catalog._call('read_profiles', homes={})
+            self.assertEqual(run.call_args.kwargs['timeout'], 30)
+
 
 @unittest.skipUnless(MANAGED_PYTHON.is_file() and HERMES_SOURCE.is_dir(), 'The local Hermes runtime is absent.')
 class NativeHermesCatalogTests(unittest.TestCase):

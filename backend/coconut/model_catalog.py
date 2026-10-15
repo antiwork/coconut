@@ -17,6 +17,8 @@ from uuid import UUID
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MAX_REQUEST_CHARACTERS = 100_000
+# A profile read that failed, for example because a busy Mac delayed the settings process, runs again after this.
+PROFILE_RETRY_SECONDS = 15
 NATIVE_TEXT_FIELDS = {'routine_finish': 'output', 'relay_reply': 'text'}
 RUNTIME_KEYS = frozenset(('provider', 'api_mode', 'base_url', 'api_key', 'requested_provider',
                           'acp_command', 'acp_args', 'command', 'args'))
@@ -306,7 +308,7 @@ class HermesModelCatalog:
                 stat = path.stat() if path.exists() else None
                 signature = (global_signature, (stat.st_mtime_ns, stat.st_size, stat.st_ino) if stat else None)
                 cached = self._profile_cache.get(bot_id)
-                if cached and cached[0] == signature:
+                if cached and cached[0] == signature and (cached[2] is None or time.monotonic() < cached[2]):
                     result[bot_id] = deepcopy(cached[1])
                 else:
                     changed[bot_id] = {'home': str(home), 'signature': signature}
@@ -314,11 +316,15 @@ class HermesModelCatalog:
                 try:
                     values = self._call('read_profiles', homes={key: row['home'] for key, row in changed.items()})
                 except ModelCatalogError:
+                    # A busy Mac can delay the settings process, so a failed read is kept only briefly.
                     values = {key: {'model_override': None, 'effective_model': None,
                                     'error': 'Hermes profile settings are unavailable. Check this profile in Terminal.'}
                               for key in changed}
+                    retry_at = time.monotonic() + PROFILE_RETRY_SECONDS
+                else:
+                    retry_at = None
                 for bot_id, value in values.items():
-                    self._profile_cache[bot_id] = (changed[bot_id]['signature'], value)
+                    self._profile_cache[bot_id] = (changed[bot_id]['signature'], value, retry_at)
                     result[bot_id] = deepcopy(value)
             return result
 
@@ -383,7 +389,8 @@ class HermesModelCatalog:
                 result = subprocess.run([self.python, str(Path(__file__).resolve()), '--worker'],
                                         input=serialized, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                                         env=environment, cwd=self.private_home,
-                                        timeout=30 if operation in ('get', 'runtime', 'native') else 5)
+                                        # A turn reads its bot's profile first. Under load, this read can take seconds.
+                                        timeout=30 if operation in ('get', 'runtime', 'native', 'read_profiles') else 5)
             # The snapshot combines settings and routines, each with a separate response budget.
             response_limit = 8_000_000 if operation == 'native' and payload.get('native_operation') == 'snapshot_read' else 4_000_000
             if result.returncode or len(result.stdout) > response_limit:
