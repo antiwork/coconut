@@ -258,6 +258,151 @@ class StateSyncTests(unittest.TestCase):
             page = self.service.updates(cursor, collection_deltas=True, native_events=True)
         self.assertEqual([a['id'] for a in page['artifacts']], ['retained'])
 
+    def native_outcomes(self, *names):
+        """Create one native Work outcome with a pull request for each name, and return their tasks."""
+        self.service.provider.supports_native_outcomes = True
+        tasks = {name: self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': name, 'mode': 'queue'})
+                 for name in names}
+        with self.service.transaction():
+            for name, task in tasks.items():
+                self.service._put('artifacts', dict(id=f'{name}-work', kind='work', task_id=task['id'], bot_id=self.bot['id'],
+                    status='working', title=name, created_at=task['created_at'], _native_outcome_id=f't_{name}'))
+                self.service._put('artifacts', dict(id=f'{name}-pr', kind='pr', task_id=task['id'], bot_id=self.bot['id'],
+                    status='open', title=name, url=f'https://github.com/o/r/pull/{name}', work_outcome_id=f'{name}-work',
+                    created_at=task['created_at']))
+        return tasks
+
+    def native_update(self, cursor):
+        from types import SimpleNamespace
+        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={}, observed_at='2099-01-01T00:00:00Z')), \
+             patch('coconut.service.now', return_value='2099-01-01T00:00:00Z'), \
+             patch.object(Service, '_work_projection', side_effect=lambda items: items):
+            return self.service.updates(cursor, collection_deltas=True, native_events=True)
+
+    def test_decision_event_sends_only_the_work_of_its_outcome(self):
+        tasks = self.native_outcomes('first', 'second')
+        cursor = self.service._cursor()
+        decision = dict(id='card', bot_id=self.bot['id'], task_id=tasks['first']['id'], status='pending', revision=1)
+        with self.service.transaction():
+            self.service._put('decisions', decision)
+            self.service._event('decision.created', decision, self.bot['id'], decision['task_id'])
+        page = self.native_update(cursor)
+        self.assertEqual([a['id'] for a in page['artifacts']], ['first-work', 'first-pr'])
+        self.assertEqual([d['id'] for d in page['decisions']], ['card'])
+
+    def test_merge_decision_sends_the_work_of_its_pull_request_before_and_after_a_new_link(self):
+        self.native_outcomes('first', 'second', 'third')
+        other = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Review', 'mode': 'queue'})
+        decision = dict(id='merge', bot_id=self.bot['id'], task_id=other['id'], status='pending', revision=1,
+                        merge_pr_url='https://github.com/o/r/pull/first')
+        with self.service.transaction():
+            self.service._put('decisions', decision)
+            self.service._event('decision.created', decision, self.bot['id'], other['id'])
+        cursor = self.service._cursor()
+        self.assertEqual([a['id'] for a in self.native_update(cursor - 1)['artifacts']], ['first-work', 'first-pr'])
+        # A revision names another pull request. The first outcome no longer waits for this card.
+        decision.update(merge_pr_url='https://github.com/o/r/pull/second', revision=2)
+        with self.service.transaction():
+            self.service._put('decisions', decision)
+            self.service._event('decision.updated', decision, self.bot['id'], other['id'])
+        page = self.native_update(cursor)
+        self.assertEqual({a['id'] for a in page['artifacts']}, {'first-work', 'first-pr', 'second-work', 'second-pr'})
+
+    def test_work_item_event_sends_only_the_work_of_its_outcome(self):
+        self.native_outcomes('first', 'second')
+        cursor = self.service._cursor()
+        with self.service.transaction():
+            item = self.service._get('artifacts', 'second-pr')
+            item['status'] = 'merged'
+            self.service._put('artifacts', item)
+            self.service._event('artifact.updated', self.service._public(item), self.bot['id'], item['task_id'])
+        page = self.native_update(cursor)
+        self.assertEqual([a['id'] for a in page['artifacts']], ['second-work', 'second-pr'])
+        self.assertEqual(page['removed_artifacts'], [])
+
+    def test_pull_request_that_leaves_an_outcome_sends_the_outcome_that_shows_its_merge_card(self):
+        tasks = self.native_outcomes('first', 'second')
+        decision = dict(id='merge', bot_id=self.bot['id'], task_id=tasks['second']['id'], status='pending', revision=1,
+                        merge_pr_url='https://github.com/o/r/pull/first')
+        with self.service.transaction():
+            self.service._put('decisions', decision)
+            item = self.service._get('artifacts', 'first-pr')
+            self.service._event('artifact.updated', self.service._public(item), self.bot['id'], item['task_id'])
+        cursor = self.service._cursor()
+        with self.service.transaction():
+            item.pop('work_outcome_id')
+            self.service._put('artifacts', item)
+            self.service._event('artifact.updated', self.service._public(item), self.bot['id'], item['task_id'])
+        page = self.native_update(cursor)
+        self.assertEqual([a['id'] for a in page['artifacts']], ['first-work', 'first-pr'])
+
+    def test_structural_update_reads_only_the_rows_it_names(self):
+        tasks = self.native_outcomes('first', 'second')
+        chat = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'A question without Work'})
+        decision = dict(id='card', bot_id=self.bot['id'], task_id=tasks['first']['id'], status='pending', revision=1)
+        with self.service.transaction():
+            self.service._put('decisions', decision)
+            self.service._event('decision.created', decision, self.bot['id'], decision['task_id'])
+        cursor = self.service._cursor()
+        with self.service.transaction():
+            decision['title'] = 'Changed question'
+            self.service._put('decisions', decision)
+            self.service._event('decision.updated', decision, self.bot['id'], decision['task_id'])
+            task = self.service._get('tasks', chat['id'])
+            self.service._event('task.updated', self.service._public(task), self.bot['id'], task['id'])
+        read = Service._all
+        def bounded(service, table):
+            if table != 'bots':
+                raise AssertionError(f'An update must not decode every row of {table}')
+            return read(service, table)
+        with patch.object(Service, '_all', bounded):
+            page = self.native_update(cursor)
+        self.assertEqual([d['id'] for d in page['decisions']], ['card'])
+        self.assertEqual({t['id'] for t in page['tasks']}, {tasks['first']['id'], chat['id']})
+        self.assertEqual([a['id'] for a in page['artifacts']], ['first-work', 'first-pr'])
+
+    def test_removed_work_lists_only_rows_that_this_update_hides(self):
+        tasks = self.native_outcomes('first', 'second')
+        with self.service.transaction():
+            self.service._put('artifacts', dict(id='old-hidden', kind='file', task_id=tasks['first']['id'],
+                bot_id=self.bot['id'], title='Preview', created_at=tasks['first']['created_at'], _hidden=True))
+        cursor = self.service._cursor()
+        with self.service.transaction():
+            item = self.service._get('artifacts', 'second-pr')
+            item['_hidden'] = True
+            self.service._put('artifacts', item)
+            self.service._event('artifact.updated', dict(self.service._public(item), _hidden=True), self.bot['id'], item['task_id'])
+        page = self.native_update(cursor)
+        self.assertEqual(page['removed_artifacts'], ['second-pr'])
+        self.assertEqual([a['id'] for a in page['artifacts']], ['second-work'])
+        # A task that leaves the conversation takes its Work with it.
+        cursor = page['cursor']
+        with self.service.transaction():
+            task = self.service._get('tasks', tasks['first']['id'])
+            task['_hidden'] = True
+            self.service._put('tasks', task)
+            self.service._event('task.updated', self.service._public(task), self.bot['id'], task['id'])
+        self.assertEqual(self.native_update(cursor)['removed_artifacts'], ['first-pr', 'first-work', 'old-hidden'])
+
+    def test_retained_work_search_reads_only_the_tasks_of_unfinished_legacy_work(self):
+        tasks = self.native_outcomes('native')
+        legacy = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Legacy', 'mode': 'queue'})
+        template = dict(kind='pr', task_id=legacy['id'], bot_id=self.bot['id'], title='Legacy', created_at=legacy['created_at'])
+        with self.service.transaction():
+            self.service._put('artifacts', dict(template, id='merged-pr', status='merged', url='https://github.com/o/r/pull/1'))
+            self.service._put('artifacts', dict(template, id='open-pr', status='open', url='https://github.com/o/r/pull/2'))
+        read = Service._get
+        owners = []
+        def counted(service, table, identity):
+            if table == 'tasks':
+                owners.append(identity)
+            return read(service, table, identity)
+        with patch.object(Service, '_get', counted), self.service._read_view() as view, view._read_transaction():
+            retained = view._retained_work_observations()
+        self.assertEqual([a['id'] for a in retained], ['open-pr'])
+        self.assertEqual(owners, [legacy['id']])
+        self.assertNotIn(tasks['native']['id'], owners)
+
     def test_native_update_resends_work_whose_task_changed(self):
         from types import SimpleNamespace
         self.service.provider.supports_native_outcomes = True

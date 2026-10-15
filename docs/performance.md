@@ -1,5 +1,50 @@
 # App performance
 
+## Server updates, October 15, 2026
+
+These measurements use a new consistent copy of the Mac mini database: 13,976 tasks (64 MB of JSON), 2,103 work and
+file rows, 1,341 cards, and 4,107 contexts. A stub Hermes Kanban serves the 1,032 task rows of a copy of the live
+Kanban database. The bench replays the last 2,000 events one at a time, as a phone that keeps up: it caps the event
+cursor at each event and sets the clock to 0.3 s after the event. "Before" is the server after the October 14 changes.
+The times come from a laptop with no other load. The Mac mini is about 2 to 3 times slower.
+
+| Measurement | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| JSON for the 2,000 updates | 353.0 MB | 135.9 MB | −62% |
+| Compressed size (gzip level 5) | 81.6 MB | 34.8 MB | −57% |
+| Updates that resend all work cards | 82 | 0 | |
+| Work cards in the 82 decision and Work item updates | 131,774 | 284 | |
+| Server time for the 2,000 updates | 734.8 s | 21.4 s | −97% |
+| Server time of one update, median | 379 ms | 12 ms | −97% |
+| Server time of one update, 90th percentile | 424 ms | 21 ms | −95% |
+| Slowest update | 602 ms | 53 ms | −91% |
+
+Each update still sends about 64 KB of bots. That is now most of a typical update.
+
+The bench applies each update as `StateUpdates.applying` does and compares the complete phone state after each of
+the 2,000 updates. The state was the same, with one field that the app does not show: `activity_observed_at` of
+finished cards without a native task. The old server set it to the time of each update that resent every card. Now
+the field keeps the time of the last update that sent the card. The app reads this field only for unfinished cards.
+The result was the same with a stub Kanban that has one native task for each bound task.
+
+- A decision or a Work item event used to resend every work card. It now sends the cards of the outcomes that the
+  event can change. For a Work item, that is its own outcome. For a decision, those are the outcomes that can show it
+  as their first pending decision: the outcomes of a task with the same native task, the outcome whose root task asked
+  the decision, the outcomes of its pull request, and the legacy outcome that it pauses. A changed row can also leave an
+  outcome, so the version of the last earlier event counts too. When no earlier event recorded that version, every
+  card is sent, as before.
+- A structural update decoded the whole task, Work, context, and card tables. It now reads the rows that its events
+  name and the tasks that own them, by ID or with the existing indexes. It reads the Work rows only when an outcome
+  changed.
+- `removed_artifacts` listed every hidden row in each update, about 500 IDs. The phone holds only rows that were
+  visible, and a row leaves through its own event or through its task. So the list now names the rows that this update
+  hides, and the rows of a task that this update hides.
+- The search for retained legacy work skips rows without links in SQLite when they have a native task or are merged
+  or closed pull requests. It checks each linked outcome once. It runs only when an update starts a new 15-second
+  interval.
+- The Work projection reads the links of each pull request in SQLite and decodes only the rows of the projected
+  outcomes. It decodes the root tasks and the tasks of the projected native outcomes, not every Kanban task.
+
 ## Measurements from October 14, 2026
 
 The September fixture was much smaller than the real data. It had 818 messages, one task, no work cards, and an older
