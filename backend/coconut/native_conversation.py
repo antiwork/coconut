@@ -145,6 +145,23 @@ def resume_session(db, root):
     return db.resolve_resume_session_id(tip if tip and db.get_session(tip) else root)
 
 
+def available_session(db, root, session_id):
+    """Return session_id, or a successor of it that Hermes accepts as a new session.
+
+    Hermes keeps a deletion tombstone for a pruned session and refuses to create that id again during its retry
+    horizon. A missing tombstoned session moves to a successor derived from the root, so every process picks the same
+    id. The caller records it as the tip after it creates the session.
+    """
+    try:
+        from hermes_state_mutation_retirement import RETIRED_PREFIX
+    except ImportError:
+        # Hermes before v0.22 keeps no tombstone.
+        return session_id
+    while not db.get_session(session_id) and db.get_meta(RETIRED_PREFIX + session_id) is not None:
+        session_id = str(uuid5(UUID(root), 'reseed:' + session_id))
+    return session_id
+
+
 def session_root(bot, *, execution=None, epoch=None):
     root = bot['session_id']
     if execution:
@@ -167,8 +184,11 @@ class NativeConversation:
         # and this root is not the one its turn uses, so only work and a chat without an epoch reseed.
         pruned = (execution or not epoch) and not db.get_session(resume_session(db, root))
         if db.get_meta(marker) != 'complete' or pruned:
-            target = resume_session(db, root)
+            resolved = resume_session(db, root)
+            target = available_session(db, root, resolved)
             db.create_session(target, source='coconut', model=request.get('model'))
+            if target != resolved:
+                db.set_meta(TIP_KEY + root, target)
             active, transcript = db.get_resume_conversations(target)
             prefix = missing_prefix(seed_messages(request), transcript)
             if prefix:
@@ -178,7 +198,8 @@ class NativeConversation:
         if epoch and not execution:
             root = session_root(bot, epoch=epoch)
         self.root = root
-        self.session_id = resume_session(db, root)
+        # The worker creates a missing session. It must not choose a tombstoned id.
+        self.session_id = available_session(db, root, resume_session(db, root))
         session = db.get_session(self.session_id)
         if session and session.get('ended_at') and session.get('end_reason') == IDLE_END_REASON:
             # The outcome resumed after Coconut ended its idle session.
