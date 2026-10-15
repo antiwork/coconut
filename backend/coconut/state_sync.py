@@ -207,6 +207,8 @@ class StateSync:
         visible = {b['id'] for b in bots}
         result = dict(after=after, cursor=cursor, server_time=server_time, bots=bots, **freshness)
         task_ids, message_ids, decision_ids, artifact_ids = set(), set(), set(), set()
+        # A task's status shows in the attempts of its work. Only task events change it.
+        changed_task_ids = set()
         native_work_ids = set() if native and collection_deltas else None
         # Time alone changes only retained legacy work. Native rows change through events.
         timed_ids = {a['id'] for a in retained} if refresh_activity else set()
@@ -222,6 +224,8 @@ class StateSync:
                     native_work_ids = None
             if task_id:
                 task_ids.add(task_id)
+            if kind.startswith('task.'):
+                changed_task_ids.update(identity for identity in (task_id, value.get('id')) if identity)
             if kind.startswith('task.') and value.get('id'):
                 task_ids.add(value['id'])
             if kind.startswith('message.') and value.get('id'):
@@ -244,8 +248,7 @@ class StateSync:
             for identity in sorted(task_ids):
                 row = self._read_one('SELECT data FROM tasks WHERE id=?', (identity,))
                 value = json.loads(row[0]) if row else None
-                # A task's status shows in the attempts of its native work.
-                if value and native_work_ids is not None and value.get('_native_outcome_id'):
+                if identity in changed_task_ids and value and native_work_ids is not None and value.get('_native_outcome_id'):
                     native_work_ids.add(value['_native_outcome_id'])
                 if visible_row(value):
                     tasks.append(self._public(value))
@@ -278,7 +281,7 @@ class StateSync:
                     return False
                 outcome = self._work_outcome_artifact(artifact)
                 return (native_work_ids is None or outcome.get('_native_outcome_id') in native_work_ids
-                    or outcome.get('task_id') in task_ids)
+                    or outcome.get('task_id') in changed_task_ids)
             artifacts = [a for a in stored_artifacts if visible_owned(a) and changed_artifact(a)]
             if collection_deltas:
                 present = {a['id'] for a in stored_artifacts if visible_owned(a)}
