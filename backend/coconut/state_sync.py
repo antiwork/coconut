@@ -191,12 +191,13 @@ class StateSync:
         from datetime import datetime
         server_time = now()
         native = native_events and self.kanban is not None and getattr(self.provider, 'supports_native_outcomes', False)
-        retained = self._retained_work_observations() if native else []
-        timed = not native or bool(retained)
-        previous = self._read_one('SELECT created_at FROM events WHERE seq=?', (after,)) if timed else None
-        refresh_activity = timed and (previous is None or
+        previous = self._read_one('SELECT created_at FROM events WHERE seq=?', (after,))
+        new_interval = (previous is None or
             int(datetime.fromisoformat(previous[0].replace('Z', '+00:00')).timestamp() // 15) !=
             int(datetime.fromisoformat(server_time.replace('Z', '+00:00')).timestamp() // 15))
+        # Only retained legacy work changes with time alone. Within one interval, a native update does not look for it.
+        retained = self._retained_work_observations() if native and new_interval else []
+        refresh_activity = new_interval and (not native or bool(retained))
         freshness = {'native_work_observed_at': self.kanban.observed_at} if native else {}
         if not rows and collection_deltas and (native or not refresh_activity):
             result = dict(after=after, cursor=cursor, server_time=server_time, collection_deltas=True, **freshness)
@@ -210,6 +211,8 @@ class StateSync:
         native_work_ids = set() if native and collection_deltas else None
         # Time alone changes only retained legacy work. Native rows change through events.
         timed_ids = {a['id'] for a in retained} if refresh_activity else set()
+        # Decision and Work item events change the cards of some outcomes. _changed_work finds them.
+        work_events = []
         if collection_deltas:
             result['collection_deltas'] = True
         for _, kind, task_id, data in rows:
@@ -217,8 +220,10 @@ class StateSync:
             if native_work_ids is not None:
                 if kind == 'work.updated' and isinstance(value.get('native_task_ids'), list):
                     native_work_ids.update(value['native_task_ids'])
-                elif kind.startswith(('work.', 'decision.', 'artifact.')) and kind != 'artifact.observed':
-                    # Only new check times leave other work unchanged, so they do not resend every card.
+                elif kind.startswith(('decision.', 'artifact.')) and kind != 'artifact.observed':
+                    # New check times (artifact.observed) change only their own row.
+                    work_events.append((kind, task_id, value))
+                elif kind.startswith('work.'):
                     native_work_ids = None
             if task_id:
                 task_ids.add(task_id)
@@ -239,11 +244,19 @@ class StateSync:
         def visible_row(value):
             return (value and not value.get('_hidden') and not value.get('_deleted')
                     and value.get('bot_id') in visible and value.get('conversation_bot_id', value.get('bot_id')) in visible)
+        stored_tasks = {}
+        def stored_task(identity):
+            # An update reads the tasks that it names or that own its rows, not the whole task history.
+            if identity not in stored_tasks:
+                row = self._read_one('SELECT data FROM tasks WHERE id=?', (identity,))
+                stored_tasks[identity] = json.loads(row[0]) if row else None
+            return stored_tasks[identity]
+        def visible_owned(value):
+            return visible_row(value) and (not value.get('task_id') or visible_row(stored_task(value['task_id'])))
         if rows:
             tasks = []
             for identity in sorted(task_ids):
-                row = self._read_one('SELECT data FROM tasks WHERE id=?', (identity,))
-                value = json.loads(row[0]) if row else None
+                value = stored_task(identity)
                 if visible_row(value):
                     tasks.append(self._public(value))
             messages, removed = [], []
@@ -264,30 +277,64 @@ class StateSync:
         # Native task changes publish work.updated. Age alone changes no native state.
         structural = not rows or refresh_activity or any(r[1] not in ('message.created', 'message.updated', 'bot.read', 'bot.updated') for r in rows)
         if structural:
-            tasks = {t['id']: t for t in self._all('tasks') if visible_row(t)}
-            def visible_owned(value):
-                return visible_row(value) and (not value.get('task_id') or value['task_id'] in tasks)
-            stored_artifacts = self._all('artifacts')
+            work_outcomes = set()
+            if not collection_deltas:
+                stored_artifacts = self._all('artifacts')
+            else:
+                # Read the changed rows, and the Work rows only when some outcomes changed.
+                stored = {}
+                if native_work_ids is None or native_work_ids or work_events:
+                    stored.update((row[0], json.loads(row[1])) for row in self.db.execute(
+                        "SELECT rowid,data FROM artifacts WHERE json_extract(data,'$.kind') IN ('work','pr')"))
+                if work_events and native_work_ids is not None:
+                    changed = self._changed_work(work_events, list(stored.values()), after)
+                    if changed is None:
+                        native_work_ids = None
+                    else:
+                        natives, work_outcomes = changed
+                        native_work_ids |= natives
+                stored.update((row[0], json.loads(row[1])) for row in self.db.execute(
+                    'SELECT rowid,data FROM artifacts WHERE id IN (SELECT value FROM json_each(?))',
+                    (json.dumps(sorted(artifact_ids | timed_ids)),)))
+                stored_artifacts = [stored[rowid] for rowid in sorted(stored)]
+            outcomes = {}
             def changed_artifact(artifact):
                 if artifact['id'] in artifact_ids or artifact['id'] in timed_ids or not collection_deltas:
                     return True
                 if artifact['kind'] not in ('pr', 'work'):
                     return False
-                return (native_work_ids is None
-                    or self._work_outcome_artifact(artifact).get('_native_outcome_id') in native_work_ids)
-            artifacts = [a for a in stored_artifacts if visible_owned(a) and changed_artifact(a)]
+                if native_work_ids is None:
+                    return True
+                # Rows with one work_outcome_id share their outcome.
+                key = artifact.get('work_outcome_id') or artifact['id']
+                if key not in outcomes:
+                    outcome = self._work_outcome_artifact(artifact)
+                    outcomes[key] = outcome.get('_native_outcome_id') in native_work_ids or outcome['id'] in work_outcomes
+                return outcomes[key]
+            # The cheap test comes first, so an update reads the tasks of the rows that it sends.
+            artifacts = [a for a in stored_artifacts if changed_artifact(a) and visible_owned(a)]
             if collection_deltas:
-                present = {a['id'] for a in stored_artifacts if visible_owned(a)}
-                result['removed_artifacts'] = sorted((artifact_ids - present) |
-                    {a['id'] for a in stored_artifacts if not visible_owned(a)})
+                present = {a['id'] for a in stored_artifacts if a['id'] in artifact_ids and visible_owned(a)}
+                removed = artifact_ids - present
+                # The phone holds only rows that were visible. A row leaves through its own event or through its task.
+                hidden_tasks = [identity for identity in task_ids if not visible_row(stored_task(identity))]
+                if hidden_tasks:
+                    removed.update(row[0] for row in self.db.execute(
+                        "SELECT id FROM artifacts WHERE json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?))",
+                        (json.dumps(hidden_tasks),)))
+                result['removed_artifacts'] = sorted(removed)
             result['artifacts'] = [self._public(a) for a in self._work_projection(artifacts)]
             result['work_capacity'] = capacity_state(self._setting('work_capacity'))
             if rows:
-                replying = {c['decision_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working') and not c.get('_decision_refresh')}
+                replying = {c['decision_id'] for c in (json.loads(row[0]) for row in self.db.execute(
+                    "SELECT data FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working')"))
+                    if not c.get('_decision_refresh')}
                 decisions, removed_decisions = [], set(decision_ids)
-                for decision in self._all('decisions'):
-                    if collection_deltas and decision['id'] not in decision_ids and decision['task_id'] not in task_ids:
-                        continue
+                stored_decisions = self._all('decisions') if not collection_deltas else [json.loads(row[0]) for row in self.db.execute(
+                    "SELECT data FROM decisions WHERE id IN (SELECT value FROM json_each(?)) "
+                    "OR json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?)) ORDER BY rowid",
+                    (json.dumps(list(decision_ids)), json.dumps(list(task_ids))))]
+                for decision in stored_decisions:
                     if not visible_owned(decision):
                         removed_decisions.add(decision['id'])
                         continue
@@ -295,7 +342,7 @@ class StateSync:
                     decision = self._public(decision)
                     decision['reply_pending'] = decision['id'] in replying
                     if not decision.get('request_text') and decision.get('task_id'):
-                        decision.update(self.decision_origin(tasks[decision['task_id']]))
+                        decision.update(self.decision_origin(stored_task(decision['task_id'])))
                     decisions.append(decision)
                 included = {d['id'] for d in decisions}
                 for earlier in self._page_decisions([{'decision_id': identity} for identity in included]):
@@ -303,12 +350,12 @@ class StateSync:
                         continue
                     previous = self._public(earlier)
                     previous['reply_pending'] = earlier['id'] in replying
-                    previous.update(self.decision_origin(tasks[earlier['task_id']]))
+                    previous.update(self.decision_origin(stored_task(earlier['task_id'])))
                     decisions.append(previous)
                     included.add(earlier['id'])
                     removed_decisions.discard(earlier['id'])
                     if not any(t['id'] == earlier['task_id'] for t in result['tasks']):
-                        result['tasks'].append(self._public(tasks[earlier['task_id']]))
+                        result['tasks'].append(self._public(stored_task(earlier['task_id'])))
                 result['decisions'] = decisions
                 if collection_deltas:
                     result['removed_decisions'] = sorted(removed_decisions)
@@ -319,16 +366,109 @@ class StateSync:
         result = []
         visible = {row[0] for row in self.db.execute(
             "SELECT id FROM bots WHERE NOT coalesce(json_extract(data,'$._deleted'),0)")}
+        # A row without links is its own outcome. SQLite skips such rows when they have a native task, or when they are
+        # merged or closed pull requests. Most other rows link to an outcome with work_outcome_id, so each is checked once.
+        finished = {}
         for row in self.db.execute("SELECT data FROM artifacts WHERE json_extract(data,'$.kind') IN ('work','pr') "
-                "AND NOT coalesce(json_extract(data,'$._hidden'),0) AND NOT coalesce(json_extract(data,'$._deleted'),0)"):
+                "AND NOT coalesce(json_extract(data,'$._hidden'),0) AND NOT coalesce(json_extract(data,'$._deleted'),0) "
+                # IS never returns NULL, so a missing field cannot hide a row.
+                "AND NOT (json_extract(data,'$.work_outcome_id') IS NULL AND json_extract(data,'$._work_replaced_by') IS NULL "
+                "AND json_extract(data,'$._same_outcome_as') IS NULL AND ((json_type(data,'$._native_outcome_id') IS 'text' "
+                "AND json_extract(data,'$._native_outcome_id')<>'') OR (json_extract(data,'$.kind') IS 'pr' "
+                "AND (json_extract(data,'$.status') IS 'merged' OR json_extract(data,'$.pr_state') IS 'merged' "
+                "OR json_extract(data,'$.pr_state') IS 'closed'))))"):
             original = json.loads(row[0])
             if original['bot_id'] not in visible:
+                continue
+            # Rows of native or finished outcomes stop here, before their task is read.
+            key = original.get('work_outcome_id') or original['id']
+            if key not in finished:
+                item = self._work_outcome_artifact(original)
+                finished[key] = bool(item.get('_native_outcome_id') or self._retained_terminal_work(item))
+            if finished[key]:
                 continue
             owner = self._get('tasks', original['task_id']) if original.get('task_id') else None
             if owner and owner.get('conversation_bot_id', owner['bot_id']) not in visible:
                 continue
-            item = self._work_outcome_artifact(original)
-            if item.get('_native_outcome_id') or self._retained_terminal_work(item):
-                continue
             result.append(original)
         return result
+
+    def _changed_work(self, events, items, after):
+        """Find the Work cards that decision and Work item events can change.
+
+        Return the native task IDs and the outcome row IDs of those cards, or None when every card must be sent again.
+        A card belongs to the outcome that _work_outcome_artifact finds. _native_work_view shows the first pending
+        decision of the outcome: a decision of a task with the same native task, of the root task of the outcome, or for
+        the URL of one of its pull requests. A changed row can also leave an outcome, so the last version that an event
+        recorded before this update counts too.
+        """
+        import json
+        by_id = {item['id']: item for item in items}
+        by_task, by_url, by_pause = {}, {}, {}
+        for item in items:
+            by_task.setdefault(item.get('task_id'), []).append(item)
+            by_pause.setdefault(item.get('paused_by_decision_id'), []).append(item)
+            if item['kind'] == 'pr':
+                by_url.setdefault(item.get('url'), []).append(item)
+        def outcome(item):
+            return self._work_outcome_artifact(item)['id']
+        def stored(table, identity):
+            row = self._read_one(f'SELECT data FROM {table} WHERE id=?', (identity,))
+            return json.loads(row[0]) if row else None
+        changed = {'decision': {}, 'artifact': {}}
+        for kind, task_id, value in events:
+            table = kind.split('.')[0]
+            if kind == 'decision.answered' and task_id:
+                # The answer names no decision. Every decision of its task counts.
+                for row in self.db.execute("SELECT id FROM decisions WHERE json_extract(data,'$.task_id')=?", (task_id,)):
+                    changed[table].setdefault(row[0], (task_id, []))
+            elif value.get('id') and task_id:
+                changed[table].setdefault(value['id'], (task_id, []))[1].append(value)
+            else:
+                return None
+        created = {value.get('id') for kind, _, value in events if kind in ('decision.created', 'artifact.created')}
+        def versions(table, identity, task_id, values, current):
+            # The events of this update, the stored row, and the version of the last earlier event.
+            result = [*values, current]
+            if identity not in created:
+                # Events usually carry the task ID of their row. When the task index finds no earlier version of a
+                # changed row, the row cannot be followed, so every card is sent.
+                row = self._read_one("SELECT data FROM events WHERE task_id=? AND seq<=? AND type LIKE ? "
+                                     "AND json_extract(data,'$.id')=? ORDER BY seq DESC LIMIT 1",
+                                     (task_id, after, table + '.%', identity))
+                if row is None and values:
+                    return None
+                result.append(json.loads(row[0]) if row else None)
+            return [v for v in result if v]
+        natives, outcomes, decisions = set(), set(), []
+        for identity, (task_id, values) in changed['decision'].items():
+            found = versions('decision', identity, task_id, values, stored('decisions', identity))
+            if found is None:
+                return None
+            decisions.extend(found)
+            outcomes.update(item['id'] for item in by_pause.get(identity, []))
+        for decision in decisions:
+            if decision.get('task_id'):
+                task = stored('tasks', decision['task_id'])
+                if task and task.get('_native_outcome_id'):
+                    natives.add(task['_native_outcome_id'])
+                outcomes.update(item['id'] for item in by_task.get(decision['task_id'], []))
+            if decision.get('merge_pr_url'):
+                outcomes.update(outcome(item) for item in by_url.get(decision['merge_pr_url'], []))
+        urls = {row[0] for row in self.db.execute(
+            "SELECT json_extract(data,'$.merge_pr_url') FROM decisions WHERE json_extract(data,'$.status')='pending' "
+            "AND NOT coalesce(json_extract(data,'$._hidden'),0) AND NOT coalesce(json_extract(data,'$._deleted'),0)")}
+        urls.update(d.get('merge_pr_url') for d in decisions)
+        for identity, (task_id, values) in changed['artifact'].items():
+            current = by_id.get(identity)
+            outcomes.add(identity)
+            if current:
+                outcomes.add(outcome(current))
+            # A pull request that left an outcome can leave its pending merge decision on that outcome's card.
+            if not any(v and v.get('kind') == 'pr' and v.get('url') and v['url'] in urls for v in [*values, current]):
+                continue
+            found = versions('artifact', identity, task_id, values, current)
+            if found is None:
+                return None
+            outcomes.update(outcome({'work_outcome_id': v['work_outcome_id']}) for v in found if v.get('work_outcome_id'))
+        return natives, outcomes

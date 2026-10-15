@@ -149,10 +149,12 @@ board.dispatch.heartbeat_worker(board.conn,sys.argv[2],note='Running the focused
         with self.service.transaction():
             pr = dict(id='observed-pr', bot_id=item['bot_id'], task_id=item['task_id'], kind='pr', title='Pull request',
                       status='checks_running', preview='', url='https://github.com/example/project/pull/42',
-                      created_at='2026-09-08T00:00:00Z', checked_at='2026-09-08T00:00:00Z', observed_at='2026-09-08T00:00:00Z')
+                      created_at='2026-09-08T00:00:00Z', checked_at='2026-09-08T00:00:00Z', observed_at='2026-09-08T00:00:00Z',
+                      work_outcome_id=item['id'])
             self.service._put('artifacts', pr)
         self.service.kanban.call({'op': 'snapshot'})
         self.service._publish_kanban_changes()
+        # Other changes of a pull request can change the card of its outcome.
         for kind, expected in (('artifact.observed', {pr['id']}), ('artifact.updated', {pr['id'], item['id']})):
             with self.subTest(kind=kind):
                 cursor = self.service._cursor()
@@ -161,9 +163,7 @@ board.dispatch.heartbeat_worker(board.conn,sys.argv[2],note='Running the focused
                     self.service._put('artifacts', pr)
                     self.service._event(kind, self.service._public(pr), pr['bot_id'], pr['task_id'])
                 page = self.service.updates(cursor, collection_deltas=True, native_events=True)
-                self.assertTrue(expected <= {a['id'] for a in page['artifacts']})
-                if kind == 'artifact.observed':
-                    self.assertEqual({a['id'] for a in page['artifacts']}, expected)
+                self.assertEqual({a['id'] for a in page['artifacts']}, expected)
 
     def test_native_restart_preserves_unknown_result_without_a_manual_reply_alert(self):
         identity, item = self.outcome()

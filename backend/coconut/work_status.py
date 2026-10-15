@@ -516,6 +516,8 @@ class WorkStatus:
             self.db.execute('DELETE FROM settings WHERE key=?', (key,))
 
     def _work_outcome_artifact(self, item):
+        # StateSync._retained_work_observations and NativeOutcomes._native_work_view read these links in SQLite first.
+        # A new link field must go there too.
         if item.get('work_outcome_id'):
             item = self._get('artifacts', item['work_outcome_id'])
         item = self._canonical_work(item)

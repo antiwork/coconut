@@ -9,6 +9,7 @@ Each paired session has one event loop. A generation check rejects responses fro
 Concurrent reads share a snapshot request. Current servers send changed tasks and messages with current decisions and Work.
 Idle responses refresh Work observations without advancing the event cursor.
 Hidden messages use explicit removal IDs. Cursor gaps, unknown events, and structural changes return a content reset.
+An update sends the work cards of the outcomes that its events change. Its removal IDs name the rows that it hides.
 Older servers retain the full snapshot and event path.
 The app advances its cursor only after it applies the complete batch or snapshot.
 Display cache writes run off the main thread and combine rapid updates.

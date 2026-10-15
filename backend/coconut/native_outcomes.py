@@ -1561,21 +1561,39 @@ class NativeOutcomes:
             groups.setdefault(root['id'], (root, []))[1].append(item)
         if groups:
             identities = {root['task_id'] for root, _ in groups.values()} - {None}
-            identities.update(n['external_id'] for n in self.kanban.tasks.values())
-            tasks = {t['id']: t for t in (json.loads(row[0]) for row in self.db.execute(
-                'SELECT data FROM tasks WHERE id IN (SELECT value FROM json_each(?))', (json.dumps(sorted(identities)),)))}
+            natives = {root['_native_outcome_id'] for root, _ in groups.values()}
+            # The projection reads the root tasks and the tasks of these native outcomes. The queue reads only which
+            # Kanban tasks exist, so the other rows stay in SQLite.
+            rows = self.db.execute(
+                "SELECT id,CASE WHEN id IN (SELECT value FROM json_each(?)) OR json_extract(data,'$._native_outcome_id') "
+                "IN (SELECT value FROM json_each(?)) THEN data END FROM tasks WHERE id IN (SELECT value FROM json_each(?))",
+                (json.dumps(sorted(identities)), json.dumps(sorted(natives)),
+                 json.dumps(sorted(identities | {n['external_id'] for n in self.kanban.tasks.values()})))).fetchall()
+            tasks = {row[0]: json.loads(row[1]) for row in rows if row[1] is not None}
             decisions = [json.loads(row[0]) for row in self.db.execute(
                 "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending' "
                 "AND NOT coalesce(json_extract(data,'$._hidden'),0) AND NOT coalesce(json_extract(data,'$._deleted'),0)")]
-            reports = {}
+            reports, roots = {}, {}
+            # Most pull requests belong to other outcomes. Read the links of each row first, as _work_outcome_artifact
+            # follows them, and decode the rows of these outcomes. Many rows share one work_outcome_id.
             for row in self.db.execute(
-                    "SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='pr' "
+                    "SELECT id,json_extract(data,'$.work_outcome_id','$._work_replaced_by','$._same_outcome_as',"
+                    "'$._hidden','$._work_parent_id'),data FROM artifacts WHERE json_extract(data,'$.kind')='pr' "
                     "AND NOT coalesce(json_extract(data,'$._hidden'),0)"):
-                linked = json.loads(row[0])
-                root_id = self._work_outcome_artifact(linked)['id']
+                target, replaced, same, hidden, parent = json.loads(row[1])
+                linked = None
+                if target:
+                    if target not in roots:
+                        roots[target] = self._work_outcome_artifact({'work_outcome_id': target})['id']
+                    root_id = roots[target]
+                elif not replaced and not same and not (hidden and parent):
+                    root_id = row[0]
+                else:
+                    linked = json.loads(row[2])
+                    root_id = self._work_outcome_artifact(linked)['id']
                 if root_id in groups:
-                    reports.setdefault(root_id, []).append(linked)
-            positions = self._native_queue_positions(tasks, timestamp.timestamp())
+                    reports.setdefault(root_id, []).append(linked or json.loads(row[2]))
+            positions = self._native_queue_positions({row[0] for row in rows}, timestamp.timestamp())
             for root, peers in groups.values():
                 outcome = self._native_outcome_projection(root, tasks, [], decisions, timestamp, positions,
                     peers + reports.get(root['id'], []))
