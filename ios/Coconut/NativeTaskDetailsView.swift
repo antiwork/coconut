@@ -280,23 +280,6 @@ struct NativeTaskDetailsView: View {
         TrackedWorkItem.nativeTasks(in: store.artifacts, botId: botId, tasks: store.tasks, includeDismissed: true)
     }
 
-    private struct Groups {
-        var active: [TrackedWorkItem] = [], idle: [TrackedWorkItem] = [], recent: [TrackedWorkItem] = [], older: [TrackedWorkItem] = []
-
-        /// Only the bot's own tasks count as idle, because the Mac archives only those.
-        init(_ items: [TrackedWorkItem], botId: String, at date: Date) {
-            for item in items {
-                let waits = item.artifact.botId == botId && item.isIdle(at: date)
-                if item.canOfferCheckoutRecovery || (!item.isFinished && !waits) { active.append(item) }
-                else if !item.isFinished { idle.append(item) }
-                else if item.isRecent(at: date) { recent.append(item) }
-                else { older.append(item) }
-            }
-            recent.sort { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
-            older.sort { ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast) }
-        }
-    }
-
     private func archiveTitle(_ count: Int) -> String {
         if archiving { return "Archiving…" }
         return count == 1 ? "Archive 1 idle task" : "Archive \(count) idle tasks"
@@ -390,7 +373,7 @@ struct NativeTaskDetailsView: View {
         }
     }
 
-    @ViewBuilder private func taskSections(_ groups: Groups) -> some View {
+    @ViewBuilder private func taskSections(_ groups: TrackedWorkItem.Groups) -> some View {
         if items.isEmpty {
             Text("No tasks").foregroundStyle(.secondary)
         }
@@ -423,7 +406,7 @@ struct NativeTaskDetailsView: View {
     var body: some View {
         List {
             pendingRecovery
-            taskSections(Groups(items, botId: botId, at: now))
+            taskSections(TrackedWorkItem.Groups(items, at: now))
         }
         .task {
             while !Task.isCancelled {
@@ -458,7 +441,7 @@ struct NativeTaskDetailsView: View {
             Button("Archive \(items.count)", role: .destructive) {
                 archiving = true
                 Task {
-                    error = (await store.archiveIdleWork(botId: botId, items: items)).map { NativeTaskDetailsError(origin: .stopTask, message: $0) }
+                    error = (await store.archiveIdleWork(items)).map { NativeTaskDetailsError(origin: .stopTask, message: $0) }
                     archiving = false
                 }
             }.accessibilityIdentifier("confirm-archive-idle-tasks")
