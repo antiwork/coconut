@@ -71,6 +71,9 @@ final class AppStore {
     @ObservationIgnored private var nativeSettingsPending = false
     @ObservationIgnored private var nativeSettingsRequiredCursor = 0
     var historyLoading: Set<String> = []
+    /// Bots whose Task details can load finished Work that the Mac left out of the recent state.
+    var olderWorkBotIds: Set<String> = []
+    var olderWorkLoading: Set<String> = []
     var remoteSearchQuery = ""
     var remoteSearchBotIds: Set<String> = []
     @ObservationIgnored private var snapshotEpoch = UUID()
@@ -305,7 +308,7 @@ final class AppStore {
             ProtectedCache.remove("checkout-recovery.json")
         }
         bots = []; tasks = []; messages = []; decisions = []; artifacts = []; learning = []
-        routines = []
+        routines = []; olderWorkBotIds = []
         approvals = nil; parallelWork = nil; apiFallback = nil; workCapacity = nil; mcpServers = []
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
         cursor = 0
@@ -1661,6 +1664,8 @@ final class AppStore {
         if messages != snapshot.messages { messages = snapshot.messages }
         if decisions != snapshot.decisions { decisions = snapshot.decisions }
         if artifacts != snapshot.artifacts { artifacts = snapshot.artifacts }
+        let olderWork = Set(snapshot.olderWorkBotIds ?? [])
+        if olderWorkBotIds != olderWork { olderWorkBotIds = olderWork }
         approvals = snapshot.approvals
         workCapacity = snapshot.workCapacity
         parallelWork = snapshot.parallelWork
@@ -1860,10 +1865,30 @@ final class AppStore {
             state.messages = StateUpdates.merge(state.messages, into: page.messages)
             state.tasks = StateUpdates.merge(state.tasks, into: page.tasks ?? [])
             state.decisions = StateUpdates.merge(state.decisions, into: page.decisions ?? [])
+            state.artifacts = StateUpdates.merge(state.artifacts, into: page.artifacts ?? [])
             state.historyBefore?[botId] = page.before
             apply(state, persist: true)
             return page.before != before
         } catch { report(error); return false }
+    }
+
+    /// Load the finished Work that the Mac left out of the recent state for one bot's Task details.
+    func loadOlderWork(_ botId: String) async {
+        guard let client, olderWorkBotIds.contains(botId), !olderWorkLoading.contains(botId) else { return }
+        let generation = connectionGeneration
+        let epoch = snapshotEpoch
+        olderWorkLoading.insert(botId)
+        defer { olderWorkLoading.remove(botId) }
+        do {
+            let page: OlderWorkPage = try await client.request("bots/\(botId)/work/older")
+            guard self.client === client, generation == connectionGeneration, epoch == snapshotEpoch,
+                  var state = cachedState else { return }
+            // Current cards win if an update changes one while this request runs.
+            state.artifacts = StateUpdates.merge(state.artifacts, into: page.artifacts)
+            state.tasks = StateUpdates.merge(state.tasks, into: page.tasks)
+            state.olderWorkBotIds?.removeAll { $0 == botId }
+            apply(state, persist: true)
+        } catch { report(error) }
     }
 
     func notificationDestination(_ target: NotificationTarget) async -> NotificationDestination? {

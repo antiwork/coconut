@@ -189,8 +189,15 @@ final class APIClient: @unchecked Sendable {
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        if path == "state" && !fullState { request.setValue("recent", forHTTPHeaderField: "X-Coconut-State") }
-        if path.hasPrefix("updates?") { request.setValue("4", forHTTPHeaderField: "X-Coconut-Updates") }
+        // Task details loads older finished Work on request, so recent content can leave it out.
+        if path == "state" && !fullState {
+            request.setValue("recent", forHTTPHeaderField: "X-Coconut-State")
+            request.setValue("recent", forHTTPHeaderField: "X-Coconut-Work")
+        }
+        if path.hasPrefix("updates?") {
+            request.setValue("4", forHTTPHeaderField: "X-Coconut-Updates")
+            request.setValue("recent", forHTTPHeaderField: "X-Coconut-Work")
+        }
         request.httpBody = body
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
