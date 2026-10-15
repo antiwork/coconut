@@ -121,7 +121,8 @@ row) in the `.xctestrun` file. Every pairing code must return one device for the
 
 - Decision and work-card events still resend every work card. They are about 5% of updates and most of the remaining bytes.
 - Each structural update decodes the whole task table on the server, about 0.4 s on the laptop.
-- A reset after more than 1,000 events sends the full 3.7 MB state. Most of it is old finished work for Task details.
+- A reset leaves out finished work older than 7 days, which Task details loads on request. On the live data of
+  October 15 it fell from 4.19 MB to 1.54 MB. See [the reset measurements](performance-2026-10-15.md).
 - Opening and scrolling a conversation spends most of its time in SwiftUI layout of Markdown rows.
 - Use Instruments on an iPhone to confirm these results on a device.
 
