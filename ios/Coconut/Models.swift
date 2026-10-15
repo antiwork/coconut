@@ -587,13 +587,13 @@ extension String {
     }
 }
 
-struct ApprovalMode: Codable, Identifiable, Sendable {
+struct ApprovalMode: Codable, Identifiable, Equatable, Sendable {
     let id: String
     let label: String
     let description: String
 }
 
-struct ApprovalSettings: Codable, Sendable {
+struct ApprovalSettings: Codable, Equatable, Sendable {
     let defaults: String
     let modes: [ApprovalMode]
     enum CodingKeys: String, CodingKey { case defaults = "default", modes }

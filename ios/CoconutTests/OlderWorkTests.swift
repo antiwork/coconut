@@ -83,6 +83,14 @@ final class OlderWorkTests: XCTestCase {
         XCTAssertEqual(Set(items.map(\.artifact.id)), ["current", "older"])
         await store.loadOlderWork(bot)
         XCTAssertEqual(server.requests(to: "/v1/bots/\(bot)/work/older"), 1, "Loaded Work stays until the next reset.")
+
+        // An older message shows its card, which recent content left out.
+        let loaded = await store.loadOlderMessages(bot)
+        XCTAssertTrue(loaded)
+        XCTAssertEqual(store.artifacts.first { $0.id == "history-card" }?.title, "Merged fix")
+
+        // Leaving the foreground writes the saved state at once.
+        store.setForeground(false)
         var saved: SnapshotCache?
         for _ in 0..<40 {
             saved = ProtectedCache.read("snapshot.json")
@@ -90,12 +98,7 @@ final class OlderWorkTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(50))
         }
         XCTAssertEqual(saved?.snapshot.olderWorkBotIds, [])
-        XCTAssertEqual(Set(saved?.snapshot.artifacts.map(\.id) ?? []), ["current", "older"])
-
-        // An older message shows its card, which recent content left out.
-        let loaded = await store.loadOlderMessages(bot)
-        XCTAssertTrue(loaded)
-        XCTAssertEqual(store.artifacts.first { $0.id == "history-card" }?.title, "Merged fix")
+        XCTAssertEqual(Set(saved?.snapshot.artifacts.map(\.id) ?? []), ["current", "older", "history-card"])
         #endif
     }
 }

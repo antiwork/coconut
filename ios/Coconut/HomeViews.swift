@@ -120,11 +120,11 @@ func latestConversationMessage(in messages: [Message]) -> Message? {
     let textMessages = messages.filter {
         $0.kind == "text" && !$0.streaming && $0.reactionEvent == nil && ["user", "assistant"].contains($0.role)
             && !TranscriptPresentation.isSilenceControl($0)
-            && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !TranscriptPresentation.trimmed($0.text, equals: "")
     }
     // Older hosts stored this completion event as a text message.
     let content = textMessages.filter {
-        !($0.role == "assistant" && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == "Ready to review.")
+        !($0.role == "assistant" && TranscriptPresentation.trimmed($0.text, equals: "Ready to review."))
     }
     return (content.isEmpty ? textMessages : content).max {
         ($0.createdAt.apiDate ?? .distantPast) < ($1.createdAt.apiDate ?? .distantPast)
