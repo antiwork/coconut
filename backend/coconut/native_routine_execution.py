@@ -46,6 +46,25 @@ def scheduler_result(result, status):
     return json.dumps(value) if isinstance(result, str) else value
 
 
+def finished_occurrence(task, job):
+    """The service's proof that this task's own occurrence finished. The finished flag alone is not proof."""
+    owner = (job.get('fire_claim') or {}).get('by')
+    proof = task.get('_native_job_completion') or {}
+    if (not task.get('_native_job_finished') or not owner or not job.get('id')
+            or proof.get('job_id') != job['id'] or proof.get('owner') != owner):
+        return False
+    continuation = proof.get('continuation')
+    if continuation is not None:
+        # A failed occurrence continues only through its authenticated delivery to this exact turn.
+        return (isinstance(continuation, dict)
+                and all(isinstance(continuation.get(key), str) and continuation[key]
+                        for key in ('delivery_id', 'task_id', 'turn_id', 'native_task_id'))
+                and continuation['task_id'] == task['id']
+                and continuation.get('turn_id') == task.get('_native_turn_id')
+                and continuation.get('native_task_id') == task.get('_native_outcome_id'))
+    return proof.get('success') is True
+
+
 @contextmanager
 def job_context(request, runtime, config):
     job = request['task'].get('_native_job')
@@ -78,7 +97,12 @@ def job_context(request, runtime, config):
     prompt = _build_job_prompt(job)
     workdir = job.get('workdir') or ''
     if workdir and not Path(workdir).is_dir():
-        raise ValueError('The scheduled working directory does not exist.')
+        if not finished_occurrence(request['task'], job):
+            raise ValueError('The scheduled working directory does not exist.')
+        # The scheduled run is over and its directory can be retired. Its continuation works in
+        # this task's own execution workspace. The bridge still confirms the claim before each tool.
+        workspace = request.get('workspace') or ''
+        workdir = workspace if workspace and Path(workspace).is_dir() else ''
     task_id = request['task']['id']
     # Coconut can pause scheduled turns for approvals and resume them.
     tokens = set_session_vars(cwd=workdir, cron_session=False, session_key=task_id, platform='coconut')
