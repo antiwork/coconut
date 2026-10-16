@@ -580,8 +580,28 @@ class NativeOutcomes:
             return quiet(source) and (source['status'] in ('failed', 'cancelled') or (
                 source['status'] == 'completed' and not self._unfinished_work(source)))
 
+        def delegate_report(candidate, root):
+            # The delegate's own hidden report of the requester's Work. _sync_delegated_work saved each link,
+            # and _register_work saved the reporting task. A missing or different link is not this report.
+            if not (candidate['kind'] == 'work' and candidate.get('_hidden') and root['kind'] == 'work'
+                    and candidate['bot_id'] == owner['bot_id'] and candidate['task_id'] == owner['id']
+                    and candidate.get('_work_report_task_id') == owner['id']
+                    and candidate.get('_work_parent_id') == root['id']
+                    and candidate.get('_same_outcome_as') in (None, root['id'])
+                    and candidate.get('_native_outcome_id') in (None, native['id'])
+                    and root['bot_id'] != owner['bot_id'] and root['bot_id'] == owner.get('source_bot_id')):
+                return False
+            row = self.db.execute('SELECT data FROM tasks WHERE id=?', (root['task_id'],)).fetchone()
+            parent = json.loads(row[0]) if row else None
+            return bool(parent and candidate.get('_work_parent_task_id') ==
+                        (parent.get('_assignment_task_id') or parent['id']))
+
+        reports = []
         for candidate in items:
             root = self._work_outcome_artifact(candidate)
+            if delegate_report(candidate, root):
+                reports.append(root)
+                continue
             # A requester's source audit can delegate for an existing Work outcome of that requester.
             # _source_native_ids lists the native outcomes that the audit commented on. That alone does not
             # prove a delegation, so the Work's own task must also make this call.
@@ -600,6 +620,11 @@ class NativeOutcomes:
                 retained.append(candidate)
             else:
                 retained.append(root)
+        # The report and the one delegated PR of the same Work describe one execution and one outcome.
+        # Two PRs, another Work, or no authenticated PR keep the report's Work, so the choice stays ambiguous.
+        delegated = {a['id'] for a in retained if linked_parent and a['kind'] == 'pr'
+                     and a.get('work_outcome_id') == linked_parent['id']}
+        retained.extend(root for root in reports if not (len(delegated) == 1 and root['id'] == linked_parent['id']))
         items = list({a['id']: a for a in retained}.values())
         if len(items) > 1:
             raise ServiceError(409, 'Choose one retained Work item for this native outcome.')

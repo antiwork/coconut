@@ -333,6 +333,10 @@ there using normal device authentication and a new idempotency key. Pending
 native approvals must still be answered through their existing decision routes.
 An unfinished native outcome resumes in place. Terminal outcomes use the existing
 native successor route, including legacy PR owners without `_work_context_id`.
+A delegate can hold both a hidden report of the requester's Work and the one PR
+that it delegated for that Work. The continuation retains the PR. The report must
+name the owner as its reporting task and the requester's Work and task as its
+parent. Two PRs, another Work, or a missing link still need one chosen Work item.
 
 ## Validation
 
