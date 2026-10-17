@@ -57,19 +57,34 @@ class NativeRoutines:
                     or delivery.get('turn_id') != task['_native_turn_id']
                     or delivery.get('created_at', '') <= failed_at):
                 continue
-            source = self.db.execute('SELECT data FROM tasks WHERE id=?', (delivery.get('source_task_id'),)).fetchone()
-            if not source:
-                continue
-            source = json.loads(source[0])
-            if source['bot_id'] not in (task['bot_id'], task.get('source_bot_id')):
-                continue
-            if not any(m.get('sender_bot_id') == source['bot_id'] and m.get('text') == delivery.get('text')
-                       for m in task.get('_bot_messages', [])):
+            if not self._delivered(task, delivery):
                 continue
             return dict(job_id=job['id'], owner=owner,
                         continuation=dict(task_id=task['id'], turn_id=task['_native_turn_id'],
                                           native_task_id=task['_native_outcome_id'], delivery_id=delivery['id']))
         return {}
+
+    def _delivered(self, task, delivery):
+        """Whether the owner or its requesting bot sent this delivery, and the task holds its message."""
+        source = self.db.execute('SELECT data FROM tasks WHERE id=?', (delivery.get('source_task_id'),)).fetchone()
+        if not source:
+            return False
+        source = json.loads(source[0])
+        return (source['bot_id'] in (task['bot_id'], task.get('source_bot_id'))
+                and any(m.get('sender_bot_id') == source['bot_id'] and m.get('text') == delivery.get('text')
+                        for m in task.get('_bot_messages', [])))
+
+    def _continuation_turns(self, task):
+        """The turns that an authenticated coconut_continue_work delivery gave this task."""
+        turns = set()
+        for row in self.db.execute(ROUTINE_DELIVERIES, (task['id'],)):
+            delivery = json.loads(row[0])
+            receipt = delivery.get('receipt') or {}
+            if (isinstance(receipt.get('native_task_id'), str) and isinstance(delivery.get('turn_id'), str)
+                    and receipt == dict(task_id=task['id'], native_task_id=receipt['native_task_id'], status='queued')
+                    and delivery.get('target_bot_id') == task['bot_id'] and self._delivered(task, delivery)):
+                turns.add(delivery['turn_id'])
+        return turns
 
     def _input_successor(self, task):
         """Whether the native outcome of the task is the successor that Board.sync made for its current input.
@@ -108,6 +123,40 @@ class NativeRoutines:
                     and all(isinstance(r, dict) and r.get('ended') and r.get('outcome') != 'completed' for r in runs)
                     and runs[-1].get('outcome') in FAILED_RUN_OUTCOMES and runs[-1].get('id') == claim.get('run_id'))
 
+    def settled_scheduled_continuation(self, task, card, completion):
+        """Whether Coconut's settle pass archived the scheduled card of a successful routine's continuation.
+
+        A continuation of a finished routine runs in a successor card. Its worker can park that card with
+        kanban_schedule to check again later. Hermes then ends the run as scheduled, nothing re-gates the card, the task
+        completes, and the settle pass archives the card a day later. The work is unfinished, though, and the routine
+        occurrence itself succeeded. Hermes must have confirmed that success for this exact job and owner, and the
+        original card stays as it is. The archived card must be the successor that Board.sync made for an authenticated
+        continuation of this task, holding the current input, also authenticated. Its last run must be the run of the
+        claim of that input, ended as scheduled. No run may have completed, and no run or worker may be left. The guards
+        of settled_failed_occurrence hold too. completion() reads the card from the adapter. Anything else stays final.
+        """
+        claim = task.get('_kanban_claim') or {}
+        turn = task.get('_native_turn_id')
+        key = card.get('idempotency_key')
+        prefix = 'coconut-followup:' + task['id'] + ':'
+        if (not turn or claim.get('input') != turn or type(claim.get('run_id')) is not int
+                or task.get('_kanban_started') != claim['run_id'] or card.get('input_id') != turn
+                or task.get('_native_outcome_id') != card.get('id')
+                or (task.get('_native_occurrence') or {}).get('native_id') in (None, card.get('id'))
+                or not isinstance(key, str) or not key.startswith(prefix)
+                or (task.get('_self_recovery') or {}).get('unknown_tools')
+                or not self._settled_occurrence(task, card, success=True)
+                or not {turn, key[len(prefix):]} <= self._continuation_turns(task)):
+            return False
+        native = completion()
+        runs = native.get('runs')
+        return bool(native.get('id') == card['id'] and native.get('tenant') == task['bot_id']
+                    and native.get('idempotency_key') == key and native.get('status') == 'archived'
+                    and native.get('input_id') == turn and not native.get('current_run_id') and not native.get('worker_pid')
+                    and isinstance(runs, list) and runs
+                    and all(isinstance(r, dict) and r.get('ended') and r.get('outcome') != 'completed' for r in runs)
+                    and runs[-1].get('outcome') == 'scheduled' and runs[-1].get('id') == claim['run_id'])
+
     def keeps_settled_failure(self, task, native):
         """Whether reconciliation keeps a failure whose native task Coconut's settle pass archived.
 
@@ -129,23 +178,33 @@ class NativeRoutines:
 
     def _settled_failure(self, task, card):
         """The checks of settled_failed_occurrence that read only Coconut's records and the snapshot card."""
+        claim = task.get('_kanban_claim') or {}
+        keys = {'coconut:' + task['id']}
+        if task.get('_native_outcome_id') == card.get('id') and claim.get('input'):
+            keys.add('coconut-followup:' + task['id'] + ':' + claim['input'])
+        return (task.get('_native_outcome_id') in (None, card.get('id')) and card.get('idempotency_key') in keys
+                and self._settled_occurrence(task, card, success=False))
+
+    def _settled_occurrence(self, task, card, success):
+        """Whether the settle pass archived the card of this finished occurrence, from Coconut's records and the snapshot.
+
+        Hermes confirmed the outcome of this job and owner. The claim names the card, which Coconut created in this
+        tenant, and which has no run or worker left. Its last activity is within IDLE_AGE, so the phone's idle archive
+        is not it. No person stopped or archived the occurrence, and it has no open input, worker, or unknown tool call.
+        """
         from .kanban_runtime import IDLE_AGE
         job = task.get('_native_job') or {}
         owner = (job.get('fire_claim') or {}).get('by')
         claim = task.get('_kanban_claim') or {}
         last = card.get('last_activity_at')
-        keys = {'coconut:' + task['id']}
-        if task.get('_native_outcome_id') == card.get('id') and claim.get('input'):
-            keys.add('coconut-followup:' + task['id'] + ':' + claim['input'])
-        if (task['status'] != 'failed' or not owner or not job.get('id') or not task.get('_native_job_finished')
-                or task.get('_native_finish_unconfirmed')
+        if (task['status'] != ('completed' if success else 'failed') or not owner or not job.get('id')
+                or not task.get('_native_job_finished') or task.get('_native_finish_unconfirmed')
                 or task.get('routine_id') != str(uuid5(UUID(task['bot_id']), 'cron:' + job['id']))
-                or task.get('_native_job_completion_receipt') != dict(job_id=job['id'], owner=owner, success=False)
-                or task.get('_native_outcome_id') not in (None, card.get('id'))
+                or task.get('_native_job_completion_receipt') != dict(job_id=job['id'], owner=owner, success=success)
                 or claim.get('native_id') != card.get('id') or claim.get('external_id') != task['id']
                 or any(task.get(key) for key in OPEN_INTAKE)
                 or card.get('status') != 'archived' or card.get('tenant') != task['bot_id']
-                or card.get('created_by') != 'coconut' or card.get('idempotency_key') not in keys
+                or card.get('created_by') != 'coconut'
                 or card.get('current_run_id') or card.get('worker_pid')
                 or not isinstance(last, (int, float)) or time.time() - last >= IDLE_AGE):
             return False

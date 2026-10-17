@@ -73,6 +73,15 @@ Hermes keeps the archived task and gives the new input a successor in the same e
 The continuation proof then names the successor, but only while the successor's key names this request and this input.
 Every other archived task stays final.
 
+A continuation of a successful occurrence can also end with `kanban_schedule`, when its work is not finished.
+Hermes ends the run as scheduled, and nothing re-gates the card, so the task completes. The settle pass archives the card a day later.
+That card can still continue in the same execution. Hermes must have confirmed the success of this job and owner,
+and the original card of the occurrence stays as it is. The archived card must be a successor whose key names this request
+and an input of an authenticated `coconut_continue_work` delivery. It must hold the current input, which is authenticated too.
+Its last run must be the run of that input's claim, ended as scheduled, and no run may have completed.
+The other guards of a settled failure hold too. A completed task keeps its status when its card is archived, so the reconciler
+does not cancel it. The new input gets a successor of the archived card in the same execution and workspace, as above.
+
 ## Disagreement report
 
 Coconut and Hermes each keep a lifecycle for a request. The settle pass archives the native task of a finished request.
