@@ -105,6 +105,9 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_provider_failure_retry.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_settle_native_orphans.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_archived_failed_routine_continuation.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_archived_scheduled_routine_continuation.py 2> .runtime/archived-scheduled-routine-continuation.log || { cat .runtime/archived-scheduled-routine-continuation.log; exit 1; }
+          cat .runtime/archived-scheduled-routine-continuation.log
+          grep -qx 'OK' .runtime/archived-scheduled-routine-continuation.log # The native dispatch checks must run, not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_relay_roster.py
           "$COCONUT_HERMES_PYTHON" scripts/test_native_kanban.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON"
           "$COCONUT_HERMES_PYTHON" scripts/test_completed_routine_continuation.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON"

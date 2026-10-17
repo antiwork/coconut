@@ -1057,8 +1057,10 @@ class NativeOutcomes:
             review = native.get('status') == 'review'
             queued = native.get('status') == 'ready' and owner['status'] == 'queued'
             # Coconut archives the task of a failed request itself. Its routine occurrence still continues.
-            settled = native.get('status') == 'archived' and self.settled_failed_occurrence(
-                owner, native, lambda: completion(identity))
+            # So does the scheduled card of a successful occurrence's continuation, which the settle pass also archives.
+            settled = native.get('status') == 'archived' and (
+                self.settled_failed_occurrence(owner, native, lambda: completion(identity))
+                or self.settled_scheduled_continuation(owner, native, lambda: completion(identity)))
             if native.get('status') not in ('triage', 'blocked', 'done', 'scheduled', 'review') and not queued and not settled:
                 raise ServiceError(409, 'This native outcome is not blocked or completed or quiescent queued/review work. Read its current result or activity.')
             # Fresh input can continue an existing PR, but no other respawn guard.
