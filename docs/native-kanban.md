@@ -60,6 +60,19 @@ The owner or requesting bot must send a new explicit `coconut_continue_work` mes
 Replaying the old message returns its saved receipt and does not authorize another input.
 No migration changes the historical delivery or the failed occurrence.
 
+The settle pass archives the native task of a failed occurrence (see the disagreement report below). That occurrence can still continue.
+Hermes must have confirmed the failure of this job and owner, and the occurrence must have no Stop, no open input,
+decision, background process, or unknown tool call, and no running worker.
+The archived task must be the one that Coconut created for the request, in its tenant, ended without success by the run of its claim,
+with no run or worker left. Its last activity must be less than seven days ago, so an idle archive from the phone stays final.
+Coconut reads the runs with the adapter's `completion` operation. An adapter that does not answer admits nothing.
+When a continuation fails again, the settle pass archives its successor too. That successor continues in the same way.
+The reconciler cancels a request when Hermes archives the task of its accepted input. It keeps such a settled routine failure
+failed instead, because no person stopped it. It checks this without the adapter, while the archive is new, and the task keeps the answer.
+Hermes keeps the archived task and gives the new input a successor in the same execution and workspace.
+The continuation proof then names the successor, but only while the successor's key names this request and this input.
+Every other archived task stays final.
+
 ## Disagreement report
 
 Coconut and Hermes each keep a lifecycle for a request. The settle pass archives the native task of a finished request.

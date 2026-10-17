@@ -412,8 +412,10 @@ class NativeKanban(NativeOutcomes):
                                     self._put('artifacts', artifact)
                                     self._event('artifact.updated', self._public(artifact), artifact['bot_id'], identity)
                         accepted = str(item.get('_native_turn_id') or item.get('_message_id') or item['id'])
+                        # The settle pass archives a failed request too. A settled routine failure is not a Stop.
                         if (native['status'] in ('done', 'archived') and native.get('input_id') == accepted
-                                and item['status'] not in ('completed', 'cancelled')):
+                                and item['status'] not in ('completed', 'cancelled')
+                                and not (table == 'tasks' and self.keeps_settled_failure(item, native))):
                             if native['status'] == 'done' and item.get('_steering'):
                                 self._advance_input(item)
                                 item.update(status='queued', summary='Applying your follow-up')
