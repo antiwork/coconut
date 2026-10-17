@@ -119,6 +119,24 @@ class ArchivedOccurrence:
         self.store._put('tasks', continued)
         return continued
 
+    def settled_successor(self, owner, source):
+        """The continuation fails, the settle pass archives its successor, and reconciliation reads that snapshot."""
+        self.resume(source)
+        continued = self.successor(owner)
+        self.store.emit(owner['id'], 'failed', dict(summary='The recheck tool failed.'))
+        # Board.sync recorded the accepted input of the successor. The settle pass archived it after the failure.
+        self.store.kanban.tasks[owner['id']].update(status='archived', current_run_id=None, worker_pid=None,
+                                                    claim_lock=None, last_activity_at=time.time() - 60)
+        self.assertEqual(self.store.kanban.tasks[owner['id']]['input_id'], continued['_native_turn_id'])
+        self.runs = [dict(id=42, status='blocked', outcome='worker_failed', ended=True)]
+        self.store._reconcile_kanban()
+        return continued
+
+    def cancellations(self, owner):
+        return [json.loads(row[0]) for row in self.store.db.execute(
+            "SELECT data FROM events WHERE task_id=? AND type='task.updated' "
+            "AND json_extract(data,'$.status')='cancelled'", (owner['id'],))]
+
 
 class ArchivedFailedRoutineAdmissionTests(ArchivedOccurrence, unittest.TestCase):
     def assertRejected(self, owner, source, pattern='.'):
@@ -298,6 +316,87 @@ class ArchivedFailedRoutineAdmissionTests(ArchivedOccurrence, unittest.TestCase)
             self.store.emit(source['id'], 'work_continue', dict(task_id='t_successor', message='Another recheck.'))
         self.assertEqual(self.store._get('tasks', owner['id']), failed)
 
+    def test_reconciliation_keeps_the_failure_of_a_settled_successor(self):
+        owner, source = self.archived()
+        continued = self.settled_successor(owner, source)
+        failed = self.store._get('tasks', owner['id'])
+        self.assertEqual(failed['status'], 'failed', 'Reconciliation cancelled a failure that no person stopped.')
+        self.assertEqual(self.cancellations(owner), [])
+        self.assertEqual(failed['_native_outcome_id'], 't_successor')
+        self.assertEqual(failed['_native_job_completion_receipt'], dict(job_id=JOB, owner=OWNER, success=False))
+        # Later passes keep it, also after the seven days in which it can continue.
+        card = self.store.kanban.tasks[owner['id']]
+        card['last_activity_at'] = time.time() - 8 * 86400
+        self.store._reconcile_kanban()
+        self.assertEqual(self.store._get('tasks', owner['id']), failed)
+        self.assertEqual(self.cancellations(owner), [])
+        card['last_activity_at'] = time.time() - 60
+        receipt = self.store.emit(source['id'], 'work_continue', dict(task_id='t_successor', message='Recheck again.'))
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_successor', status='queued'))
+        again = self.store._get('tasks', owner['id'])
+        self.assertNotEqual(again['_native_turn_id'], continued['_native_turn_id'])
+        # Board.sync makes a successor for this third input. The reconciler binds it before Hermes claims it.
+        self.store.kanban.tasks[owner['id']] = dict(self.card, id='t_successor_2', status='ready', input_id=None,
+            idempotency_key='coconut-followup:' + owner['id'] + ':' + again['_native_turn_id'])
+        self.store._reconcile_kanban()
+        queued = self.store._get('tasks', owner['id'])
+        self.assertEqual((queued['status'], queued['_native_outcome_id']), ('queued', 't_successor_2'))
+        proof = self.store.native_routine_completion_input(queued)
+        self.assertEqual(proof['completion'], dict(job_id=JOB, owner=OWNER, success=False, native_confirmed=True))
+        self.assertEqual(proof['continuation']['native_task_id'], 't_successor_2')
+        self.assertEqual(self.store._active_routine_task(owner['routine_id'])['id'], owner['id'])
+        # Hermes claims it. The worker receives the same proof for this turn.
+        queued.update(status='working', _kanban_claim=dict(queued['_kanban_claim'], native_id='t_successor_2',
+                                                           run_id=43, input=queued['_native_turn_id']))
+        self.store.kanban.tasks[owner['id']].update(status='running', current_run_id=43, worker_pid=4343)
+        proof = self.store.native_routine_completion_input(queued)
+        self.assertEqual(proof['continuation']['native_task_id'], 't_successor_2')
+        self.assertTrue(finished_occurrence(queued | {'_native_job_completion': proof}, queued['_native_job']))
+        stale = dict(queued, _native_job_completion=dict(proof, continuation=dict(
+            proof['continuation'], native_task_id='t_successor')))
+        self.assertFalse(finished_occurrence(stale, queued['_native_job']))
+
+    def test_reconciliation_still_cancels_other_archived_results(self):
+        cases = dict(
+            # The phone archived it after a week without activity.
+            idle=lambda task, card: card.update(last_activity_at=time.time() - 8 * 86400),
+            foreign=lambda task, card: card.update(tenant='another-bot'),
+            another_input=lambda task, card: card.update(
+                idempotency_key='coconut-followup:' + task['id'] + ':another-input'),
+            unconfirmed=lambda task, card: task.update(_native_finish_unconfirmed=True),
+            unknown_tool=lambda task, card: self.store._put('native_receipts', dict(id='unknown-' + task['id'],
+                task_id=task['id'], turn_id=task['_native_turn_id'], state='executing', action_hash='hash',
+                action={'name': 'write_file', 'arguments': {}}, created_at='2026-10-16T17:00:00Z')),
+            plain=lambda task, card: [task.pop('_native_job'), task.pop('routine_id')])
+        for name, change in cases.items():
+            with self.subTest(name):
+                ArchivedOccurrence.setUp(self)  # A fresh store: one routine claim per store.
+                owner, source = self.archived()
+                self.resume(source)
+                self.successor(owner)
+                self.store.emit(owner['id'], 'failed', dict(summary='The recheck tool failed.'))
+                task = self.store._get('tasks', owner['id'])
+                card = self.store.kanban.tasks[owner['id']]
+                card.update(status='archived', current_run_id=None, worker_pid=None, claim_lock=None,
+                            last_activity_at=time.time() - 60)
+                change(task, card)
+                self.store._put('tasks', task)
+                self.store._reconcile_kanban()
+                self.assertEqual(self.store._get('tasks', owner['id'])['status'], 'cancelled')
+                self.assertEqual(len(self.cancellations(owner)), 1)
+
+    def test_stop_after_the_failure_stays_cancelled(self):
+        owner, source = self.archived()
+        self.settled_successor(owner, source)
+        stopped = dict(self.store._get('tasks', owner['id']), status='cancelled')
+        self.store._put('tasks', stopped)
+        self.store._event('task.updated', stopped, owner['bot_id'], owner['id'])
+        self.store._reconcile_kanban()
+        self.assertEqual(self.store._get('tasks', owner['id']), stopped)
+        with self.assertRaises(ServiceError):
+            self.store.emit(source['id'], 'work_continue', dict(task_id='t_successor', message='Continue anyway.'))
+        self.assertEqual(self.store._get('tasks', owner['id']), stopped)
+
     def test_adapter_without_an_answer_admits_nothing(self):
         owner, source = self.archived()
         def silent(request):
@@ -438,11 +537,22 @@ class ArchivedFailedRoutineNativeTests(unittest.TestCase):
     def setUp(self):
         native_fixtures.NativeKanbanTests.setUp(self)
         self.provider.tasks = []
+        self.fail_turns = False
         start = self.provider.start_task
         def record(task, bot, history, emit):
             self.provider.tasks.append(copy.deepcopy(task))
+            if self.fail_turns:
+                emit('failed', dict(summary='The recheck tool failed.'))
+                return
             start(task, bot, history, emit)
         self.provider.start_task = record
+
+    def dispatched(self, count):
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and len(self.provider.tasks) < count:
+            self.tick()
+        self.assertEqual(len(self.provider.tasks), count, 'The continuation did not dispatch.')
+        return self.provider.tasks[-1]
 
     def native(self, identity):
         program = ('import json\nt = board.kb.get_task(board.conn, sys.argv[2])\n'
@@ -499,11 +609,7 @@ class ArchivedFailedRoutineNativeTests(unittest.TestCase):
             message='The scheduled checkout retired. Recheck in this execution workspace.'))
         self.assertEqual(receipt['native_task_id'], archived)
         continued = self.service._get('tasks', owner['id'])
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline and not self.provider.tasks:
-            self.tick()
-        self.assertEqual(len(self.provider.tasks), 1, 'The continuation did not dispatch.')
-        task = self.provider.tasks[0]
+        task = self.dispatched(1)
         successor = task['_native_outcome_id']
         self.assertNotEqual(successor, archived)
         native = self.native(successor)
@@ -520,6 +626,44 @@ class ArchivedFailedRoutineNativeTests(unittest.TestCase):
         self.assertTrue(finished_occurrence(task, task['_native_job']))
         self.assertEqual(task['_native_job'], owner['_native_job'])
         self.assertEqual(task['_kanban_workspace'], workspace)
+
+    def test_settled_successor_of_a_failed_continuation_stays_failed_and_continues(self):
+        owner, source, archived, workspace = self.failed_occurrence()
+        self.fail_turns = True
+        self.service.emit(source['id'], 'work_continue', dict(task_id=archived, message='Recheck in this workspace.'))
+        first = self.dispatched(1)
+        successor = first['_native_outcome_id']
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and self.service._get('tasks', owner['id'])['status'] != 'failed':
+            time.sleep(.05)
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'failed')
+        # Coconut finishes the failed run, and the settle pass archives the successor.
+        self.native_program("assert board.finish(sys.argv[2], int(sys.argv[3]), 'blocked', 'The recheck tool failed.')",
+                            successor, str(first['_kanban_claim']['run_id']))
+        self.native_program("assert board.archive_settled(sys.argv[2], None)", successor)
+        # A real dispatcher pass reconciles the archived successor of the accepted input before the next continuation.
+        self.tick()
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'archived')
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['input_id'], first['_native_turn_id'])
+        failed = self.service._get('tasks', owner['id'])
+        self.assertEqual(failed['status'], 'failed', 'Reconciliation cancelled a failure that no person stopped.')
+        self.assertFalse(any(json.loads(row[0]).get('status') == 'cancelled' for row in self.service.db.execute(
+            "SELECT data FROM events WHERE task_id=? AND type='task.updated'", (owner['id'],))))
+        receipt = self.service.emit(source['id'], 'work_continue', dict(task_id=successor, message='Recheck again.'))
+        self.assertEqual(receipt['native_task_id'], successor)
+        continued = self.service._get('tasks', owner['id'])
+        second = self.dispatched(2)
+        latest = second['_native_outcome_id']
+        native = self.native(latest)
+        self.assertEqual(native['parents'], [successor])
+        self.assertEqual(native['key'], 'coconut-followup:' + owner['id'] + ':' + continued['_native_turn_id'])
+        self.assertEqual((native['tenant'], native['path']), (owner['bot_id'], workspace))
+        proof = second['_native_job_completion']
+        self.assertEqual(proof['completion'], dict(job_id=JOB, owner=OWNER, success=False, native_confirmed=True))
+        self.assertEqual(proof['continuation']['native_task_id'], latest)
+        self.assertEqual(proof['continuation']['turn_id'], continued['_native_turn_id'])
+        self.assertTrue(finished_occurrence(second, second['_native_job']))
+        self.assertEqual(second['_kanban_workspace'], workspace)
 
     def test_cancelled_occurrence_stays_archived(self):
         owner, source, archived, _ = self.failed_occurrence()

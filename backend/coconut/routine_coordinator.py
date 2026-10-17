@@ -96,6 +96,39 @@ class NativeRoutines:
         A continuation that failed again has its successor archived the same way. That card is the successor of the
         claim's input. Anything else stays final.
         """
+        if not self._settled_failure(task, card):
+            return False
+        claim = task.get('_kanban_claim') or {}
+        native = completion()
+        runs = native.get('runs')
+        return bool(native.get('id') == card['id'] and native.get('tenant') == task['bot_id']
+                    and native.get('idempotency_key') == card['idempotency_key'] and native.get('status') == 'archived'
+                    and not native.get('current_run_id') and not native.get('worker_pid')
+                    and isinstance(runs, list) and runs
+                    and all(isinstance(r, dict) and r.get('ended') and r.get('outcome') != 'completed' for r in runs)
+                    and runs[-1].get('outcome') in FAILED_RUN_OUTCOMES and runs[-1].get('id') == claim.get('run_id'))
+
+    def keeps_settled_failure(self, task, native):
+        """Whether reconciliation keeps a failure whose native task Coconut's settle pass archived.
+
+        The reconciler cancels a request when Hermes archives the task of its accepted input. The settle pass archives
+        the task of every failed request, though, and no person stopped this one, so its failure stays and the
+        occurrence can continue. The reconciler sees the archive within a pass, while the age check still tells it
+        from the phone's idle archive. The task keeps that answer, so a later pass does not cancel it either.
+        Only Coconut's records and the snapshot are read, because the reconciler holds the service lock.
+        """
+        if task['status'] != 'failed' or native.get('status') != 'archived':
+            return False
+        if task.get('_native_settled_failure') == native['id']:
+            return True
+        if not self._settled_failure(task, native):
+            return False
+        task['_native_settled_failure'] = native['id']
+        self._put('tasks', task)
+        return True
+
+    def _settled_failure(self, task, card):
+        """The checks of settled_failed_occurrence that read only Coconut's records and the snapshot card."""
         from .kanban_runtime import IDLE_AGE
         job = task.get('_native_job') or {}
         owner = (job.get('fire_claim') or {}).get('by')
@@ -133,14 +166,7 @@ class NativeRoutines:
                                    "json_extract(data,'$._execution_task_id')) AND json_extract(data,'$.decided_by')='archive' "
                                    "LIMIT 1", (task['id'],)).fetchone()):
             return False
-        native = completion()
-        runs = native.get('runs')
-        return bool(native.get('id') == card['id'] and native.get('tenant') == task['bot_id']
-                    and native.get('idempotency_key') == card['idempotency_key'] and native.get('status') == 'archived'
-                    and not native.get('current_run_id') and not native.get('worker_pid')
-                    and isinstance(runs, list) and runs
-                    and all(isinstance(r, dict) and r.get('ended') and r.get('outcome') != 'completed' for r in runs)
-                    and runs[-1].get('outcome') in FAILED_RUN_OUTCOMES and runs[-1].get('id') == claim.get('run_id'))
+        return True
 
     def native_routine_completion_input(self, task):
         completion = self._native_routine_completion_input(task)
