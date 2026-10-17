@@ -71,6 +71,11 @@ class _NativeSnapshotsNeeded(Exception):
         self.identities = identities
 
 
+class _NativeCardNeeded(Exception):
+    def __init__(self, identity):
+        self.identity = identity
+
+
 class NativeOutcomes:
     def _unlink_conversation_current(self, child):
         epoch = self._setting('conversation_epoch')
@@ -976,6 +981,7 @@ class NativeOutcomes:
     def continue_native_work(self, source_id, payload):
         requested = set()
         snapshots = {}
+        cards = {}
         with self.lock:
             source = self._get('tasks', source_id)
             invocation = (source.get('_native_turn_id'), source.get('_kanban_claim'))
@@ -985,12 +991,25 @@ class NativeOutcomes:
             if missing:
                 raise _NativeSnapshotsNeeded(sorted(missing))
 
+        def completion(identity):
+            if identity not in cards:
+                raise _NativeCardNeeded(identity)
+            return cards[identity]
+
         # The scheduler holds its adapter lock while spawn takes self.lock.
         # Roll back and release the service transaction before querying it, then
         # re-read all ownership, peer links and pause guards in a new transaction.
         for attempt in range(5):
             try:
-                return self._continue_native_work(source_id, payload, snapshot_missing, snapshots, invocation)
+                return self._continue_native_work(source_id, payload, snapshot_missing, snapshots, invocation, completion)
+            except _NativeCardNeeded as pending:
+                if attempt == 4:
+                    break
+                # An adapter that cannot answer proves nothing about the card.
+                try:
+                    cards[pending.identity] = self.kanban.call({'op': 'completion', 'id': pending.identity}).get('card') or {}
+                except Exception:
+                    cards[pending.identity] = {}
             except _NativeSnapshotsNeeded as pending:
                 if attempt == 4:
                     break
@@ -1003,7 +1022,7 @@ class NativeOutcomes:
         from .service import ServiceError
         raise ServiceError(409, 'The native work changed while checking it. Read its current activity and retry.')
 
-    def _continue_native_work(self, source_id, payload, snapshot_missing, snapshots, invocation):
+    def _continue_native_work(self, source_id, payload, snapshot_missing, snapshots, invocation, completion):
         from .service import ServiceError, now, uid, digest, encoded, require_text
         from .work_capacity import execution_key
         with self.transaction():
@@ -1037,7 +1056,10 @@ class NativeOutcomes:
             scheduled = native.get('status') == 'scheduled'
             review = native.get('status') == 'review'
             queued = native.get('status') == 'ready' and owner['status'] == 'queued'
-            if native.get('status') not in ('triage', 'blocked', 'done', 'scheduled', 'review') and not queued:
+            # Coconut archives the task of a failed request itself. Its routine occurrence still continues.
+            settled = native.get('status') == 'archived' and self.settled_failed_occurrence(
+                owner, native, lambda: completion(identity))
+            if native.get('status') not in ('triage', 'blocked', 'done', 'scheduled', 'review') and not queued and not settled:
                 raise ServiceError(409, 'This native outcome is not blocked or completed or quiescent queued/review work. Read its current result or activity.')
             # Fresh input can continue an existing PR, but no other respawn guard.
             # Native claim_task still enforces dependencies at dispatch time.

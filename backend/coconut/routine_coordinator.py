@@ -12,6 +12,9 @@ ROUTINE_DELIVERIES = "SELECT data FROM deliveries WHERE json_extract(data,'$.rec
 # Open intake of a waiting occurrence. Any of these means that the occurrence still works or has input to take.
 OPEN_INTAKE = ('_steering', '_live_messages', '_blocked_followup', '_native_reply_pending', '_return_pending',
                '_resume_decision', '_background_completion', '_pr_review', '_work_resume', '_routine_pending_bot_result')
+# Hermes outcomes of a run that ended without success. A completed run, or one that an archive reclaimed, is not one.
+# An archive reclaims only the current run, so an earlier reclaimed run comes from a restart.
+FAILED_RUN_OUTCOMES = ('blocked', 'crashed', 'gave_up', 'spawn_failed', 'stale', 'timed_out', 'worker_failed')
 
 
 class NativeRoutines:
@@ -38,13 +41,19 @@ class NativeRoutines:
                     failed_at = stamp
         if not triggered or not failed_at:
             return {}
+        successor = self._input_successor(task)
         rows = self.db.execute(ROUTINE_DELIVERIES, (task['id'],))
         for row in rows:
             delivery = json.loads(row[0])
             expected = dict(task_id=task['id'], native_task_id=task['_native_outcome_id'], status='queued')
+            receipt = delivery.get('receipt') or {}
+            # A continuation of an archived task runs in the successor that Hermes made for this input.
+            if (successor and isinstance(receipt.get('native_task_id'), str)
+                    and receipt == dict(expected, native_task_id=receipt['native_task_id'])):
+                expected = receipt
             # Old deliveries without an input binding require a new explicit
             # continuation. Recovery metadata alone cannot authorize a new turn.
-            if (delivery.get('receipt') != expected or delivery.get('target_bot_id') != task['bot_id']
+            if (receipt != expected or delivery.get('target_bot_id') != task['bot_id']
                     or delivery.get('turn_id') != task['_native_turn_id']
                     or delivery.get('created_at', '') <= failed_at):
                 continue
@@ -61,6 +70,77 @@ class NativeRoutines:
                         continuation=dict(task_id=task['id'], turn_id=task['_native_turn_id'],
                                           native_task_id=task['_native_outcome_id'], delivery_id=delivery['id']))
         return {}
+
+    def _input_successor(self, task):
+        """Whether the native outcome of the task is the successor that Board.sync made for its current input.
+
+        Hermes keeps an archived task. New input to it gets a child task whose key names the request and the input.
+        The key does not name the parent. The delivery names it. The reconciler binds the successor before Hermes
+        claims it, so the claim of the previous input can remain until dispatch. A claim of this input names the successor.
+        """
+        card = (self.kanban.tasks if getattr(self, 'kanban', None) else {}).get(task['id']) or {}
+        claim = task.get('_kanban_claim') or {}
+        return (card.get('id') == task['_native_outcome_id']
+                and (claim.get('input') != task['_native_turn_id'] or claim.get('native_id') == card['id'])
+                and card.get('tenant') == task['bot_id'] and card.get('created_by') == 'coconut'
+                and card.get('idempotency_key') == 'coconut-followup:' + task['id'] + ':' + task['_native_turn_id'])
+
+    def settled_failed_occurrence(self, task, card, completion):
+        """Whether Coconut's own settle pass archived the native task of this failed routine occurrence.
+
+        _settle_native_orphans archives the waiting task of a failed request after a few minutes. A person's Stop
+        cancels the request instead, and the phone's idle archive takes only a task that waited for IDLE_AGE. Hermes
+        must have confirmed the failure of this exact job and owner, and the occurrence must hold no input, decision,
+        or tool call. The archived task must be the one that Coconut created for this request, ended by the run of
+        its claim without success, with no run or worker left. completion() reads that card from the adapter.
+        A continuation that failed again has its successor archived the same way. That card is the successor of the
+        claim's input. Anything else stays final.
+        """
+        from .kanban_runtime import IDLE_AGE
+        job = task.get('_native_job') or {}
+        owner = (job.get('fire_claim') or {}).get('by')
+        claim = task.get('_kanban_claim') or {}
+        last = card.get('last_activity_at')
+        keys = {'coconut:' + task['id']}
+        if task.get('_native_outcome_id') == card.get('id') and claim.get('input'):
+            keys.add('coconut-followup:' + task['id'] + ':' + claim['input'])
+        if (task['status'] != 'failed' or not owner or not job.get('id') or not task.get('_native_job_finished')
+                or task.get('_native_finish_unconfirmed')
+                or task.get('routine_id') != str(uuid5(UUID(task['bot_id']), 'cron:' + job['id']))
+                or task.get('_native_job_completion_receipt') != dict(job_id=job['id'], owner=owner, success=False)
+                or task.get('_native_outcome_id') not in (None, card.get('id'))
+                or claim.get('native_id') != card.get('id') or claim.get('external_id') != task['id']
+                or any(task.get(key) for key in OPEN_INTAKE)
+                or card.get('status') != 'archived' or card.get('tenant') != task['bot_id']
+                or card.get('created_by') != 'coconut' or card.get('idempotency_key') not in keys
+                or card.get('current_run_id') or card.get('worker_pid')
+                or not isinstance(last, (int, float)) or time.time() - last >= IDLE_AGE):
+            return False
+        worker = self.running.get(task['id'])
+        if worker and worker.is_alive():
+            return False
+        triggered = False
+        for kind, raw in self.db.execute(COMPLETION_EVENTS, (task['id'], task['bot_id'])):
+            data = json.loads(raw)
+            if kind == 'routine.triggered':
+                if triggered or data != dict(routine_id=task['routine_id'], task_id=task['id']):
+                    return False
+                triggered = True
+            if kind == 'task.updated' and triggered and data.get('status') == 'cancelled':
+                return False
+        if (not triggered or self._native_task_receipts(task['id'], state='executing')
+                or self.db.execute("SELECT 1 FROM decisions WHERE ? IN (json_extract(data,'$.task_id'), "
+                                   "json_extract(data,'$._execution_task_id')) AND json_extract(data,'$.decided_by')='archive' "
+                                   "LIMIT 1", (task['id'],)).fetchone()):
+            return False
+        native = completion()
+        runs = native.get('runs')
+        return bool(native.get('id') == card['id'] and native.get('tenant') == task['bot_id']
+                    and native.get('idempotency_key') == card['idempotency_key'] and native.get('status') == 'archived'
+                    and not native.get('current_run_id') and not native.get('worker_pid')
+                    and isinstance(runs, list) and runs
+                    and all(isinstance(r, dict) and r.get('ended') and r.get('outcome') != 'completed' for r in runs)
+                    and runs[-1].get('outcome') in FAILED_RUN_OUTCOMES and runs[-1].get('id') == claim.get('run_id'))
 
     def native_routine_completion_input(self, task):
         completion = self._native_routine_completion_input(task)
