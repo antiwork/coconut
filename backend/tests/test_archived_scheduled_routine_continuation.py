@@ -595,6 +595,11 @@ class ArchivedScheduledRoutineNativeTests(unittest.TestCase):
         while time.monotonic() < deadline and self.service._get('tasks', owner['id'])['status'] != 'completed':
             time.sleep(.05)
         self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'completed')
+        # The turn's thread ends after it reports. Until then the task counts as running, for continuation and settle alike.
+        worker = self.service.running.get(owner['id'])
+        if worker:
+            worker.join(20)
+            self.assertFalse(worker.is_alive(), 'The completed turn did not end.')
 
     def native(self, identity):
         program = ('import json\nt = board.kb.get_task(board.conn, sys.argv[2])\n'
@@ -635,6 +640,12 @@ class ArchivedScheduledRoutineNativeTests(unittest.TestCase):
             owner.update(_native_job_finished=True, _native_finish_unconfirmed=False, _native_job_completion_receipt=dict(SUCCESS))
             self.service._put('tasks', owner)
         self.assertEqual(owner['_native_occurrence']['native_id'], identity)
+        # The next dispatcher pass reads the committed card before any continuation, as the scheduler does.
+        # The cached snapshot above still shows the card ready, from before the claim.
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._reconcile_kanban()
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'done')
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'completed')
         Path(card['workspace_path']).mkdir(parents=True, exist_ok=True)
         source = self.write('/v1/bots/' + self.bot['id'] + '/messages', {'text': 'Check the routine.'})
         source = self.service._get('tasks', source['id'])
