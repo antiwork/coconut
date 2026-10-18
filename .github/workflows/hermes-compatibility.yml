@@ -69,6 +69,9 @@ jobs:
           export COCONUT_REQUIRE_NATIVE=1 # A missing Hermes install fails the native completion proof tests instead of skipping them.
           "$COCONUT_HERMES_PYTHON" -c 'import jsonschema' # Required: this CI regression suite must not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_draft_refresh_schema.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_withdrawal_correction_route.py 2> .runtime/withdrawal-correction-route.log || { cat .runtime/withdrawal-correction-route.log; exit 1; }
+          cat .runtime/withdrawal-correction-route.log
+          grep -qx 'OK' .runtime/withdrawal-correction-route.log # The registered schema check must run, not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_turn_timings.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_live_messages.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_initial_input.py

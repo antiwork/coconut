@@ -47,6 +47,26 @@ process cannot restart it. New external evidence, for example a person who chang
 The card stays open for a person meanwhile.
 Hermes reads the source and keeps, revises, or withdraws the existing question. These checks cannot approve actions.
 Coconut rejects results when the card revision or linked evidence changes during the check.
+A check reads only human messages that can direct its card: replies on that card, and messages that a person sent in the card's own
+outcome. A reply on another card, or a message whose chosen quote is from another conversation, is not input for this card.
+The reply that the chat showed automatically when the person wrote does not count as a chosen quote, so a message sent in the card's
+outcome stays input. The bot audience, the time, and the text alone never make a message relevant. Each message keeps its task,
+thread, card, and chosen quote.
+
+A withdrawal records the check that made it. When maintenance finds that a check withdrew a suggestion or message draft in error,
+`coconut_correct_withdrawal` reopens the same card with its exact draft. Only a turn of the execution that owns the card, or a turn of
+an execution that it genuinely delegated to in the same thread, sees and can use the tool. A genuine delegation is a service delivery
+that set the delegate's reply link to the owner. A return, a progress reply, or a callback to the requester gives no authority.
+Coconut reads that authority from service records, never from tool arguments or bot names.
+The call names the card revision, the withdrawing check, the draft hash, and the source versions.
+Coconut reads each linked GitHub source during the call and refuses a card that changed. It also refuses
+a card that a person answered, dismissed, replied on, or replaced, a card with a later human message in its outcome, a running check,
+and a tool result that is not confirmed. A blocking question cannot be reopened, because its withdrawal already resumed the task.
+The later-message rule is deliberately strict. It also applies when a person asked for the repair in that outcome, because Coconut
+cannot tell a maintenance request from direction about the card without reading prose. Such a card stays with the person.
+A repair that the owner or its delegate requests, with no new human message in the outcome, can use the tool.
+The correction is service maintenance, not human approval. It keeps the withdrawal in the card's history, and a replay changes nothing.
+The person then chooses Send or Discard as usual.
 Unchanged checks and failed checks do not add chat messages.
 Native tool approvals and message drafts keep their separate approval rules.
 
