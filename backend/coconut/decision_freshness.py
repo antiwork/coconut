@@ -583,10 +583,21 @@ class DecisionFreshness:
                 decision.update(status='resolved', resolution='work_scope_changed', resolution_context=response,
                                 outcome=evidence, resolved_at=now(), revision=decision['revision'] + 1)
                 # The exact check that withdrew the card. A maintenance correction must name it (see withdrawal_corrections).
+                # It also keeps the source facts this check saw and the receipt IDs of every check of the card, because
+                # maintenance later shortens these contexts and deletes old receipts.
+                from .decision_sources import github_links
+                from copy import deepcopy
+                turns = [row[0] for row in self.db.execute(
+                    "SELECT id FROM contexts WHERE json_extract(data,'$.decision_id')=?", (decision['id'],))]
+                receipt_ids = {row[0] for row in self.db.execute(
+                    "SELECT id FROM native_receipts WHERE json_extract(data,'$.turn_id') IN (SELECT value FROM json_each(?))",
+                    (json.dumps(turns),))} | {r['id'] for r in context.get('_recovery_unknown_tools', [])}
                 decision['_withdrawal'] = dict(context_id=context_id, from_revision=context['_decision_revision'],
                     revision=decision['revision'], conversation_epoch=context.get('_conversation_epoch'),
                     evidence_fingerprint=fingerprint, human_input_ids=list(context.get('_human_input_ids', [])),
-                    resolved_at=decision['resolved_at'])
+                    resolved_at=decision['resolved_at'], receipt_ids=sorted(receipt_ids),
+                    source_facts={url: deepcopy(facts) for url, facts in decision.get('_source_facts', {}).items()
+                                  if url in github_links(decision)})
                 if decision.get('_receipt_id'):
                     record = self._get('native_receipts', decision['_receipt_id'])
                     if record['state'] == 'awaiting_answer':

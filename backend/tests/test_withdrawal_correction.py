@@ -4,7 +4,9 @@ The incident shape: a person replied on another outcome's card, the card check o
 answer, and it withdrew the draft. These tests exercise the service route that a worker receipt reaches (Service.emit).
 """
 import json
+import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import test_automatic_work as fixtures
@@ -19,10 +21,14 @@ BODY = 'Prepare a plan for application-only physical sales.\n\nReturn it for rev
 
 
 class IssueTracker:
-    """GitHub reads without a network. `before_read` runs while the service lock is free."""
+    """GitHub reads without a network, through the GitHubPRTracker record contract. `before_read` runs without the lock.
+
+    `pull_request` makes the record a pull request, as GitHub reports it for `/issues/N` of a PR number.
+    """
 
     def __init__(self, record):
         self.record = record
+        self.pull_request = False
         self.reads = []
         self.before_read = None
 
@@ -32,11 +38,20 @@ class IssueTracker:
     def observe_discussion(self, url):
         return None
 
-    def observe_issue(self, url):
-        self.reads.append(url)
+    def _issue_record(self, route, deadline, *, with_kind=False):
+        self.reads.append('https://github.com/' + route)
         if self.before_read:
             self.before_read()
-        return dict(self.record) if self.record is not None else None
+        facts = dict(self.record) if self.record is not None else None
+        record = None if facts is None else dict(facts, number=int(route.rsplit('/', 1)[1]),
+                                                  **({'pull_request': {'url': route}} if self.pull_request else {}))
+        if with_kind:
+            return (facts, record) if facts is not None else (None, False)
+        return facts
+
+    def observe_issue(self, url):
+        from coconut.decision_sources import github_source
+        return self._issue_record(github_source(url)[1], 0)
 
 
 class Fixture:
@@ -57,7 +72,7 @@ class Fixture:
             self.service._put('tasks', task)
         return task
 
-    def draft(self, task_id=None):
+    def draft(self, task_id=None, url=ISSUE, kind='issue'):
         if task_id is None:
             self.start()
             task_id = self.task['id']
@@ -67,7 +82,7 @@ class Fixture:
         self.service.native_event(task_id, 'native_proposal', dict(
             key='issue-plan-request', title='Ask for an expansion plan?',
             context='Post the draft on the issue to request a plan.',
-            sources=[dict(kind='issue', title='#3730', url=ISSUE)], source_revisions={ISSUE: REVISION},
+            sources=[dict(kind=kind, title='#3730', url=url)], source_revisions={url: REVISION},
             draft=dict(channel='GitHub', recipient=ISSUE, sender='owner', body=BODY)))
         self.service.running.clear()
         self.set_task(task_id, status='completed')
@@ -197,7 +212,7 @@ class WithdrawalCorrectionTests(Fixture, unittest.TestCase):
         self.assertEqual(self.service._all('tasks'), tasks)
         self.assertEqual(self.service._all('messages'), messages)
         events = [json.loads(row[0]) for row in self.service.db.execute(
-            "SELECT data FROM events WHERE type='decision.withdrawal_corrected'")]
+            "SELECT data FROM events WHERE type='maintenance.withdrawal_corrected'")]
         self.assertEqual([e['decision_id'] for e in events], [decision['id']])
         # A replay returns the same receipt and changes nothing.
         replay = self.correct(helper, self.payload(withdrawn, context))
@@ -659,13 +674,88 @@ class DurableToolEffectTests(Fixture, unittest.TestCase):
         self.service._put('native_receipts', record)
         return record
 
-    def finish_withdrawal(self, decision, check):
+    def finish_withdrawal(self, decision, check, legacy=True):
         self.service.refresh_decision(check['id'], dict(status='withdraw', evidence='The issue owner closed this request.'))
         self.service._cancel_stale_decision_refreshes()
         withdrawn = self.service._get('decisions', decision['id'])
-        withdrawn.pop('_withdrawal', None)
-        self.service._put('decisions', withdrawn)
+        if legacy:
+            withdrawn.pop('_withdrawal', None)
+            self.service._put('decisions', withdrawn)
         return withdrawn, self.service._get('contexts', check['id'])
+
+    def age_outcome(self, days=10):
+        """Leave every task finished and unchanged for `days`, so receipt cleanup treats the outcome as idle."""
+        old = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        with self.service.transaction():
+            for task in self.service._all('tasks'):
+                status = task['status'] if task['status'] in ('completed', 'failed', 'cancelled') else 'completed'
+                self.service._put('tasks', dict(task, status=status, created_at=old, updated_at=old))
+        self.service.running.clear()
+
+    def lost_delivery(self, legacy):
+        """A process result reaches a check that is cancelled before it records anything. A retry withdraws the card."""
+        decision = self.draft()
+        check = self.card_check(decision)
+        process = self.receipt('lost-delivery', check['id'],
+                               result=json.dumps(dict(session_id='test-process', notify_on_complete=True)))
+        self.service._put('contexts', dict(check, status='completed'))
+        self.service._resume_process_context(check['id'], [(process, 'The tests passed.')])
+        lost = self.service._all('contexts')[-1]
+        self.service._put('contexts', dict(lost, status='cancelled'))
+        withdrawn, retry = self.finish_withdrawal(decision, self.card_check(decision), legacy=legacy)
+        return decision, withdrawn, retry, process
+
+    def clean_up(self, kept=(), deleted=()):
+        """Run the real receipt and context cleanup passes, then restart the service."""
+        self.service._prune_receipts(time.time())
+        present = {row[0] for row in self.service.db.execute('SELECT id FROM native_receipts')}
+        self.assertTrue(set(kept) <= present, present)
+        self.assertFalse(set(deleted) & present, present)
+        self.service._prune_contexts()
+        self.service.close()
+        self.service = Service(self.temp.name, self.provider, start_workers=False, pr_tracker=self.issues)
+
+    def read_check(self, legacy):
+        """The withdrawing check runs one completed command. Nothing about it is unknown while its receipt exists."""
+        decision = self.draft()
+        check = self.card_check(decision)
+        command = self.receipt('read-issue', check['id'], action=dict(name='read_file', arguments={'path': 'plan.md'}),
+                               result='{"content": "plan"}')
+        withdrawn, check = self.finish_withdrawal(decision, check, legacy=legacy)
+        return decision, withdrawn, check, command
+
+    def test_a_delivered_result_to_an_unrecorded_check_survives_cleanup_and_refuses(self):
+        # Receipt cleanup keeps a delivered process result, so the lost delivery stays visible after both passes.
+        decision, withdrawn, retry, process = self.lost_delivery(legacy=False)
+        self.age_outcome()
+        self.clean_up(kept=[process['id']])
+        self.assertRefused(self.delegate(), self.payload(withdrawn, retry), 409, decision)
+
+    def test_a_check_receipt_lost_to_cleanup_refuses(self):
+        decision, withdrawn, check, command = self.read_check(legacy=False)
+        self.assertEqual(withdrawn['_withdrawal']['receipt_ids'], [command['id']])
+        self.age_outcome()
+        self.clean_up(deleted=[command['id']])
+        # The recorded receipt is gone, so Coconut cannot confirm that check's result any more.
+        message = self.assertRefused(self.delegate(), self.payload(withdrawn, check), 409, decision)
+        self.assertIn('deleted a receipt', message)
+
+    def test_an_older_withdrawal_whose_receipts_may_be_gone_refuses(self):
+        decision, withdrawn, check, command = self.read_check(legacy=True)
+        self.assertNotIn('_withdrawal', withdrawn)
+        self.age_outcome()
+        self.clean_up(deleted=[command['id']])
+        message = self.assertRefused(self.delegate(), self.payload(withdrawn, check), 409, decision)
+        self.assertIn('predates its receipt record', message)
+
+    def test_a_recorded_withdrawal_with_all_receipts_restores(self):
+        decision = self.draft()
+        check = self.card_check(decision)
+        self.receipt('read-issue', check['id'])
+        withdrawn, check = self.finish_withdrawal(decision, check, legacy=False)
+        self.assertEqual(withdrawn['_withdrawal']['receipt_ids'], ['read-issue'])
+        self.service._prune_contexts()
+        self.assertEqual(self.correct(self.delegate(), self.payload(withdrawn, check))['status'], 'restored')
 
     def prune_and_reload(self):
         self.assertGreaterEqual(self.service._prune_contexts(), 1)
@@ -752,6 +842,155 @@ class DurableToolEffectTests(Fixture, unittest.TestCase):
         self.receipt('other-card-write', sibling_check['id'], state='executing', result=None)
         self.prune_and_reload()
         self.assertEqual(self.correct(self.delegate(), self.payload(withdrawn, context))['status'], 'restored')
+
+
+class SourceBaselineTests(Fixture, unittest.TestCase):
+    """The correction compares the live source with the facts that the withdrawing check saw."""
+
+    def pull_request_withdrawal(self, legacy):
+        pull = 'https://github.com/example/shop/pull/3731'
+        decision = self.draft(url=pull, kind='pull_request')
+        withdrawn, context, _ = self.withdraw(decision, legacy=legacy)
+        # The issue API reports the same updated_at, which says nothing about a new head, review, or check.
+        message = self.assertRefused(self.delegate(), self.payload(withdrawn, context, source_revisions={pull: REVISION}),
+                                     409, decision)
+        self.assertIn('pull request', message)
+
+    def test_a_card_that_links_a_pull_request_is_refused(self):
+        self.pull_request_withdrawal(legacy=False)
+
+    def test_an_older_withdrawal_of_a_pull_request_card_is_refused(self):
+        self.pull_request_withdrawal(legacy=True)
+
+    def commented_withdrawal(self, legacy):
+        decision = self.draft()
+        # A comment arrives while the card is pending. The source refresh records it before the check withdraws.
+        self.issues.record = dict(self.issues.record, updated_at='2026-10-18T19:00:00Z', comments=2)
+        self.service._refresh_decision_sources({})
+        self.assertEqual(self.service._get('decisions', decision['id'])['_source_facts'][ISSUE]['comments'], 2)
+        withdrawn, context, _ = self.withdraw(self.service._get('decisions', decision['id']), legacy=legacy)
+        baseline = (withdrawn['_source_check']['facts'] if legacy else withdrawn['_withdrawal']['source_facts'])[ISSUE]
+        self.assertEqual((baseline['updated_at'], baseline['comments']), ('2026-10-18T19:00:00Z', 2))
+        payload = self.payload(withdrawn, context, source_revisions={ISSUE: '2026-10-18T19:00:00Z'})
+        self.assertEqual(self.correct(self.delegate(), payload)['status'], 'restored')
+
+    def test_a_comment_before_the_withdrawal_is_part_of_the_recorded_baseline(self):
+        self.commented_withdrawal(legacy=False)
+
+    def test_a_comment_before_an_older_withdrawal_is_part_of_its_source_check(self):
+        self.commented_withdrawal(legacy=True)
+
+    def test_any_changed_issue_fact_refuses(self):
+        decision = self.draft()
+        withdrawn, context, _ = self.withdraw(decision, legacy=False)
+        helper = self.delegate()
+        for change in (dict(comments=2), dict(title='Physical goods, revised'), dict(state_reason='completed')):
+            with self.subTest(change=change):
+                self.issues.record = dict(self.issues.record, **change)
+                self.assertRefused(helper, self.payload(withdrawn, context), 409, decision)
+                self.issues.record = dict(self.issues.record, comments=1, title='Expand into physical goods', state_reason=None)
+        self.assertEqual(self.correct(helper, self.payload(withdrawn, context))['status'], 'restored')
+
+    def test_an_older_withdrawal_needs_its_recorded_source_check(self):
+        decision = self.draft()
+        withdrawn, context, _ = self.withdraw(decision)
+        helper = self.delegate()
+        # Without the snapshot that the check recorded, the version from card creation is no proof.
+        for check in (None, dict(withdrawn['_source_check'], links=[]), dict(withdrawn['_source_check'], facts={})):
+            with self.subTest(check=check):
+                card = dict(withdrawn)
+                card.pop('_source_check')
+                if check is not None:
+                    card['_source_check'] = check
+                self.service._put('decisions', card)
+                self.assertRefused(helper, self.payload(withdrawn, context), 409, decision)
+        self.service._put('decisions', withdrawn)
+        self.assertEqual(self.correct(helper, self.payload(withdrawn, context))['status'], 'restored')
+
+    def test_a_recorded_withdrawal_without_its_source_facts_is_refused(self):
+        decision = self.draft()
+        withdrawn, context, _ = self.withdraw(decision, legacy=False)
+        card = dict(withdrawn, _withdrawal={k: v for k, v in withdrawn['_withdrawal'].items() if k != 'source_facts'})
+        self.service._put('decisions', card)
+        self.assertRefused(self.delegate(), self.payload(withdrawn, context), 409, decision)
+
+
+class IssueKindAndBaselineTests(Fixture, unittest.TestCase):
+    """The record read proves that a linked number is an issue, and the baseline must hold every issue fact."""
+
+    def pull_request_alias(self, legacy):
+        decision = self.draft()
+        withdrawn, context, _ = self.withdraw(decision, legacy=legacy)
+        # GitHub reports a pull request for /issues/3730. Its issue facts are unchanged, so they say nothing about a new
+        # head, review, or check.
+        self.issues.pull_request = True
+        message = self.assertRefused(self.delegate(), self.payload(withdrawn, context), 409, decision)
+        self.assertIn('is a pull request', message)
+
+    def test_a_pull_request_behind_an_issue_link_is_refused(self):
+        self.pull_request_alias(legacy=False)
+
+    def test_an_older_withdrawal_of_a_pull_request_behind_an_issue_link_is_refused(self):
+        self.pull_request_alias(legacy=True)
+
+    def test_an_unreadable_kind_refuses(self):
+        from urllib.error import URLError
+        decision = self.draft()
+        withdrawn, context, _ = self.withdraw(decision, legacy=False)
+        helper = self.delegate()
+
+        def unavailable():
+            raise URLError('GitHub is unavailable.')
+
+        self.issues.before_read = unavailable
+        self.assertRefused(helper, self.payload(withdrawn, context), 409, decision)
+        self.issues.before_read = None
+        self.assertEqual(self.correct(helper, self.payload(withdrawn, context))['status'], 'restored')
+
+    def test_a_partial_recorded_baseline_refuses(self):
+        decision = self.draft()
+        withdrawn, context, _ = self.withdraw(decision, legacy=False)
+        helper = self.delegate()
+        facts = withdrawn['_withdrawal']['source_facts'][ISSUE]
+        self.assertIsNone(facts['state_reason'])
+        for missing in ('title', 'comments', 'state_reason', 'state', 'updated_at'):
+            with self.subTest(missing=missing):
+                partial = {k: v for k, v in facts.items() if k != missing}
+                self.service._put('decisions', dict(withdrawn, _withdrawal=dict(
+                    withdrawn['_withdrawal'], source_facts={ISSUE: partial})))
+                self.assertRefused(helper, self.payload(withdrawn, context), 409, decision)
+        # A present null state_reason is a complete fact.
+        self.service._put('decisions', withdrawn)
+        self.assertEqual(self.correct(helper, self.payload(withdrawn, context))['status'], 'restored')
+
+    def test_a_partial_legacy_source_check_refuses(self):
+        decision = self.draft()
+        withdrawn, context, _ = self.withdraw(decision)
+        helper = self.delegate()
+        facts = withdrawn['_source_check']['facts'][ISSUE]
+        for missing in ('title', 'comments', 'state_reason'):
+            with self.subTest(missing=missing):
+                partial = {k: v for k, v in facts.items() if k != missing}
+                self.service._put('decisions', dict(withdrawn, _source_check=dict(
+                    withdrawn['_source_check'], facts={ISSUE: partial})))
+                self.assertRefused(helper, self.payload(withdrawn, context), 409, decision)
+        self.service._put('decisions', withdrawn)
+        self.assertEqual(self.correct(helper, self.payload(withdrawn, context))['status'], 'restored')
+
+
+class CorrectionSyncTests(Fixture, unittest.TestCase):
+    def test_a_correction_reaches_clients_as_an_incremental_update(self):
+        decision = self.draft()
+        withdrawn, context, _ = self.withdraw(decision)
+        helper = self.delegate()
+        after = self.service.updates(0)['cursor']
+        self.correct(helper, self.payload(withdrawn, context))
+        for deltas in (False, True):
+            with self.subTest(collection_deltas=deltas):
+                update = self.service.updates(after, collection_deltas=deltas)
+                self.assertNotIn('reset', update)
+                card = next(d for d in update['decisions'] if d['id'] == decision['id'])
+                self.assertEqual((card['status'], card['revision']), ('pending', 3))
 
 
 class RestoredCardLifecycleTests(Fixture, unittest.TestCase):

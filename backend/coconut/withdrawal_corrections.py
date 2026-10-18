@@ -29,6 +29,9 @@ CORRECTION_SCHEMA = {
     }, 'required': ['decision_id', 'expected_revision', 'withdrawal_context_id', 'reason']},
 }
 
+# The issue facts that GitHubPRTracker._issue_record reads. The baseline must hold all of them, and all must match.
+ISSUE_FACTS = ('state', 'state_reason', 'title', 'updated_at', 'comments')
+
 # A person's answer, dismissal, or follow-up card leaves one of these on the card.
 HUMAN_FIELDS = ('decided_at', 'decided_by', 'decided_by_name', 'selected_option_id', 'selected_option_label',
                 'correction', '_answers', '_inbox_dismissed_at', '_inbox_reject_device', '_execution_task_id')
@@ -54,10 +57,35 @@ def correction_request(payload):
     return dict(payload, reason=reason.strip(), source_revisions=revisions)
 
 
-def issue_url(url):
+def complete_issue_facts(facts):
+    """Whether these are all the issue facts that the tracker reads, with their types. A null state_reason is valid."""
+    return (isinstance(facts, dict) and set(ISSUE_FACTS) <= set(facts) and facts['state'] in ('open', 'closed')
+            and isinstance(facts['updated_at'], str) and bool(facts['updated_at']) and isinstance(facts['title'], str)
+            and type(facts['comments']) is int and (facts['state_reason'] is None or isinstance(facts['state_reason'], str)))
+
+
+def read_issue(tracker, url):
+    """Read a linked issue and its actual kind with the tracker's record read (GitHubPRTracker._issue_record).
+
+    GitHub numbers issues and pull requests together, so `/issues/N` can name a pull request; only the record's
+    `pull_request` marker proves the kind. Return (facts, kind), where kind is 'issues', 'pulls', or None if the read failed.
+    """
+    import time
+    from http.client import HTTPException
+    from urllib.error import HTTPError, URLError
     from .decision_sources import github_source
+    from .pr_tracking import PRTrackingError
     owner, repo, _, number = github_source(url)[1].split('/')
-    return f'https://github.com/{owner}/{repo}/issues/{number}'
+    try:
+        facts, record = tracker._issue_record(f'{owner}/{repo}/issues/{number}', time.monotonic() + 10, with_kind=True)
+    except HTTPError as error:
+        error.close()
+        return None, None
+    except (URLError, TimeoutError, OSError, HTTPException, PRTrackingError, ValueError, TypeError):
+        return None, None
+    if not complete_issue_facts(facts) or not isinstance(record, dict):
+        return None, None
+    return facts, 'pulls' if 'pull_request' in record else 'issues'
 
 
 class WithdrawalCorrections:
@@ -137,7 +165,7 @@ class WithdrawalCorrections:
         """
         from .service import ServiceError, digest, encoded
         from .decision_freshness import WITHDRAWAL_RESPONSE
-        from .decision_sources import github_links
+        from .decision_sources import github_links, github_source
         if caller['status'] != 'working' or self.stopping.is_set() or self._task_paused(caller):
             raise ServiceError(409, 'This turn is not running.')
         decision = self._get('decisions', request['decision_id'])
@@ -200,6 +228,20 @@ class WithdrawalCorrections:
             (json.dumps(sorted(contexts)),))]
         receipts += [self._row('SELECT data FROM native_receipts WHERE id=?', (r['id'],))
                      for r in context.get('_recovery_unknown_tools', [])]
+        # `_prune_receipts` also deletes completed receipts, including a result delivered to a check that never recorded
+        # it, once the outcome stayed idle. A missing receipt must refuse, never count as confirmed.
+        if recorded is not None:
+            kept = recorded.get('receipt_ids')
+            if not isinstance(kept, list):
+                raise ServiceError(409, 'The withdrawal kept no receipt record. Ask the person.')
+            kept = [self._row('SELECT data FROM native_receipts WHERE id=?', (identity,)) for identity in kept]
+            if any(r is None for r in kept):
+                raise ServiceError(409, 'Maintenance deleted a receipt of a check of this card, so its result cannot be '
+                                        'confirmed. Ask the person.')
+            receipts += kept
+        elif not self._receipts_unpruned(task):
+            raise ServiceError(409, 'This withdrawal predates its receipt record, and maintenance may have deleted its '
+                                    'receipts. Ask the person.')
         if any(self._unresolved_effect(r, contexts) for r in receipts):
             raise ServiceError(409, 'A tool of a check of this card has no confirmed result. Verify it before reopening the card.')
 
@@ -230,18 +272,41 @@ class WithdrawalCorrections:
                 raise ServiceError(409, 'Another card replaced this one. Keep the newer card.')
 
         links = github_links(decision)
+        if any(github_source(url)[0] == 'pulls' for url in links):
+            # The issue API's updated_at does not cover a new head, checks, or reviews, and the withdrawal keeps no such
+            # baseline. Such a card stays with the person.
+            raise ServiceError(409, 'A card that links a pull request cannot be reopened. Ask the person.')
         if set(request['source_revisions']) - set(links):
             raise ServiceError(400, 'source_revisions lists a URL that the card does not link.')
+        # The issue facts that the withdrawing check saw. A new withdrawal saves them. An older one has the same snapshot
+        # in `_source_check`, which refresh_decision wrote with the withdrawal (its revision is checked above).
+        if recorded is not None:
+            baseline = recorded.get('source_facts')
+        else:
+            check = decision.get('_source_check') or {}
+            baseline = check.get('facts') if check.get('links') == links else None
         expected = {}
         for url in links:
-            revision = (decision.get('_source_facts', {}).get(url) or {}).get('updated_at') or decision.get('_source_seen', {}).get(url)
-            if not isinstance(revision, str):
-                raise ServiceError(409, 'The withdrawal recorded no version of ' + url + '. Ask the person.')
-            if request['source_revisions'].get(url) != revision:
+            facts = baseline.get(url) if isinstance(baseline, dict) else None
+            if not complete_issue_facts(facts):
+                raise ServiceError(409, 'The withdrawal recorded no complete version of ' + url + '. Ask the person.')
+            if request['source_revisions'].get(url) != facts['updated_at']:
                 raise ServiceError(409, 'The source changed after the withdrawal, or source_revisions is missing: ' + url
                                    + '. Read its current state and comments. Ask the person instead.')
-            expected[url] = revision
+            expected[url] = facts
         return dict(decision=decision, task=task, context=context, authority=authority, links=links, expected=expected)
+
+    @staticmethod
+    def _receipts_unpruned(task):
+        """Whether maintenance cannot yet have deleted a receipt of this task.
+
+        `_prune_receipts` deletes the receipts of a task only after every task of its execution stayed unchanged for
+        RECEIPT_RETENTION_DAYS. A task's `updated_at` never precedes its `created_at`, so a younger task keeps them all.
+        """
+        import time
+        from .database_maintenance import RECEIPT_RETENTION_DAYS, seconds
+        created = seconds(task.get('created_at'))
+        return created is not None and time.time() - created < RECEIPT_RETENTION_DAYS * 86400
 
     @staticmethod
     def _unresolved_effect(record, contexts):
@@ -272,13 +337,14 @@ class WithdrawalCorrections:
         if card['links']:
             tracker = self._pr_tracker_for(card['decision']['bot_id'])
             for url in card['links']:
-                current = tracker.observe_issue(issue_url(url))
-                if not isinstance(current, dict) or current.get('updated_at') != card['expected'][url]:
+                current, kind = read_issue(tracker, url)
+                if kind == 'pulls':
+                    raise ServiceError(409, url + ' is a pull request. A card that links a pull request cannot be reopened. '
+                                       'Ask the person.')
+                baseline = card['expected'][url]
+                if kind != 'issues' or any(current[key] != baseline[key] for key in ISSUE_FACTS):
                     raise ServiceError(409, 'Coconut could not confirm that ' + url + ' is unchanged since the withdrawal. '
                                        'The card stays withdrawn. Read the source again before retrying.')
-                recorded = card['decision'].get('_source_facts', {}).get(url) or {}
-                if recorded.get('state') and current.get('state') != recorded['state']:
-                    raise ServiceError(409, 'The state of ' + url + ' changed since the withdrawal. The card stays withdrawn.')
                 observed[url] = current
         with self.transaction():
             caller = self._get('tasks', task_id)
@@ -295,7 +361,8 @@ class WithdrawalCorrections:
                               withdrawn_revision=decision['revision'], restored_revision=decision['revision'] + 1,
                               caller_bot_id=caller['bot_id'], caller_task_id=caller['id'],
                               caller_turn_id=caller.get('_native_turn_id'), authority=card['authority'],
-                              reason=request['reason'], source_revisions=card['expected'],
+                              reason=request['reason'],
+                              source_revisions={url: facts['updated_at'] for url, facts in card['expected'].items()},
                               draft_hash=decision.get('draft_hash'), corrected_at=now(), withdrawn=withdrawn)
             # Keep the withdrawal in the card's history. Human fields and inbox holds stay as they are.
             decision.setdefault('_withdrawal_corrections', []).append(correction)
@@ -314,7 +381,8 @@ class WithdrawalCorrections:
                                           correction_id=correction['id'])
             self._put('decisions', decision)
             self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
-            self._event('decision.withdrawal_corrected', {key: correction[key] for key in (
+            # The audit event is not a decision version. decision.updated above carries the card to clients.
+            self._event('maintenance.withdrawal_corrected', {key: correction[key] for key in (
                 'id', 'kind', 'withdrawal_context_id', 'withdrawn_revision', 'restored_revision',
                 'caller_bot_id', 'caller_task_id', 'authority')} | {'decision_id': decision['id']}, task['bot_id'], task['id'])
             self._refresh_bot(task['bot_id'])

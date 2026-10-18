@@ -110,6 +110,19 @@ class WithdrawalCorrectionRouteTests(corrections.Fixture, unittest.TestCase):
         self.assertIn('coconut_restart_service', seen['names'])
         self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'resolved')
 
+    def test_a_pull_request_behind_an_issue_link_is_rejected_through_the_worker(self):
+        decision = self.draft()
+        withdrawn, context, _ = self.withdraw(decision)
+        # GitHub reports a pull request for the linked /issues/3730 record, with unchanged issue facts.
+        self.issues.pull_request = True
+        seen, _ = self.run_turn(self.delegate(running=False), [self.payload(withdrawn, context)])
+        result, = seen['results']
+        self.assertEqual(result['status'], 'rejected')
+        self.assertIn('is a pull request', result['error'])
+        saved = self.service._get('decisions', decision['id'])
+        self.assertEqual((saved['status'], saved['revision']), ('resolved', 2))
+        self.assertNotIn('_withdrawal_corrections', saved)
+
     def test_without_a_withdrawal_the_tool_is_absent(self):
         self.draft()
         seen, _ = self.run_turn(self.delegate(running=False), [])
@@ -130,6 +143,7 @@ class WithdrawalCorrectionSchemaTests(WithdrawalCorrectionRouteTests):
         self.assertEqual(seen['results'][0]['status'], 'restored')
 
     test_other_bots_do_not_see_the_tool = None
+    test_a_pull_request_behind_an_issue_link_is_rejected_through_the_worker = None
     test_without_a_withdrawal_the_tool_is_absent = None
     test_delegate_turn_restores_the_card_through_the_worker_receipt = None
 

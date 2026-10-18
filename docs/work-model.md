@@ -59,9 +59,16 @@ an execution that it genuinely delegated to in the same thread, sees and can use
 that set the delegate's reply link to the owner. A return, a progress reply, or a callback to the requester gives no authority.
 Coconut reads that authority from service records, never from tool arguments or bot names.
 The call names the card revision, the withdrawing check, the draft hash, and the source versions.
-Coconut reads each linked GitHub source during the call and refuses a card that changed. It also refuses
-a card that a person answered, dismissed, replied on, or replaced, a card with a later human message in its outcome, a running check,
-and a tool result that is not confirmed. A blocking question cannot be reopened, because its withdrawal already resumed the task.
+A withdrawal records the issue facts that its check saw and the receipt IDs of every check of the card. An older withdrawal uses
+the source snapshot that its check recorded. The baseline must hold every issue fact (state, state reason, title, update time,
+and comment count). Coconut reads each linked issue during the call and refuses it if any fact changed. A card that links a pull
+request cannot be reopened, because the issue facts do not cover a new head, checks, or reviews. An `/issues/N` link can name a pull
+request, so Coconut checks the kind on the GitHub record and refuses when it cannot read it.
+Coconut also refuses a card that a person answered, dismissed, replied on, or replaced, a card with a later human message in its
+outcome, a running check, and a tool result that is not confirmed. A recorded receipt that maintenance deleted counts as
+unconfirmed. An older withdrawal without receipt IDs can be reopened only while its task is younger than the receipt retention
+time (7 days), because maintenance cannot have deleted any of its receipts before then.
+A blocking question cannot be reopened, because its withdrawal already resumed the task.
 The later-message rule is deliberately strict. It also applies when a person asked for the repair in that outcome, because Coconut
 cannot tell a maintenance request from direction about the card without reading prose. Such a card stays with the person.
 A repair that the owner or its delegate requests, with no new human message in the outcome, can use the tool.
