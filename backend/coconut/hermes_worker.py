@@ -1185,6 +1185,11 @@ def run_turn(request, emit, request_receipt):
             registry.register(name=RESTART_SCHEMA['name'], toolset='coconut', schema=RESTART_SCHEMA,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('service_restart', arguments)))
             allowed.add(RESTART_SCHEMA['name'])
+            if request['task'].get('_withdrawal_corrections'):
+                from withdrawal_corrections import CORRECTION_SCHEMA
+                registry.register(name=CORRECTION_SCHEMA['name'], toolset='coconut', schema=CORRECTION_SCHEMA,
+                                  handler=lambda arguments, **kwargs: json.dumps(request_receipt('withdrawal_correction', arguments)))
+                allowed.add(CORRECTION_SCHEMA['name'])
         registry.register(name=QUESTION_SCHEMA['name'], toolset='coconut', schema=QUESTION_SCHEMA, handler=bridge.ask)
         allowed.add(QUESTION_SCHEMA['name'])
         if operation != 'context':

@@ -1164,7 +1164,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         owner = self.service._get('tasks', self.task['id'])
         fingerprint, _ = self.service._decision_evidence(decision, {t['id']: t for t in self.service._all('tasks')},
             self.service._all('native_receipts'), self.service._all('artifacts'))
-        context.update(_evidence_fingerprint=fingerprint, _human_input_ids=[m['id'] for m in self.service._decision_human_messages(owner)])
+        context.update(_evidence_fingerprint=fingerprint, _human_input_ids=[m['id'] for m in self.service._decision_human_messages(owner, decision)])
         self.service._put('contexts', context)
         with self.assertRaises(ServiceError):
             self.service.refresh_decision(context['id'], dict(status='withdraw', evidence='Premature result.'))
@@ -1371,7 +1371,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.service._put('decisions', peer)
         callback = dict(context, id='peer-callback', bot_id=bot['id'], task_id=task['id'], decision_id=peer['id'],
                         _conversation_epoch=task.get('_conversation_epoch'),
-                        _human_input_ids=[m['id'] for m in self.service._decision_human_messages(task)])
+                        _human_input_ids=[m['id'] for m in self.service._decision_human_messages(task, peer)])
         self.service._put('contexts', callback)
         started = []
         def start(identity):
@@ -1480,13 +1480,21 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'pending')
 
     def test_next_check_includes_new_human_instructions(self):
-        self.question()
-        reply = self.write('POST', '/v1/bots/' + self.bot['id'] + '/messages', dict(text='Do not install dependencies.', mode='auto'))
-        task = self.service._get('tasks', reply['id'])
+        decision = self.question()
+        # A chat message in another conversation reaches the same bot later, but it does not name this card.
+        chat = self.write('POST', '/v1/bots/' + self.bot['id'] + '/messages', dict(text='Close the old issue.', mode='auto'))
+        task = self.service._get('tasks', chat['id'])
+        self.assertNotEqual(task['thread_id'], self.task['thread_id'])
         task['status'] = 'completed'
         self.service._put('tasks', task)
+        # A reply on the card is an instruction for this card.
+        self.write('POST', '/v1/decisions/' + decision['id'] + '/reply', dict(text='Do not install dependencies.', revision=1))
+        for context in self.service._all('contexts'):
+            context['status'] = 'completed'
+            self.service._put('contexts', context)
         context = self.refresh()
         self.assertIn('Do not install dependencies.', context['question'])
+        self.assertNotIn('Close the old issue.', context['question'])
 
     def test_new_chat_instruction_invalidates_an_automatic_check(self):
         decision = self.question()

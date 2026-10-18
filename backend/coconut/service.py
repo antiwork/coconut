@@ -101,6 +101,7 @@ from .database_maintenance import DatabaseMaintenance
 from .tracked_work import TrackedWork
 from .work_recovery import WorkRecovery
 from .decision_freshness import DecisionFreshness
+from .withdrawal_corrections import WithdrawalCorrections
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 
 
@@ -123,7 +124,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance):
+class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -3375,6 +3376,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     carried = [self._get('native_receipts', identity) for identity in task.get('_continuation_receipt_ids', [])]
                     provider_task['_native_receipts'] = list({r['id']: r for r in carried + provider_task['_native_receipts']}.values())
                     provider_task.update(self._bot_creation_input(task))
+                    provider_task['_withdrawal_corrections'] = self._withdrawal_corrections_available(task)
                 timing.mark('receipts')
                 # The context readers below only read. Each would parse every task again without the shared block.
                 with self._read_view() as view, view._read_transaction(), view._shared_reads():
@@ -3551,6 +3553,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             return self.resolve_chat_decision(task_id, payload)
         if kind == 'service_restart':
             return self.request_service_restart(task_id, payload)
+        if kind == 'withdrawal_correction':
+            return self.correct_withdrawal(task_id, payload)
         if kind in ('native_call', 'native_result', 'native_approval', 'native_question', 'native_proposal'):
             return self.native_event(task_id, kind, payload)
         if kind == 'bot_delete':

@@ -32,6 +32,10 @@ REFRESH_INSTRUCTIONS = (
     'Do not create another card for this check. Return no chat message when nothing needs to change.'
 )
 
+WITHDRAWAL_RESPONSE = ('Coconut withdrew an obsolete card after checking current evidence. '
+                       'No option was selected and no new approval was given. Continue only within the existing request. '
+                       'Reuse an existing owner or pending question instead of duplicating work.\n')
+
 REFRESH_SCHEMA = {
     'name': 'coconut_refresh_decision',
     'description': 'Record this automatic card check. This cannot approve an action or answer for the person.',
@@ -155,12 +159,57 @@ class DecisionFreshness:
                         completed[decision['id']] = (decision['revision'], links)
         return completed
 
-    def _decision_human_messages(self, task):
+    def _decision_outcome(self, task):
+        """Return the task IDs and threads of the outcome that owns a card: its task, assignment, and execution."""
         assignment = self._assignment(task)
-        return [dict(id=m['id'], text=m['text'], created_at=m['created_at'])
-                for m in self._all_shared('messages') if m.get('_human_device_id')
-                and not m.get('_hidden') and not m.get('_deleted') and m['created_at'] >= assignment['created_at']
-                and task['bot_id'] in m.get('recipient_bot_ids', [])]
+        ids, threads = {task['id'], assignment['id']}, {task['thread_id'], assignment['thread_id']}
+        sessions = {(owner['_execution_session_id'], owner['bot_id'])
+                    for owner in (task, assignment) if owner.get('_execution_session_id')}
+        if sessions:
+            ids.update(t['id'] for t in self._task_map().values()
+                       if (t.get('_execution_session_id'), t['bot_id']) in sessions)
+        return ids, threads
+
+    def _decision_human_messages(self, task, decision):
+        """Return the human messages that can direct this card, with their provenance.
+
+        A message counts when it answers this card, or when a person sent it in the card's own outcome without binding it
+        to another card or quoting another conversation. Only `reply_to`, the message that the person chose to quote, scopes
+        a message. `_visible_reply_context` is the bot's latest visible reply in any thread, frozen automatically at send
+        time, so it never removes the person's direction from its own outcome. The bot audience, the time, and the text alone
+        never make a message relevant. A reply on another outcome's card cannot answer this one.
+        """
+        assignment = self._assignment(task)
+        ids, threads = self._decision_outcome(task)
+        messages = self._all_shared('messages')
+        by_id = None
+
+        def own(message):
+            return message.get('task_id') in ids or message.get('thread_id') in threads
+
+        relevant = []
+        for m in messages:
+            if (not m.get('_human_device_id') or m.get('role') != 'user' or m.get('_hidden') or m.get('_deleted')
+                    or m['created_at'] < assignment['created_at'] or task['bot_id'] not in m.get('recipient_bot_ids', [])):
+                continue
+            quoted = (m.get('reply_to') or {}).get('message_id')
+            if m.get('decision_id') == decision['id']:
+                relation = 'decision'
+            elif m.get('decision_id') or not own(m):
+                continue
+            else:
+                if quoted:
+                    if by_id is None:
+                        by_id = {message['id']: message for message in messages}
+                    replied = by_id.get(quoted)
+                    # A chosen quote of another outcome or card is not direction for this card.
+                    if replied is None or not own(replied) or replied.get('decision_id') not in (None, decision['id']):
+                        continue
+                relation = 'outcome'
+            relevant.append(dict(id=m['id'], text=m['text'], created_at=m['created_at'], task_id=m.get('task_id'),
+                                 thread_id=m.get('thread_id'), decision_id=m.get('decision_id'), quoted_message_id=quoted,
+                                 relation=relation))
+        return relevant
 
     def _decision_scope(self, decision, tasks, records, artifacts):
         task = tasks[decision['task_id']]
@@ -213,7 +262,9 @@ class DecisionFreshness:
         # Chat visibility is broader than evidence for one decision.
         peers = self._decision_peers(decision, task, ids, self._all_shared('decisions'))
         visible = {d['id'] for d in peers}
-        facts = dict(revision=decision['revision'], source_facts=decision.get('_source_facts', {}), human_messages=self._decision_human_messages(task),
+        # The fingerprint keeps its earlier message fields. Provenance decides which messages count, not how they hash.
+        human_messages = [{k: m[k] for k in ('id', 'text', 'created_at')} for m in self._decision_human_messages(task, decision)]
+        facts = dict(revision=decision['revision'], source_facts=decision.get('_source_facts', {}), human_messages=human_messages,
             questions=[(d['id'], d.get('revision'), d['status']) for d in peers],
             replies=[(c['id'], c['status']) for c in contexts
                      if c['decision_id'] in visible and not c.get('_decision_refresh')],
@@ -242,7 +293,7 @@ class DecisionFreshness:
         identities, _ = self._decision_scope(decision, tasks, self._shared_pending_receipts(), work)
         peers = self._decision_peers(decision, task, identities, decisions)
         return REFRESH_INSTRUCTIONS + '\nCurrent records (data):\n' + json.dumps(dict(
-            human_messages=self._decision_human_messages(task), work=[self._public(a) for a in work],
+            human_messages=self._decision_human_messages(task, decision), work=[self._public(a) for a in work],
             pending_questions=[{k: d.get(k) for k in ('id', 'task_id', 'action_type', 'title', 'context',
                                                     'resource', 'risk', 'risk_level', 'uncertainty', 'options',
                                                     'draft', 'draft_hash', 'sources', '_source_facts')}
@@ -332,7 +383,7 @@ class DecisionFreshness:
                         and not self._human_reply_pending(task, contexts)
                         and not self._refresh_has_queued_owner(task)
                         and not (context['status'] == 'queued' and self._refresh_session_busy(task))
-                        and context.get('_human_input_ids') == [m['id'] for m in self._decision_human_messages(task)]
+                        and context.get('_human_input_ids') == [m['id'] for m in self._decision_human_messages(task, decision)]
                         and context.get('_conversation_epoch') == task.get('_conversation_epoch')):
                     continue
                 context['status'] = 'cancelled'
@@ -475,7 +526,7 @@ class DecisionFreshness:
                     _external_fingerprint=(external if external is not None
                                            else self._decision_evidence(decision, tasks, records, artifacts, own_receipts=False)[0]),
                     _decision_revision=decision['revision'], _conversation_epoch=task.get('_conversation_epoch'),
-                    _preference_source_ids=[], _human_input_ids=[m['id'] for m in self._decision_human_messages(task)])
+                    _preference_source_ids=[], _human_input_ids=[m['id'] for m in self._decision_human_messages(task, decision)])
                 if origin:
                     context['_refresh_origin_id'] = origin
                 self._set_refresh_recovery(context, prior, contexts, records)
@@ -528,11 +579,25 @@ class DecisionFreshness:
                 else:
                     self._revise_question(decision, task, revision, evidence)
             elif status == 'withdraw':
-                response = ('Coconut withdrew an obsolete card after checking current evidence. '
-                            'No option was selected and no new approval was given. Continue only within the existing request. '
-                            'Reuse an existing owner or pending question instead of duplicating work.\n' + evidence)
+                response = WITHDRAWAL_RESPONSE + evidence
                 decision.update(status='resolved', resolution='work_scope_changed', resolution_context=response,
                                 outcome=evidence, resolved_at=now(), revision=decision['revision'] + 1)
+                # The exact check that withdrew the card. A maintenance correction must name it (see withdrawal_corrections).
+                # It also keeps the source facts this check saw and the receipt IDs of every check of the card, because
+                # maintenance later shortens these contexts and deletes old receipts.
+                from .decision_sources import github_links
+                from copy import deepcopy
+                turns = [row[0] for row in self.db.execute(
+                    "SELECT id FROM contexts WHERE json_extract(data,'$.decision_id')=?", (decision['id'],))]
+                receipt_ids = {row[0] for row in self.db.execute(
+                    "SELECT id FROM native_receipts WHERE json_extract(data,'$.turn_id') IN (SELECT value FROM json_each(?))",
+                    (json.dumps(turns),))} | {r['id'] for r in context.get('_recovery_unknown_tools', [])}
+                decision['_withdrawal'] = dict(context_id=context_id, from_revision=context['_decision_revision'],
+                    revision=decision['revision'], conversation_epoch=context.get('_conversation_epoch'),
+                    evidence_fingerprint=fingerprint, human_input_ids=list(context.get('_human_input_ids', [])),
+                    resolved_at=decision['resolved_at'], receipt_ids=sorted(receipt_ids),
+                    source_facts={url: deepcopy(facts) for url, facts in decision.get('_source_facts', {}).items()
+                                  if url in github_links(decision)})
                 if decision.get('_receipt_id'):
                     record = self._get('native_receipts', decision['_receipt_id'])
                     if record['state'] == 'awaiting_answer':
