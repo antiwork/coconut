@@ -5,10 +5,13 @@ from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import io
+import itertools
 import json
 import logging
+import math
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import stat
@@ -48,6 +51,62 @@ def remember_head(binding, log):
     binding['_head_log'] = dict(size=len(log), digest=hashlib.sha256(log).hexdigest())
 
 
+# `git reflog expire` writes every entry again, with a tab before an empty message. `git gc` runs it, and Git starts
+# that gc in the background after an ordinary fetch or commit. The first entry of `git worktree add` has an empty
+# message, so the rewrite changes the bytes of a saved checkpoint but not its entries.
+REFLOG_ENTRY = re.compile(rb'([0-9a-f]{40}|[0-9a-f]{64}) ([0-9a-f]{40}|[0-9a-f]{64}) [^\t\n]* (\d+) [+-]\d{4}(\t[^\n]*)?\n')
+# With the default settings, expiry removes no entry that is younger than gc.reflogExpireUnreachable, 30 days.
+REFLOG_KEEP_SECONDS = 30 * 24 * 60 * 60
+# Each rewritten entry may or may not have had its tab before. Coconut tries at most this many saved versions.
+REWRITE_CANDIDATES = 256
+
+
+def checkpoint_end(path, log, checkpoint):
+    """Return the length of the saved checkpoint in `log`, or None when the log does not continue it."""
+    size, digest = checkpoint.get('size', 0), checkpoint.get('digest')
+    if size <= 0 or len(log) < size:
+        return None
+    if hashlib.sha256(log[:size]).hexdigest() == digest:
+        return size
+    lines = log.splitlines(keepends=True)
+    entries = [REFLOG_ENTRY.fullmatch(line) for line in lines]
+    if not all(entries):
+        return None
+    end = 0
+    for count, line in enumerate(lines, 1):
+        end += len(line)
+        added = end - size
+        if added < 0:
+            continue
+        tabbed = [index for index in range(count) if entries[index].group(4) == b'\t']
+        if added > len(tabbed) or math.comb(len(tabbed), added) > REWRITE_CANDIDATES:
+            return None
+        for untabbed in itertools.combinations(tabbed, added):
+            saved = b''.join(lines[index][:-2] + b'\n' if index in untabbed else lines[index] for index in range(count))
+            if hashlib.sha256(saved).hexdigest() == digest:
+                if not complete_after_rewrite(path, entries, count):
+                    return None
+                logging.getLogger(__name__).warning(
+                    'Coconut matched the saved Git history of worktree %s after Git rewrote its reflog.', path)
+                return end
+    return None
+
+
+def complete_after_rewrite(path, entries, count):
+    # The saved bytes prove the first `count` entries. Expiry can also remove later entries, so check that it did not.
+    settings = subprocess.run(['git', '-C', str(path), 'config', '--get-regexp', r'^gc\..*reflogexpire'],
+                              capture_output=True, timeout=60)
+    if settings.returncode != 1 or settings.stdout:
+        return False
+    oldest = time.time() - REFLOG_KEEP_SECONDS
+    previous = entries[count - 1].group(2)
+    for entry in entries[count:]:
+        if entry.group(1) != previous or int(entry.group(3)) < oldest:
+            return False
+        previous = entry.group(2)
+    return previous.decode() == git(path, 'rev-parse', 'HEAD')
+
+
 def validate_binding(binding, *, allow_rename=False):
     path = Path(binding['path'])
     repository = Path(binding['repository']).resolve()
@@ -59,10 +118,8 @@ def validate_binding(binding, *, allow_rename=False):
         raise ValueError('The saved worktree belongs to another repository.')
     current, log = stable_head(path)
     if current != binding['branch']:
-        checkpoint = binding.get('_head_log', {})
-        size = checkpoint.get('size', 0)
-        continuous = (size > 0 and len(log) >= size
-            and hashlib.sha256(log[:size]).hexdigest() == checkpoint.get('digest'))
+        size = checkpoint_end(path, log, binding.get('_head_log', {}))
+        continuous = size is not None
         branch = binding['branch']
         for line in log[size:].splitlines() if continuous else []:
             message = line.partition(b'\t')[2].decode('utf-8', errors='replace')
