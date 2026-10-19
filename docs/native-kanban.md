@@ -139,6 +139,8 @@ The bot uses the returned directory for code changes and tests.
 An existing linked worktree can be adopted once to retain earlier changes.
 The registry rejects another outcome's worktree and an unverified branch switch.
 A Git-confirmed branch rename keeps the same owner and files. Coconut updates its saved branch without a service restart.
+Git gc rewrites the worktree reflog and adds a tab before each empty message. Coconut still confirms a rename then,
+but only when the saved entries match exactly apart from those tabs and nothing shows that Git expired a later entry.
 The service keeps the registry under `workspaces/worktrees.json`.
 Coconut retains these worktrees after a turn ends. It does not delete uncommitted work.
 
