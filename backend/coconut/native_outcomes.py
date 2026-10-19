@@ -48,7 +48,7 @@ UNLINK_SCHEMA = {
 
 CONTINUE_SCHEMA = {
     'name': 'coconut_continue_work',
-    'description': 'Continue a quiescent queued, scheduled, review, blocked, or completed Hermes outcome with new facts. Use the native task ID from kanban_show. '
+    'description': 'Continue a quiescent queued, scheduled, review, blocked, failed, or completed Hermes outcome with new facts. Use the native task ID from kanban_show. '
         'You must own the work or be its requesting bot. This keeps its task, workspace, decisions, and result route. '
         'Hermes preserves completed results and creates a linked follow-up with the same workspace. '
         'This does not approve actions. The result goes to the original requester.',
@@ -1143,11 +1143,12 @@ class NativeOutcomes:
             scheduled = native.get('status') == 'scheduled'
             review = native.get('status') == 'review'
             queued = native.get('status') == 'ready' and owner['status'] == 'queued'
-            # Coconut archives the task of a failed request itself. Its routine occurrence still continues.
-            # So does the scheduled card of a continuation of a successful occurrence or a completed ordinary request,
-            # which the settle pass also archives.
+            # Coconut archives the task of a failed request itself. Its routine occurrence still continues, and so does
+            # a failed ordinary request. So does the scheduled card of a continuation of a successful occurrence or a
+            # completed ordinary request, which the settle pass also archives.
             settled = native.get('status') == 'archived' and (
                 self.settled_failed_occurrence(owner, native, lambda: completion(identity))
+                or self.settled_failed_request(owner, native, lambda: completion(identity))
                 or self.settled_scheduled_continuation(owner, native, lambda: completion(identity)))
             # A later audit of the same source item may still wait for the person. Its answer comes first.
             if settled and self.pending_source_decision(owner):

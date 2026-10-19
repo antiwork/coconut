@@ -10,6 +10,7 @@ from .work_sources import ANSWERED, source_origin
 # Statements of the routine pass. Each needs an index and no scan. A test reads the plan of each one.
 ROUTINE_EVENTS = 'SELECT type,data,created_at FROM events WHERE task_id=? AND bot_id=? ORDER BY seq'
 COMPLETION_EVENTS = 'SELECT type,data FROM events WHERE task_id=? AND bot_id=? ORDER BY seq'
+REQUEST_EVENTS = 'SELECT bot_id,type,data FROM events WHERE task_id=? ORDER BY seq'
 ROUTINE_DELIVERIES = "SELECT data FROM deliveries WHERE json_extract(data,'$.receipt.task_id')=? ORDER BY rowid DESC"
 # Open intake of a waiting occurrence. Any of these means that the occurrence still works or has input to take.
 OPEN_INTAKE = ('_steering', '_live_messages', '_blocked_followup', '_native_reply_pending', '_return_pending',
@@ -17,6 +18,8 @@ OPEN_INTAKE = ('_steering', '_live_messages', '_blocked_followup', '_native_repl
 # Hermes outcomes of a run that ended without success. A completed run, or one that an archive reclaimed, is not one.
 # An archive reclaims only the current run, so an earlier reclaimed run comes from a restart.
 FAILED_RUN_OUTCOMES = ('blocked', 'crashed', 'gave_up', 'spawn_failed', 'stale', 'timed_out', 'worker_failed')
+# Inputs that a failed turn selected but may never have received. continue_native_work hands them to the retry.
+FAILED_TURN_INPUT = ('_background_completion', '_pr_review')
 # Records that only a routine occurrence has. A request that has any of them, even an empty one, follows the routine
 # rules alone. Only the routine code writes them, so an ordinary request never has one.
 ROUTINE_PROVENANCE = ('routine_id', 'routine_occurrence_id', '_native_job', '_native_job_finished', '_native_finish_unconfirmed',
@@ -173,6 +176,49 @@ class NativeRoutines:
                     and all(isinstance(r, dict) and r.get('ended') and r.get('outcome') != 'completed' for r in runs)
                     and runs[-1].get('outcome') == 'scheduled' and runs[-1].get('id') == claim['run_id'])
 
+    def settled_failed_request(self, task, card, completion):
+        """Whether Coconut's settle pass archived the native task of this failed ordinary request.
+
+        _settle_native_orphans archives the triage or blocked task of a failed request after a few minutes. Before
+        that archive, the owner or its requesting bot could continue the request. This keeps that continuation, and
+        nothing else. The request has no routine record, and no person stopped it. Coconut created the request once.
+        Its claim names the archived task and the current input, and Coconut started the run of that claim.
+        No tool call is unknown. Its only open input is the input that the failed turn never received, which the
+        continuation hands to the retry. The checks of _settled_card hold too, so the phone's idle archive is not it.
+        Hermes must report the same task: no run or worker left, no completed run, and the last run is the claim's run,
+        ended without success. completion() reads that card from the adapter. Reconciliation keeps its own rules.
+        """
+        claim = task.get('_kanban_claim') or {}
+        turn = task.get('_native_turn_id')
+        keys = {'coconut:' + task['id']}
+        if task.get('_native_outcome_id') == card.get('id') and claim.get('input'):
+            keys.add('coconut-followup:' + task['id'] + ':' + claim['input'])
+        if (task['status'] != 'failed' or any(field in task for field in ROUTINE_PROVENANCE)
+                or task.get('_native_outcome_id') not in (None, card.get('id')) or card.get('idempotency_key') not in keys
+                or not turn or claim.get('input') != turn or type(claim.get('run_id')) is not int
+                or task.get('_kanban_started') != claim['run_id']
+                or (task.get('_self_recovery') or {}).get('unknown_tools')
+                or not self._settled_card(task, card, carried=FAILED_TURN_INPUT)):
+            return False
+        # A relay records the creation under the requesting bot, so read the events of every bot.
+        created = []
+        for bot, kind, raw in self.db.execute(REQUEST_EVENTS, (task['id'],)):
+            if kind == 'routine.triggered' or (kind == 'task.updated' and json.loads(raw).get('status') == 'cancelled'):
+                return False
+            if kind == 'task.created':
+                created.append(bot)
+        if created not in ([task['bot_id']], [task.get('conversation_bot_id')]):
+            return False
+        native = completion()
+        runs = native.get('runs')
+        return bool(native.get('id') == card['id'] and native.get('tenant') == task['bot_id']
+                    and native.get('idempotency_key') == card['idempotency_key'] and native.get('status') == 'archived'
+                    and native.get('input_id') in (None, turn)
+                    and not native.get('current_run_id') and not native.get('worker_pid')
+                    and isinstance(runs, list) and runs
+                    and all(isinstance(r, dict) and r.get('ended') and r.get('outcome') != 'completed' for r in runs)
+                    and runs[-1].get('outcome') in FAILED_RUN_OUTCOMES and runs[-1].get('id') == claim['run_id'])
+
     def keeps_settled_failure(self, task, native):
         """Whether reconciliation keeps a failure whose native task Coconut's settle pass archived.
 
@@ -276,18 +322,19 @@ class NativeRoutines:
                 return True
         return False
 
-    def _settled_card(self, task, card):
+    def _settled_card(self, task, card, carried=()):
         """The checks of a settled archive that hold for every finished request.
 
         The claim names the card, which Coconut created in this tenant, and which has no run or worker left. Its last
         activity is within IDLE_AGE, so the phone's idle archive is not it. The request has no open input, worker,
-        or unknown tool call, and no idle archive closed any of its cards.
+        or unknown tool call, and no idle archive closed any of its cards. `carried` names open input that the caller
+        hands to the continuation.
         """
         from .kanban_runtime import IDLE_AGE
         claim = task.get('_kanban_claim') or {}
         last = card.get('last_activity_at')
         if (claim.get('native_id') != card.get('id') or claim.get('external_id') != task['id']
-                or any(task.get(key) for key in OPEN_INTAKE)
+                or any(task.get(key) for key in OPEN_INTAKE if key not in carried)
                 or card.get('status') != 'archived' or card.get('tenant') != task['bot_id']
                 or card.get('created_by') != 'coconut'
                 or card.get('current_run_id') or card.get('worker_pid')

@@ -91,6 +91,13 @@ No person may ever have stopped the request. The owner or its requesting bot con
 Pending decisions still hold the continuation. This covers a decision in the same execution, and a decision of another
 execution that now holds the outcome's Work row. Continue that owner instead.
 
+A failed ordinary request has the gap too. Its owner or requesting bot can continue it while Hermes holds its task in
+triage or blocked, and the settle pass then archives that task. The archived task still continues, under the rules of
+a settled failure without the routine ones. The request has no routine record and no Stop, and Coconut created it once.
+Its claim names the archived task and the current input, Coconut started the claim's run, and that run is the last one,
+ended without success. No run completed, and no tool call is unknown. The PR facts or background result that the failed
+turn never received go to the retry, and any other open input holds it. The reconciler's rules do not change.
+
 The work source audit records the source item that it gives a task in `_source_assignment`. A later audit of the same item
 runs in a separate execution, and it can ask the person about that item while the request's card waits archived.
 So this recovery also waits while the same bot has a pending decision about the exact same `source_id` and item `id`.
