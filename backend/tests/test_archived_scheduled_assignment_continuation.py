@@ -56,7 +56,7 @@ class ScheduledAssignment:
         task = self.store.mutate('POST', '/v1/bots/' + bot['id'] + '/messages', {'text': text}, str(uuid4()), 'test-phone')
         return self.update(task['id'], status='working')
 
-    def assignment(self, delegated=True, source=None):
+    def assignment(self, delegated=True, source=None, drain=True):
         """The assignment ends card t_original by run 26393, and its result returns.
 
         A delegated assignment comes from the requester, Lead. Otherwise the work source audit gave Desk the source item
@@ -84,10 +84,14 @@ class ScheduledAssignment:
         self.receipt(owner['id'], 'kanban_complete', dict(task_id='t_original', summary='Validated the intake.'),
                      dict(ok=True, task_id='t_original', run_id=26393))
         self.store.emit(owner['id'], 'completed', dict(summary='Validated the intake.'))
-        self.store._drain_returns()
         owner = self.store._get('tasks', owner['id'])
         self.assertEqual(owner['status'], 'completed')
-        self.assertFalse(owner.get('_return_pending'))
+        # A delegated result waits for the return drain, which a dispatcher pass runs first. Only then can work continue.
+        self.assertEqual(bool(owner.get('_return_pending')), delegated)
+        if drain:
+            self.store._drain_returns()
+            owner = self.store._get('tasks', owner['id'])
+            self.assertFalse(owner.get('_return_pending'))
         self.store.kanban.tasks[owner['id']] = self.card(owner, 't_original', 'coconut:' + owner['id'],
                                                          input_id='turn-original')
         self.runs['t_original'] = [dict(id=26393, status='done', outcome='completed', ended=True)]
@@ -95,6 +99,7 @@ class ScheduledAssignment:
         return owner
 
     def resume(self, identity, message, caller=None):
+        self.assertFalse(self.store.db.in_transaction, 'A continuation must not start inside another transaction.')
         return self.store.emit((caller or self.requester)['id'], 'work_continue', dict(task_id=identity, message=message))
 
     dispatch = routine_fixtures.ScheduledOccurrence.dispatch
@@ -183,6 +188,20 @@ class ArchivedScheduledAssignmentAdmissionTests(ScheduledAssignment, unittest.Te
         self.assertEqual(self.cancellations(owner), [])
         self.assertEqual([c for c in self.calls if c['op'] == 'archive_settled'], settled)
         self.assertEqual(self.store.kanban.tasks[owner['id']]['status'], 'archived')
+
+    def test_completed_assignment_waits_for_its_result_to_reach_the_requester(self):
+        owner = self.assignment(drain=False)
+        self.assertEqual(owner['_return_pending']['target_bot_id'], self.lead['id'])
+        results = self.deliveries(owner)
+        # The undelivered result holds the first continuation, and the refusal writes nothing.
+        self.assertRejected(owner, 'previous result to be delivered', identity='t_original')
+        self.assertEqual(self.deliveries(owner), results)
+        self.store._drain_returns()
+        delivered = self.store._get('tasks', owner['id'])
+        self.assertFalse(delivered.get('_return_pending'))
+        self.assertIn((self.lead['id'], 'Validated the intake.'), [(d['target_bot_id'], d['text']) for d in self.deliveries(owner)])
+        self.assertTrue(any(t.get('_is_return') and t['bot_id'] == self.lead['id'] for t in self.store._all('tasks')))
+        self.assertEqual(self.resume('t_original', 'Validate the bank details again.')['task_id'], owner['id'])
 
     def test_evicted_archived_card_is_read_back_from_the_adapter(self):
         owner = self.saved()
@@ -843,15 +862,64 @@ class ArchivedScheduledAssignmentNativeTests(unittest.TestCase):
 
     completed = routine_fixtures.ArchivedScheduledRoutineNativeTests.completed
 
+    def update(self, identity, **fields):
+        """Change a task in one committed service transaction, as the service's own writers do."""
+        self.assertFalse(self.service.db.in_transaction, 'A fixture write must not nest in another transaction.')
+        with self.service.transaction():
+            task = self.service._get('tasks', identity)
+            task.update(fields)
+            self.service._put('tasks', task)
+        return task
+
+    def settle_returns(self, owner, requester):
+        """The dispatcher delivers the owner's saved result, and the requester's return callback runs to its end.
+
+        The pass drains saved returns first, as a running service does. The callback is a turn of the requester, so it
+        must end, and its worker must exit, before the next continuation, or it would share dispatch with that turn.
+        """
+        def callbacks():
+            return [t for t in self.service._all('tasks') if t['bot_id'] == requester['id'] and t.get('_is_return')]
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and (self.service._get('tasks', owner['id']).get('_return_pending') or not callbacks()
+                                               or any(t['status'] in self.service.ACTIVE for t in callbacks())):
+            self.tick()
+            time.sleep(.05)
+        self.assertFalse(self.service._get('tasks', owner['id']).get('_return_pending'), 'The saved result was not delivered.')
+        self.assertTrue(callbacks(), 'The requester received no return callback.')
+        for task in callbacks():
+            self.assertNotIn(task['status'], self.service.ACTIVE, 'The return callback did not finish.')
+            worker = self.service.running.get(task['id'])
+            if worker:
+                worker.join(20)
+                self.assertFalse(worker.is_alive(), 'The return callback turn did not end.')
+        delivered = [json.loads(row[0]) for row in self.service.db.execute(
+            "SELECT data FROM deliveries WHERE json_extract(data,'$.source_task_id')=?", (owner['id'],))]
+        self.assertIn((requester['id'], 'Validated the intake.'), [(d['target_bot_id'], d['text']) for d in delivered])
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._reconcile_kanban()
+
+    def assertQuiescent(self, owner):
+        """Before a continuation: no open transaction, no undelivered result, and no live turn of the owner."""
+        self.assertFalse(self.service.db.in_transaction)
+        task = self.service._get('tasks', owner['id'])
+        self.assertFalse(task.get('_return_pending'), 'The previous result is still waiting for delivery.')
+        worker = self.service.running.get(owner['id'])
+        self.assertFalse(worker and worker.is_alive(), 'The previous turn is still running.')
+
+    def continue_work(self, caller, owner, identity, message):
+        self.assertQuiescent(owner)
+        return self.service.emit(caller['id'], 'work_continue', dict(task_id=identity, message=message))
+
     def completed_assignment(self, delegated=True, source=None):
         """The assignment ends its own card with kanban_complete. A requester delegated it, or the source audit gave it."""
         lead = self.write('/v1/bots', {'name': 'Lead'}) if delegated else self.bot
         if delegated:
-            origin = self.service._get('tasks', self.write('/v1/bots/' + lead['id'] + '/messages', {'text': 'Validate the intake.'})['id'])
-            origin.update(status='working', _chat_session=True)
-            self.service._put('tasks', origin)
+            origin = self.update(self.write('/v1/bots/' + lead['id'] + '/messages', {'text': 'Validate the intake.'})['id'],
+                                 status='working', _chat_session=True)
             identity = self.service._store_bot_message(origin['id'], dict(target_bot_id=self.bot['id'],
                                                                            text='Validate the bank details read-only.'))['task_id']
+            # The requester's turn ends after it delegates. The result returns to it in a later turn.
+            self.update(origin['id'], status='completed')
         else:
             identity = self.write('/v1/bots/' + self.bot['id'] + '/messages', {'text': 'Review the assigned bank intake issue.'})['id']
         with self.service.transaction():
@@ -884,31 +952,34 @@ class ArchivedScheduledAssignmentNativeTests(unittest.TestCase):
         owner = self.service._get('tasks', owner['id'])
         self.assertEqual(owner['status'], 'completed')
         self.assertFalse(any(owner.get(k) for k in ('_native_job', 'routine_id', '_native_occurrence')))
+        if delegated:
+            # A delegated result waits for delivery. Continuing now would be refused, so the dispatcher delivers it first.
+            self.assertEqual(owner['_return_pending']['target_bot_id'], lead['id'])
+            self.settle_returns(owner, lead)
+            owner = self.service._get('tasks', owner['id'])
+        else:
+            self.assertFalse(owner.get('_return_pending'))
         Path(card['workspace_path']).mkdir(parents=True, exist_ok=True)
-        source = self.service._get('tasks', self.write('/v1/bots/' + lead['id'] + '/messages', {'text': 'Check it.'})['id'])
-        source.update(status='working', _chat_session=True)
-        self.service._put('tasks', source)
+        source = self.update(self.write('/v1/bots/' + lead['id'] + '/messages', {'text': 'Check it.'})['id'],
+                             status='working', _chat_session=True)
         return owner, source, identity, card['workspace_path']
 
     def scheduled(self, delegated=True, source=None):
         """Two continuations schedule one successor card. The settle pass archives it a day after the task completed."""
         owner, source, original, workspace = self.completed_assignment(delegated, source)
-        self.service.emit(source['id'], 'work_continue', dict(task_id=original, message='Validate the bank details again.'))
+        self.continue_work(source, owner, original, 'Validate the bank details again.')
         first = self.dispatched(1)
         scheduled = first['_native_outcome_id']
         self.assertNotEqual(scheduled, original)
         self.completed(owner)
         self.tick()
         self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'scheduled')
-        self.service.emit(source['id'], 'work_continue', dict(task_id=scheduled, message='Continue the bank validation.'))
+        self.continue_work(source, owner, scheduled, 'Continue the bank validation.')
         second = self.dispatched(2)
         self.assertEqual(second['_native_outcome_id'], scheduled)
         self.completed(owner)
         self.tick()
-        with self.service.transaction():
-            task = self.service._get('tasks', owner['id'])
-            task['updated_at'] = stamp(SETTLE_SECONDS + 1)
-            self.service._put('tasks', task)
+        self.update(owner['id'], updated_at=stamp(SETTLE_SECONDS + 1))
         self.service._settle_native_orphans()
         self.service.kanban.call({'op': 'snapshot'})
         self.tick()
@@ -922,7 +993,7 @@ class ArchivedScheduledAssignmentNativeTests(unittest.TestCase):
     def test_continuation_dispatches_a_successor_of_the_scheduled_card(self):
         owner, source, original, scheduled, workspace = self.scheduled()
         history = self.native(scheduled), self.native(original)
-        receipt = self.service.emit(source['id'], 'work_continue', dict(task_id=scheduled, message='Finish the bank validation.'))
+        receipt = self.continue_work(source, owner, scheduled, 'Finish the bank validation.')
         self.assertEqual(receipt['native_task_id'], scheduled)
         continued = self.service._get('tasks', owner['id'])
         task = self.dispatched(3)
@@ -949,25 +1020,25 @@ class ArchivedScheduledAssignmentNativeTests(unittest.TestCase):
     def test_pending_source_decision_holds_the_archived_card_until_answered(self):
         owner, caller, original, scheduled, workspace = self.scheduled(delegated=False, source=SOURCE)
         history = self.native(scheduled), self.native(original)
+        # A separate audit of the same item, written through the service's own route, then committed as completed.
+        reconciler = self.write('/v1/bots/' + self.bot['id'] + '/messages', {'text': 'Reconcile the assigned bank intake issue.'})
+        reconciler = self.update(reconciler['id'], status='completed', _execution_session_id=reconciler['id'],
+                                 _source_assignment=dict(SOURCE))
+        decision = dict(id=str(uuid4()), task_id=reconciler['id'], bot_id=self.bot['id'], status='pending',
+                        inbox_kind='proposal', title='Is the bank intake change worth merging?', revision=1,
+                        sources=[dict(kind='issue', title='Bank intake', url=SOURCE['id'])])
         with self.service.transaction():
-            reconciler = self.service._get('tasks', self.write('/v1/bots/' + self.bot['id'] + '/messages',
-                {'text': 'Reconcile the assigned bank intake issue.'})['id'])
-            reconciler.update(status='completed', _execution_session_id=reconciler['id'], _source_assignment=dict(SOURCE))
-            self.service._put('tasks', reconciler)
-            decision = dict(id=str(uuid4()), task_id=reconciler['id'], bot_id=self.bot['id'], status='pending',
-                            inbox_kind='proposal', title='Is the bank intake change worth merging?', revision=1,
-                            sources=[dict(kind='issue', title='Bank intake', url=SOURCE['id'])])
             self.service._put('decisions', decision)
         before = self.service._get('tasks', owner['id'])
         with self.assertRaisesRegex(ServiceError, 'decision about the same source is pending'):
-            self.service.emit(caller['id'], 'work_continue', dict(task_id=scheduled, message='Finish the bank validation.'))
+            self.continue_work(caller, owner, scheduled, 'Finish the bank validation.')
         self.tick()
         self.assertEqual(self.service._get('tasks', owner['id']), before)
         self.assertEqual(len(self.provider.tasks), 2)
         self.assertEqual((self.native(scheduled), self.native(original)), history)
         with self.service.transaction():
             self.service._put('decisions', dict(decision, status='approved', decided_by='test-phone'))
-        receipt = self.service.emit(caller['id'], 'work_continue', dict(task_id=scheduled, message='Finish the bank validation.'))
+        receipt = self.continue_work(caller, owner, scheduled, 'Finish the bank validation.')
         self.assertEqual(receipt['native_task_id'], scheduled)
         successor = self.dispatched(3)['_native_outcome_id']
         self.assertEqual(self.native(successor)['parents'], [scheduled])
@@ -980,7 +1051,7 @@ class ArchivedScheduledAssignmentNativeTests(unittest.TestCase):
             self.service._cancel_one(owner, [], include_finished=True)
         owner = self.service._get('tasks', owner['id'])
         with self.assertRaises(ServiceError):
-            self.service.emit(source['id'], 'work_continue', dict(task_id=scheduled, message='Continue anyway.'))
+            self.continue_work(source, owner, scheduled, 'Continue anyway.')
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
 
