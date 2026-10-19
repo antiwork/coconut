@@ -357,19 +357,7 @@ class NativeOutcomes:
             if previous and self._continued_work_task(previous, tasks) == current:
                 current = previous
                 continue
-            producer = tasks.get(current.get('source_task_id'))
-            if (not current.get('_is_return') or current.get('_assignment_task_id') != requester['id']
-                    or not producer or current.get('source_bot_id') != producer['bot_id']
-                    or producer.get('source_bot_id') != requester['bot_id']
-                    or (producer.get('_reply_to_task_id') or producer.get('source_task_id')) != requester['id']
-                    or current.get('exchange_id') != producer.get('exchange_id')
-                    or not any(d.get('source_task_id') == producer['id']
-                               and d.get('target_bot_id') == current['bot_id']
-                               and d.get('receipt', {}).get('task_id') == current['id']
-                               and d.get('receipt', {}).get('target_bot_id') == current['bot_id']
-                               and d.get('receipt', {}).get('thread_id') == current['thread_id']
-                               and d.get('receipt', {}).get('status') in ('queued', 'paused')
-                               for d in self._all('deliveries'))):
+            if not self._requester_return(current, requester, tasks):
                 return False
             current = requester
         claim = caller.get('_kanban_claim') or {}
@@ -382,6 +370,37 @@ class NativeOutcomes:
                     and card.get('claim_source_status') != 'review'
                     and card.get('current_run_id') == claim['run_id']
                     and (not card.get('worker_pid') or card['worker_pid'] == claim.get('pid')))
+
+    def _requester_return(self, callback, requester, tasks):
+        """A return callback of the requester, with its producer's exact persisted delivery and route."""
+        producer = tasks.get(callback.get('source_task_id'))
+        return bool(callback.get('_is_return') and callback.get('_assignment_task_id') == requester['id']
+                    and producer and callback.get('source_bot_id') == producer['bot_id']
+                    and producer.get('source_bot_id') == requester['bot_id']
+                    and (producer.get('_reply_to_task_id') or producer.get('source_task_id')) == requester['id']
+                    and callback.get('exchange_id') == producer.get('exchange_id')
+                    and any(d.get('source_task_id') == producer['id']
+                            and d.get('target_bot_id') == callback['bot_id']
+                            and d.get('receipt', {}).get('task_id') == callback['id']
+                            and d.get('receipt', {}).get('target_bot_id') == callback['bot_id']
+                            and d.get('receipt', {}).get('thread_id') == callback['thread_id']
+                            and d.get('receipt', {}).get('status') in ('queued', 'paused')
+                            for d in self._all('deliveries')))
+
+    def _requester_callback_root(self, owner, tasks):
+        """The requester's coordinating root when the owner's source task is one of its return callbacks.
+
+        The callback runs in the root's execution, and the owner's result goes to the root.
+        """
+        source = tasks.get(owner.get('source_task_id'))
+        if not source:
+            return None
+        root = self._work_execution_owner(source, tasks)
+        if (root['id'] == source['id'] or owner.get('_reply_to_task_id') != root['id']
+                or owner.get('source_bot_id') != root['bot_id']
+                or not self._requester_return(source, root, tasks)):
+            return None
+        return root
 
     def _linked_owner_report_coordinator(self, owner, item, peer, reporter, peers, tasks, get_deliveries):
         """Authenticate a completed activity report without transferring PR ownership."""
@@ -575,6 +594,10 @@ class NativeOutcomes:
                         or self._background_pending(task['id']) or running_tool(task)
                         or native_live or task['id'] in pending_decisions or task['id'] in open_contexts)
 
+        def live(task):
+            return (task['status'] in self.ACTIVE or not quiet(task)
+                    or (task['status'] == 'completed' and self._unfinished_work(task)))
+
         def audit_finished():
             # The audit path skips the audit's own writer checks, so the audit must have finished.
             # Coconut reads the audit's card only for an audited delegation.
@@ -650,6 +673,9 @@ class NativeOutcomes:
             # The requester's coordinating task can differ from the task that delegated this work.
             requesters = {owner.get('source_task_id')} | ({linked_parent['task_id']} if linked_parent else set())
             requesters.discard(None)
+            # A return callback source reports and calls for its root. Its other live branches stay guarded.
+            requester_root = self._requester_callback_root(owner, tasks)
+            requester_roots = {requester_root['id']} if requester_root else set()
             # Only the caller is not a competing writer. When the coordinator calls for its audit, the audit stays guarded.
             callers = ({linked_parent['task_id']} if linked_parent and linked_parent['task_id'] != owner.get('source_task_id')
                        else {owner.get('source_task_id')})
@@ -693,8 +719,8 @@ class NativeOutcomes:
                     reporter = tasks[peer[field]]
                     if execution_key(reporter) == execution_key(owner):
                         continue
-                    requester_activity = (requester_report and
-                        self._work_execution_owner(reporter, tasks)['id'] == owner.get('source_task_id'))
+                    requester_activity = (requester_report and self._work_execution_owner(reporter, tasks)['id']
+                        in {owner.get('source_task_id'), *requester_roots})
                     reporter_source = tasks.get(reporter.get('source_task_id'))
                     owner_report = (peer['id'] == item['id'] and peer['task_id'] == owner['id']
                         and reporter['bot_id'] == owner['bot_id']
@@ -716,7 +742,7 @@ class NativeOutcomes:
                         # The coordinating requester task has its own branches. Keep its live ones in the guard too.
                         # A failed or cancelled branch with no live signal cannot write. Its unfinished work items
                         # are expected. A completed branch with unfinished work items stays guarded.
-                        for identity in requesters - {root['id']}:
+                        for identity in (requesters | requester_roots) - {root['id']}:
                             if identity in tasks:
                                 linked.update({key: value for key, value in self._work_chain(
                                     tasks[identity], tasks, records, include_continuations=True).items()
@@ -731,7 +757,10 @@ class NativeOutcomes:
                         # are not competing writers. Their other descendants
                         # still need terminal claims, returns, and decisions.
                         for identity in (*callers, owner['id']):
-                            linked.pop(identity, None)
+                            value = linked.pop(identity, None)
+                            if requester_roots and identity == source['id'] and value and live(value[0]):
+                                # A root's source callback is an earlier turn, not the caller. It stays guarded while live.
+                                linked[identity] = value
                         if audited_parent:
                             # The same quiet-terminal rule applies to the audit's
                             # own chain, whether or not a passive report exists.
@@ -788,7 +817,7 @@ class NativeOutcomes:
             for peer, reporter, linked, native_tasks, passive_report, linked_report in peer_chains:
                 foreground = (caller['id'] if passive_report and caller and caller['id'] in linked
                     and any(self._requester_callback_foreground(caller, tasks.get(identity), tasks, snapshots)
-                            for identity in callers) else None)
+                            for identity in (*callers, *requester_roots)) else None)
                 routine_scope = routine_scopes.get((peer['id'], reporter['id']))
                 projection = (routine_reports.project(self, routine_scope, tasks, snapshots, get_deliveries(), caller)
                               if routine_scope else None)

@@ -275,5 +275,259 @@ class RequesterCallbackContinuationTests(unittest.TestCase):
                 self.assertEqual(errors, [])
 
 
+class RequesterRootCallbackContinuationTests(unittest.TestCase):
+    """The owner's source is a return callback of the requester's root, as in Desk #3748.
+
+    Its same-PR activity reporter and the calling callback both execute as that root.
+    """
+    setUp = fixtures.NativeWorkContinuationTests.setUp
+    tearDown = fixtures.NativeWorkContinuationTests.tearDown
+    write = fixtures.NativeWorkContinuationTests.write
+    prepare = fixtures.NativeWorkContinuationTests.prepare
+    scheduled_native = fixtures.NativeWorkContinuationTests.scheduled_native
+    snapshot_result = fixtures.NativeWorkContinuationTests.snapshot_result
+    resume = fixtures.NativeWorkContinuationTests.resume
+    through_provider = RequesterCallbackContinuationTests.through_provider
+    reject = RequesterCallbackContinuationTests.reject
+
+    def returned(self, owner, root, name, *, callback_owner=None, status='completed'):
+        # A helper that the root delegated returns through the real delivery route.
+        producer = dict(owner, id=str(uuid4()), _execution_session_id=str(uuid4()), status=status,
+                        source_task_id=root['id'], parent_task_id=root['id'], _reply_to_task_id=root['id'],
+                        _native_relay=dict(envelope_id=uuid4().hex, sender_bot_id=root['bot_id']),
+                        _kanban_claim={'native_id': 't_' + name + '_helper', 'input': name})
+        for key in ('_work_todos', '_requester_reply_task_id'):
+            producer.pop(key, None)
+        if callback_owner:
+            producer['_requester_reply_task_id'] = callback_owner
+        self.service._put('tasks', producer)
+        self.service.kanban.tasks[producer['id']] = dict(id='t_' + name + '_helper', status='done')
+        with self.service.transaction():
+            delivered = self.service._store_bot_message(producer['id'], {
+                'target_bot_id': root['bot_id'], 'text': name + ' result'}, returning=True)
+            callback = self.service._get('tasks', delivered['task_id'])
+            self.service._ensure_execution_session(callback)
+        callback.update(status='completed', _native_turn_id=name + '-turn',
+                        _conversation_epoch=root['_conversation_epoch'],
+                        _kanban_claim=dict(native_id='t_' + name, external_id=callback['id'],
+                                           input=callback['id'], run_id=0, pid=0, context=''))
+        self.service._put('tasks', callback)
+        self.service.kanban.tasks[callback['id']] = dict(id='t_' + name, status='done')
+        return producer, callback
+
+    def run_as_caller(self, callback):
+        callback.update(status='working', _kanban_claim=dict(callback['_kanban_claim'], run_id=71, pid=101))
+        self.service._put('tasks', callback)
+        self.service.running[callback['id']] = Mock(is_alive=Mock(return_value=True))
+        self.service.kanban.tasks[callback['id']] = dict(id=callback['_kanban_claim']['native_id'], status='running',
+                                                         current_run_id=71, worker_pid=101)
+        return callback
+
+    def incident(self):
+        owner, root = self.scheduled_native()
+        self.service.kanban.tasks[owner['id']]['status'] = 'done'
+        root.update(status='completed', _waiting_on=[], _conversation_epoch=self.service._setting('conversation_epoch'))
+        self.service._put('tasks', root)
+        _, source = self.returned(owner, root, 'source')
+        # The source callback relayed this owner. The owner's result goes to the root.
+        owner.update(source_task_id=source['id'], parent_task_id=source['id'], _reply_to_task_id=root['id'],
+                     _requester_reply_task_id=source['id'])
+        self.service._put('tasks', owner)
+        _, reporter = self.returned(owner, root, 'reporter', callback_owner=source['id'])
+        helper, caller = self.returned(owner, root, 'caller', callback_owner=source['id'])
+        self.run_as_caller(caller)
+        url = 'https://github.com/example/project/pull/1'
+        original = dict(id='original-pr', task_id=owner['id'], bot_id=owner['bot_id'], kind='pr',
+                        title='Original PR', status='merged', pr_state='merged', url=url,
+                        _review_task_id=owner['id'], _activity_task_id=owner['id'])
+        peer = dict(id='requester-pr', task_id=source['id'], bot_id=root['bot_id'], kind='pr',
+                    title='Requester PR', status='merged', pr_state='merged', url=url.upper(),
+                    _review_task_id=source['id'], _activity_task_id=reporter['id'])
+        for item in (original, peer):
+            self.service._put('artifacts', item)
+        for task in (source, reporter, caller):
+            self.assertTrue(task['_is_return'])
+            self.assertEqual(task['_execution_session_id'], root['id'])
+            self.assertEqual(task['_assignment_task_id'], root['id'])
+        for task in (reporter, caller):
+            self.assertEqual(task['_relay_callback_owner'], source['id'])
+        self.assertNotIn('_native_outcome_id', owner)
+        return owner, root, source, reporter, helper, caller, original, peer
+
+    def test_provider_root_callback_admits_once_preserving_owner_route_and_workspace(self):
+        owner, root, source, reporter, helper, caller, original, peer = self.incident()
+        owner['_kanban_claim']['workspace'] = str(Path(self.temp.name) / 'retained-owner')
+        self.service._put('tasks', owner)
+        self.service._put('decisions', dict(id='answered', task_id=owner['id'], status='rejected'))
+        before = copy.deepcopy(self.service.kanban.tasks)
+        tasks_before = self.service._all('tasks')
+        receipt = self.through_provider(caller, twice=True)
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
+        queued = self.service._get('tasks', owner['id'])
+        for key in ('id', '_execution_session_id', '_kanban_claim', 'source_task_id', 'source_bot_id',
+                    '_reply_to_task_id', '_requester_reply_task_id', 'thread_id'):
+            self.assertEqual(queued[key], owner[key], key)
+        self.assertEqual(queued['_reply_to_task_id'], root['id'])
+        self.assertEqual(queued['_work_context_id'], original['id'])
+        self.assertEqual(queued['_self_recovery']['decisions'][0]['status'], 'rejected')
+        self.assertEqual(self.service.kanban.tasks, before)
+        self.assertEqual(len(self.service._all('tasks')), len(tasks_before))
+        for task in tasks_before:
+            if task['id'] != owner['id']:
+                self.assertEqual(self.service._get('tasks', task['id']), task)
+        self.assertEqual(self.service._get('artifacts', peer['id']), peer)
+        self.assertEqual(len([d for d in self.service._all('deliveries')
+                             if d['receipt'].get('native_task_id') == 't_existing']), 1)
+
+    def test_live_helper_and_other_live_root_branches_remain_guarded(self):
+        owner, root, source, reporter, helper, caller, _, _ = self.incident()
+        # The helper whose result the caller consumes is still running, like Care's repair.
+        self.service._put('tasks', dict(helper, status='working'))
+        self.service.kanban.tasks[helper['id']] = dict(id='t_caller_helper', status='running', current_run_id=81)
+        self.reject(owner, caller)
+        self.service._put('tasks', helper)
+        self.service.kanban.tasks[helper['id']] = dict(id='t_caller_helper', status='done')
+        # An independent writer that the root delegated outside the source callback's branch.
+        independent, _ = self.returned(owner, root, 'independent')
+        self.service._put('tasks', dict(independent, status='working'))
+        self.service.kanban.tasks[independent['id']] = dict(id='t_independent_helper', status='running', current_run_id=82)
+        self.reject(owner, caller)
+        self.service._put('tasks', independent)
+        self.service.kanban.tasks[independent['id']] = dict(id='t_independent_helper', status='done')
+        # A sibling callback of the root that runs beside the caller.
+        _, sibling = self.returned(owner, root, 'sibling')
+        self.run_as_caller(sibling)
+        self.reject(owner, caller)
+        self.service._put('tasks', dict(sibling, status='completed'))
+        self.service.running.pop(sibling['id'])
+        self.service.kanban.tasks[sibling['id']] = dict(id='t_sibling', status='done')
+        for changes in ({'_waiting_on': [helper['id']]}, {'_return_pending': {'text': 'result'}}):
+            with self.subTest(root=changes):
+                self.service._put('tasks', dict(self.service._get('tasks', root['id']), **changes))
+                self.reject(owner, caller)
+        self.service._put('tasks', root)
+        for identity in (root['id'], reporter['id'], caller['id']):
+            with self.subTest(decision=identity):
+                self.service._put('decisions', dict(id='pending', task_id=identity, status='pending'))
+                self.reject(owner, caller)
+                self.assertEqual(self.service._get('decisions', 'pending')['status'], 'pending')
+        self.service._put('decisions', dict(id='pending', task_id=caller['id'], status='executed'))
+        self.service._put('native_receipts', dict(id='unknown', task_id=reporter['id'], turn_id='reporter-turn',
+            state='executing', action={'name': 'unknown', 'arguments': {}}))
+        self.reject(owner, caller)
+        self.service._put('native_receipts', dict(id='unknown', task_id=reporter['id'], turn_id='reporter-turn',
+            state='completed', action={'name': 'unknown', 'arguments': {}}))
+        self.assertEqual(self.resume(caller)['task_id'], owner['id'])
+
+    def test_provider_source_callback_live_signals_remain_guarded(self):
+        # The source callback is an earlier turn of the root, not the caller. Only the caller is exempt.
+        def task(**changes):
+            return lambda s, source, helper: s.service._put('tasks', dict(source, **{
+                k: ([helper['id']] if v == 'helper' else v) for k, v in changes.items()}))
+        def card(**changes):
+            return lambda s, source, helper: s.service.kanban.tasks.__setitem__(
+                source['id'], dict(s.service.kanban.tasks[source['id']], **changes))
+        def row(table, **values):
+            return lambda s, source, helper: s.service._put(table, dict(values, task_id=source['id']))
+        cases = {
+            'wait': task(_waiting_on='helper'), 'return': task(_return_pending={'text': 'result'}),
+            'working': task(status='working'), 'queued': task(status='queued'),
+            'decision': row('decisions', id='source-decision', status='pending'),
+            'context': row('contexts', id='source-context', status='queued'),
+            'unknown receipt': row('native_receipts', id='source-unknown', turn_id='source-turn', state='executing',
+                                   action={'name': 'unknown', 'arguments': {}}),
+            'running command': row('native_receipts', id='source-command', turn_id='source-turn', state='executing',
+                                   action={'name': 'terminal', 'arguments': {}}),
+            'background wait': row('native_receipts', id='source-wait', turn_id='source-turn', state='completed',
+                                   action={'name': 'process', 'arguments': {}}, _wait_process_receipt='source-process'),
+            'native ready': card(status='ready', block_kind='dependency', current_run_id=None, worker_pid=None),
+            'native claim': card(status='running', current_run_id=91, worker_pid=191),
+            'native input block': card(status='blocked', block_kind='needs_input'),
+            'rebound native': card(id='t_other'),
+            'live worker': lambda s, source, helper: s.service.running.__setitem__(
+                source['id'], Mock(is_alive=Mock(return_value=True))),
+        }
+        for name, apply in cases.items():
+            with self.subTest(source=name):
+                self.tearDown()
+                self.setUp()
+                owner, root, source, reporter, helper, caller, _, _ = self.incident()
+                apply(self, source, helper)
+                receipt = self.through_provider(caller)
+                self.assertEqual(receipt['status'], 'rejected', receipt)
+                self.assertIn('another execution', receipt['error'])
+                self.assertEqual(self.service._get('tasks', owner['id']), owner)
+                for decision in self.service._all('decisions'):
+                    self.assertEqual(decision['status'], 'pending')
+        # The same source admits once it is quiet: answered decision, ended context and delivered wait.
+        self.tearDown()
+        self.setUp()
+        owner, root, source, reporter, helper, caller, _, _ = self.incident()
+        self.service._put('decisions', dict(id='source-decision', task_id=source['id'], status='executed'))
+        self.service._put('contexts', dict(id='source-context', task_id=source['id'], status='completed'))
+        self.service._put('native_receipts', dict(id='source-wait', task_id=source['id'], turn_id='source-turn',
+            state='completed', action={'name': 'process', 'arguments': {}}, _wait_process_receipt='source-process',
+            _process_delivery='delivered'))
+        self.service._put('native_receipts', dict(id='source-unknown', task_id=source['id'], turn_id='source-turn',
+            state='completed', action={'name': 'unknown', 'arguments': {}}))
+        receipt = self.through_provider(caller, twice=True)
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
+        self.assertEqual(self.service._get('tasks', source['id']), source)
+
+    def test_ready_native_callback_with_completed_input_waits_for_the_settle_pass(self):
+        from datetime import datetime, timedelta, timezone
+        owner, root, source, reporter, helper, caller, _, _ = self.incident()
+        # A completed callback blocked on a native dependency. Hermes promoted it to READY
+        # after the dependency finished, but Coconut has no input left to dispatch on it.
+        _, stale = self.returned(owner, root, 'stale', callback_owner=source['id'])
+        finished = (datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat().replace('+00:00', 'Z')
+        stale['updated_at'] = finished
+        self.service._put('tasks', stale)
+        self.service.kanban.tasks[stale['id']] = dict(id='t_stale', status='ready', block_kind='dependency',
+                                                      current_run_id=None, worker_pid=None, dependencies=[])
+        self.reject(owner, caller)
+        settled = []
+        def call(request):
+            if request['op'] == 'archive_settled':
+                settled.append(request)
+                self.service.kanban.tasks[stale['id']] = dict(id='t_stale', status='done')
+                return {'ok': True}
+            return self.snapshot_result()
+        self.service.kanban.call.side_effect = call
+        self.service._settle_native_orphans()
+        self.assertEqual(settled, [dict(op='archive_settled', id='t_stale', summary=stale['summary'])])
+        self.assertEqual(self.service._get('tasks', stale['id']), stale)
+        self.assertEqual(self.resume(caller)['task_id'], owner['id'])
+
+    def test_root_needs_verified_callback_provenance(self):
+        owner, root, source, reporter, helper, caller, _, _ = self.incident()
+        delivery = next(d for d in self.service._all('deliveries') if d['receipt']['task_id'] == source['id'])
+        for table, row, changes in (
+                ('tasks', source, {'_is_return': False}),
+                ('tasks', source, {'_assignment_task_id': reporter['id']}),
+                ('tasks', source, {'source_bot_id': 'unrelated'}),
+                ('tasks', source, {'session_id': 'other'}),
+                ('tasks', owner, {'_reply_to_task_id': source['id']}),
+                ('deliveries', delivery, {'target_bot_id': 'other'}),
+                ('deliveries', delivery, {'receipt': dict(delivery['receipt'], task_id=reporter['id'])}),
+                ('deliveries', delivery, {'receipt': dict(delivery['receipt'], status='rejected')})):
+            with self.subTest(table=table, changes=changes):
+                self.service._put(table, dict(row, **changes))
+                self.reject(dict(owner, **changes) if row is owner else owner, caller)
+                self.service._put(table, row)
+        self.assertEqual(self.resume(caller)['task_id'], owner['id'])
+
+    def test_root_callback_does_not_grant_another_bot_or_execution(self):
+        owner, root, source, reporter, helper, caller, _, _ = self.incident()
+        stranger = self.write('/v1/bots', {'name': 'Unrelated'})
+        for changes in ({'bot_id': stranger['id']}, {'_execution_session_id': str(uuid4())},
+                        {'_assignment_task_id': source['id']}):
+            with self.subTest(changes=changes):
+                self.service._put('tasks', dict(caller, **changes))
+                self.reject(owner, caller)
+        self.service._put('tasks', caller)
+        self.assertEqual(self.resume(caller)['task_id'], owner['id'])
+
+
 if __name__ == '__main__':
     unittest.main()

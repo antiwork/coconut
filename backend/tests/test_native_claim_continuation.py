@@ -363,6 +363,95 @@ else:
         self.prepare = prepare_callback
         self.check_dispatch('done')
 
+    def test_requester_root_callback_waits_for_settled_ready_callback_then_dispatches_once(self):
+        # The owner's source is a return callback of the requester's root, as in Desk #3748.
+        # A completed sibling callback stays READY after its native dependency finished.
+        import os
+        from datetime import datetime, timedelta, timezone
+        prepare = self.prepare
+        def prepare_root_callback(*args):
+            owner, unused, identity, workspace = prepare(*args)
+            self.service._put('tasks', dict(unused, status='completed'))
+            root = self.service._get('tasks', owner['source_task_id'])
+            root.update(_execution_session_id=root['id'], _waiting_on=[],
+                        _conversation_epoch=self.service._setting('conversation_epoch'))
+            self.service._put('tasks', root)
+            def returned(name, callback_owner=None):
+                producer = dict(owner, id=str(uuid4()), _execution_session_id=str(uuid4()),
+                                source_task_id=root['id'], parent_task_id=root['id'], _reply_to_task_id=root['id'],
+                                _native_relay=dict(envelope_id=uuid4().hex, sender_bot_id=root['bot_id']))
+                for key in ('_kanban_claim', '_requester_reply_task_id'):
+                    producer.pop(key, None)
+                if callback_owner:
+                    producer['_requester_reply_task_id'] = callback_owner
+                self.service._put('tasks', producer)
+                delivered = self.service._store_bot_message(producer['id'], dict(
+                    target_bot_id=root['bot_id'], text=name + ' result is saved.'), returning=True)
+                callback = self.service._get('tasks', delivered['task_id'])
+                self.service._ensure_execution_session(callback)
+                callback.update(_native_turn_id=name + '-input', _conversation_epoch=root['_conversation_epoch'])
+                self.service._put('tasks', callback)
+                return producer, callback
+            _, source = returned('source')
+            owner.update(source_task_id=source['id'], parent_task_id=source['id'], _reply_to_task_id=root['id'],
+                         _requester_reply_task_id=source['id'])
+            self.service._put('tasks', owner)
+            _, reporter = returned('reporter', source['id'])
+            _, caller = returned('caller', source['id'])
+            stale_producer, stale = returned('stale', source['id'])
+            rows = [self.service._kanban_row(t, t, 'ready', 10) for t in (source, reporter, caller, stale)]
+            self.native_program('import json; board.sync(json.loads(sys.argv[2]))', json.dumps(rows))
+            self.service.kanban.call({'op': 'snapshot'})
+            native = {t['id']: self.service.kanban.tasks[t['id']]['id'] for t in (source, reporter, caller, stale)}
+            self.native_program('''
+kb, conn = board.kb, board.conn
+source, reporter, caller, stale, tenant, workspace, producer, pid = sys.argv[2:]
+assert kb.complete_task(conn, source, summary='Source callback consumed')
+assert kb.complete_task(conn, reporter, summary='Same-PR activity saved')
+assert kb.claim_task(conn, caller)
+board.dispatch._set_worker_pid(conn, caller, int(pid))
+claimed = kb.claim_task(conn, stale)
+dependency = kb.create_task(conn, title='Native dependency', body='Fixture', assignee='default', tenant=tenant,
+                            workspace_kind='dir', workspace_path=workspace)
+board.bind(dependency, producer)
+kb.link_tasks(conn, dependency, stale, expected_child_run_id=claimed.current_run_id)
+assert kb.block_task(conn, stale, reason='Waiting for the native dependency', kind='dependency',
+                     expected_run_id=claimed.current_run_id)
+assert kb.complete_task(conn, dependency, summary='Dependency finished')
+kb.recompute_ready(conn)
+assert kb.get_task(conn, stale).status == 'ready', kb.get_task(conn, stale).status
+''', native[source['id']], native[reporter['id']], native[caller['id']], native[stale['id']],
+                root['bot_id'], rows[3]['workspace'], stale_producer['id'], str(os.getpid()))
+            self.service.kanban.call({'op': 'snapshot'})
+            for task, row in zip((source, reporter, caller, stale), rows):
+                card = self.service.kanban.tasks[task['id']]
+                task.update(status='completed', _kanban_claim=dict(native_id=card['id'], external_id=task['id'],
+                    input=row['input'], run_id=card['current_run_id'] or 'completed-run', pid=os.getpid(), context=''))
+            caller['status'] = 'working'
+            stale.update(summary='Complete.', updated_at=(datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat().replace('+00:00', 'Z'))
+            for task in (source, reporter, caller, stale):
+                self.service._put('tasks', task)
+            card = self.service.kanban.tasks[stale['id']]
+            self.assertEqual((card['status'], card['block_kind'], card['dependencies'], card['current_run_id']),
+                             ('ready', 'dependency', [], None))
+            url = 'https://github.com/example/app/pull/6'
+            from coconut.service import now
+            for task, review, activity in ((owner, owner, owner), (source, source, reporter)):
+                self.service._put('artifacts', dict(id=str(uuid4()), task_id=task['id'], bot_id=task['bot_id'],
+                    created_at=now(), kind='pr', title='Retained PR', status='merged', pr_state='merged', url=url,
+                    _review_task_id=review['id'], _activity_task_id=activity['id']))
+            # The READY card is not proof that its input is consumed. Reject until the settle pass ends it.
+            with self.assertRaises(ServiceError):
+                self.resume(caller, identity)
+            self.assertEqual(self.service._get('tasks', owner['id']), owner)
+            self.service._settle_native_orphans()
+            self.service.kanban.call({'op': 'snapshot'})
+            self.assertEqual(self.service.kanban.tasks[stale['id']]['status'], 'done')
+            self.assertEqual(self.service._get('tasks', stale['id']), stale)
+            return owner, caller, identity, workspace
+        self.prepare = prepare_root_callback
+        self.check_dispatch('done')
+
     def test_aged_completed_claim_dispatches_after_adapter_restart(self):
         self.check_dispatch('done', aged=True)
 
