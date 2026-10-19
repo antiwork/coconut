@@ -388,8 +388,9 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
         requester = self.update(requester['id'], status='working')
         delivered = self.service._store_bot_message(requester['id'], dict(
             target_bot_id=self.dev['id'], text='Implement the admin-only download grant.', native_envelope_id=ENVELOPE))
+        # The saved input carries the PR facts that its failed turn never received.
         owner = self.update(delivered['task_id'], status='queued', _native_intake=True, _native_turn_id=TURN,
-                            _execution_session_id=delivered['task_id'],
+                            _execution_session_id=delivered['task_id'], _pr_review=dict(PR_REVIEW),
                             _conversation_epoch=self.service._setting('conversation_epoch'))
         row = self.service._kanban_row(owner, owner, 'ready', 10)
         self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
@@ -413,10 +414,12 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
     def test_continuation_dispatches_a_successor_in_the_same_execution(self):
         owner, requester, archived, workspace = self.failed_request()
         self.assertEqual((owner['status'], owner.get('_native_outcome_id')), ('failed', None))
+        self.assertEqual(owner['_pr_review'], PR_REVIEW)
         history = self.native(archived)
         receipt = self.service.emit(requester['id'], 'work_continue', dict(task_id=archived, message='Continue the grant.'))
         self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id=archived, status='queued'))
         continued = self.service._get('tasks', owner['id'])
+        self.assertEqual(continued['_pr_review'], PR_REVIEW)
         task = self.dispatched(1)
         successor = task['_native_outcome_id']
         self.assertNotEqual(successor, archived)
@@ -427,7 +430,8 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
         self.assertEqual(self.provider.prepared[-1][1:3], (workspace, owner['id']))
         self.assertEqual(self.native(archived), history)
         self.assertEqual((task['_kanban_workspace'], task['_reply_to_task_id']), (workspace, requester['id']))
-        self.assertEqual(task['_pr_review'] if '_pr_review' in owner else None, owner.get('_pr_review'))
+        # The successor turn receives the PR facts that the failed turn never received.
+        self.assertEqual(task['_pr_review'], PR_REVIEW)
 
     def test_cancelled_request_stays_archived(self):
         owner, requester, archived, _ = self.failed_request()
