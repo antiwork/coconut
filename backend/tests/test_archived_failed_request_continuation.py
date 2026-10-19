@@ -458,7 +458,6 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
     native_program = native_fixtures.NativeKanbanTests.native_program
     tick = native_fixtures.NativeKanbanTests.tick
     native = failed_routine_fixtures.ArchivedFailedRoutineNativeTests.native
-    dispatched = failed_routine_fixtures.ArchivedFailedRoutineNativeTests.dispatched
 
     def setUp(self):
         if not (native_fixtures.SOURCE and native_fixtures.PYTHON):
@@ -480,10 +479,12 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
         start = self.provider.start_task
 
         self.fail_turns = False
+        self.owner_id = None
 
+        # Every started turn is recorded: the owner's, and the requester's return callbacks. Only the owner's turns fail.
         def record(task, bot, history, emit):
             self.provider.tasks.append(copy.deepcopy(task))
-            if self.fail_turns:
+            if self.fail_turns and task['id'] == self.owner_id:
                 emit('failed', dict(summary='The grant tests failed.'))
                 return
             start(task, bot, history, emit)
@@ -496,12 +497,82 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
             self.service._put('tasks', task)
         return task
 
+    def dispatch_state(self, owner):
+        """The task identities and native state that explain a missing turn. No prompt or message text."""
+        task = self.service._get('tasks', owner['id'])
+        card = self.service.kanban.tasks.get(owner['id']) or {}
+        return json.dumps(dict(
+            started=[{k: t.get(k) for k in ('id', 'bot_id', 'source_task_id', '_execution_session_id', '_native_outcome_id',
+                                            '_native_turn_id')} for t in self.provider.tasks],
+            prepared=[list(p[:3]) for p in self.provider.prepared],
+            owner=dict({k: task.get(k) for k in ('status', '_native_outcome_id', '_native_turn_id', '_kanban_started',
+                                                '_waiting_on')}, return_pending=bool(task.get('_return_pending')),
+                       claim={k: (task.get('_kanban_claim') or {}).get(k) for k in ('native_id', 'input', 'run_id')},
+                       worker_alive=bool(self.service.running.get(owner['id']) and self.service.running[owner['id']].is_alive())),
+            card={k: card.get(k) for k in ('id', 'status', 'input_id', 'current_run_id', 'worker_pid', 'idempotency_key',
+                                           'dispatch_blocker')},
+            open=[{k: t.get(k) for k in ('id', 'bot_id', 'status', 'source_task_id', '_is_return')}
+                  for t in self.service._all('tasks') if t['status'] in ('queued', 'working', 'scheduled', 'waiting')]),
+            default=str, sort_keys=True)
+
+    def owner_turn(self, owner, count):
+        """Tick a real dispatcher until the owner's own turn number `count` starts, and return it."""
+        def turns():
+            return [t for t in self.provider.tasks if t['id'] == owner['id']]
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and len(turns()) < count:
+            self.tick()
+            time.sleep(.05)
+        self.assertEqual(len(turns()), count, 'The owner turn did not start: ' + self.dispatch_state(owner))
+        turn = turns()[-1]
+        self.assertEqual((turn['bot_id'], turn['_execution_session_id']), (owner['bot_id'], owner['_execution_session_id']),
+                         self.dispatch_state(owner))
+        self.assertIn('_native_outcome_id', turn, self.dispatch_state(owner))
+        return turn
+
+    def returned(self, owner, requester, count):
+        """Tick until at least `count` return callbacks of the owner reached the requester, and every one of them ended.
+
+        A failed relayed turn returns its result to the requester as a callback turn of the requester's bot. It is not a
+        turn of the owner, and it must end before the next continuation, as a running service does.
+        """
+        def callbacks():
+            return [t for t in self.service._all('tasks') if t.get('_is_return') and t.get('source_task_id') == owner['id']
+                    and t['bot_id'] == requester['bot_id']]
+        def done():
+            started = {t['id'] for t in self.provider.tasks}
+            found = callbacks()
+            return (len(found) >= count and all(t['id'] in started and t['status'] not in self.service.ACTIVE for t in found)
+                    and not self.service._get('tasks', owner['id']).get('_return_pending'))
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not done():
+            self.tick()
+            time.sleep(.05)
+        self.assertTrue(done(), 'The failure return did not reach the requester: ' + self.dispatch_state(owner))
+        for task in callbacks():
+            worker = self.service.running.get(task['id'])
+            if worker:
+                worker.join(20)
+                self.assertFalse(worker.is_alive(), 'The return callback turn did not end: ' + self.dispatch_state(owner))
+
+    def ended(self, owner, status):
+        """Wait until the owner's turn reported `status` and its thread ended. Until then the task counts as running."""
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and self.service._get('tasks', owner['id'])['status'] != status:
+            time.sleep(.05)
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], status, self.dispatch_state(owner))
+        worker = self.service.running.get(owner['id'])
+        if worker:
+            worker.join(20)
+            self.assertFalse(worker.is_alive(), 'The owner turn did not end: ' + self.dispatch_state(owner))
+
     def failed_request(self):
         requester = self.write('/v1/bots/' + self.bot['id'] + '/messages', {'text': 'Ask Dev for the grant.'})
         requester = self.update(requester['id'], status='working')
         delivered = self.service._store_bot_message(requester['id'], dict(
             target_bot_id=self.dev['id'], text='Implement the admin-only download grant.', native_envelope_id=ENVELOPE))
         # The saved input carries the PR facts that its failed turn never received.
+        self.owner_id = delivered['task_id']
         owner = self.update(delivered['task_id'], status='queued', _native_intake=True, _native_turn_id=TURN,
                             _execution_session_id=delivered['task_id'], _pr_review=dict(PR_REVIEW),
                             _conversation_epoch=self.service._setting('conversation_epoch'))
@@ -533,16 +604,21 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
         self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id=archived, status='queued'))
         continued = self.service._get('tasks', owner['id'])
         self.assertEqual(continued['_pr_review'], PR_REVIEW)
-        task = self.dispatched(1)
+        task = self.owner_turn(owner, 1)
+        # The initial failure's result reached the requester as its own callback turn.
+        self.returned(owner, requester, 1)
         successor = task['_native_outcome_id']
         self.assertNotEqual(successor, archived)
         native = self.native(successor)
         self.assertEqual(native['parents'], [archived])
         self.assertEqual(native['key'], 'coconut-followup:' + owner['id'] + ':' + continued['_native_turn_id'])
         self.assertEqual((native['tenant'], native['path']), (owner['bot_id'], workspace))
-        self.assertEqual(self.provider.prepared[-1][1:3], (workspace, owner['id']))
+        self.assertEqual([p for p in self.provider.prepared if p[0] == owner['id']][-1][1:3], (workspace, owner['id']))
         self.assertEqual(self.native(archived), history)
-        self.assertEqual((task['_kanban_workspace'], task['_reply_to_task_id']), (workspace, requester['id']))
+        self.assertEqual((task['_native_turn_id'], task['_kanban_workspace']), (continued['_native_turn_id'], workspace))
+        # The provider task carries public fields only. The result route stays on the owner and its source.
+        self.assertEqual((task['source_task_id'], task['parent_task_id']), (requester['id'], requester['id']))
+        self.assertEqual(self.service._get('tasks', owner['id'])['_reply_to_task_id'], requester['id'])
         # The successor turn receives the PR facts that the failed turn never received.
         self.assertEqual(task['_pr_review'], PR_REVIEW)
 
@@ -550,22 +626,23 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
         owner, requester, archived, workspace = self.failed_request()
         self.fail_turns = True
         self.service.emit(requester['id'], 'work_continue', dict(task_id=archived, message='Continue the grant.'))
-        first = self.dispatched(1)
+        first = self.owner_turn(owner, 1)
         successor = first['_native_outcome_id']
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline and self.service._get('tasks', owner['id'])['status'] != 'failed':
-            time.sleep(.05)
-        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'failed')
+        self.assertNotEqual(successor, archived)
+        self.ended(owner, 'failed')
         # Coconut finishes the failed run, and the settle pass archives the successor.
         self.native_program("assert board.finish(sys.argv[2], int(sys.argv[3]), 'blocked', 'The grant tests failed.')",
                             successor, str(first['_kanban_claim']['run_id']))
         self.native_program('assert board.archive_settled(sys.argv[2], None)', successor)
-        # A real dispatcher pass reconciles the archived successor of the accepted input before the next continuation.
+        # Real dispatcher passes deliver both failure returns and reconcile the archived successor of the accepted input.
+        self.returned(owner, requester, 2)
         self.tick()
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['id'], successor, self.dispatch_state(owner))
         self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'archived')
         self.assertEqual(self.service.kanban.tasks[owner['id']]['input_id'], first['_native_turn_id'])
         failed = self.service._get('tasks', owner['id'])
         self.assertEqual(failed['status'], 'failed', 'Reconciliation cancelled a failure that no person stopped.')
+        self.assertEqual(failed.get('_native_settled_failure'), successor, self.dispatch_state(owner))
         self.assertFalse(any(json.loads(row[0]).get('status') == 'cancelled' for row in self.service.db.execute(
             "SELECT data FROM events WHERE task_id=? AND type='task.updated'", (owner['id'],))))
         self.fail_turns = False
@@ -573,13 +650,16 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
         receipt = self.service.emit(requester['id'], 'work_continue', dict(task_id=successor, message='Run the tests again.'))
         self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id=successor, status='queued'))
         continued = self.service._get('tasks', owner['id'])
-        second = self.dispatched(2)
+        second = self.owner_turn(owner, 2)
         latest = second['_native_outcome_id']
+        self.assertNotIn(latest, (archived, successor))
         native = self.native(latest)
         self.assertEqual(native['parents'], [successor])
         self.assertEqual(native['key'], 'coconut-followup:' + owner['id'] + ':' + continued['_native_turn_id'])
         self.assertEqual((native['tenant'], native['path']), (owner['bot_id'], workspace))
-        self.assertEqual((second['_kanban_workspace'], second['_reply_to_task_id']), (workspace, requester['id']))
+        self.assertEqual((second['_native_turn_id'], second['_kanban_workspace']), (continued['_native_turn_id'], workspace))
+        self.assertEqual((second['source_task_id'], second['parent_task_id']), (requester['id'], requester['id']))
+        self.assertEqual(self.service._get('tasks', owner['id'])['_reply_to_task_id'], requester['id'])
         self.assertEqual(second['_pr_review'], PR_REVIEW)
 
     def test_cancelled_request_stays_archived(self):
