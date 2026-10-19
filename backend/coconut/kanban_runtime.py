@@ -497,6 +497,8 @@ class Board:
         for task in result:
             task['dependencies'] = [parent for parent in graph[task['id']]['parents']
                                     if parent['status'] not in ('done', 'archived')]
+            # Every current parent edge, including finished parents. A registered delegation reads it.
+            task['parent_ids'] = [parent['id'] for parent in graph[task['id']]['parents']]
         return result
 
     def tick(self, rows, capacity, spawn):

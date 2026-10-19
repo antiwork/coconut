@@ -390,6 +390,14 @@ A delegate can hold both a hidden report of the requester's Work and the one PR
 that it delegated for that Work. The continuation retains the PR. The report must
 name the owner as its reporting task and the requester's Work and task as its
 parent. Two PRs, another Work, or a missing link still need one chosen Work item.
+Another task of the requester can own the Work of a delegated PR. The continuation retains the PR only when that task
+registered the wait: its saved `kanban_link` result makes the Work's card a child of the owner's current card, or of a
+card that the owner completed with `kanban_complete` without naming a card. Hermes completes an unnamed card only for a
+claimed worker, so that card is the owner's own. A turn without a claim can complete any card that it names, so a named
+card does not count. The board must still have that edge. The audit that delegated must have finished. The Work stays the parent
+presentation. Both requester tasks and their live branches, waits, decisions, and unknown tool calls still block.
+Only the calling task is exempt: one of those two tasks, or a running return callback of one of them.
+A shared PR URL, bot, or comment does not link them.
 
 ## Validation
 
