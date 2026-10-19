@@ -82,6 +82,17 @@ Its last run must be the run of that input's claim, ended as scheduled, and no r
 The other guards of a settled failure hold too. A completed task keeps its status when its card is archived, so the reconciler
 does not cancel it. The new input gets a successor of the archived card in the same execution and workspace, as above.
 
+## Requester callback continuations
+
+A delegated owner can come from a return callback of the requester, not from the requester's root task.
+The callback runs in the root's execution, and the owner's result goes to the root.
+Coconut treats that root as the same requester only when the callback has the exact delivery of its producer,
+the producer replies to the root, and the owner's result route names the root.
+Then a same-PR report from the root's execution is the requester's own report, and a running return callback of the root can continue the owner.
+Only that calling turn is exempt. The source callback is an earlier turn, so it blocks while it is live.
+The root's other live branches, waits, returns, decisions, and unknown tool calls still block.
+A completed callback whose native task Hermes promoted to ready also blocks until the settle pass ends that task.
+
 ## Disagreement report
 
 Coconut and Hermes each keep a lifecycle for a request. The settle pass archives the native task of a finished request.
