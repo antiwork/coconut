@@ -660,9 +660,12 @@ class NativeOutcomes:
                        and result.get('parent_id') == arguments.get('parent_id') and result['parent_id'] in runs}
             if not parents:
                 return False
-            # An unlink removes the edge from the board, so the Work's current card must still have it.
-            if snapshot_missing and work['id'] not in snapshots:
-                snapshot_missing([work['id']])
+            # An unlink removes the edge from the board, so the Work's current card must still have it. A cached card
+            # can predate the unlink. Read it, and the audit's card, once in this request, even when the cache has them.
+            # The retry reads them outside the service lock. The scheduler then replaces its cache with that snapshot,
+            # and a newer snapshot still wins over the copy that this request read.
+            if snapshot_missing:
+                snapshot_missing([work['id'], source['id']])
             card = snapshots.get(work['id']) or {}
             return card.get('id') == identity and bool(parents & set(card.get('parent_ids') or ()))
 

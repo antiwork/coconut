@@ -259,6 +259,121 @@ class RegisteredDelegationTests(unittest.TestCase):
         owner = self.service._get('tasks', owner['id'])
         self.assert_rejected(owner, self.owner_caller(owner), UNRELATED)
 
+    def board(self, after_fetch=None):
+        """A board behind the scheduler cache. Like KanbanScheduler.call, a snapshot replaces the whole cache.
+
+        after_fetch(cache) can then replace that cache, as a periodic snapshot that lands before the retry does.
+        """
+        board = copy.deepcopy(self.service.kanban.tasks)
+        requests = []
+
+        def call(request):
+            self.assertEqual(request['op'], 'snapshot')
+            requests.append(sorted(request.get('external_ids') or ()))
+            self.service.kanban.tasks = copy.deepcopy(board)
+            if after_fetch:
+                self.service.kanban.tasks = after_fetch(copy.deepcopy(board))
+            return {'tasks': [dict(row, external_id=identity) for identity, row in board.items()]}
+
+        self.service.kanban.call.side_effect = call
+        return board, requests
+
+    def test_an_unlink_after_the_cached_snapshot_rejects_the_continuation(self):
+        for path in ('emit', 'provider'):
+            with self.subTest(path):
+                self.tearDown()
+                self.setUp()
+                owner, audit, coordinator, work, requester_pr, pr = self.saved_graph()
+                board, requests = self.board()
+                # The edge leaves the board. The service cache still holds the snapshot from before the unlink.
+                board[coordinator['id']]['parent_ids'] = ['t_assignment']
+                self.assertIn('t_earlier', self.service.kanban.tasks[coordinator['id']]['parent_ids'])
+                caller = self.owner_caller(owner)
+                if path == 'emit':
+                    self.assert_rejected(owner, caller, UNRELATED)
+                else:
+                    receipt = self.through_provider(caller)
+                    self.assertEqual(receipt['status'], 'rejected')
+                    self.assertIn(UNRELATED, receipt['error'])
+                    self.assertEqual(self.service._get('tasks', owner['id']), owner)
+                self.assertEqual(len([r for r in requests if coordinator['id'] in r]), 1)
+                self.assertNotIn('t_earlier', self.service.kanban.tasks[coordinator['id']]['parent_ids'])
+                self.assertEqual(self.service._get('artifacts', pr['id']), pr)
+                self.assertFalse([d for d in self.service._all('deliveries') if d['receipt'].get('native_task_id')])
+
+    def test_each_request_reads_the_work_card_once(self):
+        owner, audit, coordinator, work, requester_pr, pr = self.saved_graph()
+        board, requests = self.board()
+        board[coordinator['id']]['parent_ids'] = ['t_assignment']
+        caller = self.owner_caller(owner)
+        for _ in range(2):
+            self.assert_rejected(owner, caller, UNRELATED)
+        # One read per request, not a loop. The audit's card comes in the same read.
+        self.assertEqual(len([r for r in requests if coordinator['id'] in r]), 2)
+        self.assertTrue(all(audit['id'] in r for r in requests if coordinator['id'] in r))
+        # The edge returns to the board. The next request reads it again and continues once.
+        board[coordinator['id']]['parent_ids'] = ['t_assignment', 't_earlier']
+        receipt = self.resume(caller)
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
+        self.assertEqual(len([r for r in requests if coordinator['id'] in r]), 3)
+        self.assertEqual(self.service._get('tasks', owner['id'])['_work_context_id'], pr['id'])
+        self.assertEqual(self.resume(caller), receipt)
+        self.assertEqual(len([r for r in requests if coordinator['id'] in r]), 3)
+        self.assertEqual(len([d for d in self.service._all('deliveries')
+                              if d['receipt'].get('native_task_id') == 't_existing']), 1)
+
+    def test_an_empty_cache_still_fits_the_retry_budget(self):
+        for caller in ('owner', 'callback'):
+            with self.subTest(caller):
+                self.tearDown()
+                self.setUp()
+                owner, audit, coordinator, work, requester_pr, pr = self.saved_graph()
+                source = self.owner_caller(owner) if caller == 'owner' else self.callback(owner, audit)
+                board, requests = self.board()
+                self.service.kanban.tasks = {}
+                self.assertEqual(self.resume(source)['task_id'], owner['id'])
+                # The owner's lookup, then the Work's and the audit's cards in one read. Each read repeats earlier IDs.
+                self.assertEqual(requests, [[owner['id']], sorted([owner['id'], audit['id'], coordinator['id']])])
+
+    def test_eviction_and_newer_snapshots_keep_the_current_edge(self):
+        def evict(identity):
+            return lambda cache: {key: value for key, value in cache.items() if key != identity}
+
+        def unlink(identity):
+            def newer(cache):
+                cache[identity]['parent_ids'] = ['t_assignment']
+                return cache
+            return newer
+
+        # (card missing from the cache, board keeps the edge, cache after the read, expected result)
+        cases = (
+            ('evicted before the request', True, True, None, None),
+            ('evicted after the read with the edge', False, True, 'evict', None),
+            ('evicted after the read without the edge', False, False, 'evict', UNRELATED),
+            ('a newer snapshot without the edge', False, True, 'unlink', UNRELATED),
+        )
+        for name, missing, edge, after, message in cases:
+            with self.subTest(name):
+                self.tearDown()
+                self.setUp()
+                owner, audit, coordinator, work, requester_pr, pr = self.saved_graph()
+                if missing:
+                    self.service.kanban.tasks.pop(coordinator['id'])
+                after_fetch = {'evict': evict, 'unlink': unlink}[after](coordinator['id']) if after else None
+                board, requests = self.board(after_fetch)
+                board[coordinator['id']] = board.get(coordinator['id']) or dict(
+                    external_id=coordinator['id'], id='t_requester', status='done', block_kind=None,
+                    current_run_id=None, worker_pid=None, parent_ids=['t_assignment', 't_earlier'])
+                if not edge:
+                    board[coordinator['id']]['parent_ids'] = ['t_assignment']
+                caller = self.owner_caller(owner)
+                if message:
+                    self.assert_rejected(owner, caller, message)
+                else:
+                    self.assertEqual(self.resume(caller)['task_id'], owner['id'])
+                    self.assertEqual(self.service._get('tasks', owner['id'])['_work_context_id'], pr['id'])
+                self.assertEqual(len([r for r in requests if coordinator['id'] in r]), 1)
+
     def test_failed_unknown_or_other_board_receipts_do_not_register(self):
         cases = (
             ('failed link', {'parent_id': 't_earlier', 'child_id': 't_requester'},
@@ -414,7 +529,7 @@ class NativeRegisteredDelegationTests(unittest.TestCase):
     check_dispatch = native_fixtures.NativeClaimContinuationTests.check_dispatch
     review_evidence = native_fixtures.NativeClaimContinuationTests.review_evidence
 
-    def registered(self, settled=True, edge=True):
+    def registered(self, settled=True, edge=True, unlink_after_snapshot=False):
         prepare = self.prepare
         saved = {}
 
@@ -450,6 +565,11 @@ class NativeRegisteredDelegationTests(unittest.TestCase):
             record_tool(self.service, coordinator, 'kanban_link', {'parent_id': identity, 'child_id': card},
                         {'ok': True, 'parent_id': identity, 'child_id': card, 'gated': False}, row['input'])
             self.service.kanban.call({'op': 'snapshot'})
+            if unlink_after_snapshot:
+                # The board loses the edge after the service cached it. Nothing refreshes the cache.
+                self.assertIn(identity, self.service.kanban.tasks[coordinator['id']]['parent_ids'])
+                self.native_program('assert board.kb.unlink_tasks(board.conn, sys.argv[2], sys.argv[3])', identity, card)
+                self.assertIn(identity, self.service.kanban.tasks[coordinator['id']]['parent_ids'])
             work = dict(id='requester-work', task_id=coordinator['id'], bot_id=coordinator['bot_id'], kind='work',
                         title='The request', status='waiting', created_at=coordinator['created_at'],
                         _native_outcome_id=card, _work_key='retained-pr:' + URL)
@@ -505,6 +625,12 @@ class NativeRegisteredDelegationTests(unittest.TestCase):
 
     def test_an_unlinked_registration_keeps_the_requester_work(self):
         self.check_rejected(self.registered(edge=False), UNRELATED)
+
+    def test_an_unlink_after_the_cached_snapshot_keeps_the_requester_work(self):
+        saved = self.registered(unlink_after_snapshot=True)
+        self.check_rejected(saved, UNRELATED)
+        # The request read the Work's card from the board, so the cache now has no edge either.
+        self.assertEqual(self.service.kanban.tasks[saved['coordinator']]['parent_ids'], [])
 
     def test_a_live_registered_work_keeps_the_writer_guard(self):
         self.check_rejected(self.registered(settled=False), 'another execution')
