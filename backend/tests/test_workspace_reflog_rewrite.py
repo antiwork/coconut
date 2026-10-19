@@ -186,8 +186,12 @@ class ReflogRewriteTests(unittest.TestCase):
             validate_binding(dict(self.binding), allow_rename=True)
 
     def test_a_fetch_that_starts_gc_keeps_the_worktree_continuous(self):
-        # Git starts gc itself after a fetch when the repository has too many packs.
+        # A fetch runs `git maintenance run --auto`, and each Git version's default maintenance rewrites the reflogs once
+        # its threshold is met. Before Git 2.54, the default runs gc when the repository has too many packs. From Git
+        # 2.54, the default ("geometric") has no gc, and its reflog-expire task runs `git reflog expire --all` once HEAD
+        # has maintenance.reflog-expire.auto expirable entries, 100 by default. Lower both thresholds.
         git(self.repo, 'config', 'gc.autoPackLimit', '1')
+        git(self.repo, 'config', 'maintenance.reflog-expire.auto', '-1')
         git(self.repo, 'config', 'fetch.unpackLimit', '1')
         git(self.repo, 'repack', '-q', '-d')
         self.upstream_commit('Fetched change')

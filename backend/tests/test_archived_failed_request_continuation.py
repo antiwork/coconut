@@ -115,6 +115,36 @@ class ArchivedRequest:
             "SELECT data FROM events WHERE task_id=? AND type='task.updated' "
             "AND json_extract(data,'$.status')='cancelled'", (owner['id'],))]
 
+    def dispatch_successor(self, owner, identity, run):
+        """Board.sync gives the queued input a successor, the reconciler binds it, and Hermes claims it."""
+        turn = self.store._get('tasks', owner['id'])['_native_turn_id']
+        card = dict(self.store.kanban.tasks[owner['id']], id=identity, status='ready', input_id=turn, current_run_id=None,
+                    worker_pid=None, claim_lock=None, idempotency_key='coconut-followup:' + owner['id'] + ':' + turn,
+                    last_activity_at=time.time())
+        self.store.kanban.tasks[owner['id']] = card
+        self.store._reconcile_kanban()
+        queued = self.store._get('tasks', owner['id'])
+        self.assertEqual((queued['status'], queued['_native_outcome_id'], queued['_native_turn_id']), ('queued', identity, turn))
+        card.update(status='running', current_run_id=run, worker_pid=4000 + run % 1000, claim_lock='host:' + str(run))
+        self.runs[identity] = [dict(id=run, status='running', outcome=None, ended=False)]
+        return self.update(owner['id'], status='working', _kanban_started=run, _kanban_claim=dict(
+            native_id=identity, external_id=owner['id'], input=turn, run_id=run, claim_lock='host:' + str(run),
+            workspace=str(self.workspace)))
+
+    def settle_failure(self, owner, identity, change=None):
+        """The turn fails and its result returns. Coconut ends the run as blocked, and the settle pass archives the card."""
+        self.store.emit(owner['id'], 'failed', dict(summary='The grant tests failed.'))
+        self.store._drain_returns()
+        self.runs[identity][-1].update(status='blocked', outcome='blocked', ended=True)
+        card = self.store.kanban.tasks[owner['id']]
+        card.update(status='archived', current_run_id=None, worker_pid=None, claim_lock=None, last_activity_at=time.time() - 60)
+        if change:
+            task = self.store._get('tasks', owner['id'])
+            change(task, card)
+            self.store._put('tasks', task)
+        self.store._reconcile_kanban()
+        return self.store._get('tasks', owner['id'])
+
 
 class ArchivedFailedRequestAdmissionTests(ArchivedRequest, unittest.TestCase):
     def test_saved_shape_continues_through_its_original_requester(self):
@@ -260,6 +290,84 @@ class ArchivedFailedRequestAdmissionTests(ArchivedRequest, unittest.TestCase):
         self.assertNotIn('SCAN events', plan)
 
 
+class ArchivedFailedRequestRepeatTests(ArchivedRequest, unittest.TestCase):
+    """A continuation that fails again keeps its failure when the settle pass archives its successor."""
+
+    def test_a_second_failure_stays_failed_and_continues_again(self):
+        owner = self.archived()
+        self.resume()
+        first = self.dispatch_successor(owner, 't_successor', RUN + 2)
+        failed = self.settle_failure(owner, 't_successor')
+        self.assertEqual(failed['status'], 'failed', 'Reconciliation cancelled a failure that no person stopped.')
+        self.assertEqual(self.cancellations(owner), [])
+        self.assertEqual((failed['_native_outcome_id'], failed['_native_settled_failure']), ('t_successor', 't_successor'))
+        self.assertEqual(self.store.kanban.tasks[owner['id']]['input_id'], first['_native_turn_id'])
+        for key in ('_execution_session_id', 'session_id', 'exchange_id', 'source_bot_id', 'source_task_id',
+                    'parent_task_id', '_reply_to_task_id', '_native_relay'):
+            self.assertEqual(failed.get(key), owner.get(key), key)
+        self.assertEqual(failed['_pr_review'], PR_REVIEW)
+        # Later passes keep it, also after the seven days in which it can continue.
+        card = self.store.kanban.tasks[owner['id']]
+        card['last_activity_at'] = time.time() - IDLE_AGE - 60
+        self.store._reconcile_kanban()
+        self.assertEqual(self.store._get('tasks', owner['id']), failed)
+        card['last_activity_at'] = time.time() - 60
+        # The requester continues the same execution again, through the archived successor.
+        self.requester = self.update(self.requester['id'], status='working')
+        receipt = self.resume(identity='t_successor', message='Run the grant tests again.')
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_successor', status='queued'))
+        again = self.store._get('tasks', owner['id'])
+        self.assertNotEqual(again['_native_turn_id'], first['_native_turn_id'])
+        self.assertEqual((again['_pr_review'], again['_reply_to_task_id']), (PR_REVIEW, self.requester['id']))
+        self.assertIn({'op': 'completion', 'id': 't_successor'}, self.calls)
+        # The archived successor never accepted the new input, so the next rebind keeps the request queued.
+        self.store._reconcile_kanban()
+        self.assertEqual(self.store._get('tasks', owner['id']), again)
+        second = self.dispatch_successor(owner, 't_successor_2', RUN + 3)
+        self.assertEqual(second['_kanban_claim']['input'], again['_native_turn_id'])
+        self.assertEqual(self.cancellations(owner), [])
+
+    def test_reconciliation_still_cancels_other_archived_failures(self):
+        cases = dict(
+            stopped=lambda task, card: self.store._event('task.updated', dict(self.store._public(task), status='cancelled'),
+                                                         task['bot_id'], task['id']),
+            idle=lambda task, card: card.update(last_activity_at=time.time() - IDLE_AGE - 60),
+            unknown_tool=lambda task, card: self.store._put('native_receipts', dict(id='unknown-' + task['id'],
+                task_id=task['id'], turn_id=task['_native_turn_id'], state='executing', action_hash='hash',
+                action={'name': 'write_file', 'arguments': {}}, created_at='2026-10-19T20:00:00Z')),
+            recorded_unknown=lambda task, card: task.update(_self_recovery=dict(task['_self_recovery'],
+                                                                                unknown_tools=[dict(id='earlier-write')])),
+            foreign=lambda task, card: card.update(tenant=self.desk['id']),
+            other_key=lambda task, card: card.update(idempotency_key='coconut-followup:' + task['id'] + ':another-input'),
+            not_started=lambda task, card: task.update(_kanban_started=RUN),
+            routine=lambda task, card: task.update(routine_id=str(uuid4())),
+            open_input=lambda task, card: task.update(_steering=['Use the other checkout.']))
+        for name, change in cases.items():
+            with self.subTest(name):
+                ArchivedRequest.setUp(self)  # A fresh store for each case.
+                owner = self.archived()
+                self.resume()
+                self.dispatch_successor(owner, 't_successor', RUN + 2)
+                cancelled = self.settle_failure(owner, 't_successor', change)
+                self.assertEqual(cancelled['status'], 'cancelled')
+                self.assertNotIn('_native_settled_failure', cancelled)
+                # The reconciler adds one cancellation. The stopped case recorded the person's Stop before it.
+                self.assertEqual(len(self.cancellations(owner)), 2 if name == 'stopped' else 1)
+
+    def test_a_pending_decision_keeps_the_failure_and_holds_the_continuation(self):
+        owner = self.archived()
+        self.resume()
+        self.dispatch_successor(owner, 't_successor', RUN + 2)
+        decision = dict(id='pending', task_id=owner['id'], bot_id=owner['bot_id'], status='pending')
+        failed = self.settle_failure(owner, 't_successor', lambda task, card: self.store._put('decisions', decision))
+        self.assertEqual(failed['status'], 'failed')
+        self.requester = self.update(self.requester['id'], status='working')
+        with self.assertRaisesRegex(ServiceError, 'decision must be answered'):
+            self.resume(identity='t_successor', message='Run the grant tests again.')
+        self.assertEqual(self.store._get('tasks', owner['id']), failed)
+        self.assertEqual(self.store._get('decisions', 'pending')['status'], 'pending')
+
+
 class ArchivedFailedRequestWorkerTests(ArchivedRequest, unittest.TestCase):
     """The provider starts a real worker process for the continued owner. Its native modules are the shared stub.
 
@@ -371,8 +479,13 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
         self.provider.tasks = []
         start = self.provider.start_task
 
+        self.fail_turns = False
+
         def record(task, bot, history, emit):
             self.provider.tasks.append(copy.deepcopy(task))
+            if self.fail_turns:
+                emit('failed', dict(summary='The grant tests failed.'))
+                return
             start(task, bot, history, emit)
         self.provider.start_task = record
 
@@ -432,6 +545,42 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
         self.assertEqual((task['_kanban_workspace'], task['_reply_to_task_id']), (workspace, requester['id']))
         # The successor turn receives the PR facts that the failed turn never received.
         self.assertEqual(task['_pr_review'], PR_REVIEW)
+
+    def test_settled_successor_of_a_failed_continuation_stays_failed_and_continues(self):
+        owner, requester, archived, workspace = self.failed_request()
+        self.fail_turns = True
+        self.service.emit(requester['id'], 'work_continue', dict(task_id=archived, message='Continue the grant.'))
+        first = self.dispatched(1)
+        successor = first['_native_outcome_id']
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and self.service._get('tasks', owner['id'])['status'] != 'failed':
+            time.sleep(.05)
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'failed')
+        # Coconut finishes the failed run, and the settle pass archives the successor.
+        self.native_program("assert board.finish(sys.argv[2], int(sys.argv[3]), 'blocked', 'The grant tests failed.')",
+                            successor, str(first['_kanban_claim']['run_id']))
+        self.native_program('assert board.archive_settled(sys.argv[2], None)', successor)
+        # A real dispatcher pass reconciles the archived successor of the accepted input before the next continuation.
+        self.tick()
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'archived')
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['input_id'], first['_native_turn_id'])
+        failed = self.service._get('tasks', owner['id'])
+        self.assertEqual(failed['status'], 'failed', 'Reconciliation cancelled a failure that no person stopped.')
+        self.assertFalse(any(json.loads(row[0]).get('status') == 'cancelled' for row in self.service.db.execute(
+            "SELECT data FROM events WHERE task_id=? AND type='task.updated'", (owner['id'],))))
+        self.fail_turns = False
+        requester = self.update(requester['id'], status='working')
+        receipt = self.service.emit(requester['id'], 'work_continue', dict(task_id=successor, message='Run the tests again.'))
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id=successor, status='queued'))
+        continued = self.service._get('tasks', owner['id'])
+        second = self.dispatched(2)
+        latest = second['_native_outcome_id']
+        native = self.native(latest)
+        self.assertEqual(native['parents'], [successor])
+        self.assertEqual(native['key'], 'coconut-followup:' + owner['id'] + ':' + continued['_native_turn_id'])
+        self.assertEqual((native['tenant'], native['path']), (owner['bot_id'], workspace))
+        self.assertEqual((second['_kanban_workspace'], second['_reply_to_task_id']), (workspace, requester['id']))
+        self.assertEqual(second['_pr_review'], PR_REVIEW)
 
     def test_cancelled_request_stays_archived(self):
         owner, requester, archived, _ = self.failed_request()

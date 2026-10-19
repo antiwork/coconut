@@ -181,12 +181,31 @@ class NativeRoutines:
 
         _settle_native_orphans archives the triage or blocked task of a failed request after a few minutes. Before
         that archive, the owner or its requesting bot could continue the request. This keeps that continuation, and
-        nothing else. The request has no routine record, and no person stopped it. Coconut created the request once.
-        Its claim names the archived task and the current input, and Coconut started the run of that claim.
-        No tool call is unknown. Its only open input is the input that the failed turn never received, which the
-        continuation hands to the retry. The checks of _settled_card hold too, so the phone's idle archive is not it.
-        Hermes must report the same task: no run or worker left, no completed run, and the last run is the claim's run,
-        ended without success. completion() reads that card from the adapter. Reconciliation keeps its own rules.
+        nothing else. The checks of _settled_request_failure hold. Hermes must also report the same task: no run or
+        worker left, no completed run, and the last run is the claim's run, ended without success. completion() reads
+        that card from the adapter. A continuation that failed again has its successor archived the same way, and that
+        successor continues the same way.
+        """
+        if not self._settled_request_failure(task, card):
+            return False
+        claim = task['_kanban_claim']
+        native = completion()
+        runs = native.get('runs')
+        return bool(native.get('id') == card['id'] and native.get('tenant') == task['bot_id']
+                    and native.get('idempotency_key') == card['idempotency_key'] and native.get('status') == 'archived'
+                    and native.get('input_id') in (None, task['_native_turn_id'])
+                    and not native.get('current_run_id') and not native.get('worker_pid')
+                    and isinstance(runs, list) and runs
+                    and all(isinstance(r, dict) and r.get('ended') and r.get('outcome') != 'completed' for r in runs)
+                    and runs[-1].get('outcome') in FAILED_RUN_OUTCOMES and runs[-1].get('id') == claim['run_id'])
+
+    def _settled_request_failure(self, task, card):
+        """The checks of settled_failed_request that read only Coconut's records and the snapshot card.
+
+        The request has no routine record, and no person stopped it. Coconut created the request once. Its claim names
+        the archived task and the current input, and Coconut started the run of that claim. No tool call is unknown.
+        Its only open input is the input that the failed turn never received, which the continuation hands to the
+        retry. The checks of _settled_card hold too, so the phone's idle archive is not it.
         """
         claim = task.get('_kanban_claim') or {}
         turn = task.get('_native_turn_id')
@@ -207,32 +226,23 @@ class NativeRoutines:
                 return False
             if kind == 'task.created':
                 created.append(bot)
-        if created not in ([task['bot_id']], [task.get('conversation_bot_id')]):
-            return False
-        native = completion()
-        runs = native.get('runs')
-        return bool(native.get('id') == card['id'] and native.get('tenant') == task['bot_id']
-                    and native.get('idempotency_key') == card['idempotency_key'] and native.get('status') == 'archived'
-                    and native.get('input_id') in (None, turn)
-                    and not native.get('current_run_id') and not native.get('worker_pid')
-                    and isinstance(runs, list) and runs
-                    and all(isinstance(r, dict) and r.get('ended') and r.get('outcome') != 'completed' for r in runs)
-                    and runs[-1].get('outcome') in FAILED_RUN_OUTCOMES and runs[-1].get('id') == claim['run_id'])
+        return created in ([task['bot_id']], [task.get('conversation_bot_id')])
 
     def keeps_settled_failure(self, task, native):
         """Whether reconciliation keeps a failure whose native task Coconut's settle pass archived.
 
         The reconciler cancels a request when Hermes archives the task of its accepted input. The settle pass archives
         the task of every failed request, though, and no person stopped this one, so its failure stays and the
-        occurrence can continue. The reconciler sees the archive within a pass, while the age check still tells it
-        from the phone's idle archive. The task keeps that answer, so a later pass does not cancel it either.
-        Only Coconut's records and the snapshot are read, because the reconciler holds the service lock.
+        occurrence or request can continue. The reconciler sees the archive within a pass, while the age check still
+        tells it from the phone's idle archive. The task keeps that answer, so a later pass does not cancel it either.
+        Only Coconut's records and the snapshot are read, because the reconciler holds the service lock. A continuation
+        still reads the runs from the adapter before it starts (settled_failed_occurrence, settled_failed_request).
         """
         if task['status'] != 'failed' or native.get('status') != 'archived':
             return False
         if task.get('_native_settled_failure') == native['id']:
             return True
-        if not self._settled_failure(task, native):
+        if not (self._settled_failure(task, native) or self._settled_request_failure(task, native)):
             return False
         task['_native_settled_failure'] = native['id']
         self._put('tasks', task)

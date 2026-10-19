@@ -96,7 +96,10 @@ triage or blocked, and the settle pass then archives that task. The archived tas
 a settled failure without the routine ones. The request has no routine record and no Stop, and Coconut created it once.
 Its claim names the archived task and the current input, Coconut started the claim's run, and that run is the last one,
 ended without success. No run completed, and no tool call is unknown. The PR facts or background result that the failed
-turn never received go to the retry, and any other open input holds it. The reconciler's rules do not change.
+turn never received go to the retry, and any other open input holds it.
+When a continuation fails again, the settle pass archives its successor too. The reconciler keeps that failure, as it
+does for a routine, when Coconut's records and the snapshot pass the same checks. It reads no adapter under the service
+lock. The next continuation reads the successor's runs from the adapter before it starts.
 
 The work source audit records the source item that it gives a task in `_source_assignment`. A later audit of the same item
 runs in a separate execution, and it can ask the person about that item while the request's card waits archived.
