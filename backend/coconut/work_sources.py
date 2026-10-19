@@ -50,29 +50,39 @@ def audit_priority(task):
 ANSWERED = ('approved', 'rejected', 'modified', 'replied', 'executed', 'failed')
 
 
+def source_origin(task_id, bot_id, task, executed_proposal):
+    """Return the nearest source assignment of a task's source work, or {} when it has none.
+
+    task(id) reads a task. executed_proposal(child, parent) tells whether the person answered a proposal of the parent
+    that this child carries out. Parent links also represent unrelated human replies. Only a recorded proposal
+    execution or an explicit assignment identifies a source-work continuation. The nearest source assignment wins,
+    even when an ancestor has another. A missing task, a task of another bot, or a cycle ends the walk without one.
+    """
+    seen = set()
+    while task_id and task_id not in seen:
+        seen.add(task_id)
+        current = task(task_id) or {}
+        if current.get('bot_id') != bot_id:
+            return {}
+        origin = audit_item(current)
+        if origin:
+            return origin
+        parent = current.get('parent_task_id')
+        task_id = current.get('_assignment_task_id') or (parent if parent and executed_proposal(task_id, parent) else None)
+    return {}
+
+
 def answered_decisions(item, source, tasks, decisions, *, sole_source=False):
     """List the answers to earlier cards for one source item, newest first."""
-    # Parent links also represent unrelated human replies. Only a recorded proposal
-    # execution or an explicit assignment identifies a source-work continuation.
     continuations = {d['_execution_task_id']: d['task_id'] for d in decisions.values()
                      if d.get('_execution_task_id') and d.get('inbox_kind') == 'proposal'
                      and d.get('bot_id') == source['bot_id'] and d.get('status') in ANSWERED}
 
     def matches(task_id):
-        seen = set()
-        while task_id and task_id not in seen:
-            seen.add(task_id)
-            task = tasks.get(task_id, {})
-            if task.get('bot_id') != source['bot_id']:
-                return False
-            origin = audit_item(task)
-            if origin:
-                # The nearest source assignment wins, even when an ancestor matches.
-                return (origin.get('id') == item['id'] and (origin.get('source_id') == source['id']
-                        or (sole_source and not origin.get('source_id'))))
-            parent = continuations.get(task_id)
-            task_id = task.get('_assignment_task_id') or (parent if parent == task.get('parent_task_id') else None)
-        return False
+        origin = source_origin(task_id, source['bot_id'], tasks.get,
+                               lambda child, parent: continuations.get(child) == parent)
+        return bool(origin) and (origin.get('id') == item['id'] and (origin.get('source_id') == source['id']
+                                 or (sole_source and not origin.get('source_id'))))
 
     rows = [d for d in decisions.values()
             if d.get('bot_id') == source['bot_id'] and d.get('status') in ANSWERED and d.get('decided_at')
