@@ -553,10 +553,12 @@ class NativeOutcomes:
             items = [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr') and a['task_id'] == owner['id']]
         linked_parent = None
         audited_parent = None
+        registered_parent = None
         retained = []
         source = self._get('tasks', owner['source_task_id']) if owner.get('source_task_id') else None
         pending_decisions = {d['task_id'] for d in self._all('decisions') if d['status'] == 'pending'}
-        open_contexts = {c['task_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
+        contexts = self._all('contexts')
+        open_contexts = {c['task_id'] for c in contexts if c['status'] in ('queued', 'working')}
         deliveries = None
 
         def get_deliveries():
@@ -624,6 +626,49 @@ class NativeOutcomes:
             return bool(parent and candidate.get('_work_parent_task_id') ==
                         (parent.get('_assignment_task_id') or parent['id']))
 
+        def tool_results(task, name):
+            # Successful results that the service saved for the task's own turns. A context job is not its turn.
+            jobs = {c['id'] for c in contexts if c['task_id'] == task['id']}
+            for receipt in self._native_task_receipts(task['id'], state='completed'):
+                action = receipt.get('action') or {}
+                arguments = action.get('arguments') or {}
+                if action.get('name') != name or receipt.get('turn_id') in jobs or arguments.get('board'):
+                    continue
+                try:
+                    result = json.loads(receipt.get('result', ''))
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(result, dict) and result.get('ok') is True:
+                    yield arguments, result
+
+        def registered_delegation(root):
+            # The Work's own task made its native outcome wait for a native run of this exact owner.
+            # kanban_complete names the card of the owner's own run, and kanban_link names the edge that the Work's
+            # task added. A shared PR URL, bot, comment, or ancestor does not prove that the Work waits for this owner.
+            identity = root.get('_native_outcome_id')
+            row = self.db.execute('SELECT data FROM tasks WHERE id=?', (root['task_id'],)).fetchone()
+            work = json.loads(row[0]) if row else None
+            if not (identity and work and work['bot_id'] == root['bot_id']
+                    and work.get('_native_outcome_id') == identity and work.get('_work_context_id') == root['id']):
+                return False
+            # Hermes completes an implicit card only for a claimed worker, and that card is the worker's own. A turn
+            # without a claim can complete any card that it names, so a named card is not proof of the owner's run.
+            runs = {native['id']} | {result['task_id'] for arguments, result in tool_results(owner, 'kanban_complete')
+                                     if result.get('task_id') and 'task_id' not in arguments}
+            parents = {result['parent_id'] for arguments, result in tool_results(work, 'kanban_link')
+                       if result.get('child_id') == arguments.get('child_id') == identity
+                       and result.get('parent_id') == arguments.get('parent_id') and result['parent_id'] in runs}
+            if not parents:
+                return False
+            # An unlink removes the edge from the board, so the Work's current card must still have it. A cached card
+            # can predate the unlink. Read it, and the audit's card, once in this request, even when the cache has them.
+            # The retry reads them outside the service lock. The scheduler then replaces its cache with that snapshot,
+            # and a newer snapshot still wins over the copy that this request read.
+            if snapshot_missing:
+                snapshot_missing([work['id'], source['id']])
+            card = snapshots.get(work['id']) or {}
+            return card.get('id') == identity and bool(parents & set(card.get('parent_ids') or ()))
+
         reports = []
         for candidate in items:
             root = self._work_outcome_artifact(candidate)
@@ -636,15 +681,21 @@ class NativeOutcomes:
             audited = bool(source and caller and caller['id'] == root['task_id'] and root.get('_native_outcome_id')
                            and root['_native_outcome_id'] in (source.get('_source_native_ids') or ())
                            and root['task_id'] != source['id'] and audit_finished())
-            if (root['bot_id'] != owner['bot_id'] and candidate['kind'] == 'pr'
+            delegated_pr = (root['bot_id'] != owner['bot_id'] and candidate['kind'] == 'pr'
                     and candidate['bot_id'] == owner['bot_id'] and candidate['task_id'] == owner['id']
                     and candidate.get('work_outcome_id') == root['id'] and root['kind'] == 'work'
-                    and root['bot_id'] == owner.get('source_bot_id')
-                    and (root['task_id'] == owner.get('source_task_id') or audited)):
+                    and root['bot_id'] == owner.get('source_bot_id'))
+            # Another task of the requester can own the Work. Its registered wait for this owner links the two,
+            # once the audit that delegated has finished. Every requester branch stays guarded below.
+            registered = bool(delegated_pr and source and not audited and root['task_id'] != source['id']
+                              and registered_delegation(root) and audit_finished())
+            if delegated_pr and (root['task_id'] == owner.get('source_task_id') or audited or registered):
                 # A delegated PR shares the requester's Work presentation, not its execution.
                 linked_parent = root
                 if audited:
                     audited_parent = root
+                if registered:
+                    registered_parent = root
                 retained.append(candidate)
             else:
                 retained.append(root)
@@ -679,7 +730,14 @@ class NativeOutcomes:
             # Only the caller is not a competing writer. When the coordinator calls for its audit, the audit stays guarded.
             callers = ({linked_parent['task_id']} if linked_parent and linked_parent['task_id'] != owner.get('source_task_id')
                        else {owner.get('source_task_id')})
-            if audited_parent:
+            # A registered Work can be continued by the owner or a requester callback. The audit and the Work's
+            # task stay guarded unless one of them makes this call. A requester's return callback can be the foreground.
+            foregrounds = set(requester_roots)
+            if registered_parent:
+                callers = {caller['id']} & requesters if caller else set()
+                foregrounds |= requesters
+            foregrounds |= callers
+            if audited_parent or registered_parent:
                 # PR report fields are optional. Check the audited requester branches
                 # even when every report points back to the owner under continuation.
                 linked = {}
@@ -817,7 +875,7 @@ class NativeOutcomes:
             for peer, reporter, linked, native_tasks, passive_report, linked_report in peer_chains:
                 foreground = (caller['id'] if passive_report and caller and caller['id'] in linked
                     and any(self._requester_callback_foreground(caller, tasks.get(identity), tasks, snapshots)
-                            for identity in (*callers, *requester_roots)) else None)
+                            for identity in foregrounds) else None)
                 routine_scope = routine_scopes.get((peer['id'], reporter['id']))
                 projection = (routine_reports.project(self, routine_scope, tasks, snapshots, get_deliveries(), caller)
                               if routine_scope else None)
