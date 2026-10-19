@@ -4,6 +4,8 @@ import time
 import json
 from uuid import UUID, uuid5
 
+from .work_sources import ANSWERED, source_origin
+
 
 # Statements of the routine pass. Each needs an index and no scan. A test reads the plan of each one.
 ROUTINE_EVENTS = 'SELECT type,data,created_at FROM events WHERE task_id=? AND bot_id=? ORDER BY seq'
@@ -15,7 +17,18 @@ OPEN_INTAKE = ('_steering', '_live_messages', '_blocked_followup', '_native_repl
 # Hermes outcomes of a run that ended without success. A completed run, or one that an archive reclaimed, is not one.
 # An archive reclaims only the current run, so an earlier reclaimed run comes from a restart.
 FAILED_RUN_OUTCOMES = ('blocked', 'crashed', 'gave_up', 'spawn_failed', 'stale', 'timed_out', 'worker_failed')
-
+# Records that only a routine occurrence has. A request that has any of them, even an empty one, follows the routine
+# rules alone. Only the routine code writes them, so an ordinary request never has one.
+ROUTINE_PROVENANCE = ('routine_id', 'routine_occurrence_id', '_native_job', '_native_job_finished', '_native_finish_unconfirmed',
+                      '_native_job_completion_receipt', '_native_job_completion', '_native_occurrence')
+# The pending decisions of a bot. Their tasks lead to the source items that the cards ask about.
+PENDING_DECISIONS = ("SELECT json_extract(data,'$.task_id') FROM decisions WHERE json_extract(data,'$.status')='pending' "
+                     "AND json_extract(data,'$.bot_id')=?")
+# An answered proposal of a parent task that the child task carries out. See work_sources.source_origin.
+EXECUTED_PROPOSAL = ("SELECT 1 FROM decisions WHERE json_extract(data,'$.task_id')=? "
+                     "AND json_extract(data,'$._execution_task_id')=? AND json_extract(data,'$.inbox_kind')='proposal' "
+                     "AND json_extract(data,'$.bot_id')=? "
+                     "AND json_extract(data,'$.status') IN (" + ','.join('?' * len(ANSWERED)) + ") LIMIT 1")
 
 class NativeRoutines:
     def _routine_continuation_input(self, task, job, owner):
@@ -124,13 +137,14 @@ class NativeRoutines:
                     and runs[-1].get('outcome') in FAILED_RUN_OUTCOMES and runs[-1].get('id') == claim.get('run_id'))
 
     def settled_scheduled_continuation(self, task, card, completion):
-        """Whether Coconut's settle pass archived the scheduled card of a successful routine's continuation.
+        """Whether Coconut's settle pass archived the scheduled card of a continuation that a finished request still owns.
 
-        A continuation of a finished routine runs in a successor card. Its worker can park that card with
+        A continuation of a finished request runs in a successor card. Its worker can park that card with
         kanban_schedule to check again later. Hermes then ends the run as scheduled, nothing re-gates the card, the task
-        completes, and the settle pass archives the card a day later. The work is unfinished, though, and the routine
-        occurrence itself succeeded. Hermes must have confirmed that success for this exact job and owner, and the
-        original card stays as it is. The archived card must be the successor that Board.sync made for an authenticated
+        completes, and the settle pass archives the card a day later. The work is unfinished, though.
+        For a routine, Hermes must have confirmed the success of this exact job and owner, and the original card of the
+        occurrence stays as it is. An ordinary request has no routine record at all; its completed input proves nothing
+        more. Either way the archived card must be the successor that Board.sync made for an authenticated
         continuation of this task, holding the current input, also authenticated. Its last run must be the run of the
         claim of that input, ended as scheduled. No run may have completed, and no run or worker may be left. The guards
         of settled_failed_occurrence hold too. completion() reads the card from the adapter. Anything else stays final.
@@ -139,13 +153,15 @@ class NativeRoutines:
         turn = task.get('_native_turn_id')
         key = card.get('idempotency_key')
         prefix = 'coconut-followup:' + task['id'] + ':'
+        routine = any(field in task for field in ROUTINE_PROVENANCE)
         if (not turn or claim.get('input') != turn or type(claim.get('run_id')) is not int
                 or task.get('_kanban_started') != claim['run_id'] or card.get('input_id') != turn
                 or task.get('_native_outcome_id') != card.get('id')
-                or (task.get('_native_occurrence') or {}).get('native_id') in (None, card.get('id'))
+                or (routine and (task.get('_native_occurrence') or {}).get('native_id') in (None, card.get('id')))
                 or not isinstance(key, str) or not key.startswith(prefix)
                 or (task.get('_self_recovery') or {}).get('unknown_tools')
-                or not self._settled_occurrence(task, card, success=True)
+                or not (self._settled_occurrence(task, card, success=True) if routine
+                        else self._settled_request(task, card))
                 or not {turn, key[len(prefix):]} <= self._continuation_turns(task)):
             return False
         native = completion()
@@ -188,28 +204,15 @@ class NativeRoutines:
     def _settled_occurrence(self, task, card, success):
         """Whether the settle pass archived the card of this finished occurrence, from Coconut's records and the snapshot.
 
-        Hermes confirmed the outcome of this job and owner. The claim names the card, which Coconut created in this
-        tenant, and which has no run or worker left. Its last activity is within IDLE_AGE, so the phone's idle archive
-        is not it. No person stopped or archived the occurrence, and it has no open input, worker, or unknown tool call.
+        Hermes confirmed the outcome of this job and owner, and no person stopped the occurrence. See _settled_card.
         """
-        from .kanban_runtime import IDLE_AGE
         job = task.get('_native_job') or {}
         owner = (job.get('fire_claim') or {}).get('by')
-        claim = task.get('_kanban_claim') or {}
-        last = card.get('last_activity_at')
         if (task['status'] != ('completed' if success else 'failed') or not owner or not job.get('id')
                 or not task.get('_native_job_finished') or task.get('_native_finish_unconfirmed')
                 or task.get('routine_id') != str(uuid5(UUID(task['bot_id']), 'cron:' + job['id']))
                 or task.get('_native_job_completion_receipt') != dict(job_id=job['id'], owner=owner, success=success)
-                or claim.get('native_id') != card.get('id') or claim.get('external_id') != task['id']
-                or any(task.get(key) for key in OPEN_INTAKE)
-                or card.get('status') != 'archived' or card.get('tenant') != task['bot_id']
-                or card.get('created_by') != 'coconut'
-                or card.get('current_run_id') or card.get('worker_pid')
-                or not isinstance(last, (int, float)) or time.time() - last >= IDLE_AGE):
-            return False
-        worker = self.running.get(task['id'])
-        if worker and worker.is_alive():
+                or not self._settled_card(task, card)):
             return False
         triggered = False
         for kind, raw in self.db.execute(COMPLETION_EVENTS, (task['id'], task['bot_id'])):
@@ -220,12 +223,83 @@ class NativeRoutines:
                 triggered = True
             if kind == 'task.updated' and triggered and data.get('status') == 'cancelled':
                 return False
-        if (not triggered or self._native_task_receipts(task['id'], state='executing')
-                or self.db.execute("SELECT 1 FROM decisions WHERE ? IN (json_extract(data,'$.task_id'), "
-                                   "json_extract(data,'$._execution_task_id')) AND json_extract(data,'$.decided_by')='archive' "
-                                   "LIMIT 1", (task['id'],)).fetchone()):
+        return triggered
+
+    def _settled_request(self, task, card):
+        """Whether the settle pass archived the card of this completed ordinary request.
+
+        The request has no routine record, and no person ever stopped it. See _settled_card.
+        """
+        if task['status'] != 'completed' or any(field in task for field in ROUTINE_PROVENANCE) or not self._settled_card(task, card):
             return False
-        return True
+        return not any(kind == 'routine.triggered' or (kind == 'task.updated' and json.loads(raw).get('status') == 'cancelled')
+                       for kind, raw in self.db.execute(COMPLETION_EVENTS, (task['id'], task['bot_id'])))
+
+    def pending_source_decision(self, task):
+        """Whether a decision about the work source item of this ordinary request is still pending.
+
+        The work source audit records the item that it gives a task in _source_assignment. A later audit of the same
+        item runs in a separate execution, and its card about that item can wait while the request's own card is
+        archived. So can a card of a turn that carries out an answered proposal of that audit, or of a task that the
+        audit assigned. Continuing the request then would judge the same item again before the person answers. So any
+        pending decision of this bot whose task leads to the same source and item holds it. The request and each card's
+        task resolve their item the same way, through work_sources.source_origin, and the nearest assignment wins.
+        A request with no source item has no such decision. A malformed source assignment of the request holds it.
+        A card whose item has no source, as in the oldest audit prompts, holds it when the item matches.
+        Routine occurrences keep their own rules.
+        """
+        if any(field in task for field in ROUTINE_PROVENANCE):
+            return False
+        bot = task['bot_id']
+
+        def read(identity):
+            if identity == task['id']:
+                return task
+            row = self.db.execute('SELECT data FROM tasks WHERE id=?', (identity,)).fetchone()
+            return json.loads(row[0]) if row else None
+
+        def executed(child, parent):
+            return bool(self.db.execute(EXECUTED_PROPOSAL, (parent, child, bot, *ANSWERED)).fetchone())
+
+        if '_source_assignment' in task:
+            item = task['_source_assignment']
+        else:
+            item = source_origin(task['id'], bot, read, executed)
+            if not item:
+                return False
+        if (not isinstance(item, dict) or not isinstance(item.get('id'), str) or not item['id']
+                or not isinstance(item.get('source_id'), str) or not item['source_id']):
+            return True
+        for (identity,) in self.db.execute(PENDING_DECISIONS, (bot,)).fetchall():
+            origin = source_origin(identity, bot, read, executed)
+            if origin.get('id') == item['id'] and origin.get('source_id') in (item['source_id'], None):
+                return True
+        return False
+
+    def _settled_card(self, task, card):
+        """The checks of a settled archive that hold for every finished request.
+
+        The claim names the card, which Coconut created in this tenant, and which has no run or worker left. Its last
+        activity is within IDLE_AGE, so the phone's idle archive is not it. The request has no open input, worker,
+        or unknown tool call, and no idle archive closed any of its cards.
+        """
+        from .kanban_runtime import IDLE_AGE
+        claim = task.get('_kanban_claim') or {}
+        last = card.get('last_activity_at')
+        if (claim.get('native_id') != card.get('id') or claim.get('external_id') != task['id']
+                or any(task.get(key) for key in OPEN_INTAKE)
+                or card.get('status') != 'archived' or card.get('tenant') != task['bot_id']
+                or card.get('created_by') != 'coconut'
+                or card.get('current_run_id') or card.get('worker_pid')
+                or not isinstance(last, (int, float)) or time.time() - last >= IDLE_AGE):
+            return False
+        worker = self.running.get(task['id'])
+        if worker and worker.is_alive():
+            return False
+        return not (self._native_task_receipts(task['id'], state='executing')
+                    or self.db.execute("SELECT 1 FROM decisions WHERE ? IN (json_extract(data,'$.task_id'), "
+                                       "json_extract(data,'$._execution_task_id')) AND json_extract(data,'$.decided_by')='archive' "
+                                       "LIMIT 1", (task['id'],)).fetchone())
 
     def native_routine_completion_input(self, task):
         completion = self._native_routine_completion_input(task)

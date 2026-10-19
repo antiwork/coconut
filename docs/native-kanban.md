@@ -82,6 +82,26 @@ Its last run must be the run of that input's claim, ended as scheduled, and no r
 The other guards of a settled failure hold too. A completed task keeps its status when its card is archived, so the reconciler
 does not cancel it. The new input gets a successor of the archived card in the same execution and workspace, as above.
 
+An ordinary request, such as a delegated assignment, has the same gap. Its continuation can park its successor card with
+`kanban_schedule`, the task completes, and the settle pass archives the card. That card can continue under the same rules,
+without the routine ones. The request must have no routine record at all: no job, occurrence, completion receipt, or routine
+trigger. Even an empty routine field counts, because only the routine code writes them. Its completed input proves nothing
+more, so the authenticated continuations and the scheduled run carry the proof.
+No person may ever have stopped the request. The owner or its requesting bot continues it, and the result keeps its route.
+Pending decisions still hold the continuation. This covers a decision in the same execution, and a decision of another
+execution that now holds the outcome's Work row. Continue that owner instead.
+
+The work source audit records the source item that it gives a task in `_source_assignment`. A later audit of the same item
+runs in a separate execution, and it can ask the person about that item while the request's card waits archived.
+So this recovery also waits while the same bot has a pending decision about the exact same `source_id` and item `id`.
+A card belongs to the item of its task's source work. That is the task's own source assignment, or the nearest one that it
+continues: a turn that carries out a proposal of the audit that the person answered, or a task that the audit assigned.
+The audit's answered cards use the same rule. A plain parent link does not count, because a person's reply has one too.
+The request finds its own item the same way. Coconut compares the recorded values only. A link in a card, another item,
+another source, another bot, a missing task, or a loop does not hold it. A malformed source assignment of the request holds it,
+and so does a card from the oldest audits, which recorded the item without its source. The refusal changes nothing, and the
+same continuation proceeds after the person answers. Coconut never answers that decision itself.
+
 ## Requester callback continuations
 
 A delegated owner can come from a return callback of the requester, not from the requester's root task.
