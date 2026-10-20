@@ -100,6 +100,9 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_registered_delegation_continuation.py 2> .runtime/registered-delegation-continuation.log || { cat .runtime/registered-delegation-continuation.log; exit 1; }
           cat .runtime/registered-delegation-continuation.log
           grep -qx 'OK' .runtime/registered-delegation-continuation.log # The registered PR dispatch checks must run, not skip.
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_delegated_block_pause.py 2> .runtime/native-delegated-block-pause.log || { cat .runtime/native-delegated-block-pause.log; exit 1; }
+          cat .runtime/native-delegated-block-pause.log
+          grep -qx 'OK' .runtime/native-delegated-block-pause.log # The native board and registry pause checks must run, not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_continuation_snapshot_eviction.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_requester_callback_continuation.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_foreground_dispatch.py

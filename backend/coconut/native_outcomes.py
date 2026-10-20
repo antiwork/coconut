@@ -12,6 +12,14 @@ else:
     from technical_lane import SCHEMA as TECHNICAL_LANE_SCHEMA, requested as technical_lane_request
 
 
+# A block check offers a delegate's answer with only these public fields, including the person's typed reply.
+# The card's context and notes stay private. The fingerprint covers the answer itself.
+DELEGATED_DECISION_FIELDS = ('id', 'bot_id', 'task_id', 'title', 'action_type', 'status', 'revision', 'decided_at',
+                             'selected_option_id', 'selected_option_label', 'correction')
+BLOCK_ANSWER_FIELDS = ('id', 'task_id', 'bot_id', 'status', 'revision', 'decided_by', 'decided_at',
+                       'selected_option_id', 'selected_option_label', 'correction')
+
+
 def outcome_owner_id(origin_id, native_id):
     return str(uuid5(UUID(origin_id), 'kanban:' + native_id))
 
@@ -1560,22 +1568,168 @@ class NativeOutcomes:
         session = task.get('_execution_session_id')
         return {t['id'] for t in self._all('tasks') if session and t.get('_execution_session_id') == session} | {task['id']}
 
+    def _block_check_delegates(self, task, card, related):
+        # Map each delegate execution this outcome waits for to the tasks whose human direction ends its pause.
+        # This outcome's own execution added a native edge to the delegate's outcome, the board still has that edge,
+        # and the service delivered the delegate's request from this bot through an audited native relay, to the
+        # outcome's owner or to the intake whose kanban_create made it (see _block_check_relay_lineage).
+        # An ancestor, sibling, comment, or bot report does not prove that this outcome waits for that delegate.
+        identity = task.get('_native_outcome_id')
+        parents = set(card.get('parent_ids') or ()) if card and identity and card.get('id') == identity else set()
+        if not parents:
+            return {}
+        tasks = {t['id']: t for t in self._all('tasks')}
+        jobs = {c['id'] for c in self._all('contexts') if c['task_id'] in related}
+        linked = set()
+        for owner in related:
+            if tasks.get(owner, {}).get('bot_id') != task['bot_id']:
+                continue
+            for receipt in self._native_task_receipts(owner, state='completed'):
+                action = receipt.get('action') or {}
+                arguments = action.get('arguments') or {}
+                if action.get('name') != 'kanban_link' or receipt.get('turn_id') in jobs or arguments.get('board'):
+                    continue
+                try:
+                    result = json.loads(receipt.get('result', ''))
+                except (ValueError, TypeError):
+                    continue
+                if (isinstance(result, dict) and result.get('ok') is True
+                        and result.get('child_id') == arguments.get('child_id') == identity
+                        and result.get('parent_id') == arguments.get('parent_id') and result['parent_id'] in parents):
+                    linked.add(result['parent_id'])
+        delegates = {}
+        for parent in linked:
+            owners = [t for t in tasks.values() if t.get('_native_outcome_id') == parent]
+            delegate = owners[0] if len(owners) == 1 else {}
+            if not (delegate and delegate['bot_id'] != task['bot_id'] and delegate.get('_execution_session_id') == delegate['id']):
+                continue
+            lineage = self._block_check_relay_lineage(task, delegate, tasks)
+            if not lineage:
+                continue
+            intake = lineage[-1]
+            source = tasks[intake['source_task_id']]
+            # The answers stay those of the outcome's own execution. Human direction counts from that execution, the
+            # tasks that created it, the intake that received the relay, and the requester that sent it.
+            execution = {t['id'] for t in tasks.values()
+                         if t.get('_execution_session_id') == delegate['id'] and t['bot_id'] == delegate['bot_id']}
+            sessions = {(t.get('_execution_session_id') or t['id'], t['bot_id']) for t in lineage[1:] + [source]}
+            direction = {t['id'] for t in tasks.values() if (t.get('_execution_session_id') or t['id'], t['bot_id']) in sessions}
+            delegates[delegate['id']] = dict(bot_id=delegate['bot_id'], tasks=execution | {delegate['id']},
+                                             direction=execution | {delegate['id']} | direction
+                                             | {t['id'] for t in lineage} | {source['id']})
+        return delegates
+
+    def _block_check_relay_lineage(self, task, owner, tasks, depth=0):
+        # Return [owner, ..., intake] when the intake received an audited native relay from this bot. An owner that
+        # holds the relay is its own intake. Otherwise _adopt_native_outcomes made the owner for an outcome that its
+        # parent task created: the owner ID derives from that parent and the outcome, the parent's own kanban_create
+        # receipt returned that outcome, and the callback owner that adoption copied is the parent's verified intake.
+        from .service import digest, encoded
+        if depth > 8:
+            return None
+        relay = owner.get('_native_relay') or {}
+        if relay:
+            source = tasks.get(owner.get('source_task_id'), {})
+            if not (owner['bot_id'] != task['bot_id'] and not owner.get('_is_return') and relay.get('envelope_id')
+                    and owner.get('source_bot_id') == relay.get('sender_bot_id') == task['bot_id']
+                    and source.get('bot_id') == task['bot_id'] and source.get('session_id') == task.get('session_id')):
+                return None
+            row = self._read_one('SELECT data FROM bots WHERE id=?', (owner['bot_id'],))
+            bot = json.loads(row[0]) if row else {}
+            row = self._read_one('SELECT data FROM deliveries WHERE id=?', (digest(encoded([source['id'], relay['envelope_id']])),))
+            delivery = json.loads(row[0]) if row else {}
+            if (not bot or bot.get('_deleted') or owner.get('session_id') != bot.get('session_id')
+                    or delivery.get('source_task_id') != source['id'] or delivery.get('target_bot_id') != owner['bot_id']
+                    or (delivery.get('receipt') or {}).get('task_id') != owner['id']):
+                return None
+            # The sender's own relay call returned this intake for this envelope.
+            for result in self._block_check_results(source['id'], 'message_agent'):
+                if result.get('task_id') == owner['id'] and result.get('delivery_id') == relay['envelope_id']:
+                    return [owner]
+            return None
+        origin = tasks.get(owner.get('parent_task_id'), {})
+        native = owner.get('_native_outcome_id')
+        try:
+            derived = bool(origin and native) and owner['id'] == outcome_owner_id(origin['id'], native)
+        except ValueError:
+            derived = False
+        if not (derived and owner.get('_execution_session_id') == owner['id'] and origin['bot_id'] == owner['bot_id']
+                and origin.get('session_id') == owner.get('session_id') and origin.get('source_bot_id') == task['bot_id']
+                and owner.get('source_bot_id') == task['bot_id']):
+            return None
+        created = False
+        for receipt in self._native_task_receipts(origin['id'], state='completed'):
+            arguments = (receipt.get('action') or {}).get('arguments') or {}
+            if ((receipt.get('action') or {}).get('name') != 'kanban_create' or arguments.get('session_id') != origin['id']
+                    or arguments.get('tenant') != origin['bot_id']
+                    or not str(arguments.get('idempotency_key', '')).startswith('coconut:' + origin['id'] + ':')):
+                continue
+            try:
+                result = json.loads(receipt.get('result', ''))
+            except (ValueError, TypeError):
+                continue
+            if isinstance(result, dict) and result.get('ok') is True and result.get('task_id') == native:
+                created = True
+                break
+        lineage = self._block_check_relay_lineage(task, origin, tasks, depth + 1) if created else None
+        callback = (origin.get('_relay_callback_owner') or origin['id']) if lineage else None
+        if not lineage or callback != lineage[-1]['id'] or owner.get('_relay_callback_owner') != callback:
+            return None
+        return [owner] + lineage
+
+    def _block_check_results(self, task_id, name):
+        for receipt in self._native_task_receipts(task_id, state='completed'):
+            if (receipt.get('action') or {}).get('name') != name:
+                continue
+            try:
+                result = json.loads(receipt.get('result', ''))
+            except (ValueError, TypeError):
+                continue
+            if isinstance(result, dict):
+                yield result
+
+    @staticmethod
+    def _block_answer_fingerprint(decision):
+        from .service import digest, encoded
+        return digest(encoded({key: decision.get(key) for key in BLOCK_ANSWER_FIELDS}))
+
+    def _delegated_block_answers(self, task, card, related):
+        # Answered decisions of the delegates this outcome waits for, while no later human direction from this
+        # execution, the delegate, or its requester overrides them. The check, its record, and its later
+        # revalidation all use this one rule. A pending card of another bot stays with that bot.
+        delegates = self._block_check_delegates(task, card, related)
+        owners = {identity: delegate for delegate in delegates.values() for identity in delegate['tasks']}
+        answers = {}
+        for decision in self._all('decisions'):
+            delegate = owners.get(decision['task_id'])
+            # _block_pause_holds accepts only a person's answer.
+            if (delegate and decision.get('bot_id') == delegate['bot_id']
+                    and not decision.get('_hidden') and not decision.get('_deleted')
+                    and self._block_pause_holds(decision, related | delegate['direction'])):
+                answers[decision['id']] = decision
+        return answers
+
     def _block_pause_holds(self, decision, related):
         # Any later message or approval from the person, including one sent during the check, is new direction.
         from .work_status import PAUSE_DECISION_STATES
         return bool(decision and decision.get('decided_by') and decision['status'] in PAUSE_DECISION_STATES
                     and not self._human_direction_after(related, decision.get('decided_at') or decision['created_at'], decision))
 
-    def _block_check_paused(self, task, check, related):
+    def _block_check_paused(self, task, check, related, card):
         # The check turn recorded the human answer that controls this block. Another turn or new direction ends it.
         identity = check.get('paused_by_decision_id')
         if not identity or check.get('pause_turn') != task.get('_native_turn_id'):
             return False
+        if check.get('pause_fingerprint'):
+            # A delegate's answer holds while its provenance and the exact recorded answer hold.
+            decision = self._delegated_block_answers(task, card, related).get(identity)
+            return bool(decision and self._block_answer_fingerprint(decision) == check['pause_fingerprint'])
         row = self._read_one('SELECT data FROM decisions WHERE id=?', (identity,))
         return self._block_pause_holds(json.loads(row[0]) if row else None, related)
 
     def record_block_pause(self, task_id, payload):
         from .service import ServiceError, YieldForDecision, require_text
+        from .work_recovery import BLOCK_PAUSE_FIELDS
         from .work_status import PAUSE_DECISION_STATES
         identity = require_text(payload, 'decision_id', 100)
         with self.transaction():
@@ -1588,15 +1742,26 @@ class NativeOutcomes:
             if not check or not turn or (recovery.get('blocked') or {}).get('turn') != turn:
                 raise ServiceError(409, 'Only the check of a blocked task can record this pause.')
             # The check context lists the decisions of this outcome. An unrelated card cannot pause it.
-            offered = {d.get('id') for d in recovery.get('decisions', [])}
+            offered = {d.get('id'): d for d in recovery.get('decisions', [])}
             row = self._read_one('SELECT data FROM decisions WHERE id=?', (identity,)) if identity in offered else None
             decision = json.loads(row[0]) if row else None
             if not decision or not decision.get('decided_by') or decision['status'] not in PAUSE_DECISION_STATES:
                 raise ServiceError(409, 'Choose an answered human decision from this check context.')
-            if not self._block_pause_holds(decision, self._block_check_related(task)):
+            related = self._block_check_related(task)
+            fingerprint = offered[identity].get('answer_fingerprint')
+            if fingerprint:
+                # The check offered this answer of a delegate. Its provenance and the exact answer must still hold.
+                card = (self.kanban.tasks if self.kanban else {}).get(task['id'])
+                current = self._delegated_block_answers(task, card, related).get(identity)
+                if not current or self._block_answer_fingerprint(current) != fingerprint:
+                    raise ServiceError(409, 'This answer changed, no longer belongs to work this outcome waits for, '
+                                            'or the person gave new direction after it. Follow the current state instead of pausing.')
+            elif not self._block_pause_holds(decision, related):
                 raise ServiceError(409, 'The person gave new direction after this answer. Follow it instead of pausing.')
-            if check.get('paused_by_decision_id') != identity or check.get('pause_turn') != turn:
-                task['_block_check'] = dict(check, paused_by_decision_id=identity, pause_turn=turn)
+            pause = dict(paused_by_decision_id=identity, pause_turn=turn, pause_fingerprint=fingerprint)
+            if any(check.get(key) != value for key, value in pause.items()):
+                task['_block_check'] = dict({k: v for k, v in check.items() if k not in BLOCK_PAUSE_FIELDS},
+                                            **{key: value for key, value in pause.items() if value})
                 self._put('tasks', task)
         return dict(status='recorded', decision_id=identity)
 
@@ -1637,7 +1802,7 @@ class NativeOutcomes:
             task['_block_check'] = dict(since=clock, attempt=attempt, next_at=clock + block_check_delay(attempt))
             if check and check.get('pause_turn') and check['pause_turn'] == task.get('_native_turn_id'):
                 # The check turn that recorded the pause blocked the task again. A later turn's block gets a new check.
-                task['_block_check'].update({key: check[key] for key in BLOCK_PAUSE_FIELDS})
+                task['_block_check'].update({key: check[key] for key in BLOCK_PAUSE_FIELDS if key in check})
             self._put('tasks', task)
             return
         # Hermes moves a task to triage when it blocks again with the same kind, so that a person acts.
@@ -1659,8 +1824,12 @@ class NativeOutcomes:
         decisions = [d for d in self._all('decisions') if d['task_id'] in related]
         if (self._task_work_is_paused(task) or self._automatic_work_is_paused(task)
                 or any(d['status'] == 'pending' for d in decisions)
-                or self._block_check_paused(task, check, related)):
+                or self._block_check_paused(task, check, related, native)):
             return defer()
+        # A delegate's answer joins the check only with its public answer fields and the fingerprint the record checks.
+        # Refresh these entries each check, so an answer that no longer holds leaves the context.
+        delegated = [dict({key: d.get(key) for key in DELEGATED_DECISION_FIELDS}, answer_fingerprint=self._block_answer_fingerprint(d))
+                     for d in self._delegated_block_answers(task, native, related).values()]
         records = [json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM native_receipts WHERE json_extract(data,'$.task_id')=? "
             "AND json_extract(data,'$.state')='executing'", (task['id'],))]
@@ -1693,7 +1862,8 @@ class NativeOutcomes:
                              since=datetime.fromtimestamp(check['since'], timezone.utc).isoformat()),
                 unknown_tools=records, work=previous.get('work', []),
                 # The check reads earlier answers, so a declined card becomes a pause instead of a new question.
-                decisions=list({d['id']: d for d in previous.get('decisions', []) + [self._public(d) for d in decisions]}.values())))
+                decisions=list({d['id']: d for d in [d for d in previous.get('decisions', []) if 'answer_fingerprint' not in d]
+                                + [self._public(d) for d in decisions] + delegated}.values())))
         self._put('tasks', task)
         self._event('task.updated', self._public(task), task['bot_id'], task['id'])
 
