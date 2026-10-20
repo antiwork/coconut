@@ -609,7 +609,7 @@ class HermesProvider(FixtureProvider):
                                 receipt = ({'status': 'recorded', 'decision_id': error.decision_id}
                                            if isinstance(error, YieldForDecision) else
                                            {'status': 'unconfirmed', 'error': 'The service did not confirm this decision.'})
-                        elif event['type'] in ('artifact', 'withdrawal_correction', 'work_wait', 'work_continue', 'dependency_unlink', 'block_pause', 'decision_response', 'native_proposal') and isinstance(error, ServiceError) and 400 <= error.status < 500:
+                        elif event['type'] in ('artifact', 'withdrawal_correction', 'work_wait', 'work_continue', 'dependency_unlink', 'block_pause', 'decision_response', 'native_proposal', 'native_call') and isinstance(error, ServiceError) and 400 <= error.status < 500:
                             receipt = {'status': 'rejected', 'error': str(error)}
                         elif event['type'] in ('bot_create', 'bot_delete') and isinstance(error, ServiceError) and 400 <= error.status < 500:
                             message = {

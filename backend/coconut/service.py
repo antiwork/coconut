@@ -103,6 +103,7 @@ from .work_recovery import WorkRecovery
 from .decision_freshness import DecisionFreshness
 from .withdrawal_corrections import WithdrawalCorrections
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
+from .technical_lane import TechnicalLane
 
 
 # The statements of Service._refresh_bot. Each needs an index and no sort. A test reads the plan of each one.
@@ -124,7 +125,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance):
+class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -3268,6 +3269,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             bot_lock = self.bot_locks.setdefault(execution_key(task), threading.Lock())
         with bot_lock:
             reaction_feedback = []
+            started = None
             source_seen = {}
             source_activity = []
             try:
@@ -3321,6 +3323,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     self._event('task.updated', self._public(task), bot['id'], task_id)
                     self._refresh_bot(bot['id'])
                     decision = self._get('decisions', task['_resume_decision']) if task.get('_resume_decision') else None
+                    started = (task.get('_resume_decision'), task['_native_turn_id'])
                 if decision and decision['status'] == 'approved' and not decision.get('_native'):
                     self._execute_decision(decision['id'])
                     with self.lock:
@@ -3347,6 +3350,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                         provider_task[field] = task[field]
                 if task.get('_native_outcome_id'):
                     provider_task['_native_outcome'] = task['_kanban_claim']
+                if lane := self._technical_lane(task):
+                    provider_task['_technical_lane'] = lane
                 if task.get('_execution_session_id'):
                     provider_task['_execution_task_ids'] = self._execution_task_ids(task)
                 reaction_feedback = task.get('_reaction_feedback', [])
@@ -3482,7 +3487,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     summary = f'Work stopped: {str(error)[:240]}'
                     with self.transaction():
                         current = self._get('tasks', task_id)
-                        if current.get('_resume_decision'):
+                        # Fail only the decision this worker started with. A newer answer, given while an independent
+                        # technical work turn ran, belongs to the next turn.
+                        if started and started[0] and (current.get('_resume_decision'), current.get('_native_turn_id')) == started:
                             failed_decision = self._get('decisions', current['_resume_decision'])
                             if failed_decision['status'] == 'approved':
                                 failed_decision.update(status='failed', outcome=summary)
@@ -3536,6 +3543,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._put('tasks', record)
 
     def emit(self, task_id: str, kind: str, payload: dict):
+        self._refuse_technical_event(task_id, kind)
         if kind == 'steering_ready':
             with self.lock:
                 if payload.get('turn_id') != self._get('tasks', task_id).get('_native_turn_id'):
@@ -3662,6 +3670,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 if candidate and not marker_silent:
                     self._message(bot_id, candidate, task_id=task_id)
                 self._save_work_progress(task, payload)
+                if self._finish_technical_lane(task, kind, payload.get('summary')):
+                    return
                 if kind == 'completed' and not task.get('_steering'):
                     continuation = self._continue_unfinished_work(task)
                     if continuation == 'queued':
@@ -3914,6 +3924,11 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 self._withdraw_stream(task['id'])
                 uncertain = self._has_uncertain_receipt(task['id'], task.get('_native_turn_id'))
                 task.update(status='failed' if uncertain else 'queued', summary='A tool stopped without a receipt. Check its result before starting new work.' if uncertain else 'Resuming after the Mac service restarted.', updated_at=now())
+                # A lane turn returns to its pending decision without a result. The executing receipt stays unknown,
+                # so the next continuation is refused until someone checks it.
+                if uncertain and self._finish_technical_lane(task, 'failed', task['summary']):
+                    self._event('task.recovered', self._public(task), task['bot_id'], task['id'])
+                    continue
                 if uncertain:
                     if recovery := task.get('_self_recovery'):
                         # A service interruption does not consume a bot's recovery attempt.

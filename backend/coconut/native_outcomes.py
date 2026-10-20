@@ -5,6 +5,12 @@ import time
 from datetime import datetime, timezone
 from uuid import UUID, uuid5
 
+if __package__:
+    from .technical_lane import SCHEMA as TECHNICAL_LANE_SCHEMA, requested as technical_lane_request
+else:
+    # Hermes workers import this module from the package directory for its tool schemas.
+    from technical_lane import SCHEMA as TECHNICAL_LANE_SCHEMA, requested as technical_lane_request
+
 
 def outcome_owner_id(origin_id, native_id):
     return str(uuid5(UUID(origin_id), 'kanban:' + native_id))
@@ -53,7 +59,8 @@ CONTINUE_SCHEMA = {
         'Hermes preserves completed results and creates a linked follow-up with the same workspace. '
         'This does not approve actions. The result goes to the original requester.',
     'parameters': {'type': 'object', 'additionalProperties': False,
-        'properties': {'task_id': {'type': 'string'}, 'message': {'type': 'string', 'maxLength': 16000}},
+        'properties': {'task_id': {'type': 'string'}, 'message': {'type': 'string', 'maxLength': 16000},
+                       'independent_technical_work': TECHNICAL_LANE_SCHEMA},
         'required': ['task_id', 'message']},
 }
 
@@ -699,6 +706,12 @@ class NativeOutcomes:
                 retained.append(candidate)
             else:
                 retained.append(root)
+        # A merged or closed delegated PR of the same Work is an earlier finished step of this owner. With exactly
+        # one open delegated PR left, that PR is the outcome under continuation. Any other mix stays ambiguous.
+        prs = [a for a in retained if linked_parent and a['kind'] == 'pr' and a.get('work_outcome_id') == linked_parent['id']]
+        finished = [a for a in prs if a.get('pr_state') in ('merged', 'closed')]
+        if finished and len(prs) - len(finished) == 1:
+            retained = [a for a in retained if a not in finished]
         # The report and the one delegated PR of the same Work describe one execution and one outcome.
         # Two PRs, another Work, or no authenticated PR keep the report's Work, so the choice stays ambiguous.
         delegated = {a['id'] for a in retained if linked_parent and a['kind'] == 'pr'
@@ -721,6 +734,7 @@ class NativeOutcomes:
             routine_scopes = routine_reports.scopes(self, owner, item, peers, tasks, get_deliveries())
             report_changes = {}
             peer_chains = []
+            finished_roots = {}
             # The requester's coordinating task can differ from the task that delegated this work.
             requesters = {owner.get('source_task_id')} | ({linked_parent['task_id']} if linked_parent else set())
             requesters.discard(None)
@@ -774,6 +788,16 @@ class NativeOutcomes:
                                  or (requester_report and peer[field] == owner['source_task_id']))):
                         # The requester's own same-PR report is not a second writer.
                         continue
+                    # The guarded requester's report of a merged or closed PR of the same Work. That PR has no writer
+                    # left. The requester is the direct requester, or the proven caller of an audited or registered
+                    # delegation. Only that requester's own run state is exempt below; its decisions, unknown tools,
+                    # returns, and every other branch stay in the guard.
+                    guarded_requester = linked_parent and (linked_parent['task_id'] == owner.get('source_task_id') or (
+                        (audited_parent or registered_parent) and linked_parent['task_id'] in callers))
+                    finished_report = bool(field == '_review_task_id' and peer['kind'] == 'pr' and guarded_requester
+                        and peer.get('pr_state') in ('merged', 'closed') and peer['bot_id'] == linked_parent['bot_id']
+                        and peer.get('work_outcome_id') == linked_parent['id'] and peer['task_id'] == linked_parent['task_id']
+                        and peer[field] == linked_parent['task_id'])
                     reporter = tasks[peer[field]]
                     if execution_key(reporter) == execution_key(owner):
                         continue
@@ -808,6 +832,9 @@ class NativeOutcomes:
                                     or (value[0]['status'] == 'completed' and self._unfinished_work(value[0]))})
                     linked[root['id']] = (root, 0)
                     linked[reporter['id']] = (reporter, 0)
+                    if finished_report and root['id'] == reporter['id']:
+                        linked.pop(owner['id'], None)
+                        finished_roots[(peer['id'], reporter['id'])] = root['id']
                     if owner_report and reporter_source and reporter_source['id'] not in (owner['id'], *requesters):
                         linked[reporter_source['id']] = (reporter_source, 0)
                     if passive_report:
@@ -876,6 +903,8 @@ class NativeOutcomes:
                 foreground = (caller['id'] if passive_report and caller and caller['id'] in linked
                     and any(self._requester_callback_foreground(caller, tasks.get(identity), tasks, snapshots)
                             for identity in foregrounds) else None)
+                finished_root = finished_roots.get((peer['id'], reporter['id']))
+                foreground = foreground or finished_root
                 routine_scope = routine_scopes.get((peer['id'], reporter['id']))
                 projection = (routine_reports.project(self, routine_scope, tasks, snapshots, get_deliveries(), caller)
                               if routine_scope else None)
@@ -898,7 +927,8 @@ class NativeOutcomes:
                         or ((peer['bot_id'] == owner['bot_id'] or reporter['bot_id'] == owner['bot_id'])
                             and not (passive_report or linked_report))
                         or any((t['status'] != 'completed' and t['id'] != foreground and t['id'] not in historical)
-                               or t.get('_waiting_on') or t.get('_return_pending')
+                               or [i for i in t.get('_waiting_on') or [] if not (t['id'] == finished_root and i == owner['id'])]
+                               or t.get('_return_pending')
                                or ((linked_report or historical) and t.get('_native_reply_pending'))
                                or self._task_paused(t) or self._get('exchanges', t['exchange_id']).get('cancelled')
                                or self._background_pending(t['id']) or self._unfinished_work(t)
@@ -1123,7 +1153,8 @@ class NativeOutcomes:
                 raise ServiceError(409, 'This task cannot continue work now.')
             identity = require_text(payload, 'task_id', 100)
             text = require_text(payload, 'message', 16000)
-            key = digest(encoded(['continue_work', source_id, source.get('_native_turn_id'), identity, text]))
+            lane = technical_lane_request(payload)
+            key = digest(encoded(['continue_work', source_id, source.get('_native_turn_id'), identity, text] + ([lane] if lane else [])))
             previous = self.db.execute('SELECT data FROM deliveries WHERE id=?', (key,)).fetchone()
             if previous:
                 return json.loads(previous[0])['receipt']
@@ -1165,12 +1196,14 @@ class NativeOutcomes:
                 snapshot_missing([owner['id']])
             if queued and native.get('dispatch_blocker') not in (None, 'active_pr'):
                 raise ServiceError(409, 'This native outcome is guarded. Wait for its current activity.')
+            related = [t for t in self._all('tasks') if execution_key(t) == execution_key(owner)]
+            # Only an explicit lane may leave one exact question pending. See technical_lane.py.
+            gate = self._technical_lane_gate(owner, native, lane, related) if lane else None
             if (owner['status'] not in ('completed', 'failed', 'waiting') and not
-                    (scheduled and owner['status'] == 'scheduled') and not queued) or owner.get('_waiting_on'):
+                    (scheduled and owner['status'] == 'scheduled') and not queued and not gate) or owner.get('_waiting_on'):
                 raise ServiceError(409, 'Wait for this task and its existing dependencies.')
             if owner.get('_return_pending'):
                 raise ServiceError(409, 'Wait for the previous result to be delivered before continuing this work.')
-            related = [t for t in self._all('tasks') if execution_key(t) == execution_key(owner)]
             worker = self.running.get(owner['id'])
             active_worker = bool(worker and worker.is_alive())
             # Review can hold a reviewer claim or a human pause. Only fresh input
@@ -1179,13 +1212,18 @@ class NativeOutcomes:
                     (t['id'] != owner['id'] and t['status'] in self.ACTIVE)
                     or self._background_pending(t['id']) for t in related):
                 raise ServiceError(409, 'This execution has active work. Wait for its result.')
-            if any(d['status'] == 'pending' and d['task_id'] in {t['id'] for t in related}
+            if any(d['status'] == 'pending' and d['task_id'] in {t['id'] for t in related} and d['id'] != (gate or {}).get('id')
                    for d in self._all('decisions')):
                 raise ServiceError(409, 'The existing decision must be answered before work continues.')
             if not owner.get('_native_outcome_id'):
                 self._retain_native_work(owner, native, snapshot_missing, snapshots, caller=source)
             owner['_native_outcome_id'] = identity
             self._restore_native_work_owner(owner)
+            previous_lane = owner.pop('_technical_lane', None)
+            if gate:
+                owner['_technical_lane'] = dict(lane, native_task_id=identity, requester_task_id=source_id,
+                                                requester_bot_id=source['bot_id'], admitted_at=now(),
+                                                **self._technical_checkpoint(owner, previous_lane))
             related_ids = {t['id'] for t in related}
             recovery = owner.setdefault('_self_recovery', {})
             recovery.pop('from_block_check', None)
@@ -1211,6 +1249,8 @@ class NativeOutcomes:
             else:
                 retry_input = {}
             self._advance_input(owner)
+            if gate:
+                self._technical_turn_advanced(owner)
             owner.update(retry_input)
             owner['_continuation_receipt_ids'] = list(dict.fromkeys(completed))
             owner.setdefault('_bot_messages', []).append(dict(sender_bot_id=source['bot_id'],

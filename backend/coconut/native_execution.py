@@ -90,6 +90,8 @@ class NativeExecution:
                 late_result = receipt['task_id'] == task_id and receipt.get('turn_id') == context_id
             if (not active or self._task_paused(task)) and not late_result:
                 raise ServiceError(409, 'This task cannot execute a tool now.')
+            if kind == 'native_call' and not context:
+                self._refuse_technical_tool(task, {'name': payload['name'], 'arguments': payload['arguments']})
             if not context:
                 self._save_work_progress(task, payload)
             if kind == 'native_call':

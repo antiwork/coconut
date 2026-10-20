@@ -206,6 +206,8 @@ class NativeKanban(NativeOutcomes):
                 from .service import uid
                 task['_native_turn_id'] = uid()
                 self._put('tasks', task)
+            if task.get('_technical_lane'):
+                self._leave_technical_turn(task)
             key = execution_key(task)
             state = native_state(task['status'])
             if task['status'] in ('queued', 'scheduled'):

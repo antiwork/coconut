@@ -91,6 +91,9 @@ jobs:
           cat .runtime/native-occurrence-completion.log
           grep -qx 'OK' .runtime/native-occurrence-completion.log # A skipped run prints 'OK (skipped=N)' and fails here.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_work_continuation.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_independent_technical_work.py 2> .runtime/independent-technical-work.log || { cat .runtime/independent-technical-work.log; exit 1; }
+          cat .runtime/independent-technical-work.log
+          grep -qx 'OK' .runtime/independent-technical-work.log # The real review card claim and finish checks must run, not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_delegated_report_continuation.py 2> .runtime/delegated-report-continuation.log || { cat .runtime/delegated-report-continuation.log; exit 1; }
           cat .runtime/delegated-report-continuation.log
           grep -qx 'OK' .runtime/delegated-report-continuation.log # The native dispatch checks must run, not skip.
