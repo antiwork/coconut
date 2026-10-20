@@ -129,7 +129,8 @@ class WorkerModelProcessTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def run_worker(self, operation, *, effort, native=None, extract=True, decision_status='executed', task_context=None):
+    def run_worker(self, operation, *, effort, native=None, extract=True, decision_status='executed', task_context=None,
+                   decision=None):
         home = self.root / 'bot-home'
         home.mkdir(exist_ok=True)
         capture = self.root / (str(uuid4()) + '.jsonl')
@@ -140,7 +141,8 @@ class WorkerModelProcessTests(unittest.TestCase):
         runtime = self.native if native is None else native
         request = {'operation': operation, 'task': task, 'bot': self.bot, 'history': [], 'model': 'gpt-6-astra',
                    'provider': 'openai-codex', 'base_url': self.native['base_url'], 'runtime_config': runtime,
-                   'reasoning_effort': effort, 'question': source['text'], 'decision': {'status': decision_status}}
+                   'reasoning_effort': effort, 'question': source['text'],
+                   'decision': decision if decision is not None else {'status': decision_status}}
         env = {'PATH': os.environ.get('PATH', ''), 'HOME': str(home), 'HERMES_HOME': str(home), 'TMPDIR': str(self.root),
                'COCONUT_DEFAULT_HOME': str(home), 'PYTHONPATH': str(self.source), 'WORKER_CAPTURE': str(capture), 'OPENAI_API_KEY': 'ambient-test-key'}
         if runtime.get('api_key'):
@@ -232,6 +234,34 @@ class WorkerModelProcessTests(unittest.TestCase):
         self.assertEqual(code, 0, events)
         self.assertIn(json.dumps([observation]), self.prompts[0])
         self.assertNotIn(observation['checked_at'], records[0]['ephemeral_system_prompt'])
+
+    def test_selected_ready_and_merge_actions_keep_their_exact_scope(self):
+        options = [dict(id='ready', label='Mark PR ready', explanation='Leave the PR unmerged.'),
+                   dict(id='merge', label='Mark ready and merge', explanation='Merge the exact reviewed head.')]
+        for selected in options:
+            with self.subTest(selected=selected['id']):
+                decision = dict(action_type='question', status='approved',
+                    merge_pr_url='https://github.com/example/project/pull/42', options=options,
+                    selected_option_id=selected['id'], selected_option_label=selected['label'])
+                code, events, records, _ = self.run_worker('resume', effort=None, extract=False, decision=decision)
+                self.assertEqual(code, 0, events)
+                self.assertIn(json.dumps(decision), self.prompts[0])
+                system = records[0]['ephemeral_system_prompt']
+                self.assertIn('Respect the exact selected card action.', system)
+                self.assertIn('Approval to mark a PR ready does not authorize a merge.', system)
+
+    def test_scoped_human_holds_reach_the_model_with_scope_preservation_rules(self):
+        self.bot['instructions'] = 'For issue #3664, Gianfranco merges its Feature announcements PRs manually.'
+        message = dict(sender_bot_id='coordinator', sender_name='Coordinator',
+                       text='For issue #3664, do not merge its Feature announcements PRs.')
+        code, events, records, _ = self.run_worker('start', effort=None, extract=False,
+            task_context={'_bot_messages': [message]})
+        self.assertEqual(code, 0, events)
+        self.assertIn(message['text'], self.prompts[0])
+        system = records[0]['ephemeral_system_prompt']
+        self.assertIn('Carry each human permission or hold with its original task, repository, and action scope', system)
+        self.assertIn("Never broaden one task's do-not-merge instruction into a restriction on every PR.", system)
+        self.assertIn('A current direct human instruction overrides an older preference within the same scope.', system)
 
     def test_system_prompt_stays_the_same_when_turn_context_changes(self):
         # Hermes puts the system prompt before the saved conversation. A change in it loses the provider's prompt cache.

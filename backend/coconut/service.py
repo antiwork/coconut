@@ -518,7 +518,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.db.execute('INSERT INTO events(type,bot_id,task_id,data,created_at) VALUES (?,?,?,?,?)', (event_type, bot_id, task_id, encoded(data), now()))
         self.push.record(event_type, data, bot_id, task_id)
 
-    def _message(self, bot_id: str, text: str, *, task_id: str | None = None, role: str = 'assistant', kind: str = 'text', decision_id: str | None = None, artifact_id: str | None = None, streaming: bool = False, sender_bot_id: str | None = None, recipient_bot_ids: list[str] | None = None, human_authored: bool = False, direct_reply_message_id: str | None = None) -> dict:
+    def _message(self, bot_id: str, text: str, *, task_id: str | None = None, role: str = 'assistant', kind: str = 'text', decision_id: str | None = None, artifact_id: str | None = None, streaming: bool = False, sender_bot_id: str | None = None, recipient_bot_ids: list[str] | None = None, human_authored: bool = False, direct_reply_message_id: str | None = None, interim: bool = False) -> dict:
         task = self._get('tasks', task_id) if task_id else None
         thread_id = task['thread_id'] if task else None
         display_bot_id = (task['bot_id'] if task.get('source_bot_id') else task['conversation_bot_id']) if task else bot_id
@@ -529,6 +529,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             kind = 'bot_exchange'
             display_bot_id = sender_bot_id
         message = dict(id=uid(), bot_id=display_bot_id, task_id=task_id, thread_id=thread_id, sender_bot_id=sender_bot_id, recipient_bot_ids=recipients, role=role, kind=kind, text=text, decision_id=decision_id, artifact_id=artifact_id, created_at=now(), streaming=streaming)
+        if interim:
+            message['_interim'] = True
         if role == 'assistant' and kind == 'text':
             direct_reply_message_id = direct_reply_message_id or (task or {}).get('_direct_reply_message_id')
             if direct_reply_message_id:
@@ -3587,6 +3589,10 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 candidate = task.pop('_silence_candidate', '')
                 replacing = payload.get('replace') is True
                 text = ('' if replacing else candidate) + str(payload.get('text', payload.get('delta', '')))
+                if payload.get('finalize_interim') is True:
+                    from .interim_messages import confirm
+                    if confirm(self, task, text):
+                        return
                 previous = next((m for m in reversed(self._task_messages(task_id)) if m['streaming']), None)
                 if replacing and not text:
                     self._withdraw_stream(task_id)
@@ -3609,6 +3615,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     message = self._message(bot_id, text, task_id=task_id, streaming=True)
                     from .turn_timings import TurnTrace
                     TurnTrace(task, 'delivery').mark('reply_created', message_id=message['id'])
+            elif kind == 'interim_message':
+                from .interim_messages import store
+                store(self, task, payload.get('text'))
             elif kind == 'activity':
                 self._message(bot_id, str(payload.get('text', payload.get('summary', 'Working')))[:500], task_id=task_id, kind='activity')
             elif kind == 'decision':
@@ -3712,7 +3721,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     self._advance_input(task)
                 else:
                     task['_preference_source_ids'] = []
-                    results = [message for message in reversed(self._task_messages(task_id)) if message['task_id'] == task_id and message.get('sender_bot_id') == task['bot_id'] and message['kind'] in ('text', 'artifact') and not message.get('_hidden') and not message.get('recipient_bot_ids')]
+                    turn_started_at = task.get('_turn_started_at', task['created_at'])
+                    results = [message for message in reversed(self._task_messages(task_id)) if message['task_id'] == task_id and message.get('sender_bot_id') == task['bot_id'] and message['kind'] in ('text', 'artifact') and message['created_at'] >= turn_started_at and not message.get('_hidden') and not message.get('_interim') and not message.get('recipient_bot_ids')]
                     result = next((message for message in results if message['kind'] == 'text'), results[0] if results else None)
                     result_text = result['text'] if result and kind == 'completed' else task['summary']
                     if result and result['kind'] == 'artifact' and kind == 'completed':
@@ -3728,7 +3738,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     pass
                 elif generic_completion:
                     turn_started_at = task.get('_turn_started_at', task['created_at'])
-                    result = next((message for message in reversed(self._task_messages(task_id)) if message['task_id'] == task_id and message['role'] == 'assistant' and message['kind'] in ('text', 'artifact') and not message.get('_hidden') and message['created_at'] >= turn_started_at and message['text'].strip()), None)
+                    result = next((message for message in reversed(self._task_messages(task_id)) if message['task_id'] == task_id and message['role'] == 'assistant' and message['kind'] in ('text', 'artifact') and not message.get('_hidden') and not message.get('_interim') and message['created_at'] >= turn_started_at and message['text'].strip()), None)
                     if result:
                         bot = self._get('bots', task['bot_id'] if task.get('source_bot_id') else task['conversation_bot_id'])
                         bot['last_message'] = result['text'][:160]

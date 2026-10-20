@@ -2424,6 +2424,24 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.resume(source)
         self.assertEqual(self.service._all('decisions'), before)
 
+    def test_pending_decision_reports_before_undelivered_dependencies(self):
+        from uuid import uuid4
+        owner, source = self.scheduled_native()
+        self.service._put('decisions', dict(id='decision', task_id=owner['id'], status='pending'))
+        relay = dict(source, id=str(uuid4()), status='queued', _execution_session_id=str(uuid4()))
+        self.service._put('tasks', relay)
+        receipt = dict(id='queued-relay', task_id=owner['id'], state='completed', result='{}',
+                       action={'name': 'message_agent', 'arguments': {}}, _relay_task_id=relay['id'])
+        self.service._put('native_receipts', receipt)
+        self.service._put('native_receipts', dict(receipt, id='pending-decision',
+            _relay_task_id=None, _wait_decision_id='decision'))
+        self.assertTrue(self.service._background_pending(owner['id']))
+        before = {table: copy.deepcopy(self.service._all(table)) for table in
+                  ('tasks', 'decisions', 'native_receipts', 'deliveries')}
+        with self.assertRaisesRegex(ServiceError, 'existing decision'):
+            self.resume(source)
+        self.assertEqual({table: self.service._all(table) for table in before}, before)
+
     def test_unconfirmed_actions_and_saved_results_reach_the_continued_worker(self):
         from coconut.hermes_worker import conversation_input
         owner, source = self.native()

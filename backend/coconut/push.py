@@ -161,6 +161,7 @@ class PushDelivery:
     def visible_message(message, task):
         return (message.get('role') == 'assistant' and message.get('kind') in ('text', 'artifact')
                 and not message.get('streaming') and not message.get('_hidden') and not message.get('_deleted')
+                and not message.get('_interim')
                 and not message.get('recipient_bot_ids') and not message.get('exchange_recipient_bot_ids')
                 and (not task.get('source_task_id') or task.get('_is_return') or message.get('decision_id'))
                 and bool(message.get('text', '').strip() or message.get('artifact_id')))

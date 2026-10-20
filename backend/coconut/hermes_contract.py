@@ -118,7 +118,7 @@ def verify_contract():
         'model', 'provider', 'api_key', 'base_url', 'api_mode', 'reasoning_config', 'fallback_model',
         'enabled_toolsets', 'quiet_mode', 'ephemeral_system_prompt', 'session_id',
         'skip_context_files', 'skip_memory', 'skip_background_review', 'save_trajectories',
-        'max_tokens', 'max_iterations', 'run_budget_seconds', 'load_soul_identity', 'gateway_session_key', 'clarify_callback', 'disabled_toolsets', 'session_db',
+        'max_tokens', 'max_iterations', 'run_budget_seconds', 'load_soul_identity', 'gateway_session_key', 'clarify_callback', 'interim_assistant_callback', 'disabled_toolsets', 'session_db',
     })
     require_keywords(AIAgent.run_conversation, {'conversation_history', 'task_id', 'stream_callback', 'persist_user_message', 'persist_user_platform_id'})
     for name in ('close', 'release_clients', 'hard_interrupt'):

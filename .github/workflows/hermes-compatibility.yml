@@ -73,6 +73,7 @@ jobs:
           cat .runtime/withdrawal-correction-route.log
           grep -qx 'OK' .runtime/withdrawal-correction-route.log # The registered schema check must run, not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_turn_timings.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_interim_messages.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_live_messages.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_initial_input.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_api_fallback.py

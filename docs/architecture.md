@@ -62,7 +62,10 @@ Advanced native jobs that Coconut cannot preserve do not execute through its dis
 
 Each bot has a separate Hermes profile, session, workspace, and browser directory.
 `HOME` remains the Mac account home so macOS Keychain works.
-Coconut scopes Codex, Claude Code, GitHub CLI, and XDG settings through their native environment variables.
+`USER` identifies the Mac account so Claude Code selects its saved Keychain login.
+Coconut scopes Codex, GitHub CLI, and XDG settings through their native environment variables.
+Claude Code shares the Mac account's native login, settings, and session history across bots and managed Hermes Terminal.
+Its configuration overrides remain unset so Claude Code and Hermes use the same native credential store.
 These paths organize data; they do not restrict a full-access process from reading other paths.
 Browser tools must use the intended profile. Shared desktop control needs serialized ownership.
 

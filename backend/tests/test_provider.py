@@ -164,7 +164,8 @@ class ProviderTests(unittest.TestCase):
             second, second_cwd = provider.environment(str(uuid4()))
         self.assertEqual(first['HOME'], second['HOME'])
         self.assertNotEqual(first['CODEX_HOME'], second['CODEX_HOME'])
-        self.assertNotEqual(first['CLAUDE_CONFIG_DIR'], second['CLAUDE_CONFIG_DIR'])
+        self.assertNotIn('CLAUDE_CONFIG_DIR', first)
+        self.assertNotIn('CLAUDE_CONFIG_DIR', second)
         self.assertNotEqual(first['GH_CONFIG_DIR'], second['GH_CONFIG_DIR'])
         self.assertNotEqual(first_cwd, second_cwd)
         self.assertNotEqual(first['COCONUT_BROWSER_PROFILE'], second['COCONUT_BROWSER_PROFILE'])
@@ -195,7 +196,8 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(first_config.parent.stat().st_mode & 0o777, 0o700)
         self.assertEqual(first['HOME'], second['HOME'])
         self.assertNotEqual(first['CODEX_HOME'], second['CODEX_HOME'])
-        self.assertNotEqual(first['CLAUDE_CONFIG_DIR'], second['CLAUDE_CONFIG_DIR'])
+        self.assertNotIn('CLAUDE_CONFIG_DIR', first)
+        self.assertNotIn('CLAUDE_CONFIG_DIR', second)
         self.assertNotEqual(first['GH_CONFIG_DIR'], second['GH_CONFIG_DIR'])
         self.assertNotEqual(first['HERMES_HOME'], second['HERMES_HOME'])
         for environment in (first, second):
@@ -275,6 +277,7 @@ class ProviderTests(unittest.TestCase):
                     self.valid_tool_names = set() if self.preference_check else set(registry.handlers)
                     self.system_prompt = kwargs.get('ephemeral_system_prompt', '')
                     self.skip_memory = kwargs.get('skip_memory')
+                    self.interim_assistant_callback = kwargs.get('interim_assistant_callback')
                 def run_conversation(self, prompt, **kwargs):
                     if self.preference_check:
                         assert not FORBID_PREFERENCE_DERIVATION
@@ -763,6 +766,98 @@ class ProviderTests(unittest.TestCase):
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
         self.assertEqual([kind for kind, _ in events], ['failed'])
+
+    def test_completed_commentary_reaches_the_phone_before_work_finishes(self):
+        started, release = self.root / 'started', self.root / 'release'
+        provider = self.fake_hermes(
+            "from pathlib import Path\nimport time\n"
+            "kwargs['stream_callback']('I will ')\n"
+            "kwargs['stream_callback']('check the failing test.')\n"
+            "self.interim_assistant_callback('I will check the failing test.', already_streamed=True)\n"
+            f"Path({str(started)!r}).touch()\n"
+            f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+            "kwargs['stream_callback']('An unfinished **')\n"
+            "return {'completed': True, 'final_response': 'The test passes.'}\n")
+        events, errors, replied = [], [], threading.Event()
+        def emit(kind, data):
+            events.append((kind, data))
+            if kind == 'interim_message':
+                replied.set()
+        def run():
+            try:
+                provider.start_task(self.task, self.bot, [], emit)
+            except Exception as error:
+                errors.append(error)
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            thread = threading.Thread(target=run)
+            thread.start()
+            try:
+                self.assertTrue(replied.wait(3), 'Commentary waits for the whole turn.')
+                self.wait_for_path(started)
+                self.assertTrue(thread.is_alive())
+                self.assertEqual(events, [('interim_message', {'text': 'I will check the failing test.'})])
+            finally:
+                release.touch()
+                thread.join(timeout=3)
+                if thread.is_alive(): provider.cancel_task(self.task['id'])
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(events, [('interim_message', {'text': 'I will check the failing test.'}),
+                                  ('text_delta', {'text': 'The test passes.'}),
+                                  ('completed', {'summary': 'Complete.'})])
+
+    def test_streamed_commentary_does_not_repeat_as_a_fallback_final_reply(self):
+        provider = self.fake_hermes(
+            "kwargs['stream_callback']('I will check the test.')\n"
+            "self.interim_assistant_callback('I will check the test.', already_streamed=True)\n"
+            "return {'completed': True, 'final_response': ''}\n")
+        events = []
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+        self.assertEqual(events, [('interim_message', {'text': 'I will check the test.'}),
+                                  ('completed', {'summary': 'Complete.'})])
+
+    def test_codex_final_callback_confirms_the_existing_interim_message(self):
+        provider = self.fake_hermes(
+            "self.interim_assistant_callback('I will check the test.', already_streamed=False)\n"
+            "self.interim_assistant_callback('The test passes.', already_streamed=False)\n"
+            "return {'completed': True, 'final_response': 'The test passes.'}\n")
+        events = []
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+        self.assertEqual(events, [('interim_message', {'text': 'I will check the test.'}),
+                                  ('interim_message', {'text': 'The test passes.'}),
+                                  ('text_delta', {'text': 'The test passes.', 'finalize_interim': True}),
+                                  ('completed', {'summary': 'Complete.'})])
+
+    def test_failure_keeps_completed_commentary_and_withholds_the_draft(self):
+        provider = self.fake_hermes(
+            "self.interim_assistant_callback('I found the failing test.', already_streamed=False)\n"
+            "kwargs['stream_callback']('Unverified success')\nraise RuntimeError('failed')\n")
+        events = []
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+        self.assertEqual([kind for kind, _ in events], ['interim_message', 'failed'])
+        self.assertEqual(events[0][1]['text'], 'I found the failing test.')
+        self.assertNotIn('Unverified success', json.dumps(events))
+
+    def test_interim_silence_marker_does_not_emit_text(self):
+        provider = self.fake_hermes(
+            "self.interim_assistant_callback('[SILENT]', already_streamed=False)\n"
+            "return {'completed': True, 'final_response': '[SILENT]'}\n")
+        events = []
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+        self.assertEqual(events, [('completed', {'summary': 'Complete.', 'silent_response': True})])
+
+    def test_context_keeps_interim_commentary_out_of_the_answer(self):
+        provider = self.fake_hermes(
+            "self.interim_assistant_callback('I will read the proposal.', already_streamed=False)\n"
+            "return {'completed': True, 'final_response': 'The proposal saves a report.'}\n")
+        events = []
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+            provider.answer_context(self.task, self.bot, [], 'What changes?', lambda kind, data: events.append((kind, data)))
+        self.assertEqual(events, [('text_delta', {'text': 'The proposal saves a report.'})])
 
     def configure_peer(self, *, budget=8):
         peer = {'id': str(uuid4()), 'name': 'Lin', 'role': 'Check calculations'}

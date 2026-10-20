@@ -749,7 +749,7 @@ class AutomaticUpdateTests(unittest.TestCase):
 
     def test_completed_archive_receipt_survives_interruption(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'source'
+            source = Path(directory).resolve() / 'source'
             source.mkdir()
             receipt = Path(directory) / 'archive.json'
             receipt.write_text(json.dumps(dict(source=str(source), source_hash='hash', build=162, version='2026.9.19')))
@@ -946,7 +946,7 @@ class PostmergeRegressionTests(unittest.TestCase):
     def archive_case(self, receipt_text='{"source":', *, helper_change=None, helper_text=None,
                      status=None, expected_error=False, head='sha', recovered=False):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             source = root / 'source'
             source.mkdir()
             helper = root / 'helper/release.py'

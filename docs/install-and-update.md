@@ -99,12 +99,16 @@ See [GitHub CLI authentication](https://cli.github.com/manual/gh_auth_login).
 
 ## CLI login from chat
 
-Bots use `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, and `GH_CONFIG_DIR` inside their existing Hermes profile directory.
+Bots use `CODEX_HOME` and `GH_CONFIG_DIR` inside their existing Hermes profile directory.
 Keep these variables unchanged during login and later commands. Do not replace `HOME`.
+Claude Code uses one Mac account login for all bots and managed Hermes Terminal.
+Keep `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` unset so Claude Code and Hermes use the same native credential store.
+Claude Code settings and session history also share this account scope. Hermes instructions, memory, and workspaces remain separate.
+An update preserves old bot Claude directories. Coconut does not copy their tokens or settings into the account directory.
 For interactive login, the bot starts a native Hermes terminal with `pty=true` and `background=true`.
 The process remains available while you authorize from your phone.
 The bot checks a fresh authenticated request before it reports a successful connection.
-Claude Code scopes its Keychain entry through `CLAUDE_CONFIG_DIR`; see [native credential storage](https://code.claude.com/docs/en/authentication#credential-management).
+The Mac account's Keychain must permit access. See [native credential storage](https://code.claude.com/docs/en/authentication#credential-management).
 
 ## Pair the iPhone
 

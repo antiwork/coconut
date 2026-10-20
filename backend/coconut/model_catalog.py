@@ -363,10 +363,9 @@ class HermesModelCatalog:
         for path in (self.root, self.private_home, self.private_home / 'tmp'):
             path.mkdir(parents=True, exist_ok=True, mode=0o700)
         environment = dict(self.env)
-        environment.update(HOME=str(self.private_home), HERMES_REAL_HOME=str(self.private_home),
-                           HERMES_HOME=str(self.root), PYTHONPATH=str(self.source),
-                           XDG_CONFIG_HOME=str(self.private_home / '.config'),
-                           XDG_CACHE_HOME=str(self.private_home / '.cache'),
+        from .runtime_environment import prepare_profile
+        environment.update(prepare_profile(self.private_home))
+        environment.update(HERMES_HOME=str(self.root), PYTHONPATH=str(self.source),
                            TMPDIR=str(self.private_home / 'tmp'), HERMES_DISABLE_TELEMETRY='1',
                            PYTHONUNBUFFERED='1')
         if operation == 'native' and payload.get('native_operation', '').startswith('routine_'):
@@ -699,7 +698,8 @@ def _native_runtime(selection, profile_home=None, canonical_home=None, canonical
         from hermes_cli import auth
         from dotenv import dotenv_values
         for key, value in dotenv_values(Path(profile_home) / '.env').items():
-            if value is not None and key not in ('HOME', 'HERMES_HOME', 'HERMES_REAL_HOME', 'PYTHONPATH'):
+            if value is not None and key not in ('HOME', 'USER', 'HERMES_HOME', 'HERMES_REAL_HOME', 'PYTHONPATH',
+                                               'CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR'):
                 os.environ[key] = value
         # The native transaction writes refreshed OAuth tokens back to their source file.
         candidates = [Path(canonical_home) / 'auth.json', Path(canonical_root) / 'auth.json']
@@ -757,7 +757,8 @@ def _worker(request):
     # Read profile variables without the native CLI's optional file-format repairs.
     from dotenv import dotenv_values
     for key, value in dotenv_values(selected_home / '.env').items():
-        if value is not None and key not in ('HOME', 'HERMES_HOME', 'HERMES_REAL_HOME', 'PYTHONPATH'):
+        if value is not None and key not in ('HOME', 'USER', 'HERMES_HOME', 'HERMES_REAL_HOME', 'PYTHONPATH',
+                                           'CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR'):
             os.environ[key] = value
     if request['operation'] == 'native':
         from native_settings import worker

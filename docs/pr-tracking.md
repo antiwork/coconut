@@ -27,6 +27,10 @@ Human holds, pending decisions, and native tool approval checks remain effective
 Coordinator handoffs cannot grant or revoke human authorization.
 Read-only card checks cannot merge.
 Recorded choices for the same head remain effective after a check reruns.
+The owner keeps each human permission or hold within its original task, repository, and action scope.
+Saving memory or relaying instructions must not expand one task's merge hold to every PR.
+A current direct human instruction overrides an older preference within the same scope.
+Approval to mark a PR ready does not authorize merging it.
 Bots use `coconut_track_pr` and finish their turn while checks run.
 They do not need a separate `gh pr checks --watch` process.
 
