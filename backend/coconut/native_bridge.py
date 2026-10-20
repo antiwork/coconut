@@ -158,6 +158,8 @@ class NativeBridge:
             # then release the claim before Hermes waits at its dispatch gate.
             with self.claim():
                 record = self.receipt('native_call', action)
+            if record.get('status') == 'rejected':
+                return json.dumps({'error': record.get('error') or 'The service refused this tool. The tool did not run.'})
             if record.get('status') != 'recorded':
                 return json.dumps({'error': 'The Mac did not persist the tool intent. The tool did not run.'})
             if needs_new_approval:
@@ -289,7 +291,8 @@ class NativeBridge:
 
     def approval(self, data):
         from tools.approval import resolve_gateway_approval
-        if self.request['operation'] == 'context':
+        if self.request['operation'] == 'context' or self.request['task'].get('_technical_lane'):
+            # Independent technical work cannot ask for a new permission while its decision is pending.
             resolve_gateway_approval(self.session_key, 'deny', request_id=data.get('request_id'), reason='The original decision remains pending.')
             return
         call = getattr(self.local, 'call', None)

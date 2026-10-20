@@ -112,6 +112,55 @@ another source, another bot, a missing task, or a loop does not hold it. A malfo
 and so does a card from the oldest audits, which recorded the item without its source. The refusal changes nothing, and the
 same continuation proceeds after the person answers. Coconut never answers that decision itself.
 
+## Independent technical work
+
+A pending decision normally holds every continuation of its execution. An owner can still need clear, already-authorized
+technical work while a separate human choice waits, for example a CI fix while a visual review waits.
+The owner or its requesting bot then adds `independent_technical_work` to `coconut_continue_work`:
+
+```json
+{"task_id": "t_26513095", "message": "Fix the CI findings locally.",
+ "independent_technical_work": {"decision_id": "<pending card ID>", "decision_revision": 2,
+                                "scope": ["diagnosis", "tests", "local_fixes"],
+                                "authorization_decision_id": "<approved card ID>"}}
+```
+
+Coconut admits it only when the native outcome is in review with no run, its owner waits on exactly that pending question
+at that revision, and the question holds no tool, merge, draft, or human answer. A person's refusal in the execution, a
+Work pause, an unknown tool result, an open card request, active or uncertain native dispatch, a running worker, a foreign
+bot, and an earlier conversation still refuse it. `local_fixes`, and only `local_fixes`, needs
+`authorization_decision_id`: a native question of the same execution that a person approved with a selected option.
+Coconut checks its recorded answer and gives the bot that exact question, choice, and sources as the whole fix scope.
+A native approval, a file card, a merge question, a card of another execution, or a requester's message cannot authorize
+product changes, and `diagnosis` or `tests` grant none. The continuation keeps the owner, session, worktree,
+dependencies, and result route, and it leaves the question pending.
+
+While the person has not answered, the service holds the native actions that Coconut can enforce: Kanban writes other
+than notes on the owner's own task, bot messages, routines, new cards, decision answers, waits, continuations, dependency
+changes, and Hermes approval requests. When the turn ends, the owner returns to the question and its native task to review.
+A failed turn or a service restart during a lane tool does the same and sends no result. A follow-up stays saved, and an
+unknown tool result stays unknown, so every continuation waits until someone checks it.
+A follow-up that arrives during a completed lane turn runs as the next lane turn of the same owner. The approved scope
+stays approved, and nothing is returned. Admitting the lane again for the same question keeps the effects of the turn
+that asked it. A lane never leaves a turn with an unknown tool result.
+The lane applies only to the owner's own task, so a callback of the owner keeps its normal route. It binds its own
+turns: a lane turn keeps its holds until it ends, even if the question is answered, withdrawn, resolved, or deleted
+meanwhile. Such a turn cannot finish the outcome, execute an approval, or return a result. It requeues the owner to
+resume the question, and the dispatcher then moves the owner to a normal turn. An automated revision keeps the lane.
+Ending the lane grants nothing: the normal task, decision, and pause rules apply again. Cancelling the owner's only
+Work still stops the task.
+The answered decision resumes in a new turn that carries the completed effects of the turn that asked it, as a normal
+resume does. The lane's tool results stay history and are never returned as results of the resumed turn. If a lane
+tool result is unknown, the lane turn stays current, so the existing receipt check stops the resume.
+
+An owner whose earlier delegated PR merged and who now works on a follow-up PR for the same requester Work can continue
+that open PR. A merged or closed PR of the same Work, and the requester's own report of it, is no longer a writer.
+Two open PRs, a PR of another Work, or an open requester PR still refuse the continuation.
+
+The lane is not a sandbox and grants no permission. Terminal, coding agents, and file tools keep full local access, as in
+any turn. The bot receives exact scope instructions to stay local and not push, publish, mark ready, or merge.
+Coconut does not inspect commands, so it cannot prevent those effects from a command.
+
 ## Requester callback continuations
 
 A delegated owner can come from a return callback of the requester, not from the requester's root task.
