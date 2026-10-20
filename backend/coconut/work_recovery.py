@@ -48,6 +48,7 @@ BLOCKED_WORK_INSTRUCTIONS = (
     'If the block cleared, continue the approved work. '
     'If a person can clear it, call coconut_ask once. Name the exact action the person must take, the verified facts, and choices such as "Retry after I free space" and "Stop this work". '
     'If it will clear without a person, schedule a bounded recheck with native Hermes scheduling and finish. '
+    'The saved decisions can include an answered card of a delegate whose work this outcome waits for. '
     'If a recorded human decision pauses this outcome, or the person already declined the action this block needs, that answer controls this block; do not ask again. '
     'Call coconut_record_pause with that decision ID, then call kanban_block and stop. '
     'A declined card that does not control this block does not pause the outcome. '
@@ -66,7 +67,7 @@ BLOCK_PAUSE_SCHEMA = {
         'decision_id': {'type': 'string', 'description': 'ID of the answered decision from the saved check context.'}},
         'required': ['decision_id']},
 }
-BLOCK_PAUSE_FIELDS = ('paused_by_decision_id', 'pause_turn')
+BLOCK_PAUSE_FIELDS = ('paused_by_decision_id', 'pause_turn', 'pause_fingerprint')
 
 
 class WorkRecovery:
