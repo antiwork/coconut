@@ -301,6 +301,16 @@ class WorkStatus:
             return latest[1]
         return shared.setdefault('graphs', {})
 
+    @staticmethod
+    def _proposal_execution(decision, source, target):
+        """Whether a person's answer to this proposal of the source task started the target task."""
+        return bool(source and target and decision.get('inbox_kind') == 'proposal'
+                    and decision.get('task_id') == source['id'] and decision.get('_execution_task_id') == target['id']
+                    and decision.get('decided_by')
+                    and decision.get('status') in ('approved', 'modified', 'replied', 'executed', 'failed')
+                    and decision.get('bot_id') == source['bot_id'] and target.get('parent_task_id') == source['id']
+                    and all(source.get(k) == target.get(k) for k in ('bot_id', 'conversation_bot_id', 'session_id', 'thread_id')))
+
     def _proposal_work_links(self, tasks):
         import json
         graphs = self._graph_memo()
@@ -314,10 +324,7 @@ class WorkStatus:
             decision = json.loads(row[0])
             source = tasks.get(decision.get('task_id'))
             target = tasks.get(decision.get('_execution_task_id'))
-            if (not source or not target or not decision.get('decided_by')
-                    or decision.get('status') not in ('approved', 'modified', 'replied', 'executed', 'failed')
-                    or decision.get('bot_id') != source['bot_id'] or target.get('parent_task_id') != source['id']
-                    or any(source.get(k) != target.get(k) for k in ('bot_id', 'conversation_bot_id', 'session_id', 'thread_id'))):
+            if not self._proposal_execution(decision, source, target):
                 continue
             direct.setdefault(source['id'], set()).add(target['id'])
         linked = {source: set(targets) for source, targets in direct.items()}

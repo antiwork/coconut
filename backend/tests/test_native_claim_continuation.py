@@ -192,6 +192,8 @@ for index in range(33):
 
     def check_dispatch(self, state, caller='requester', interrupt_binding=False, aged=False, dispatch_idle=False):
         owner, source, identity, workspace = self.prepare(state, caller)
+        # Results that the owner returned before this continuation are not its new result.
+        earlier_returns = {d['id'] for d in self.service._all('deliveries') if d['source_task_id'] == owner['id']}
         review_evidence = self.review_evidence(identity) if state == 'review' else None
         if aged:
             self.age_binding_and_restart(owner)
@@ -291,7 +293,8 @@ else:
         self.service._drain_returns()
         self.service._drain_returns()
         self.assertEqual(self.resume(source, identity), receipt)
-        returned = [d for d in self.service._all('deliveries') if d['source_task_id'] == owner['id']]
+        returned = [d for d in self.service._all('deliveries') if d['source_task_id'] == owner['id']
+                    and d['id'] not in earlier_returns]
         self.assertEqual(len(returned), 1)
         self.assertEqual(returned[0]['target_bot_id'], owner['source_bot_id'])
         self.assertEqual(returned[0]['text'], 'Follow-up verified locally')
@@ -451,6 +454,197 @@ assert kb.get_task(conn, stale).status == 'ready', kb.get_task(conn, stale).stat
             return owner, caller, identity, workspace
         self.prepare = prepare_root_callback
         self.check_dispatch('done')
+
+    def test_approved_proposal_root_continues_original_owner_after_helper_and_callback_settle(self):
+        self.check_approved_proposal('dependency')
+
+    def test_approved_proposal_root_keeps_a_deliberate_callback_input_hold(self):
+        # The callback asked for input itself. The settle pass keeps that hold, so the original owner stays guarded.
+        self.check_approved_proposal('needs_input')
+
+    def check_approved_proposal(self, block):
+        # A person approved a follow-up proposal of a requester callback, as in Desk 2b4380e0 for PR 8549. The approved
+        # root relayed to a new Dev execution; that delegate's callback filed a dependency block after its owner
+        # parent finished, so Hermes re-kinded it to an input block. Care's repair returned to the root's outcome.
+        import os
+        from datetime import datetime, timedelta, timezone
+        prepare = self.prepare
+        def program(source, *args):
+            return self.native_program(source, *args)
+        def card(task):
+            return self.service.kanban.tasks[task['id']]
+        def relay(source, bot, text):
+            call = self.service.emit(source['id'], 'native_call', dict(name='message_agent',
+                                     arguments=dict(target=bot['id'], message=text)))
+            receipt = self.service.emit(source['id'], 'native_bot_message', dict(native_call_id=call['id'],
+                native_envelope_id=uuid4().hex, target_bot_id=bot['id'], text=text))
+            return self.service._get('tasks', receipt['task_id'])
+        def finish(task, summary):
+            self.service._put('tasks', dict(self.service._get('tasks', task['id']), status='working'))
+            self.service.emit(task['id'], 'completed', {'summary': summary})
+            return self.service._get('tasks', task['id'])
+        def sync(*tasks):
+            rows = [self.service._kanban_row(t, t, 'ready', 10) for t in tasks]
+            program('import json; board.sync(json.loads(sys.argv[2]))', json.dumps(rows))
+            self.service.kanban.call({'op': 'snapshot'})
+            return rows
+        def claim(task, row):
+            program('assert board.kb.claim_task(board.conn, sys.argv[2])\n'
+                    'board.dispatch._set_worker_pid(board.conn, sys.argv[2], int(sys.argv[3]))',
+                    card(task)['id'], str(os.getpid()))
+            self.service.kanban.call({'op': 'snapshot'})
+            native = card(task)
+            context = program('print(board.kb.build_worker_context(board.conn, sys.argv[2]))', native['id']) \
+                if task.get('_native_outcome_id') else ''
+            task.update(status='working', _kanban_claim=dict(native_id=native['id'], external_id=task['id'],
+                        input=row['input'], run_id=native['current_run_id'], pid=os.getpid(), context=context))
+            self.service._put('tasks', task)
+            return native
+        def complete(task, summary):
+            # The claimed worker's own completion of its run.
+            program('assert board.kb.complete_task(board.conn, sys.argv[2], summary=sys.argv[3], expected_run_id=int(sys.argv[4]))',
+                    card(task)['id'], summary, str(card(task)['current_run_id']))
+            self.service.kanban.call({'op': 'snapshot'})
+        def prepare_approved(*args):
+            owner, unused, identity, workspace = prepare(*args)
+            self.service._put('tasks', dict(unused, status='completed'))
+            epoch = self.service._setting('conversation_epoch')
+            requester = self.service._get('tasks', owner['source_task_id'])
+            requester.update(_execution_session_id=requester['id'], _waiting_on=[], _conversation_epoch=epoch)
+            self.service._put('tasks', requester)
+            care = self.write('/v1/bots', {'name': 'Care'})
+            def returned(name):
+                with self.service.transaction():
+                    delivered = self.service._store_bot_message(owner['id'], dict(
+                        target_bot_id=requester['bot_id'], text=name + ' result is saved.'), returning=True)
+                callback = self.service._get('tasks', delivered['task_id'])
+                self.service._ensure_execution_session(callback)
+                callback.update(_native_turn_id=name + '-input', _conversation_epoch=epoch)
+                self.service._put('tasks', callback)
+                return callback
+            reporter, proposer = returned('reporter'), returned('proposer')
+            for task in (reporter, proposer):
+                row, = sync(task)
+                claim(task, row)
+                complete(task, 'Callback consumed')
+                self.service._put('tasks', dict(self.service._get('tasks', task['id']), status='completed'))
+            self.service.kanban.call({'op': 'snapshot'})
+            # The person approves the proposer's follow-up proposal in the app.
+            self.service._put('tasks', dict(self.service._get('tasks', proposer['id']), status='working'))
+            self.service.emit(proposer['id'], 'native_proposal', dict(key='followup-draft', title='Create the draft PR?',
+                options=[dict(id='draft', label='Create the test-hardening draft PR')]))
+            self.service._put('tasks', dict(self.service._get('tasks', proposer['id']), status='completed'))
+            decision = next(d for d in self.service._all('decisions') if d['task_id'] == proposer['id'])
+            self.write(f"/v1/decisions/{decision['id']}/answer", dict(option_id='draft', revision=decision['revision']))
+            root = self.service._get('tasks', self.service._get('decisions', decision['id'])['_execution_task_id'])
+            self.service._ensure_execution_session(root)
+            root.update(_native_turn_id='root-input', _conversation_epoch=epoch)
+            self.service._put('tasks', root)
+            row, = sync(root)
+            claim(root, row)
+            delegate = relay(root, self.bot, 'Publish the approved draft.')
+            self.service._ensure_execution_session(delegate)
+            delegate.update(_conversation_epoch=epoch)
+            self.service._put('tasks', delegate)
+            row, = sync(delegate)
+            claim(delegate, row)
+            complete(delegate, 'Another execution owns it')
+            finish(delegate, 'Another execution owns the worktree.')
+            self.service._drain_returns()
+            callback = next(t for t in self.service._all('tasks') if t.get('_is_return') and t.get('source_task_id') == delegate['id'])
+            self.service._ensure_execution_session(callback)
+            callback.update(_native_turn_id='callback-input', _conversation_epoch=epoch)
+            self.service._put('tasks', callback)
+            row, = sync(callback)
+            native = claim(callback, row)
+            helper = relay(callback, care, 'Repair the original owner route.')
+            self.service._ensure_execution_session(helper)
+            helper.update(_conversation_epoch=epoch)
+            self.service._put('tasks', helper)
+            row, = sync(helper)
+            claim(helper, row)
+            # The owner finished first, so Hermes turns the callback's dependency block into an input block.
+            # In the other case the callback asks for input itself.
+            program('''
+import json
+kb, conn = board.kb, board.conn
+owner, callback, run, kind = sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5]
+kb.link_tasks(conn, owner, callback, expected_child_run_id=run)
+assert kb.block_task(conn, callback, reason='Waiting for the original owner', kind=kind, expected_run_id=run)
+task = kb.get_task(conn, callback)
+assert (task.status, task.block_kind) == ('blocked', 'needs_input'), task
+event = json.loads(conn.execute("SELECT payload FROM task_events WHERE task_id=? AND kind='blocked' ORDER BY id DESC",
+                                (callback,)).fetchone()[0])
+assert event.get('rekind_reason') == ('no_open_parent' if kind == 'dependency' else None), event
+''', identity, native['id'], str(native['current_run_id']), block)
+            callback = finish(callback, 'Complete.')
+            callback['updated_at'] = (datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat().replace('+00:00', 'Z')
+            self.service._put('tasks', callback)
+            # The root waits for Care as a retained native outcome.
+            root = self.service._get('tasks', root['id'])
+            root['_native_outcome_id'] = card(root)['id']
+            program('kb, conn = board.kb, board.conn\n'
+                    "kb.link_tasks(conn, sys.argv[2], sys.argv[3], expected_child_run_id=int(sys.argv[4]))\n"
+                    "assert kb.block_task(conn, sys.argv[3], reason='Waiting for Care', kind='dependency', expected_run_id=int(sys.argv[4]))",
+                    card(helper)['id'], card(root)['id'], str(card(root)['current_run_id']))
+            root.update(status='completed', _waiting_on=[])
+            self.service._put('tasks', root)
+            self.service.kanban.call({'op': 'snapshot'})
+            self.assertEqual((card(root)['status'], card(root)['block_kind']), ('todo', 'dependency'))
+            self.assertEqual((card(callback)['status'], card(callback)['block_kind']), ('blocked', 'needs_input'))
+            proof = card(callback)['block_rekind']
+            if block == 'dependency':
+                self.assertEqual((proof['run_id'], proof['requested_kind'], proof['rekind_reason']),
+                                 (native['current_run_id'], 'dependency', 'no_open_parent'))
+            else:
+                self.assertIsNone(proof)
+            url = 'https://github.com/example/app/pull/8549'
+            from coconut.service import now
+            for task, review, activity in ((owner, owner, owner), (requester, requester, reporter)):
+                self.service._put('artifacts', dict(id=str(uuid4()), task_id=task['id'], bot_id=task['bot_id'],
+                    created_at=now(), kind='pr', title='Retained PR', status='merged', pr_state='merged', url=url,
+                    _review_task_id=review['id'], _activity_task_id=activity['id']))
+            # Care finishes normally. Hermes readies the root, and its result resumes the root's outcome.
+            complete(helper, 'Route repaired')
+            finish(helper, 'Route repaired.')
+            self.service._drain_returns()
+            self.assertNotIn('_return_pending', self.service._get('tasks', helper['id']))
+            root = self.service._get('tasks', root['id'])
+            self.assertEqual(root['status'], 'queued')
+            row, = sync(root)
+            self.assertEqual(card(root)['input_id'], root['_native_turn_id'])
+            self.assertEqual(card(root)['status'], 'ready')
+            claim(root, row)
+            self.assertTrue(root['_kanban_claim']['context'])
+            # Every helper result is consumed. Only the callback's input block holds the gate now.
+            with self.assertRaises(ServiceError):
+                self.resume(root, identity)
+            self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'completed')
+            self.service._settle_native_orphans()
+            self.service.kanban.call({'op': 'snapshot'})
+            self.assertEqual(self.service._get('tasks', callback['id']), callback)
+            if block != 'dependency':
+                self.assertEqual((card(callback)['status'], card(callback)['block_kind']), ('blocked', 'needs_input'))
+                held = self.service._get('tasks', owner['id'])
+                with self.assertRaises(ServiceError):
+                    self.resume(root, identity)
+                self.assertEqual(self.service._get('tasks', owner['id']), held)
+                return None
+            self.assertEqual(card(callback)['status'], 'done')
+            self.requester_id, self.root_id = requester['id'], root['id']
+            return owner, root, identity, workspace
+        if block != 'dependency':
+            self.assertIsNone(prepare_approved('done'))
+            return
+        self.prepare = prepare_approved
+        self.check_dispatch('done')
+        # The owner's new result returns once, as a callback of the original requester rather than the approved root.
+        result, = [d for d in self.service._all('deliveries') if d['text'] == 'Follow-up verified locally']
+        callback = self.service._get('tasks', result['receipt']['task_id'])
+        self.assertEqual((callback['_is_return'], callback['_assignment_task_id']), (True, self.requester_id))
+        self.service._ensure_execution_session(callback)
+        self.assertEqual(callback['_execution_session_id'], self.requester_id)
+        self.assertNotEqual(callback['_execution_session_id'], self.root_id)
 
     def test_aged_completed_claim_dispatches_after_adapter_restart(self):
         self.check_dispatch('done', aged=True)

@@ -529,5 +529,503 @@ class RequesterRootCallbackContinuationTests(unittest.TestCase):
         self.assertEqual(self.resume(caller)['task_id'], owner['id'])
 
 
+class ApprovedProposalRequesterContinuationTests(unittest.TestCase):
+    """A person approved a follow-up proposal of the requester's callback, as in Desk 2b4380e0 for PR 8549.
+
+    The approved root runs in its own execution. It delegated to a new Dev execution instead of the original owner.
+    That delegate's callback filed a dependency block after the owner finished, so Hermes left its card in an input
+    block, and Care's repair returned to the root. The root then continues the original owner.
+    """
+    setUp = fixtures.NativeWorkContinuationTests.setUp
+    tearDown = fixtures.NativeWorkContinuationTests.tearDown
+    write = fixtures.NativeWorkContinuationTests.write
+    prepare = fixtures.NativeWorkContinuationTests.prepare
+    scheduled_native = fixtures.NativeWorkContinuationTests.scheduled_native
+    snapshot_result = fixtures.NativeWorkContinuationTests.snapshot_result
+    resume = fixtures.NativeWorkContinuationTests.resume
+    through_provider = RequesterCallbackContinuationTests.through_provider
+    reject = RequesterCallbackContinuationTests.reject
+
+    def returned(self, producer, name):
+        # The owner's results return to the requester through the real delivery route.
+        with self.service.transaction():
+            delivered = self.service._store_bot_message(producer['id'], {
+                'target_bot_id': self.desk['id'], 'text': name + ' result'}, returning=True)
+            callback = self.service._get('tasks', delivered['task_id'])
+            self.service._ensure_execution_session(callback)
+        callback.update(status='completed', _native_turn_id=name + '-turn', _conversation_epoch=self.epoch,
+                        _kanban_claim=dict(native_id='t_' + name, external_id=callback['id'],
+                                           input=callback['id'], run_id=0, pid=0, context=''))
+        self.service._put('tasks', callback)
+        self.service.kanban.tasks[callback['id']] = dict(id='t_' + name, status='done')
+        return callback
+
+    def relay(self, source, bot, text):
+        # A native message_agent call and its relay delivery, as the worker sends them.
+        call = self.service.emit(source['id'], 'native_call', dict(name='message_agent',
+                                 arguments=dict(target=bot['id'], message=text)))
+        receipt = self.service.emit(source['id'], 'native_bot_message', dict(native_call_id=call['id'],
+            native_envelope_id=uuid4().hex, target_bot_id=bot['id'], text=text))
+        return self.service._get('tasks', receipt['task_id'])
+
+    def finish(self, task, summary):
+        # The task's own turn ends through the service, which prepares its return.
+        self.service._put('tasks', dict(self.service._get('tasks', task['id']), status='working'))
+        self.service.emit(task['id'], 'completed', {'summary': summary})
+        return self.service._get('tasks', task['id'])
+
+    def incident(self):
+        from datetime import datetime, timedelta, timezone
+        self.epoch = self.service._setting('conversation_epoch')
+        self.care = self.write('/v1/bots', {'name': 'Care'})
+        owner, requester = self.scheduled_native()
+        self.service.kanban.tasks[owner['id']]['status'] = 'done'
+        requester.update(status='completed', _waiting_on=[], _conversation_epoch=self.epoch)
+        self.service._put('tasks', requester)
+        reporter = self.returned(owner, 'reporter')
+        proposer = self.returned(owner, 'proposer')
+        # The proposer's turn records the proposal, and the person approves it in the app.
+        self.service._put('tasks', dict(proposer, status='working'))
+        self.service.emit(proposer['id'], 'native_proposal', dict(key='followup-draft', title='Create the draft PR?',
+            options=[dict(id='draft', label='Create the test-hardening draft PR')]))
+        self.service._put('tasks', proposer)
+        decision = next(d for d in self.service._all('decisions') if d['task_id'] == proposer['id'])
+        self.service.mutate('POST', f"/v1/decisions/{decision['id']}/answer",
+                            dict(option_id='draft', revision=decision['revision']), str(uuid4()), 'test-phone')
+        decision = self.service._get('decisions', decision['id'])
+        root = self.service._get('tasks', decision['_execution_task_id'])
+        self.service._ensure_execution_session(root)
+        root.update(status='working', _native_turn_id='root-first-turn', _conversation_epoch=self.epoch)
+        self.service._put('tasks', root)
+        # The root relayed to a new Dev execution. Its result returned to the root through a callback.
+        delegate = self.relay(root, self.dev, 'Publish the approved draft.')
+        delegate.update(_conversation_epoch=self.epoch, _kanban_claim=dict(native_id='t_delegate', input=delegate['id']))
+        self.service._put('tasks', delegate)
+        self.service.kanban.tasks[delegate['id']] = dict(id='t_delegate', status='done')
+        self.service._put('tasks', dict(self.service._get('tasks', root['id']), status='waiting'))
+        self.finish(delegate, 'Another execution owns the worktree.')
+        self.service._drain_returns()
+        callback = next(t for t in self.service._all('tasks') if t.get('_is_return') and t.get('source_task_id') == delegate['id'])
+        self.service._ensure_execution_session(callback)
+        callback.update(status='working', _native_turn_id='callback-turn', _conversation_epoch=self.epoch,
+                        _kanban_claim=dict(native_id='t_callback', external_id=callback['id'], input=callback['id'],
+                                           run_id=72, pid=0, context=''))
+        self.service._put('tasks', callback)
+        # The callback asked Care to repair the route, then ended. Care's result goes to the root.
+        helper = self.relay(callback, self.care, 'Repair the original owner route.')
+        helper.update(_conversation_epoch=self.epoch, _kanban_claim=dict(native_id='t_helper', input=helper['id']))
+        self.service._put('tasks', helper)
+        callback = self.finish(callback, 'Complete.')
+        callback['updated_at'] = (datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat().replace('+00:00', 'Z')
+        self.service._put('tasks', callback)
+        # Hermes re-kinded the callback's dependency block: its owner parent had already finished. The snapshot carries
+        # the latest block event of the callback's own run as proof (Board.rekinded_block).
+        self.service.kanban.tasks[callback['id']] = dict(id='t_callback', status='blocked', block_kind='needs_input',
+                                                         current_run_id=None, worker_pid=None, dependencies=[],
+                                                         block_rekind=dict(self.REKIND))
+        # The root now owns a native outcome that waits for Care.
+        root = self.service._get('tasks', root['id'])
+        root.update(status='completed', _waiting_on=[], _native_outcome_id='t_root')
+        self.service._put('tasks', root)
+        self.service.kanban.tasks[root['id']] = dict(id='t_root', status='todo', block_kind='dependency',
+                                                     current_run_id=None, worker_pid=None, input_id='root-first-turn',
+                                                     dependencies=[{'id': 't_helper'}])
+        self.service.kanban.tasks[helper['id']] = dict(id='t_helper', status='running', current_run_id=81, worker_pid=181)
+        url = 'https://github.com/example/project/pull/8549'
+        original = dict(id='original-pr', task_id=owner['id'], bot_id=owner['bot_id'], kind='pr',
+                        title='Original PR', status='merged', pr_state='merged', url=url,
+                        _review_task_id=owner['id'], _activity_task_id=owner['id'])
+        peer = dict(id='requester-pr', task_id=requester['id'], bot_id=requester['bot_id'], kind='pr',
+                    title='Requester PR', status='merged', pr_state='merged', url=url.upper(),
+                    _review_task_id=requester['id'], _activity_task_id=reporter['id'])
+        for item in (original, peer):
+            self.service._put('artifacts', item)
+        ids = dict(owner=owner['id'], requester=requester['id'], reporter=reporter['id'], proposer=proposer['id'],
+                   decision=decision['id'], root=root['id'], delegate=delegate['id'], callback=callback['id'],
+                   helper=helper['id'])
+        return ids, original, peer
+
+    def get(self, identity):
+        return self.service._get('tasks', identity)
+
+    def helper_finished(self, ids):
+        # Care finishes normally. Its result resumes the root's native outcome, and the root's worker claims it.
+        helper = self.finish(self.get(ids['helper']), 'Route repaired.')
+        self.service.kanban.tasks[ids['helper']] = dict(id='t_helper', status='done')
+        self.assertTrue(helper['_return_pending'])
+        self.service._drain_returns()
+        self.assertNotIn('_return_pending', self.get(ids['helper']))
+        root = self.get(ids['root'])
+        self.assertEqual(root['status'], 'queued')
+        self.assertEqual(root['_bot_messages'][-1]['_return_source_task_id'], ids['helper'])
+        return self.run_root(root)
+
+    def run_root(self, root):
+        turn = root['_native_turn_id']
+        root.update(status='working', _kanban_claim=dict(native_id='t_root', external_id=root['id'], input=turn,
+                    run_id=91, pid=191, context='# Kanban task t_root'))
+        self.service._put('tasks', root)
+        self.service.running[root['id']] = Mock(is_alive=Mock(return_value=True))
+        self.service.kanban.tasks[root['id']] = dict(id='t_root', status='running', current_run_id=91,
+                                                     worker_pid=191, input_id=turn, dependencies=[])
+        return root
+
+    def settle(self, ids, current=None):
+        # Like Board.archive_settled, the adapter closes an input block only while the request's event is its proof.
+        settled = []
+        def call(request):
+            if request['op'] == 'archive_settled':
+                settled.append(request)
+                proof = current if current is not None else self.service.kanban.tasks[ids['callback']].get('block_rekind')
+                if not proof or request.get('rekind_event') != proof['event_id']:
+                    return {'ok': False}
+                self.service.kanban.tasks[ids['callback']] = dict(id='t_callback', status='done')
+                return {'ok': True}
+            return self.snapshot_result()
+        self.service.kanban.call.side_effect = call
+        self.service._settle_native_orphans()
+        self.service.kanban.call.side_effect = lambda request: self.snapshot_result()
+        return settled
+
+    REKIND = dict(event_id=541371, run_id=72, requested_kind='dependency', rekind_reason='no_open_parent')
+    SETTLED = dict(op='archive_settled', id='t_callback', summary='Complete.', rekind_event=541371)
+
+    def ready(self):
+        ids, original, peer = self.incident()
+        root = self.helper_finished(ids)
+        self.assertEqual(self.settle(ids), [self.SETTLED])
+        return ids, original, peer, root
+
+    def fresh(self):
+        self.tearDown()
+        self.setUp()
+        return self.ready()
+
+    def chain(self, ids):
+        tasks = {t['id']: t for t in self.service._all('tasks')}
+        return self.service._work_chain(tasks[ids['requester']], tasks, self.service._pending_completion_receipts(),
+                                        include_continuations=True)
+
+    def foreground(self, ids, caller='root'):
+        tasks = {t['id']: t for t in self.service._all('tasks')}
+        return self.service._requester_callback_foreground(tasks[ids[caller]], tasks[ids['requester']], tasks,
+                                                          self.service.kanban.tasks)
+
+    def test_proposal_lookup_uses_the_decision_task_index(self):
+        from coconut.native_outcomes import PROPOSAL_DECISIONS
+        plan = [row[-1] for row in self.service.db.execute('EXPLAIN QUERY PLAN ' + PROPOSAL_DECISIONS, ('task',))]
+        self.assertTrue(any('USING INDEX decisions_task' in step for step in plan), plan)
+        self.assertFalse(any(step.startswith('SCAN') for step in plan), plan)
+        ids, _, _, root = self.ready()
+        executed = []
+        self.service.db.set_trace_callback(executed.append)
+        try:
+            self.assertTrue(self.foreground(ids))
+        finally:
+            self.service.db.set_trace_callback(None)
+        lookups = [statement for statement in executed if 'FROM decisions' in statement]
+        self.assertTrue(lookups)
+        self.assertFalse([statement for statement in lookups if '_execution_task_id' in statement], lookups)
+
+    def test_incident_graph_matches_the_saved_topology(self):
+        ids, original, peer = self.incident()
+        owner, root, callback, helper = (self.get(ids[k]) for k in ('owner', 'root', 'callback', 'helper'))
+        proposer, delegate = self.get(ids['proposer']), self.get(ids['delegate'])
+        from coconut.work_capacity import execution_key
+        self.assertEqual(execution_key(proposer), ids['requester'])
+        self.assertEqual((proposer['_is_return'], proposer['_assignment_task_id'], proposer['source_task_id']),
+                         (True, ids['requester'], ids['owner']))
+        self.assertEqual((root['parent_task_id'], execution_key(root), bool(root.get('_is_return'))),
+                         (ids['proposer'], ids['root'], False))
+        self.assertEqual((delegate['bot_id'], delegate['source_task_id'], delegate['_reply_to_task_id']),
+                         (owner['bot_id'], ids['root'], ids['root']))
+        self.assertNotEqual(execution_key(delegate), execution_key(owner))
+        self.assertEqual((callback['_is_return'], callback['_assignment_task_id'], execution_key(callback)),
+                         (True, ids['root'], ids['root']))
+        self.assertEqual((helper['bot_id'], helper['source_task_id'], helper['_reply_to_task_id']),
+                         (self.care['id'], ids['callback'], ids['root']))
+        self.assertEqual((owner['_reply_to_task_id'], owner['source_task_id']), (ids['requester'], ids['requester']))
+        self.assertEqual(self.service._get('decisions', ids['decision'])['status'], 'approved')
+        # Like the live graph, the approved root and all of its branches belong to the requester's same-PR chain.
+        self.assertEqual(set(ids.values()) - {ids['decision'], ids['owner']} - set(self.chain(ids)), set())
+
+    def test_provider_root_continues_original_owner_once_after_helper_and_callback_settle(self):
+        ids, original, peer = self.incident()
+        # The callback settles first, so only Care's live run holds the gate.
+        self.assertEqual(self.settle(ids), [self.SETTLED])
+        self.service._put('tasks', dict(self.get(ids['helper']), status='working'))
+        root = self.run_root(self.get(ids['root']))
+        self.assertTrue(self.foreground(ids))
+        owner = self.get(ids['owner'])
+        receipt = self.through_provider(root)
+        self.assertEqual(receipt['status'], 'rejected', receipt)
+        self.assertIn('another execution', receipt['error'])
+        self.assertEqual(self.get(ids['owner']), owner)
+        # The root's worker ends, Care finishes normally, and its result resumes the root.
+        self.service._put('tasks', dict(self.get(ids['root']), status='completed'))
+        self.service.running.pop(ids['root'])
+        root = self.helper_finished(ids)
+        owner['_kanban_claim']['workspace'] = str(Path(self.temp.name) / 'retained-owner')
+        self.service._put('tasks', owner)
+        before = copy.deepcopy(self.service.kanban.tasks)
+        tasks_before = self.service._all('tasks')
+        decisions_before = self.service._all('decisions')
+        receipt = self.through_provider(root, twice=True)
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
+        queued = self.get(owner['id'])
+        for key in ('id', '_execution_session_id', '_kanban_claim', 'source_task_id', 'source_bot_id',
+                    '_reply_to_task_id', 'thread_id', 'exchange_id'):
+            self.assertEqual(queued[key], owner[key], key)
+        self.assertEqual(queued['_reply_to_task_id'], ids['requester'])
+        self.assertEqual(queued['_work_context_id'], original['id'])
+        self.assertEqual(queued['_bot_messages'][-1]['sender_bot_id'], self.desk['id'])
+        self.assertEqual(self.service.kanban.tasks, before)
+        self.assertEqual(len(self.service._all('tasks')), len(tasks_before))
+        for task in tasks_before:
+            if task['id'] != owner['id']:
+                self.assertEqual(self.get(task['id']), task)
+        self.assertEqual(self.service._all('decisions'), decisions_before)
+        self.assertEqual(self.service._get('artifacts', peer['id']), peer)
+        self.assertEqual(len([d for d in self.service._all('deliveries')
+                             if d['receipt'].get('native_task_id') == 't_existing']), 1)
+        # The same turn's repeated call returns the saved receipt.
+        self.assertEqual(self.service.emit(root['id'], 'work_continue', dict(
+            task_id='t_existing', message='Keep the verified correction local.')), receipt)
+        # The owner's result goes once to the original requester, not to the approved root.
+        owner = self.get(owner['id'])
+        owner.update(status='working')
+        self.service._put('tasks', owner)
+        self.service.kanban.tasks[owner['id']] = dict(id='t_existing', status='done', input_id=owner['_native_turn_id'])
+        self.service.emit(owner['id'], 'completed', {'summary': 'Draft PR published.'})
+        self.service._drain_returns()
+        self.service._drain_returns()
+        returned = [d for d in self.service._all('deliveries') if d['source_task_id'] == owner['id']
+                    and d['text'] == 'Draft PR published.']
+        self.assertEqual(len(returned), 1)
+        result = self.get(returned[0]['receipt']['task_id'])
+        self.assertEqual((result['bot_id'], result['_is_return'], result['_assignment_task_id']),
+                         (self.desk['id'], True, ids['requester']))
+        # A later turn of the requester continues the same retained owner and execution again.
+        self.service._ensure_execution_session(result)
+        result.update(status='working', _native_turn_id='later-turn', _conversation_epoch=self.epoch,
+                      _kanban_claim=dict(native_id='t_later', external_id=result['id'], input=result['id'],
+                                         run_id=95, pid=195, context=''))
+        self.service._put('tasks', result)
+        self.service.kanban.tasks[result['id']] = dict(id='t_later', status='running', current_run_id=95, worker_pid=195)
+        again = self.through_provider(result)
+        self.assertEqual(again, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
+        continued = self.get(owner['id'])
+        for key in ('_execution_session_id', '_kanban_claim', '_reply_to_task_id', '_work_context_id'):
+            self.assertEqual(continued[key], queued[key], key)
+
+    def test_residual_callback_input_block_waits_for_the_settle_pass(self):
+        ids, original, peer = self.incident()
+        callback = self.get(ids['callback'])
+        recent = dict(callback, updated_at=callback['created_at'])
+        root = self.helper_finished(ids)
+        self.assertTrue(self.foreground(ids))
+        owner = self.get(ids['owner'])
+        # Care finished and every result is consumed. Only the callback's input block remains, and it stays a guard.
+        self.reject(owner, root)
+        # The settle pass waits until the callback has finished for a while.
+        self.service._put('tasks', recent)
+        self.assertEqual(self.settle(ids), [])
+        self.reject(owner, root)
+        self.service._put('tasks', callback)
+        self.assertEqual(self.settle(ids), [self.SETTLED])
+        self.assertEqual(self.get(ids['callback']), callback)
+        self.assertEqual(self.resume(root)['task_id'], owner['id'])
+
+    def test_deliberate_callback_holds_are_never_settled(self):
+        # Only the re-kind proof of the callback's own claimed run settles its block. Any other hold stays, and so does
+        # the gate on the original owner.
+        cases = {
+            'explicit input block': dict(card=dict(block_rekind=None)),
+            'capability triage': dict(card=dict(status='triage', block_kind='capability')),
+            'capability block with proof': dict(card=dict(block_kind='capability')),
+            'proof of another run': dict(card=dict(block_rekind=dict(self.REKIND, run_id=73))),
+            'proof of another kind': dict(card=dict(block_rekind=dict(self.REKIND, requested_kind='needs_input'))),
+            'proof without reason': dict(card=dict(block_rekind=dict(self.REKIND, rekind_reason=None))),
+            'proof without event': dict(card=dict(block_rekind=dict(self.REKIND, event_id=None))),
+            'claim of another card': dict(task=dict(native_id='t_other')),
+            'unclaimed run': dict(task=dict(run_id=None)),
+            'failed callback': dict(status='failed'),
+            'callback with outcome': dict(outcome='t_callback'),
+            'unknown tool effect': dict(receipt=True),
+            'pending decision': dict(decision=True),
+            'newer hold before the archive': dict(current=dict(self.REKIND, event_id=541999)),
+        }
+        for name, case in cases.items():
+            with self.subTest(case=name):
+                self.tearDown()
+                self.setUp()
+                ids, original, peer = self.incident()
+                root = self.helper_finished(ids)
+                owner = self.get(ids['owner'])
+                card = self.service.kanban.tasks[ids['callback']]
+                card.update(case.get('card', {}))
+                callback = self.get(ids['callback'])
+                if 'task' in case:
+                    callback['_kanban_claim'] = dict(callback['_kanban_claim'], **case['task'])
+                if 'status' in case:
+                    callback['status'] = case['status']
+                if 'outcome' in case:
+                    callback['_native_outcome_id'] = case['outcome']
+                self.service._put('tasks', callback)
+                if case.get('receipt'):
+                    self.service._put('native_receipts', dict(id='callback-unknown', task_id=ids['callback'], turn_id='callback-turn',
+                        state='executing', action={'name': 'unknown', 'arguments': {}}))
+                if case.get('decision'):
+                    self.service._put('decisions', dict(id='callback-hold', task_id=ids['callback'], status='pending'))
+                held = copy.deepcopy(self.service.kanban.tasks[ids['callback']])
+                settled = self.settle(ids, case.get('current'))
+                self.assertEqual(self.service.kanban.tasks[ids['callback']], held)
+                if 'current' in case:
+                    self.assertEqual(settled, [self.SETTLED])
+                else:
+                    self.assertEqual(settled, [])
+                self.reject(owner, root)
+                self.assertEqual(self.get(ids['callback']), callback)
+
+    def test_old_and_wrong_callers_are_not_the_foreground(self):
+        for name in ('delegate', 'helper', 'callback', 'proposer', 'reporter'):
+            with self.subTest(caller=name):
+                ids, _, _, root = self.fresh()
+                owner = self.get(ids['owner'])
+                caller = self.get(ids[name])
+                caller.update(status='working', _native_turn_id=name + '-new-turn')
+                self.service._put('tasks', caller)
+                self.assertFalse(self.foreground(ids, name) and name != 'proposer')
+                with self.assertRaises(ServiceError):
+                    self.resume(caller)
+                self.assertEqual(self.get(ids['owner']), owner)
+        # The earlier proposer is a verified requester callback, so only the running root holds it back.
+        ids, _, _, root = self.fresh()
+        self.service._put('tasks', dict(root, status='completed'))
+        self.service.running.pop(ids['root'])
+        self.service.kanban.tasks[ids['root']] = dict(id='t_root', status='done', input_id=root['_native_turn_id'])
+        with self.assertRaises(ServiceError):
+            self.resume(self.get(ids['root']))
+
+    def test_answer_provenance_is_required(self):
+        # A forged or missing answer neither links the root into the requester's graph nor makes it the foreground.
+        cases = [('decisions', {'decided_by': None}), ('decisions', {'status': 'pending'}),
+                 ('decisions', {'status': 'rejected'}), ('decisions', {'inbox_kind': 'question'}),
+                 ('decisions', {'bot_id': 'other-bot'}), ('decisions', {'task_id': 'reporter'}),
+                 ('decisions', {'_execution_task_id': 'callback'}),
+                 ('tasks', {'parent_task_id': 'reporter'}), ('tasks', {'thread_id': 'other'}),
+                 ('tasks', {'conversation_bot_id': 'other-bot'})]
+        for table, changes in cases:
+            with self.subTest(table=table, changes=changes):
+                ids, _, _, root = self.fresh()
+                changes = {k: ids.get(v, v) for k, v in changes.items()}
+                row = self.service._get('decisions', ids['decision']) if table == 'decisions' else root
+                self.service._put(table, dict(row, **changes))
+                self.assertFalse(self.foreground(ids))
+                self.assertNotIn(ids['root'], self.chain(ids))
+        # A linked root that is a callback or that runs in the requester's execution is not the answer's execution.
+        for changes in ({'_is_return': True}, {'_execution_session_id': 'requester'}):
+            with self.subTest(root=changes):
+                ids, _, _, root = self.fresh()
+                owner = self.get(ids['owner'])
+                self.service._put('tasks', dict(root, **{k: ids.get(v, v) for k, v in changes.items()}))
+                self.assertIn(ids['root'], self.chain(ids))
+                self.assertFalse(self.foreground(ids))
+                self.reject(owner, self.get(ids['root']))
+        ids, _, _, root = self.fresh()
+        self.assertTrue(self.foreground(ids))
+        self.assertEqual(self.resume(root)['task_id'], ids['owner'])
+
+    def test_proposing_callback_needs_verified_return_provenance(self):
+        cases = (('tasks', {'_is_return': False}), ('tasks', {'_assignment_task_id': 'root'}),
+                 ('tasks', {'source_bot_id': 'unrelated'}), ('tasks', {'exchange_id': 'other'}),
+                 ('deliveries', {'target_bot_id': 'other'}), ('deliveries', {'receipt': 'reporter'}),
+                 ('deliveries', {'receipt': 'rejected'}))
+        for table, changes in cases:
+            with self.subTest(table=table, changes=changes):
+                ids, _, _, root = self.fresh()
+                owner, proposer = self.get(ids['owner']), self.get(ids['proposer'])
+                row = proposer if table == 'tasks' else next(
+                    d for d in self.service._all('deliveries') if d['receipt']['task_id'] == proposer['id'])
+                if 'receipt' in changes:
+                    value = changes['receipt']
+                    changes = {'receipt': dict(row['receipt'], **({'status': value} if value == 'rejected' else {'task_id': ids[value]}))}
+                self.service._put(table, dict(row, **{k: ids.get(v, v) if isinstance(v, str) else v for k, v in changes.items()}))
+                self.assertIn(ids['root'], self.chain(ids))
+                self.assertFalse(self.foreground(ids))
+                self.reject(owner, root)
+
+    def test_root_claim_must_be_its_own_current_outcome_run(self):
+        card_cases = ({'input_id': 'older-input'}, {'id': 't_other'}, {'current_run_id': 92}, {'worker_pid': 192},
+                      {'status': 'review'}, {'claim_source_status': 'review'})
+        root_cases = ({'_kanban_claim': dict(input='older-input')}, {'_native_turn_id': 'newer-turn'},
+                      {'_native_outcome_id': 't_other'}, {'_native_outcome_id': None},
+                      {'_kanban_claim': dict(native_id='t_other')}, {'_kanban_claim': dict(external_id='other')},
+                      {'status': 'completed'})
+        for kind, changes in [('card', c) for c in card_cases] + [('root', c) for c in root_cases]:
+            with self.subTest(kind=kind, changes=changes):
+                ids, _, _, root = self.fresh()
+                owner = self.get(ids['owner'])
+                if kind == 'card':
+                    self.service.kanban.tasks[ids['root']] = dict(self.service.kanban.tasks[ids['root']], **changes)
+                else:
+                    if '_kanban_claim' in changes:
+                        changes = {'_kanban_claim': dict(root['_kanban_claim'], **changes['_kanban_claim'])}
+                    self.service._put('tasks', dict(root, **changes))
+                self.assertFalse(self.foreground(ids))
+                self.reject(owner, self.get(ids['root']))
+        ids, _, _, root = self.fresh()
+        self.assertEqual(self.resume(root)['task_id'], ids['owner'])
+
+    def test_pending_choices_inputs_returns_tools_and_cancellation_still_block(self):
+        def task(name, **changes):
+            return lambda ids, original, peer: self.service._put('tasks', dict(self.get(ids[name]), **changes))
+        def row(table, name, **values):
+            return lambda ids, original, peer: self.service._put(table, dict(values, task_id=ids[name]))
+        def card(name, **changes):
+            return lambda ids, original, peer: self.service.kanban.tasks.__setitem__(
+                ids[name], dict(self.service.kanban.tasks[ids[name]], **changes))
+        cases = {}
+        for name in ('root', 'requester', 'proposer', 'callback', 'helper', 'delegate', 'reporter'):
+            cases['decision ' + name] = row('decisions', name, id='pending-' + name, status='pending')
+            cases['context ' + name] = row('contexts', name, id='context-' + name, status='queued')
+            cases['unknown tool ' + name] = row('native_receipts', name, id='unknown-' + name, turn_id='turn',
+                                               state='executing', action={'name': 'unknown', 'arguments': {}})
+        for key, value in (('_waiting_on', ['unfinished']), ('_return_pending', {'text': 'result'}),
+                           ('_steering', ['new input']), ('_live_messages', {'message': 'new input'}),
+                           ('_blocked_followup', {'text': 'new input'}), ('_native_reply_pending', {'text': 'result'})):
+            cases['root ' + key] = task('root', **{key: value})
+        for name in ('helper', 'delegate', 'requester'):
+            cases['return ' + name] = task(name, _return_pending={'text': 'result'})
+        cases['waiting requester'] = task('requester', status='waiting', _waiting_on=['unfinished'])
+        for name in ('helper', 'callback', 'proposer', 'delegate', 'reporter'):
+            cases['working ' + name] = task(name, status='working')
+        cases['helper native claim'] = card('helper', status='running', current_run_id=82, worker_pid=182)
+        cases['callback input block'] = card('callback', status='blocked', block_kind='needs_input', block_rekind=None)
+        cases['proposer native claim'] = card('proposer', status='running', current_run_id=83)
+        cases['delegate native retry'] = card('delegate', status='ready', block_kind='transient')
+        cases['live helper worker'] = lambda ids, original, peer: self.service.running.__setitem__(
+            ids['helper'], Mock(is_alive=Mock(return_value=True)))
+        cases['cancelled exchange'] = lambda ids, original, peer: self.service._put('exchanges', dict(
+            self.service._get('exchanges', self.get(ids['root'])['exchange_id']), cancelled=True))
+        cases['cancelled work'] = lambda ids, original, peer: self.service.db.execute(
+            'INSERT INTO settings VALUES (?,?)', ('work.cancelled.' + self.service._work_identity(original), 'true'))
+        cases['independent same-PR reviewer'] = lambda ids, original, peer: self.service._put(
+            'artifacts', dict(peer, _review_task_id=ids['root']))
+        for name, apply in cases.items():
+            with self.subTest(case=name):
+                ids, original, peer, root = self.fresh()
+                owner = self.get(ids['owner'])
+                apply(ids, original, peer)
+                receipt = self.through_provider(self.get(ids['root']))
+                self.assertEqual(receipt['status'], 'rejected', receipt)
+                self.assertEqual(self.get(ids['owner']), owner)
+                for decision in self.service._all('decisions'):
+                    if decision['id'].startswith('pending-'):
+                        self.assertEqual(decision['status'], 'pending')
+        # Without any of them the same graph admits once.
+        ids, original, peer, root = self.fresh()
+        self.assertEqual(self.through_provider(root)['task_id'], ids['owner'])
+
 if __name__ == '__main__':
     unittest.main()

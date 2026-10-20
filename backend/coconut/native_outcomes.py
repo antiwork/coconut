@@ -79,6 +79,9 @@ CONTINUE_SCHEMA = {
 # result, and Hermes marks that delegation abandoned. The receipt keeps its executing state and its unknown child
 # effects for the owner's next turn. Only the writer guard reads the ended mark.
 LOCAL_COMMAND_TOOLS = ('terminal', 'execute_code', 'delegate_task')
+# The proposals of one task. decisions_task indexes this expression, so no lookup scans every decision.
+PROPOSAL_DECISIONS = ("SELECT data FROM decisions WHERE json_extract(data,'$.task_id')=? "
+                      "AND json_extract(data,'$.inbox_kind')='proposal'")
 
 
 class _NativeSnapshotsNeeded(Exception):
@@ -357,13 +360,12 @@ class NativeOutcomes:
                 or bot.get('archived') or bot.get('_deleted')
                 or caller.get('session_id') != bot.get('session_id')
                 or caller.get('_conversation_epoch') != self._setting('conversation_epoch')
-                or execution_key(caller) != execution_key(requester)
                 or any(caller.get(k) != requester.get(k) for k in
                        ('bot_id', 'session_id', 'thread_id', 'conversation_bot_id', '_conversation_epoch'))):
             return False
         # Execution identity alone is not return provenance. Follow reciprocal
-        # continuation links, or a callback's exact persisted delivery and route.
-        current, seen = caller, set()
+        # continuation links, a person's answer to a proposal, or a callback's exact persisted delivery and route.
+        current, execution, seen = caller, execution_key(caller), set()
         while current['id'] != requester['id']:
             if current['id'] in seen:
                 return False
@@ -372,19 +374,36 @@ class NativeOutcomes:
             if previous and self._continued_work_task(previous, tasks) == current:
                 current = previous
                 continue
+            if (previous and not current.get('_is_return') and execution == execution_key(current) == current['id']
+                    and self._approved_proposal_execution(previous, current)):
+                # The answer started a new execution from the proposing turn. That turn must lead to the requester.
+                current, execution = previous, execution_key(previous)
+                continue
             if not self._requester_return(current, requester, tasks):
                 return False
             current = requester
+        if execution != execution_key(requester):
+            return False
         claim = caller.get('_kanban_claim') or {}
         card = snapshots.get(caller['id'], {})
         # A different native run (including a reviewer) is never our foreground.
+        # Hermes gives context only to the claim of a retained outcome. That claim must be the caller's own outcome,
+        # holding the caller's current input.
         return bool(claim.get('native_id') and claim.get('run_id')
-                    and claim.get('external_id') == caller['id'] and not claim.get('context')
+                    and claim.get('external_id') == caller['id']
+                    and (not claim.get('context') or (caller.get('_native_outcome_id') == claim['native_id']
+                         and claim.get('input') and card.get('input_id') == claim['input'] == caller['_native_turn_id']))
                     and caller.get('_native_outcome_id') in (None, claim['native_id'])
                     and card.get('id') == claim['native_id'] and card.get('status') == 'running'
                     and card.get('claim_source_status') != 'review'
                     and card.get('current_run_id') == claim['run_id']
                     and (not card.get('worker_pid') or card['worker_pid'] == claim.get('pid')))
+
+    def _approved_proposal_execution(self, source, target):
+        """The person's answer to the source task's proposal started the target task. See _proposal_work_links."""
+        # The source's own decisions, through the decisions_task index. The predicate checks the target and the answer.
+        rows = self.db.execute(PROPOSAL_DECISIONS, (source['id'],))
+        return any(self._proposal_execution(json.loads(row[0]), source, target) for row in rows)
 
     def _requester_return(self, callback, requester, tasks):
         """A return callback of the requester, with its producer's exact persisted delivery and route."""
@@ -853,6 +872,12 @@ class NativeOutcomes:
                             value = linked.pop(identity, None)
                             if requester_roots and identity == source['id'] and value and live(value[0]):
                                 # A root's source callback is an earlier turn, not the caller. It stays guarded while live.
+                                linked[identity] = value
+                            elif (value and identity != owner['id'] and caller and caller['id'] in linked
+                                    and caller['bot_id'] == value[0]['bot_id']
+                                    and execution_key(caller) != execution_key(value[0])):
+                                # The requester's task in another execution, such as an approved proposal, makes this
+                                # call. The requester is not calling, so its own decisions, tools, and returns still apply.
                                 linked[identity] = value
                         if audited_parent:
                             # The same quiet-terminal rule applies to the audit's

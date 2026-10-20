@@ -519,10 +519,17 @@ class NativeKanban(NativeOutcomes):
         - The block check owns a task that a capability or an input blocks, and it keeps a `_block_check` record.
         - A pending card or a pause holds the work.
         A task with an open parent waits for that parent, and it is settled in a later pass when the parent goes.
+
+        One input block has no owner. Hermes turns a dependency block into an input block when no parent is open any more,
+        and the snapshot carries the event that proves it (see Board.rekinded_block). A return callback only consumes a
+        result for its assignment, which owns any further work, and the block check never reads a callback, so nothing
+        would answer that block. It is settled when the callback completed and its own claimed run filed the block. Any
+        other input or capability block is someone's hold and stays.
         """
         waiting = {identity: native for identity, native in self.kanban.tasks.items()
                    if native['status'] in ('ready', 'todo', 'triage', 'blocked', 'scheduled') and not native.get('unbound')
-                   and not native.get('dependencies') and native.get('block_kind') not in ('capability', 'needs_input')}
+                   and not native.get('dependencies')
+                   and (native.get('block_kind') not in ('capability', 'needs_input') or native.get('block_rekind'))}
         if not waiting:
             return []
         with self.lock:
@@ -537,7 +544,9 @@ class NativeKanban(NativeOutcomes):
         for task in rows:
             if (task['status'] not in ('completed', 'cancelled', 'failed') or task['id'] in self.running
                     or task['id'] in self.context_threads or task.get('_block_check')
-                    or (task.get('_native_outcome_id') and waiting[task['id']]['status'] == 'ready')):
+                    or (task.get('_native_outcome_id') and waiting[task['id']]['status'] == 'ready')
+                    or (waiting[task['id']].get('block_kind') in ('capability', 'needs_input')
+                        and not self._rekinded_callback(task, waiting[task['id']]))):
                 continue
             try:
                 # A context has no dates. Its native task was made when the turn was queued, and a running turn beats
@@ -556,14 +565,36 @@ class NativeKanban(NativeOutcomes):
                 "SELECT json_extract(data,'$.task_id') FROM decisions WHERE json_extract(data,'$.status')='pending' "
                 "AND json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?))",
                 (json.dumps([task['id'] for task in candidates]),))}
+            rekinded = [task['id'] for task in candidates if waiting[task['id']].get('block_kind') == 'needs_input']
+            if rekinded:
+                # A tool call of the callback without a result may still have an effect. Its block stays.
+                held |= {row[0] for row in self.db.execute(
+                    "SELECT json_extract(data,'$.task_id') FROM native_receipts WHERE json_extract(data,'$.state')='executing' "
+                    "AND json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?))", (json.dumps(rekinded),))}
             return [(task, waiting[task['id']]) for task in candidates if task['id'] not in held
                     and (task.get('_context') or not (self._task_paused(task) or self._automatic_work_is_paused(task)))]
+
+    @staticmethod
+    def _rekinded_callback(task, native):
+        """A completed return callback whose own claimed run filed the dependency block that Hermes re-kinded."""
+        proof = native.get('block_rekind') or {}
+        claim = task.get('_kanban_claim') or {}
+        return bool(task['status'] == 'completed' and task.get('_is_return') and not task.get('_context')
+                    and not task.get('_native_outcome_id') and native.get('status') == 'blocked'
+                    and native.get('block_kind') == 'needs_input' and proof.get('event_id')
+                    and proof.get('requested_kind') == 'dependency' and proof.get('rekind_reason') == 'no_open_parent'
+                    and claim.get('native_id') == native.get('id') and type(claim.get('run_id')) is int
+                    and claim['run_id'] == proof.get('run_id'))
 
     def _settle_native_orphans(self):
         """Archive the native tasks that wait although Coconut finished their request. See `_native_orphans`."""
         # A cancelled or failed request may have a summary too, but its work did not succeed, so only a completed one passes its result.
         for task, native in self._native_orphans()[:SETTLE_BATCH]:
-            self.kanban.call({'op': 'archive_settled', 'id': native['id'], 'summary': (task.get('summary') or None) if task['status'] == 'completed' else None})
+            request = {'op': 'archive_settled', 'id': native['id'], 'summary': (task.get('summary') or None) if task['status'] == 'completed' else None}
+            if native.get('block_kind') in ('capability', 'needs_input'):
+                # The adapter closes the block only while this event is still its current proof.
+                request['rekind_event'] = native['block_rekind']['event_id']
+            self.kanban.call(request)
 
     def _report_native_disagreements(self):
         """Log the tasks on which Coconut and Hermes disagree, at most once in ORPHAN_ALERT_EVERY_SECONDS.

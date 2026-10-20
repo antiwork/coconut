@@ -34,6 +34,25 @@ def native(name, parents=()):
 '''
 
 
+REKIND = '''
+def snapshot(name):
+    return next(t for t in board.snapshot([name]) if t['external_id'] == name)
+
+def rekinded(name):
+    # A callback's run links its finished owner and files a dependency block. Hermes re-kinds it to an input block.
+    owner = native(name + '-owner')
+    assert kb.complete_task(conn, owner, summary='Owner finished.')
+    callback = native(name)
+    claimed = kb.claim_task(conn, callback)
+    kb.link_tasks(conn, owner, callback, expected_child_run_id=claimed.current_run_id)
+    assert kb.block_task(conn, callback, reason='Waiting for the owner', kind='dependency',
+                         expected_run_id=claimed.current_run_id)
+    task = kb.get_task(conn, callback)
+    assert (task.status, task.block_kind, task.current_run_id) == ('blocked', 'needs_input', None), task
+    return callback, claimed.current_run_id
+'''
+
+
 @unittest.skipUnless(SOURCE and PYTHON, 'Set Coconut Hermes paths for native integration checks.')
 class ArchiveSettledTests(unittest.TestCase):
     def run_native(self, program):
@@ -80,6 +99,63 @@ class ArchiveSettledTests(unittest.TestCase):
             assert kb.get_task(conn, child).status == 'archived'
         ''')
 
+    def test_a_rekinded_callback_block_carries_its_proof_and_completes_with_its_result(self):
+        # The callback linked itself to an owner that finished moments earlier, then filed a dependency block.
+        self.run_native(REKIND + textwrap.dedent('''
+            callback, run = rekinded('callback')
+            event = conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind='blocked' ORDER BY id DESC LIMIT 1",
+                                 (callback,)).fetchone()[0]
+            # Comments and links keep the block. They do not end its proof.
+            kb.add_comment(conn, callback, 'default', 'Waiting for the owner.')
+            proof = snapshot('callback')['block_rekind']
+            assert proof == dict(event_id=event, run_id=run, requested_kind='dependency', rekind_reason='no_open_parent'), proof
+            assert board.archive_settled(callback, 'Complete.') is False
+            assert board.archive_settled(callback, 'Complete.', event + 1) is False
+            assert kb.get_task(conn, callback).status == 'blocked'
+            assert board.archive_settled(callback, 'Complete.', event) is True
+            assert kb.get_task(conn, callback).status == 'done', kb.get_task(conn, callback).status
+            assert kb.latest_summary(conn, callback) == 'Complete.', kb.latest_summary(conn, callback)
+        '''))
+
+    def test_a_deliberate_input_or_capability_hold_has_no_proof_and_stays(self):
+        self.run_native(REKIND + textwrap.dedent('''
+            for kind in ('needs_input', 'capability'):
+                held = native('held-' + kind)
+                claimed = kb.claim_task(conn, held)
+                assert kb.block_task(conn, held, reason='A person must answer', kind=kind, expected_run_id=claimed.current_run_id)
+                task = kb.get_task(conn, held)
+                assert task.block_kind == kind, task
+                assert snapshot('held-' + kind)['block_rekind'] is None
+                event = conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind='blocked' ORDER BY id DESC LIMIT 1",
+                                     (held,)).fetchone()[0]
+                for proof in (None, event):
+                    assert board.archive_settled(held, 'Complete.', proof) is False
+                assert kb.get_task(conn, held).status == task.status
+            # A newer hold after a re-kind ends the old proof.
+            callback, run = rekinded('later')
+            stale = snapshot('later')['block_rekind']['event_id']
+            assert kb.unblock_task(conn, callback)
+            claimed = kb.claim_task(conn, callback)
+            assert kb.block_task(conn, callback, reason='A person must answer', kind='needs_input',
+                                 expected_run_id=claimed.current_run_id)
+            held = kb.get_task(conn, callback)
+            # The second input block of the same kind is a recurrence, which Hermes may move to triage for a person.
+            assert held.status in ('blocked', 'triage') and held.block_kind == 'needs_input', held
+            assert snapshot('later')['block_rekind'] is None
+            assert board.archive_settled(callback, 'Complete.', stale) is False
+            assert kb.get_task(conn, callback).status == held.status
+            # Any lifecycle event after the re-kind ends its proof, even without a new block.
+            import time
+            callback, run = rekinded('touched')
+            proof = snapshot('touched')['block_rekind']
+            assert proof, proof
+            conn.execute("INSERT INTO task_events (task_id, run_id, kind, payload, created_at) VALUES (?, NULL, 'specified', '{}', ?)",
+                         (callback, int(time.time())))
+            assert snapshot('touched')['block_rekind'] is None
+            assert board.archive_settled(callback, 'Complete.', proof['event_id']) is False
+            assert kb.get_task(conn, callback).status == 'blocked'
+        '''))
+
     def test_a_todo_task_waiting_on_a_stuck_parent_is_archived(self):
         self.run_native('''
             parent = native('parent')
@@ -90,7 +166,7 @@ class ArchiveSettledTests(unittest.TestCase):
 
 
 class SettleSchedulerTests(unittest.TestCase):
-    def service(self, tasks, natives, running=(), held=(), paused=False, contexts=(), threads=()):
+    def service(self, tasks, natives, running=(), held=(), paused=False, contexts=(), threads=(), executing=()):
         calls = []
         service = SimpleNamespace(kanban=SimpleNamespace(tasks=natives, call=calls.append), lock=MagicMock(), db=MagicMock(),
                                   running={i: None for i in running}, context_threads={i: None for i in threads},
@@ -99,11 +175,14 @@ class SettleSchedulerTests(unittest.TestCase):
             wanted = set(json.loads(values[0]))
             if 'FROM decisions' in statement:
                 return [(identity,) for identity in held if identity in wanted]
+            if 'FROM native_receipts' in statement:
+                return [(identity,) for identity in executing if identity in wanted]
             if 'FROM contexts' in statement:
                 return [(json.dumps(c),) for c in contexts if c['id'] in wanted]
             return [(json.dumps(t),) for t in tasks if t['id'] in wanted]
         service.db.execute.side_effect = execute
         service._native_orphans = lambda slack=0: NativeKanban._native_orphans(service, slack)
+        service._rekinded_callback = NativeKanban._rekinded_callback
         service.calls = calls
         return service
 
@@ -140,6 +219,53 @@ class SettleSchedulerTests(unittest.TestCase):
         service = self.service(tasks, natives, held=['card'])
         # Only the triage task of an outcome that no block check or card holds goes.
         self.assertEqual(self.settled(service), ['t_plain'])
+
+    def test_only_a_proven_rekind_of_the_callbacks_own_run_settles_its_input_block(self):
+        # Hermes turns a callback's dependency block into an input block when its parent already finished. The snapshot
+        # carries that event as proof. Every other input or capability block is someone's hold and stays.
+        from coconut.kanban_scheduler import SETTLE_PLAIN_SECONDS
+        old, young = self.ago(SETTLE_PLAIN_SECONDS + 60), self.ago(60)
+        proof = dict(event_id=7, run_id=41, requested_kind='dependency', rekind_reason='no_open_parent')
+        callback = dict(status='completed', updated_at=old, summary='Complete.', _is_return=True,
+                        _assignment_task_id='root')
+        blocked = dict(status='blocked', block_kind='needs_input', block_rekind=proof)
+        cases = {
+            'rekind': ({}, {}, True),
+            'explicit input': ({}, dict(block_rekind=None), False),
+            'capability': ({}, dict(status='triage', block_kind='capability', block_rekind=None), False),
+            'capability with proof': ({}, dict(block_kind='capability'), False),
+            'triage with proof': ({}, dict(status='triage'), False),
+            'other run': ({}, dict(block_rekind=dict(proof, run_id=42)), False),
+            'other kind': ({}, dict(block_rekind=dict(proof, requested_kind='needs_input')), False),
+            'no reason': ({}, dict(block_rekind=dict(proof, rekind_reason=None)), False),
+            'no event': ({}, dict(block_rekind=dict(proof, event_id=None)), False),
+            'other card': ({'claim': 't_elsewhere'}, {}, False),
+            'failed': ({'status': 'failed'}, {}, False),
+            'cancelled': ({'status': 'cancelled'}, {}, False),
+            'outcome': ({'_native_outcome_id': 't_outcome'}, {}, False),
+            'request': ({'_is_return': False, '_assignment_task_id': None}, {}, False),
+            'young': ({'updated_at': young}, {}, False),
+            'parent': ({}, dict(dependencies=[{'id': 't_open'}]), False),
+            'held': ({}, {}, False),
+            'live': ({}, {}, False),
+            'unknown tool': ({}, {}, False),
+        }
+        tasks, natives = [], {}
+        for name, (changes, card, _) in cases.items():
+            claim = dict(native_id=changes.pop('claim', 't_' + name), external_id=name, run_id=41)
+            tasks.append(dict(callback, id=name, _kanban_claim=claim, **changes))
+            natives[name] = dict(blocked, id='t_' + name, **card)
+        service = self.service(tasks, natives, held=['held'], running=['live'], executing=['unknown tool'])
+        self.assertEqual(self.settled(service), ['t_rekind'])
+        # The adapter closes the block only while the event that Coconut read is still its proof.
+        self.assertEqual(service.calls, [{'op': 'archive_settled', 'id': 't_rekind', 'summary': 'Complete.', 'rekind_event': 7}])
+        # A context keeps its input block, and a paused callback keeps its task.
+        context = self.service([], {'c': dict(blocked, id='t_c', created_at=time.time() - SETTLE_PLAIN_SECONDS - 60)},
+                               contexts=[dict(id='c', status='completed', _is_return=True, _kanban_claim=dict(native_id='t_c', run_id=41))])
+        self.assertEqual(self.settled(context), [])
+        paused = self.service([dict(callback, id='p', _kanban_claim=dict(native_id='t_p', run_id=41))],
+                              {'p': dict(blocked, id='t_p')}, paused=True)
+        self.assertEqual(self.settled(paused), [])
 
     def test_a_plain_request_settles_after_minutes_and_an_outcome_after_a_day(self):
         from coconut.kanban_scheduler import SETTLE_PLAIN_SECONDS
