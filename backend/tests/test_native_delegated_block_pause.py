@@ -28,7 +28,7 @@ BACKEND = str(Path(__file__).resolve().parents[1])
 ANSWER = 'delegate-answer'
 SIBLING = 'sibling-answer'
 PUBLIC_ANSWER = {'id', 'bot_id', 'task_id', 'title', 'action_type', 'status', 'revision', 'decided_at',
-                 'selected_option_id', 'selected_option_label'}
+                 'selected_option_id', 'selected_option_label', 'correction'}
 
 # A tool call of the chat turn on the fixture board, without a claimed card. Board pins the fixture's own board first.
 CHAT_TOOL = '''
