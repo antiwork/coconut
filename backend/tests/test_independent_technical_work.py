@@ -1132,6 +1132,12 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
                 self.service._get('tasks', source['id']), _waiting_on=['other-task'])),
             'an unfinished sibling return': lambda owner, source: self.requester_branch(
                 owner, source, status='completed', _return_pending={'target_bot_id': source['bot_id'], 'text': 'Result'}),
+            # Only the requester chain finds these: a return callback of the requester's assignment, not in its waits.
+            'a queued requester callback': lambda owner, source: self.requester_callback(source),
+            'a requester callback with an unknown tool result': lambda owner, source: self.service._put('native_receipts', dict(
+                id='callback-unknown', task_id=self.requester_callback(source, status='completed')['id'], turn_id='callback-turn',
+                state='executing', action={'name': 'terminal', 'arguments': {'command': 'make'}}, action_hash='x',
+                created_at=source['created_at'])),
         }
         for name, change in cases.items():
             with self.subTest(case=name):
@@ -1145,6 +1151,17 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
                     # Each case needs a fresh store: an admitted case would replay its saved receipt otherwise.
                     self.tearDown()
                     self.setUp()
+
+    def requester_callback(self, requester, status='queued'):
+        """A return callback of the requester's assignment. The work chain links it through _assignment_task_id."""
+        requester = self.service._get('tasks', requester['id'])
+        callback = dict(copy.deepcopy(requester), id=str(uuid4()), status=status, _is_return=True,
+                        _assignment_task_id=requester['id'], _waiting_on=[])
+        callback['_execution_session_id'] = callback['id']
+        for key in ('_native_outcome_id', '_kanban_claim', '_work_context_id'):
+            callback.pop(key, None)
+        self.service._put('tasks', callback)
+        return callback
 
     def test_direct_delegation_still_admits_a_requester_that_waits_for_this_owner(self):
         owner, source, items = self.retained_pr_owner()

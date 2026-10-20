@@ -425,6 +425,130 @@ class RegisteredDelegationTests(unittest.TestCase):
             self.resume(self.owner_caller(owner))
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
+
+    FINISHED_URL = 'https://github.com/example/project/pull/0'
+
+    def finished_report(self, owner, requester, work, **changes):
+        """An earlier merged delegated PR of the same Work and the requester's own report of it."""
+        earlier = dict(id='earlier-pr', task_id=owner['id'], bot_id=owner['bot_id'], kind='pr', title='Earlier fix',
+                       status='merged', pr_state='merged', url=self.FINISHED_URL, work_outcome_id=work['id'],
+                       _review_task_id=owner['id'], _activity_task_id=owner['id'])
+        report = dict(id='requester-earlier-pr', task_id=requester['id'], bot_id=requester['bot_id'], kind='pr',
+                      title='Earlier fix', status='merged', pr_state='merged', url=self.FINISHED_URL,
+                      work_outcome_id=work['id'], _review_task_id=requester['id'], **changes)
+        self.service._put('artifacts', earlier)
+        self.service._put('artifacts', report)
+        return earlier, report
+
+    def requester_branch(self, requester, **changes):
+        """Another branch of the requester, delegated through the real bot-message route."""
+        docs = self.write('/v1/bots', {'name': 'Docs ' + str(uuid4())[:8]})
+        working = dict(self.service._get('tasks', requester['id']))
+        self.service._put('tasks', dict(working, status='working'))
+        with self.service.transaction():
+            receipt = self.service._store_bot_message(requester['id'], {'target_bot_id': docs['id'], 'text': 'Check the docs.'})
+        self.service._put('tasks', dict(self.service._get('tasks', requester['id']), status=working['status']))
+        sibling = dict(self.service._get('tasks', receipt['task_id']), **changes)
+        self.service._put('tasks', sibling)
+        return sibling
+
+    def requester_cases(self, requester_id):
+        def update(**changes):
+            return lambda: self.service._put('tasks', dict(self.service._get('tasks', requester_id), **changes))
+        return {
+            'an active sibling branch': lambda: self.requester_branch(self.service._get('tasks', requester_id)),
+            'a pending requester decision': lambda: self.service._put('decisions', dict(
+                id='requester-question', task_id=requester_id, bot_id=self.service._get('tasks', requester_id)['bot_id'],
+                status='pending', action_type='question', inbox_kind='decision', revision=1, title='Which list?')),
+            'an unknown requester tool result': lambda: self.service._put('native_receipts', dict(
+                id='requester-unknown', task_id=requester_id, turn_id='requester-turn', state='executing',
+                action={'name': 'terminal', 'arguments': {'command': 'gh pr view'}}, action_hash='x', created_at='2026-10-20')),
+            'an undelivered requester return': update(_return_pending={'target_bot_id': 'someone', 'text': 'Result'}),
+            'a requester wait on other work': update(_waiting_on=['other-task']),
+            'an unfinished sibling return': lambda: self.requester_branch(
+                self.service._get('tasks', requester_id), status='completed',
+                _return_pending={'target_bot_id': 'someone', 'text': 'Result'}),
+            # Only the requester chain finds these: a return callback of the requester's assignment, not in its waits.
+            'a queued requester callback': lambda: self.requester_callback(requester_id),
+            'a requester callback with an unknown tool result': lambda: self.service._put('native_receipts', dict(
+                id='callback-unknown', task_id=self.requester_callback(requester_id, status='completed')['id'],
+                turn_id='callback-turn', state='executing', action={'name': 'terminal', 'arguments': {'command': 'make'}},
+                action_hash='x', created_at='2026-10-20')),
+        }
+
+    def requester_callback(self, requester_id, status='queued'):
+        """A return callback of the requester's assignment. The work chain links it through _assignment_task_id."""
+        requester = self.service._get('tasks', requester_id)
+        callback = dict(requester, id=str(uuid4()), status=status, _is_return=True, _assignment_task_id=requester_id,
+                        _waiting_on=[])
+        callback['_execution_session_id'] = callback['id']
+        for key in ('_native_outcome_id', '_kanban_claim', '_work_context_id'):
+            callback.pop(key, None)
+        self.service._put('tasks', callback)
+        return callback
+
+    def test_a_registered_follow_up_continues_its_open_pr_past_an_earlier_finished_report(self):
+        owner, audit, coordinator, work, requester_pr, pr = self.saved_graph()
+        earlier, report = self.finished_report(owner, coordinator, work)
+        before = {a['id']: a for a in self.service._all('artifacts')}
+        receipt = self.resume(self.owner_caller(owner))
+        self.assertEqual(receipt['task_id'], owner['id'])
+        self.assertEqual(self.service._get('tasks', owner['id'])['_work_context_id'], pr['id'])
+        after = {a['id']: a for a in self.service._all('artifacts')}
+        self.assertEqual(set(after), set(before), 'No duplicate Work item')
+        for identity in (work['id'], earlier['id'], report['id'], requester_pr['id']):
+            self.assertEqual(after[identity], before[identity])
+
+    def test_a_working_registered_work_task_stays_refused_with_or_without_a_finished_report(self):
+        # The registered route has never admitted a working Work task as caller. The finished report changes nothing.
+        for finished in (False, True):
+            with self.subTest(finished=finished):
+                try:
+                    owner, audit, coordinator, work, requester_pr, pr = self.saved_graph()
+                    if finished:
+                        self.finished_report(owner, coordinator, work)
+                    coordinator = dict(coordinator, status='working')
+                    self.service._put('tasks', coordinator)
+                    self.assert_rejected(owner, coordinator, 'another execution')
+                finally:
+                    self.tearDown()
+                    self.setUp()
+
+    def test_a_registered_follow_up_keeps_the_requesters_other_work_and_identity_guards(self):
+        for name in self.requester_cases('unused'):
+            with self.subTest(case=name):
+                try:
+                    owner, audit, coordinator, work, requester_pr, pr = self.saved_graph()
+                    self.finished_report(owner, coordinator, work)
+                    self.requester_cases(coordinator['id'])[name]()
+                    self.assert_rejected(owner, self.owner_caller(owner), 'another execution')
+                finally:
+                    self.tearDown()
+                    self.setUp()
+        # The owner calls, so the working Work task is not a proven caller. Its finished report exempts nothing.
+        owner, audit, coordinator, work, requester_pr, pr = self.saved_graph()
+        self.finished_report(owner, coordinator, work)
+        self.service._put('tasks', dict(coordinator, status='working'))
+        self.assert_rejected(owner, self.owner_caller(owner), 'another execution')
+        self.tearDown()
+        self.setUp()
+        for name, message, change in (
+                ('two open delegated PRs', 'Choose one retained Work item', lambda pr: self.service._put('artifacts', dict(
+                    pr, id='second-delegated-pr', url=URL[:-1] + '9'))),
+                ('a finished report of another Work', 'Choose one retained Work item|' + UNRELATED,
+                 lambda pr: self.service._put('artifacts', dict(
+                     self.service._get('artifacts', 'earlier-pr'), work_outcome_id='other-work')))):
+            with self.subTest(case=name):
+                try:
+                    owner, audit, coordinator, work, requester_pr, pr = self.saved_graph()
+                    self.service._put('artifacts', dict(work, id='other-work', _native_outcome_id='t_other'))
+                    self.finished_report(owner, coordinator, work)
+                    change(pr)
+                    self.assert_rejected(owner, self.owner_caller(owner), message)
+                finally:
+                    self.tearDown()
+                    self.setUp()
+
     def test_live_requester_tasks_keep_their_guards(self):
         cases = {
             # The Work's own task is parked on the board, as in the saved graph now.

@@ -155,7 +155,8 @@ tool result is unknown, the lane turn stays current, so the existing receipt che
 
 An owner whose earlier delegated PR merged and who now works on a follow-up PR for the same requester Work can continue
 that open PR. A merged or closed PR of the same Work is no longer a writer. The requester's report of it exempts only
-the requester's own run state, because the requester waits for this owner. Its other branches, pending decisions,
+the requester's own run state. That requester is the direct requester, which waits for this owner, or the proven caller of
+an audited or registered delegation. Its other branches, pending decisions,
 unknown tool results, undelivered returns, and other waits still refuse the continuation, as do two open PRs, a PR of
 another Work, or an open requester PR.
 

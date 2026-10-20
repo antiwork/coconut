@@ -788,13 +788,16 @@ class NativeOutcomes:
                                  or (requester_report and peer[field] == owner['source_task_id']))):
                         # The requester's own same-PR report is not a second writer.
                         continue
-                    # The direct requester's report of a merged or closed PR of the same Work. That PR has no writer
-                    # left, and the requester root waits for this owner. Only the root's own run state is exempt below;
-                    # its decisions, unknown tools, returns, and every other branch stay in the guard.
-                    finished_report = bool(field == '_review_task_id' and peer['kind'] == 'pr' and linked_parent
+                    # The guarded requester's report of a merged or closed PR of the same Work. That PR has no writer
+                    # left. The requester is the direct requester, or the proven caller of an audited or registered
+                    # delegation. Only that requester's own run state is exempt below; its decisions, unknown tools,
+                    # returns, and every other branch stay in the guard.
+                    guarded_requester = linked_parent and (linked_parent['task_id'] == owner.get('source_task_id') or (
+                        (audited_parent or registered_parent) and linked_parent['task_id'] in callers))
+                    finished_report = bool(field == '_review_task_id' and peer['kind'] == 'pr' and guarded_requester
                         and peer.get('pr_state') in ('merged', 'closed') and peer['bot_id'] == linked_parent['bot_id']
                         and peer.get('work_outcome_id') == linked_parent['id'] and peer['task_id'] == linked_parent['task_id']
-                        and peer[field] == linked_parent['task_id'] == owner.get('source_task_id'))
+                        and peer[field] == linked_parent['task_id'])
                     reporter = tasks[peer[field]]
                     if execution_key(reporter) == execution_key(owner):
                         continue
