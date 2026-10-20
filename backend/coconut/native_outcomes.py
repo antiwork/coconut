@@ -734,6 +734,7 @@ class NativeOutcomes:
             routine_scopes = routine_reports.scopes(self, owner, item, peers, tasks, get_deliveries())
             report_changes = {}
             peer_chains = []
+            finished_roots = {}
             # The requester's coordinating task can differ from the task that delegated this work.
             requesters = {owner.get('source_task_id')} | ({linked_parent['task_id']} if linked_parent else set())
             requesters.discard(None)
@@ -781,14 +782,19 @@ class NativeOutcomes:
                             and ((linked_parent and peer['bot_id'] == linked_parent['bot_id']
                                   and peer.get('work_outcome_id') == linked_parent['id']
                                   and peer.get('url') and item.get('url')
-                                  and (peer['url'].lower() == item['url'].lower()
-                                       or peer.get('pr_state') in ('merged', 'closed'))
+                                  and peer['url'].lower() == item['url'].lower()
                                   and peer['task_id'] == linked_parent['task_id']
                                   and peer[field] == linked_parent['task_id'])
                                  or (requester_report and peer[field] == owner['source_task_id']))):
-                        # The requester's own same-PR report is not a second writer. Neither is its report of a
-                        # merged or closed PR of the same Work: that PR has no writer left.
+                        # The requester's own same-PR report is not a second writer.
                         continue
+                    # The direct requester's report of a merged or closed PR of the same Work. That PR has no writer
+                    # left, and the requester root waits for this owner. Only the root's own run state is exempt below;
+                    # its decisions, unknown tools, returns, and every other branch stay in the guard.
+                    finished_report = bool(field == '_review_task_id' and peer['kind'] == 'pr' and linked_parent
+                        and peer.get('pr_state') in ('merged', 'closed') and peer['bot_id'] == linked_parent['bot_id']
+                        and peer.get('work_outcome_id') == linked_parent['id'] and peer['task_id'] == linked_parent['task_id']
+                        and peer[field] == linked_parent['task_id'] == owner.get('source_task_id'))
                     reporter = tasks[peer[field]]
                     if execution_key(reporter) == execution_key(owner):
                         continue
@@ -823,6 +829,9 @@ class NativeOutcomes:
                                     or (value[0]['status'] == 'completed' and self._unfinished_work(value[0]))})
                     linked[root['id']] = (root, 0)
                     linked[reporter['id']] = (reporter, 0)
+                    if finished_report and root['id'] == reporter['id']:
+                        linked.pop(owner['id'], None)
+                        finished_roots[(peer['id'], reporter['id'])] = root['id']
                     if owner_report and reporter_source and reporter_source['id'] not in (owner['id'], *requesters):
                         linked[reporter_source['id']] = (reporter_source, 0)
                     if passive_report:
@@ -891,6 +900,8 @@ class NativeOutcomes:
                 foreground = (caller['id'] if passive_report and caller and caller['id'] in linked
                     and any(self._requester_callback_foreground(caller, tasks.get(identity), tasks, snapshots)
                             for identity in foregrounds) else None)
+                finished_root = finished_roots.get((peer['id'], reporter['id']))
+                foreground = foreground or finished_root
                 routine_scope = routine_scopes.get((peer['id'], reporter['id']))
                 projection = (routine_reports.project(self, routine_scope, tasks, snapshots, get_deliveries(), caller)
                               if routine_scope else None)
@@ -913,7 +924,8 @@ class NativeOutcomes:
                         or ((peer['bot_id'] == owner['bot_id'] or reporter['bot_id'] == owner['bot_id'])
                             and not (passive_report or linked_report))
                         or any((t['status'] != 'completed' and t['id'] != foreground and t['id'] not in historical)
-                               or t.get('_waiting_on') or t.get('_return_pending')
+                               or [i for i in t.get('_waiting_on') or [] if not (t['id'] == finished_root and i == owner['id'])]
+                               or t.get('_return_pending')
                                or ((linked_report or historical) and t.get('_native_reply_pending'))
                                or self._task_paused(t) or self._get('exchanges', t['exchange_id']).get('cancelled')
                                or self._background_pending(t['id']) or self._unfinished_work(t)

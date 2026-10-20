@@ -154,8 +154,10 @@ resume does. The lane's tool results stay history and are never returned as resu
 tool result is unknown, the lane turn stays current, so the existing receipt check stops the resume.
 
 An owner whose earlier delegated PR merged and who now works on a follow-up PR for the same requester Work can continue
-that open PR. A merged or closed PR of the same Work, and the requester's own report of it, is no longer a writer.
-Two open PRs, a PR of another Work, or an open requester PR still refuse the continuation.
+that open PR. A merged or closed PR of the same Work is no longer a writer. The requester's report of it exempts only
+the requester's own run state, because the requester waits for this owner. Its other branches, pending decisions,
+unknown tool results, undelivered returns, and other waits still refuse the continuation, as do two open PRs, a PR of
+another Work, or an open requester PR.
 
 The lane is not a sandbox and grants no permission. Terminal, coding agents, and file tools keep full local access, as in
 any turn. The bot receives exact scope instructions to stay local and not push, publish, mark ready, or merge.

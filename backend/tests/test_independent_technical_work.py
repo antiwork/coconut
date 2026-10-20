@@ -641,6 +641,9 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         answered = self.service._get('tasks', owner['id'])
         self.assertEqual((answered['status'], answered['_resume_decision'], answered['_native_turn_id']),
                          ('queued', 'gate', lane_turn))
+        # The same held-in-flight state that the real-kernel case asserts in CI.
+        self.assertEqual(self.service._technical_lane(answered)['turn_id'], lane_turn)
+        self.assertIsNone(self.service._technical_gate(answered)[0])
         captured, bridge = self.resume_after_gate(owner)
         self.assert_resumed_from_the_gate(owner, lane_turn, captured, bridge, pre_lane)
 
@@ -1070,6 +1073,87 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         self.assert_resumed_from_the_gate(owner, [lane_turn], captured, bridge, pre_lane, expect=('resolved', None))
         self.assertEqual(captured['decision']['resolution_context'], withdrawn['resolution_context'])
 
+    def test_an_old_lane_worker_failing_after_an_answer_keeps_the_answer_for_the_next_turn(self):
+        owner, source = self.lane_native()
+        pre_lane = self.gate_turn_receipt(owner)
+        self.lane(source)
+        lane_turn = self.service._get('tasks', owner['id'])['_native_turn_id']
+        def start_task(task, bot, history, emit):
+            record = emit('native_call', {'name': 'terminal', 'arguments': {'command': 'bin/rspec'}})
+            emit('native_result', {'id': record['id'], 'result': json.dumps({'output': 'passes'})})
+            self.answer_gate()
+            raise RuntimeError('The old lane worker stopped after the answer.')
+        self.service.provider.start_task = start_task
+        self.service._run_task(owner['id'])
+        gate = self.service._get('decisions', 'gate')
+        self.assertEqual((gate['status'], gate['selected_option_id'], gate['decided_by']), ('approved', 'accept', 'test-phone'))
+        self.assertNotIn('Work stopped', gate.get('outcome') or '')
+        queued = self.service._get('tasks', owner['id'])
+        self.assertEqual((queued['status'], queued['_resume_decision'], queued['_native_turn_id']), ('queued', 'gate', lane_turn))
+        self.assertNotIn('_return_pending', queued)
+        captured, bridge = self.resume_after_gate(owner)
+        self.assert_resumed_from_the_gate(owner, [lane_turn], captured, bridge, pre_lane)
+
+    def test_a_resumed_turn_that_fails_still_fails_its_own_decision(self):
+        owner, source = self.lane_native()
+        self.answer_gate()
+        resumed = self.service._get('tasks', owner['id'])
+        self.assertEqual((resumed['status'], resumed['_resume_decision']), ('queued', 'gate'))
+        self.assertNotIn('_technical_lane', resumed)
+        def resume_task(task, bot, history, decision, emit):
+            raise RuntimeError('The resumed worker stopped.')
+        self.service.provider.resume_task = resume_task
+        self.service._run_task(owner['id'])
+        gate = self.service._get('decisions', 'gate')
+        self.assertEqual((gate['status'], gate['outcome']), ('failed', 'Work stopped: The resumed worker stopped.'))
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'failed')
+
+    def requester_branch(self, owner, source, **changes):
+        """Another branch of the requester, delegated through the real bot-message route."""
+        docs = self.write('/v1/bots', {'name': 'Docs'})
+        with self.service.transaction():
+            receipt = self.service._store_bot_message(source['id'], {'target_bot_id': docs['id'], 'text': 'Check the docs.'})
+        sibling = dict(self.service._get('tasks', receipt['task_id']), **changes)
+        self.service._put('tasks', sibling)
+        return sibling
+
+    def test_direct_delegation_keeps_the_requesters_other_work_in_the_guard(self):
+        cases = {
+            'an active sibling branch': lambda owner, source: self.requester_branch(owner, source),
+            'a pending requester decision': lambda owner, source: self.service._put('decisions', dict(
+                id='requester-question', task_id=source['id'], bot_id=source['bot_id'], status='pending',
+                action_type='question', inbox_kind='decision', revision=1, title='Which list?')),
+            'an unknown requester tool result': lambda owner, source: self.service._put('native_receipts', dict(
+                id='requester-unknown', task_id=source['id'], turn_id='requester-turn', state='executing',
+                action={'name': 'terminal', 'arguments': {'command': 'gh pr view'}}, action_hash='x', created_at=source['created_at'])),
+            'an undelivered requester return': lambda owner, source: self.service._put('tasks', dict(
+                self.service._get('tasks', source['id']), _return_pending={'target_bot_id': 'someone', 'text': 'Result'})),
+            'a requester wait on other work': lambda owner, source: self.service._put('tasks', dict(
+                self.service._get('tasks', source['id']), _waiting_on=['other-task'])),
+            'an unfinished sibling return': lambda owner, source: self.requester_branch(
+                owner, source, status='completed', _return_pending={'target_bot_id': source['bot_id'], 'text': 'Result'}),
+        }
+        for name, change in cases.items():
+            with self.subTest(case=name):
+                try:
+                    owner, source, items = self.retained_pr_owner()
+                    change(owner, source)
+                    before = self.service._all('artifacts')
+                    self.refused(owner, source, 'another execution')
+                    self.assertEqual(self.service._all('artifacts'), before)
+                finally:
+                    # Each case needs a fresh store: an admitted case would replay its saved receipt otherwise.
+                    self.tearDown()
+                    self.setUp()
+
+    def test_direct_delegation_still_admits_a_requester_that_waits_for_this_owner(self):
+        owner, source, items = self.retained_pr_owner()
+        # A finished sibling branch and a requester that waits only for this owner do not hold the continuation.
+        self.requester_branch(owner, source, status='completed')
+        self.service._put('tasks', dict(self.service._get('tasks', source['id']), _waiting_on=[owner['id']]))
+        self.assertEqual(self.lane(source)['task_id'], owner['id'])
+        self.assertEqual(self.service._get('tasks', owner['id'])['_work_context_id'], 'open-pr')
+
     def test_lane_turn_through_the_service_run_route(self):
         owner, source = self.lane_native()
         self.lane(source)
@@ -1353,7 +1437,10 @@ class TechnicalLaneNativeBoardTests(unittest.TestCase):
                          ('approved', 'accept', 'test-phone'))
         resumed = self.service._get('tasks', owner['id'])
         self.assertEqual((resumed['status'], resumed['_resume_decision']), ('queued', gate['id']))
-        self.assertIsNone(self.service._technical_lane(resumed))
+        # The answer ends the gate, but the in-flight lane turn keeps its holds until the dispatcher moves the owner.
+        self.assertEqual(resumed['_native_turn_id'], seen['turn'])
+        self.assertEqual(self.service._technical_lane(resumed)['turn_id'], seen['turn'])
+        self.assertIsNone(self.service._technical_gate(resumed)[0])
         self.assertNotIn(self.native_status(identity), ('done', 'archived'))
         # The next real claim resumes the answered decision in a new turn without the lane's results.
         captured = {}
@@ -1381,7 +1468,12 @@ class TechnicalLaneNativeBoardTests(unittest.TestCase):
                                              '(sys.argv[2],)).fetchone()[0])', identity), str(runs + 1))
         returned = [d for d in self.service._all('deliveries') if d['source_task_id'] == owner['id']]
         self.assertEqual([(d['target_bot_id'], d['text']) for d in returned], [(owner['source_bot_id'], 'Resumed result verified')])
-        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'completed')
+        completed = self.service._get('tasks', owner['id'])
+        self.assertEqual(completed['status'], 'completed')
+        # The dispatcher moved the owner to a normal resumed turn, which ended the lane.
+        self.assertNotIn('_technical_lane', completed)
+        self.assertEqual(completed['_native_turn_id'], captured['task']['_native_turn_id'])
+        self.assertNotEqual(completed['_native_turn_id'], seen['turn'])
         lane_receipts = {r['id'] for r in self.service._native_task_receipts(owner['id']) if r['turn_id'] == seen['turn']}
         self.assertTrue(lane_receipts)
         self.assertNotEqual(captured['task']['_native_turn_id'], seen['turn'])

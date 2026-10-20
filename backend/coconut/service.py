@@ -3269,6 +3269,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             bot_lock = self.bot_locks.setdefault(execution_key(task), threading.Lock())
         with bot_lock:
             reaction_feedback = []
+            started = None
             source_seen = {}
             source_activity = []
             try:
@@ -3322,6 +3323,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     self._event('task.updated', self._public(task), bot['id'], task_id)
                     self._refresh_bot(bot['id'])
                     decision = self._get('decisions', task['_resume_decision']) if task.get('_resume_decision') else None
+                    started = (task.get('_resume_decision'), task['_native_turn_id'])
                 if decision and decision['status'] == 'approved' and not decision.get('_native'):
                     self._execute_decision(decision['id'])
                     with self.lock:
@@ -3485,7 +3487,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                     summary = f'Work stopped: {str(error)[:240]}'
                     with self.transaction():
                         current = self._get('tasks', task_id)
-                        if current.get('_resume_decision'):
+                        # Fail only the decision this worker started with. A newer answer, given while an independent
+                        # technical work turn ran, belongs to the next turn.
+                        if started and started[0] and (current.get('_resume_decision'), current.get('_native_turn_id')) == started:
                             failed_decision = self._get('decisions', current['_resume_decision'])
                             if failed_decision['status'] == 'approved':
                                 failed_decision.update(status='failed', outcome=summary)
