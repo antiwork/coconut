@@ -12,9 +12,10 @@ else:
     from technical_lane import SCHEMA as TECHNICAL_LANE_SCHEMA, requested as technical_lane_request
 
 
-# A block check offers a delegate's answer with only these public fields. The fingerprint covers the answer itself.
+# A block check offers a delegate's answer with only these public fields, including the person's typed reply.
+# The card's context and notes stay private. The fingerprint covers the answer itself.
 DELEGATED_DECISION_FIELDS = ('id', 'bot_id', 'task_id', 'title', 'action_type', 'status', 'revision', 'decided_at',
-                             'selected_option_id', 'selected_option_label')
+                             'selected_option_id', 'selected_option_label', 'correction')
 BLOCK_ANSWER_FIELDS = ('id', 'task_id', 'bot_id', 'status', 'revision', 'decided_by', 'decided_at',
                        'selected_option_id', 'selected_option_label', 'correction')
 
@@ -1570,9 +1571,9 @@ class NativeOutcomes:
     def _block_check_delegates(self, task, card, related):
         # Map each delegate execution this outcome waits for to the tasks whose human direction ends its pause.
         # This outcome's own execution added a native edge to the delegate's outcome, the board still has that edge,
-        # and the service delivered the delegate's request from this bot through an audited native relay.
+        # and the service delivered the delegate's request from this bot through an audited native relay, to the
+        # outcome's owner or to the intake whose kanban_create made it (see _block_check_relay_lineage).
         # An ancestor, sibling, comment, or bot report does not prove that this outcome waits for that delegate.
-        from .service import digest, encoded
         identity = task.get('_native_outcome_id')
         parents = set(card.get('parent_ids') or ()) if card and identity and card.get('id') == identity else set()
         if not parents:
@@ -1600,44 +1601,92 @@ class NativeOutcomes:
         for parent in linked:
             owners = [t for t in tasks.values() if t.get('_native_outcome_id') == parent]
             delegate = owners[0] if len(owners) == 1 else {}
-            relay = delegate.get('_native_relay') or {}
-            source = tasks.get(delegate.get('source_task_id'), {})
-            if not (delegate and delegate['bot_id'] != task['bot_id'] and delegate.get('_execution_session_id') == delegate['id']
-                    and not delegate.get('_is_return') and relay.get('envelope_id')
-                    and delegate.get('source_bot_id') == relay.get('sender_bot_id') == task['bot_id']
-                    and source.get('bot_id') == task['bot_id'] and source.get('session_id') == task.get('session_id')):
+            if not (delegate and delegate['bot_id'] != task['bot_id'] and delegate.get('_execution_session_id') == delegate['id']):
                 continue
-            row = self._read_one('SELECT data FROM bots WHERE id=?', (delegate['bot_id'],))
+            lineage = self._block_check_relay_lineage(task, delegate, tasks)
+            if not lineage:
+                continue
+            intake = lineage[-1]
+            source = tasks[intake['source_task_id']]
+            # The answers stay those of the outcome's own execution. Human direction counts from that execution, the
+            # tasks that created it, the intake that received the relay, and the requester that sent it.
+            execution = {t['id'] for t in tasks.values()
+                         if t.get('_execution_session_id') == delegate['id'] and t['bot_id'] == delegate['bot_id']}
+            sessions = {(t.get('_execution_session_id') or t['id'], t['bot_id']) for t in lineage[1:] + [source]}
+            direction = {t['id'] for t in tasks.values() if (t.get('_execution_session_id') or t['id'], t['bot_id']) in sessions}
+            delegates[delegate['id']] = dict(bot_id=delegate['bot_id'], tasks=execution | {delegate['id']},
+                                             direction=execution | {delegate['id']} | direction
+                                             | {t['id'] for t in lineage} | {source['id']})
+        return delegates
+
+    def _block_check_relay_lineage(self, task, owner, tasks, depth=0):
+        # Return [owner, ..., intake] when the intake received an audited native relay from this bot. An owner that
+        # holds the relay is its own intake. Otherwise _adopt_native_outcomes made the owner for an outcome that its
+        # parent task created: the owner ID derives from that parent and the outcome, the parent's own kanban_create
+        # receipt returned that outcome, and the callback owner that adoption copied is the parent's verified intake.
+        from .service import digest, encoded
+        if depth > 8:
+            return None
+        relay = owner.get('_native_relay') or {}
+        if relay:
+            source = tasks.get(owner.get('source_task_id'), {})
+            if not (owner['bot_id'] != task['bot_id'] and not owner.get('_is_return') and relay.get('envelope_id')
+                    and owner.get('source_bot_id') == relay.get('sender_bot_id') == task['bot_id']
+                    and source.get('bot_id') == task['bot_id'] and source.get('session_id') == task.get('session_id')):
+                return None
+            row = self._read_one('SELECT data FROM bots WHERE id=?', (owner['bot_id'],))
             bot = json.loads(row[0]) if row else {}
             row = self._read_one('SELECT data FROM deliveries WHERE id=?', (digest(encoded([source['id'], relay['envelope_id']])),))
             delivery = json.loads(row[0]) if row else {}
-            if (not bot or bot.get('_deleted') or delegate.get('session_id') != bot.get('session_id')
-                    or delivery.get('source_task_id') != source['id'] or delivery.get('target_bot_id') != delegate['bot_id']
-                    or (delivery.get('receipt') or {}).get('task_id') != delegate['id']):
+            if (not bot or bot.get('_deleted') or owner.get('session_id') != bot.get('session_id')
+                    or delivery.get('source_task_id') != source['id'] or delivery.get('target_bot_id') != owner['bot_id']
+                    or (delivery.get('receipt') or {}).get('task_id') != owner['id']):
+                return None
+            # The sender's own relay call returned this intake for this envelope.
+            for result in self._block_check_results(source['id'], 'message_agent'):
+                if result.get('task_id') == owner['id'] and result.get('delivery_id') == relay['envelope_id']:
+                    return [owner]
+            return None
+        origin = tasks.get(owner.get('parent_task_id'), {})
+        native = owner.get('_native_outcome_id')
+        try:
+            derived = bool(origin and native) and owner['id'] == outcome_owner_id(origin['id'], native)
+        except ValueError:
+            derived = False
+        if not (derived and owner.get('_execution_session_id') == owner['id'] and origin['bot_id'] == owner['bot_id']
+                and origin.get('session_id') == owner.get('session_id') and origin.get('source_bot_id') == task['bot_id']
+                and owner.get('source_bot_id') == task['bot_id']):
+            return None
+        created = False
+        for receipt in self._native_task_receipts(origin['id'], state='completed'):
+            arguments = (receipt.get('action') or {}).get('arguments') or {}
+            if ((receipt.get('action') or {}).get('name') != 'kanban_create' or arguments.get('session_id') != origin['id']
+                    or arguments.get('tenant') != origin['bot_id']
+                    or not str(arguments.get('idempotency_key', '')).startswith('coconut:' + origin['id'] + ':')):
                 continue
-            # The sender's own relay call returned this delegate for this envelope.
-            sent = False
-            for receipt in self._native_task_receipts(source['id'], state='completed'):
-                if (receipt.get('action') or {}).get('name') != 'message_agent':
-                    continue
-                try:
-                    result = json.loads(receipt.get('result', ''))
-                except (ValueError, TypeError):
-                    continue
-                if (isinstance(result, dict) and result.get('task_id') == delegate['id']
-                        and result.get('delivery_id') == relay['envelope_id']):
-                    sent = True
-                    break
-            if not sent:
+            try:
+                result = json.loads(receipt.get('result', ''))
+            except (ValueError, TypeError):
                 continue
-            execution = {t['id'] for t in tasks.values()
-                         if t.get('_execution_session_id') == delegate['id'] and t['bot_id'] == delegate['bot_id']}
-            requester = source.get('_execution_session_id') or source['id']
-            delegation = {t['id'] for t in tasks.values()
-                          if (t.get('_execution_session_id') or t['id']) == requester and t['bot_id'] == source['bot_id']}
-            delegates[delegate['id']] = dict(bot_id=delegate['bot_id'], tasks=execution | {delegate['id']},
-                                             direction=execution | {delegate['id']} | delegation | {source['id']})
-        return delegates
+            if isinstance(result, dict) and result.get('ok') is True and result.get('task_id') == native:
+                created = True
+                break
+        lineage = self._block_check_relay_lineage(task, origin, tasks, depth + 1) if created else None
+        callback = (origin.get('_relay_callback_owner') or origin['id']) if lineage else None
+        if not lineage or callback != lineage[-1]['id'] or owner.get('_relay_callback_owner') != callback:
+            return None
+        return [owner] + lineage
+
+    def _block_check_results(self, task_id, name):
+        for receipt in self._native_task_receipts(task_id, state='completed'):
+            if (receipt.get('action') or {}).get('name') != name:
+                continue
+            try:
+                result = json.loads(receipt.get('result', ''))
+            except (ValueError, TypeError):
+                continue
+            if isinstance(result, dict):
+                yield result
 
     @staticmethod
     def _block_answer_fingerprint(decision):

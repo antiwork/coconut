@@ -1,9 +1,10 @@
 """A block check records a delegate's answer from the installed Hermes board and tool registry.
 
-The fixture board is the test's own Hermes Kanban board. The blocked outcome's claimed run links its card to the
-delegate's card and blocks it through Hermes' own kanban_link and kanban_block tools. Coconut reads the edge from its
-adapter snapshot. The check offers the delegate's answer, and coconut_record_pause reaches the service through the
-real Hermes registry with the schema the worker registers for a block check.
+The fixture board is the test's own Hermes Kanban board. The delegate's relay intake creates the delegate's outcome with
+Hermes' own kanban_create, and _adopt_native_outcomes gives that outcome its own owner, as in normal native delegation.
+The blocked outcome's claimed run links its card to that outcome's card and blocks it through Hermes' own kanban_link
+and kanban_block tools. Coconut reads the edge from its adapter snapshot. The check offers the delegate's answer, and
+coconut_record_pause reaches the service through the real Hermes registry with the schema the worker registers.
 Native CI sets COCONUT_REQUIRE_NATIVE, and then a missing Hermes install fails these tests instead of skipping them.
 """
 import json
@@ -14,6 +15,8 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
+from coconut.native_bridge import kanban_arguments
+from coconut.native_outcomes import outcome_owner_id
 from coconut.service import ServiceError, now
 from coconut.work_recovery import BLOCK_PAUSE_SCHEMA, block_check_delay
 import legacy_work_sync
@@ -26,6 +29,14 @@ ANSWER = 'delegate-answer'
 SIBLING = 'sibling-answer'
 PUBLIC_ANSWER = {'id', 'bot_id', 'task_id', 'title', 'action_type', 'status', 'revision', 'decided_at',
                  'selected_option_id', 'selected_option_label'}
+
+# A tool call of the chat turn on the fixture board, without a claimed card. Board pins the fixture's own board first.
+CHAT_TOOL = '''
+import json
+import tools.kanban_tools
+from tools.registry import registry
+print(json.dumps(dict(result=registry.dispatch(sys.argv[2], json.loads(sys.argv[3])))))
+'''
 
 # A tool call of the claimed worker on the fixture board. Board pins the Hermes board to the fixture's own home first.
 WORKER_TOOL = '''
@@ -129,15 +140,37 @@ class NativeDelegatedBlockPauseTests(unittest.TestCase):
         self.update(sender['id'], status='completed')
         return self.service._get('tasks', receipt['task_id'])
 
-    def finished_delegate(self, delegate):
-        """The delegate's own card on the fixture board, claimed and completed by its run."""
-        native, _ = self.card(delegate['id'])
-        run, _ = self.claim(native)
+    def adopted_delegate(self, intake, title):
+        """The intake's chat turn creates the delegate's outcome with kanban_create, Coconut adopts it, and its run finishes."""
+        turn = 'intake-turn-' + str(uuid4())
+        self.update(intake['id'], status='working', _native_turn_id=turn)
+        arguments = kanban_arguments(dict(title=title, body='Check it read-only.', workspace_kind='dir',
+                                          workspace_path=str(Path(self.tmp.name) / 'workspaces' / str(uuid4()))),
+                                     intake['id'], turn, intake['bot_id'])
+        created = self.last_json(self.native_program(CHAT_TOOL, 'kanban_create', json.dumps(arguments)))['result']
+        native = json.loads(created)
+        self.assertIs(native.get('ok'), True, created)
+        self.record(intake['id'], 'kanban_create', arguments, created)
+        self.update(intake['id'], status='completed')
+        self.service.kanban.call({'op': 'snapshot'})
+        card = self.service.kanban.tasks['native:' + native['task_id']]
+        self.assertTrue(card.get('unbound'))
+        self.assertEqual((card['idempotency_key'], card['tenant']), (arguments['idempotency_key'], intake['bot_id']))
+        self.service._adopt_native_outcomes()
+        identity = outcome_owner_id(intake['id'], native['task_id'])
+        owner = self.service._get('tasks', identity)
+        self.assertEqual((owner['parent_task_id'], owner['_relay_callback_owner'], owner['_native_outcome_id']),
+                         (intake['id'], intake['id'], native['task_id']))
+        self.assertNotIn('_native_relay', owner)
+        self.assertEqual(self.snapshot(identity)['id'], native['task_id'])
+        # The outcome's own run finishes its card.
+        self.native_program('board.kb.unblock_task(board.conn, sys.argv[2])', native['task_id'])
+        run, _ = self.claim(native['task_id'])
         self.native_program("assert board.kb.complete_task(board.conn, sys.argv[2], summary='Checked the record.', "
-                            "expected_run_id=int(sys.argv[3]))", native, str(run))
-        self.update(delegate['id'], status='completed', _native_outcome_id=native)
-        self.assertEqual(self.snapshot(delegate['id'])['status'], 'done')
-        return native
+                            "expected_run_id=int(sys.argv[3]))", native['task_id'], str(run))
+        self.update(identity, status='completed')
+        self.assertEqual(self.snapshot(identity)['status'], 'done')
+        return owner, native['task_id']
 
     def answer(self, task_id, identity):
         decision = dict(id=identity, task_id=task_id, bot_id=self.dev['id'], status='executed', decided_by='person',
@@ -192,15 +225,18 @@ class NativeDelegatedBlockPauseTests(unittest.TestCase):
 
     def test_check_records_the_delegate_answer_from_the_hermes_board_and_registry(self):
         sender = self.task('Ask Dev to check the payout record')
-        delegate = self.relay(sender, self.dev, 'Check the payout record')
-        sibling = self.relay(sender, self.dev, 'Check the refund record')
-        delegate_card = self.finished_delegate(delegate)
-        sibling_card = self.finished_delegate(sibling)
+        intake = self.relay(sender, self.dev, 'Check the payout record')
+        # The intake creates two outcomes. The blocked outcome waits for one of them only.
+        delegate, delegate_card = self.adopted_delegate(intake, 'Check the payout record')
+        sibling, sibling_card = self.adopted_delegate(intake, 'Check the refund record')
+        # The person's request comes first. A message from the person after an answer is new direction, so the
+        # answers must follow the request that the blocked outcome serves.
+        checked = self.task('Settle the payout case')
         answer = self.answer(delegate['id'], ANSWER)
         self.answer(sibling['id'], SIBLING)
+        self.answer(intake['id'], 'intake-answer')
 
         # The blocked outcome's own claimed run links its card to the delegate's card, then blocks it for input.
-        checked = self.task('Settle the payout case')
         checked_card, row = self.card(checked['id'])
         run, lock = self.claim(checked_card)
         self.update(checked['id'], status='working', _native_turn_id='link-turn', _native_outcome_id=checked_card,
@@ -230,6 +266,7 @@ class NativeDelegatedBlockPauseTests(unittest.TestCase):
         offered = {d['id']: d for d in queued['_self_recovery']['decisions']}
         self.assertIn(ANSWER, offered)
         self.assertNotIn(SIBLING, offered)
+        self.assertNotIn('intake-answer', offered)
         self.assertEqual(set(offered[ANSWER]), PUBLIC_ANSWER | {'answer_fingerprint'})
         self.assertNotIn('Private delegate notes', json.dumps(queued['_self_recovery']))
 

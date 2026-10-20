@@ -39,9 +39,12 @@ The check continues the work if the block cleared. Otherwise it asks the person 
 A pending card or a recorded pause on the outcome stops further checks. A declined card becomes a recorded pause.
 The check can also record an answered card of a delegate that the outcome waits for. The outcome's own execution must
 have linked its native task to the delegate's native outcome, the board must still have that edge, and the service must
-have delivered the delegate's request from the same bot through an audited native relay. The check shows only the
-public answer fields of that card. The pause ends when the answer changes, the link or relay proof no longer holds, or
-the person gives new direction in the checked, delegate, or requesting execution.
+have delivered the delegate's request from the same bot through an audited native relay. The relay's intake can own
+that outcome, or it can have created it with kanban_create. Then adoption gave the outcome its own owner, and the
+intake's own creation receipt must name that outcome. Only cards of the outcome's own execution count. The check shows
+only the public answer fields of that card, including a typed reply. The pause ends when the answer changes, the link,
+creation, or relay proof no longer holds, or the person gives new direction in the checked, delegate, intake, or
+requesting execution.
 Hermes moves a task to triage when it blocks again with the same kind. If the check turn itself ended in triage, Coconut queues no further check.
 The task waits for the person, and Work shows it as paused. A message from the person starts a new turn, and the next block of that turn gets a check.
 An answer to a card resumes the check turn, so a block after that answer also waits for a message.

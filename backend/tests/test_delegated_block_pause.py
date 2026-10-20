@@ -3,24 +3,28 @@
 The saved graph: one requester execution delegates through an audited native relay. A later requester execution owns
 the blocked outcome and links its native outcome to the delegate's outcome. The person answered the delegate's card.
 Only that verified wait makes the delegate's answer eligible. An ancestor, sibling, comment, or copied relay does not.
+The delegate's outcome has its own owner when the relay intake created it with kanban_create, or the intake owns it.
 """
 import json
 import os
+from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
 from coconut.kanban_scheduler import KanbanScheduler
+from coconut.native_bridge import kanban_arguments
+from coconut.native_outcomes import outcome_owner_id
 from coconut.providers import FixtureProvider, HermesProvider
-from coconut.service import Service, ServiceError, now
+from coconut.service import Service, ServiceError, YieldForDecision, now
 from coconut.work_recovery import block_check_delay
 import test_provider as fixtures
 
 ANSWER = 'delegate-answer'
 # The public answer fields a check may show of another bot's card.
 PUBLIC_ANSWER = {'id', 'bot_id', 'task_id', 'title', 'action_type', 'status', 'revision', 'decided_at',
-                 'selected_option_id', 'selected_option_label'}
+                 'selected_option_id', 'selected_option_label', 'correction'}
 
 
 class DelegatedBlockPauseTests(unittest.TestCase):
@@ -34,7 +38,7 @@ class DelegatedBlockPauseTests(unittest.TestCase):
         self.desk = self.service.mutate('POST', '/v1/bots', {'name': 'Desk', 'role': ''}, str(uuid4()))
         self.dev = self.service.mutate('POST', '/v1/bots', {'name': 'Dev', 'role': ''}, str(uuid4()))
         self.sender = self.message(self.desk, 'Ask Dev to check the payout record')
-        self.delegate = self.relay(self.sender, self.dev, 't_delegate')
+        self.delegate = self.delegated('t_delegate')
         self.task_id = self.message(self.desk, 'Settle the payout case')['id']
         self.bind(self.task_id, 't_checked')
         self.link('t_delegate')
@@ -52,7 +56,12 @@ class DelegatedBlockPauseTests(unittest.TestCase):
         self.service._put('tasks', dict(saved, status='working', _native_turn_id=turn))
         return saved
 
-    def relay(self, sender, target, native_id):
+    def delegated(self, native_id):
+        """The relay intake owns the delegate's outcome."""
+        self.intake = self.relay(self.sender, self.dev, native_id)
+        return self.intake
+
+    def relay(self, sender, target, native_id, *, bind=True):
         """The sender's message_agent call delivered through the audited native relay route."""
         saved = self.working(sender['id'], 'sender-turn-' + native_id)
         text = 'Check the payout record ' + native_id
@@ -62,7 +71,8 @@ class DelegatedBlockPauseTests(unittest.TestCase):
         self.service._put('tasks', dict(self.service._get('tasks', sender['id']), status='completed'))
         delegate = self.service._get('tasks', receipt['task_id'])
         self.assertEqual(delegate['_native_relay']['sender_bot_id'], saved['bot_id'])
-        self.bind(delegate['id'], native_id)
+        if bind:
+            self.bind(delegate['id'], native_id)
         return self.service._get('tasks', delegate['id'])
 
     def bind(self, identity, native_id):
@@ -92,6 +102,14 @@ class DelegatedBlockPauseTests(unittest.TestCase):
         with self.service.transaction():
             self.service._put('decisions', decision)
         return decision
+
+    def intake_peer(self):
+        """Another turn of the intake's execution, such as its reply to a later message."""
+        peer = self.message(self.dev, 'Any update on the record?')
+        intake = self.service._get('tasks', self.intake['id'])
+        self.service._put('tasks', dict(self.service._get('tasks', peer['id']), status='completed',
+                                        _execution_session_id=intake.get('_execution_session_id') or intake['id']))
+        return peer['id']
 
     def human_message(self, task_id, text='Use the other account.'):
         with self.service.transaction():
@@ -232,7 +250,7 @@ class DelegatedBlockPauseTests(unittest.TestCase):
         forged = self.message(self.dev, 'Pretend Desk asked for this')
         saved = self.service._get('tasks', forged['id'])
         self.service._put('tasks', dict(saved, source_bot_id=self.desk['id'], source_task_id=self.sender['id'],
-                                        parent_task_id=self.sender['id'], _native_relay=self.delegate['_native_relay']))
+                                        parent_task_id=self.sender['id'], _native_relay=self.intake['_native_relay']))
         self.bind(forged['id'], 't_forged')
         self.answer(forged['id'], 'forged-answer')
         self.link('t_forged')
@@ -326,27 +344,66 @@ class DelegatedBlockPauseTests(unittest.TestCase):
     # Later human direction from either owner.
 
     def test_human_message_during_the_check_blocks_the_record(self):
-        for owner in ('checked', 'delegate', 'requester'):
+        for owner in ('checked', 'delegate', 'intake', 'intake execution', 'requester'):
             with self.subTest(owner=owner):
                 self.setUp()
                 self.queued_check()
-                self.human_message({'checked': self.task_id, 'delegate': self.delegate['id'],
-                                    'requester': self.sender['id']}[owner])
+                target = self.intake_peer() if owner == 'intake execution' else {
+                    'checked': self.task_id, 'delegate': self.delegate['id'], 'intake': self.intake['id'],
+                    'requester': self.sender['id']}[owner]
+                self.human_message(target)
                 with self.assertRaisesRegex(ServiceError, 'new direction'):
                     self.record()
 
     def test_later_human_direction_from_either_owner_ends_the_pause(self):
-        for owner in ('checked', 'delegate', 'delegate approval'):
+        for owner in ('checked', 'delegate', 'intake', 'intake execution', 'delegate approval'):
             with self.subTest(owner=owner):
                 self.setUp()
                 armed = self.paused_check()
                 if owner == 'delegate approval':
                     self.answer(self.delegate['id'], 'new-direction', status='approved', decided_at='9999-01-01T00:00:00Z')
+                elif owner == 'intake execution':
+                    self.human_message(self.intake_peer())
                 else:
-                    self.human_message(self.task_id if owner == 'checked' else self.delegate['id'])
+                    self.human_message({'checked': self.task_id, 'delegate': self.delegate['id'],
+                                        'intake': self.intake['id']}[owner])
                 queued = self.check(armed['next_at'])
                 self.assertEqual(queued['status'], 'queued')
                 self.assertNotIn(ANSWER, self.offered(queued))
+
+    def typed_reply(self, text):
+        """The delegate asks a card, and the person answers it with a typed reply through the phone route."""
+        saved = self.working(self.delegate['id'], 'question-turn')
+        call = self.service.emit(self.delegate['id'], 'native_call', dict(name='coconut_ask', arguments={'title': 'Close the case?'}))
+        with self.assertRaises(YieldForDecision):
+            self.service.native_event(self.delegate['id'], 'native_question', dict(
+                title='Close the case?', context='Private delegate notes', receipt_id=call['id'],
+                options=[dict(id='close', label='Close it now')]))
+        decision = next(d for d in self.service._all('decisions') if d['task_id'] == self.delegate['id'] and d['status'] == 'pending')
+        self.service.mutate('POST', f"/v1/decisions/{decision['id']}/answer",
+                            dict(choice='reply', correction=text, revision=decision['revision']), str(uuid4()))
+        self.service._put('tasks', dict(self.service._get('tasks', self.delegate['id']), status=saved['status']))
+        return self.service._get('decisions', decision['id'])
+
+    def test_typed_reply_is_offered_with_its_public_text_only(self):
+        text = 'Keep it open. The customer asked us to wait until Friday.'
+        reply = self.typed_reply(text)
+        self.assertEqual((reply['status'], reply['correction'], reply['selected_option_id']), ('replied', text, None))
+        queued = self.queued_check()
+        offered = self.offered(queued)[reply['id']]
+        self.assertEqual(set(offered), PUBLIC_ANSWER | {'answer_fingerprint'})
+        self.assertEqual((offered['status'], offered['correction']), ('replied', text))
+        self.assertNotIn('Private delegate notes', json.dumps(queued['_self_recovery']))
+        # A changed typed answer is a changed answer. The record refuses it, then the exact answer records.
+        changed = dict(reply, correction='Close it now.')
+        with self.service.transaction():
+            self.service._put('decisions', changed)
+        with self.assertRaisesRegex(ServiceError, 'changed'):
+            self.record(reply['id'])
+        with self.service.transaction():
+            self.service._put('decisions', reply)
+        self.assertEqual(self.record(reply['id']), dict(status='recorded', decision_id=reply['id']))
+        self.assertEqual(self.service._get('decisions', reply['id']), reply)
 
     def test_record_needs_the_check_turn(self):
         self.queued_check()
@@ -359,6 +416,101 @@ class DelegatedBlockPauseTests(unittest.TestCase):
 
 
 
+class AdoptedDelegateBlockPauseTests(DelegatedBlockPauseTests):
+    """Every check above, where the relay intake created the delegate's outcome and adoption gave it its own owner."""
+
+    def delegated(self, native_id):
+        self.intake = self.relay(self.sender, self.dev, native_id, bind=False)
+        return self.adopt(self.intake, native_id)
+
+    def adopt(self, intake, native_id):
+        """The intake's kanban_create with Coconut's creation arguments, then _adopt_native_outcomes."""
+        saved = self.working(intake['id'], 'intake-turn-' + native_id)
+        arguments = kanban_arguments(dict(title='Check the payout record', body='Check it read-only.', workspace_kind='dir',
+                                          workspace_path=str(self.service.root / 'workspaces' / native_id)),
+                                     intake['id'], saved.get('_native_turn_id') or 'intake-turn-' + native_id, intake['bot_id'])
+        call = self.service.emit(intake['id'], 'native_call', dict(name='kanban_create', arguments=arguments))
+        self.service.emit(intake['id'], 'native_result', dict(id=call['id'], result=json.dumps(
+            dict(ok=True, task_id=native_id, status='blocked'))))
+        self.service._put('tasks', dict(self.service._get('tasks', intake['id']), status='completed'))
+        self.service.kanban.tasks['native:' + native_id] = dict(
+            external_id='native:' + native_id, unbound=True, id=native_id, title='Check the payout record',
+            status='blocked', tenant=intake['bot_id'], session_id=intake['id'], idempotency_key=arguments['idempotency_key'])
+        with patch.object(self.service.kanban, 'call', return_value={}) as adapter:
+            self.service._adopt_native_outcomes()
+        identity = outcome_owner_id(intake['id'], native_id)
+        adapter.assert_any_call(dict(op='bind', id=native_id, external_id=identity))
+        self.service.kanban.tasks.pop('native:' + native_id)
+        owner = self.service._get('tasks', identity)
+        self.assertEqual((owner['parent_task_id'], owner['_relay_callback_owner'], owner['_native_outcome_id']),
+                         (intake['id'], intake['id'], native_id))
+        self.assertNotIn('_native_relay', owner)
+        return owner
+
+    def creation(self):
+        return next(r for r in self.service._all('native_receipts')
+                    if r['task_id'] == self.intake['id'] and r['action']['name'] == 'kanban_create')
+
+    def change(self, table, row, **fields):
+        with self.service.transaction():
+            self.service._put(table, dict(row, **fields))
+
+    def test_only_the_adopted_execution_answers_are_offered(self):
+        # The intake's own card and a sibling outcome that the same intake created stay with their owners.
+        self.answer(self.intake['id'], 'intake-answer')
+        sibling = self.adopt(self.intake, 't_sibling')
+        self.answer(sibling['id'], 'sibling-outcome-answer')
+        queued = self.queued_check()
+        self.assertIn(ANSWER, self.offered(queued))
+        for identity in ('intake-answer', 'sibling-outcome-answer'):
+            self.assertNotIn(identity, self.offered(queued))
+            with self.subTest(identity=identity), self.assertRaisesRegex(ServiceError, 'answered human decision'):
+                self.record(identity)
+
+    def test_adoption_without_its_proof_is_not_eligible(self):
+        def other_intake():
+            return self.relay(self.sender, self.dev, 't_other', bind=False)
+
+        def copied_owner():
+            # The same fields and the answer under an ID that adoption did not derive.
+            copy = dict(self.delegate, id=str(uuid4()))
+            self.change('tasks', copy, _execution_session_id=copy['id'])
+            self.change('tasks', {k: v for k, v in self.delegate.items() if k != '_native_outcome_id'})
+            self.answer(copy['id'])
+
+        def without_receipt():
+            self.service.db.execute('DELETE FROM native_receipts WHERE id=?', (self.creation()['id'],))
+
+        def receipt_arguments(**fields):
+            receipt = self.creation()
+            receipt['action']['arguments'].update(fields)
+            self.change('native_receipts', receipt)
+
+        cases = {
+            'callback to another intake': lambda: self.change('tasks', self.delegate, _relay_callback_owner=other_intake()['id']),
+            'copied owner': copied_owner,
+            'missing creation receipt': without_receipt,
+            'creation result for another outcome': lambda: self.change('native_receipts', self.creation(),
+                result=json.dumps(dict(ok=True, task_id='t_other', status='blocked'))),
+            'unfinished creation': lambda: self.change('native_receipts', self.creation(), state='executing'),
+            'creation for another tenant': lambda: receipt_arguments(tenant=self.desk['id']),
+            'creation key of another task': lambda: receipt_arguments(idempotency_key='coconut:' + self.sender['id'] + ':key'),
+            'creation receipt of another task': lambda: self.change('native_receipts', self.creation(), task_id=self.sender['id']),
+            'owner in another session': lambda: self.change('tasks', self.delegate, session_id=str(uuid4())),
+            'intake in another session': lambda: self.change('tasks', self.service._get('tasks', self.intake['id']), session_id=str(uuid4())),
+            'intake relay without delivery': lambda: self.change('tasks', self.service._get('tasks', self.intake['id']),
+                _native_relay=dict(self.intake['_native_relay'], envelope_id=uuid4().hex)),
+        }
+        for name, forge in cases.items():
+            with self.subTest(case=name):
+                self.setUp()
+                forge()
+                queued = self.queued_check()
+                self.assertNotIn(ANSWER, self.offered(queued))
+                with self.assertRaisesRegex(ServiceError, 'answered human decision'):
+                    self.record()
+
+
 class DelegatedBlockPauseProviderTests(unittest.TestCase):
     """The check turn records the delegate's answer through the exposed coconut_record_pause tool."""
     setUp = fixtures.ProviderTests.setUp
@@ -366,9 +518,17 @@ class DelegatedBlockPauseProviderTests(unittest.TestCase):
     fake_hermes = fixtures.ProviderTests.fake_hermes
     for name in ('message', 'working', 'relay', 'bind', 'tool', 'link', 'answer', 'blocked', 'check', 'state'):
         locals()[name] = getattr(DelegatedBlockPauseTests, name)
+    adopt = AdoptedDelegateBlockPauseTests.adopt
     del name
 
     def test_check_turn_records_the_delegate_answer_through_the_tool(self):
+        self.run_check_turn(adopted=False)
+
+    def test_check_turn_records_the_typed_answer_of_an_adopted_outcome(self):
+        self.run_check_turn(adopted=True)
+
+    def run_check_turn(self, *, adopted):
+        typed = 'Keep it open until Friday.' if adopted else ''
         fixture = self.fake_hermes('''
             import json
             names = set(registry.handlers)
@@ -377,12 +537,13 @@ class DelegatedBlockPauseProviderTests(unittest.TestCase):
             assert 'an answered card of a delegate' in prompt
             assert ANSWER in prompt and SIBLING not in prompt
             assert 'Private delegate notes' not in prompt
+            assert TYPED in prompt
             denied = json.loads(registry.dispatch('coconut_record_pause', {'decision_id': SIBLING}))
             assert denied['status'] == 'rejected' and 'answered human decision' in denied['error'], denied
             receipt = json.loads(registry.dispatch('coconut_record_pause', {'decision_id': ANSWER}))
             assert receipt == {'status': 'recorded', 'decision_id': ANSWER}, receipt
             return {'completed': True, 'final_response': 'The delegate answer still controls this block.'}
-        '''.replace('SIBLING', repr('sibling-answer')).replace('ANSWER', repr(ANSWER)))
+        '''.replace('SIBLING', repr('sibling-answer')).replace('ANSWER', repr(ANSWER)).replace('TYPED', repr(typed)))
         # A native claim runs in its workspace. The shared stub has no workspace override.
         with (self.root / 'source' / 'tools' / 'terminal_tool.py').open('a') as stub:
             stub.write('def register_task_env_overrides(task_id, overrides): pass\n')
@@ -396,12 +557,21 @@ class DelegatedBlockPauseProviderTests(unittest.TestCase):
         self.desk = self.service.mutate('POST', '/v1/bots', {'name': 'Desk', 'role': ''}, str(uuid4()))
         self.dev = self.service.mutate('POST', '/v1/bots', {'name': 'Dev', 'role': ''}, str(uuid4()))
         sender = self.message(self.desk, 'Ask Dev to check the payout record')
-        delegate = self.relay(sender, self.dev, 't_delegate')
-        sibling = self.relay(sender, self.dev, 't_sibling')
+        if adopted:
+            # The relay intake created the outcome with kanban_create, and adoption gave it its own owner.
+            intake = self.relay(sender, self.dev, 't_delegate', bind=False)
+            delegate = self.adopt(intake, 't_delegate')
+            sibling = self.adopt(intake, 't_sibling')
+        else:
+            delegate = self.relay(sender, self.dev, 't_delegate')
+            sibling = self.relay(sender, self.dev, 't_sibling')
         self.task_id = self.message(self.desk, 'Settle the payout case')['id']
         self.bind(self.task_id, 't_checked')
         self.link('t_delegate')
-        self.answer(delegate['id'])
+        if adopted:
+            self.answer(delegate['id'], status='replied', selected_option_id=None, selected_option_label=None, correction=typed)
+        else:
+            self.answer(delegate['id'])
         self.answer(sibling['id'], 'sibling-answer')
         with self.service.transaction():
             saved = self.service._get('tasks', self.task_id)
