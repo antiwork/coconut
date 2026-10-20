@@ -25,6 +25,8 @@ def fingerprint(value):
 IDLE_STATUSES = ('triage', 'todo', 'blocked', 'review', 'scheduled')
 # A waiting task without a Hermes event for this long is idle. The phone uses the same age.
 IDLE_AGE = 7 * 86400
+# Events that leave a block as it is. Any other later event (a claim, an unblock, a new block) ends its proof.
+BLOCK_KEEPING_EVENTS = ('commented', 'linked', 'unlinked', 'attached', 'reprioritized', 'heartbeat', 'terminal_worker_reaped')
 
 class Board:
     def __init__(self, home):
@@ -404,16 +406,48 @@ class Board:
             return self.kb.schedule_task(self.conn, identity, reason=summary, expected_run_id=run_id)
         return self.kb.block_task(self.conn, identity, reason=summary, expected_run_id=run_id)
 
-    def archive_settled(self, identity, summary=None):
+    def rekinded_block(self, task):
+        """The event that proves Hermes made this input block from a dependency block without an open parent, or None.
+
+        Hermes re-kinds such a block so that a context-free respawn cannot start. Only the latest block counts, filed
+        by the task's latest run, which ended blocked, with nothing but block-keeping events after it. A worker's or a
+        person's own input block, and a capability block, have no such proof and keep their hold.
+        """
+        if task.status != 'blocked' or task.block_kind != 'needs_input' or task.current_run_id or task.worker_pid:
+            return None
+        event = self.conn.execute("SELECT id, run_id, payload FROM task_events WHERE task_id=? AND kind='blocked' "
+                                  'ORDER BY id DESC LIMIT 1', (task.id,)).fetchone()
+        run = self.conn.execute('SELECT id, outcome, ended_at FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                                (task.id,)).fetchone()
+        if not event or not run or event[1] != run[0] or run[1] != 'blocked' or run[2] is None:
+            return None
+        later = {row[0] for row in self.conn.execute('SELECT DISTINCT kind FROM task_events WHERE task_id=? AND id>?',
+                                                    (task.id, event[0]))}
+        try:
+            payload = json.loads(event[2] or '{}')
+        except ValueError:
+            return None
+        if (not isinstance(payload, dict) or later - set(BLOCK_KEEPING_EVENTS) or payload.get('kind') != 'needs_input'
+                or payload.get('requested_kind') != 'dependency' or payload.get('rekind_reason') != 'no_open_parent'):
+            return None
+        return dict(event_id=event[0], run_id=event[1], requested_kind='dependency', rekind_reason='no_open_parent')
+
+    def archive_settled(self, identity, summary=None, rekind_event=None):
         """Close a native task that waits while Coconut has finished its request, so its dependents can start.
 
         Completion comes first, because a successor and a routine report read the result of a done task. A task that
         still has an open parent, or that waits in triage, cannot complete, so it is archived. A running task keeps its
-        worker, and a done or archived task is already final.
+        worker, and a done or archived task is already final. An input or capability block is someone's hold. Only a
+        re-kinded dependency block whose current proof is the event that Coconut read may close.
         """
         task = self.kb.get_task(self.conn, identity)
         if task is None or task.status not in ('ready', 'todo', 'triage', 'blocked', 'scheduled'):
             return False
+        # A supplied proof must still hold now, whatever the status. An unblock after the snapshot ends it.
+        if rekind_event is not None or (task.block_kind in ('needs_input', 'capability') and task.status in ('triage', 'blocked')):
+            proof = self.rekinded_block(task)
+            if rekind_event is None or not proof or proof['event_id'] != rekind_event:
+                return False
         if task.status in ('ready', 'blocked') and summary:
             with contextlib.suppress(Exception):
                 if self.kb.complete_task(self.conn, identity, summary=summary):
@@ -486,6 +520,7 @@ class Board:
             accepted = self.conn.execute('SELECT input_id FROM coconut_outcomes WHERE native_id=?', (task.id,)).fetchone()
             last_activity_at, diagnostics = self.activity(task)
             result.append(dict(external_id=binding[0], dispatch_blocker=blocker, input_id=accepted[0] if accepted else None,
+                block_rekind=self.rekinded_block(task),
                 last_activity_at=last_activity_at, diagnostics=diagnostics,
                 claim_source_status=self.kb._retry_status_for_run(self.conn, task.id) if task.status == 'running' else None,
                 progress_note=progress[0] if progress and 0 <= time.time() - progress[1] < 120 else None,
@@ -624,7 +659,7 @@ def main():
                 elif request['op'] == 'archive_idle':
                     result = {'archived': board.archive_idle(request['tenant'], request['ids'])}
                 elif request['op'] == 'archive_settled':
-                    result = {'ok': board.archive_settled(request['id'], request.get('summary'))}
+                    result = {'ok': board.archive_settled(request['id'], request.get('summary'), request.get('rekind_event'))}
                 elif request['op'] == 'promote':
                     result = {'id': board.promote(request['row'])}
                 elif request['op'] == 'bind':
