@@ -443,7 +443,8 @@ class Board:
         task = self.kb.get_task(self.conn, identity)
         if task is None or task.status not in ('ready', 'todo', 'triage', 'blocked', 'scheduled'):
             return False
-        if task.block_kind in ('needs_input', 'capability') and task.status in ('triage', 'blocked'):
+        # A supplied proof must still hold now, whatever the status. An unblock after the snapshot ends it.
+        if rekind_event is not None or (task.block_kind in ('needs_input', 'capability') and task.status in ('triage', 'blocked')):
             proof = self.rekinded_block(task)
             if rekind_event is None or not proof or proof['event_id'] != rekind_event:
                 return False

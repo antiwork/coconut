@@ -156,6 +156,50 @@ class ArchiveSettledTests(unittest.TestCase):
             assert kb.get_task(conn, callback).status == 'blocked'
         '''))
 
+    def test_a_stale_rekind_proof_never_closes_a_card_that_was_unblocked_after_the_snapshot(self):
+        # Coconut read the proof, then the card left its block before the settle call arrived. The card must keep its
+        # state and result and still start fresh work, whatever status the unblock gave it.
+        self.run_native(REKIND + textwrap.dedent('''
+            def stale(name):
+                callback, run = rekinded(name)
+                proof = snapshot(name)['block_rekind']
+                assert proof and proof['run_id'] == run, proof
+                assert kb.unblock_task(conn, callback)
+                return callback, proof['event_id']
+
+            def refused(callback, event):
+                before = kb.get_task(conn, callback)
+                summary = kb.latest_summary(conn, callback)
+                assert snapshot(callback_names[callback])['block_rekind'] is None
+                assert board.archive_settled(callback, 'Complete.', event) is False
+                after = kb.get_task(conn, callback)
+                assert (after.status, after.result, after.completed_at) == (before.status, before.result, before.completed_at), after
+                assert kb.latest_summary(conn, callback) == summary
+                return after
+
+            callback_names = {}
+            ready, event = stale('ready')
+            callback_names[ready] = 'ready'
+            task = refused(ready, event)
+            assert task.status == 'ready', task
+            claimed = kb.claim_task(conn, ready)
+            assert claimed is not None and claimed.status == 'running', claimed
+
+            scheduled, event = stale('scheduled')
+            callback_names[scheduled] = 'scheduled'
+            assert kb.schedule_task(conn, scheduled, reason='Waiting for its time')
+            assert refused(scheduled, event).status == 'scheduled'
+            assert kb.unblock_task(conn, scheduled)
+            assert kb.claim_task(conn, scheduled) is not None
+
+            waiting, event = stale('waiting')
+            callback_names[waiting] = 'waiting'
+            parent = native('waiting-parent')
+            kb.link_tasks(conn, parent, waiting)
+            kb.recompute_ready(conn)
+            assert refused(waiting, event).status == 'todo', kb.get_task(conn, waiting)
+        '''))
+
     def test_a_todo_task_waiting_on_a_stuck_parent_is_archived(self):
         self.run_native('''
             parent = native('parent')
