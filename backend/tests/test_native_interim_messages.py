@@ -11,7 +11,9 @@ import unittest
 class NativeInterimMessageTests(unittest.TestCase):
     def test_codex_commentary_and_final_messages_remain_distinct_and_complete(self):
         with tempfile.TemporaryDirectory() as temporary:
-            env = {'PATH': os.environ.get('PATH', ''), 'HERMES_HOME': temporary,
+            home = Path(temporary) / 'bots' / 'test-bot' / 'home'
+            home.mkdir(parents=True)
+            env = {'PATH': os.environ.get('PATH', ''), 'HERMES_HOME': str(home),
                    'TMPDIR': temporary, 'PYTHONDONTWRITEBYTECODE': '1',
                    'PYTHONPATH': os.pathsep.join((str(Path(__file__).resolve().parents[1]),
                                                 os.environ['COCONUT_HERMES_ROOT'],
