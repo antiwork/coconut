@@ -1947,7 +1947,7 @@ print(parent)
         self.assertEqual(env['HOME'], os.environ['HOME'])
         self.assertEqual(env['HERMES_HOME'], str(self.data / 'bots' / self.bot['id'] / 'home'))
         self.assertEqual(env['CODEX_HOME'], env['HERMES_HOME'] + '/.codex')
-        self.assertEqual(env['CLAUDE_CONFIG_DIR'], env['HERMES_HOME'] + '/.claude')
+        self.assertNotIn('CLAUDE_CONFIG_DIR', env)
         for worker in self.service.running.values():
             worker.join(5)
         # A real cached native runtime can drain without being killed to prove

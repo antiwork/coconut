@@ -20,6 +20,40 @@ final class TranscriptPresentationTests: XCTestCase {
         XCTAssertEqual(TranscriptPresentation.previewFallback("Saved complete reply", messages: []), "Saved complete reply")
     }
 
+    func testCompletedCommentaryAppearsWhileFinalReplyRemainsPartial() {
+        let request = message("request", role: "user", text: "Check the merge action.")
+        let commentary = message("commentary", text: "I will check the merge action and its tests.")
+        let partial = message("reply", text: "The merge action", streaming: true)
+
+        XCTAssertEqual(visibleIDs([request, commentary, partial]), [request.id, commentary.id])
+        XCTAssertEqual(latestConversationMessage(in: [commentary, partial])?.id, commentary.id)
+
+        let answer = message("reply", text: "The merge action now merges the pull request.")
+        XCTAssertEqual(visibleIDs([request, commentary, answer]), [request.id, commentary.id, answer.id])
+    }
+
+    @MainActor
+    func testWorkingTaskKeepsCompletedCommentaryInConversation() throws {
+        let store = AppStore(demo: true)
+        var task = try XCTUnwrap(store.tasks.first)
+        task.status = "working"
+        store.tasks = [task]
+        store.decisions = []
+        store.outgoingMessages = []
+        store.outgoingAnswers = []
+        let commentary = Message(id: "commentary", botId: task.chatBotId, taskId: task.id, role: "assistant",
+                                 kind: "text", text: "I will check the merge action and its tests.",
+                                 decisionId: nil, artifactId: nil, createdAt: "2026-09-08T12:00:00Z", streaming: false)
+        var partial = commentary
+        partial.id = "partial"
+        partial.text = "[SIL"
+        partial.streaming = true
+        store.messages = [commentary, partial]
+
+        XCTAssertTrue(store.isConversationResponding(task.chatBotId))
+        XCTAssertEqual(store.conversationTranscript(for: task.chatBotId).map(\.id), [commentary.id])
+    }
+
     func testSilenceControlsStayOutOfChatAndPreview() {
         let normal = message("answer", text: "The review finished.")
         let silent = message("silent", text: "  [SILENT]\n")

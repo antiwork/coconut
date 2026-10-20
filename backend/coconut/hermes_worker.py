@@ -1087,6 +1087,8 @@ def run_turn(request, emit, request_receipt):
         operation = request['operation']
         proposed = False
         response_chunks = []
+        last_interim_response = None
+        reaction_turn = reaction_only_turn(request)
         allowed = set()
         directory = bot_directory(request, os.environ['HERMES_HOME'])
         directory_lock = threading.Lock()
@@ -1318,6 +1320,18 @@ def run_turn(request, emit, request_receipt):
                 trace.mark('first_output')
                 response_chunks.append(text)
 
+        def publish_interim(text, *, already_streamed=False):
+            nonlocal last_interim_response
+            if (operation == 'context' or reaction_turn or scope.cancelled.is_set() or bridge.paused.is_set()
+                    or creation_errors or deletion_errors or not isinstance(text, str)
+                    or not text.strip() or is_silent_response(text)):
+                return
+            # Hermes supplies complete visible messages here. Codex also sends the final answer through this callback.
+            trace.mark('first_output')
+            emit('interim_message', {'text': text})
+            last_interim_response = text
+            response_chunks.clear()
+
         pr_progress = (
             'Supply work_id with the native task ID when a PR delivers its outcome. '
             'Record progress with kanban_heartbeat. Keep lifecycle state in Hermes. '
@@ -1326,6 +1340,10 @@ def run_turn(request, emit, request_receipt):
             'Include activity in coconut_track_pr at phase changes and when returning a result. '
             'Report ready after verified review, waiting for an external result, or blocked when no next owner exists. ')
         instructions = ('You work in Coconut, a concise messaging app. Give short, useful replies. '
+                        'Use complete sentences for prose replies and progress updates. '
+                        'Before multi-step work requested by a person, give one brief reply that states your next action, then use tools. '
+                        'For long work, give brief progress when you learn something useful or change the next action. '
+                        'Do not add an opening reply for passive reactions, bot relay messages, or silent scheduled work. '
                         'Use coconut_track_pr when you create a PR, start work on an existing PR, or the person asks to follow one. Track the URL even when this task continues an older conversation. '
                         + pr_progress +
                         (PR_MERGE_INSTRUCTIONS if operation != 'context' else '') +
@@ -1352,7 +1370,8 @@ def run_turn(request, emit, request_receipt):
                         'The service restarts once after active turns finish. Do not create launchctl jobs or restart the parent from terminal. '
                         'Use the inherited HOMEBREW_XDG_CONFIG_HOME for package trust; do not replace HOME or share other configuration. '
                         'HOME is the Mac account home so native credential storage works. '
-                        'HERMES_HOME, CODEX_HOME, CLAUDE_CONFIG_DIR, GH_CONFIG_DIR, and XDG paths select this bot\'s profiles. '
+                        'HERMES_HOME, CODEX_HOME, GH_CONFIG_DIR, and XDG paths select this bot\'s profiles. '
+                        'Claude Code uses the Mac account\'s shared login. Keep CLAUDE_CONFIG_DIR and CLAUDE_SECURESTORAGE_CONFIG_DIR unset. '
                         'Keep those inherited paths during login and later commands. Do not invent a different HOME. '
                         'For Gmail and Calendar, use the inherited gog access from this bot terminal. '
                         'Google is one shared connection for all Coconut bots on this Mac. Google connections are read-only. If access is missing or expired, direct the person to Coconut Settings → Connections → Google. '
@@ -1429,6 +1448,7 @@ def run_turn(request, emit, request_receipt):
                         enabled_toolsets=list(dict.fromkeys(toolsets + mcp_names + [coconut_toolset] + (['todo'] if work.enabled else []))), disabled_toolsets=disabled, quiet_mode=True,
                         ephemeral_system_prompt=instructions, session_id=conversation.session_id, session_db=conversation.db,
                         platform='coconut', gateway_session_key=request['task']['id'], clarify_callback=bridge.clarify,
+                        interim_assistant_callback=publish_interim,
                         skip_context_files=False, load_soul_identity=True, skip_memory=False, skip_background_review=False,
                         save_trajectories=False, run_budget_seconds=None)
         from native_compression import install as install_compression_fallback
@@ -1497,18 +1517,21 @@ def run_turn(request, emit, request_receipt):
             return 1
         final = result.get('final_response') or ''.join(response_chunks)
         silent_response = is_silent_response(final)
-        if request['task'].get('_native_job') or reaction_only_turn(request):
+        if request['task'].get('_native_job') or reaction_turn:
             from cron.scheduler import _is_cron_silence_response
             silent_response = _is_cron_silence_response(final or '')
         if not silent_response and final:
-            emit('text_delta', {'text': final})
+            payload = {'text': final}
+            if last_interim_response and ' '.join(final.split()) == ' '.join(last_interim_response.split()):
+                payload['finalize_interim'] = True
+            emit('text_delta', payload)
         if operation != 'context':
             completion = {'summary': 'Complete.'}
             if silent_response:
                 completion['silent_response'] = True
                 if request['task'].get('_native_job'):
                     completion['routine_silent'] = True
-                elif reaction_only_turn(request):
+                elif reaction_turn:
                     completion['reaction_silent'] = True
             emit('completed', completion)
     except (TurnPaused, TurnUnconfirmed):

@@ -40,11 +40,11 @@ def configure_terminal(home):
     try:
         from .native_settings import raw_config, save_config
         from .profiles import _write
-        from .runtime_environment import prepare_profile
+        from .runtime_environment import CLAUDE_PROFILE_OVERRIDES, prepare_profile
     except ImportError:
         from native_settings import raw_config, save_config
         from profiles import _write
-        from runtime_environment import prepare_profile
+        from runtime_environment import CLAUDE_PROFILE_OVERRIDES, prepare_profile
     home = Path(home)
     config = raw_config(home)
     terminal = config.get('terminal') or {}
@@ -60,7 +60,8 @@ def configure_terminal(home):
     files = [str(home / item[2:]) if isinstance(item, str) and item.startswith('~/') else item for item in files]
     script = home / 'coconut-terminal.sh'
     environment = prepare_profile(home)
-    exports = ''.join(f'export {key}={shlex.quote(value)}\n' for key, value in environment.items())
+    exports = 'unset ' + ' '.join(CLAUDE_PROFILE_OVERRIDES) + '\n'
+    exports += ''.join(f'export {key}={shlex.quote(value)}\n' for key, value in environment.items())
     _write(script, SHELL_INIT + exports, home)
     google_script = home / 'coconut-google.sh'
     updated = [item for item in files if item not in (str(script), str(google_script))] + [str(script)]
@@ -72,5 +73,7 @@ def configure_terminal(home):
     if terminal.get('shell_init_files') != updated:
         terminal['shell_init_files'] = updated
         save_config(home, config)
+    for key in CLAUDE_PROFILE_OVERRIDES:
+        os.environ.pop(key, None)
     os.environ.update(environment)
     os.environ['PATH'] = command_path(os.environ.get('PATH', ''))

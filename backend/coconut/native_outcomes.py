@@ -1212,6 +1212,9 @@ class NativeOutcomes:
                 raise ServiceError(409, 'Wait for this task and its existing dependencies.')
             if owner.get('_return_pending'):
                 raise ServiceError(409, 'Wait for the previous result to be delivered before continuing this work.')
+            if any(d['status'] == 'pending' and d['task_id'] in {t['id'] for t in related} and d['id'] != (gate or {}).get('id')
+                   for d in self._all('decisions')):
+                raise ServiceError(409, 'The existing decision must be answered before work continues.')
             worker = self.running.get(owner['id'])
             active_worker = bool(worker and worker.is_alive())
             # Review can hold a reviewer claim or a human pause. Only fresh input
@@ -1220,9 +1223,6 @@ class NativeOutcomes:
                     (t['id'] != owner['id'] and t['status'] in self.ACTIVE)
                     or self._background_pending(t['id']) for t in related):
                 raise ServiceError(409, 'This execution has active work. Wait for its result.')
-            if any(d['status'] == 'pending' and d['task_id'] in {t['id'] for t in related} and d['id'] != (gate or {}).get('id')
-                   for d in self._all('decisions')):
-                raise ServiceError(409, 'The existing decision must be answered before work continues.')
             if not owner.get('_native_outcome_id'):
                 self._retain_native_work(owner, native, snapshot_missing, snapshots, caller=source)
             owner['_native_outcome_id'] = identity

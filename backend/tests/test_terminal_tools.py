@@ -132,7 +132,8 @@ class TerminalTests(unittest.TestCase):
     def test_terminal_launch_uses_managed_runtime_private_homes_and_only_saved_model_keys(self):
         with patch.dict(os.environ, {'GITHUB_TOKEN': 'ambient-key', 'SSH_AUTH_SOCK': 'agent',
                                      'ANTHROPIC_API_KEY': 'unrelated-key', 'HERMES_HOME': '/outside',
-                                     'HERMES_REAL_HOME': '/outside', 'PYTHONPATH': '/outside'}):
+                                     'HERMES_REAL_HOME': '/outside', 'PYTHONPATH': '/outside',
+                                     'CLAUDE_CONFIG_DIR': '/old/profile', 'CLAUDE_SECURESTORAGE_CONFIG_DIR': '/old/profile'}):
             result = self.capture_launch(['--profile', 'work', '--help'])
         environment = result['environment']
         self.assertEqual(environment['ANTHROPIC_API_KEY'], 'test-only-model-key')
@@ -140,7 +141,8 @@ class TerminalTests(unittest.TestCase):
         self.assertNotIn('SSH_AUTH_SOCK', environment)
         import pwd
         self.assertEqual(environment['HOME'], pwd.getpwuid(os.getuid()).pw_dir)
-        self.assertEqual(environment['CLAUDE_CONFIG_DIR'], str(self.root / '.runtime/hermes/terminal/home/.claude'))
+        self.assertNotIn('CLAUDE_CONFIG_DIR', environment)
+        self.assertNotIn('CLAUDE_SECURESTORAGE_CONFIG_DIR', environment)
         self.assertEqual(environment['CODEX_HOME'], str(self.root / '.runtime/hermes/terminal/home/.codex'))
         self.assertEqual(environment['HERMES_REAL_HOME'], environment['HOME'])
         self.assertEqual(environment['HERMES_HOME'], str(self.root / '.runtime/hermes/terminal/hermes'))

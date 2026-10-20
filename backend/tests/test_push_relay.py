@@ -64,6 +64,17 @@ class RelayPushTests(unittest.TestCase):
         self.assertEqual(payload['coconut']['task_id'], task['id'])
         self.assertNotIn('Private', json.dumps(self.relay.sent))
 
+    def test_legacy_completion_preview_does_not_publish_interim_text(self):
+        def start(task, bot, history, emit):
+            emit('interim_message', {'text': 'I will check the failing test.'})
+            emit('completed', {'summary': 'Complete.'})
+        self.service.provider.start_task = start
+        task = self.run_task('Check the test')
+        self.flush()
+        self.assertEqual(self.relay.sealed[0]['coconut']['kind'], 'completed')
+        self.assertEqual(self.relay.sealed[0]['aps']['alert'],
+                         {'title': 'Private bot name', 'subtitle': 'Finished', 'body': task['title']})
+
     def test_decision_preview_uses_pending_question(self):
         self.run_task('Write report')
         self.flush()

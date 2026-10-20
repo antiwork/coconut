@@ -3,8 +3,8 @@
 Each Coconut bot maps to one native Hermes profile. Coconut's adapter runs outside the upstream source checkout.
 The installer pins and verifies the upstream revision before accepting updates.
 
-The tested revision is `345cd2b057a452236de401d3534b8502a7465e8d` from stable release `v2026.9.14`.
-Its primary interfaces are [AIAgent](https://github.com/NousResearch/hermes-agent/blob/345cd2b057a452236de401d3534b8502a7465e8d/run_agent.py),
+The tested revision is `d923a5eb487a17c0a68801bba9ef0f56c81040a8` from stable release `v0.22.1`.
+Its primary interfaces are [AIAgent](https://github.com/NousResearch/hermes-agent/blob/d923a5eb487a17c0a68801bba9ef0f56c81040a8/run_agent.py),
 [native profiles](https://hermes-agent.nousresearch.com/docs/user-guide/profiles/),
 [native memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory/),
 [approvals](https://hermes-agent.nousresearch.com/docs/user-guide/security/), and
@@ -22,8 +22,15 @@ Coconut asks Hermes to stop native children before exiting. After a forced exit,
 A Mac or service restart can still interrupt an unfinished login. Saved credentials remain in the bot's native profile.
 
 The worker uses native context files, `SOUL.md`, memory, tool configuration, and skill discovery.
-It buffers response text until Hermes completes the turn, then publishes the full reply once.
-The app keeps the bot's thinking animation visible while it waits. Failed turns do not publish unfinished response text.
+Hermes sends completed commentary through its native `interim_assistant_callback`.
+Coconut saves each commentary message at once so the phone shows the bot's next action while work continues.
+Commentary does not complete the task or send a push alert. It remains visible after failure, cancellation, or restart.
+Scheduled jobs and reaction-only turns publish only their final reply and preserve native silence rules.
+Hermes removes hidden reasoning and duplicate commentary before calling the adapter.
+The Codex app-server runtime also sends its final answer through this callback.
+Coconut confirms that message after the turn succeeds, keeps the same bubble, and sends one final alert.
+Coconut buffers draft response text until Hermes completes the turn, then publishes the full final reply once.
+The app keeps the bot's thinking animation visible while work continues. Failed turns do not publish unfinished response text.
 It resumes native `SessionDB` history across tasks and follows Hermes compression continuations.
 Existing Coconut conversations enter native history through a one-time import.
 See [continuous conversations](conversation-continuity.md) for restart and retrieval behavior.
@@ -119,7 +126,7 @@ Coconut changes no Hermes source files.
 Native cron APIs create, edit, pause, resume, delete, claim, and finish jobs in each profile.
 Coconut runs supported prompt jobs as conversation tasks while the phone is closed.
 Native cron state determines recurrence and repeat limits.
-Completion uses the pinned [native outcome and schedule helpers](https://github.com/NousResearch/hermes-agent/blob/345cd2b057a452236de401d3534b8502a7465e8d/cron/jobs.py).
+Completion uses the pinned [native outcome and schedule helpers](https://github.com/NousResearch/hermes-agent/blob/d923a5eb487a17c0a68801bba9ef0f56c81040a8/cron/jobs.py).
 Coconut records the completion owner in the same native write as the outcome.
 This lets a retry confirm completion without advancing the schedule twice.
 The compatibility check verifies these interfaces before accepting an update.

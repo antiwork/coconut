@@ -98,6 +98,8 @@ more, so the authenticated continuations and the scheduled run carry the proof.
 No person may ever have stopped the request. The owner or its requesting bot continues it, and the result keeps its route.
 Pending decisions still hold the continuation. This covers a decision in the same execution, and a decision of another
 execution that now holds the outcome's Work row. Continue that owner instead.
+When an execution also has undelivered dependencies, Coconut reports its pending decision before its background work.
+The refusal leaves the decision, dependency receipts, and execution unchanged.
 
 A failed ordinary request has the gap too. Its owner or requesting bot can continue it while Hermes holds its task in
 triage or blocked, and the settle pass then archives that task. The archived task still continues, under the rules of

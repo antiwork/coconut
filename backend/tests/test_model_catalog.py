@@ -30,6 +30,24 @@ def example_catalog():
 
 
 class ModelSelectionTests(unittest.TestCase):
+    def test_model_resolution_uses_the_same_account_home_as_bot_terminals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'
+            source.mkdir()
+            (source / 'run_agent.py').touch()
+            catalog = HermesModelCatalog(directory, source=source, python=sys.executable)
+            with patch.object(model_catalog.subprocess, 'run',
+                              return_value=subprocess.CompletedProcess([], 0, '{"result": {}}', '')) as run:
+                catalog._call('runtime')
+            from coconut.runtime_environment import profile_environment
+            environment = run.call_args.kwargs['env']
+            self.assertEqual(environment['HOME'], profile_environment(Path(directory) / 'bot')['HOME'])
+            self.assertEqual(environment['HERMES_REAL_HOME'], environment['HOME'])
+            self.assertEqual(environment['USER'], profile_environment(Path(directory) / 'bot')['USER'])
+            self.assertEqual(environment['CODEX_HOME'], str(catalog.private_home / '.codex'))
+            self.assertNotIn('CLAUDE_CONFIG_DIR', environment)
+            self.assertNotIn('CLAUDE_SECURESTORAGE_CONFIG_DIR', environment)
+
     def test_combined_native_response_preserves_both_read_budgets(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'source'
