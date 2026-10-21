@@ -29,6 +29,18 @@ ROUTINE_PROVENANCE = ('routine_id', 'routine_occurrence_id', '_native_job', '_na
 # The pending decisions of a bot. Their tasks lead to the source items that the cards ask about.
 PENDING_DECISIONS = ("SELECT json_extract(data,'$.task_id') FROM decisions WHERE json_extract(data,'$.status')='pending' "
                      "AND json_extract(data,'$.bot_id')=?")
+# A task with a native job that has not finished. The partial index tasks_native_job_open holds these tasks.
+OPEN_NATIVE_JOB = "json_type(data,'$._native_job') IN ('object','true') AND json_type(data,'$._native_job_finished') IS NOT 'true'"
+# No ORDER BY: it makes SQLite scan the table. The few rows sort in Python.
+OPEN_NATIVE_JOBS = 'SELECT rowid, data FROM tasks WHERE ' + OPEN_NATIVE_JOB
+# A routine task that has not finished its native job. The partial index tasks_routine_open holds these tasks.
+OPEN_ROUTINE_TASK = "json_type(data,'$.routine_id') IS NOT NULL AND json_type(data,'$._native_job_finished') IS NOT 'true'"
+# The tasks that can keep a routine busy: open routine tasks, and queued or working ones that can continue.
+OPEN_ROUTINE_TASKS = 'SELECT rowid, data FROM tasks WHERE ' + OPEN_ROUTINE_TASK
+RUNNING_ROUTINE_TASKS = ("SELECT rowid, data FROM tasks WHERE json_extract(data,'$.status') IN ('queued','working') "
+                         "AND json_type(data,'$.routine_id') IS NOT NULL")
+# The tasks that these tasks started. The index tasks_source finds them.
+CHILD_TASKS = "SELECT rowid, data FROM tasks WHERE json_extract(data,'$.source_task_id') IN (SELECT value FROM json_each(?))"
 # An answered proposal of a parent task that the child task carries out. See work_sources.source_origin.
 EXECUTED_PROPOSAL = ("SELECT 1 FROM decisions WHERE json_extract(data,'$.task_id')=? "
                      "AND json_extract(data,'$._execution_task_id')=? AND json_extract(data,'$.inbox_kind')='proposal' "
@@ -637,12 +649,15 @@ class NativeRoutines:
             bot = next((b for b in bots if b['id'] == routine['bot_id']), None)
             if bot:
                 self.provider.native_settings('routine_create', [bot], bot_id=bot['id'], changes=routine, request_key=routine['id'])
-        snapshot = self.provider.native_settings('routines_read', bots)
+        read = getattr(self.provider, 'native_routines', None)
+        snapshot = read(bots) if read else self.provider.native_settings('routines_read', bots)
         native = snapshot['routines']
         completions = snapshot.get('completions', {})
         with self.transaction():
             from .native_routine_receipts import completion_id
-            for task in self._all('tasks'):
+            from .service import encoded
+            # Only a completion receipt changes a task here. Hermes rarely has one, so most passes read no task.
+            for task in self._all('tasks') if any(completions.values()) else ():
                 job = task.get('_native_job') or {}
                 owner = (job.get('fire_claim') or {}).get('by')
                 if job.get('id') and owner:
@@ -653,11 +668,15 @@ class NativeRoutines:
                         # An in-flight request still holds its pre-migration copy.
                         if task['id'] in self.running or task['status'] == 'working':
                             completions[task['bot_id']].pop(completion_id(job['id'], owner))
-            previous = {r['id']: r for r in self._all('routines')}
-            self.db.execute('DELETE FROM routines')
+            stored = [row[0] for row in self.db.execute('SELECT data FROM routines ORDER BY rowid')]
+            previous = {r['id']: r for r in map(json.loads, stored)}
             for routine in native:
                 routine['last_task_id'] = previous.get(routine['id'], {}).get('last_task_id')
-                self._put('routines', routine)
+            # Most passes find the same routines. Then the table already holds them, in the same order.
+            if [encoded(routine) for routine in native] != stored:
+                self.db.execute('DELETE FROM routines')
+                for routine in native:
+                    self._put('routines', routine)
 
         # Persist proof with its task before removing the redundant native file.
         # Unowned captured receipts can go too; later completions are untouched.
@@ -757,7 +776,8 @@ class NativeRoutines:
         try:
             self.refresh_native_routines()
             with self.lock:
-                tasks = self._all('tasks')
+                # A partial index holds the tasks with an unfinished native job.
+                tasks = [json.loads(row[1]) for row in sorted(self.db.execute(OPEN_NATIVE_JOBS).fetchall())]
             for candidate in tasks:
                 if not candidate.get('_native_job') or candidate.get('_native_job_finished'):
                     continue

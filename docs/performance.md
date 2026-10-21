@@ -1,5 +1,31 @@
 # App performance
 
+## Routine tick, October 21, 2026
+
+The routine tick runs every 15 seconds. It read the native routines with a new Hermes process, rewrote the routines
+table, and decoded the whole task table three times under the service lock. The Mac mini log of October 21 showed
+lock holds of 1,197 ms on average for `refresh_native_routines` and 924 ms for `tick_native_routines`.
+
+These measurements use a consistent copy of the Mac mini database: 16,973 tasks, 532 routines, and 5 bots. A stub
+provider serves the stored routines, so the times leave out the Hermes process. The times come from a laptop.
+
+| Step | Before | After |
+| --- | ---: | ---: |
+| `refresh_native_routines` | 286 ms | 21 ms |
+| `tick_native_routines`, with the refresh | 796 ms | 25 ms |
+| `_routine_index` | 252 ms | 0.16 ms |
+
+- The provider keeps the routines of each bot until a file of that read changes: `cron/jobs.json`,
+  `cron/executions.db` and its WAL file, `config.yaml`, `.env`, the receipts in `coconut-runs`, or the default profile
+  files. Most ticks start no Hermes process.
+- The refresh reads the tasks only when Hermes returns a completion receipt.
+- The refresh writes the routines table only when its rows change.
+- The tick reads the tasks with an unfinished native job through the partial index `tasks_native_job_open`.
+- `_routine_index` reads the open routine tasks, the queued or working ones, and the tasks that they started, through
+  indexes. It used to decode every task.
+
+On the copy, `_active_routine_task` gave the same answer for all 532 routines with the old and new index.
+
 ## Kanban pass reads, October 21, 2026
 
 Each Kanban pass holds the service lock while it reads Coconut rows. These measurements use a consistent copy of the

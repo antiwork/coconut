@@ -148,6 +148,8 @@ class HermesProvider(FixtureProvider):
         self._lock = threading.Lock()
         self._profile_settings_lock = threading.Lock()
         self._profile_settings: dict[str, tuple] = {}
+        self._routines_lock = threading.Lock()
+        self._routines: dict[str, tuple] = {}
         self._processes: dict[str, subprocess.Popen] = {}
         self._cancelled: set[str] = set()
         self._cancelled_contexts: set[str] = set()
@@ -339,6 +341,40 @@ class HermesProvider(FixtureProvider):
                         self._profile_settings[bot['id']] = (signatures[bot['id']], deepcopy(values[bot['id']]))
             result.update(values)
         return result
+
+    def native_routines(self, bots):
+        """Read the native routines and completion receipts of these bots. The routine tick reads them every 15 seconds.
+
+        Each read starts a Hermes process. A saved result of a bot stays valid while the files that the read uses are
+        unchanged (see routines_signature).
+        """
+        signature = getattr(self.catalog, 'routines_signature', None)
+        if signature is None:
+            return self.native_settings('routines_read', bots)
+        try:
+            # Take the signatures before the read. A file that changes during the read changes the next signature.
+            signatures = {bot['id']: signature(bot['id']) for bot in bots}
+        except (OSError, ValueError):
+            return self.native_settings('routines_read', bots)
+        with self._routines_lock:
+            for identity in self._routines.keys() - signatures.keys():
+                # A deleted bot is not read again.
+                del self._routines[identity]
+            saved = {identity: deepcopy(self._routines[identity][1]) for identity, current in signatures.items()
+                     if identity in self._routines and self._routines[identity][0] == current}
+        missing = [bot for bot in bots if bot['id'] not in saved]
+        if missing:
+            snapshot = self.native_settings('routines_read', missing)
+            completions = snapshot.get('completions', {})
+            with self._routines_lock:
+                for bot in missing:
+                    value = dict(routines=[r for r in snapshot['routines'] if r['bot_id'] == bot['id']],
+                                 completions=completions.get(bot['id'], {}))
+                    self._routines[bot['id']] = (signatures[bot['id']], deepcopy(value))
+                    saved[bot['id']] = value
+        # The read returns the routines of each bot in the order of the bots.
+        return {'routines': [routine for bot in bots for routine in saved[bot['id']]['routines']],
+                'completions': {bot['id']: saved[bot['id']]['completions'] for bot in bots}}
 
     def set_bot_model(self, bot, selection):
         return self.catalog.set_profile(bot['id'], selection)
