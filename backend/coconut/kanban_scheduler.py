@@ -150,6 +150,15 @@ def native_state(status):
             'completed': 'done', 'cancelled': 'archived', 'needs_you': 'review'}.get(status, 'blocked')
 
 
+def held_block(native):
+    """Whether an input or capability block still holds this native task.
+
+    Hermes keeps `block_kind` after an unblock, to count a block that comes back. A ready task with no run was unblocked
+    and promoted, so its old block holds nothing (see Board.archive_settled).
+    """
+    return native.get('block_kind') in ('capability', 'needs_input') and native['status'] != 'ready'
+
+
 from .native_outcomes import NativeOutcomes
 
 
@@ -592,12 +601,12 @@ class NativeKanban(NativeOutcomes):
         and the snapshot carries the event that proves it (see Board.rekinded_block). A return callback only consumes a
         result for its assignment, which owns any further work, and the block check never reads a callback, so nothing
         would answer that block. It is settled when the callback completed and its own claimed run filed the block. Any
-        other input or capability block is someone's hold and stays.
+        other input or capability block is someone's hold and stays, until an unblock makes the task ready again.
         """
         waiting = {identity: native for identity, native in self.kanban.tasks.items()
                    if native['status'] in ('ready', 'todo', 'triage', 'blocked', 'scheduled') and not native.get('unbound')
                    and not native.get('dependencies')
-                   and (native.get('block_kind') not in ('capability', 'needs_input') or native.get('block_rekind'))}
+                   and (not held_block(native) or native.get('block_rekind'))}
         if not waiting:
             return []
         with self.lock:
@@ -613,8 +622,7 @@ class NativeKanban(NativeOutcomes):
             if (task['status'] not in ('completed', 'cancelled', 'failed') or task['id'] in self.running
                     or task['id'] in self.context_threads or task.get('_block_check')
                     or (task.get('_native_outcome_id') and waiting[task['id']]['status'] == 'ready')
-                    or (waiting[task['id']].get('block_kind') in ('capability', 'needs_input')
-                        and not self._rekinded_callback(task, waiting[task['id']]))):
+                    or (held_block(waiting[task['id']]) and not self._rekinded_callback(task, waiting[task['id']]))):
                 continue
             try:
                 # A context has no dates. Its native task was made when the turn was queued, and a running turn beats
@@ -633,12 +641,13 @@ class NativeKanban(NativeOutcomes):
                 "SELECT json_extract(data,'$.task_id') FROM decisions WHERE json_extract(data,'$.status')='pending' "
                 "AND json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?))",
                 (json.dumps([task['id'] for task in candidates]),))}
-            rekinded = [task['id'] for task in candidates if waiting[task['id']].get('block_kind') == 'needs_input']
-            if rekinded:
-                # A tool call of the callback without a result may still have an effect. Its block stays.
+            blocked = [task['id'] for task in candidates
+                       if waiting[task['id']].get('block_kind') in ('capability', 'needs_input')]
+            if blocked:
+                # A tool call without a result may still have an effect. A re-kinded block, or a released one, stays.
                 held |= {row[0] for row in self.db.execute(
                     "SELECT json_extract(data,'$.task_id') FROM native_receipts WHERE json_extract(data,'$.state')='executing' "
-                    "AND json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?))", (json.dumps(rekinded),))}
+                    "AND json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?))", (json.dumps(blocked),))}
             return [(task, waiting[task['id']]) for task in candidates if task['id'] not in held
                     and (task.get('_context') or not (self._task_paused(task) or self._automatic_work_is_paused(task)))]
 
@@ -659,7 +668,7 @@ class NativeKanban(NativeOutcomes):
         # A cancelled or failed request may have a summary too, but its work did not succeed, so only a completed one passes its result.
         for task, native in self._native_orphans()[:SETTLE_BATCH]:
             request = {'op': 'archive_settled', 'id': native['id'], 'summary': (task.get('summary') or None) if task['status'] == 'completed' else None}
-            if native.get('block_kind') in ('capability', 'needs_input'):
+            if held_block(native):
                 # The adapter closes the block only while this event is still its current proof.
                 request['rekind_event'] = native['block_rekind']['event_id']
             self.kanban.call(request)
