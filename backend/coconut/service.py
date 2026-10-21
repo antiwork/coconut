@@ -85,7 +85,8 @@ from .pull_request_reviews import PENDING_CARDS, PR_ARTIFACTS, PullRequestReview
 from .work_progress import WorkProgress, work_enabled
 
 
-from .routine_coordinator import NativeRoutines
+from .routine_coordinator import (CHILD_TASKS, NativeRoutines, OPEN_NATIVE_JOB, OPEN_ROUTINE_TASK, OPEN_ROUTINE_TASKS,
+                                  RUNNING_ROUTINE_TASKS)
 from .approval_updates import ApprovalUpdates
 from .parallel_work_updates import ParallelWorkUpdates
 from .native_fallback_updates import NativeFallbackUpdates
@@ -214,6 +215,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.db.execute('CREATE INDEX IF NOT EXISTS native_receipts_pending_completion ON native_receipts (id) WHERE ' + PENDING_COMPLETIONS)
         for field in MARKS:
             self.db.execute(f'CREATE INDEX IF NOT EXISTS tasks{field} ON tasks (id) WHERE ' + marked(field))
+        self.db.execute('CREATE INDEX IF NOT EXISTS tasks_native_job_open ON tasks (id) WHERE ' + OPEN_NATIVE_JOB)
+        self.db.execute('CREATE INDEX IF NOT EXISTS tasks_routine_open ON tasks (id) WHERE ' + OPEN_ROUTINE_TASK)
+        self.db.execute("CREATE INDEX IF NOT EXISTS tasks_source ON tasks (json_extract(data,'$.source_task_id'))")
         self._request_device_id = None
         self._request_key = None
         self._message_interaction = None
@@ -1551,8 +1555,19 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         raise ServiceError(404, 'This routine route was not found.')
 
     def _routine_index(self) -> dict:
-        """Group the tasks by routine and by source task once, for a pass over many routines."""
-        tasks = self._all('tasks')
+        """Group the tasks that can keep a routine busy by routine and by source task once, for a pass over many routines.
+
+        _active_routine_task starts from an open routine task, or from a queued or working one, and follows the tasks
+        that each task started. The index holds those tasks and every task that they started, and no other task.
+        """
+        with self.lock:
+            rows = dict(self.db.execute(OPEN_ROUTINE_TASKS).fetchall() + self.db.execute(RUNNING_ROUTINE_TASKS).fetchall())
+            frontier = rows
+            while frontier:
+                frontier = {rowid: data for rowid, data in self.db.execute(
+                    CHILD_TASKS, (json.dumps([json.loads(data)['id'] for data in frontier.values()]),)) if rowid not in rows}
+                rows.update(frontier)
+        tasks = [json.loads(rows[rowid]) for rowid in sorted(rows)]
         index = dict(tasks=tasks, order={}, by_id={}, by_routine={}, by_source={})
         for position, task in enumerate(tasks):
             index['order'][task['id']] = position

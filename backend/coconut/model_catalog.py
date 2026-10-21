@@ -291,6 +291,25 @@ class HermesModelCatalog:
                 files.append((name, None))
         return self._signature(), tuple(files)
 
+    def routines_signature(self, bot_id):
+        """Identify the files that native_routines reads for this bot, with the default profile files.
+
+        Hermes keeps the jobs in cron/jobs.json and their runs in cron/executions.db. Coconut keeps its claim and
+        completion receipts in coconut-runs. The settings set the time zone and the routine model.
+        """
+        home = self._profile_home(bot_id)
+        receipts = _contained(home / 'coconut-runs', self.data_dir)
+        names = ['cron/jobs.json', 'cron/executions.db', 'cron/executions.db-wal', 'config.yaml', '.env']
+        names += sorted('coconut-runs/' + path.name for path in receipts.glob('*.json'))
+        files = []
+        for name in names:
+            try:
+                state = _contained(home / name, self.data_dir).stat()
+                files.append((name, state.st_ino, state.st_mtime_ns, state.st_size))
+            except FileNotFoundError:
+                files.append((name, None))
+        return self._signature(), tuple(files)
+
     def read_profile(self, bot_id):
         return self.read_profiles([bot_id])[bot_id]
 

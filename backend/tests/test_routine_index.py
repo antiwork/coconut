@@ -69,7 +69,7 @@ class RoutineIndexTests(unittest.TestCase):
                 actual = self.service._active_routine_task(routine, given)
                 self.assertEqual(actual and actual['id'], expected and expected['id'], routine)
 
-    def test_a_pass_reads_the_tasks_once_for_all_routines(self):
+    def test_a_pass_reads_no_whole_table_for_all_routines(self):
         self.put(routine_id='r1', status='working')
         reads = []
         original = Service._all
@@ -80,7 +80,8 @@ class RoutineIndexTests(unittest.TestCase):
             index = self.service._routine_index()
             for routine in ('r1', 'r2', 'r3', 'r4'):
                 self.service._active_routine_task(routine, index)
-        self.assertEqual(reads, ['tasks'])
+        # The index reads the busy routine tasks and their children through indexes.
+        self.assertEqual(reads, [])
 
     def test_the_lookups_of_the_continuation_check_use_an_index_and_scan_no_table(self):
         from coconut import routine_coordinator
@@ -94,6 +95,18 @@ class RoutineIndexTests(unittest.TestCase):
             plan = ' | '.join(row[3] for row in self.service.db.execute('EXPLAIN QUERY PLAN ' + statement, values))
             self.assertIn('USING INDEX', plan, (name, plan))
             self.assertNotIn('SCAN', plan, (name, plan))
+
+    def test_the_routine_tick_reads_tasks_only_through_indexes(self):
+        from coconut import routine_coordinator
+        # A scan of a partial index reads only the rows of that index.
+        for name, statement in {'open native jobs': routine_coordinator.OPEN_NATIVE_JOBS,
+                                'open routine tasks': routine_coordinator.OPEN_ROUTINE_TASKS,
+                                'queued or working routine tasks': routine_coordinator.RUNNING_ROUTINE_TASKS,
+                                'child tasks': routine_coordinator.CHILD_TASKS}.items():
+            plan = [row[3] for row in self.service.db.execute('EXPLAIN QUERY PLAN ' + statement, ('[]',)[:statement.count('?')])]
+            reads = [line for line in plan if line.startswith(('SCAN tasks', 'SEARCH tasks'))]
+            self.assertTrue(reads, (name, plan))
+            self.assertTrue(all('USING INDEX' in line for line in reads), (name, plan))
 
     def test_a_queued_continuation_keeps_its_routine_busy_as_the_scan_says(self):
         from uuid import UUID, uuid5
