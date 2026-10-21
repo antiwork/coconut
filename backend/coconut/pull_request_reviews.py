@@ -23,6 +23,14 @@ PR_MERGE_INSTRUCTIONS = (
 
 # The cards that name one PR as their merge. The index decisions_merge_url finds them.
 MERGE_DECISIONS = "SELECT data FROM decisions WHERE lower(json_extract(data,'$.merge_pr_url'))=?"
+# The pending cards, in row order. The index decisions_status finds them.
+PENDING_CARDS = "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending' ORDER BY rowid"
+PENDING_MERGE_CARDS = ("SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending' "
+                       "AND json_extract(data,'$.merge_pr_url') IS NOT NULL ORDER BY rowid")
+MERGED_PRS = ("SELECT json_extract(data,'$.bot_id','$.url','$.observed_at','$.refresh_error') FROM artifacts "
+              "WHERE json_extract(data,'$.kind')='pr' AND json_extract(data,'$.pr_state')='merged'")
+# The PR rows, in row order. A PR poll decodes these rows and not the work and file rows.
+PR_ARTIFACTS = "SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='pr' ORDER BY rowid"
 
 PR_REVIEW_INSTRUCTIONS = (
     'Coconut observed new check or review results for a tracked pull request. This is a request to assess merge readiness, not permission to merge. '
@@ -260,10 +268,13 @@ class PullRequestReviews:
     def _resolve_merged_pr_decisions(self):
         from .service import now
         with self.transaction():
-            merged = {(a['bot_id'], a['url'].lower()) for a in self._all('artifacts')
-                      if a['kind'] == 'pr' and a.get('pr_state') == 'merged'
-                      and a.get('observed_at') and not a.get('refresh_error')}
-            for decision in self._all('decisions'):
+            decisions = [json.loads(row[0]) for row in self.db.execute(PENDING_MERGE_CARDS)]
+            merged = set()
+            if decisions:
+                for bot_id, url, observed, error in (json.loads(row[0]) for row in self.db.execute(MERGED_PRS)):
+                    if observed and not error:
+                        merged.add((bot_id, url.lower()))
+            for decision in decisions:
                 url = decision.get('merge_pr_url')
                 if (not url or decision['status'] != 'pending' or decision['action_type'] != 'question'
                         or (decision['bot_id'], url.lower()) not in merged):
@@ -439,19 +450,23 @@ class PullRequestReviews:
 
     def _queue_pr_reviews(self, *, artifact_ids=None):
         from .service import now, uid
+        def tasks_by_id(identities):
+            return {row[0]: json.loads(row[1]) for row in self.db.execute(
+                'SELECT id, data FROM tasks WHERE id IN (SELECT value FROM json_each(?))',
+                (json.dumps(sorted(i for i in identities if isinstance(i, str))),))}
         with self.transaction():
-            tasks = {t['id']: t for t in self._all('tasks')}
+            reviewed = [a for a in (json.loads(row[0]) for row in self.db.execute(PR_ARTIFACTS)) if a.get('_review_task_id')]
+            # The owner of a review is its task or that task's execution session. Read only those tasks.
+            tasks = tasks_by_id({a['_review_task_id'] for a in reviewed})
+            tasks.update(tasks_by_id({t.get('_execution_session_id') for t in tasks.values()} - tasks.keys()))
             # A retry keeps the native execution and its delegated return route.
             # Repair saved retry bindings before comparing owners across bots.
-            for artifact in self._all('artifacts'):
-                if artifact['kind'] != 'pr' or not artifact.get('_review_task_id'):
-                    continue
+            for artifact in reviewed:
                 owner = self._pr_review_source(artifact['bot_id'], artifact['_review_task_id'], tasks=tasks)
                 if owner['id'] != artifact['_review_task_id']:
                     self._set_review_owner(artifact, owner['id'])
                     self._put('artifacts', artifact)
-            bot_ids = {a['bot_id'] for a in self._all('artifacts') if a['kind'] == 'pr' and a.get('_review_task_id')
-                       and (artifact_ids is None or a['id'] in artifact_ids)}
+            bot_ids = {a['bot_id'] for a in reviewed if artifact_ids is None or a['id'] in artifact_ids}
         for bot_id in bot_ids:
             with self.lock:
                 bot_lock = self.bot_locks.setdefault(bot_id, threading.Lock())
@@ -462,15 +477,15 @@ class PullRequestReviews:
                     if self.stopping.is_set() or self.restart_pending:
                         return
                     bot = self._get('bots', bot_id)
-                    # Read the artifacts and decisions once. This loop changes only the artifact that it
-                    # reviews, and that object is also in its peer list, so later peers see the change.
-                    artifacts, decisions = self._all('artifacts'), self._all('decisions')
+                    # Read the PR rows once. This loop changes only the artifact that it reviews, and that object
+                    # is also in its peer list, so later peers see the change. The pause and merge checks read
+                    # their few decisions through indexes.
+                    artifacts = [json.loads(row[0]) for row in self.db.execute(PR_ARTIFACTS)]
                     by_url = {}
                     for item in artifacts:
-                        if item['kind'] == 'pr':
-                            by_url.setdefault(item.get('url', '').lower(), []).append(item)
+                        by_url.setdefault(item.get('url', '').lower(), []).append(item)
                     for artifact in artifacts:
-                        if (artifact['bot_id'] != bot_id or artifact['kind'] != 'pr'
+                        if (artifact['bot_id'] != bot_id
                                 or (artifact_ids is not None and artifact['id'] not in artifact_ids)
                                 or not artifact.get('_review_task_id') or artifact.get('refresh_error')
                                 or (artifact.get('pr_state') != 'open' and not artifact.get('_terminal_review_pending'))
@@ -491,12 +506,12 @@ class PullRequestReviews:
                             continue
                         # One outstanding review per PR, even when several bots register it.
                         peers = by_url.get(artifact['url'].lower(), [])
-                        if self._work_pause(artifact, decisions=decisions, peers=peers):
+                        if self._work_pause(artifact, peers=peers):
                             continue
                         owner = self._pr_review_owner(peers)
                         if not owner or owner['id'] != artifact['id']:
                             continue
-                        if not terminal and self._pr_has_recorded_merge_decision(artifact, peers, decisions):
+                        if not terminal and self._pr_has_recorded_merge_decision(artifact, peers):
                             continue
                         review_key = f"{artifact['pr_state']}:{artifact['head_sha']}" if terminal else artifact['head_sha']
                         signal = json.dumps([artifact['head_sha'], artifact.get('checks_state'),
