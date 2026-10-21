@@ -394,10 +394,13 @@ board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the expo
             owners.append((owner['id'], alias['id']))
         self.provider.supports_native_outcomes = True
         with patch.object(self.service, '_all', wraps=self.service._all) as reads, \
+                patch.object(self.service, '_read_all_tasks', wraps=self.service._read_all_tasks) as full, \
                 patch.object(self.service, '_work_links', wraps=self.service._work_links) as graphs:
             self.service._migrate_native_work()
         self.assertEqual(graphs.call_count, 1)
-        self.assertEqual(sum(call.args == ('tasks',) for call in reads.call_args_list), 1)
+        # The service keeps the parsed tasks and reads only the changed rows (TaskCache).
+        self.assertEqual(sum(call.args == ('tasks',) for call in reads.call_args_list), 0)
+        self.assertLessEqual(full.call_count, 1)
         for identity, alias in owners:
             self.assertNotIn('_native_outcome_id', self.service._get('tasks', identity))
             task = self.service._get('tasks', alias)

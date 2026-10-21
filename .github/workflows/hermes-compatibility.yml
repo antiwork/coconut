@@ -31,6 +31,7 @@ jobs:
       - name: Check Hermes contracts and recovery
         env:
           PYTHONPATH: backend
+          COCONUT_VERIFY_TASK_CACHE: '1' # Each read of the kept tasks is compared with the table.
         run: |
           # Each file runs in its own process because test module names collide.
           for test in backend/tests/test_*.py; do

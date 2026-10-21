@@ -90,6 +90,7 @@ from .routine_coordinator import (CHILD_TASKS, NativeRoutines, OPEN_NATIVE_JOB, 
 from .approval_updates import ApprovalUpdates
 from .parallel_work_updates import ParallelWorkUpdates
 from .native_fallback_updates import NativeFallbackUpdates
+from .task_cache import SCHEMA as TASK_CHANGES_SCHEMA, TaskCache
 from .work_capacity import execution_key, state as capacity_state
 from .kanban_scheduler import NativeKanban
 
@@ -126,7 +127,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane):
+class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -167,6 +168,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         self.db.execute('PRAGMA synchronous=FULL')
         for table in self.TABLES:
             self.db.execute(f'CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
+        self.db.executescript(TASK_CHANGES_SCHEMA)
         self.db.executescript('''
         CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, bot_id TEXT, task_id TEXT, data TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS requests (key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response TEXT NOT NULL);
@@ -338,6 +340,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                 for bot_id in self.__dict__.pop('_published_in_transaction', set()):
                     self.__dict__.get('_published_bots', {}).pop(bot_id, None)
                 self.__dict__.pop('_forget_bots_on_commit', None)
+                # The kept tasks can hold rows that this rollback removes. Forget them first: ROLLBACK can raise.
+                self._forget_cached_tasks()
                 self.db.execute('ROLLBACK')
                 raise
             pending, self._profile_pending = self._profile_pending, {}
@@ -443,7 +447,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         if cache is None:
             return self._all(table)
         if table not in cache:
-            cache[table] = self._all(table)
+            # The task list comes from the kept task map, in the same row order.
+            cache[table] = list(self._task_map().values()) if table == 'tasks' else self._all(table)
         return cache[table]
 
     def _task_map(self):
@@ -452,7 +457,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         if cache is None:
             return {task['id']: task for task in self._all('tasks')}
         if 'task map' not in cache:
-            cache['task map'] = {task['id']: task for task in self._all_shared('tasks')}
+            cache['task map'] = self._cached_tasks()
         return cache['task map']
 
     def _shared_pending_receipts(self):
@@ -872,6 +877,7 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             view._read_cache = None
             # A read view has its own connection. It must not use the writer's shared objects.
             view._shared_state = None
+            view._task_rows = None
             yield view
 
     @contextlib.contextmanager

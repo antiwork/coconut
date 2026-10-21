@@ -318,6 +318,8 @@ class DatabaseMaintenance:
                     started = time.monotonic()
                     self.db.execute('PRAGMA auto_vacuum=INCREMENTAL')
                     self.db.execute('VACUUM')
+                    # VACUUM can renumber rowids, so the kept tasks can lose their row order.
+                    self._forget_cached_tasks()
                     logging.getLogger(__name__).warning('coconut.database_vacuum %s', json.dumps(dict(
                         pages_before=pages, free_before=free, seconds=round(time.monotonic() - started, 1))))
                     freed += free
