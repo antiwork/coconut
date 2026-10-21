@@ -998,6 +998,131 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertEqual(list((self.workspaces / outcome).iterdir()), [])
 
+    def verification_evidence(self, path):
+        """Write ignored verification evidence and a nested review checkout into the worktree, as an install check does."""
+        with (self.repo / '.git' / 'info' / 'exclude').open('a') as exclude:
+            exclude.write('.runtime/\n')
+        files = {'.runtime/verifiers/accept.py': b'print("accept")\n',
+                 '.runtime/preinstall/raw-before.json': b'{"runtime": "before"}\n'}
+        for name, data in files.items():
+            (path / name).parent.mkdir(parents=True, exist_ok=True)
+            (path / name).write_bytes(data)
+        review = path / '.runtime' / 'review'
+        git(path, 'worktree', 'add', '-q', '-b', 'review-' + path.name[:8], str(review))
+        (review / 'tracked.txt').write_text('review note\n')
+        return files, review
+
+    def assert_evidence_kept(self, path, identity, files, review):
+        self.assertTrue(path.exists())
+        self.assertNotIn('retired', self.registry()[identity])
+        for name, data in files.items():
+            self.assertEqual((path / name).read_bytes(), data)
+        self.assertEqual((review / 'tracked.txt').read_text(), 'review note\n')
+
+    def test_a_merge_keeps_the_ignored_evidence_of_a_scheduled_native_owner_on_a_low_disk(self):
+        # The observed 0b3 shape: PR merged, native card scheduled to accept the install, free space below LOW_DISK_BYTES,
+        # and ignored evidence that retirement cannot archive exactly. Three idle hours also make the outcome stale.
+        outcome, identity, path, task = self.outcome(updated_at=self.ago(hours=3))
+        self.pull_request(task, 'merged')
+        files, review = self.verification_evidence(path)
+        (path / 'node_modules').mkdir()
+        (path / 'node_modules' / 'package.js').write_bytes(b'x' * 64)
+        board, calls = self.native_board({task['id']: dict(id='t_4ae01508', external_id=task['id'], status='scheduled')})
+        with patch.object(self.service, 'kanban', board), patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18), \
+                patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 10):
+            self.assertEqual(self.retire(), [])
+        self.assert_evidence_kept(path, identity, files, review)
+        self.assertFalse((self.workspaces / 'archive' / 'done' / (identity + '.tar.gz')).exists())
+        # The build folders still go.
+        self.assertFalse((path / 'node_modules').exists())
+        self.assertEqual(calls, [({'op': 'snapshot'}, False)])
+
+    def test_a_merge_retires_the_worktree_of_a_scheduled_native_owner_with_its_ignored_evidence(self):
+        outcome, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        files = {'.env': b'SECRET=1\n', 'build/raw-before.json': b'{"runtime": "before"}\n'}
+        for name, data in files.items():
+            (path / name).parent.mkdir(parents=True, exist_ok=True)
+            (path / name).write_bytes(data)
+        board, _ = self.native_board({task['id']: dict(id='t_owner', external_id=task['id'], status='scheduled')})
+        with patch.object(self.service, 'kanban', board):
+            self.assertEqual(self.retire(), [identity])
+        # Retirement archived the ignored files exactly. The resume puts them back.
+        self.assertNotIn('done', self.registry()[identity]['retired'])
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        for name, data in files.items():
+            self.assertEqual((restored / name).read_bytes(), data)
+
+    def test_an_unfinished_native_owner_keeps_a_refused_worktree_after_long_idle_or_on_a_low_disk(self):
+        for status in ('scheduled', 'blocked', 'review', 'triage', 'todo'):
+            for label, rules in (('long idle', dict(DISCARD_IDLE_SECONDS=24 * 60 * 60)),
+                                 ('low disk', dict(LOW_DISK_BYTES=10 ** 18))):
+                with self.subTest(status=status, rules=label):
+                    _, identity, path, task = self.outcome()
+                    git(path, 'checkout', '-q', '-b', 'switched-' + path.name[:8])
+                    files, review = self.verification_evidence(path)
+                    board, _ = self.native_board({task['id']: dict(id='t_' + status, external_id=task['id'], status=status)})
+                    with patch.object(self.service, 'kanban', board), patch.multiple(retirement, **rules):
+                        # The board holds only this card. The outcomes of earlier subtests count as done now.
+                        self.assertNotIn(identity, self.retire())
+                    self.assert_evidence_kept(path, identity, files, review)
+
+    def test_a_done_or_archived_native_owner_still_loses_its_merged_or_refused_worktree(self):
+        for status in ('done', 'archived'):
+            for label in ('merged', 'long idle'):
+                with self.subTest(status=status, path=label):
+                    _, identity, path, task = self.outcome()
+                    if label == 'merged':
+                        self.pull_request(task, 'merged')
+                    else:
+                        git(path, 'checkout', '-q', '-b', 'switched-' + path.name[:8])
+                    _, review = self.verification_evidence(path)
+                    board, _ = self.native_board({task['id']: dict(id='t_' + status, external_id=task['id'], status=status)})
+                    with patch.object(self.service, 'kanban', board), \
+                            patch.object(retirement, 'DISCARD_IDLE_SECONDS', 24 * 60 * 60), \
+                            patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 10):
+                        self.assertIn(identity, self.retire())
+                    self.assertFalse(path.exists())
+                    self.assertFalse(review.exists())
+                    self.assertTrue(self.registry()[identity]['retired']['done'])
+
+    def test_live_unknown_or_unreadable_native_states_keep_a_merged_worktree(self):
+        done = lambda task: {task['id']: dict(id='t_owner', external_id=task['id'], status='done')}
+        cases = [(status, lambda task, status=status: (
+                     {task['id']: dict(id='t_owner', external_id=task['id'], status=status)}, None))
+                 for status in ('running', 'ready', 'claiming', 'unknown-state')]
+        cases.append(('reopened since the last snapshot', lambda task: (
+            done(task), {task['id']: dict(id='t_owner', external_id=task['id'], status='scheduled')})))
+        cases.append(('board unreadable', lambda task: (done(task), RuntimeError('The Hermes Kanban adapter did not respond.'))))
+        for label, cards in cases:
+            with self.subTest(label):
+                _, identity, path, task = self.outcome()
+                self.pull_request(task, 'merged')
+                files, review = self.verification_evidence(path)
+                board, _ = self.native_board(*cards(task))
+                with patch.object(self.service, 'kanban', board), patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18), \
+                        patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 10):
+                    # The board holds only this card. The outcomes of earlier subtests count as done now.
+                    self.assertNotIn(identity, self.retire())
+                self.assert_evidence_kept(path, identity, files, review)
+
+    def test_a_native_card_that_reopens_during_the_discard_keeps_the_worktree(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        files, review = self.verification_evidence(path)
+        board, _ = self.native_board({task['id']: dict(id='t_owner', external_id=task['id'], status='done')})
+
+        def reopen(path):
+            # The worktree checks are done. The card reopens before the registry lock.
+            board.tasks = {task['id']: dict(id='t_owner', external_id=task['id'], status='scheduled')}
+            return False
+        with patch.object(self.service, 'kanban', board), patch.object(work_workspace, 'in_use', side_effect=reopen), \
+                patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 10), \
+                self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(any('resumed' in line for line in logs.output))
+        self.assert_evidence_kept(path, identity, files, review)
+
     def test_a_low_disk_keeps_a_stale_queued_worktree_only_while_its_own_claim_is_in_progress(self):
         claimed, claimed_identity, claimed_path, _ = self.outcome(status='queued', updated_at=self.ago(hours=13))
         other, other_identity, other_path, _ = self.outcome(status='queued', updated_at=self.ago(hours=13))
