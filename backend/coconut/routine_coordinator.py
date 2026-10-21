@@ -12,6 +12,8 @@ ROUTINE_EVENTS = 'SELECT type,data,created_at FROM events WHERE task_id=? AND bo
 COMPLETION_EVENTS = 'SELECT type,data FROM events WHERE task_id=? AND bot_id=? ORDER BY seq'
 REQUEST_EVENTS = 'SELECT bot_id,type,data FROM events WHERE task_id=? ORDER BY seq'
 ROUTINE_DELIVERIES = "SELECT data FROM deliveries WHERE json_extract(data,'$.receipt.task_id')=? ORDER BY rowid DESC"
+# The first delivery that names a request. The creation of a relayed request saves it.
+CREATION_DELIVERY = "SELECT data FROM deliveries WHERE json_extract(data,'$.receipt.task_id')=? ORDER BY rowid LIMIT 1"
 # Open intake of a waiting occurrence. Any of these means that the occurrence still works or has input to take.
 OPEN_INTAKE = ('_steering', '_live_messages', '_blocked_followup', '_native_reply_pending', '_return_pending',
                '_resume_decision', '_background_completion', '_pr_review', '_work_resume', '_routine_pending_bot_result')
@@ -148,24 +150,28 @@ class NativeRoutines:
         For a routine, Hermes must have confirmed the success of this exact job and owner, and the original card of the
         occurrence stays as it is. An ordinary request has no routine record at all; its completed input proves nothing
         more. Either way the archived card must be the successor that Board.sync made for an authenticated
-        continuation of this task, holding the current input, also authenticated. Its last run must be the run of the
-        claim of that input, ended as scheduled. No run may have completed, and no run or worker may be left. The guards
-        of settled_failed_occurrence hold too. completion() reads the card from the adapter. Anything else stays final.
+        continuation of this task, holding the current input, also authenticated. The worker of an ordinary request
+        that another bot relayed can park the original card too, before any continuation. _settled_original_card proves
+        that card and its current input instead. Its last run must be the run of the claim of that input, ended as
+        scheduled. No run may have completed, and no run or worker may be left. The guards of settled_failed_occurrence
+        hold too. completion() reads the card from the adapter. Anything else stays final.
         """
         claim = task.get('_kanban_claim') or {}
         turn = task.get('_native_turn_id')
         key = card.get('idempotency_key')
         prefix = 'coconut-followup:' + task['id'] + ':'
         routine = any(field in task for field in ROUTINE_PROVENANCE)
+        original = not routine and key == 'coconut:' + task['id']
         if (not turn or claim.get('input') != turn or type(claim.get('run_id')) is not int
                 or task.get('_kanban_started') != claim['run_id'] or card.get('input_id') != turn
                 or task.get('_native_outcome_id') != card.get('id')
                 or (routine and (task.get('_native_occurrence') or {}).get('native_id') in (None, card.get('id')))
-                or not isinstance(key, str) or not key.startswith(prefix)
+                or not isinstance(key, str) or not (key.startswith(prefix) or original)
                 or (task.get('_self_recovery') or {}).get('unknown_tools')
                 or not (self._settled_occurrence(task, card, success=True) if routine
                         else self._settled_request(task, card))
-                or not {turn, key[len(prefix):]} <= self._continuation_turns(task)):
+                or not (self._settled_original_card(task, card) if original
+                        else {turn, key[len(prefix):]} <= self._continuation_turns(task))):
             return False
         native = completion()
         runs = native.get('runs')
@@ -219,6 +225,10 @@ class NativeRoutines:
                 or (task.get('_self_recovery') or {}).get('unknown_tools')
                 or not self._settled_card(task, card, carried=FAILED_TURN_INPUT)):
             return False
+        return self._created_once(task)
+
+    def _created_once(self, task):
+        """Whether Coconut created this request once, and no routine or person ever triggered or stopped it."""
         # A relay records the creation under the requesting bot, so read the events of every bot.
         created = []
         for bot, kind, raw in self.db.execute(REQUEST_EVENTS, (task['id'],)):
@@ -290,6 +300,51 @@ class NativeRoutines:
             return False
         return not any(kind == 'routine.triggered' or (kind == 'task.updated' and json.loads(raw).get('status') == 'cancelled')
                        for kind, raw in self.db.execute(COMPLETION_EVENTS, (task['id'], task['bot_id'])))
+
+    def _settled_original_card(self, task, card):
+        """Whether the archived card is the original card of this relayed request, and its worker parked it on this input.
+
+        Board.sync makes one card for a request, under the key coconut:<id>, and later input reuses that card until it is
+        done or archived. The key proves nothing more, so Coconut's own records must prove the rest. Another bot relayed
+        the request through its native envelope: the task holds that bot's envelope, and that bot's message comes first.
+        Coconut created the task once, and its first delivery is that message, from the requesting task to this bot.
+        A return callback is no such request. The current input has its own proof: in this turn, while the task worked,
+        the bridge saved a completed kanban_schedule call on this card, and Hermes reported that the run of the claim
+        scheduled it. A card that someone else scheduled has no such receipt.
+        """
+        source = task.get('source_task_id')
+        relay = task.get('_native_relay') or {}
+        first = (task.get('_bot_messages') or [None])[0] or {}
+        if (task.get('_is_return') or task.get('_native_intake') is not True
+                or not isinstance(source, str) or not source or task.get('parent_task_id') != source
+                or not task.get('source_bot_id') or task['source_bot_id'] == task['bot_id']
+                or relay.get('sender_bot_id') != task['source_bot_id']
+                or not isinstance(relay.get('envelope_id'), str) or not relay['envelope_id']
+                or first.get('sender_bot_id') != task['source_bot_id']):
+            return False
+        requester = self.db.execute('SELECT data FROM tasks WHERE id=?', (source,)).fetchone()
+        delivery = self.db.execute(CREATION_DELIVERY, (task['id'],)).fetchone()
+        if not requester or not delivery or json.loads(requester[0]).get('bot_id') != task['source_bot_id']:
+            return False
+        delivery = json.loads(delivery[0])
+        receipt = delivery.get('receipt') or {}
+        if (delivery.get('source_task_id') != source or delivery.get('target_bot_id') != task['bot_id']
+                or delivery.get('turn_id') is not None or delivery.get('text') != first.get('text')
+                or receipt.get('task_id') != task['id'] or receipt.get('target_bot_id') != task['bot_id']
+                or not self._created_once(task)):
+            return False
+        run = task['_kanban_claim']['run_id']
+        for record in self._native_task_receipts(task['id'], turn_id=task['_native_turn_id'], state='completed'):
+            action = record.get('action') or {}
+            try:
+                result = json.loads(record.get('result'))
+            except (TypeError, ValueError):
+                continue
+            if (action.get('name') == 'kanban_schedule' and (action.get('arguments') or {}).get('task_id') == card['id']
+                    and isinstance(result, dict) and result.get('ok') is True and result.get('task_id') == card['id']
+                    and result.get('status') == 'scheduled' and result.get('run_id') == run):
+                return True
+        return False
 
     def pending_source_decision(self, task):
         """Whether a decision about the work source item of this ordinary request is still pending.

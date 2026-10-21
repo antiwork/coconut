@@ -101,6 +101,16 @@ execution that now holds the outcome's Work row. Continue that owner instead.
 When an execution also has undelivered dependencies, Coconut reports its pending decision before its background work.
 The refusal leaves the decision, dependency receipts, and execution unchanged.
 
+The worker of a relayed request can also park the request's original card, the one under `coconut:<id>`, before any
+continuation. Later input reuses that card while it is not done or archived, so the task can complete with the card still
+scheduled, and the settle pass archives it. That card continues under the same rules. The key proves nothing alone, so
+Coconut's records must prove the rest. Another bot relayed the request through its native envelope: the task holds that
+envelope and that bot's message first, Coconut created the task once, and the first delivery of the task is that message
+from the requesting task. A return callback does not count. The current input has its own proof: in that turn, the bridge
+saved a completed `kanban_schedule` call on the card, and Hermes reported that the run of the claim scheduled the card.
+A routine occurrence's original card stays final, as above. The new input gets a successor of the original card in the
+same execution. The owner's turn restores its retired or discarded worktree before it starts, as any turn does.
+
 A failed ordinary request has the gap too. Its owner or requesting bot can continue it while Hermes holds its task in
 triage or blocked, and the settle pass then archives that task. The archived task still continues, under the rules of
 a settled failure without the routine ones. The request has no routine record and no Stop, and Coconut created it once.
