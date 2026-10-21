@@ -2741,18 +2741,17 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             review_task = self._pr_review_source(bot['id'], task_id or payload.get('review_task_id'))
             existing = next((a for a in self._all('artifacts') if a['bot_id'] == bot['id'] and a['kind'] == 'pr' and a['url'].lower() == url.lower()), None)
             if existing:
-                existing.update(status=observation.state, title=(observation.title or existing['title'])[:200],
-                                preview=observation.detail, head_sha=observation.head_sha,
-                                checked_at=observation.checked_at, observed_at=observation.checked_at,
-                                refresh_error=None, pr_state=observation.pr_state,
-                                draft=observation.draft, checks_state=observation.checks_state, required_checks_state=observation.required_checks_state, review_checks=observation.review_checks, check_failures=observation.check_failures)
+                existing.update(observation.fields(), title=(observation.title or existing['title'])[:200],
+                                preview=observation.detail, checked_at=observation.checked_at,
+                                observed_at=observation.checked_at, refresh_error=None)
                 self._bind_pr_review(existing, review_task, transfer=task_id is None and bool(payload.get('review_task_id')))
                 self._set_work_activity(existing, task, payload)
                 self._put('artifacts', existing)
+                self._refresh_merge_diff(existing)
                 self._event('artifact.updated', self._public(existing), existing['bot_id'], existing['task_id'])
                 self.pr_refresh_requested.set()
                 return self._public(existing)
-            artifact = dict(id=uid(), bot_id=task['bot_id'], task_id=task_id, title=(observation.title or 'Pull request')[:200], kind='pr', status=observation.state, preview=observation.detail, url=url, created_at=now(), checked_at=observation.checked_at, observed_at=observation.checked_at, head_sha=observation.head_sha, refresh_error=None, pr_state=observation.pr_state, draft=observation.draft, checks_state=observation.checks_state, required_checks_state=observation.required_checks_state, review_checks=observation.review_checks, check_failures=observation.check_failures)
+            artifact = dict(observation.fields(), id=uid(), bot_id=task['bot_id'], task_id=task_id, title=(observation.title or 'Pull request')[:200], kind='pr', preview=observation.detail, url=url, created_at=now(), checked_at=observation.checked_at, observed_at=observation.checked_at, refresh_error=None)
             # The list of owners starts with the first one, so this record knows every owner it will have.
             artifact['_review_owners'] = []
             if review_task:
@@ -2933,7 +2932,9 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
                                 self._invalidate_terminal_pr_cards(current['bot_id'], observation)
                                 if current.get('pr_state') == 'open' and observation.pr_state in ('merged', 'closed'):
                                     current['_terminal_review_pending'] = True
-                                current.update(status=observation.state, title=(observation.title or current['title'])[:200], preview=observation.detail, head_sha=observation.head_sha, observed_at=observation.checked_at, refresh_error=None, pr_state=observation.pr_state, draft=observation.draft, checks_state=observation.checks_state, required_checks_state=observation.required_checks_state, review_checks=observation.review_checks, check_failures=observation.check_failures)
+                                current.update(observation.fields(), title=(observation.title or current['title'])[:200], preview=observation.detail, observed_at=observation.checked_at, refresh_error=None)
+                                if before.get('diff') != current.get('diff'):
+                                    self._refresh_merge_diff(current)
                             else:
                                 current.update(refresh_error=observation.detail, preview=observation.detail)
                             self._restore_active_work(current)

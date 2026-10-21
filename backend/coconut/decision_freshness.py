@@ -619,7 +619,11 @@ class DecisionFreshness:
                     if ('risk_level' in revision) != ('risk' in revision):
                         raise ServiceError(400, 'Revise risk_level and risk together.')
                     # Like a current result, revise confirms unchanged assessment fields too.
-                    assessment = decision_risk(dict(decision, **revision))
+                    if 'risk' not in revision and decision.get('risk') and decision.get('risk_level') is None:
+                        # A draft saved before levels were required keeps its reason until a check revises the risk.
+                        assessment = dict(risk_level=None, risk=decision['risk'])
+                    else:
+                        assessment = decision_risk(dict(decision, **revision))
                     uncertainty = revision.get('uncertainty', decision.get('uncertainty', ''))
                     if not isinstance(uncertainty, str) or len(uncertainty) > CARD_TEXT_LIMITS['uncertainty']:
                         raise ServiceError(400, f"Shorten the uncertainty to at most {CARD_TEXT_LIMITS['uncertainty']} characters.")

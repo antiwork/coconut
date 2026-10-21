@@ -168,7 +168,7 @@ class DecisionFreshnessTests(unittest.TestCase):
     def test_a_card_write_in_the_refresh_pass_keeps_the_other_shared_tables(self):
         decision = self.question()
         for index in range(4):
-            extra = dict(decision, id=f'extra-{index}', title=f'Question {index}?', risk='It can change the order.')
+            extra = dict(decision, id=f'extra-{index}', title=f'Question {index}?', risk_level='medium', risk='It can change the order.')
             extra['_freshness'] = dict(decision['_freshness'], fingerprint='old')
             self.service._put('decisions', extra)
         original, reads = self.service._all, []
@@ -610,7 +610,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         with patch.object(self.service, '_pr_tracker_for', return_value=tracker):
             try:
                 self.service.native_event(task['id'], 'native_question', dict(
-                    title='Publish the unrelated report?', risk='Readers can see the report.',
+                    title='Publish the unrelated report?', risk_level='medium', risk='Readers can see the report.',
                     options=[dict(id='publish', label='Publish'), dict(id='leave', label='Leave')], **fields))
             except YieldForDecision:
                 pass
@@ -618,13 +618,13 @@ class DecisionFreshnessTests(unittest.TestCase):
 
     def test_unrelated_cards_in_one_chat_do_not_invalidate_an_assessment(self):
         decision = self.question(old=False)
-        decision.update(risk='The dependency changes local files.')
+        decision.update(risk_level='medium', risk='The dependency changes local files.')
         self.service._put('decisions', decision)
         peer = self.peer_question(decision)
         for state in ('created', 'revised', 'resolved'):
             with self.subTest(state=state):
                 if state == 'revised':
-                    peer.update(revision=2, risk='The report becomes public.')
+                    peer.update(revision=2, risk_level='medium', risk='The report becomes public.')
                     self.service._put('decisions', peer)
                     self.service._initialize_decision_freshness(peer)
                 elif state == 'resolved':
@@ -655,7 +655,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.service._put('tasks', task)
         try:
             self.service.native_event(task['id'], 'native_question', dict(
-                title='Use the local database?', risk='Only local test data changes.',
+                title='Use the local database?', risk_level='medium', risk='Only local test data changes.',
                 options=[dict(id='use', label='Use it'), dict(id='leave', label='Leave')]))
         except YieldForDecision:
             pass
@@ -711,7 +711,7 @@ class DecisionFreshnessTests(unittest.TestCase):
 
     def distinct_email_sources(self, first, second):
         decision = self.question(old=False)
-        decision.update(risk='The email discloses the report.',
+        decision.update(risk_level='medium', risk='The email discloses the report.',
             sources=[dict(kind='email', title='First email', url=first)])
         self.service._put('decisions', decision)
         peer = self.peer_question(decision, sources=[dict(kind='email', title='Second email', url=second)])
@@ -742,7 +742,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         decision = self.question()
         context = self.refresh()
         self.service.refresh_decision(context['id'], dict(status='revise', evidence='The source no longer needs installation.',
-            revision=dict(title='Use the new account?', context='The old account closed.', risk='This changes the destination.',
+            revision=dict(title='Use the new account?', context='The old account closed.', risk_level='medium', risk='This changes the destination.',
                           options=[dict(id='new', label='New account'), dict(id='leave', label='Leave')], recommended_option_id='new')))
         saved = self.service._get('decisions', decision['id'])
         self.assertEqual((saved['revision'], saved['title'], saved['status']), (2, 'Use the new account?', 'pending'))
@@ -759,7 +759,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.service._put('decisions', decision)
         context = self.refresh()
         self.service.refresh_decision(context['id'], dict(status='revise', evidence='The current head is ready.',
-            revision=dict(title='Merge the export fix?', context='The tests pass.', options=decision['options'])))
+            revision=dict(title='Merge the export fix?', context='The tests pass.', risk_level='low', risk='A bad merge reaches main until a revert.', options=decision['options'])))
         saved = self.service._get('decisions', decision['id'])
         self.assertEqual((saved['merge_pr_url'], saved['_merge_pr_head']), (url, 'reviewed-head'))
         self.service._revise_question(saved, self.service._get('tasks', self.task['id']),

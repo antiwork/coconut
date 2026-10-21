@@ -16,6 +16,8 @@ PR_MERGE_INSTRUCTIONS = (
     'Coconut preserves the recorded conversation route. Do not wait for the requesting bot to present the card. '
     'Reuse an existing pending merge decision for this PR. Do not bypass its unanswered choice or duplicate its action. '
     'Recommend Merge when justified and include a Leave open option. Identify the PR and merge scope in each choice. '
+    'For a draft, the merge choice marks it ready and merges it. Offer a ready-only choice only when a standing human hold covers this exact PR. '
+    'Set risk_level low, medium, or high and one risk sentence for the merge. '
     'Set merge_pr_url to the tracked PR URL so an external merge retires the card. '
     'Before an authorized merge, recheck the exact head and use a merge operation that rejects a changed head. '
     'Merge permission does not expand deployment or other external-action permission. '
@@ -61,10 +63,21 @@ class PullRequestReviews:
             raise ServiceError(400, 'Track this PR with coconut_track_pr before creating its merge decision.')
         return url
 
-    def _merge_decision_head(self, url, task):
-        return next((a.get('head_sha') for a in self._all('artifacts')
+    def _merge_decision_artifact(self, url, task):
+        return next((a for a in self._all('artifacts')
                      if url and a['kind'] == 'pr' and a['bot_id'] == task['bot_id']
-                     and a['url'].lower() == url.lower()), None)
+                     and a['url'].lower() == url.lower()), {})
+
+    def _refresh_merge_diff(self, artifact):
+        """Keep the change size of this PR current on its pending merge cards. The size does not change the choice."""
+        import json
+        rows = self.db.execute("SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending' "
+                               "AND lower(json_extract(data,'$.merge_pr_url'))=?", ((artifact.get('url') or '').lower(),))
+        for decision in [json.loads(row[0]) for row in rows]:
+            if decision.get('bot_id') == artifact['bot_id'] and decision.get('merge_pr_diff') != artifact.get('diff'):
+                decision['merge_pr_diff'] = artifact.get('diff')
+                self._put('decisions', decision)
+                self._event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
 
     def _validate_merge_decision(self, decision, task):
         from .service import ServiceError

@@ -48,6 +48,13 @@ class PRObservation:
     check_failures: str | None = None
     required_checks_observed: bool = False
     base_branch: str | None = None
+    diff: dict | None = None
+
+    def fields(self) -> dict:
+        """The observed values that a PR artifact stores."""
+        return dict(status=self.state, head_sha=self.head_sha, pr_state=self.pr_state, draft=self.draft,
+                    checks_state=self.checks_state, required_checks_state=self.required_checks_state,
+                    review_checks=self.review_checks, check_failures=self.check_failures, diff=self.diff)
 
 
 class PRTrackingError(ValueError):
@@ -121,6 +128,14 @@ def _pr_fields(pr: dict[str, Any]) -> tuple[str, str, bool, bool, str]:
     ):
         raise PRTrackingError("GitHub returned incomplete pull request data.")
     return sha, state, draft, merged, title
+
+
+def _diff(pr: dict[str, Any]) -> dict | None:
+    """The size of the PR's changes, as GitHub counts them for its Files tab."""
+    values = {key: pr.get(key) for key in ('additions', 'deletions', 'changed_files')}
+    if all(type(value) is int and value >= 0 for value in values.values()):
+        return values
+    return None
 
 
 def _classify(
@@ -594,6 +609,7 @@ class GitHubPRTracker:
             before = _pr_fields(initial)
             sha, state, draft, merged, title = before
             base_branch = (initial.get("base") or {}).get("ref")
+            diff = _diff(initial)
             checks_state = None
             required_checks_state = None
             required_checks_observed = False
@@ -614,6 +630,7 @@ class GitHubPRTracker:
                 final = self._get(path, deadline)
                 after = _pr_fields(final)
                 sha, base_branch = after[0], (final.get("base") or {}).get("ref")
+                diff = _diff(final)
                 if before[:4] != after[:4]:
                     raise PRTrackingError("The pull request changed during refresh. Refresh again.")
                 if (initial.get('base') or {}).get('ref') != (final.get('base') or {}).get('ref'):
@@ -632,7 +649,8 @@ class GitHubPRTracker:
                 if failures:
                     check_failures = hashlib.sha256(json.dumps(sorted(failures)).encode()).hexdigest()
             return PRObservation(result, sha, title, url, detail, checked_at, True, "merged" if merged else state,
-                                 draft, checks_state, required_checks_state, review_checks, check_failures, required_checks_observed, base_branch)
+                                 draft, checks_state, required_checks_state, review_checks, check_failures, required_checks_observed, base_branch,
+                                 diff)
         except HTTPError as error:
             detail = f"GitHub refresh failed (HTTP {error.code})."
             error.close()

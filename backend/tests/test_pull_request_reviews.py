@@ -143,7 +143,7 @@ class PRReviewTests(unittest.TestCase):
         def start(task, bot, history, emit):
             if not task.get('_pr_review'):
                 return original_start(task, bot, history, emit)
-            emit('native_question', {'title': 'Merge PR #42?', 'merge_pr_url': URL, 'source_revisions': {URL: revision},
+            emit('native_question', {'title': 'Merge PR #42?', 'merge_pr_url': URL, 'risk_level': 'low', 'risk': 'A bad merge reaches main.', 'source_revisions': {URL: revision},
                 'recommended_option_id': 'merge',
                 'options': [{'id': 'merge', 'label': 'Merge',
                              'explanation': 'Merge the verified changes into main.'},

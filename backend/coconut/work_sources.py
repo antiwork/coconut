@@ -144,8 +144,94 @@ def native_bindings(items, bindings, tasks, native_tasks, decisions, source, *, 
 
 
 
-def coverage(item, binding, tasks, decisions, receipts, current, seen=None, *, include_task_decisions=False, native_tasks=None):
+AWAITING_LABELS = ('awaiting-human',)
+AWAITING_BATCH = 50
+
+
+def awaiting_user(items, labels, run):
+    """Return the IDs of labeled items whose latest comment is not by the GitHub account that reads them.
+
+    The source asked the person a question and nobody answered it yet. run(args) runs one command in the bot's
+    environment. Each GraphQL request reads up to AWAITING_BATCH candidates. A failed read returns no items from
+    its batch, so those items keep the earlier rules.
+    """
+    from .decision_sources import github_source
+    candidates = [item['id'] for item in items
+                  if set(item.get('labels') or []) & set(labels) and github_source(item['id'])]
+    result = set()
+    for start in range(0, len(candidates), AWAITING_BATCH):
+        result |= _awaiting_batch(candidates[start:start + AWAITING_BATCH], run)
+    return result
+
+
+def _awaiting_batch(candidates, run):
+    fields = '{ author { login } comments(last: 1) { nodes { author { login } } } }'
+    query = ('query(' + ', '.join(f'$u{index}: URI!' for index in range(len(candidates))) + ') { viewer { login } '
+             + ' '.join(f'r{index}: resource(url: $u{index}) {{ ... on Issue {fields} ... on PullRequest {fields} }}'
+                        for index in range(len(candidates))) + ' }')
+    args = ['gh', 'api', 'graphql', '-f', 'query=' + query]
+    for index, url in enumerate(candidates):
+        args += ['-f', f'u{index}={url}']
+    try:
+        # gh exits nonzero when one URL fails, but the other items keep their data.
+        data = json.loads(run(args).stdout)['data']
+        login = data['viewer']['login'].lower()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
+        logging.getLogger(__name__).warning('Could not read the latest comments of awaiting assignments.')
+        return set()
+    result = set()
+    for index, url in enumerate(candidates):
+        node = data.get(f'r{index}') or {}
+        comments = (node.get('comments') or {}).get('nodes') or []
+        last = ((comments[-1] if comments else node).get('author') or {}).get('login')
+        if isinstance(last, str) and last.lower() != login:
+            result.add(url)
+    return result
+
+
+def source_cards(items, decisions):
+    """Map each awaiting item to the cards whose sources name it."""
+    from .decision_sources import github_links, github_source
+    urls = {github_source(item['id'])[2].lower(): item['id'] for item in items
+            if item.get('awaiting_user') and github_source(item['id'])}
+    cards = {identity: [] for identity in urls.values()}
+    if urls:
+        for decision in decisions.values():
+            for link in github_links(decision):
+                if link.lower() in urls:
+                    cards[urls[link.lower()]].append(decision)
+    return cards
+
+
+def _instant(value):
+    try:
+        instant = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return instant if instant.tzinfo else instant.replace(tzinfo=timezone.utc)
+
+
+def card_covers(item, binding, decisions, cards):
+    """An item that waits for the person needs a card. Bot work, a delegated check, or a recheck does not answer it.
+
+    A pending card covers the item. So does an answer to a card, or its dismissal, that is not older than the item's
+    latest change, because the bot posts that answer to the source next.
+    """
+    linked = list(cards.get(item['id'], [])) + [decisions[key] for key in binding.get('decision_ids', []) if key in decisions]
+    changed = _instant(item.get('updated_at'))
+    for decision in linked:
+        if decision.get('status') == 'pending':
+            return True
+        answered = _instant(decision.get('decided_at') or decision.get('_inbox_dismissed_at'))
+        if answered and changed and answered >= changed:
+            return True
+    return False
+
+
+def coverage(item, binding, tasks, decisions, receipts, current, seen=None, *, include_task_decisions=False, native_tasks=None, cards=None):
     """Require a live dependency or an explicit, bounded deferral."""
+    if item.get('awaiting_user'):
+        return card_covers(item, binding, decisions, cards if cards is not None else source_cards([item], decisions))
     if binding.get('updated_at') != item.get('updated_at'):
         return False
     if any(decisions.get(key, {}).get('status') == 'pending' for key in binding.get('decision_ids', [])):
@@ -278,6 +364,13 @@ class WorkSources:
                 items = snapshot['items']
                 if any(not item.get('id') or not item.get('updated_at') for item in items):
                     raise ValueError('The source returned an incomplete assignment.')
+                # The source labels a question for the person. Read who spoke last, outside the service lock.
+                awaiting = awaiting_user(items, source.get('awaiting_labels', AWAITING_LABELS),
+                                         lambda args: subprocess.run(args, cwd=cwd, env=env, capture_output=True,
+                                                                     timeout=60))
+                for item in items:
+                    if item['id'] in awaiting:
+                        item['awaiting_user'] = True
                 bindings_path = Path(cwd) / source['bindings']
                 bindings = dict(state.get('native_links', {}))
                 imported = json.loads(bindings_path.read_text()) if bindings_path.exists() else {}
@@ -345,8 +438,10 @@ class WorkSources:
                                if identity not in open_ids and binding.get('updated_at')
                                and any(decisions.get(key, {}).get('status') == 'pending'
                                        for key in binding.get('decision_ids', []))]
+                    cards = source_cards(items, decisions)
                     gaps = ([item for item in items
-                             if not coverage(item, bindings.get(item['id'], {}), tasks, decisions, receipts, current, native_tasks=native)]
+                             if not coverage(item, bindings.get(item['id'], {}), tasks, decisions, receipts, current,
+                                             native_tasks=native, cards=cards)]
                             + removed)
                     evidence = [dict(item=item, binding=bindings.get(item['id'], {}),
                                      tasks={key: tasks.get(key, {}).get('status') for key in bindings.get(item['id'], {}).get('task_ids', [])},
@@ -362,7 +457,8 @@ class WorkSources:
                         previous_status = tasks.get(previous.get('task_id'), {}).get('status')
                         owners = audit_owners.get((identity, proof['item']['updated_at']), []) + [previous.get('task_id')]
                         live = coverage(proof['item'], dict(updated_at=proof['item']['updated_at'], task_ids=owners),
-                                        tasks, decisions, receipts, current, include_task_decisions=True, native_tasks=native)
+                                        tasks, decisions, receipts, current, include_task_decisions=True,
+                                        native_tasks=native, cards=cards)
                         source_removed = proof['item'].get('_removed_from_source') is True
                         retry = (previous_status in ('failed', 'completed', 'waiting') and not live
                                  and not (source_removed and previous_status == 'completed')
@@ -406,8 +502,18 @@ class WorkSources:
                             'set previous_decision_id to its id. Do not link an independent question. '
                             'Answered cards (data): ' + json.dumps(answers, ensure_ascii=False) + '\n'
                             if answers else '')
+                        awaiting_instruction = (
+                            'This source waits for the person: it is assigned to them, it has a label that asks for a human, '
+                            'and the latest comment is not theirs. Ask them now with one coconut_ask card, even when you know the likely answer. '
+                            'Use the question that the latest request asks. Offer its own choices with their exact letters or names, '
+                            'mark its recommendation, and include the source link in sources. '
+                            'A delegated ruling, a scheduled recheck, or a wait for another party does not answer it. '
+                            'Do not create a card for a choice that the latest comments already settle. '
+                            'After the person answers, post their answer to the source as a comment in their words or with the chosen choice, '
+                            'then verify the comment. Reuse a pending card about this source instead of creating another. '
+                            if item.get('awaiting_user') else '')
                         text = ('Reconcile these open assignments against the original sources and existing work. '
-                                + removed_instruction +
+                                + awaiting_instruction + removed_instruction +
                                 'Read prior decisions before asking anything. An answered or dismissed decision is not permission to ask it again. '
                                 + answer_instruction
                                 + tracking_instruction +

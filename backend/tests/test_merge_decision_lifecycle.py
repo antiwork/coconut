@@ -45,6 +45,8 @@ class MergeDecisionLifecycleTests(unittest.TestCase):
         from coconut.decision_sources import github_links
         if kind in ('native_question', 'native_proposal'):
             payload = dict(payload, source_revisions={url: SOURCE_REVISION for url in github_links(payload)})
+            if payload.get('merge_pr_url') and 'risk_level' not in payload:
+                payload.update(risk_level='low', risk=payload.get('risk') or 'A bad merge reaches main until a revert.')
         return self.service.emit(task_id, kind, payload)
 
     def question(self, **extra):
@@ -282,7 +284,7 @@ class MergeDecisionLifecycleTests(unittest.TestCase):
         reconsidered = self.service._all('decisions')[-1]
         with self.service.transaction():
             self.service._revise_question(reconsidered, task,
-                dict(title='Leave the reviewed PR open?', options=decision['options']), 'Refresh the saved question.')
+                dict(risk_level='low', risk='A bad merge reaches main until a revert.', title='Leave the reviewed PR open?', options=decision['options']), 'Refresh the saved question.')
         self.assertEqual(self.service._get('decisions', reconsidered['id'])['revision'], 2)
         self.write(f"/v1/decisions/{reconsidered['id']}/answer", {'choice': 'reply', 'revision': 2,
             'correction': 'Clarify the remaining risk before asking again.'})
@@ -350,6 +352,37 @@ class MergeDecisionLifecycleTests(unittest.TestCase):
         self.assertEqual(decisions[-1]['_merge_pr_head'], 'b' * 40)
         self.assertEqual(decisions[-1]['status'], 'pending')
 
+    def test_merge_card_states_an_assessed_risk(self):
+        payload = dict(title='Merge this PR?', merge_pr_url=URL, source_revisions={URL: SOURCE_REVISION},
+                       options=[dict(id='merge', label='Merge', explanation='')])
+        receipt = self.service.emit(self.task['id'], 'native_call', {'name': 'coconut_ask', 'arguments': payload})
+        for extra in ({}, dict(risk_level='not_assessed', risk='The checks are unknown.'), dict(risk='Main can break.')):
+            with self.subTest(extra=extra), self.assertRaises(ServiceError):
+                self.service.emit(self.task['id'], 'native_question', dict(payload, receipt_id=receipt['id'], **extra))
+        self.assertEqual(self.service._all('decisions'), [])
+        merge = dict(payload['options'][0], risk_level='medium', risk='Main can break.')
+        leave = dict(id='leave', label='Leave open', explanation='', risk_level='low', risk='The fix waits.')
+        with self.subTest('only Leave open assessed'), self.assertRaises(ServiceError):
+            self.service.emit(self.task['id'], 'native_question', dict(payload, receipt_id=receipt['id'],
+                                                                      options=[payload['options'][0], leave]))
+        with self.assertRaises(YieldForDecision):
+            self.service.emit(self.task['id'], 'native_question', dict(payload, receipt_id=receipt['id'],
+                                                                      options=[merge, dict(leave, risk_level=None, risk='')]))
+        self.assertEqual(self.service._all('decisions')[-1]['options'][0]['risk_level'], 'medium')
+
+    def test_merge_card_shows_the_current_size_of_the_pr(self):
+        from dataclasses import replace
+        self.observation = replace(self.observed('open'), diff=dict(additions=171, deletions=25, changed_files=4))
+        self.service.refresh_pull_requests()
+        decision, _ = self.question(merge_pr_url=URL)
+        self.assertEqual(decision['merge_pr_diff'], dict(additions=171, deletions=25, changed_files=4))
+        self.assertEqual(self.service._public(decision)['merge_pr_diff']['changed_files'], 4)
+        self.observation = replace(self.observation, diff=dict(additions=180, deletions=25, changed_files=5))
+        self.service.refresh_pull_requests()
+        current = self.service._get('decisions', decision['id'])
+        self.assertEqual(current['merge_pr_diff'], dict(additions=180, deletions=25, changed_files=5))
+        self.assertEqual(current['revision'], decision['revision'])
+
     def test_text_reply_can_lead_to_a_revised_merge_question(self):
         decision, _ = self.question(merge_pr_url=URL)
         self.write(f"/v1/decisions/{decision['id']}/answer", {'choice': 'reply', 'revision': 1,
@@ -373,5 +406,5 @@ class MergeDecisionLifecycleTests(unittest.TestCase):
         self.assertIsNone(self.service._get('decisions', other['id']).get('merge_pr_url'))
         with self.service.transaction():
             self.service._revise_question(decision, self.service._get('tasks', decision['task_id']),
-                dict(title='Merge the reviewed changes?', options=decision['options']), 'Clarify the title.')
+                dict(risk_level='low', risk='A bad merge reaches main until a revert.', title='Merge the reviewed changes?', options=decision['options']), 'Clarify the title.')
         self.assertEqual(self.service._get('decisions', decision['id'])['revision'], 2)

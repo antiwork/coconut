@@ -25,5 +25,15 @@ final class DecisionSourceTests: XCTestCase {
         XCTAssertEqual(card.cardSources.first?.title, "project #42")
         card.sources = [DecisionSource(kind: "pull_request", title: "Fix reconnect", url: card.mergePrUrl)]
         XCTAssertEqual(card.cardSources.count, 1)
+        XCTAssertNil(card.mergePrDiff)
+    }
+
+    func testMergeCardDiffDecodesAndReadsCompactly() throws {
+        let diff = try APIJSON.decoder().decode(PullRequestDiff.self, from: Data(
+            #"{"additions":1171,"deletions":25,"changed_files":1}"#.utf8))
+        XCTAssertEqual(diff.changedFiles, 1)
+        XCTAssertEqual(diff.summary, "+\(1171.formatted()) −25 · 1 file")
+        XCTAssertEqual(PullRequestDiff(additions: 3, deletions: 0, changedFiles: 2).accessibilityLabel,
+                       "3 lines added, 0 lines removed, in 2 files")
     }
 }

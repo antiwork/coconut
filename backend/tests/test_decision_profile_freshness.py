@@ -197,6 +197,7 @@ class DecisionProfileFreshnessTests(unittest.TestCase):
         context = self.refresh()
         self.service.refresh_decision(context['id'], dict(status='revise', evidence='The current native instructions scope the manual-merge hold.',
             revision=dict(title='Mark PR #42 ready and merge it?', context='Approval marks the draft ready and merges the reviewed head.',
+                risk_level='low', risk='A bad merge reaches main until a revert.',
                 options=[dict(id='merge', label='Mark ready and merge'), dict(id='leave', label='Leave open')],
                 recommended_option_id='merge')))
         saved = self.service._get('decisions', decision['id'])
