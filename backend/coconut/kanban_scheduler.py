@@ -641,12 +641,13 @@ class NativeKanban(NativeOutcomes):
                 "SELECT json_extract(data,'$.task_id') FROM decisions WHERE json_extract(data,'$.status')='pending' "
                 "AND json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?))",
                 (json.dumps([task['id'] for task in candidates]),))}
-            rekinded = [task['id'] for task in candidates if waiting[task['id']].get('block_kind') == 'needs_input']
-            if rekinded:
-                # A tool call of the callback without a result may still have an effect. Its block stays.
+            blocked = [task['id'] for task in candidates
+                       if waiting[task['id']].get('block_kind') in ('capability', 'needs_input')]
+            if blocked:
+                # A tool call without a result may still have an effect. A re-kinded block, or a released one, stays.
                 held |= {row[0] for row in self.db.execute(
                     "SELECT json_extract(data,'$.task_id') FROM native_receipts WHERE json_extract(data,'$.state')='executing' "
-                    "AND json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?))", (json.dumps(rekinded),))}
+                    "AND json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?))", (json.dumps(blocked),))}
             return [(task, waiting[task['id']]) for task in candidates if task['id'] not in held
                     and (task.get('_context') or not (self._task_paused(task) or self._automatic_work_is_paused(task)))]
 

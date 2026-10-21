@@ -526,6 +526,21 @@ class SettleSchedulerTests(unittest.TestCase):
         paused = self.service([dict(request, id='p')], {'p': dict(released, id='t_p')}, paused=True)
         self.assertEqual(self.settled(paused), [])
 
+    def test_an_unknown_tool_effect_keeps_a_released_card_of_either_kind_until_its_result(self):
+        # A tool call of the finished request that has no result yet may still have an effect, whatever kind of block
+        # the ready card still names. The card settles once the receipt has its result.
+        from coconut.kanban_scheduler import SETTLE_PLAIN_SECONDS
+        old = self.ago(SETTLE_PLAIN_SECONDS + 60)
+        for kind in ('needs_input', 'capability'):
+            executing = ['request']
+            service = self.service([dict(id='request', status='completed', updated_at=old, summary='Complete.')],
+                                   {'request': dict(id='t_request', status='ready', block_kind=kind, block_rekind=None)},
+                                   executing=executing)
+            self.assertEqual(self.settled(service), [], kind)
+            executing.clear()
+            self.assertEqual(self.settled(service), ['t_request'], kind)
+            self.assertEqual(service.calls, [{'op': 'archive_settled', 'id': 't_request', 'summary': 'Complete.'}], kind)
+
     def test_the_report_names_a_released_ready_task_that_was_not_settled(self):
         from coconut.kanban_scheduler import ORPHAN_ALERT_SLACK_SECONDS, SETTLE_PLAIN_SECONDS
         late = self.ago(SETTLE_PLAIN_SECONDS + ORPHAN_ALERT_SLACK_SECONDS + 60)
