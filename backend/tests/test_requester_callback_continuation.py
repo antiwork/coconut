@@ -537,7 +537,10 @@ class ApprovedProposalRequesterContinuationTests(unittest.TestCase):
     block, and Care's repair returned to the root. The root then continues the original owner.
     """
     setUp = fixtures.NativeWorkContinuationTests.setUp
-    tearDown = fixtures.NativeWorkContinuationTests.tearDown
+    def tearDown(self):
+        self.end_turn()
+        fixtures.NativeWorkContinuationTests.tearDown(self)
+
     write = fixtures.NativeWorkContinuationTests.write
     prepare = fixtures.NativeWorkContinuationTests.prepare
     scheduled_native = fixtures.NativeWorkContinuationTests.scheduled_native
@@ -659,6 +662,55 @@ class ApprovedProposalRequesterContinuationTests(unittest.TestCase):
         self.assertEqual(root['status'], 'queued')
         self.assertEqual(root['_bot_messages'][-1]['_return_source_task_id'], ids['helper'])
         return self.run_root(root)
+
+    LONG_REPLY = ('Route repaired. New blocker: keep the original owner paused until the migration check on PR 8549 '
+                  'passes, then publish only the draft.')
+
+    def readied_root(self, ids, *, parent=True):
+        # As in run 30130: Care's card completes while Care's own turn still runs, before its final reply exists.
+        # Hermes readies the root's card, and the service queues the root's outcome (_native_retry).
+        import time
+        self.service._put('tasks', dict(self.get(ids['helper']), status='working'))
+        self.service.kanban.tasks[ids['helper']] = dict(id='t_helper', status='done', current_run_id=None, worker_pid=None,
+                                                        completed_at=int(time.time()), **self.created(ids['helper'], self.care))
+        self.service.kanban.tasks[ids['root']] = dict(id='t_root', status='ready', current_run_id=None, worker_pid=None,
+                                                      input_id=self.get(ids['root'])['_native_turn_id'], dependencies=[],
+                                                      parent_ids=['t_root_first'] + (['t_helper'] if parent else []))
+        self.service._native_retry(self.get(ids['root']), self.service.kanban.tasks[ids['root']])
+        self.assertEqual(self.get(ids['root'])['status'], 'queued')
+
+    @staticmethod
+    def created(owner, bot, successor_input=None):
+        # The creation record that Board writes on every card of a request.
+        key = 'coconut-followup:%s:%s' % (owner, successor_input) if successor_input else 'coconut:' + owner
+        return dict(created_by='coconut', tenant=bot['id'], idempotency_key=key)
+
+    def root_row(self, ids):
+        return next(r for r in self.service._kanban_rows() if r['id'] == ids['root'])['state']
+
+    def start_root(self, ids, during=None):
+        # The dispatcher claims the readied card and _run_task starts the turn. The provider records the turn's input,
+        # then makes the continuation call from inside the turn.
+        root = self.get(ids['root'])
+        self.service.kanban.tasks[ids['root']].update(status='running', current_run_id=91, worker_pid=191,
+                                                      input_id=root['_native_turn_id'])
+        root['_kanban_claim'] = dict(native_id='t_root', external_id=root['id'], input=root['_native_turn_id'],
+                                     run_id=91, pid=191, context='# Kanban task t_root')
+        self.service._put('tasks', root)
+        seen = {}
+        def start(task, bot, history, emit):
+            from coconut.hermes_worker import conversation_input
+            seen['prompt'] = conversation_input(dict(operation='start', task=task, history=history))[0]
+            seen['started'] = copy.deepcopy(self.get(ids['root']))
+            if during:
+                during()
+            try:
+                seen['receipt'] = emit('work_continue', dict(task_id='t_existing', message='Keep the verified correction local.'))
+            except ServiceError as error:
+                seen['receipt'] = error
+        self.service.provider.start_task = start
+        self.service._run_task(root['id'])
+        return seen
 
     def run_root(self, root):
         turn = root['_native_turn_id']
@@ -835,6 +887,167 @@ class ApprovedProposalRequesterContinuationTests(unittest.TestCase):
         self.assertEqual(self.settle(ids), [self.SETTLED])
         self.assertEqual(self.get(ids['callback']), callback)
         self.assertEqual(self.resume(root)['task_id'], owner['id'])
+
+    def test_root_waits_for_the_helper_reply_before_it_starts(self):
+        ids, original, peer = self.incident()
+        self.assertEqual(self.settle(ids), [self.SETTLED])
+        self.readied_root(ids)
+        # Care's card is done, but Care's turn has not ended, so its reply does not exist yet.
+        self.assertEqual(self.root_row(ids), 'scheduled')
+        helper = self.finish(self.get(ids['helper']), self.LONG_REPLY)
+        self.assertTrue(helper['_return_pending'])
+        self.assertEqual(self.root_row(ids), 'scheduled')
+        self.service._drain_returns()
+        root = self.get(ids['root'])
+        self.assertEqual((root['status'], root.get('_steering', [])), ('queued', []))
+        self.assertEqual(root['_bot_messages'][-1]['text'], self.LONG_REPLY)
+        self.assertEqual(self.root_row(ids), 'ready')
+        owner = self.get(ids['owner'])
+        seen = self.start_root(ids)
+        # The whole reply, with its new blocker, is in the turn's input. Nothing waits as steering.
+        self.assertIn(self.LONG_REPLY, seen['prompt'])
+        self.assertEqual((seen['started']['status'], seen['started']['_steering']), ('working', []))
+        self.assertEqual(seen['receipt'], dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
+        queued = self.get(owner['id'])
+        for key in ('_execution_session_id', '_kanban_claim', 'source_task_id', '_reply_to_task_id', 'thread_id'):
+            self.assertEqual(queued[key], owner[key], key)
+        self.assertEqual(queued['_work_context_id'], original['id'])
+        self.assertEqual(len([d for d in self.service._all('deliveries')
+                             if d['receipt'].get('native_task_id') == 't_existing']), 1)
+
+    def test_a_person_reply_while_the_root_waits_is_kept_for_its_turn(self):
+        for attachment in (False, True):
+            with self.subTest(attachment=attachment):
+                ids, original, peer = self.fresh_incident()
+                self.assertEqual(self.settle(ids), [self.SETTLED])
+                self.readied_root(ids)
+                data = dict(text='Also keep the README change out of the draft.')
+                if attachment:
+                    data['attachment_ids'] = [self.write('/v1/attachments', dict(bot_id=self.desk['id'], filename='note.txt',
+                                                         content_base64='bm90ZQ=='))['id']]
+                self.write('/v1/tasks/' + ids['root'] + '/replies', data)
+                self.assertEqual(self.root_row(ids), 'scheduled')
+                self.finish(self.get(ids['helper']), self.LONG_REPLY)
+                self.service._drain_returns()
+                self.assertEqual(self.root_row(ids), 'ready')
+                seen = self.start_root(ids)
+                self.assertIn(self.LONG_REPLY, seen['prompt'])
+                self.assertIn(data['text'], seen['prompt'])
+                self.assertEqual(seen['started']['_steering'], [])
+                self.assertEqual(seen['receipt']['task_id'], ids['owner'])
+
+    def test_only_a_parent_helper_that_owes_this_root_a_result_holds_it(self):
+        def helper(**changes):
+            return lambda ids: self.service._put('tasks', dict(self.get(ids['helper']), **changes))
+        def finished(ids):
+            self.finish(self.get(ids['helper']), self.LONG_REPLY)
+        def failed(ids):
+            self.service.emit(ids['helper'], 'failed', dict(summary='Care could not repair the route.'))
+            self.assertTrue(self.get(ids['helper'])['_return_pending'])
+        def delivered(ids):
+            finished(ids)
+            self.service._drain_returns()
+        def rebound(times, linked_successor=False, earlier=None):
+            # The helper's turn ended with a follow-up, so Board made a successor of its done card and rebound it.
+            # The old card stays in the snapshot as an unbound outcome card. As with Care's t_d9d0cb1d, the card that
+            # the root linked can itself be an earlier successor of the helper.
+            def apply(ids):
+                previous = self.service.kanban.tasks.pop(ids['helper'])
+                if linked_successor:
+                    previous.update(self.created(ids['helper'], self.care, 'earlier-input'))
+                if earlier:
+                    previous.update(earlier)
+                for index in range(times):
+                    self.service.kanban.tasks['outcome:' + previous['id']] = previous
+                    previous = dict(id='t_helper_next%d' % index, status='done' if index + 1 < times else 'running',
+                                    current_run_id=None if index + 1 < times else 83, parent_ids=[previous['id']],
+                                    **self.created(ids['helper'], self.care, 'input-%d' % index))
+                self.service.kanban.tasks[ids['helper']] = previous
+                self.service._put('tasks', dict(self.get(ids['helper']), status='working'))
+            return apply
+        def foreign(**record):
+            def apply(ids):
+                self.service.kanban.tasks[ids['helper']].update(record)
+            return apply
+        def evicted(claimed):
+            # A bound card that finished long ago can drop out of the cached snapshot.
+            def apply(ids):
+                self.service.kanban.tasks.pop(ids['helper'])
+                if not claimed:
+                    task = self.get(ids['helper'])
+                    task['_kanban_claim'] = dict(task['_kanban_claim'], native_id='t_unrelated')
+                    self.service._put('tasks', task)
+            return apply
+        def plain_root(ids):
+            root = self.get(ids['root'])
+            root.pop('_native_outcome_id')
+            self.service._put('tasks', root)
+        cases = {
+            'helper turn still running': (True, None, 'scheduled'),
+            'helper reply not yet delivered': (True, finished, 'scheduled'),
+            'helper failed with its result pending': (True, failed, 'scheduled'),
+            'helper waits for a person': (True, helper(status='needs_you'), 'scheduled'),
+            'helper native reply pending': (True, helper(status='completed', _native_reply_pending={'text': 'reply'}), 'scheduled'),
+            'helper result pending without a relay reply': (True, helper(status='completed', _native_reply_pending=None,
+                                                                         _return_pending={'text': 'result'}), 'scheduled'),
+            'helper reply delivered': (True, delivered, 'ready'),
+            'helper replies to another task': (True, helper(_reply_to_task_id='another-task'), 'ready'),
+            'helper card is not a parent': (False, None, 'ready'),
+            'helper cancelled': (True, helper(status='cancelled'), 'ready'),
+            'helper rebound to a successor card': (True, rebound(1), 'scheduled'),
+            'helper rebound through two successor cycles': (True, rebound(2), 'scheduled'),
+            'linked successor card and the helper rebinds again': (True, rebound(1, linked_successor=True), 'scheduled'),
+            'bound parent card made by a worker is still its task': (True, foreign(created_by='default'), 'scheduled'),
+            'earlier card made by a worker, not by Board': (True, rebound(1, earlier=dict(created_by='default')), 'ready'),
+            'earlier card of another bot': (True, rebound(1, earlier=dict(tenant='another-bot')), 'ready'),
+            'earlier card naming another request': (True, rebound(1, earlier=dict(idempotency_key='coconut:another-task')), 'ready'),
+            'earlier card without an owner key': (True, rebound(1, earlier=dict(idempotency_key='coconut-outcome:work')), 'ready'),
+            'evicted parent card still claimed by the helper': (True, evicted(True), 'scheduled'),
+            'evicted parent card that no task claims': (True, evicted(False), 'ready'),
+            'root has no native outcome': (True, plain_root, 'ready'),
+        }
+        for name, (parent, apply, state) in cases.items():
+            with self.subTest(case=name):
+                ids, original, peer = self.fresh_incident()
+                self.assertEqual(self.settle(ids), [self.SETTLED])
+                self.readied_root(ids, parent=parent)
+                if apply:
+                    apply(ids)
+                self.assertEqual(self.root_row(ids), state)
+
+    def test_a_reply_that_arrives_during_the_turn_still_blocks_the_owner(self):
+        # When nothing holds the root, for example a helper that is not its parent, the reply arrives as steering.
+        # The owner gate keeps treating it as new input.
+        ids, original, peer = self.incident()
+        self.assertEqual(self.settle(ids), [self.SETTLED])
+        self.readied_root(ids, parent=False)
+        self.assertEqual(self.root_row(ids), 'ready')
+        owner = self.get(ids['owner'])
+        def deliver():
+            self.finish(self.get(ids['helper']), self.LONG_REPLY)
+            self.service._drain_returns()
+            self.assertEqual(self.get(ids['root'])['_steering'], ['Care: ' + self.LONG_REPLY])
+        seen = self.start_root(ids, during=deliver)
+        self.assertIsInstance(seen['receipt'], ServiceError)
+        self.assertIn('another execution', str(seen['receipt']))
+        self.assertEqual(self.get(ids['owner']), owner)
+
+    def fresh_incident(self):
+        self.end_turn()
+        self.tearDown()
+        self.setUp()
+        return self.incident()
+
+    def end_turn(self):
+        # Let a blocked fixture turn return, so the service closes without waiting for it.
+        turn = getattr(self, 'turn', None)
+        if turn:
+            turn['go'].set()
+            turn['done'].set()
+            for worker in list(self.service.running.values()):
+                if isinstance(worker, threading.Thread):
+                    worker.join(10)
+            self.turn = None
 
     def test_deliberate_callback_holds_are_never_settled(self):
         # Only the re-kind proof of the callback's own claimed run settles its block. Any other hold stays, and so does

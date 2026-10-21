@@ -214,7 +214,10 @@ for index in range(33):
             self.assertEqual(len(receipts), 1)
             receipt = receipts[0]
         else:
-            receipt = self.resume(source, identity)
+            try:
+                receipt = self.resume(source, identity)
+            except ServiceError as error:
+                self.fail('The continuation was refused: %s' % error)
         queued = self.service._get('tasks', owner['id'])
         self.assertEqual(self.resume(source, identity), receipt)
         self.assertEqual(len(self.service._all('tasks')), before)
@@ -462,7 +465,17 @@ assert kb.get_task(conn, stale).status == 'ready', kb.get_task(conn, stale).stat
         # The callback asked for input itself. The settle pass keeps that hold, so the original owner stays guarded.
         self.check_approved_proposal('needs_input')
 
-    def check_approved_proposal(self, block):
+    def test_approved_proposal_root_waits_for_the_helper_reply_before_it_starts(self):
+        # As in run 30130: Hermes completes Care's card before Care's turn ends. The root starts only once Care's
+        # whole reply is delivered, so it never arrives later as steering.
+        self.check_approved_proposal('dependency', race=True)
+
+    def test_approved_proposal_root_waits_through_helper_follow_ups_on_successor_cards(self):
+        # Follow-ups reach the helper after each of its cards completes, so its turns end without a result and Board
+        # moves it to successor cards twice. The root's parent edge names its first card. The root still waits.
+        self.check_approved_proposal('dependency', race=True, followups=2)
+
+    def check_approved_proposal(self, block, race=False, followups=0):
         # A person approved a follow-up proposal of a requester callback, as in Desk 2b4380e0 for PR 8549. The approved
         # root relayed to a new Dev execution; that delegate's callback filed a dependency block after its owner
         # parent finished, so Hermes re-kinded it to an input block. Care's repair returned to the root's outcome.
@@ -562,7 +575,12 @@ assert kb.get_task(conn, stale).status == 'ready', kb.get_task(conn, stale).stat
             helper.update(_conversation_epoch=epoch)
             self.service._put('tasks', helper)
             row, = sync(helper)
-            claim(helper, row)
+            if race:
+                # Like Care, the helper is a retained native outcome. The dispatcher starts its turn below.
+                helper['_native_outcome_id'] = card(helper)['id']
+                self.service._put('tasks', helper)
+            else:
+                claim(helper, row)
             # The owner finished first, so Hermes turns the callback's dependency block into an input block.
             # In the other case the callback asks for input itself.
             program('''
@@ -604,24 +622,121 @@ assert event.get('rekind_reason') == ('no_open_parent' if kind == 'dependency' e
                 self.service._put('artifacts', dict(id=str(uuid4()), task_id=task['id'], bot_id=task['bot_id'],
                     created_at=now(), kind='pr', title='Retained PR', status='merged', pr_state='merged', url=url,
                     _review_task_id=review['id'], _activity_task_id=activity['id']))
-            # Care finishes normally. Hermes readies the root, and its result resumes the root's outcome.
-            complete(helper, 'Route repaired')
-            finish(helper, 'Route repaired.')
-            self.service._drain_returns()
-            self.assertNotIn('_return_pending', self.service._get('tasks', helper['id']))
-            root = self.service._get('tasks', root['id'])
-            self.assertEqual(root['status'], 'queued')
-            row, = sync(root)
-            self.assertEqual(card(root)['input_id'], root['_native_turn_id'])
-            self.assertEqual(card(root)['status'], 'ready')
-            claim(root, row)
+            if race:
+                # As in run 30130: the dispatcher starts the helper's turn, and Hermes completes the helper's card
+                # while that turn still runs, before its final reply exists. Each follow-up that reaches the helper
+                # in that window ends its turn without a result: Board makes a successor card and the helper runs
+                # again. The root must not start until the helper's final reply is delivered.
+                reply = ('Route repaired. New blocker: keep the original owner paused until the migration check on '
+                         'PR 8549 passes, then publish only the draft.')
+                starts, turns = [], []
+                releases = [threading.Event() for _ in range(followups + 1)]
+                root_end = threading.Event()
+                for event in (*releases, root_end):
+                    self.addCleanup(event.set)
+                def provider(task, bot, history, emit):
+                    from coconut.hermes_worker import conversation_input
+                    if task['id'] == helper['id']:
+                        index = len(turns)
+                        turns.append(task['_native_turn_id'])
+                        if not releases[index].wait(60):
+                            return
+                        if index < followups:
+                            emit('completed', {'summary': 'Checked the route.'})
+                        else:
+                            emit('text_delta', {'text': reply})
+                            emit('completed', {'summary': 'Route repaired'})
+                    elif task['id'] == root['id']:
+                        starts.append(conversation_input(dict(operation='start', task=task, history=history))[0])
+                        root_end.wait(60)
+                self.provider.start_task = provider
+                def wait(condition):
+                    for _ in range(300):
+                        if condition():
+                            return True
+                        threading.Event().wait(0.05)
+                    return condition()
+                cards = []
+                for index in range(followups + 1):
+                    # The dispatcher claims the helper's card and _run_task starts its turn.
+                    self.service._dispatch_pending()
+                    self.assertTrue(wait(lambda: len(turns) == index + 1))
+                    running = self.service._get('tasks', helper['id'])
+                    native = card(helper)
+                    cards.append(native['id'])
+                    self.assertEqual((running['status'], running['_native_outcome_id']), ('working', native['id']))
+                    self.assertEqual((native['status'], native['current_run_id'], native['input_id']),
+                                     ('running', running['_kanban_claim']['run_id'], running['_native_turn_id']))
+                    self.assertEqual(running['_kanban_claim']['input'], turns[index])
+                    if index:
+                        # A successor of the previous card, so the root's parent edge still names an earlier card.
+                        self.assertEqual(native['parent_ids'], [cards[index - 1]])
+                    complete(helper, 'Route repaired')
+                    # The first completion readies the root's card. After that the fence keeps it scheduled.
+                    self.assertEqual(card(root)['status'], 'ready' if index == 0 else 'scheduled')
+                    self.service._dispatch_pending()
+                    self.assertEqual(starts, [])
+                    self.assertEqual(self.service._get('tasks', root['id'])['status'], 'queued')
+                    self.assertEqual(card(root)['status'], 'scheduled')
+                    if index < followups:
+                        # A person's follow-up reaches the helper after its card completed, before its turn ends.
+                        self.write('/v1/tasks/' + helper['id'] + '/replies', {'text': 'Also check the staging route.'})
+                        self.assertTrue(self.service._get('tasks', helper['id'])['_steering'])
+                    worker = self.service.running[helper['id']]
+                    releases[index].set()
+                    worker.join(15)
+                    self.assertFalse(worker.is_alive())
+                    finished = self.service._get('tasks', helper['id'])
+                    if index < followups:
+                        self.assertEqual(finished['status'], 'queued')
+                        self.assertNotIn('_return_pending', finished)
+                self.assertEqual(len(set(cards)), followups + 1)
+                self.assertIn(cards[0], card(root)['parent_ids'])
+                # The helper's final turn prepared its whole reply, not the native summary, as its return.
+                self.assertEqual(finished['status'], 'completed')
+                self.assertEqual(finished['_return_pending']['text'], reply)
+                self.assertEqual(starts, [])
+                # The next pass delivers that reply and then starts the root once.
+                self.service._dispatch_pending()
+                self.assertTrue(wait(lambda: len(starts) == 1))
+                self.assertIn(reply, starts[0])
+                self.assertNotIn('_return_pending', self.service._get('tasks', helper['id']))
+                root = self.service._get('tasks', root['id'])
+                native = card(root)
+                self.assertEqual(root['status'], 'working')
+                self.assertEqual(root['_steering'], [])
+                self.assertEqual(root['_bot_messages'][-1]['text'], reply)
+                self.assertEqual((native['status'], native['current_run_id'], native['input_id']),
+                                 ('running', root['_kanban_claim']['run_id'], root['_native_turn_id']))
+                self.assertEqual(root['_kanban_claim']['input'], root['_native_turn_id'])
+                self.assertEqual(native['worker_pid'], root['_kanban_claim']['pid'])
+                self.assertEqual(root['_conversation_epoch'], epoch)
+                self.service._dispatch_pending()
+                self.assertEqual(len(starts), 1)
+            else:
+                # Care finishes normally. Hermes readies the root, and its result resumes the root's outcome.
+                complete(helper, 'Route repaired')
+                finish(helper, 'Route repaired.')
+                self.service._drain_returns()
+                self.assertNotIn('_return_pending', self.service._get('tasks', helper['id']))
+                root = self.service._get('tasks', root['id'])
+                self.assertEqual(root['status'], 'queued')
+                row, = sync(root)
+                self.assertEqual(card(root)['input_id'], root['_native_turn_id'])
+                self.assertEqual(card(root)['status'], 'ready')
+                claim(root, row)
             self.assertTrue(root['_kanban_claim']['context'])
-            # Every helper result is consumed. Only the callback's input block holds the gate now.
-            with self.assertRaises(ServiceError):
-                self.resume(root, identity)
-            self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'completed')
-            self.service._settle_native_orphans()
-            self.service.kanban.call({'op': 'snapshot'})
+            if race:
+                # The dispatcher's own pass already settled the re-kinded callback before it claimed the root.
+                self.assertEqual(card(callback)['status'], 'done')
+                self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'completed')
+            else:
+                # Every helper result is consumed. Only the callback's input block holds the gate now.
+                with self.assertRaises(ServiceError):
+                    self.resume(root, identity)
+                self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'completed')
+                self.service._settle_native_orphans()
+                self.service.kanban.call({'op': 'snapshot'})
             self.assertEqual(self.service._get('tasks', callback['id']), callback)
             if block != 'dependency':
                 self.assertEqual((card(callback)['status'], card(callback)['block_kind']), ('blocked', 'needs_input'))
