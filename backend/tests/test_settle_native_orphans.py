@@ -9,9 +9,10 @@ import textwrap
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from coconut.kanban_scheduler import NativeKanban, SETTLE_BATCH, SETTLE_SECONDS
+import test_native_kanban as fixtures
 
 SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
 PYTHON = os.environ.get('COCONUT_HERMES_PYTHON')
@@ -200,6 +201,41 @@ class ArchiveSettledTests(unittest.TestCase):
             assert refused(waiting, event).status == 'todo', kb.get_task(conn, waiting)
         '''))
 
+    def test_a_released_block_completes_without_a_proof_and_a_new_block_after_the_snapshot_refuses(self):
+        # Hermes keeps the kind of a block through the unblock. A ready task holds nothing, so the settle call has no
+        # proof to send. When the task is blocked again before the call arrives, the new block is a hold.
+        self.run_native(REKIND + textwrap.dedent('''
+            def released(name, kind):
+                if kind == 'dependency':
+                    callback, run = rekinded(name)
+                else:
+                    callback = native(name)
+                    claimed = kb.claim_task(conn, callback)
+                    assert kb.block_task(conn, callback, reason='A person must answer', kind=kind,
+                                         expected_run_id=claimed.current_run_id)
+                assert kb.unblock_task(conn, callback)
+                card = snapshot(name)
+                assert (card['status'], card['block_kind'], card['block_rekind']) == (
+                    'ready', 'capability' if kind == 'capability' else 'needs_input', None), card
+                return callback
+
+            for kind in ('dependency', 'needs_input', 'capability'):
+                callback = released('released-' + kind, kind)
+                assert board.archive_settled(callback, 'Complete.') is True
+                assert kb.get_task(conn, callback).status == 'done', kb.get_task(conn, callback)
+                assert kb.latest_summary(conn, callback) == 'Complete.', kb.latest_summary(conn, callback)
+
+                again = released('again-' + kind, kind)
+                claimed = kb.claim_task(conn, again)
+                assert kb.block_task(conn, again, reason='A person must answer', kind='needs_input',
+                                     expected_run_id=claimed.current_run_id)
+                held = kb.get_task(conn, again)
+                assert held.status in ('blocked', 'triage') and held.block_kind == 'needs_input', held
+                assert board.archive_settled(again, 'Complete.') is False
+                after = kb.get_task(conn, again)
+                assert (after.status, after.result, after.completed_at) == (held.status, held.result, held.completed_at), after
+        '''))
+
     def test_a_todo_task_waiting_on_a_stuck_parent_is_archived(self):
         self.run_native('''
             parent = native('parent')
@@ -207,6 +243,141 @@ class ArchiveSettledTests(unittest.TestCase):
             assert board.archive_settled(child) is True
             assert kb.get_task(conn, child).status == 'archived'
         ''')
+
+
+@unittest.skipUnless(SOURCE and PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+class ReleasedBlockDispatcherTests(unittest.TestCase):
+    """The service dispatcher settles a finished request whose native task was blocked during its run, then unblocked."""
+    setUp = fixtures.NativeKanbanTests.setUp
+    write = fixtures.NativeKanbanTests.write
+    task = fixtures.NativeKanbanTests.task
+    tick = fixtures.NativeKanbanTests.tick
+    settle = fixtures.NativeKanbanTests.settle
+    native_program = fixtures.NativeKanbanTests.native_program
+
+    def card(self, request):
+        self.service.kanban.call({'op': 'snapshot'})
+        return self.service.kanban.tasks[request['id']]
+
+    @staticmethod
+    def identity(request):
+        return {key: value for key, value in request.items()
+                if key in ('id', 'bot_id', 'title', 'status', 'summary', 'created_at', 'updated_at', '_kanban_claim')
+                or 'workspace' in key}
+
+    def blocked_during_its_run(self, text, kind):
+        # The request completes while its turn thread is still alive, so the dispatcher's reconciliation leaves the
+        # claim, and the sync records the result while the card still runs. The worker's own run then files a block
+        # before the claim is finished, so no finish or sync can complete the card later.
+        import threading
+        ended = threading.Event()
+        self.addCleanup(ended.set)
+        def provider(task, bot, history, emit):
+            self.provider.started.append(task['id'])
+            emit('text_delta', {'text': 'Checked.'})
+            emit('completed', {'summary': 'Complete.'})
+            ended.wait(30)
+        self.provider.start_task = provider
+        request = self.task(text)
+        self.settle(lambda: self.service._get('tasks', request['id'])['status'] == 'completed')
+        self.tick()
+        card = self.card(request)
+        self.assertEqual(card['status'], 'running')
+        self.native_program('''
+kb, conn = board.kb, board.conn
+callback, run, kind = sys.argv[2], int(sys.argv[3]), sys.argv[4]
+if kind == 'dependency':
+    # The parent that the run waits for has already finished, so Hermes re-kinds the block to an input block.
+    parent = kb.create_task(conn, title='Finished parent', body='Fixture', assignee='default', tenant='care')
+    assert kb.complete_task(conn, parent, summary='Parent finished.')
+    kb.link_tasks(conn, parent, callback, expected_child_run_id=run)
+assert kb.block_task(conn, callback, reason='Waiting', kind=kind, expected_run_id=run)
+task = kb.get_task(conn, callback)
+assert task.status == 'blocked' and task.block_kind == ('needs_input' if kind == 'dependency' else kind), task
+''', card['id'], str(card['current_run_id']), kind)
+        ended.set()
+        self.service.running[request['id']].join(10)
+        self.assertFalse(self.service.running[request['id']].is_alive())
+        self.tick()
+        # The finished request keeps a blocked card. The settle pass waits SETTLE_PLAIN_SECONDS before it reads it.
+        blocked = self.card(request)
+        self.assertEqual((blocked['status'], blocked['current_run_id']), ('blocked', None))
+        return self.service._get('tasks', request['id']), card['id'], card['current_run_id']
+
+    def test_a_finished_request_whose_block_was_released_settles_and_its_dependent_starts(self):
+        # As in t_9617fcd3: the run re-kinded a dependency block, someone unblocked it to todo behind an open parent,
+        # and the card became ready when that parent finished. Hermes keeps block_kind needs_input on the ready card.
+        import coconut.kanban_scheduler as scheduler
+        request, identity, run = self.blocked_during_its_run('Check the release', 'dependency')
+        # The run's own dependency block became an input block because its parent had finished.
+        event = json.loads(self.native_program('''
+import json
+row = board.conn.execute("SELECT run_id, payload FROM task_events WHERE task_id=? AND kind='blocked' ORDER BY id DESC LIMIT 1",
+                         (sys.argv[2],)).fetchone()
+print(json.dumps(dict(json.loads(row[1]), run_id=row[0])))
+''', identity))
+        self.assertEqual((event['run_id'], event['kind'], event['requested_kind'], event['rekind_reason']),
+                         (run, 'needs_input', 'dependency', 'no_open_parent'))
+        parent = self.native_program('''
+kb, conn = board.kb, board.conn
+callback = sys.argv[2]
+parent = kb.create_task(conn, title='Open parent', body='Fixture', assignee='default', tenant='care')
+kb.link_tasks(conn, parent, callback)
+assert kb.unblock_task(conn, callback)
+dependent = kb.create_task(conn, title='Dependent', body='Fixture', assignee='default', tenant='care', parents=[callback])
+assert kb.get_task(conn, callback).status == 'todo', kb.get_task(conn, callback)
+print(parent + ' ' + dependent)
+''', identity)
+        parent, dependent = parent.split()
+        history = [m for m in self.service._all('messages') if m.get('task_id') == request['id']]
+        with patch.object(scheduler, 'SETTLE_PLAIN_SECONDS', 0):
+            # An open parent still holds the card.
+            self.tick()
+            card = self.card(request)
+            self.assertEqual((card['status'], card['block_kind'], [p['id'] for p in card['dependencies']]),
+                             ('todo', 'needs_input', [parent]))
+            self.native_program('''
+kb, conn = board.kb, board.conn
+assert kb.complete_task(conn, sys.argv[2], summary='Parent finished.')
+kb.recompute_ready(conn)
+''', parent)
+            card = self.card(request)
+            self.assertEqual((card['status'], card['block_kind'], card['block_rekind'], card['current_run_id']),
+                             ('ready', 'needs_input', None, None))
+            before = self.service._get('tasks', request['id'])
+            self.tick()
+        card = self.card(request)
+        # The card completes with the request's result, so its dependent can start.
+        self.assertEqual((card['status'], card['outcome_summary']), ('done', request['summary']))
+        self.assertEqual(self.native_program('''
+board.kb.recompute_ready(board.conn)
+print(board.kb.get_task(board.conn, sys.argv[2]).status)
+''', dependent), 'ready')
+        # The request itself is unchanged: same identity, owner, result, workspace and history.
+        after = self.service._get('tasks', request['id'])
+        self.assertEqual(after, before)
+        self.assertEqual(self.identity(after), self.identity(request))
+        self.assertEqual([m for m in self.service._all('messages') if m.get('task_id') == request['id']], history)
+
+    def test_an_explicit_block_settles_only_after_an_unblock(self):
+        import coconut.kanban_scheduler as scheduler
+        released, held = {}, {}
+        for kind in ('needs_input', 'capability'):
+            released[kind] = self.blocked_during_its_run('Released ' + kind, kind)
+            held[kind] = self.blocked_during_its_run('Held ' + kind, kind)
+            self.native_program('assert board.kb.unblock_task(board.conn, sys.argv[2])', released[kind][1])
+        with patch.object(scheduler, 'SETTLE_PLAIN_SECONDS', 0):
+            self.tick()
+        for kind in ('needs_input', 'capability'):
+            request = released[kind][0]
+            card = self.card(request)
+            self.assertEqual((card['status'], card['outcome_summary']), ('done', request['summary']), kind)
+            self.assertEqual(self.identity(self.service._get('tasks', request['id'])), self.identity(request))
+            # A block that was never released is still someone's hold.
+            request = held[kind][0]
+            card = self.card(request)
+            self.assertEqual((card['status'], card['block_kind']), ('blocked', kind), kind)
+            self.assertEqual(self.identity(self.service._get('tasks', request['id'])), self.identity(request))
 
 
 class SettleSchedulerTests(unittest.TestCase):
@@ -310,6 +481,57 @@ class SettleSchedulerTests(unittest.TestCase):
         paused = self.service([dict(callback, id='p', _kanban_claim=dict(native_id='t_p', run_id=41))],
                               {'p': dict(blocked, id='t_p')}, paused=True)
         self.assertEqual(self.settled(paused), [])
+
+    def test_an_unblocked_ready_task_settles_although_hermes_keeps_its_old_block_kind(self):
+        # Hermes keeps `block_kind` through an unblock, so a released input or capability block still names its kind
+        # when the task is ready again. As in t_9617fcd3: a re-kinded dependency block, unblocked to todo, then ready
+        # after its parent finished. Board.rekinded_block gives a ready task no proof, and the request was long done.
+        from coconut.kanban_scheduler import SETTLE_PLAIN_SECONDS
+        old, young = self.ago(SETTLE_PLAIN_SECONDS + 60), self.ago(60)
+        request = dict(status='completed', updated_at=old, summary='Complete.')
+        released = dict(status='ready', block_kind='needs_input', block_rekind=None)
+        cases = {
+            'input': ({}, {}, True),
+            'capability': ({}, dict(block_kind='capability'), True),
+            'callback': (dict(_is_return=True, _kanban_claim=dict(native_id='t_callback', run_id=41)), {}, True),
+            'failed': (dict(status='failed'), {}, True),
+            # A native retry owns a ready outcome, and the block check owns its record.
+            'outcome': (dict(_native_outcome_id='t_outcome'), {}, False),
+            'check': (dict(_block_check=dict(attempt=1)), {}, False),
+            'young': (dict(updated_at=young), {}, False),
+            'queued': (dict(status='queued'), {}, False),
+            'parent': ({}, dict(dependencies=[{'id': 't_open'}]), False),
+            'held': ({}, {}, False),
+            'live': ({}, {}, False),
+            'thread': ({}, {}, False),
+            'unknown tool': ({}, {}, False),
+            # Only a ready task was released. A todo or scheduled task becomes ready first, and blocks still hold.
+            'todo': ({}, dict(status='todo'), False),
+            'scheduled': ({}, dict(status='scheduled'), False),
+            'blocked': ({}, dict(status='blocked'), False),
+            'triage': ({}, dict(status='triage', block_kind='capability'), False),
+        }
+        tasks, natives = [], {}
+        for name, (changes, card, _) in cases.items():
+            tasks.append(dict(request, id=name, **changes))
+            natives[name] = dict(released, id='t_' + name, **card)
+        service = self.service(tasks, natives, held=['held'], running=['live'], threads=['thread'],
+                               executing=['unknown tool'])
+        self.assertEqual(self.settled(service), sorted('t_' + name for name, (_, _, settles) in cases.items() if settles))
+        # The old block is not current, so no re-kind proof goes with the call. Board still rechecks the live task.
+        self.assertTrue(all('rekind_event' not in call for call in service.calls), service.calls)
+        self.assertEqual(next(call for call in service.calls if call['id'] == 't_input'),
+                         {'op': 'archive_settled', 'id': 't_input', 'summary': 'Complete.'})
+        # A paused request keeps its task.
+        paused = self.service([dict(request, id='p')], {'p': dict(released, id='t_p')}, paused=True)
+        self.assertEqual(self.settled(paused), [])
+
+    def test_the_report_names_a_released_ready_task_that_was_not_settled(self):
+        from coconut.kanban_scheduler import ORPHAN_ALERT_SLACK_SECONDS, SETTLE_PLAIN_SECONDS
+        late = self.ago(SETTLE_PLAIN_SECONDS + ORPHAN_ALERT_SLACK_SECONDS + 60)
+        service = self.service([dict(id='late', status='completed', updated_at=late)],
+                               {'late': dict(id='t_late', status='ready', block_kind='needs_input', block_rekind=None)})
+        self.assertIn('1 finished requests keep a waiting native task (t_late)', self.report(service))
 
     def test_a_plain_request_settles_after_minutes_and_an_outcome_after_a_day(self):
         from coconut.kanban_scheduler import SETTLE_PLAIN_SECONDS
