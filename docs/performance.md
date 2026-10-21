@@ -1,5 +1,26 @@
 # App performance
 
+## Kanban pass reads, October 21, 2026
+
+Each Kanban pass holds the service lock while it reads Coconut rows. These measurements use a consistent copy of the
+Mac mini database: 16,973 tasks, 1,545 decisions, 4,411 contexts, and 2,622 work and file rows. A stub Kanban serves
+the 1,531 rows of a copy of the live Kanban database. The times come from a laptop. The Mac mini is about 2 to 3 times
+slower.
+
+| Step of one pass | Before | After |
+| --- | ---: | ---: |
+| Finish expired Undo windows (`finish_inbox_swipes`) | 15.6 ms | 0.004 ms |
+| Promote saved legacy work (`_migrate_native_work`) | 48.1 ms | 14.1 ms |
+| Contexts of the ready rows (`_dispatch_kanban`) | 15.6 ms | 0.014 ms |
+
+- The Undo check read and decoded every decision. A partial index, `decisions_undo`, now holds the swiped cards.
+- A work pause reads its pause decisions by ID. It used to decode every decision.
+- The check for a recorded merge decision reads the cards of one PR through the index `decisions_merge_url`.
+- The promotion of legacy work reads only pending decisions and queued or working contexts, through the status indexes.
+- The dispatch reads the contexts of the ready rows by ID. It used to decode every context.
+
+On the copy, the pause and merge answers were the same for all 1,986 PR and work rows with the old and new reads.
+
 ## Server updates, October 15, 2026
 
 These measurements use a new consistent copy of the Mac mini database: 13,976 tasks (64 MB of JSON), 2,103 work and

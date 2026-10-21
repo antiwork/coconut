@@ -349,7 +349,10 @@ class NativeKanban(NativeOutcomes):
             self._dispatch_chat(capacity)
             rows = self._kanban_rows()
             by_id = {r['id']: r for r in rows}
-            contexts = {c['id']: c for c in self._all('contexts')}
+            # Only a ready row can spawn. Read the contexts of those rows by ID, not the whole table.
+            contexts = {row[0]: json.loads(row[1]) for row in self.db.execute(
+                'SELECT id, data FROM contexts WHERE id IN (SELECT value FROM json_each(?))',
+                (json.dumps([row['id'] for row in rows if row['state'] == 'ready']),))}
             foreground = sum(bool(self._get('tasks', i).get('_chat_session') or
                 self._get('tasks', i).get('_work_status_only')) for i in self.running)
             capacity = max(0, capacity - max(0, foreground - 1))

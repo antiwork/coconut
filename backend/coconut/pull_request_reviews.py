@@ -21,6 +21,9 @@ PR_MERGE_INSTRUCTIONS = (
     'Merge permission does not expand deployment or other external-action permission. '
 )
 
+# The cards that name one PR as their merge. The index decisions_merge_url finds them.
+MERGE_DECISIONS = "SELECT data FROM decisions WHERE lower(json_extract(data,'$.merge_pr_url'))=?"
+
 PR_REVIEW_INSTRUCTIONS = (
     'Coconut observed new check or review results for a tracked pull request. This is a request to assess merge readiness, not permission to merge. '
     'Read the current PR head, required checks, reviews, unresolved findings, merge conflicts, and the original human instructions. '
@@ -423,13 +426,16 @@ class PullRequestReviews:
         return heads
 
     def _pr_has_recorded_merge_decision(self, artifact, peers, decisions=None):
+        if decisions is None:
+            with self.lock:
+                decisions = [json.loads(row[0]) for row in self.db.execute(MERGE_DECISIONS, (artifact['url'].lower(),))]
         recorded_check = max((a.get('_review_checked_at', '') for a in peers), default='')
         return any(d.get('merge_pr_url', '').lower() == artifact['url'].lower()
             and d['status'] in ('approved', 'rejected', 'executed', 'dismissed')
             and (d.get('_merge_pr_head') == artifact.get('head_sha')
                 or (not d.get('_merge_pr_head') and (not recorded_check
                     or (d.get('decided_at') or d['created_at']) >= recorded_check)))
-            for d in (self._all('decisions') if decisions is None else decisions) if d.get('merge_pr_url'))
+            for d in decisions if d.get('merge_pr_url'))
 
     def _queue_pr_reviews(self, *, artifact_ids=None):
         from .service import now, uid

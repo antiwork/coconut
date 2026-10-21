@@ -28,7 +28,12 @@ class WorkStatus:
         if peers is None:
             peers = self._work_pause_peers(item, shared=True)
         identities = {p.get('paused_by_decision_id') for p in peers}
-        return next((d for d in (decisions if decisions is not None else self._all_shared('decisions'))
+        if decisions is None:
+            with self.lock:
+                decisions = [json.loads(row[0]) for row in self.db.execute(
+                    'SELECT data FROM decisions WHERE id IN (SELECT value FROM json_each(?)) ORDER BY rowid',
+                    (json.dumps(sorted(identities - {None})),))]
+        return next((d for d in decisions
                      if d['id'] in identities and d.get('decided_by')
                      and d['status'] in PAUSE_DECISION_STATES), None)
 

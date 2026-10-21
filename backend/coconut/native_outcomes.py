@@ -1411,8 +1411,10 @@ class NativeOutcomes:
                 continue
             pr_reports = [self._get('artifacts', i) for i in item.get('_pr_migration_reports', [])]
             pr_urls = {p['url'].lower() for p in pr_reports}
-            pending = any(d['status'] == 'pending' and (d['task_id'] == owner['id']
-                or (d.get('merge_pr_url') or '').lower() in pr_urls) for d in self._all_shared('decisions'))
+            # The status indexes find the few open cards and requests. The tables hold thousands of finished rows.
+            decisions = [json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending'")]
+            pending = any(d['task_id'] == owner['id'] or (d.get('merge_pr_url') or '').lower() in pr_urls for d in decisions)
             waiting = pending or self._background_pending(owner['id']) or bool(owner.get('_waiting_on'))
             waiting = waiting or owner['status'] in ('scheduled', 'paused')
             tasks = self._task_map()
@@ -1432,8 +1434,9 @@ class NativeOutcomes:
             if (any((i not in waiters and tasks[i]['status'] in self.ACTIVE)
                     or self._background_pending(i, excluding_task_ids={owner['id']} if i in waiters else ())
                     for i in related if i in tasks)
-                    or any(d['task_id'] in related and d['status'] == 'pending' for d in self._all_shared('decisions'))
-                    or any(c['task_id'] in attempts and c['status'] in ('queued', 'working') for c in self._all_shared('contexts'))):
+                    or any(d['task_id'] in related for d in decisions)
+                    or any(row[0] in attempts for row in self.db.execute(
+                        "SELECT json_extract(data,'$.task_id') FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working')"))):
                 continue
             unknown = list({r['id']: r for r in (owner.get('_self_recovery') or {}).get('unknown_tools', [])
                 + [r for r in records if r['task_id'] in attempts and r['state'] == 'executing']}.values())

@@ -9,6 +9,9 @@ import json
 CARD_TEXT_LIMITS = dict(context=400, uncertainty=200)
 RISK_LIMIT = 200
 OPTION_EXPLANATION_LIMIT = 200
+# The cards with an open or expired Undo window. The partial index decisions_undo holds them.
+# No ORDER BY: it makes SQLite scan the table. The few rows sort in Python.
+SWIPED_DECISIONS = "SELECT rowid, data FROM decisions WHERE json_extract(data,'$.inbox_undo_until') IS NOT NULL"
 
 
 def decision_risk(payload):
@@ -178,7 +181,7 @@ class DecisionInbox:
         from datetime import datetime, timezone
         callbacks = []
         with self.transaction():
-            for decision in self._all('decisions'):
+            for decision in (json.loads(row[1]) for row in sorted(self.db.execute(SWIPED_DECISIONS).fetchall())):
                 deadline = decision.get('inbox_undo_until')
                 if not deadline or datetime.fromisoformat(deadline.replace('Z', '+00:00')) > datetime.now(timezone.utc):
                     continue
