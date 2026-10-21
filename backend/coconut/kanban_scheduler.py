@@ -177,6 +177,7 @@ class NativeKanban(NativeOutcomes):
                            for identity in self.context_threads)
         selected = set(active_keys)
         refresh_active = any(self._get('contexts', i).get('_decision_refresh') for i in self.context_threads)
+        cards = []  # One card index per pass, built when an outcome first needs it (see _owed_helper_return).
         rows = []
         for context in (json.loads(row[0]) for row in self.db.execute(
                 "SELECT data FROM contexts WHERE rowid IN ("
@@ -212,7 +213,7 @@ class NativeKanban(NativeOutcomes):
             state = native_state(task['status'])
             if task['status'] in ('queued', 'scheduled'):
                 state = ('ready' if self._dispatch_eligible(task, time.time()) and key not in selected
-                         and not self._owed_helper_return(task, known) else 'scheduled')
+                         and not self._owed_helper_return(task, known, cards) else 'scheduled')
                 if state == 'ready':
                     selected.add(key)
             priority = 20 if task.get('_resume_decision') or task.get('_is_return') or task.get('_background_completion') else 10
@@ -223,7 +224,7 @@ class NativeKanban(NativeOutcomes):
             rows.append(self._kanban_row(task, task, state, priority))
         return rows
 
-    def _owed_helper_return(self, task, known):
+    def _owed_helper_return(self, task, known, index=None):
         """Whether a helper that this native outcome waits for still owes it a Coconut result.
 
         The outcome's card waits for the helper's card. Hermes can complete that card while the helper's turn is still
@@ -233,20 +234,33 @@ class NativeKanban(NativeOutcomes):
 
         The helper is the Coconut task that owns a parent card of the outcome's card. A helper whose turn ends with a
         follow-up gets a successor card, so the parent can be an earlier card of the same helper (see _card_owner).
-        Only a helper whose result goes to this outcome counts.
+        Only a helper whose result goes to this outcome counts. `index` holds the snapshot's card index for the whole
+        dispatch pass, so each outcome does not scan the snapshot again.
         """
         card = known.get(task['id'])
         if not task.get('_native_outcome_id') or not card or not card.get('parent_ids'):
             return False
-        cards = {native['id']: native for native in known.values() if native.get('id')}
-        bound = {native['id']: identity for identity, native in known.items()
-                 if native.get('id') and not identity.startswith(('outcome:', 'native:'))}
+        index = [] if index is None else index
+        if not index:
+            index.append(self._card_index(known))
+        cards, bound = index[0]
         for parent in card['parent_ids']:
             helper = self._card_owner(parent, cards.get(parent), bound.get(parent))
             if (helper and helper['id'] != task['id'] and helper.get('_reply_to_task_id') == task['id']
                     and (helper['status'] in self.ACTIVE or helper.get('_return_pending') or helper.get('_native_reply_pending'))):
                 return True
         return False
+
+    @staticmethod
+    def _card_index(known):
+        """Every snapshot card by native id, and the request currently bound to each card."""
+        cards, bound = {}, {}
+        for identity, native in known.items():
+            if native.get('id'):
+                cards[native['id']] = native
+                if not identity.startswith(('outcome:', 'native:')):
+                    bound[native['id']] = identity
+        return cards, bound
 
     def _card_owner(self, identity, native, bound):
         """The Coconut task that owns a native card.

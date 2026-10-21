@@ -1015,6 +1015,76 @@ class ApprovedProposalRequesterContinuationTests(unittest.TestCase):
                     apply(ids)
                 self.assertEqual(self.root_row(ids), state)
 
+    def test_one_card_index_per_dispatch_pass(self):
+        # Every parented outcome reads the same card index of the pass. The number of whole-snapshot scans in one
+        # _kanban_rows pass must not grow with the number of such outcomes, and every hold stays as it was.
+        ids, original, peer = self.incident()
+        self.assertEqual(self.settle(ids), [self.SETTLED])
+        self.readied_root(ids)
+        class Snapshot(dict):
+            scans = 0
+            def items(self):
+                Snapshot.scans += 1
+                return super().items()
+            def values(self):
+                Snapshot.scans += 1
+                return super().values()
+            def keys(self):
+                Snapshot.scans += 1
+                return super().keys()
+            def __iter__(self):
+                Snapshot.scans += 1
+                return super().__iter__()
+        def task(bot, name):
+            created = self.write('/v1/bots/' + bot['id'] + '/messages', {'text': name})
+            row = self.get(created['id'])
+            row.update(_execution_session_id=row['id'], _conversation_epoch=self.epoch)
+            self.service._put('tasks', row)
+            return row
+        def outcome(name, parents):
+            row = task(self.desk, name)
+            row.update(status='queued', _native_outcome_id='t_' + name, _native_turn_id=name + '-input')
+            self.service._put('tasks', row)
+            self.service.kanban.tasks[row['id']] = dict(id='t_' + name, status='ready', current_run_id=None, worker_pid=None,
+                                                        input_id=name + '-input', dependencies=[], parent_ids=parents,
+                                                        **self.created(row['id'], self.desk))
+            return row['id']
+        def helper(name, root, claim=None):
+            row = task(self.care, name)
+            row.update(status='working', _reply_to_task_id=root, _kanban_claim=dict(native_id=claim or 't_' + name, input=row['id']))
+            self.service._put('tasks', row)
+            return row['id']
+        held = {ids['root']: 'scheduled'}
+        # An adopted worker card bound to its helper.
+        adopted = outcome('adopted-root', ['t_adopted'])
+        self.service.kanban.tasks[helper('adopted-helper', adopted)] = dict(id='t_adopted', status='done', created_by='default',
+                                                                            tenant=self.care['id'], idempotency_key='coconut:x:y')
+        # An earlier card of a helper that has moved to a successor.
+        earlier = outcome('earlier-root', ['t_earlier'])
+        moved = helper('moved-helper', earlier, claim='t_moved_next')
+        self.service.kanban.tasks['outcome:t_earlier'] = dict(id='t_earlier', status='done', **self.created(moved, self.care))
+        self.service.kanban.tasks[moved] = dict(id='t_moved_next', status='running', parent_ids=['t_earlier'],
+                                                **self.created(moved, self.care, 'next'))
+        # A bound card that dropped out of the cached snapshot. Its helper still claims it.
+        missing = outcome('missing-root', ['t_gone'])
+        helper('gone-helper', missing, claim='t_gone')
+        held.update({adopted: 'scheduled', earlier: 'scheduled', missing: 'scheduled'})
+        def run_pass(extra):
+            plain = [outcome('plain-%d-%d' % (extra, index), ['t_foreign_%d' % index]) for index in range(extra)]
+            self.service.kanban.tasks = Snapshot(self.service.kanban.tasks)
+            Snapshot.scans = 0
+            states = {row['id']: row['state'] for row in self.service._kanban_rows()}
+            for identity in plain:
+                self.assertEqual(states[identity], 'ready')
+            return {identity: states[identity] for identity in held}, Snapshot.scans, plain
+        first, few, plain = run_pass(1)
+        for identity in plain:
+            self.service._put('tasks', dict(self.get(identity), status='completed'))
+        second, many, _ = run_pass(4)
+        self.assertEqual(first, held)
+        self.assertEqual(second, held)
+        self.assertEqual(many, few)
+
     def test_a_reply_that_arrives_during_the_turn_still_blocks_the_owner(self):
         # When nothing holds the root, for example a helper that is not its parent, the reply arrives as steering.
         # The owner gate keeps treating it as new input.
