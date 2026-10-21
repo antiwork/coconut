@@ -15,8 +15,10 @@ import copy
 import json
 import os
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -57,6 +59,33 @@ NOTE = 'Unfinished: recheck the second paragraph against the help center.\n'
 BRANCH = 'gianfranco/preserve-legacy-rentals'
 SOURCE = assignment_fixtures.SOURCE
 stamp = routine_fixtures.stamp
+BACKEND = str(Path(__file__).resolve().parents[1])
+# The claimed worker's kanban_schedule call on the fixture's own board, as hermes_worker makes it: the claim's
+# HERMES_KANBAN_* environment, Coconut's native bridge, and the installed Hermes tool. The bridge sends each receipt
+# request as one JSON line and reads the service's receipt back, as the worker transport does.
+BRIDGED_TOOL = r'''
+import json, os
+claim, task, arguments = (json.loads(value) for value in sys.argv[2:5])
+os.environ.update(HERMES_KANBAN_TASK=claim['native_id'], HERMES_KANBAN_RUN_ID=str(claim['run_id']),
+                  HERMES_KANBAN_CLAIM_LOCK=claim['claim_lock'])
+import tools.kanban_tools
+from tools.registry import registry
+from coconut.native_bridge import NativeBridge
+requests = iter(range(1, 100))
+def request_receipt(kind, data):
+    request_id = next(requests)
+    print(json.dumps(dict(type=kind, data=data, request_id=request_id)), flush=True)
+    reply = json.loads(sys.stdin.readline())
+    assert reply['request_id'] == request_id, reply
+    return reply['receipt']
+bridge = NativeBridge(dict(operation='start', bot=dict(id=task['bot_id']), task=task), lambda *args: None, request_receipt)
+bridge.install(None)
+try:
+    result = bridge.recorded('kanban_schedule', arguments, lambda args: registry.dispatch('kanban_schedule', args))
+finally:
+    bridge.close()
+print(json.dumps(dict(type='done', result=result)), flush=True)
+'''
 
 
 class ScheduledOriginal:
@@ -704,8 +733,8 @@ class ArchivedScheduledOriginalNativeTests(unittest.TestCase):
         self.registry = self.service.root / 'workspaces'
         self.reviews = self.write('/v1/bots', {'name': 'Reviews', 'role': ''})
         self.helper = self.write('/v1/bots', {'name': 'Copy', 'role': ''})
-        self.provider.tasks, self.restored = [], []
-        self.owner_id, self.continued = None, False
+        self.provider.tasks, self.restored, self.parked = [], [], []
+        self.owner_id, self.continued, self.mismatch = None, False, None
         start = self.provider.start_task
 
         def record(task, bot, history, emit):
@@ -717,22 +746,121 @@ class ArchivedScheduledOriginalNativeTests(unittest.TestCase):
                 # The helper's answer is new input on the scheduled original card. The worker edits the copy locally
                 # and parks the card again.
                 unfinished_copy_edit(self.path)
-                self.park(task)
+                self.park(task, self.mismatch)
             start(task, bot, history, emit)
         self.provider.start_task = record
 
-    def park(self, task):
-        """The worker parks its card with kanban_schedule. Hermes reports where it landed, and the bridge saves that."""
+    def bridged_tool(self, task, claim, arguments, timeout=60, program=BRIDGED_TOOL):
+        """Run the real kanban_schedule call through the native bridge. Return the tool's own result and the receipts.
+
+        The service answers each receipt request of the bridge, as it answers the worker. Nothing here writes the
+        result: the bridge sends the string that the installed Hermes tool returned. One deadline covers the imports,
+        the receipt exchange, and the dispatch. Past it, a watchdog kills this call's own process, which ends the read.
+        The process is always reaped within the deadline and its pipes closed, and a failure shows the end of its stderr.
+        """
+        program = 'import sys\nfrom coconut.kanban_runtime import Board\nboard = Board(sys.argv[1])\n' + program
+        bridge_task = dict(id=task['id'], bot_id=task['bot_id'], _native_turn_id=task['_native_turn_id'])
+        with tempfile.TemporaryFile('w+') as errors:
+            process = self.bridged_process = subprocess.Popen(
+                [native_fixtures.PYTHON, '-c', program, str(self.service.root / 'kanban'), json.dumps(claim),
+                 json.dumps(bridge_task), json.dumps(arguments)],
+                env=dict(os.environ, PYTHONPATH=os.pathsep.join((BACKEND, native_fixtures.SOURCE))),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True)
+            expired = threading.Event()
+
+            def expire():
+                expired.set()
+                process.kill()
+            watchdog = threading.Timer(timeout, expire)
+            watchdog.start()
+            receipts, result, other = [], None, []
+            try:
+                for line in process.stdout:
+                    try:
+                        message = json.loads(line)
+                    except ValueError:
+                        other.append(line[:200])
+                        continue
+                    if message.get('type') == 'done':
+                        result = message['result']
+                        break
+                    receipt = self.service.emit(task['id'], message['type'], message['data'])
+                    receipts.append((message['type'], message['data'], receipt))
+                    try:
+                        process.stdin.write(json.dumps(dict(request_id=message['request_id'], receipt=receipt)) + '\n')
+                        process.stdin.flush()
+                    except BrokenPipeError:
+                        break
+            finally:
+                # Closing stdin ends a child that still waits for a receipt. The watchdog still bounds the wait.
+                try:
+                    process.stdin.close()
+                except BrokenPipeError:
+                    pass
+                code = process.wait()
+                watchdog.cancel()
+                process.stdout.close()
+                errors.seek(0)
+                failure = errors.read()[-2000:]
+        if code or result is None:
+            raise AssertionError('The bridged kanban_schedule call did not finish%s: exit %s, other output %s, stderr %s'
+                                 % (' within %s seconds' % timeout if expired.is_set() else '', code, other[-5:], failure))
+        return result, receipts
+
+    def park(self, task, mismatch=None):
+        """The worker parks its card with the real kanban_schedule tool, and the bridge records its own answer.
+
+        With a mismatch, the worker's call does not fit the claim or the tool, so Hermes refuses it. Then someone
+        schedules the card outside the worker's call, so the card ends the same way, without the worker's proof.
+        """
         claim = task['_kanban_claim']
-        landed = self.native_program(
-            'import json\nassert board.kb.schedule_task(board.conn, sys.argv[2], reason=sys.argv[4], expected_run_id=int(sys.argv[3]))\n'
-            'run = board.kb.latest_run(board.conn, sys.argv[2])\nt = board.kb.get_task(board.conn, sys.argv[2])\n'
-            'print(json.dumps(dict(ok=True, task_id=t.id, run_id=run.id, status=t.status, reason=sys.argv[4])))',
-            claim['native_id'], str(claim['run_id']), REASON)
-        self.assertEqual(json.loads(landed)['run_id'], claim['run_id'])
-        call = self.service.emit(task['id'], 'native_call', dict(name='kanban_schedule',
-                                                                  arguments=dict(task_id=claim['native_id'], reason=REASON)))
-        self.service.emit(task['id'], 'native_result', dict(id=call['id'], result=landed))
+        arguments = dict(task_id=claim['native_id'], reason=REASON)
+        if mismatch == 'schema':
+            arguments['scheduled_until'] = '2026-10-20T16:00:00Z'
+        result, receipts = self.bridged_tool(task, dict(claim, run_id=self.first_run) if mismatch == 'run' else claim,
+                                             arguments)
+        self.parked.append(dict(task=task['id'], turn=task['_native_turn_id'], claim=claim, arguments=arguments,
+                                result=result, receipts=receipts, mismatch=mismatch))
+        if mismatch:
+            self.native_program('assert board.kb.schedule_task(board.conn, sys.argv[2], reason=sys.argv[4], '
+                                'expected_run_id=int(sys.argv[3]))', claim['native_id'], str(claim['run_id']), REASON)
+
+    def test_a_stuck_bridged_call_is_killed_at_its_deadline_and_reaped(self):
+        # A child that never answers: it reports on stderr and stdout, then hangs. The deadline ends it, not the job timeout.
+        stuck = 'import time\nprint("ready", flush=True)\nprint("waiting for nothing", file=sys.stderr, flush=True)\ntime.sleep(600)\n'
+        task = dict(id=str(uuid4()), bot_id=self.reviews['id'], _native_turn_id=str(uuid4()))
+        claim = dict(native_id='t_none', run_id=1, claim_lock='none')
+        started = time.monotonic()
+        with self.assertRaisesRegex(AssertionError, r'did not finish within 2 seconds: exit -9, .*ready.*waiting for nothing'):
+            self.bridged_tool(task, claim, dict(task_id='t_none'), timeout=2, program=stuck)
+        self.assertLess(time.monotonic() - started, 30)
+        process = self.bridged_process
+        self.assertEqual(process.returncode, -9)
+        self.assertTrue(process.stdin.closed and process.stdout.closed)
+        # No receipt was written for the stuck call.
+        self.assertEqual(self.service._native_task_receipts(task['id']), [])
+
+    def assertParked(self, parked):
+        """The bridge recorded the exact call and the tool's own answer, unchanged, in the turn's receipts."""
+        (call_kind, action, call), (result_kind, delivered, confirmed) = parked['receipts']
+        self.assertEqual((call_kind, action, call['status']),
+                         ('native_call', dict(name='kanban_schedule', arguments=parked['arguments']), 'recorded'))
+        self.assertEqual((result_kind, delivered, confirmed),
+                         ('native_result', dict(id=call['id'], result=parked['result'], consumed_process_ids=[]),
+                          {'status': 'recorded'}))
+        saved = self.service._get('native_receipts', call['id'])
+        self.assertEqual((saved['task_id'], saved['turn_id'], saved['state'], saved['action'], saved['result']),
+                         (parked['task'], parked['turn'], 'completed', action, parked['result']))
+        answer = json.loads(parked['result'])
+        claim = parked['claim']
+        if parked['mismatch']:
+            self.assertNotIn('ok', answer)
+            self.assertIn('could not schedule' if parked['mismatch'] == 'run' else 'unknown parameter(s): scheduled_until',
+                          answer['error'])
+        else:
+            # The installed tool's response contract that the archived-card check reads.
+            self.assertEqual(answer, dict(ok=True, task_id=claim['native_id'], run_id=claim['run_id'], status='scheduled',
+                                          reason=REASON))
 
     def update(self, identity, **fields):
         self.assertFalse(self.service.db.in_transaction, 'A fixture write must not nest in another transaction.')
@@ -811,9 +939,12 @@ class ArchivedScheduledOriginalNativeTests(unittest.TestCase):
                 self.assertFalse(worker.is_alive(), 'The return callback turn did not end.')
         return callbacks()
 
-    def scheduled_original(self):
-        """Desk relays the request, its worker edits the worktree and parks the original card, and the settle pass archives it."""
-        self.desk = self.bot
+    def scheduled_original(self, mismatch=None):
+        """Desk relays the request, its worker edits the worktree and parks the original card, and the settle pass archives it.
+
+        With a mismatch, the real tool refuses the last turn's call, and the card is scheduled outside that call.
+        """
+        self.desk, self.mismatch = self.bot, mismatch
         requester = self.update(self.write('/v1/bots/' + self.desk['id'] + '/messages',
                                            {'text': 'Ask Reviews to preserve the legacy rental copy.'})['id'], status='working')
         delivered = self.service._store_bot_message(requester['id'], dict(
@@ -841,14 +972,18 @@ class ArchivedScheduledOriginalNativeTests(unittest.TestCase):
         card = self.service.kanban.tasks[owner['id']]
         original = card['id']
         self.assertEqual(card['idempotency_key'], 'coconut:' + owner['id'])
-        run = int(self.native_program('c = board.kb.claim_task(board.conn, sys.argv[2])\nprint(c.current_run_id)', original))
+        run, lock = json.loads(self.native_program(
+            'import json\nc = board.kb.claim_task(board.conn, sys.argv[2])\nprint(json.dumps([c.current_run_id, c.claim_lock]))',
+            original))
+        self.first_run = run
         # The saved shape: the retained Work migration bound the original card as the outcome while the turn worked.
         # Board.promote returns a card that the request already owns, so the outcome is that original card.
         owner = self.update(owner['id'], status='working', _native_outcome_id=original, _kanban_started=run, _kanban_claim=dict(
-            native_id=original, external_id=owner['id'], input=row['input'], run_id=run, workspace=card['workspace_path']))
+            native_id=original, external_id=owner['id'], input=row['input'], run_id=run, claim_lock=lock,
+            workspace=card['workspace_path']))
         # The first turn asks the copy reviewer, parks the card, and waits for the answer.
         asked = self.service._store_bot_message(owner['id'], dict(target_bot_id=self.helper['id'], text=QUESTION))
-        self.park(self.service._get('tasks', owner['id']) | {'_kanban_claim': owner['_kanban_claim']})
+        self.park(self.service._get('tasks', owner['id']))
         self.service.emit(owner['id'], 'completed', dict(summary='Waiting for the copy review.'))
         owner = self.service._get('tasks', owner['id'])
         self.assertEqual((owner['status'], owner['_waiting_on']), ('waiting', [asked['task_id']]))
@@ -863,6 +998,11 @@ class ArchivedScheduledOriginalNativeTests(unittest.TestCase):
         card = self.service.kanban.tasks[owner['id']]
         self.assertEqual((card['id'], card['status'], card['input_id']), (original, 'scheduled', owner['_native_turn_id']))
         self.assertEqual(owner['_kanban_claim']['input'], owner['_native_turn_id'])
+        # Each turn's real tool call and its unchanged answer are in that turn's receipts. The last one is the current input's.
+        self.assertEqual([(p['turn'], p['claim']['run_id'], p['mismatch']) for p in self.parked],
+                         [(row['input'], run, None), (owner['_native_turn_id'], owner['_kanban_claim']['run_id'], mismatch)])
+        for parked in self.parked:
+            self.assertParked(parked)
         # The idle outcome's worktree is discarded. Its branch and the discard archive keep the unfinished edit.
         self.head, self.unstaged = git(self.path, 'rev-parse', 'HEAD'), changes(self.path)[1]
         with patch('coconut.work_workspace.holders', return_value=set()):
@@ -957,6 +1097,24 @@ class ArchivedScheduledOriginalNativeTests(unittest.TestCase):
             self.service.emit(requester['id'], 'work_continue', dict(task_id=original, message='Continue anyway.'))
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
         self.assertFalse(self.path.exists())
+
+    def assertRefusedCallStaysFinal(self, mismatch):
+        # The card ends exactly as in the continued shape, scheduled by the claim's run, but the worker's real call failed.
+        owner, requester, original = self.scheduled_original(mismatch)
+        self.assertEqual([r[1:] for r in self.card_state(original)['runs']],
+                         [['scheduled', 'scheduled', True], ['scheduled', 'scheduled', True]])
+        with self.assertRaisesRegex(ServiceError, 'not blocked or completed'):
+            self.service.emit(requester['id'], 'work_continue', dict(task_id=original, message='Continue anyway.'))
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.tick()
+        self.assertEqual(len([t for t in self.provider.tasks if t['id'] == owner['id']]), 1)
+        self.assertFalse(self.path.exists())
+
+    def test_schedule_call_of_a_stale_run_leaves_the_card_final(self):
+        self.assertRefusedCallStaysFinal('run')
+
+    def test_schedule_call_outside_the_tool_schema_leaves_the_card_final(self):
+        self.assertRefusedCallStaysFinal('schema')
 
     def test_card_without_its_schedule_receipt_stays_archived(self):
         owner, requester, original = self.scheduled_original()
