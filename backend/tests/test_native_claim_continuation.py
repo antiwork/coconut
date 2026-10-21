@@ -252,6 +252,21 @@ else:
             self.assertNotEqual(rebound['_native_outcome_id'], identity)
             self.assertEqual(rebound['_kanban_claim'], owner['_kanban_claim'])
 
+        end_caller_turn = getattr(self, 'end_caller_turn', None)
+        if end_caller_turn:
+            # The caller's own turn still holds a work slot. It ends before the owner can run.
+            end_caller_turn()
+
+        def same_receipt():
+            # The same call returns the saved receipt while its turn runs. After the turn ended, the service refuses it.
+            if not end_caller_turn:
+                self.assertEqual(self.resume(source, identity), receipt)
+                return
+            with self.assertRaises(ServiceError):
+                self.resume(source, identity)
+            self.assertEqual(len([d for d in self.service._all('deliveries')
+                                  if d['receipt'].get('native_task_id') == identity]), 1)
+
         captured = []
         release = threading.Event()
         self.addCleanup(release.set)
@@ -273,7 +288,7 @@ else:
         self.assertEqual(current['input_id'], queued['_native_turn_id'])
         self.assertEqual(current['workspace_path'], str(workspace))
         self.assertEqual(successor == identity, state != 'done')
-        self.assertEqual(self.resume(source, identity), receipt)
+        same_receipt()
         if state in ('ready', 'review'):
             with self.assertRaises(ServiceError):
                 self.service.emit(source['id'], 'work_continue', dict(
@@ -295,7 +310,7 @@ else:
         self.service._reconcile_kanban()
         self.service._drain_returns()
         self.service._drain_returns()
-        self.assertEqual(self.resume(source, identity), receipt)
+        same_receipt()
         returned = [d for d in self.service._all('deliveries') if d['source_task_id'] == owner['id']
                     and d['id'] not in earlier_returns]
         self.assertEqual(len(returned), 1)
@@ -629,6 +644,9 @@ assert event.get('rekind_reason') == ('no_open_parent' if kind == 'dependency' e
                 # again. The root must not start until the helper's final reply is delivered.
                 reply = ('Route repaired. New blocker: keep the original owner paused until the migration check on '
                          'PR 8549 passes, then publish only the draft.')
+                # One work slot, as on a small runner. Every worker here then waits for the slot.
+                self.service.mutate('PUT', '/v1/settings/work-capacity', {'limit': 1}, str(uuid4()))
+                self.assertEqual(self.service.snapshot()['work_capacity']['effective_limit'], 1)
                 starts, turns = [], []
                 releases = [threading.Event() for _ in range(followups + 1)]
                 root_end = threading.Event()
@@ -648,7 +666,11 @@ assert event.get('rekind_reason') == ('no_open_parent' if kind == 'dependency' e
                             emit('completed', {'summary': 'Route repaired'})
                     elif task['id'] == root['id']:
                         starts.append(conversation_input(dict(operation='start', task=task, history=history))[0])
-                        root_end.wait(60)
+                        if not root_end.wait(60):
+                            return
+                        # The root's turn ends normally after its continuation: its run completes its card.
+                        complete(root, 'Continued the original owner.')
+                        emit('completed', {'summary': 'Continued the original owner.'})
                 self.provider.start_task = provider
                 def wait(condition):
                     for _ in range(300):
@@ -713,6 +735,20 @@ assert event.get('rekind_reason') == ('no_open_parent' if kind == 'dependency' e
                 self.assertEqual(root['_conversation_epoch'], epoch)
                 self.service._dispatch_pending()
                 self.assertEqual(len(starts), 1)
+                def end_root_turn():
+                    # The admitted owner is queued, but the root's running card holds the only work slot.
+                    self.service._dispatch_pending()
+                    self.assertNotIn(owner['id'], self.service.running)
+                    self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'queued')
+                    self.assertEqual(card(root)['status'], 'running')
+                    worker = self.service.running[root['id']]
+                    root_end.set()
+                    worker.join(15)
+                    self.assertFalse(worker.is_alive())
+                    self.assertEqual(self.service._get('tasks', root['id'])['status'], 'completed')
+                    self.service.kanban.call({'op': 'snapshot'})
+                    self.assertEqual(card(root)['status'], 'done')
+                self.end_caller_turn = end_root_turn
             else:
                 # Care finishes normally. Hermes readies the root, and its result resumes the root's outcome.
                 complete(helper, 'Route repaired')
