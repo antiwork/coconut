@@ -29,12 +29,15 @@ MERGE_RISK_LEVELS = ('low', 'medium', 'high')
 
 
 def require_merge_risk(decision):
-    """A merge card always states an assessed risk, on the card or on each of its choices."""
+    """A merge card always states an assessed risk: on the card, or on each choice that merges.
+
+    A choice merges when its label names a merge. A choice such as Leave open needs no risk of its own.
+    """
     from .service import ServiceError
-    options = decision.get('options', [])
+    merges = [option for option in decision.get('options', []) if 'merge' in option.get('label', '').lower()]
     if decision.get('merge_pr_url') and not (
             decision.get('risk_level') in MERGE_RISK_LEVELS
-            or (options and all(option.get('risk_level') in MERGE_RISK_LEVELS for option in options))):
+            or (merges and all(option.get('risk_level') in MERGE_RISK_LEVELS for option in merges))):
         raise ServiceError(400, 'A merge card needs risk_level low, medium, or high, with one sentence in risk '
                                 'that names what the merge could break.')
 

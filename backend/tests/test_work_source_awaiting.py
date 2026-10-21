@@ -44,6 +44,16 @@ class AwaitingUserTests(unittest.TestCase):
     def test_answer_by_the_person_ends_the_wait(self):
         self.assertEqual(awaiting_user([self.item], ['awaiting-human'], lambda args: graphql('person', ('helper', 'Person'))), set())
 
+    def test_every_labeled_item_is_read_in_batches(self):
+        items = [dict(self.item, id=f'{URL[:-1]}{number}') for number in range(1, 121)]
+        calls = []
+        def run(args):
+            count = sum(arg.startswith('u') and '=' in arg for arg in args)
+            calls.append(count)
+            return graphql('person', *[('helper', 'helper')] * count)
+        self.assertEqual(awaiting_user(items, ['awaiting-human'], run), {item['id'] for item in items})
+        self.assertEqual(calls, [50, 50, 20])
+
     def test_unlabeled_items_need_no_read(self):
         self.item['labels'] = ['enhancement']
         self.assertEqual(awaiting_user([self.item], ['awaiting-human'], lambda args: self.fail('No read expected.')), set())

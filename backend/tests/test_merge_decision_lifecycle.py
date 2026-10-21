@@ -360,9 +360,14 @@ class MergeDecisionLifecycleTests(unittest.TestCase):
             with self.subTest(extra=extra), self.assertRaises(ServiceError):
                 self.service.emit(self.task['id'], 'native_question', dict(payload, receipt_id=receipt['id'], **extra))
         self.assertEqual(self.service._all('decisions'), [])
-        option = dict(payload['options'][0], risk_level='medium', risk='Main can break.')
+        merge = dict(payload['options'][0], risk_level='medium', risk='Main can break.')
+        leave = dict(id='leave', label='Leave open', explanation='', risk_level='low', risk='The fix waits.')
+        with self.subTest('only Leave open assessed'), self.assertRaises(ServiceError):
+            self.service.emit(self.task['id'], 'native_question', dict(payload, receipt_id=receipt['id'],
+                                                                      options=[payload['options'][0], leave]))
         with self.assertRaises(YieldForDecision):
-            self.service.emit(self.task['id'], 'native_question', dict(payload, receipt_id=receipt['id'], options=[option]))
+            self.service.emit(self.task['id'], 'native_question', dict(payload, receipt_id=receipt['id'],
+                                                                      options=[merge, dict(leave, risk_level=None, risk='')]))
         self.assertEqual(self.service._all('decisions')[-1]['options'][0]['risk_level'], 'medium')
 
     def test_merge_card_shows_the_current_size_of_the_pr(self):

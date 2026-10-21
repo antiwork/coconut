@@ -145,21 +145,26 @@ def native_bindings(items, bindings, tasks, native_tasks, decisions, source, *, 
 
 
 AWAITING_LABELS = ('awaiting-human',)
-AWAITING_LIMIT = 50
+AWAITING_BATCH = 50
 
 
 def awaiting_user(items, labels, run):
     """Return the IDs of labeled items whose latest comment is not by the GitHub account that reads them.
 
     The source asked the person a question and nobody answered it yet. run(args) runs one command in the bot's
-    environment. One GraphQL request reads every candidate. A failed read returns no items, so the audit keeps its
-    earlier rules.
+    environment. Each GraphQL request reads up to AWAITING_BATCH candidates. A failed read returns no items from
+    its batch, so those items keep the earlier rules.
     """
     from .decision_sources import github_source
     candidates = [item['id'] for item in items
-                  if set(item.get('labels') or []) & set(labels) and github_source(item['id'])][:AWAITING_LIMIT]
-    if not candidates:
-        return set()
+                  if set(item.get('labels') or []) & set(labels) and github_source(item['id'])]
+    result = set()
+    for start in range(0, len(candidates), AWAITING_BATCH):
+        result |= _awaiting_batch(candidates[start:start + AWAITING_BATCH], run)
+    return result
+
+
+def _awaiting_batch(candidates, run):
     fields = '{ author { login } comments(last: 1) { nodes { author { login } } } }'
     query = ('query(' + ', '.join(f'$u{index}: URI!' for index in range(len(candidates))) + ') { viewer { login } '
              + ' '.join(f'r{index}: resource(url: $u{index}) {{ ... on Issue {fields} ... on PullRequest {fields} }}'
