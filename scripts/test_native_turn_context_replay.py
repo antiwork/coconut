@@ -34,6 +34,7 @@ def child():
     from coconut.native_fallback import configuration
 
     home = Path(os.environ['HERMES_HOME'])
+    (home / '.no-bundled-skills').write_text('Use essential Hermes skills only.\n')
     owner = home / 'owner'
     owner.mkdir()
     (home / 'config.yaml').write_text(json.dumps({

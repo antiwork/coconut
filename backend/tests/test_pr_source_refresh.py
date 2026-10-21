@@ -108,7 +108,7 @@ class PRSourceRefreshTests(unittest.TestCase):
         artifacts = self.service._all('artifacts')
         newer = self.service._get('decisions', 'newer-card')
         fingerprint, _ = self.service._decision_evidence(newer, tasks,
-            self.service._decision_records(newer, tasks, artifacts), artifacts)
+            self.service._decision_records(newer, tasks, artifacts), artifacts, profile_revision=self.service.profiles.prompt_revision(self.service._get('bots', newer['bot_id'])))
         self.assertEqual(context['_evidence_fingerprint'], fingerprint)
         context['status'] = 'completed'
         self.service._put('contexts', context)
@@ -426,7 +426,7 @@ class PRSourceRefreshTests(unittest.TestCase):
                     tasks = {t['id']: t for t in self.service._all('tasks')}
                     artifacts = self.service._all('artifacts')
                     fingerprint, _ = self.service._decision_evidence(current, tasks,
-                        self.service._decision_records(current, tasks, artifacts), artifacts)
+                        self.service._decision_records(current, tasks, artifacts), artifacts, profile_revision=self.service.profiles.prompt_revision(self.service._get('bots', current['bot_id'])))
                     self.assertEqual(context['_evidence_fingerprint'], fingerprint)
             finally:
                 release_target.set()

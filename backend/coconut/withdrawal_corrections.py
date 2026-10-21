@@ -321,6 +321,7 @@ class WithdrawalCorrections:
         return destination.get('status') in ('cancelled', 'failed') and not destination.get('_refresh_recorded')
 
     def correct_withdrawal(self, task_id, payload):
+        from .profiles import ProfileError
         from .service import ServiceError, now, uid
         request = correction_request(payload)
         with self.lock:
@@ -354,6 +355,10 @@ class WithdrawalCorrections:
                 return previous
             card = self._withdrawn_card(caller, request)
             decision, task, context = card['decision'], card['task'], card['context']
+            try:
+                profile_revision = self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
+            except (OSError, ProfileError) as error:
+                raise ServiceError(409, 'Coconut cannot read the current bot instructions. Retry this correction after the profile is readable.') from error
             withdrawn = {key: decision.get(key) for key in (
                 'status', 'revision', 'resolution', 'resolution_context', 'outcome', 'resolved_at',
                 '_withdrawal', '_freshness', '_source_check')}
@@ -376,7 +381,7 @@ class WithdrawalCorrections:
             self._put('decisions', decision)
             tasks, artifacts = self._task_map(), self._all('artifacts')
             records = self._decision_records(decision, tasks, artifacts)
-            fingerprint, _ = self._decision_evidence(decision, tasks, records, artifacts)
+            fingerprint, _ = self._decision_evidence(decision, tasks, records, artifacts, profile_revision=profile_revision)
             decision['_freshness'] = dict(fingerprint=fingerprint, checked_at=correction['corrected_at'],
                                           correction_id=correction['id'])
             self._put('decisions', decision)

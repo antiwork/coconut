@@ -30,6 +30,16 @@ Each bot can inherit these values or store an override in its own native configu
 
 Coconut installs no files into the Hermes source checkout.
 The worker loads `AIAgent`, native CLI tool configuration, profile context, memory, and skill discovery.
+The worker records a revision of native identity and memory files in the session metadata.
+Each file must contain valid UTF-8 in a regular file of at most 1 MiB.
+When those files change, the worker clears the saved prompt through `SessionDB.update_system_prompt`.
+Hermes rebuilds the prompt from current native files once.
+Unchanged turns keep the saved prompt and native session hooks.
+The same session retains its full history and tool receipts.
+The recorded card choice keeps its exact action scope.
+The worker attaches its captured revision to card and tool requests.
+The service checks that revision before it records a current assessment.
+Changes during a turn leave its cards stale until another check.
 A runtime plugin registers middleware through Hermes's plugin API.
 The middleware records tool intent and result through the parent service.
 Coconut adapts native approvals through the gateway callback and resolves profile inheritance during each approval check.
@@ -42,6 +52,9 @@ Switching modes affects subsequent actions. It cannot undo an action already exe
 
 The service persists each question or approval before releasing its turn and publishing an event.
 Other bots continue. Context requests produce linked answers while preserving the decision.
+Pending card checks include the current profile revision.
+A change to identity or memory schedules a new assessment of the same card.
+This check does not answer the card.
 After an answer, the service starts a continuation with the recorded choice and prior completed tool receipts.
 A completed tool result can satisfy its matching replay call once. New turns use new receipt generations.
 

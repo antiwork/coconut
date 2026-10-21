@@ -17,6 +17,7 @@ class SessionDB:
     def resolve_session_by_title(self, title): return None
     def set_session_title(self, session_id, title): pass
     def end_session(self, session_id, reason): pass
+    def update_system_prompt(self, session_id, system_prompt): pass
     def get_resume_conversations(self, session_id): return self.sessions.get(session_id, []), []
     def close(self): pass
 ''')

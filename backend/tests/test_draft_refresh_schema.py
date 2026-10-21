@@ -56,15 +56,19 @@ class DraftRefreshSchemaTests(unittest.TestCase):
             Path({str(capture)!r}).write_text(json.dumps(dict(schema=schema, result=result)))
             return {{'completed': True, 'final_response': ''}}
         ''')
+        provider.data_dir = self.service.root
+        provider.catalog = workers.FakeNativeCatalog(self.service.root)
         self.service._queue_decision_refreshes()
         context = self.service._all('contexts')[-1]
         self.assertEqual(context['status'], 'queued')
         responses = []
+        revisions = []
         answer_context = provider.answer_context
 
         def answer(task, bot, history, question, emit):
             self.assertTrue(task['_decision_refresh'])
             self.assertIn('action_type', task['pending_decision'])
+            revisions.append(self.service.profiles.prompt_revision(bot))
 
             def route(kind, data):
                 if kind == 'decision_response':
@@ -83,7 +87,10 @@ class DraftRefreshSchemaTests(unittest.TestCase):
         context = self.service._get('contexts', context['id'])
         self.assertTrue(capture.exists(), context)
         captured = json.loads(capture.read_text())
-        self.assertEqual(responses, [payload], captured.get('errors', context))
+        self.assertEqual(len(responses), 1, captured.get('errors', context))
+        response = dict(responses[0])
+        self.assertEqual(response.pop('_worker_profile_revision'), revisions[0])
+        self.assertEqual(response, payload, captured.get('errors', context))
         return context, captured
 
     def test_draft_assessment_validates_and_reaches_service(self):
