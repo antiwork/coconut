@@ -177,6 +177,7 @@ class NativeKanban(NativeOutcomes):
                            for identity in self.context_threads)
         selected = set(active_keys)
         refresh_active = any(self._get('contexts', i).get('_decision_refresh') for i in self.context_threads)
+        cards = []  # One card index per pass, built when an outcome first needs it (see _owed_helper_return).
         rows = []
         for context in (json.loads(row[0]) for row in self.db.execute(
                 "SELECT data FROM contexts WHERE rowid IN ("
@@ -211,7 +212,8 @@ class NativeKanban(NativeOutcomes):
             key = execution_key(task)
             state = native_state(task['status'])
             if task['status'] in ('queued', 'scheduled'):
-                state = 'ready' if self._dispatch_eligible(task, time.time()) and key not in selected else 'scheduled'
+                state = ('ready' if self._dispatch_eligible(task, time.time()) and key not in selected
+                         and not self._owed_helper_return(task, known, cards) else 'scheduled')
                 if state == 'ready':
                     selected.add(key)
             priority = 20 if task.get('_resume_decision') or task.get('_is_return') or task.get('_background_completion') else 10
@@ -221,6 +223,69 @@ class NativeKanban(NativeOutcomes):
                 priority = audit_priority(assignment)
             rows.append(self._kanban_row(task, task, state, priority))
         return rows
+
+    def _owed_helper_return(self, task, known, index=None):
+        """Whether a helper that this native outcome waits for still owes it a Coconut result.
+
+        The outcome's card waits for the helper's card. Hermes can complete that card while the helper's turn is still
+        running, before the helper's final reply exists. If the outcome started then, it would see only the native
+        summary, and the reply would arrive later as steering. So the outcome waits until the helper's turn has
+        finished and its return has been delivered. Then the reply is part of the outcome's next input.
+
+        The helper is the Coconut task that owns a parent card of the outcome's card. A helper whose turn ends with a
+        follow-up gets a successor card, so the parent can be an earlier card of the same helper (see _card_owner).
+        Only a helper whose result goes to this outcome counts. `index` holds the snapshot's card index for the whole
+        dispatch pass, so each outcome does not scan the snapshot again.
+        """
+        card = known.get(task['id'])
+        if not task.get('_native_outcome_id') or not card or not card.get('parent_ids'):
+            return False
+        index = [] if index is None else index
+        if not index:
+            index.append(self._card_index(known))
+        cards, bound = index[0]
+        for parent in card['parent_ids']:
+            helper = self._card_owner(parent, cards.get(parent), bound.get(parent))
+            if (helper and helper['id'] != task['id'] and helper.get('_reply_to_task_id') == task['id']
+                    and (helper['status'] in self.ACTIVE or helper.get('_return_pending') or helper.get('_native_reply_pending'))):
+                return True
+        return False
+
+    @staticmethod
+    def _card_index(known):
+        """Every snapshot card by native id, and the request currently bound to each card."""
+        cards, bound = {}, {}
+        for identity, native in known.items():
+            if native.get('id'):
+                cards[native['id']] = native
+                if not identity.startswith(('outcome:', 'native:')):
+                    bound[native['id']] = identity
+        return cards, bound
+
+    def _card_owner(self, identity, native, bound):
+        """The Coconut task that owns a native card.
+
+        A card's current binding names its request. An earlier card of a request that moved to a successor has no
+        binding, so its own creation record names the request: Board creates every card of a request with created_by
+        'coconut', the request's bot as tenant, and an idempotency key `coconut:<id>`, `coconut:<id>:<input>`, or
+        `coconut-followup:<id>:<input>` for the successor of a done card. A worker's own kanban_create card has another
+        creator and names no owner. The snapshot keeps every unbound and outcome card. Only a bound card that finished
+        long ago can be missing, and its request still names it in its claim or outcome.
+        """
+        if bound:
+            row = self.db.execute('SELECT data FROM tasks WHERE id=?', (bound,)).fetchone()
+            return json.loads(row[0]) if row else None
+        if native is None:
+            rows = self.db.execute("SELECT data FROM tasks WHERE json_extract(data,'$._kanban_claim.native_id')=? "
+                                   "OR json_extract(data,'$._native_outcome_id')=? LIMIT 2", (identity, identity)).fetchall()
+            return json.loads(rows[0][0]) if len(rows) == 1 else None
+        key = native.get('idempotency_key') or ''
+        prefix = next((p for p in ('coconut-followup:', 'coconut:') if key.startswith(p)), None)
+        if native.get('created_by') != 'coconut' or not prefix:
+            return None
+        row = self.db.execute('SELECT data FROM tasks WHERE id=?', (key[len(prefix):].split(':', 1)[0],)).fetchone()
+        owner = json.loads(row[0]) if row else None
+        return owner if owner and owner['bot_id'] == native.get('tenant') else None
 
     def _dispatch_status_request(self):
         # A read-only progress question keeps its own bounded session when work capacity is full.

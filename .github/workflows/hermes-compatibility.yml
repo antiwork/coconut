@@ -90,7 +90,7 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_claim_continuation.py 2> .runtime/native-claim-continuation.log || { cat .runtime/native-claim-continuation.log; exit 1; }
           cat .runtime/native-claim-continuation.log
           grep -qx 'OK' .runtime/native-claim-continuation.log # The requester-root callback dispatch checks must run, not skip.
-          grep -Eq '^Ran 36 tests in ' .runtime/native-claim-continuation.log # Includes both approved proposal root checks.
+          grep -Eq '^Ran 38 tests in ' .runtime/native-claim-continuation.log # Includes the approved proposal root checks and its waits for the helper's reply.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_waiting_occurrence_release.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_occurrence_completion.py 2> .runtime/native-occurrence-completion.log || { cat .runtime/native-occurrence-completion.log; exit 1; }
           cat .runtime/native-occurrence-completion.log
