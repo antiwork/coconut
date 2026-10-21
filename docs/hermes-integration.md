@@ -3,8 +3,8 @@
 Each Coconut bot maps to one native Hermes profile. Coconut's adapter runs outside the upstream source checkout.
 The installer pins and verifies the upstream revision before accepting updates.
 
-The tested revision is `5b147ab036d6d19131bff8d20701b5001eab844a` from stable release `v0.22.3`.
-Its primary interfaces are [AIAgent](https://github.com/NousResearch/hermes-agent/blob/5b147ab036d6d19131bff8d20701b5001eab844a/run_agent.py),
+The tested revision is `4d04303818b61bf3aa09278af48356315515965b` from stable release `v0.22.4`.
+Its primary interfaces are [AIAgent](https://github.com/NousResearch/hermes-agent/blob/4d04303818b61bf3aa09278af48356315515965b/run_agent.py),
 [native profiles](https://hermes-agent.nousresearch.com/docs/user-guide/profiles/),
 [native memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory/),
 [approvals](https://hermes-agent.nousresearch.com/docs/user-guide/security/), and
@@ -126,7 +126,7 @@ Coconut changes no Hermes source files.
 Native cron APIs create, edit, pause, resume, delete, claim, and finish jobs in each profile.
 Coconut runs supported prompt jobs as conversation tasks while the phone is closed.
 Native cron state determines recurrence and repeat limits.
-Completion uses the pinned [native outcome and schedule helpers](https://github.com/NousResearch/hermes-agent/blob/5b147ab036d6d19131bff8d20701b5001eab844a/cron/jobs.py).
+Completion uses the pinned [native outcome and schedule helpers](https://github.com/NousResearch/hermes-agent/blob/4d04303818b61bf3aa09278af48356315515965b/cron/jobs.py).
 Coconut records the completion owner in the same native write as the outcome.
 This lets a retry confirm completion without advancing the schedule twice.
 The compatibility check verifies these interfaces before accepting an update.
