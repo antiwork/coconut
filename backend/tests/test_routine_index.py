@@ -87,7 +87,8 @@ class RoutineIndexTests(unittest.TestCase):
         # The statements that the routine pass runs, not copies of them.
         statements = {'events of a routine task': routine_coordinator.ROUTINE_EVENTS,
                       'events of a completion': routine_coordinator.COMPLETION_EVENTS,
-                      'deliveries of a task': routine_coordinator.ROUTINE_DELIVERIES}
+                      'deliveries of a task': routine_coordinator.ROUTINE_DELIVERIES,
+                      'first delivery of a task': routine_coordinator.CREATION_DELIVERY}
         for name, statement in statements.items():
             values = ('t', 'b')[:statement.count('?')]
             plan = ' | '.join(row[3] for row in self.service.db.execute('EXPLAIN QUERY PLAN ' + statement, values))
