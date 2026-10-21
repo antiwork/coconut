@@ -81,7 +81,7 @@ from .work_status import WorkStatus
 from .background_processes import BackgroundProcesses, PENDING_COMPLETIONS
 from .native_execution import NativeExecution
 from .decision_inbox import DecisionInbox
-from .pull_request_reviews import PullRequestReviews
+from .pull_request_reviews import PENDING_CARDS, PR_ARTIFACTS, PullRequestReviews
 from .work_progress import WorkProgress, work_enabled
 
 
@@ -2806,11 +2806,12 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         with self.lock:
             if self.stopping.is_set():
                 return
-            artifacts = [a for a in self._all('artifacts') if a['kind'] == 'pr' and a['status'] != 'merged' and a.get('pr_state') not in ('closed', 'merged') and not self._get('bots', a['bot_id']).get('_deleted')]
+            artifacts = [a for a in (json.loads(row[0]) for row in self.db.execute(PR_ARTIFACTS))
+                         if a['status'] != 'merged' and a.get('pr_state') not in ('closed', 'merged') and not self._get('bots', a['bot_id']).get('_deleted')]
         from .decision_sources import github_links, github_source
         with self.lock:
-            decisions = [d for d in self._all('decisions') if d['status'] == 'pending'
-                         and not d.get('_hidden') and not d.get('_deleted')]
+            decisions = [d for d in (json.loads(row[0]) for row in self.db.execute(PENDING_CARDS))
+                         if not d.get('_hidden') and not d.get('_deleted')]
         observations, grouped = {}, {}
         for artifact in artifacts:
             key = (artifact['bot_id'], artifact['url'].lower())
@@ -2866,7 +2867,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
             nonlocal pending_sources
             with self.lock:
                 self._pending_decision_sources.clear()
-                for decision in self._all('decisions'):
+                # This runs every 0.2 s while the poll waits. Read only the pending cards.
+                for decision in (json.loads(row[0]) for row in self.db.execute(PENDING_CARDS)):
                     if (decision['status'] != 'pending' or decision.get('_hidden') or decision.get('_deleted')
                             or self._get('bots', decision['bot_id']).get('_deleted')):
                         continue

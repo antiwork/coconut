@@ -21,6 +21,26 @@ slower.
 
 On the copy, the pause and merge answers were the same for all 1,986 PR and work rows with the old and new reads.
 
+### PR poll
+
+The PR poll runs every 60 seconds and when a bot tracks a PR. The copy had 7 open PR groups.
+
+| Step | Before | After |
+| --- | ---: | ---: |
+| Card read of `schedule_sources`, every 0.2 s while a refresh waits | 17.2 ms | 0.026 ms |
+| `_resolve_merged_pr_decisions`, once for each PR group and once at the end | 23.6 ms | 0.012 ms |
+| `_queue_pr_reviews` for one PR group | 369 ms | 37 ms |
+| `_queue_pr_reviews` for all PRs, at the end of a refresh | 589 ms | 161 ms |
+
+- The poll reads the pending cards through the status index.
+- The merged-card check reads pending merge cards first. It reads the merged PR rows only when such a card exists.
+- The review queue reads the PR rows, not all rows. It reads the review tasks and their execution sessions by ID. It used
+  to decode all 16,973 tasks for each PR group.
+- Each PR group still schedules its own review as soon as GitHub answers. A slow PR does not delay the others.
+
+To check the writes, both versions ran on a copy with the review marks of 607 PR rows cleared and 20 merged cards set to
+pending. They wrote the same 20 resolved cards, 3 queued reviews, and 23 events.
+
 ## Server updates, October 15, 2026
 
 These measurements use a new consistent copy of the Mac mini database: 13,976 tasks (64 MB of JSON), 2,103 work and
