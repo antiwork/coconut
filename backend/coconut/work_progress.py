@@ -285,6 +285,10 @@ class WorkProgress:
                 assignment['_explicit_work_waits'] = list(dict.fromkeys(assignment.get('_explicit_work_waits', []) + [target_id]))
                 self._put('tasks', assignment)
                 return {'status': 'waiting', 'task_id': target_id, 'reason': reason}
+            # A saved wait would only resume a new turn with this same result, and that turn can wait again.
+            result = self._final_task_result(target)
+            if result:
+                return {'status': 'completed', 'task_id': target_id, 'result': result}
             identity = digest(json.dumps([task_id, task.get('_native_turn_id'), target_id]))
             existing = self.db.execute('SELECT 1 FROM native_receipts WHERE id=?', (identity,)).fetchone()
             if not existing:
@@ -323,6 +327,18 @@ class WorkProgress:
                 dependencies.append({key: target.get(key) for key in ('id', 'bot_id', 'title')}
                                     | {'status': 'waiting' if pending and target['status'] == 'completed' else target['status']})
             return dependencies
+
+    def _final_task_result(self, target):
+        """The result of a completed task when no process, dependency, unfinished step, or native run can change it."""
+        if (target['status'] != 'completed' or self._background_pending(target['id']) or target.get('_waiting_on')
+                or self._unfinished_work(target)):
+            return None
+        if target.get('_native_outcome_id'):
+            native = self.kanban.tasks.get(target['id'], {}) if self.kanban else {}
+            accepted = str(target.get('_native_turn_id') or target.get('_message_id') or target['id'])
+            if (native.get('id'), native.get('status'), native.get('input_id')) != (target['_native_outcome_id'], 'done', accepted):
+                return None
+        return f"Task {target['id']} completed: {target['summary']}"
 
     def _wait_completion(self, record, task):
         source = self._get('native_receipts', record['_wait_process_receipt']) if record.get('_wait_process_receipt') else None

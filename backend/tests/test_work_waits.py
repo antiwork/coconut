@@ -217,3 +217,134 @@ class WorkWaitTests(unittest.TestCase):
         self.assertEqual(result['status'], 'completed')
         self.assertNotIn('_work_retry', result)
         self.assertEqual(result['_return_pending']['result_status'], 'completed')
+
+    def working(self):
+        with self.service.transaction():
+            task = self.service._get('tasks', self.child)
+            task.update(status='working', _conversation_epoch=self.service._setting('conversation_epoch'))
+            self.service._put('tasks', task)
+
+    def task_waits(self, target):
+        return [r for r in self.service._all('native_receipts') if r.get('_wait_task_id') == target]
+
+    def test_completed_target_returns_its_result_without_a_wait(self):
+        target = self.target(); self.finish_target(target); self.working()
+        result = self.service.wait_for_task(self.child, {'task_id': target, 'reason': 'Waiting for publication'})
+        self.assertEqual(result, {'status': 'completed', 'task_id': target,
+                                  'result': f'Task {target} completed: Publication verified.'})
+        self.assertEqual(self.task_waits(target), [])
+        self.service._drain_process_completions()
+        self.assertEqual(self.service._get('tasks', self.child)['status'], 'working')
+        self.assertNotIn('_background_completion', self.service._get('tasks', self.child))
+
+    def test_repeated_wait_after_delivery_does_not_resume_the_turn_again(self):
+        target = self.target()
+        self.wait(target)
+        self.finish_target(target)
+        self.service._drain_process_completions()
+        resumed = self.service._get('tasks', self.child)
+        self.assertEqual(resumed['status'], 'queued')
+        self.assertIn('Publication verified', resumed['_background_completion'][0])
+        turn = resumed['_native_turn_id']
+        self.assertEqual([r['_process_delivery'] for r in self.task_waits(target)], [turn])
+        replies, original = [], self.provider.start_task
+        def start(task, bot, history, emit):
+            if task['id'] != self.child:
+                return original(task, bot, history, emit)
+            # The resumed turn has a new native turn ID and repeats the same wait.
+            replies.append(emit('work_wait', {'task_id': target, 'reason': 'Waiting for publication'}))
+            emit('text_delta', {'text': 'Published the validated patch.'})
+            emit('completed', {'summary': 'Complete.', '_work_todos': progress('completed')})
+        self.provider.start_task = start
+        self.service._run_task(self.child)
+        self.provider.start_task = original
+        self.assertEqual(replies, [{'status': 'completed', 'task_id': target,
+                                    'result': f'Task {target} completed: Publication verified.'}])
+        self.assertEqual(len(self.task_waits(target)), 1)
+        self.assertEqual(self.service._get('tasks', self.child)['status'], 'completed')
+        for restart in (False, True):
+            if restart:
+                self.service.close()
+                self.service = Service(self.temp.name, self.provider, start_workers=False)
+            self.service._drain_process_completions()
+            self.service._drain_returns()
+            finished = self.service._get('tasks', self.child)
+            self.assertEqual((finished['status'], finished['_native_turn_id']), ('completed', turn))
+            self.assertEqual(len(self.task_waits(target)), 1)
+        returns = [t for t in self.service._all('tasks') if t.get('_is_return') and t['bot_id'] == self.desk['id']]
+        self.assertEqual(len(returns), 1)
+
+    def test_completed_target_with_pending_work_still_waits_for_its_new_result(self):
+        target = self.target(); self.finish_target(target)
+        with self.service.transaction():
+            self.service._put('native_receipts', dict(id=str(uuid4()), task_id=target, turn_id=None,
+                action={'name': 'terminal', 'arguments': {'background': True, 'notify': True}}, state='completed',
+                result=json.dumps({'session_id': 'proc_publish', 'notify_on_complete': True, 'status': 'running'})))
+        self.wait(target)
+        self.assertEqual(len(self.task_waits(target)), 1)
+        self.service._drain_process_completions()
+        self.assertEqual(self.service._get('tasks', self.child)['status'], 'waiting')
+        self.provider.results['proc_publish'] = 'Publication checks passed.'
+        self.service._drain_process_completions()
+        self.assertEqual(self.service._get('tasks', target)['status'], 'queued')
+        self.assertEqual(self.service._get('tasks', self.child)['status'], 'waiting')
+        self.service._run_task(target)
+        self.service._drain_process_completions()
+        resumed = self.service._get('tasks', self.child)
+        self.assertEqual(resumed['status'], 'queued')
+        self.assertEqual(resumed['_background_completion'], [f'Task {target} completed: Complete.'])
+
+    def test_unsettled_targets_keep_a_durable_wait(self):
+        cases = {
+            'dependency': {'_waiting_on': [str(uuid4())]},
+            'unfinished work': {'_work_todos': progress()},
+            'failed': {'status': 'failed'},
+        }
+        for label, change in cases.items():
+            with self.subTest(label):
+                target = self.target(); self.finish_target(target); self.working()
+                with self.service.transaction():
+                    task = self.service._get('tasks', target); task.update(change); self.service._put('tasks', task)
+                result = self.service.wait_for_task(self.child, {'task_id': target, 'reason': 'Waiting for publication'})
+                self.assertEqual(result['status'], 'waiting')
+                self.assertEqual(len(self.task_waits(target)), 1)
+
+    def test_native_target_returns_its_result_only_after_the_board_settles(self):
+        target = self.target(); self.finish_target(target); self.working()
+        with self.service.transaction():
+            task = self.service._get('tasks', target)
+            task.update(_native_outcome_id='native-target', _native_turn_id='target-input')
+            self.service._put('tasks', task)
+        card = {'id': 'native-target', 'status': 'running', 'input_id': 'target-input', 'dependencies': []}
+        native = SimpleNamespace(call=Mock(), tasks={target: card, self.child: {'id': 'native-child', 'dependencies': []}})
+        with patch.object(self.service, 'kanban', native):
+            result = self.service.wait_for_task(self.child, {'task_id': target, 'reason': 'Waiting for publication'})
+            self.assertEqual(result['status'], 'waiting')
+            self.assertEqual(len(self.task_waits(target)), 1)
+            with self.service.transaction():
+                task = self.service._get('tasks', self.child); task['_native_turn_id'] = 'next-turn'
+                self.service._put('tasks', task)
+                receipt = self.task_waits(target)[0]; receipt['_process_delivery'] = 'earlier-turn'
+                self.service._put('native_receipts', receipt)
+            card['status'] = 'done'
+            result = self.service.wait_for_task(self.child, {'task_id': target, 'reason': 'Waiting for publication'})
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(len(self.task_waits(target)), 1)
+
+    def test_changed_target_result_reaches_a_later_wait(self):
+        target = self.target(); self.finish_target(target); self.working()
+        first = self.service.wait_for_task(self.child, {'task_id': target, 'reason': 'Waiting for publication'})
+        self.assertEqual((first['status'], first.get('result')), ('completed', f'Task {target} completed: Publication verified.'))
+        with self.service.transaction():
+            task = self.service._get('tasks', target); task.update(status='working', summary='Refreshing the PR.')
+            self.service._put('tasks', task)
+            waiter = self.service._get('tasks', self.child); waiter['status'] = 'queued'
+            self.service._put('tasks', waiter)
+        self.wait(target)
+        self.assertEqual(len(self.task_waits(target)), 1)
+        with self.service.transaction():
+            task = self.service._get('tasks', target); task.update(status='completed', summary='The refreshed PR passed.')
+            self.service._put('tasks', task)
+        self.service._drain_process_completions()
+        self.assertEqual(self.service._get('tasks', self.child)['_background_completion'],
+                         [f'Task {target} completed: The refreshed PR passed.'])

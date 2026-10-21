@@ -1272,7 +1272,7 @@ def run_turn(request, emit, request_receipt):
                 'Use process_id only when the terminal result confirms notify_on_complete=true. '
                 'Otherwise use native process(action="wait") until the process exits. '
                 'especially if its owner task already depends on your reply. Finish your turn after registration; '
-                'Coconut resumes it once the task finishes or fails. A completed process returns its saved result immediately; '
+                'Coconut resumes it once the task finishes or fails. A completed task or process returns its saved result immediately; '
                 'use that result without waiting again. This does not send a message or create new work.',
                 'parameters': {'type': 'object', 'properties': {
                     'task_id': {'type': 'string'}, 'process_id': {'type': 'string'}, 'decision_id': {'type': 'string'}, 'reason': {'type': 'string', 'maxLength': 80}}}}
