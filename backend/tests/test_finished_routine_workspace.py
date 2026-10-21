@@ -1,10 +1,12 @@
 """A finished routine continuation keeps its own execution workspace after the scheduled one retires."""
 import copy
+import itertools
 from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 import textwrap
 from types import SimpleNamespace
 import unittest
@@ -13,6 +15,7 @@ from uuid import uuid4
 
 from coconut import native_routine_receipts as receipts
 from coconut.native_bridge import NativeBridge, TurnPaused
+from coconut import native_routine_execution
 from coconut.native_routine_execution import job_context
 from coconut.providers import HermesProvider
 import test_native_scheduler as scheduler_fixtures
@@ -86,7 +89,7 @@ class FinishedRoutineWorkspaceTests(unittest.TestCase):
             task['_native_job_completion'] = proof
         return task
 
-    def run_turn(self, task):
+    def run_turn(self, task, *, retired_absent=True):
         sent = copy.deepcopy(task)
         events = []
         self.provider.prepare_kanban_worker(task['_kanban_external_id'], self.bot, str(self.workspace), self.execution)
@@ -102,7 +105,8 @@ class FinishedRoutineWorkspaceTests(unittest.TestCase):
         scopes.unlink(missing_ok=True)
         prompts = Path(str(self.capture) + '.prompts')
         self.prompts = [json.loads(line) for line in prompts.read_text().splitlines()] if prompts.exists() else []
-        self.assertFalse(self.retired.exists(), 'A retired worktree must not be recreated or restored.')
+        if retired_absent:
+            self.assertFalse(self.retired.exists(), 'A retired worktree must not be recreated or restored.')
         self.assertEqual(self.manifest.read_text(), self.saved_manifest)
         return events, rows
 
@@ -125,6 +129,7 @@ class FinishedRoutineWorkspaceTests(unittest.TestCase):
         self.assertEqual(self.routine_scope(rows), [str(self.workspace)])
         self.assertIn(['terminal', task['id'], str(self.workspace)], rows)
         self.assertIn('Verify the installation.', self.prompts[-1])
+        self.assertNotIn('Coconut retired the scheduled working directory', self.prompts[-1])
 
     def test_failed_occurrence_with_its_own_continuation_uses_its_workspace(self):
         task = self.task(proof='continuation')
@@ -132,12 +137,111 @@ class FinishedRoutineWorkspaceTests(unittest.TestCase):
         self.assertIn(('completed', {'summary': 'Complete.'}), events)
         self.assertEqual(self.routine_scope(rows), [str(self.workspace)])
 
-    def test_active_occurrence_still_requires_its_scheduled_directory(self):
-        for proof in ('success', None):
-            with self.subTest(proof=proof):
-                self.assertPreparationFailed(*self.run_turn(self.task(finished=False, proof=proof)))
+    def save_bindings(self, bindings):
+        self.manifest.write_text(json.dumps(bindings))
+        self.saved_manifest = self.manifest.read_text()
+
+    def incident_binding(self, **retired):
+        # The saved shape of the failed checkpoints: a capacity recheck names the worktree of the outcome that
+        # scheduled it, and an idle pass discarded that worktree before the first occurrence.
+        repository = self.root / 'bot' / 'workspace' / 'desk-reviews' / 'repo'
+        self.retired = repository / '.worktrees' / 'scheduler-outcome-11ce49fd843261dc'
+        return {'scheduler-outcome-11ce49fd843261dc': dict(
+            _head_log=dict(digest='f' * 64, size=358), branch='gianfranco/newsletter-cutover-exact-email',
+            outcome='scheduler-outcome', path=str(self.retired), repository=str(repository),
+            retired=dict(archive=str(self.data / 'workspaces/archive/done/scheduler-outcome-11ce49fd843261dc.tar.gz'),
+                         at='2026-10-20T04:29:00.846584Z', changes='a' * 64, done=True, head='6c0f73f7' + '0' * 32,
+                         **retired))}
+
+    def test_first_occurrence_of_a_retired_worktree_uses_its_execution_workspace(self):
+        self.save_bindings(self.incident_binding())
+        # The service records the finished flag before the occurrence proves its own completion. It sends an empty
+        # proof for an unproved occurrence (native_routine_completion_input), and an older saved task has no key.
+        for finished, proof in itertools.product((False, True), ({}, None)):
+            with self.subTest(finished=finished, proof=proof):
+                task = self.task(finished=finished, proof=proof)
+                self.assertEqual(task.get('_native_job_completion', 'absent'), 'absent' if proof is None else {})
+                events, rows = self.run_turn(task)
+                self.assertIn(('completed', {'summary': 'Complete.'}), events)
+                self.assertEqual(self.routine_scope(rows), [str(self.workspace)])
+                self.assertIn(['terminal', task['id'], str(self.workspace)], rows)
+                self.assertIn('Verify the installation.', self.prompts[-1])
+                self.assertIn(f'Coconut retired the scheduled working directory {self.retired}.', self.prompts[-1])
+                self.assertIn('worktree of outcome scheduler-outcome', self.prompts[-1])
+                self.assertNotIn('restore failed', self.prompts[-1])
+        self.assertFalse(self.retired.parent.exists(), 'The retired worktree and its repository folder stay absent.')
+
+    def test_failed_restore_keeps_its_fence_and_routes_it_to_bot_maintenance(self):
+        self.save_bindings(self.incident_binding(restore_failed=dict(at='2026-10-20T05:00:00Z', error='Not empty.')))
+        events, rows = self.run_turn(self.task(finished=False, proof=None))
+        self.assertIn(('completed', {'summary': 'Complete.'}), events)
+        self.assertEqual(self.routine_scope(rows), [str(self.workspace)])
+        self.assertIn('Its earlier restore failed, so the path stays fenced: do not restore it here. Report the failure '
+                      'on that outcome for bot maintenance.', self.prompts[-1])
+        self.assertIn('scheduler-outcome-11ce49fd843261dc.tar.gz and the branch gianfranco/newsletter-cutover-exact-email',
+                      self.prompts[-1])
+        self.assertNotIn('operator', self.prompts[-1])
+
+    def test_active_occurrence_still_requires_an_explained_directory(self):
+        binding = self.incident_binding()
+        (name, saved), = binding.items()
+        live = dict(saved)
+        live.pop('retired')
+        other = dict(saved, outcome='another-outcome')
+        cases = {
+            'unregistered': ({}, None),
+            'live binding': ({name: live}, None),
+            'two bindings': ({name: saved, 'another-outcome-11ce49fd843261dc': other}, None),
+            'other spelling': ({name: dict(saved, path=saved['path'] + '/')}, None),
+            'empty outcome': ({name: dict(saved, outcome='')}, None),
+            'malformed retirement': ({name: dict(saved, retired=True)}, None),
+            'unrelated path': ({name: dict(saved, path=str(self.root / 'unrelated'))}, None),
+            'no execution workspace': (binding, self.root / 'missing-execution'),
+        }
+        for label, (bindings, workspace) in cases.items():
+            with self.subTest(label):
+                self.save_bindings(bindings)
+                task = self.task(finished=False, proof=None)
+                if workspace:
+                    task['_kanban_workspace'] = str(workspace)
+                self.assertPreparationFailed(*self.run_turn(task))
+                self.assertFalse(self.root.joinpath('missing-execution').exists())
+        with self.subTest('occupied path'):
+            # A retired binding does not explain a path that holds something else.
+            self.save_bindings(binding)
+            self.retired.parent.mkdir(parents=True)
+            self.retired.write_text('not a checkout')
+            try:
+                task = self.task(finished=False, proof=None)
+                self.assertPreparationFailed(*self.run_turn(task, retired_absent=False))
+                self.assertEqual(self.retired.read_text(), 'not a checkout')
+            finally:
+                self.retired.unlink()
+        with self.subTest('broken link'):
+            self.save_bindings(binding)
+            self.retired.parent.mkdir(parents=True, exist_ok=True)
+            self.retired.symlink_to(self.root / 'gone')
+            try:
+                self.assertPreparationFailed(*self.run_turn(self.task(finished=False, proof=None), retired_absent=False))
+                self.assertTrue(self.retired.is_symlink())
+                self.assertFalse((self.root / 'gone').exists())
+            finally:
+                self.retired.unlink()
+        with self.subTest('success proof of an active occurrence'):
+            self.save_bindings({})
+            self.assertPreparationFailed(*self.run_turn(self.task(finished=False, proof='success')))
+        # A completion proof that does not prove this occurrence is not a first occurrence either.
+        other = dict(job_id='job', owner='owner', completion={},
+                     continuation=dict(task_id='another-task', turn_id='turn', native_task_id='t_native', delivery_id='d'))
+        for proof in (dict(job_id='job', owner='later-owner', success=True), dict(job_id='job', owner='owner', success=False),
+                      other):
+            with self.subTest(retired_with_unproved=proof):
+                self.save_bindings(binding)
+                self.assertPreparationFailed(*self.run_turn(self.task(proof=proof)))
 
     def test_finished_flag_without_this_occurrence_proof_still_fails(self):
+        # No retired binding explains this missing directory, so only this occurrence's own finish proof could.
+        self.save_bindings({})
         other = dict(job_id='job', owner='owner', completion={},
                      continuation=dict(task_id='another-task', turn_id='turn', native_task_id='t_native', delivery_id='d'))
         for proof in (None, {}, dict(job_id='job', owner='later-owner', success=True),
@@ -163,6 +267,45 @@ class FinishedRoutineWorkspaceTests(unittest.TestCase):
                 self.assertIn(('completed', {'summary': 'Complete.'}), events)
                 self.assertEqual(self.routine_scope(rows), [str(scheduled)])
                 self.assertIn(['terminal', task['id'], str(scheduled)], rows)
+
+
+class RetiredCheckoutTests(unittest.TestCase):
+    """Only the exact absent path of one retired binding in the worker's own registry explains a missing directory."""
+
+    def test_registry_proof(self):
+        retired_checkout = native_routine_execution.retired_checkout
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'workspaces'
+            root.mkdir()
+            path = str(Path(folder) / 'repo/.worktrees/outcome-key')
+            binding = dict(outcome='outcome', path=path, retired=dict(done=True))
+            (root / 'worktrees.json').write_text(json.dumps({'outcome-key': binding}))
+            with patch.dict(os.environ, {'COCONUT_WORKSPACE_ROOT': str(root)}):
+                self.assertEqual(retired_checkout(path), binding)
+                self.assertIsNone(retired_checkout(path + '/'))
+                self.assertIsNone(retired_checkout(str(Path(folder) / 'elsewhere')))
+                self.assertIsNone(retired_checkout(''))
+                Path(path).parent.mkdir(parents=True)
+                os.symlink(Path(folder) / 'gone', path)
+                self.assertIsNone(retired_checkout(path))
+                os.unlink(path)
+                Path(path).write_text('a file')
+                self.assertIsNone(retired_checkout(path))
+                os.unlink(path)
+                # The provider reads the same registry first and stops on a malformed one. The worker refuses it too.
+                no_outcome = {k: v for k, v in binding.items() if k != 'outcome'}
+                for broken in (dict(binding, outcome=''), dict(binding, outcome=None), no_outcome, dict(binding, retired=True)):
+                    (root / 'worktrees.json').write_text(json.dumps({'outcome-key': broken}))
+                    self.assertIsNone(retired_checkout(path))
+                (root / 'worktrees.json').write_text(json.dumps({'outcome-key': binding, 'other-key': dict(binding, outcome='other')}))
+                self.assertIsNone(retired_checkout(path))
+                (root / 'worktrees.json').write_text('not json')
+                self.assertIsNone(retired_checkout(path))
+                (root / 'worktrees.json').write_text(json.dumps([binding]))
+                self.assertIsNone(retired_checkout(path))
+            with patch.dict(os.environ):
+                os.environ.pop('COCONUT_WORKSPACE_ROOT', None)
+                self.assertIsNone(retired_checkout(path))
 
 
 class FinishedRoutineClaimTests(unittest.TestCase):

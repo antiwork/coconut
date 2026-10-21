@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from importlib import import_module
 import json
+import os
 from pathlib import Path
 
 
@@ -65,6 +66,27 @@ def finished_occurrence(task, job):
     return proof.get('success') is True
 
 
+def retired_checkout(workdir):
+    """Return the saved binding when `workdir` is exactly the absent path of a worktree that Coconut retired, else None.
+
+    Retirement records the binding before it removes the checkout, so the registry is the proof. A missing directory
+    that no binding names, a binding that is not retired, and a path that holds anything stay unexplained.
+    """
+    root = os.environ.get('COCONUT_WORKSPACE_ROOT')
+    if not root or not workdir or os.path.lexists(workdir):
+        return None
+    try:
+        saved = json.loads((Path(root) / 'worktrees.json').read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(saved, dict):
+        return None
+    # Name the saved path exactly, as the handoff does. A link or another spelling of the path does not count.
+    found = [binding for binding in saved.values() if isinstance(binding, dict) and binding.get('path') == workdir
+             and isinstance(binding.get('retired'), dict) and isinstance(binding.get('outcome'), str) and binding['outcome']]
+    return found[0] if len(found) == 1 else None
+
+
 @contextmanager
 def job_context(request, runtime, config):
     job = request['task'].get('_native_job')
@@ -97,12 +119,28 @@ def job_context(request, runtime, config):
     prompt = _build_job_prompt(job)
     workdir = job.get('workdir') or ''
     if workdir and not Path(workdir).is_dir():
+        workspace = request.get('workspace') or ''
+        workspace = workspace if workspace and Path(workspace).is_dir() else ''
         if not finished_occurrence(request['task'], job):
-            raise ValueError('The scheduled working directory does not exist.')
+            # A job often names the worktree of the outcome that scheduled it. Coconut retires that worktree while
+            # the outcome is idle, and only a turn of that outcome restores it. This occurrence works in its own
+            # execution workspace and leaves the retired path and its binding unchanged. A completion proof that
+            # names another occurrence, owner, or card still refuses, as before.
+            binding = None if request['task'].get('_native_job_completion') else retired_checkout(workdir)
+            if not binding or not workspace:
+                raise ValueError('The scheduled working directory does not exist.')
+            prompt += (f'\n\nCoconut retired the scheduled working directory {workdir}. It is the worktree of '
+                       f'outcome {binding["outcome"]}, and a turn of that outcome restores it. This run uses its own '
+                       f'execution workspace {workspace}. Do not recreate the retired path.')
+            if binding['retired'].get('restore_failed'):
+                # The failure mark fences the path. Bot maintenance recovers it from the saved archive and branch.
+                prompt += (' Its earlier restore failed, so the path stays fenced: do not restore it here. Report the '
+                           'failure on that outcome for bot maintenance. The archive '
+                           f'{binding["retired"].get("archive") or "(none)"} and the branch {binding.get("branch") or "(unknown)"} '
+                           'keep its work.')
         # The scheduled run is over and its directory can be retired. Its continuation works in
         # this task's own execution workspace. The bridge still confirms the claim before each tool.
-        workspace = request.get('workspace') or ''
-        workdir = workspace if workspace and Path(workspace).is_dir() else ''
+        workdir = workspace
     task_id = request['task']['id']
     # Coconut can pause scheduled turns for approvals and resume them.
     tokens = set_session_vars(cwd=workdir, cron_session=False, session_key=task_id, platform='coconut')
