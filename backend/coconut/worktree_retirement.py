@@ -27,6 +27,9 @@ ORPHAN_AGE_SECONDS = WORKTREE_RETIRE_SECONDS
 ACTIVE_STATUSES = ('queued', 'working', 'scheduled', 'waiting')
 # These native states mean that no worker runs or claims the outcome soon. Another state keeps the worktree.
 NATIVE_IDLE_STATUSES = ('done', 'archived', 'blocked', 'triage', 'review', 'todo', 'scheduled')
+# Only these native states end the work of an outcome. A scratch workspace holds files that no archive keeps, such as
+# notes and raw evidence, so it keeps them while a native card of the outcome is in another state.
+NATIVE_DONE_STATUSES = ('done', 'archived')
 RETIREMENT_INTERVAL_SECONDS = 60 * 60
 # Below LOW_DISK_BYTES an outcome counts as idle after this time without a task update, not after
 # WORKTREE_RETIRE_SECONDS. A worktree comes back from its branch and its archive when the outcome resumes.
@@ -350,11 +353,13 @@ class ServiceBusy(ValueError):
 
 
 class WorktreeRetirement:
-    def _finished_outcomes(self, current, *, timeout=-1, only=None, idle=None, ages=None, urgent=False):
+    def _finished_outcomes(self, current, *, timeout=-1, only=None, idle=None, ages=None, urgent=False, settled=False):
         """Return the execution IDs whose work is idle, or None when the service lock is busy.
 
         Work that waits for a person, a failed task, and a blocked native outcome are idle.
         With urgent (a low disk), idle is URGENT_IDLE_SECONDS, and a task that waited long in the queue does not count.
+        With settled, every native card of the outcome must be done or archived too. A merged pull request or a
+        completed Coconut task does not end a native card that is still scheduled, blocked, or in review.
         Hold the service lock only to read.
         """
         if idle is None:
@@ -388,8 +393,9 @@ class WorktreeRetirement:
                                 and current - updated[task['id']] >= URGENT_QUEUED_SECONDS)
                 if any(starts_soon(t, outcome) for t in tasks):
                     continue
-                if any((native.get(t['id']) or by_native_id.get(t.get('_native_outcome_id')) or {}).get('status', 'done')
-                       not in NATIVE_IDLE_STATUSES for t in tasks):
+                states = [(native.get(t['id']) or by_native_id.get(t.get('_native_outcome_id')) or {}).get('status', 'done')
+                          for t in tasks]
+                if any(state not in (NATIVE_DONE_STATUSES if settled else NATIVE_IDLE_STATUSES) for state in states):
                     continue
                 if any(self._background_pending(t['id']) for t in tasks):
                     continue
@@ -476,6 +482,12 @@ class WorktreeRetirement:
         Nothing else removes them, and a bot often clones a repository or builds there. The folder stays, empty, because
         a later turn of the outcome uses it as its working directory. A folder that no task names goes after
         DISCARD_IDLE_SECONDS without changes. A bot's own workspace and a folder that a process uses stay.
+        No archive keeps these files, so an outcome keeps its entire scratch workspace while any of its native cards is
+        not done or archived. Scheduled, blocked, review, triage, and todo cards are unfinished work. The files stay even
+        on a low disk and with no time limit, and that includes clones, dependencies, and build output. This step frees
+        no part of that scratch: a tmp folder can hold setup that no build makes again, and a clone can hold work.
+        Disk space is the price of keeping unfinished work. The cleanup of build folders in registered worktrees
+        (free_rebuildable) is unaffected.
         """
         if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
             return
@@ -500,18 +512,25 @@ class WorktreeRetirement:
                 candidates.append(folder)
         if not candidates or self.stopping.is_set() or self.restart_pending:
             return
+        # The check below reads native states from the last board snapshot. Read the board again first, without the
+        # service lock: the adapter call can wait, and a thread that holds the service lock may wait for the adapter.
+        # Without a fresh snapshot, the scratch files of known outcomes stay until the next pass.
+        fresh = not any(folder.name in known for folder in candidates) or self._refresh_native_snapshot()
         holders = work_workspace.holders_by_path({str(folder) for folder in candidates})
         cleared = []
         for folder in candidates:
             if holders.get(str(folder)) or self.stopping.is_set() or self.restart_pending:
                 continue
             name = folder.name
+            if name in known and not fresh:
+                continue
             if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
                 continue
             try:
                 # A turn starts under this lock. Check the outcome again, and move the folder before the lock goes.
                 # Confirm the idle time that made the outcome eligible, and not only that no task is active now.
-                again = (self._finished_outcomes(time.time(), only=name, urgent=urgent,
+                # Only finished native cards release the files, because no archive keeps them.
+                again = (self._finished_outcomes(time.time(), only=name, urgent=urgent, settled=True,
                                                 idle=URGENT_DISCARD_IDLE_SECONDS if urgent else None)
                          if name in known else {name})
                 if not again or name not in again:
@@ -531,6 +550,20 @@ class WorktreeRetirement:
             for repository in repositories(saved):
                 with contextlib.suppress(*work_workspace.GIT_ERRORS):
                     work_workspace.git(repository, 'worktree', 'prune', timeout=work_workspace.CHECKOUT_SECONDS)
+
+    def _refresh_native_snapshot(self):
+        """Read the native board again. Return False when it cannot be read. Call it without the service lock."""
+        call = getattr(self.kanban, 'call', None)
+        if call is None:
+            # No adapter runs, so the saved native states are all that exists.
+            return True
+        try:
+            call({'op': 'snapshot'})
+        except (RuntimeError, OSError, ValueError) as error:
+            logging.getLogger(__name__).warning('Coconut kept the scratch workspaces of idle outcomes, because it could '
+                                                'not read the native board: %s', error)
+            return False
+        return True
 
     def _clear_stale_bot_workspaces(self, current, saved, low_disk):
         """Delete the entries of bots/<id>/workspace that nothing has changed for BOT_WORKSPACE_STALE_SECONDS.

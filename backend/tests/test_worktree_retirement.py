@@ -922,6 +922,82 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertTrue((self.workspaces / young / 'notes.txt').exists())
         self.assertFalse((self.workspaces / old / 'notes.txt').exists())
 
+    def scratch_evidence(self, outcome):
+        files = {'STATE.md': b'# Retained acceptance state\nReuse repair-evidence and repair-review.\n',
+                 'repair-evidence/REPORT.md': b'# Exact-address repair\n6 regressions fail before and pass after.\n',
+                 'repair-evidence/repair-review/result.json': b'{"findings": [], "exit": 0}\n'}
+        for name, data in files.items():
+            (self.workspaces / outcome / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.workspaces / outcome / name).write_bytes(data)
+        return files
+
+    def native_board(self, cards, fresh=None):
+        """A native board whose snapshot call records whether the service lock is held, as the adapter would see it."""
+        calls = []
+        def call(request):
+            calls.append((request, self.service.lock._is_owned()))
+            if isinstance(fresh, BaseException):
+                raise fresh
+            board.tasks = dict(fresh if fresh is not None else cards)
+            return {'tasks': list(board.tasks.values())}
+        board = SimpleNamespace(tasks=dict(cards), call=call)
+        return board, calls
+
+    def test_a_scheduled_native_owner_keeps_its_scratch_evidence_after_a_merge_on_a_low_disk(self):
+        # The observed ea5 shape: PR merged, Coconut task completed, native card scheduled with a pending capacity
+        # checkpoint, free space below LOW_DISK_BYTES, and no update for over two hours.
+        outcome, identity, path, task = self.outcome(updated_at=self.ago(hours=3))
+        self.pull_request(task, 'merged')
+        files = self.scratch_evidence(outcome)
+        (path / 'tmp' / 'repair-kit').mkdir(parents=True)
+        (path / 'tmp' / 'repair-kit' / 'run.sh').write_text('rebuildable\n')
+        board, calls = self.native_board({task['id']: dict(id='t_81201bc4', external_id=task['id'], status='scheduled')})
+        with patch.object(self.service, 'kanban', board), patch.object(retirement, 'LOW_DISK_BYTES', 10 ** 18):
+            # Source retirement is unchanged: the merged worktree goes, and its archive keeps the branch and patches.
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
+        for name, data in files.items():
+            self.assertEqual((self.workspaces / outcome / name).read_bytes(), data)
+        # The board was read again outside the service lock, before the scratch check.
+        self.assertEqual(calls, [({'op': 'snapshot'}, False)])
+
+    def test_unfinished_native_cards_keep_scratch_files_but_finished_ones_release_them(self):
+        for status, kept in (('scheduled', True), ('blocked', True), ('review', True), ('triage', True), ('todo', True),
+                             ('done', False), ('archived', False)):
+            with self.subTest(status=status):
+                outcome, _, _, task = self.outcome()
+                self.pull_request(task, 'merged')
+                files = self.scratch_evidence(outcome)
+                board, _ = self.native_board({task['id']: dict(id='t_' + status, external_id=task['id'], status=status)})
+                with patch.object(self.service, 'kanban', board):
+                    self.retire()
+                if kept:
+                    for name, data in files.items():
+                        self.assertEqual((self.workspaces / outcome / name).read_bytes(), data)
+                else:
+                    # A finished outcome keeps an empty folder for a later turn.
+                    self.assertEqual(list((self.workspaces / outcome).iterdir()), [])
+
+    def test_a_fresh_native_snapshot_decides_and_a_failed_read_keeps_the_scratch_files(self):
+        outcome, _, _, task = self.outcome()
+        self.pull_request(task, 'merged')
+        files = self.scratch_evidence(outcome)
+        done = {task['id']: dict(id='t_owner', external_id=task['id'], status='done')}
+        reopened = {task['id']: dict(id='t_owner', external_id=task['id'], status='scheduled')}
+        for label, fresh in (('reopened since the last snapshot', reopened),
+                             ('board unreadable', RuntimeError('The Hermes Kanban adapter did not respond.'))):
+            with self.subTest(label):
+                board, calls = self.native_board(done, fresh=fresh)
+                with patch.object(self.service, 'kanban', board):
+                    self.retire()
+                self.assertEqual(calls, [({'op': 'snapshot'}, False)])
+                for name, data in files.items():
+                    self.assertEqual((self.workspaces / outcome / name).read_bytes(), data)
+        board, _ = self.native_board(done)
+        with patch.object(self.service, 'kanban', board):
+            self.retire()
+        self.assertEqual(list((self.workspaces / outcome).iterdir()), [])
+
     def test_a_low_disk_keeps_a_stale_queued_worktree_only_while_its_own_claim_is_in_progress(self):
         claimed, claimed_identity, claimed_path, _ = self.outcome(status='queued', updated_at=self.ago(hours=13))
         other, other_identity, other_path, _ = self.outcome(status='queued', updated_at=self.ago(hours=13))
