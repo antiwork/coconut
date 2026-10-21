@@ -2556,6 +2556,51 @@ print(_handle_complete(dict(task_id=claim['native_id'], summary='Source checked'
             self.service.wait_for_task(parent['id'], dict(task_id=child['id'], reason='Waiting for its action'))
         self.assertFalse(any(r.get('_wait_task_id') for r in self.service._all('native_receipts')))
 
+    def test_resumed_turn_reads_a_completed_dependency_without_another_wait(self):
+        self.service.mutate('PUT', '/v1/settings/work-capacity', {'limit': 1}, str(uuid4()))
+        parent = self.task('Inspect the change')
+        child = self.task('Check its dependencies')
+        with self.service.transaction():
+            saved = self.service._get('tasks', child['id'])
+            saved['exchange_id'] = parent['exchange_id']
+            self.service._put('tasks', saved)
+        replies = []
+        def start(value, bot, history, emit):
+            if value['id'] == child['id']:
+                result = self.native_program('''
+import json, os
+claim = json.loads(sys.argv[2])
+os.environ.update(HERMES_KANBAN_TASK=claim['native_id'], HERMES_KANBAN_RUN_ID=str(claim['run_id']),
+                  HERMES_KANBAN_CLAIM_LOCK=claim['claim_lock'])
+from tools.kanban_tools import _handle_complete
+print(_handle_complete(dict(task_id=claim['native_id'], summary='Dependencies checked')))
+''', json.dumps(value['_kanban_claim']))
+                self.assertNotIn('error', json.loads(result), result)
+                emit('completed', {'summary': 'Dependencies checked'})
+                return
+            # Each native input of the waiter repeats the same wait.
+            replies.append(emit('work_wait', dict(task_id=child['id'], reason='Waiting for dependencies')))
+            emit('completed', {'summary': 'Inspection finished' if len(replies) > 1 else 'Waiting for dependencies.'})
+        self.provider.start_task = start
+        waits = lambda: [r for r in self.service._all('native_receipts') if r.get('_wait_task_id') == child['id']]
+        self.settle(lambda: self.service._get('tasks', child['id'])['status'] == 'completed'
+                    and self.service._get('tasks', parent['id'])['status'] == 'waiting')
+        self.assertEqual([reply['status'] for reply in replies], ['waiting'])
+        self.service._drain_process_completions()
+        resumed = self.service._get('tasks', parent['id'])
+        self.assertEqual(resumed['status'], 'queued')
+        self.assertIn('Dependencies checked', resumed['_background_completion'][0])
+        self.settle(lambda: self.service._get('tasks', parent['id'])['status'] == 'completed')
+        self.assertEqual(replies[1], {'status': 'completed', 'task_id': child['id'],
+                                      'result': f"Task {child['id']} completed: Dependencies checked"})
+        for _ in range(3):
+            self.service._drain_process_completions()
+            self.tick()
+        finished = self.service._get('tasks', parent['id'])
+        self.assertEqual((finished['status'], finished['_native_turn_id']), ('completed', resumed['_native_turn_id']))
+        self.assertEqual(len(replies), 2)
+        self.assertEqual([r['_process_delivery'] for r in waits()], [resumed['_native_turn_id']])
+
     def test_status_question_runs_when_native_capacity_is_full(self):
         self.service.mutate('PUT', '/v1/settings/work-capacity', {'limit': 1}, str(uuid4()))
         owner = self.task('Inspect the change')

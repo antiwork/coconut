@@ -84,6 +84,8 @@ Explicit human limits and native Hermes approval checks still apply.
 
 A follow-up uses its original assignment's Work context when it lists or waits for dependencies.
 This preserves the existing process owner without allowing waits across unrelated conversations.
+A wait for a completed task returns its saved result at once when no process, dependency, unfinished step, or unsettled native run remains.
+It saves no wait, so a later turn that repeats the wait does not resume the bot again.
 
 A passing PR gets another readiness check when its previous check is over one hour old and no live work, decision, or dependency owns the next step.
 This check reuses the existing task and cannot merge the PR.
