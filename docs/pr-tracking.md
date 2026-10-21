@@ -31,6 +31,8 @@ The owner keeps each human permission or hold within its original task, reposito
 Saving memory or relaying instructions must not expand one task's merge hold to every PR.
 A current direct human instruction overrides an older preference within the same scope.
 Approval to mark a PR ready does not authorize merging it.
+For a draft, the merge choice marks it ready and merges it. A ready-only choice appears only when a human hold covers that exact PR.
+Each poll also reads the additions, deletions, and changed files of the PR. The artifact and its pending merge cards keep these values.
 Bots use `coconut_track_pr` and finish their turn while checks run.
 They do not need a separate `gh pr checks --watch` process.
 

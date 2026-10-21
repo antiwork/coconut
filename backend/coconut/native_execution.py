@@ -222,8 +222,12 @@ class NativeExecution:
                 decision.update(self.decision_followup(task, payload, allow_resume=draft is None))
             if not approval and draft is None:
                 decision['merge_pr_url'] = self._merge_decision_url(payload, task)
-                decision['_merge_pr_head'] = self._merge_decision_head(decision['merge_pr_url'], task)
+                merged = self._merge_decision_artifact(decision['merge_pr_url'], task)
+                decision['_merge_pr_head'] = merged.get('head_sha')
+                decision['merge_pr_diff'] = merged.get('diff')
                 decision['_merge_request_at'] = self._validate_merge_decision(decision, task)
+                from .decision_inbox import require_merge_risk
+                require_merge_risk(decision)
             freshness = {}
             if not approval and payload.get('receipt_id'):
                 # A later worker cannot relabel an earlier tool intent with its own prompt snapshot.

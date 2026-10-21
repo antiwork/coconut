@@ -111,6 +111,11 @@ When a continuation fails again, the settle pass archives its successor too. The
 does for a routine, when Coconut's records and the snapshot pass the same checks. It reads no adapter under the service
 lock. The next continuation reads the successor's runs from the adapter before it starts.
 
+An open assignment can wait for the person. Its label is in `awaiting_labels` of the source (default `awaiting-human`), and its latest comment comes from another GitHub account.
+The audit reads the latest comment of each labeled item with one GraphQL request. Only a card covers such an item: a pending card that names it, or an answer or dismissal that is not older than its latest change.
+Bot work, a delegated ruling, or a scheduled recheck does not cover it. The audit tells the bot to ask with the source's own choices, and to post the answer to the source.
+When the GraphQL read fails, the audit uses its earlier rules.
+
 The work source audit records the source item that it gives a task in `_source_assignment`. A later audit of the same item
 runs in a separate execution, and it can ask the person about that item while the request's card waits archived.
 So this recovery also waits while the same bot has a pending decision about the exact same `source_id` and item `id`.

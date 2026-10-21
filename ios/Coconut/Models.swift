@@ -296,6 +296,7 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     var replyPending: Bool? = nil
     var sources: [DecisionSource]? = nil
     var mergePrUrl: String? = nil
+    var mergePrDiff: PullRequestDiff? = nil
     var sourceRefreshing: Bool? = nil
 
     var cardSources: [DecisionSource] {
@@ -368,6 +369,21 @@ struct DecisionPreview: Codable, Identifiable, Equatable, Sendable {
     var width: Int
     var height: Int
     var id: String { artifactId }
+}
+
+/// The size of a PR's changes, as GitHub counts them for its Files tab.
+struct PullRequestDiff: Codable, Equatable, Sendable {
+    var additions: Int
+    var deletions: Int
+    var changedFiles: Int
+
+    var summary: String {
+        "+\(additions.formatted()) −\(deletions.formatted()) · \(changedFiles.formatted()) \(changedFiles == 1 ? "file" : "files")"
+    }
+
+    var accessibilityLabel: String {
+        "\(additions) lines added, \(deletions) lines removed, in \(changedFiles) \(changedFiles == 1 ? "file" : "files")"
+    }
 }
 
 enum DecisionRisk {

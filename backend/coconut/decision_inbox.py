@@ -17,9 +17,26 @@ def decision_risk(payload):
     if (level not in (None, 'low', 'medium', 'high', 'not_assessed')
             or not isinstance(reason, str) or (level is not None and not reason.strip())):
         raise ServiceError(400, 'Use low, medium, high, or not_assessed for risk_level, with a concrete reason in risk.')
+    if level is None and reason.strip():
+        # The card shows the level as the heading of the risk. A reason alone shows only "Risk".
+        raise ServiceError(400, 'Set risk_level to low, medium, high, or not_assessed whenever you state a risk.')
     if len(reason) > RISK_LIMIT:
         raise ServiceError(400, f'State the risk in one sentence of at most {RISK_LIMIT} characters.')
     return dict(risk_level=level, risk=reason.strip())
+
+
+MERGE_RISK_LEVELS = ('low', 'medium', 'high')
+
+
+def require_merge_risk(decision):
+    """A merge card always states an assessed risk, on the card or on each of its choices."""
+    from .service import ServiceError
+    options = decision.get('options', [])
+    if decision.get('merge_pr_url') and not (
+            decision.get('risk_level') in MERGE_RISK_LEVELS
+            or (options and all(option.get('risk_level') in MERGE_RISK_LEVELS for option in options))):
+        raise ServiceError(400, 'A merge card needs risk_level low, medium, or high, with one sentence in risk '
+                                'that names what the merge could break.')
 
 
 def notification_importance(payload):
@@ -351,10 +368,13 @@ class DecisionInbox:
         if 'previous_decision_id' in revision:
             decision.update(self.decision_followup(task, revision))
         merge_url = self._merge_decision_url({'merge_pr_url': revision.get('merge_pr_url', decision.get('merge_pr_url'))}, task)
-        merge_head = self._merge_decision_head(merge_url, task)
+        merged = self._merge_decision_artifact(merge_url, task)
+        merge_head = merged.get('head_sha')
         requested_at = self._validate_merge_decision(dict(decision, merge_pr_url=merge_url, _merge_pr_head=merge_head), task)
+        require_merge_risk(dict(assessment, options=options, merge_pr_url=merge_url))
         decision.update(title=title, options=options, **assessment, assessment_stale=False,
                         merge_pr_url=merge_url, _merge_pr_head=merge_head, _merge_request_at=requested_at,
+                        merge_pr_diff=merged.get('diff'),
                         recommended_option_id=recommended, revision=decision['revision'] + 1,
                         inbox_deferred_at=None)
         decision.update(text, explanation=explanation)
@@ -438,14 +458,15 @@ DECISION_INSTRUCTIONS = (
     'Mention something that approval does not do only when the person would otherwise expect it. Never list the stages a choice leaves out. '
     'Always state public changes, external messages, cost, data loss, and irreversible effects when the choice causes them. '
     'For example: "PR #7910 lets long discount labels wrap, so sellers can read the full option on mobile. Merging puts it on main for the next release." '
-    'risk: one sentence that names what could go wrong and who or what it affects. Omit it when there is no material risk. '
+    'risk: one sentence that names what could go wrong and who or what it affects. Every risk sentence needs its risk_level. '
+    'A merge card always needs both. Omit both on other cards when there is no material risk. '
     'uncertainty: one sentence, only for an unknown that could change this choice. '
     'options: specific action labels such as "Update alert rules" or "Create a draft PR", never "Proceed" or "Include both". '
     'Add an option explanation only for a result or tradeoff that the label and context do not show. Keep it to one short sentence. '
     'Keep steps, commands, file paths, key or vault names, commit IDs, test lists, and supporting evidence out of the card. Put them in chat. '
     'State each fact once across the title, context, risk, uncertainty, and options. '
     'Use only verified scope and facts. If the delivery method is unknown, inspect it before asking; never invent a PR or a direct update. '
-    'Set risk_level when it helps the decision, and use the risk sentence as its reason. Assess the proposed action, not the work to build it. '
+    'Use the risk sentence as the reason for risk_level. Assess the proposed action, not the work to build it. '
     'Use low for a small, verified impact with a clear recovery path; medium for meaningful but bounded impact; '
     'high for broad impact or difficult recovery. Use not_assessed when missing facts prevent an assessment. '
     'When choices have different risks, put risk_level and risk on those options instead of on the whole card. '

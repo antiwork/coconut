@@ -238,7 +238,7 @@ class WorkQueuePositionTests(unittest.TestCase):
         revision = '2026-09-23T11:46:31Z'
         self.tracker.observe_issue = lambda url: dict(updated_at=revision)
         try:
-            self.service.emit(self.task['id'], 'native_question', dict(title='Merge PR #42?', merge_pr_url=URL, source_revisions={URL: revision},
+            self.service.emit(self.task['id'], 'native_question', dict(title='Merge PR #42?', merge_pr_url=URL, risk_level='low', risk='A bad merge reaches main.', source_revisions={URL: revision},
                 options=[dict(id='merge', label='Merge', explanation='Merge this PR.'),
                          dict(id='leave', label='Leave open', explanation='Keep this PR open.')]))
         except YieldForDecision:

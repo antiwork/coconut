@@ -18,7 +18,7 @@ class DecisionInboxTests(unittest.TestCase):
 
     def question(self, optional=False):
         payload = dict(key='one-proposal', title='Investigate references?', explanation='The hashes match.',
-                       uncertainty='References are unknown.', risk='Deletion could break a caller.',
+                       uncertainty='References are unknown.', risk='Deletion could break a caller.', risk_level='medium',
                        options=[{'id': 'check', 'label': 'Check references'}, {'id': 'leave', 'label': 'Leave it'}])
         if optional:
             self.event('native_proposal', payload)
@@ -38,7 +38,7 @@ class DecisionInboxTests(unittest.TestCase):
     def test_risk_levels_require_reasons_and_reject_numeric_confidence(self):
         for fields in (dict(risk_level='low'), dict(risk_level='medium', risk='  '),
                        dict(risk_level='safe', risk='Looks fine'), dict(risk_level=99, risk='Tests pass'),
-                       dict(risk_level='high', risk=42)):
+                       dict(risk_level='high', risk=42), dict(risk='A reason without its level')):
             for on_option in (False, True):
                 with self.subTest(fields=fields, on_option=on_option), self.assertRaises(ServiceError):
                     option = dict(id='one', label='Proceed', **(fields if on_option else {}))

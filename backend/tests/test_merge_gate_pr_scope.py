@@ -383,7 +383,7 @@ class MergeGateNativeReceiptBoundaryTests(unittest.TestCase):
             'observe_discussion': lambda _, url: None,
             'observe_issue': lambda _, url: dict(updated_at=SOURCE_REVISION)})()
         self.patch(CALLER, status='working')
-        self.payload = dict(title='Merge the target change?', merge_pr_url=TARGET,
+        self.payload = dict(title='Merge the target change?', merge_pr_url=TARGET, risk_level='low', risk='A bad merge reaches main.',
                             options=[dict(id='merge', label='Merge', explanation='Merge the reviewed change.')])
 
     def raw(self, table, identity):

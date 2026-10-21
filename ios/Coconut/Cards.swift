@@ -266,6 +266,11 @@ struct DecisionIntroduction: View {
                 if !decision.cardSources.isEmpty {
                     DecisionSources(sources: decision.cardSources)
                 }
+                if decision.mergePrUrl != nil, let diff = decision.mergePrDiff {
+                    Text(diff.summary).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                        .accessibilityLabel(diff.accessibilityLabel)
+                        .accessibilityIdentifier("decision-merge-diff")
+                }
             }
             if showsContext, let context = decision.cardContext {
                 VStack(alignment: .leading, spacing: 10) {

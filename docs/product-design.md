@@ -146,7 +146,10 @@ Inbox cards use compact padding and body-size titles. Keep option explanations, 
 Coconut supplies the same writing rules to every bot on every turn. A card names the choice and its practical effects.
 A card is as short as it can be while it stays clear on its own. Every sentence helps the person decide.
 The context is one to three connected sentences, not a stack of clipped statements. It mentions what approval does not do only when the person would otherwise expect it.
-The risk level and its one-sentence reason stay on the card. Coconut rejects card text over its limits: 400 characters of context and 200 characters of risk, uncertainty, or option explanation.
+The risk level and its one-sentence reason stay on the card. A risk reason always has its level, so the card never shows a bare "Risk" heading.
+A merge card always states a low, medium, or high risk, on the card or on its merge choice. Coconut rejects a card that breaks these rules.
+A merge card also shows the size of the PR, such as "+171 −25 · 4 files". Coconut refreshes the size with each PR poll.
+Coconut rejects card text over its limits: 400 characters of context and 200 characters of risk, uncertainty, or option explanation.
 The bot uses plain language and states the decisive fact once. The card names what changes and where.
 The card distinguishes preparation from execution: local work, a draft PR, a merge, a deployment, or a direct setting change.
 The bot verifies the delivery method before asking. It does not imply that a PR exists or that approval immediately changes production.
