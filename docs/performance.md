@@ -1,5 +1,30 @@
 # App performance
 
+## Card checks, October 21, 2026
+
+The live log showed `_queue_decision_refreshes` as the longest hold of the service lock: about 1.2 s on average, 1,706
+times. It runs every 60 seconds and after each PR source read. Most of that time went to a full read and parse of the
+task table: 17,035 rows and 83 MB, 163 ms to read and 203 ms to parse on the laptop.
+
+The service now keeps the parsed task table between operations (`task_cache.py`). SQLite triggers write the ID of
+each changed row to `task_changes` with a rising number, so a later read applies only those rows. The triggers commit and
+roll back with the write, and a rollback also drops the cache. A row that a write moves in row order makes the next
+read parse the whole table again. Read views keep their own copy. Each operation gets its own dict, but the task objects
+are shared, so only code that reads may use `_task_map` and `_all_shared('tasks')`, as before.
+
+On a copy of the live database with 25 pending cards and 3 task writes between passes (laptop, ms per call):
+
+| | First call | Later calls |
+| --- | --- | --- |
+| Before | 4,982 | 790–964 |
+| After | 2,516 | 271–340 |
+
+All 25 card fingerprints and the queued card checks were the same before and after, in each of 6 passes.
+With `COCONUT_VERIFY_TASK_CACHE=1`, each read compares the kept tasks with the table. CI runs the backend tests so, and the
+full suite found no difference. A failed rollback and a sequence number that goes back both make the next read parse the
+whole table.
+The kept table costs about 208 MB of memory in the service process (1.25 GB before).
+
 ## Routine tick, October 21, 2026
 
 The routine tick runs every 15 seconds. It read the native routines with a new Hermes process, rewrote the routines
@@ -232,7 +257,7 @@ row) in the `.xctestrun` file. Every pairing code must return one device for the
 ## Further investigation
 
 - Decision and work-card events still resend every work card. They are about 5% of updates and most of the remaining bytes.
-- Each structural update decodes the whole task table on the server, about 0.4 s on the laptop.
+- Each structural update still decodes the whole task table in its read view, about 0.4 s on the laptop.
 - A reset leaves out finished work older than 7 days, which Task details loads on request. On the live data of
   October 15 it fell from 4.19 MB to 1.54 MB. See [the reset measurements](performance-2026-10-15.md).
 - Opening and scrolling a conversation spends most of its time in SwiftUI layout of Markdown rows.
