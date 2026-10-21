@@ -204,6 +204,8 @@ class Service(NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness,
         CREATE INDEX IF NOT EXISTS tasks_bot ON tasks (json_extract(data,'$.bot_id'));
         CREATE INDEX IF NOT EXISTS contexts_status ON contexts (json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS decisions_status ON decisions (json_extract(data,'$.status'));
+        CREATE INDEX IF NOT EXISTS decisions_undo ON decisions (id) WHERE json_extract(data,'$.inbox_undo_until') IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS decisions_merge_url ON decisions (lower(json_extract(data,'$.merge_pr_url')));
         CREATE INDEX IF NOT EXISTS tasks_assignment ON tasks (json_extract(data, '$._assignment_task_id'));
         CREATE INDEX IF NOT EXISTS tasks_blocked ON tasks (id)
             WHERE json_extract(data, '$.status') IN ('needs_you', 'paused');
