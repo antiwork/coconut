@@ -365,12 +365,12 @@ class DecisionFreshnessTests(unittest.TestCase):
         tasks = {t['id']: t for t in self.service._all('tasks')}
         artifacts = self.service._all('artifacts')
         before = self.service._decision_records(decision, tasks, artifacts)
-        fingerprint, _ = self.service._decision_evidence(decision, tasks, before, artifacts)
+        fingerprint, _ = self.service._decision_evidence(decision, tasks, before, artifacts, profile_revision=self.service.profiles.prompt_revision(self.service._get('bots', decision['bot_id'])))
         records[1]['_delegation_ack_pending'] = False
         self.service._put('native_receipts', records[1])
         after = self.service._decision_records(decision, tasks, artifacts)
         self.assertEqual([r['id'] for r in before], [r['id'] for r in after])
-        self.assertEqual(fingerprint, self.service._decision_evidence(decision, tasks, after, artifacts)[0])
+        self.assertEqual(fingerprint, self.service._decision_evidence(decision, tasks, after, artifacts, profile_revision=self.service.profiles.prompt_revision(self.service._get('bots', decision['bot_id'])))[0])
 
     def test_card_checks_read_only_related_tool_history(self):
         original = self.service._all
@@ -663,7 +663,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         tasks = {t['id']: t for t in self.service._all('tasks')}
         artifacts = self.service._all('artifacts')
         current, _ = self.service._decision_evidence(decision, tasks,
-            self.service._decision_records(decision, tasks, artifacts), artifacts)
+            self.service._decision_records(decision, tasks, artifacts), artifacts, profile_revision=self.service.profiles.prompt_revision(self.service._get('bots', decision['bot_id'])))
         self.assertEqual(current, decision['_freshness']['fingerprint'])
 
     def shared_source_fences_check(self, kind, url, peer_url):
@@ -1163,7 +1163,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         # Update the input snapshot to isolate priority from the separate new-message guard.
         owner = self.service._get('tasks', self.task['id'])
         fingerprint, _ = self.service._decision_evidence(decision, {t['id']: t for t in self.service._all('tasks')},
-            self.service._all('native_receipts'), self.service._all('artifacts'))
+            self.service._all('native_receipts'), self.service._all('artifacts'), profile_revision=self.service.profiles.prompt_revision(self.service._get('bots', decision['bot_id'])))
         context.update(_evidence_fingerprint=fingerprint, _human_input_ids=[m['id'] for m in self.service._decision_human_messages(owner, decision)])
         self.service._put('contexts', context)
         with self.assertRaises(ServiceError):

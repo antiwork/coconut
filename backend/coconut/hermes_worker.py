@@ -978,6 +978,7 @@ def run_turn(request, emit, request_receipt):
     bridge = None
     registry = None
     routine_scope = None
+    profile_revision = None
     allowed = set()
     work = NativeWork(request)
     scope = current_turn.get() or TurnScope(request['task']['id'])
@@ -1000,6 +1001,8 @@ def run_turn(request, emit, request_receipt):
             trace.mark('first_output')
         if kind in ('native_call', 'native_result', 'native_question', 'native_approval'):
             payload = dict(payload, **work.payload(agent))
+        if kind in ('native_call', 'native_question', 'native_proposal', 'decision_response'):
+            payload = dict(payload, _worker_profile_revision=profile_revision)
         return raw_receipt(kind, payload)
     try:
         if request['task'].get('_execution_session_id'):
@@ -1058,7 +1061,7 @@ def run_turn(request, emit, request_receipt):
             emit('text_delta', {'text': text})
             emit('completed', {'summary': 'Complete.'})
             return 0
-        from profiles import merge_runtime_config
+        from profiles import merge_runtime_config, prompt_revision
         merge_runtime_config(os.environ['HERMES_HOME'])
         if os.environ.get('COCONUT_DEFAULT_HOME'):
             from parallel_work import prepare_turn
@@ -1444,6 +1447,13 @@ def run_turn(request, emit, request_receipt):
         relay = NativeRelay(request, request_receipt)
         relay.install(conversation)
         bridge.relay = relay
+        profile_revision = prompt_revision(os.environ['HERMES_HOME'])
+        revision_key = 'coconut.prompt-input-revision.' + conversation.session_id
+        if conversation.db.get_meta(revision_key) != profile_revision:
+            if conversation.history:
+                conversation.db.update_system_prompt(conversation.session_id, None)
+            # Save only the pre-turn revision. A later edit must remain visible to the next turn.
+            conversation.db.set_meta(revision_key, profile_revision)
         agent = AIAgent(model=request['model'], **config, fallback_model=fallback, reasoning_config=reasoning_configuration(request.get('reasoning_effort')),
                         enabled_toolsets=list(dict.fromkeys(toolsets + mcp_names + [coconut_toolset] + (['todo'] if work.enabled else []))), disabled_toolsets=disabled, quiet_mode=True,
                         ephemeral_system_prompt=instructions, session_id=conversation.session_id, session_db=conversation.db,

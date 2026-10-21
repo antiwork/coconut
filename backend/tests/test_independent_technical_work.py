@@ -45,8 +45,10 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
             selected_option_id='all', selected_option_label='Build the complete list',
             decided_by='person-device', decided_at='2026-10-20T05:32:58Z', _native=True,
             _answers=[dict(choice='approve', option_id='all', decided_by='person-device')])
+        # This gate already has an assessment for the current native profile.
         self.gate = dict(id='gate', task_id=owner['id'], bot_id=owner['bot_id'], status='pending',
             action_type='question', inbox_kind='decision', revision=2, title=owner['summary'],
+            _profile_revision=self.service.profiles.prompt_revision(self.service._get('bots', owner['bot_id'])),
             options=[dict(id='accept', label='Accept the views', answer='approve', explanation=''),
                      dict(id='hold', label='Keep the PR in draft', answer='reject', explanation='')],
             decided_by=None, decided_at=None, selected_option_id=None, merge_pr_url=None, _native=True,
@@ -939,7 +941,7 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         decision = self.service._get('decisions', 'gate')
         task = self.service._get('tasks', owner['id'])
         fingerprint, _ = self.service._decision_evidence(decision, {t['id']: t for t in self.service._all('tasks')},
-            self.service._all('native_receipts'), self.service._all('artifacts'))
+            self.service._all('native_receipts'), self.service._all('artifacts'), profile_revision=self.service.profiles.prompt_revision(self.service._get('bots', decision['bot_id'])))
         context = dict(id=str(uuid4()), task_id=owner['id'], bot_id=owner['bot_id'], decision_id='gate', status='working',
                        question='Check the pending question.', created_at=task['created_at'], _decision_refresh=True,
                        _decision_revision=decision['revision'], _evidence_fingerprint=fingerprint,
@@ -1378,8 +1380,10 @@ class TechnicalLaneNativeBoardTests(unittest.TestCase):
             selected_option_id='all', selected_option_label='Build the complete list', decided_by='test-phone',
             decided_at=owner['created_at'], created_at=owner['created_at'], _native=True,
             _answers=[dict(choice='approve', option_id='all', decided_by='test-phone')])
+        # This gate already has an assessment for the current native profile.
         gate = dict(id=str(uuid4()), task_id=owner['id'], bot_id=owner['bot_id'], status='pending',
             action_type='question', inbox_kind='decision', revision=2, title=owner['summary'], explanation='',
+            _profile_revision=self.service.profiles.prompt_revision(self.service._get('bots', owner['bot_id'])),
             context='', resource='', options=[dict(id='accept', label='Accept the views', answer='approve', explanation=''),
                                              dict(id='draft', label='Keep the PR in draft', answer='approve', explanation='')],
             recommended_option_id=None, selected_option_id=None, selected_option_label=None, decided_at=None,

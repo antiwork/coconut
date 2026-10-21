@@ -1,12 +1,15 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from uuid import uuid4
 
-from coconut.profiles import HermesProfiles, ProfileError, inspect_profiles, merge_runtime_config, profile_id
+from coconut.profiles import MAX_PROMPT_FILE_BYTES, HermesProfiles, ProfileError, inspect_profiles, merge_runtime_config, profile_id
 
 
 class ProfileTests(unittest.TestCase):
@@ -56,6 +59,122 @@ class ProfileTests(unittest.TestCase):
     def test_new_profiles_opt_out_of_the_bundled_catalog(self):
         self.profiles.sync(self.bot)
         self.assertTrue((self.profiles.home(self.bot) / '.no-bundled-skills').is_file())
+
+    def test_prompt_revision_tracks_content_and_missing_files(self):
+        self.profiles.sync(self.bot)
+        home = self.profiles.home(self.bot)
+        original = self.profiles.prompt_revision(self.bot)
+        soul = home / 'SOUL.md'
+        soul.touch()
+        self.assertEqual(self.profiles.prompt_revision(self.bot), original)
+        memories = home / 'memories'
+        memories.mkdir(exist_ok=True)
+        user = memories / 'USER.md'
+        user.touch()
+        empty = self.profiles.prompt_revision(self.bot)
+        self.assertNotEqual(empty, original)
+        user.write_text('Only issue #3664 requires manual merges.')
+        self.assertNotEqual(self.profiles.prompt_revision(self.bot), empty)
+        user.unlink()
+        self.assertEqual(self.profiles.prompt_revision(self.bot), original)
+
+    def test_prompt_revision_rejects_memory_symlinks(self):
+        self.profiles.sync(self.bot)
+        memories = self.profiles.home(self.bot) / 'memories'
+        memories.mkdir(exist_ok=True)
+        outside = self.root / 'outside-memory'
+        outside.write_text('Private content outside this profile.')
+        (memories / 'USER.md').symlink_to(outside)
+        with self.assertRaisesRegex(ProfileError, 'symbolic link'):
+            self.profiles.prompt_revision(self.bot)
+
+    def test_prompt_revision_rejects_a_fifo_without_waiting_for_a_writer(self):
+        self.profiles.sync(self.bot)
+        home = self.profiles.home(self.bot)
+        code = '''
+import os, sys
+from pathlib import Path
+from unittest.mock import patch
+from coconut.profiles import ProfileError, prompt_revision
+home = Path(sys.argv[1])
+path = home / 'memories/USER.md'
+original = os.open
+def replace(target, flags, *args, **kwargs):
+    if Path(target) == path:
+        path.unlink()
+        os.mkfifo(path)
+    return original(target, flags, *args, **kwargs)
+if sys.argv[2] == 'replace':
+    path.write_text('A valid policy before the open.')
+else:
+    os.mkfifo(path)
+try:
+    with patch('coconut.profiles.os.open', replace):
+        prompt_revision(home)
+except ProfileError as error:
+    assert 'regular file' in str(error), error
+    print('FIFO rejected without a writer.')
+else:
+    raise AssertionError('The profile accepted a FIFO.')
+'''
+        environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]))
+        for mode in ('existing', 'replace'):
+            with self.subTest(mode=mode):
+                try:
+                    result = subprocess.run([sys.executable, '-c', code, str(home), mode],
+                                            env=environment, capture_output=True, text=True, timeout=3)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn('FIFO rejected without a writer.', result.stdout)
+                finally:
+                    (home / 'memories/USER.md').unlink(missing_ok=True)
+
+    def test_prompt_revision_rejects_a_directory(self):
+        self.profiles.sync(self.bot)
+        path = self.profiles.home(self.bot) / 'memories/USER.md'
+        path.mkdir()
+        with self.assertRaisesRegex(ProfileError, 'regular file'):
+            self.profiles.prompt_revision(self.bot)
+
+    def test_prompt_revision_bounds_each_file_without_truncating_its_hash(self):
+        self.profiles.sync(self.bot)
+        home = self.profiles.home(self.bot)
+        for name in ('SOUL.md', 'memories/MEMORY.md', 'memories/USER.md'):
+            with self.subTest(name=name):
+                path = home / name
+                original = path.read_bytes() if path.exists() else None
+                try:
+                    path.write_bytes(b'a' * MAX_PROMPT_FILE_BYTES)
+                    revision = self.profiles.prompt_revision(self.bot)
+                    path.write_bytes(b'a' * (MAX_PROMPT_FILE_BYTES - 1) + b'b')
+                    self.assertNotEqual(self.profiles.prompt_revision(self.bot), revision)
+                    with path.open('ab') as handle:
+                        handle.write(b'c')
+                    with self.assertRaisesRegex(ProfileError, 'exceeds 1 MiB'):
+                        self.profiles.prompt_revision(self.bot)
+                finally:
+                    if original is None:
+                        path.unlink()
+                    else:
+                        path.write_bytes(original)
+
+    def test_prompt_revision_rejects_invalid_utf8_in_each_file(self):
+        self.profiles.sync(self.bot)
+        home = self.profiles.home(self.bot)
+        for name in ('SOUL.md', 'memories/MEMORY.md', 'memories/USER.md'):
+            with self.subTest(name=name):
+                path = home / name
+                original = path.read_bytes() if path.exists() else None
+                try:
+                    path.write_bytes(b'A policy with invalid UTF-8: \xff')
+                    with self.assertRaisesRegex(ProfileError, 'valid UTF-8'):
+                        self.profiles.prompt_revision(self.bot)
+                    path.write_text('保留此范围。')
+                    self.assertTrue(self.profiles.prompt_revision(self.bot))
+                finally:
+                    if original is None:
+                        path.unlink()
+                    else:
+                        path.write_bytes(original)
 
     def test_existing_profile_gets_default_once_and_keeps_custom_skills(self):
         self.profiles.sync(self.bot)

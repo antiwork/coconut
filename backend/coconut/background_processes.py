@@ -432,9 +432,17 @@ class BackgroundProcesses:
                 and not self._has_uncertain_receipt(task['id'], context['id']))
 
     def _resume_process_context(self, context_id, completions):
+        from .profiles import ProfileError
         from .service import uid, now
         source = self._get('contexts', context_id)
         decision = self._get('decisions', source['decision_id'])
+        if source.get('_decision_refresh'):
+            try:
+                profile_revision = self.profiles.prompt_revision(self._get('bots', source['bot_id']))
+            except (OSError, ProfileError):
+                # Keep this result undelivered until its profile is readable. Other bots can still resume.
+                logging.getLogger(__name__).exception('Could not read the native profile for process context %s.', context_id)
+                return
         # Keep the human source separate from tool output and keep the task behind its decision.
         context = dict(source, id=uid(), status='queued', _decision_revision=decision['revision'],
                        _background_completion=[text for _, text in completions])
@@ -453,10 +461,11 @@ class BackgroundProcesses:
             artifacts = self._all('artifacts')
             records = self._decision_records(decision, tasks, artifacts)
             self._set_refresh_recovery(context, source, self._all('contexts'), records)
-            fingerprint, work = self._decision_evidence(decision, tasks, records, artifacts)
+            fingerprint, work = self._decision_evidence(decision, tasks, records, artifacts, profile_revision=profile_revision)
             task = tasks[context['task_id']]
             context.update(_evidence_fingerprint=fingerprint,
-                           _external_fingerprint=self._decision_evidence(decision, tasks, records, artifacts, own_receipts=False)[0],
+                           _external_fingerprint=self._decision_evidence(decision, tasks, records, artifacts,
+                               own_receipts=False, profile_revision=profile_revision)[0],
                            _human_input_ids=[m['id'] for m in self._decision_human_messages(task, decision)],
                            question=self._decision_refresh_prompt(decision, task, work, self._all('decisions')))
         self._put('contexts', context)

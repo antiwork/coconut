@@ -98,6 +98,8 @@ class NativeExecution:
                 action = {'name': payload['name'], 'arguments': payload['arguments']}
                 record = dict(id=str(uuid4()), task_id=task_id, turn_id=context_id or task.get('_native_turn_id'), action=action, action_hash=digest(encoded(action)),
                               state='executing', created_at=now())
+                record['_worker_profile_revision'] = (payload['_worker_profile_revision'] if '_worker_profile_revision' in payload
+                    else self.profiles.prompt_revision(self._get('bots', task['bot_id'])))
                 if action['name'] == 'kanban_create':
                     record['_attachment_ids'] = list(task.get('_turn_attachment_ids', task.get('_attachment_ids', [])))
                 self._put('native_receipts', record)
@@ -222,15 +224,21 @@ class NativeExecution:
                 decision['merge_pr_url'] = self._merge_decision_url(payload, task)
                 decision['_merge_pr_head'] = self._merge_decision_head(decision['merge_pr_url'], task)
                 decision['_merge_request_at'] = self._validate_merge_decision(decision, task)
+            freshness = {}
+            if not approval and payload.get('receipt_id'):
+                # A later worker cannot relabel an earlier tool intent with its own prompt snapshot.
+                freshness['profile_revision'] = record.get('_worker_profile_revision')
+            elif '_worker_profile_revision' in payload:
+                freshness['profile_revision'] = payload['_worker_profile_revision']
             self._put('decisions', decision)
             if optional:
-                self._initialize_decision_freshness(decision)
+                self._initialize_decision_freshness(decision, **freshness)
                 self._message(task['bot_id'], decision['title'], task_id=task_id, kind='decision', decision_id=decision['id'])
                 self._event('decision.created', self._public(decision), task['bot_id'], task_id)
                 return {'status': 'recorded', 'decision_id': decision['id']}
             task.update(status='needs_you', summary=decision['title'])
             self._put('tasks', task)
-            self._initialize_decision_freshness(decision)
+            self._initialize_decision_freshness(decision, **freshness)
             self._message(task['bot_id'], decision['title'], task_id=task_id, kind='decision', decision_id=decision['id'])
             self._event('decision.created', self._public(decision), task['bot_id'], task_id)
             self._refresh_bot(task['bot_id'])
@@ -253,6 +261,9 @@ class NativeExecution:
         choice = option['answer'] if option else data.get('choice')
         if choice not in ('approve', 'reject', 'modify', 'reply') or (choice == 'approve' and not option):
             raise ServiceError(400, 'Choose one of the current options.')
+        # Hermes owns exact command approvals; profile checks apply to model questions and drafts.
+        if choice == 'approve' and decision['action_type'] in ('question', 'draft_message'):
+            self._require_current_decision_profile(decision)
         if decision.get('previews') and choice == 'approve' and data.get('previews_hash') != decision.get('previews_hash'):
             raise ServiceError(409, 'Review the images in the latest app before choosing this option.')
         if decision.get('draft') is not None and choice == 'approve' and data.get('draft_hash') != decision.get('draft_hash'):

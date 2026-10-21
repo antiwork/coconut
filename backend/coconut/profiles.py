@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
 import sqlite3
+import stat
 import tempfile
 from uuid import UUID
 
 
 class ProfileError(ValueError):
     pass
+
+
+MAX_PROMPT_FILE_BYTES = 1024 * 1024
 
 
 def profile_id(bot: dict) -> str:
@@ -53,6 +58,41 @@ def _json(value: dict) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2) + '\n'
 
 
+def prompt_revision(home: str | Path, *, boundary: str | Path | None = None) -> str:
+    home = Path(home).expanduser().absolute()
+    boundary = Path(boundary).expanduser().absolute() if boundary is not None else home
+    hashes = {}
+    for name in ('SOUL.md', 'memories/MEMORY.md', 'memories/USER.md'):
+        path = home / name
+        _safe(path, boundary)
+        try:
+            before = path.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            hashes[name] = None
+            continue
+        if not stat.S_ISREG(before.st_mode):
+            raise ProfileError('The Hermes profile prompt file must be a regular file: ' + name)
+        if before.st_size > MAX_PROMPT_FILE_BYTES:
+            raise ProfileError('The Hermes profile prompt file exceeds 1 MiB: ' + name)
+        # A path can change after stat. Nonblocking open prevents a replacement FIFO from waiting.
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, 'rb') as handle:
+            current = os.fstat(handle.fileno())
+            if not stat.S_ISREG(current.st_mode):
+                raise ProfileError('The Hermes profile prompt file must be a regular file: ' + name)
+            if current.st_size > MAX_PROMPT_FILE_BYTES:
+                raise ProfileError('The Hermes profile prompt file exceeds 1 MiB: ' + name)
+            content = handle.read(MAX_PROMPT_FILE_BYTES + 1)
+        if len(content) > MAX_PROMPT_FILE_BYTES:
+            raise ProfileError('The Hermes profile prompt file exceeds 1 MiB: ' + name)
+        try:
+            content.decode('utf-8')
+        except UnicodeDecodeError:
+            raise ProfileError('The Hermes profile prompt file must contain valid UTF-8: ' + name) from None
+        hashes[name] = hashlib.sha256(content).hexdigest()
+    return hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
+
+
 class HermesProfiles:
     """Hermes files own behavior. Coconut records identity and phone presentation."""
 
@@ -68,6 +108,9 @@ class HermesProfiles:
         path = self.home(bot) / 'SOUL.md'
         _safe(path, self.root)
         return path.read_text() if path.exists() else bot.get('instructions', '')
+
+    def prompt_revision(self, bot: dict) -> str:
+        return prompt_revision(self.home(bot), boundary=self.root)
 
     def write_instructions(self, bot: dict, text: str) -> None:
         home = self.home(bot)

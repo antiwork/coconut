@@ -8,6 +8,7 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import test_automatic_work as fixtures
 import legacy_work_sync
@@ -172,6 +173,20 @@ class Fixture:
 
 
 class WithdrawalCorrectionTests(Fixture, unittest.TestCase):
+    def test_unreadable_profile_refuses_a_correction_before_changes(self):
+        from coconut.profiles import ProfileError
+        decision = self.draft()
+        withdrawn, context, _ = self.withdraw(decision)
+        helper = self.delegate()
+        for error in (PermissionError('The profile is unreadable.'), ProfileError('The profile contains a symlink.')):
+            with self.subTest(error=type(error).__name__), \
+                 patch.object(self.service.profiles, 'prompt_revision', side_effect=error):
+                try:
+                    detail = self.assertRefused(helper, self.payload(withdrawn, context), 409, withdrawn)
+                except (OSError, ProfileError) as failure:
+                    self.fail('The correction must return a scoped conflict: ' + str(failure))
+                self.assertIn('cannot read', detail)
+
     def test_delegate_restores_the_exact_card_once_and_persists(self):
         decision = self.draft()
         withdrawn, context, _ = self.withdraw(decision)
@@ -1081,7 +1096,7 @@ class DecisionHumanMessageTests(Fixture, unittest.TestCase):
     def evidence(self, decision):
         decision = self.service._get('decisions', decision['id'])
         tasks, artifacts = self.service._task_map(), self.service._all('artifacts')
-        return self.service._decision_evidence(decision, tasks, self.service._decision_records(decision, tasks, artifacts), artifacts)[0]
+        return self.service._decision_evidence(decision, tasks, self.service._decision_records(decision, tasks, artifacts), artifacts, profile_revision=self.service.profiles.prompt_revision(self.service._get('bots', decision['bot_id'])))[0]
 
     def queue_check(self, decision):
         """Run the normal queue until it offers this card a check. Other cards' checks finish without a result."""
@@ -1233,7 +1248,7 @@ class DecisionHumanMessageTests(Fixture, unittest.TestCase):
         self.human('Post it after Sahil replies.')
         tasks, artifacts = self.service._task_map(), self.service._all('artifacts')
         records = self.service._decision_records(decision, tasks, artifacts)
-        fingerprint, _ = self.service._decision_evidence(decision, tasks, records, artifacts)
+        fingerprint, _ = self.service._decision_evidence(decision, tasks, records, artifacts, profile_revision=self.service.profiles.prompt_revision(self.service._get('bots', decision['bot_id'])))
         with self.service._shared_reads():
             inputs = self.service._decision_human_messages(tasks[decision['task_id']], decision)
         self.assertTrue(inputs)
@@ -1244,7 +1259,7 @@ class DecisionHumanMessageTests(Fixture, unittest.TestCase):
         original = self.service._decision_human_messages
         self.service._decision_human_messages = lambda task, card: bare
         try:
-            self.assertEqual(self.service._decision_evidence(decision, tasks, records, artifacts)[0], fingerprint)
+            self.assertEqual(self.service._decision_evidence(decision, tasks, records, artifacts, profile_revision=self.service.profiles.prompt_revision(self.service._get('bots', decision['bot_id'])))[0], fingerprint)
         finally:
             self.service._decision_human_messages = original
 
