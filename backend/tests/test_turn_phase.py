@@ -118,6 +118,16 @@ class BridgePhaseTests(unittest.TestCase):
         self.settle(bridge)
         self.assertEqual(sent, ['thinking', 'testing'])
 
+    def test_no_phase_follows_the_turn_outcome(self):
+        bridge, sent = self.bridge()
+        bridge.report_phase('thinking')
+        bridge.report_phase('reading')
+        timer = bridge.phase_timer
+        bridge.stop_phases()
+        timer.join()
+        bridge.report_phase('writing')
+        self.assertEqual(sent, ['thinking'])
+
     def test_a_return_to_the_sent_phase_sends_nothing(self):
         bridge, sent = self.bridge()
         bridge.report_phase('thinking')

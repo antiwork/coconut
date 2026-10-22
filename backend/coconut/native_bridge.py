@@ -48,6 +48,7 @@ class NativeBridge:
         self.phase = self.phase_sent = None
         self.phase_sent_at = -self.PHASE_INTERVAL
         self.phase_timer = None
+        self.phases_stopped = False
         self.phase_lock = threading.RLock()
         self.tools_running = 0
 
@@ -291,6 +292,8 @@ class NativeBridge:
         if phase is None or self.request['operation'] == 'context':
             return
         with self.phase_lock:
+            if self.phases_stopped:
+                return
             self.phase = phase
             wait = self.phase_sent_at + self.PHASE_INTERVAL - time.monotonic()
             if wait <= 0:
@@ -304,7 +307,7 @@ class NativeBridge:
         # Emit under the lock, so parallel tools cannot deliver labels out of order.
         with self.phase_lock:
             self.phase_timer = None
-            if self.phase == self.phase_sent:
+            if self.phases_stopped or self.phase == self.phase_sent:
                 return
             self.phase_sent, self.phase_sent_at = self.phase, time.monotonic()
             try:
@@ -324,11 +327,16 @@ class NativeBridge:
             if self.tools_running == 0:
                 self.report_phase('thinking')
 
-    def close(self):
+    def stop_phases(self):
+        # The turn outcome is the last event. No delayed label may follow it.
         with self.phase_lock:
+            self.phases_stopped = True
             if self.phase_timer is not None:
                 self.phase_timer.cancel()
                 self.phase_timer = None
+
+    def close(self):
+        self.stop_phases()
         from tools.approval import unregister_gateway_notify
         unregister_gateway_notify(self.session_key)
         model_registration = getattr(self, 'model_registration', None)

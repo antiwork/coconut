@@ -56,7 +56,7 @@ with patch('socket.socket.connect', side_effect=AssertionError('Unexpected netwo
         return [m for m in service.snapshot()['messages'] if m['task_id'] == task['id']
                 and m['role'] == 'assistant' and m['kind'] == 'text']
     def emit(kind, data):
-        if kind in ('turn_timing', 'turn_trace', 'steering_ready'):
+        if kind in ('turn_timing', 'turn_trace', 'steering_ready', 'phase'):
             return
         output.append((kind, data))
         return service.emit(task['id'], kind, data)

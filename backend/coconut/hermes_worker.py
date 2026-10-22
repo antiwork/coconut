@@ -994,6 +994,8 @@ def run_turn(request, emit, request_receipt):
     trace = TurnTrace(request['task'], request['operation'], raw_emit)
     def emit(kind, payload):
         if kind in ('completed', 'failed', 'native_question', 'native_approval'):
+            if bridge is not None:
+                bridge.stop_phases()
             payload = dict(payload, **work.payload(agent))
         return raw_emit(kind, payload)
     def request_receipt(kind, payload):
