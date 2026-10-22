@@ -2,7 +2,7 @@ import SwiftUI
 import UserNotifications
 
 enum OnboardingStep: Int, Hashable, Comparable {
-    case welcome, pair, setup, bots, logins, model, notifications, done
+    case welcome, pair, setup, bots, logins, mcp, model, notifications, done
 
     static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
 }
@@ -38,6 +38,7 @@ struct OnboardingView: View {
     @State private var notificationsOn = false
     @State private var importError: String?
     @State private var skippedSkills: [String] = []
+    @State private var serversNeedingSetup: [String] = []
 
     init(start: OnboardingStep = .welcome) {
         self.start = start
@@ -53,12 +54,16 @@ struct OnboardingView: View {
     }
 
     private var setup: HermesSetup? { load.setup }
+    private var newServers: [HermesMCPServer] { setup?.newMCPServers(existing: store.mcpServers) ?? [] }
+    // The setup's default model, when Coconut can use the same route.
+    private var setupModel: ModelOverride? { setup?.modelChoice(in: store.modelCatalog) }
     private var working: Bool { action != nil }
 
     private var steps: [OnboardingStep] {
         var steps: [OnboardingStep] = start == .welcome ? [.welcome, .pair, .setup] : [.setup]
         if setup?.importable.isEmpty == false { steps.append(.bots) }
         if setup.map({ !$0.logins.isEmpty || !$0.signIns.isEmpty }) == true { steps.append(.logins) }
+        if !newServers.isEmpty { steps.append(.mcp) }
         if !store.modelConfigured { steps.append(.model) }
         if askNotifications { steps.append(.notifications) }
         steps.append(.done)
@@ -165,10 +170,24 @@ struct OnboardingView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+        case .mcp:
+            OnboardingPage(title: "Add your MCP servers?",
+                           subtitle: "Your Hermes setup uses these MCP servers. Coconut can add them for your bots. It keeps any server that it already has.") {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(Array(newServers.enumerated()), id: \.element.id) { index, server in
+                        StaggeredRow(index: index) { MCPServerRow(server: server) }
+                    }
+                    Text("Coconut copies the keys that these servers use. A server that needs setup stays off until you finish it in Hermes on your Mac.")
+                        .font(.footnote).foregroundStyle(.secondary).padding(.top, 6)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         case .model:
-            OnboardingPage(title: "Choose a model", subtitle: modelSubtitle) {
+            OnboardingPage(title: setupModel.map { "Use \(modelName($0))?" } ?? "Choose a model", subtitle: modelSubtitle) {
                 WelcomeIllustration(phases: [.thinking, .writing, .reading])
             }
+            // Copied keys can add providers, so the page reads the Mac's catalog again.
+            .task { await store.refreshSettings() }
         case .notifications:
             OnboardingPage(title: "Get notified",
                            subtitle: "Coconut tells you when a bot finishes or needs your answer.") {
@@ -179,8 +198,8 @@ struct OnboardingView: View {
                 CompletionBurst()
             }
             .task {
-                // A note about skipped skills stays until the person reads it.
-                guard skippedSkills.isEmpty else { return }
+                // A note about skipped skills or servers that need setup stays until the person reads it.
+                guard skippedSkills.isEmpty && serversNeedingSetup.isEmpty else { return }
                 try? await Task.sleep(for: .seconds(1.6))
                 if !Task.isCancelled { finish() }
             }
@@ -189,7 +208,7 @@ struct OnboardingView: View {
 
     @ViewBuilder private var footer: some View {
         VStack(spacing: 4) {
-            if let importError, [.bots, .logins].contains(step) {
+            if let importError, [.bots, .logins, .mcp, .model].contains(step) {
                 Text(importError).font(.footnote).foregroundStyle(BoardStyle.accent)
                     .multilineTextAlignment(.center).padding(.bottom, 6)
                     .accessibilityIdentifier("onboarding-error")
@@ -223,9 +242,17 @@ struct OnboardingView: View {
                 } else {
                     PrimaryButton(title: "Continue", enabled: !working) { perform { await runImport(logins: false) } }
                 }
+            case .mcp:
+                PrimaryButton(title: "Add them", enabled: !working) { perform { await importServers() } }
+                SecondaryButton(title: "Not now", enabled: !working) { advance() }
             case .model:
-                PrimaryButton(title: "Choose a model") { modelOpen = true }
-                SecondaryButton(title: store.modelConfigured ? "Continue" : "Later") { advance() }
+                if let setupModel, !store.modelConfigured {
+                    PrimaryButton(title: "Use \(modelName(setupModel))", enabled: !working) { perform { await useSetupModel(setupModel) } }
+                    SecondaryButton(title: "Choose another model", enabled: !working) { modelOpen = true }
+                } else {
+                    PrimaryButton(title: "Choose a model") { modelOpen = true }
+                }
+                SecondaryButton(title: store.modelConfigured ? "Continue" : "Later", enabled: !working) { advance() }
             case .notifications:
                 if notificationsOn {
                     Label("Notifications on", systemImage: "checkmark")
@@ -266,15 +293,28 @@ struct OnboardingView: View {
     }
 
     private var doneSubtitle: String {
-        guard !skippedSkills.isEmpty else { return "Your bots are ready on your Mac." }
-        return "Your bots are ready. Coconut left out \(skippedSkills.formatted()), because a skill was too large or had too many files."
+        var notes: [String] = []
+        if !skippedSkills.isEmpty {
+            notes.append("Coconut left out \(skippedSkills.formatted()), because a skill was too large or had too many files.")
+        }
+        if !serversNeedingSetup.isEmpty {
+            notes.append("Finish \(serversNeedingSetup.formatted()) in Hermes on your Mac. Until then, Coconut keeps these MCP servers off.")
+        }
+        return notes.isEmpty ? "Your bots are ready on your Mac." : (["Your bots are ready."] + notes).joined(separator: " ")
     }
 
     private var modelSubtitle: String {
+        if setupModel != nil {
+            return "Your Hermes setup uses this model. Coconut can use it as the default for your bots. You can change it later in Settings."
+        }
         if let model = setup?.model {
-            return "Your Hermes setup uses \(model.model). Choose the default model for your Coconut bots."
+            return "Your Hermes setup uses \(model.model), but Coconut cannot use it yet. Choose the default model for your Coconut bots."
         }
         return "Your bots need a default model. You can change it later in Settings."
+    }
+
+    private func modelName(_ selection: ModelOverride) -> String {
+        store.modelCatalog?.name(for: selection) ?? selection.model
     }
 
     private func binding(for profile: HermesSetupProfile) -> Binding<Bool> {
@@ -326,6 +366,27 @@ struct OnboardingView: View {
         advance()
     }
 
+    private func importServers() async {
+        importError = nil
+        guard let result = await store.importHermesSetup(profileIds: [], logins: false, mcpServers: true) else {
+            importError = store.error ?? "Coconut could not add the MCP servers. Try again."
+            return
+        }
+        guard !Task.isCancelled else { return }
+        serversNeedingSetup = result.mcpNeedsSetup ?? []
+        advance()
+    }
+
+    private func useSetupModel(_ selection: ModelOverride) async {
+        importError = nil
+        guard await store.setModel(selection) else {
+            importError = store.error ?? "Coconut could not set the model. Choose another model."
+            return
+        }
+        guard !Task.isCancelled else { return }
+        advance()
+    }
+
     private func enableNotifications() async {
         await PushNotifications.shared.refresh(requestPermission: true)
         guard !Task.isCancelled else { return }
@@ -339,6 +400,8 @@ struct OnboardingView: View {
     // The next step therefore follows the fixed order, not the position in the list.
     private func advance() {
         guard let next = steps.first(where: { $0 > step }) else { return finish() }
+        // An error belongs to the page that showed it.
+        importError = nil
         history.append(step)
         step = next
     }
@@ -503,6 +566,21 @@ private struct ProfileRow: View {
             }
         }
         .padding(.vertical, 12)
+    }
+}
+
+private struct MCPServerRow: View {
+    let server: HermesMCPServer
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Label(server.id, systemImage: server.transport == "http" ? "globe" : "terminal").font(.body)
+            Spacer(minLength: 8)
+            if server.needsSetup {
+                Text("Needs setup").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 

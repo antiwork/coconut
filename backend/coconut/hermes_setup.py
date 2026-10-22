@@ -28,6 +28,9 @@ MODEL_KEYS = {
 }
 SIGN_INS = {'anthropic': 'Claude', 'nous': 'Nous Portal', 'openai-codex': 'OpenAI Codex', 'xai-oauth': 'xAI',
             'qwen-oauth': 'Qwen', 'google-gemini-cli': 'Gemini', 'copilot': 'GitHub Copilot'}
+# ${NAME} placeholders in MCP settings. Hermes resolves these context names itself, not from .env.
+REFERENCE = re.compile(r'\$\{([^}]+)\}')
+CONTEXT_NAMES = {'userHome', 'workspaceFolder', 'workspaceFolderBasename', 'pathSeparator', '/'}
 MAX_SKILL_FILE_BYTES = 5 * 1024 * 1024
 MAX_SKILL_BYTES = 50 * 1024 * 1024
 # The probe runs on each GET /v1/setup. Deep or huge folders are not skill libraries.
@@ -135,13 +138,41 @@ def _model(config: dict) -> dict | None:
     return None
 
 
+def _references(value, found: set[str]) -> set[str]:
+    if isinstance(value, str):
+        found.update(name.strip().removeprefix('env:').strip() for name in REFERENCE.findall(value)
+                     if name.strip() not in CONTEXT_NAMES)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _references(item, found)
+    elif isinstance(value, list):
+        for item in value:
+            _references(item, found)
+    return found
+
+
+def _mcp_servers(config: dict, values: dict[str, str]) -> list[dict]:
+    """Name and kind of each MCP server. A server needs setup when it signs in with OAuth or refers to a variable that .env does not define."""
+    entries = config.get('mcp_servers')
+    if not isinstance(entries, dict):
+        return []
+    found = []
+    for name, entry in entries.items():
+        if not isinstance(name, str) or not 0 < len(name) <= 64 or not isinstance(entry, dict):
+            continue
+        oauth = str(entry.get('auth') or '').strip().lower() == 'oauth'
+        missing = any(not values.get(reference) for reference in _references(entry, set()))
+        found.append({'id': name, 'transport': 'http' if entry.get('url') else 'stdio', 'needs_setup': oauth or missing})
+    return sorted(found, key=lambda item: item['id'])
+
+
 def summary(home: Path) -> dict:
     soul = _text(home / 'SOUL.md')
     return {'soul': bool(soul and soul.strip()), 'memories': len(_memories(home)), 'skills': len(_skills(home))}
 
 
-def _env(home: Path) -> tuple[str, dict[str, str]]:
-    """The .env text and its model keys as {name: resolved value}. Empty values do not count."""
+def _env(home: Path, names=MODEL_KEYS) -> tuple[str, dict[str, str]]:
+    """The .env text and its values as {name: resolved value}, by default only model keys. Empty values do not count."""
     text = _text(home / '.env') or ''
     try:
         # Hermes reads .env with python-dotenv. Use the same parser, which also resolves ${NAME} references.
@@ -154,7 +185,7 @@ def _env(home: Path) -> tuple[str, dict[str, str]]:
             name, separator, value = line.strip().removeprefix('export ').partition('=')
             if separator and not name.strip().startswith('#'):
                 values[name.strip()] = value.strip().strip('"\'')
-    return text, {name: value for name, value in values.items() if name in MODEL_KEYS and value}
+    return text, {name: value for name, value in values.items() if (names is None or name in names) and value}
 
 
 def _env_line(name: str, value: str) -> str:
@@ -189,14 +220,15 @@ def _sign_in_label(name: str) -> str:
 
 def probe(root: Path | None) -> dict:
     if root is None:
-        return {'found': False, 'profiles': [], 'logins': [], 'sign_ins': [], 'model': None}
+        return {'found': False, 'profiles': [], 'logins': [], 'sign_ins': [], 'model': None, 'mcp_servers': []}
     available = profiles(root)
     found = [dict(id=key, name=name, **summary(home)) for key, (name, home) in available.items()]
-    _, keys = _env(root)
+    _, values = _env(root, None)
+    config = _config(root) if 'default' in available else {}
     return {'found': bool(found), 'profiles': found,
-            'logins': [{'id': name, 'label': _label(name)} for name in sorted(keys)],
+            'logins': [{'id': name, 'label': _label(name)} for name in sorted(values) if name in MODEL_KEYS],
             'sign_ins': [{'id': name, 'label': _sign_in_label(name)} for name in _sign_ins(root)],
-            'model': _model(_config(root)) if 'default' in available else None}
+            'model': _model(config), 'mcp_servers': _mcp_servers(config, values)}
 
 
 def _copy_file(origin: Path, destination: Path, boundary: Path) -> None:
@@ -300,9 +332,10 @@ class HermesSetup:
         from .service import ServiceError, uid
         keys = data.get('profile_ids', []) if isinstance(data, dict) else None
         logins = data.get('logins', False) if isinstance(data, dict) else None
+        mcp = data.get('mcp_servers', False) if isinstance(data, dict) else None
         if (not isinstance(keys, list) or len(keys) > self.MAX_IMPORT_PROFILES
-                or not all(isinstance(item, str) for item in keys) or not isinstance(logins, bool)):
-            raise ServiceError(400, 'Send profile_ids as a list of profile IDs and logins as true or false.')
+                or not all(isinstance(item, str) for item in keys) or not isinstance(logins, bool) or not isinstance(mcp, bool)):
+            raise ServiceError(400, 'Send profile_ids as a list of profile IDs, and logins and mcp_servers as true or false.')
         with self.setup_lock:
             previous = self._previous_request(key, fingerprint)
             if previous is not None:
@@ -341,7 +374,9 @@ class HermesSetup:
                 # A retry with a new key resumes: imported profiles return their existing bots.
                 raise ServiceError(409, str(error) if isinstance(error, ProfileError) else
                                    'Coconut could not copy the Hermes setup.') from None
-            result = {'bots': bots, 'logins': copied, 'skipped_skills': sorted(set(skipped))}
+            servers = self._copy_mcp_servers(root) if mcp else {'added': [], 'needs_setup': []}
+            result = {'bots': bots, 'logins': copied, 'skipped_skills': sorted(set(skipped)),
+                      'mcp_servers': servers['added'], 'mcp_needs_setup': servers['needs_setup']}
             self._remember_request(key, fingerprint, result)
             return result
 
@@ -358,3 +393,18 @@ class HermesSetup:
                 # The model step reads providers again with the new keys.
                 catalog._cache = None
         return copied
+
+    def _copy_mcp_servers(self, root: Path) -> dict:
+        """Add the MCP servers that Coconut's default Hermes home does not have, through the native settings."""
+        from .service import ServiceError
+        if not hasattr(self.provider, 'native_settings'):
+            raise ServiceError(503, 'Hermes is not available.')
+        try:
+            result = self.provider.native_settings('mcp_import', source=str(root))
+        except ValueError:
+            # A retry with a new key resumes: servers that Coconut already has stay unchanged.
+            raise ServiceError(409, 'Coconut could not copy the MCP servers. Check the Hermes MCP settings.') from None
+        if result['added']:
+            with self.transaction():
+                self._event('settings.updated', {})
+        return result
