@@ -106,6 +106,8 @@ class LiveBotSourceWorkerRegressions(unittest.TestCase):
         task = self.task | {'_native_turn_id': str(uuid4())}
         events = []
         def emit(kind, data):
+            if kind == 'phase':
+                return
             events.append((kind, data))
             return {'bot_create': created, 'bot_delete': deleted}.get(kind)
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):

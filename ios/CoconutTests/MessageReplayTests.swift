@@ -129,7 +129,7 @@ final class MessageReplayTests: XCTestCase {
     }
 
     @MainActor
-    func testConversationThinkingTracksRealResponseStatesAndStreaming() throws {
+    func testConversationActivityTracksRealResponseStatesPhasesAndStreaming() throws {
         let store = AppStore(demo: false)
         let fixture = try PreviewStateFixture.load()
         let bot = fixture.bots[1]
@@ -138,25 +138,31 @@ final class MessageReplayTests: XCTestCase {
         store.tasks = [task]
         for status in ["idle", "queued", "waiting", "scheduled", "failed", "completed"] {
             store.tasks[0].status = status
-            XCTAssertFalse(store.isConversationResponding(bot.id), status)
+            XCTAssertNil(store.conversationActivity(bot.id), status)
         }
         for status in ["working", "running"] {
             store.tasks[0].status = status
-            XCTAssertTrue(store.isConversationResponding(bot.id), status)
+            XCTAssertNotNil(store.conversationActivity(bot.id), status)
         }
         task.status = "waiting"
         store.tasks = [task]
         var stream = fixture.messages.first { $0.botId == bot.id && $0.role == "assistant" }!
         stream.streaming = true
         store.messages = [stream]
-        XCTAssertTrue(store.isConversationResponding(bot.id), "A real partial response still needs feedback.")
+        XCTAssertNotNil(store.conversationActivity(bot.id), "A real partial response still needs feedback.")
         stream.streaming = false
         store.messages = [stream]
-        XCTAssertFalse(store.isConversationResponding(bot.id))
-        store.connection = .disconnected
+        XCTAssertNil(store.conversationActivity(bot.id))
         store.tasks[0].status = "working"
+        store.tasks[0].phase = "testing"
+        XCTAssertEqual(store.conversationActivity(bot.id)?.phase, .testing)
+        store.tasks[0].phase = "an unknown phase"
+        XCTAssertEqual(store.conversationActivity(bot.id)?.phase, .thinking)
         store.messages[0].streaming = true
-        XCTAssertFalse(store.isConversationResponding(bot.id))
+        XCTAssertEqual(store.conversationActivity(bot.id)?.phase, .writing)
+        XCTAssertEqual(store.conversationActivity(bot.id)?.reconnecting, false)
+        store.connection = .disconnected
+        XCTAssertEqual(store.conversationActivity(bot.id)?.reconnecting, true, "Work in progress stays visible while the phone reconnects.")
     }
 
     @MainActor
@@ -175,12 +181,12 @@ final class MessageReplayTests: XCTestCase {
             store.connection = connection
             for status in [OutgoingMessage.Status.sending, .accepted] {
                 store.outgoingMessages[0].status = status
-                XCTAssertTrue(store.isConversationResponding(sourceBot.id), "\(status) while \(connection)")
-                XCTAssertFalse(store.isConversationResponding(executorBot.id),
+                XCTAssertNotNil(store.conversationActivity(sourceBot.id), "\(status) while \(connection)")
+                XCTAssertNil(store.conversationActivity(executorBot.id),
                                "Conversation activity must stay scoped to the outgoing message's source bot.")
             }
             store.outgoingMessages[0].status = .failed
-            XCTAssertFalse(store.isConversationResponding(sourceBot.id), "Failed outgoing work must not show activity.")
+            XCTAssertNil(store.conversationActivity(sourceBot.id), "Failed outgoing work must not show activity.")
         }
     }
 

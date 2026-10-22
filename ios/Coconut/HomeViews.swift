@@ -149,6 +149,7 @@ struct BotContactRow: View {
     private var lastMessageDate: Date? {
         store.messages.filter { $0.botId == bot.id }.compactMap { $0.createdAt.apiDate }.max()
     }
+    private var phase: BotPhase? { store.botPhase(bot) }
 
     var body: some View {
         HStack(spacing: 14) {
@@ -166,14 +167,22 @@ struct BotContactRow: View {
                         }
                     }
                 }
-                Text(preview)
-                    .font(.subheadline).foregroundStyle(.secondary)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                // A working bot shows its phase in place of the last message, like a typing notice.
+                if let phase {
+                    ShimmerText(text: phase.label).font(.subheadline)
+                        .transition(.opacity)
+                } else {
+                    Text(preview)
+                        .font(.subheadline).foregroundStyle(.secondary)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                        .transition(.opacity)
+                }
             }
+            .animation(.easeOut(duration: 0.2), value: phase)
         }
         .frame(minHeight: 52)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(bot.name), \(bot.status.replacingOccurrences(of: "_", with: " ")), \(preview), \(bot.unreadCount) unread")
+        .accessibilityLabel("\(bot.name), \(phase?.label ?? bot.status.replacingOccurrences(of: "_", with: " ")), \(preview), \(bot.unreadCount) unread")
     }
 
     private var name: some View {

@@ -103,13 +103,30 @@ final class AppStore {
         guard isDemo || connection == .connected else { return false }
         // A pending decision can mask independent work in the bot's aggregate status.
         return ["working", "running"].contains(bot.status)
-            || tasks.contains { $0.botId == bot.id && ["working", "running"].contains($0.status) }
+            || tasks.contains { $0.botId == bot.id && $0.isRunning }
     }
-    func isConversationResponding(_ botId: String) -> Bool {
-        if outgoingMessages.contains(where: { $0.botId == botId && $0.expectsResponse }) { return true }
-        guard isDemo || connection == .connected else { return false }
-        return tasks.contains { $0.chatBotId == botId && ["working", "running"].contains($0.status) }
-            || messages.contains { $0.botId == botId && $0.role == "assistant" && $0.streaming }
+    // The newest running task describes what the bot does now.
+    private func runningPhase(where matches: (AgentTask) -> Bool) -> (phase: BotPhase, startedAt: Date?)? {
+        guard let task = tasks.last(where: { $0.isRunning && matches($0) }) else { return nil }
+        return (task.phase.flatMap(BotPhase.init(rawValue:)) ?? .thinking, task.turnStartedAt?.apiDate)
+    }
+    func botPhase(_ bot: Bot) -> BotPhase? {
+        guard isBotActive(bot) else { return nil }
+        return runningPhase { $0.botId == bot.id }?.phase ?? .thinking
+    }
+    // The status row stays during a lost connection, so work in progress does not seem to stop.
+    func conversationActivity(_ botId: String) -> ConversationActivity? {
+        let reconnecting = !isDemo && connection != .connected
+        if messages.contains(where: { $0.botId == botId && $0.role == "assistant" && $0.streaming }) {
+            return ConversationActivity(phase: .writing, startedAt: nil, reconnecting: reconnecting)
+        }
+        if let running = runningPhase(where: { $0.chatBotId == botId }) {
+            return ConversationActivity(phase: running.phase, startedAt: running.startedAt, reconnecting: reconnecting)
+        }
+        if outgoingMessages.contains(where: { $0.botId == botId && $0.expectsResponse }) {
+            return ConversationActivity(phase: .thinking, startedAt: nil, reconnecting: reconnecting)
+        }
+        return nil
     }
     func conversationBotId(for decision: Decision) -> String {
         tasks.first { $0.id == decision.taskId }?.chatBotId ?? decision.botId

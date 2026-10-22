@@ -294,11 +294,15 @@ struct CompactAgeLabel: View {
     }
 
     private func label(relativeTo now: Date) -> String {
-        let age = max(0, now.timeIntervalSince(date))
+        Self.span(max(0, now.timeIntervalSince(date))) ?? date.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    // Shared with the working status row. Ages of a day or more use a date instead.
+    static func span(_ age: TimeInterval) -> String? {
         if age < 60 { return "Now" }
         if age < 3600 { return "\(Int(age / 60)) min" }
         if age < 86400 { return "\(Int(age / 3600)) hr" }
-        return date.formatted(.dateTime.month(.abbreviated).day())
+        return nil
     }
 }
 

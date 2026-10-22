@@ -11,7 +11,7 @@ import time
 
 LABELS = {'starting': 'Starting worker', 'thinking': 'Worker is responding',
           'reading': 'Reading files', 'editing': 'Editing files', 'command': 'Running a command',
-          'testing': 'Running tests', 'searching': 'Searching', 'finished': 'Worker finished',
+          'testing': 'Running tests', 'searching': 'Searching', 'github': 'Working in GitHub', 'finished': 'Worker finished',
           'failed': 'Worker failed'}
 FRESH_SECONDS = 120
 
@@ -32,6 +32,8 @@ def command_phase(command):
         return command_phase(words[2])
     if words[:2] in (['bundle', 'exec'], ['uv', 'run']):
         words = words[2:]
+    if words and Path(words[0]).name == 'gh':
+        return 'github'
     if words and (Path(words[0]).name in ('rspec', 'pytest') or words[:3] in (
             ['python', '-m', 'pytest'], ['python3', '-m', 'pytest'],
             ['python', '-m', 'unittest'], ['python3', '-m', 'unittest'])

@@ -1322,6 +1322,7 @@ def run_turn(request, emit, request_receipt):
             if isinstance(text, str) and text and not creation_errors and not deletion_errors:
                 trace.mark('first_output')
                 response_chunks.append(text)
+                bridge.report_phase('writing')
 
         def publish_interim(text, *, already_streamed=False):
             nonlocal last_interim_response
@@ -1502,6 +1503,7 @@ def run_turn(request, emit, request_receipt):
         setup_lock.release()
         preparing = False
         trace.mark('model_start')
+        bridge.report_phase('thinking')
         from turn_timings import native_request_timings
         with native_request_timings(trace, agent):
             result = scope.live_messages.run_conversation(prompt, conversation_history=conversation.history, task_id=request['task']['id'],

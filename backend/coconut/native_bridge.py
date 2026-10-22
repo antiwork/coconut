@@ -4,6 +4,7 @@ from contextvars import ContextVar
 import hashlib
 import json
 import threading
+import time
 
 
 def fingerprint(action):
@@ -27,6 +28,9 @@ class TurnPaused(BaseException):
 
 
 class NativeBridge:
+    # Fast tool sequences share one update. The phone holds each label for 1.2 seconds anyway.
+    PHASE_INTERVAL = 1.0
+
     def __init__(self, request, emit, receipt):
         self.request, self.emit, self.receipt = request, emit, receipt
         self.local = threading.local()
@@ -41,6 +45,11 @@ class NativeBridge:
         self.decision = request.get('decision') or {}
         self.session_key = request['task']['id']
         self.execution_owner = ContextVar('coconut_execution_owner', default=self.session_key)
+        self.phase = self.phase_sent = None
+        self.phase_sent_at = -self.PHASE_INTERVAL
+        self.phase_timer = None
+        self.phase_lock = threading.RLock()
+        self.tools_running = 0
 
     @contextmanager
     def claim(self):
@@ -223,8 +232,10 @@ class NativeBridge:
 
         if __package__:
             from .native_turn_scope import current as turn_context
+            from .turn_phase import tool_phase
         else:
             from native_turn_scope import current as turn_context
+            from turn_phase import tool_phase
         requires_scope = turn_context.get() is not None
         agent = turn_context.get().agent if requires_scope else None
         def execute(tool_name, args, next_call, **kwargs):
@@ -253,8 +264,13 @@ class NativeBridge:
             # Sandbox RPC threads inherit the claim held by their parent tool.
             active = self.execution_scope.get()
             if active is not None and active.is_set():
+                # The outer tool already describes this nested call.
                 return recorded(tool_name, args, next_call, **kwargs)
-            return scoped(tool_name, args, next_call, **kwargs)
+            self.tool_phase_started(tool_phase(tool_name, args))
+            try:
+                return scoped(tool_name, args, next_call, **kwargs)
+            finally:
+                self.tool_phase_finished()
         if agent is not None:
             self.agent = agent
             self.previous_tool_start = getattr(agent, 'tool_start_callback', None)
@@ -270,7 +286,49 @@ class NativeBridge:
         self.recorded = recorded
         self.registration = PluginContext(PluginManifest(name='coconut-runtime', version='1'), get_plugin_manager()).register_middleware(TOOL_EXECUTION_MIDDLEWARE, execute)
 
+    def report_phase(self, phase):
+        # The phone shows one short label. A lost label must not affect the tool call.
+        if phase is None or self.request['operation'] == 'context':
+            return
+        with self.phase_lock:
+            self.phase = phase
+            wait = self.phase_sent_at + self.PHASE_INTERVAL - time.monotonic()
+            if wait <= 0:
+                self.send_phase()
+            elif self.phase_timer is None:
+                self.phase_timer = threading.Timer(wait, self.send_phase)
+                self.phase_timer.daemon = True
+                self.phase_timer.start()
+
+    def send_phase(self):
+        # Emit under the lock, so parallel tools cannot deliver labels out of order.
+        with self.phase_lock:
+            self.phase_timer = None
+            if self.phase == self.phase_sent:
+                return
+            self.phase_sent, self.phase_sent_at = self.phase, time.monotonic()
+            try:
+                self.emit('phase', {'phase': self.phase})
+            except Exception:
+                pass
+
+    def tool_phase_started(self, phase):
+        with self.phase_lock:
+            self.tools_running += 1
+            self.report_phase(phase)
+
+    def tool_phase_finished(self):
+        # Parallel tools share one label. The bot thinks again only after the last one returns.
+        with self.phase_lock:
+            self.tools_running -= 1
+            if self.tools_running == 0:
+                self.report_phase('thinking')
+
     def close(self):
+        with self.phase_lock:
+            if self.phase_timer is not None:
+                self.phase_timer.cancel()
+                self.phase_timer = None
         from tools.approval import unregister_gateway_notify
         unregister_gateway_notify(self.session_key)
         model_registration = getattr(self, 'model_registration', None)

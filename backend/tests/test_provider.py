@@ -134,14 +134,14 @@ class ProviderTests(unittest.TestCase):
     def test_fixture_independent_task_does_not_propose_file(self):
         events = []
         history = [{'role': 'user', 'task_id': self.task['id'], 'text': 'Check that 17 multiplied by 19 equals 323. Give a brief answer. Do not create a file.'}]
-        FixtureProvider(self.root).start_task(self.task, self.bot, history, lambda kind, data: events.append((kind, data)))
+        FixtureProvider(self.root).start_task(self.task, self.bot, history, lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual([kind for kind, _ in events], ['text_delta', 'completed'])
         self.assertIn('323', events[0][1]['text'])
 
     def test_fixture_proposal_has_prediction_and_does_not_write(self):
         events = []
         history = [{'role': 'user', 'task_id': self.task['id'], 'text': 'Create morning-note.md containing a short morning review.'}]
-        FixtureProvider(self.root).start_task(self.task, self.bot, history, lambda kind, data: events.append((kind, data)))
+        FixtureProvider(self.root).start_task(self.task, self.bot, history, lambda kind, data: kind == 'phase' or events.append((kind, data)))
         proposal = events[-1][1]
         self.assertEqual(events[-1][0], 'decision')
         self.assertEqual(proposal['action']['filename'], 'morning-note.md')
@@ -315,7 +315,7 @@ class ProviderTests(unittest.TestCase):
         task = dict(self.task, _kanban_claim=dict(native_id='t_source', run_id=17, claim_lock='claim-source'))
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.answer_context(task, self.bot, [], 'Explain the result.', lambda kind, data: events.append((kind, data)))
+            provider.answer_context(task, self.bot, [], 'Explain the result.', lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual(events, [('text_delta', {'text': 'Context remains separate.'})])
 
     def test_source_worker_receives_its_native_claim(self):
@@ -329,7 +329,7 @@ class ProviderTests(unittest.TestCase):
         task = dict(self.task, _kanban_claim=dict(native_id='t_source', run_id=17, claim_lock='claim-source'))
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertTrue(any(kind == 'completed' for kind, _ in events), events)
 
     def test_nested_tool_on_a_native_context_thread_finishes(self):
@@ -351,7 +351,7 @@ class ProviderTests(unittest.TestCase):
         """)
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual(events, [('text_delta', {'text': 'nested result'}), ('completed', {'summary': 'Complete.'})])
 
     def test_nested_routine_tools_share_the_parent_claim_fence(self):
@@ -390,7 +390,7 @@ class ProviderTests(unittest.TestCase):
         """)
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual(events, [('text_delta', {'text': 'fenced result'}), ('completed', {'summary': 'Complete.'})])
 
     def test_background_terminal_survives_reply_and_accepts_input_next_turn(self):
@@ -421,9 +421,9 @@ class ProviderTests(unittest.TestCase):
         self.addCleanup(lambda: getattr(provider, 'close', lambda: None)())
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
             followup = dict(self.task, id=str(uuid4()), title='Done')
-            provider.start_task(followup, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(followup, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual([data['text'] for kind, data in events if kind == 'text_delta'],
                          ['Authorize on your phone.', 'Saved.'])
 
@@ -445,7 +445,7 @@ class ProviderTests(unittest.TestCase):
                 provider.start_task(self.task, self.bot, [], pending)
             pid = provider._runtimes[self.bot['id']].pid
             events = []
-            provider.answer_context(self.task, self.bot, [], 'Explain', lambda kind, data: events.append((kind, data)))
+            provider.answer_context(self.task, self.bot, [], 'Explain', lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual(provider._runtimes[self.bot['id']].pid, pid)
         self.assertEqual(events, [('text_delta', {'text': 'Same runtime.'})])
         process = provider._runtimes[self.bot['id']]
@@ -493,7 +493,7 @@ class ProviderTests(unittest.TestCase):
         """.replace('SIDE_EFFECT', repr(str(side_effect))))
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertFalse(side_effect.exists())
         self.assertEqual([kind for kind, _ in events], ['native_question'])
 
@@ -534,7 +534,7 @@ class ProviderTests(unittest.TestCase):
         task = dict(self.task, _native_turn_id=str(uuid4()))
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             worker = threading.Thread(target=lambda: provider.start_task(task, self.bot, [],
-                                      lambda kind, data: events.append((kind, data))))
+                                      lambda kind, data: kind == 'phase' or events.append((kind, data))))
             worker.start()
             deadline = time.monotonic() + 4
             while not marker.exists() and time.monotonic() < deadline:
@@ -569,7 +569,7 @@ class ProviderTests(unittest.TestCase):
         task = dict(self.task, _native_turn_id=str(uuid4()))
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             worker = threading.Thread(target=lambda: HermesProvider._run(provider, 'start', task, self.bot, [],
-                                      lambda kind, data: events.append((kind, data))))
+                                      lambda kind, data: kind == 'phase' or events.append((kind, data))))
             worker.start()
             try:
                 deadline = time.monotonic() + 4
@@ -652,7 +652,7 @@ class ProviderTests(unittest.TestCase):
         events, errors = [], []
         def next_turn():
             try:
-                provider.start_task(dict(self.task, id=str(uuid4())), self.bot, [], lambda kind, data: events.append((kind, data)))
+                provider.start_task(dict(self.task, id=str(uuid4())), self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
             except Exception as error: errors.append(error)
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.start_task(self.task, self.bot, [], lambda *_: None)
@@ -688,7 +688,7 @@ class ProviderTests(unittest.TestCase):
         """)
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         child_pid = int(events[0][1]['text'])
         os.kill(child_pid, 0)
         provider.close()
@@ -708,7 +708,7 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("kwargs['stream_callback']('Concise result.')\nreturn {'final_response': 'Concise result.', 'completed': True}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual([data['text'] for kind, data in events if kind == 'text_delta'], ['Concise result.'])
         self.assertNotIn('noisy', json.dumps(events))
         self.assertEqual([kind for kind, _ in events], ['text_delta', 'completed'])
@@ -727,7 +727,7 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("return {'completed': True, 'final_response': '[SILENT]'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual(events, [('completed', {'summary': 'Complete.', 'silent_response': True})])
 
     def test_reply_waits_for_confirmed_completion(self):
@@ -742,7 +742,7 @@ class ProviderTests(unittest.TestCase):
         events, errors = [], []
         def run():
             try:
-                provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+                provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
             except Exception as error:
                 errors.append(error)
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
@@ -764,7 +764,7 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("kwargs['stream_callback']('Unfinished answer')\nraise RuntimeError('failed')\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual([kind for kind, _ in events], ['failed'])
 
     def test_completed_commentary_reaches_the_phone_before_work_finishes(self):
@@ -780,6 +780,8 @@ class ProviderTests(unittest.TestCase):
             "return {'completed': True, 'final_response': 'The test passes.'}\n")
         events, errors, replied = [], [], threading.Event()
         def emit(kind, data):
+            if kind == 'phase':
+                return
             events.append((kind, data))
             if kind == 'interim_message':
                 replied.set()
@@ -813,7 +815,7 @@ class ProviderTests(unittest.TestCase):
             "return {'completed': True, 'final_response': ''}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual(events, [('interim_message', {'text': 'I will check the test.'}),
                                   ('completed', {'summary': 'Complete.'})])
 
@@ -824,7 +826,7 @@ class ProviderTests(unittest.TestCase):
             "return {'completed': True, 'final_response': 'The test passes.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual(events, [('interim_message', {'text': 'I will check the test.'}),
                                   ('interim_message', {'text': 'The test passes.'}),
                                   ('text_delta', {'text': 'The test passes.', 'finalize_interim': True}),
@@ -836,7 +838,7 @@ class ProviderTests(unittest.TestCase):
             "kwargs['stream_callback']('Unverified success')\nraise RuntimeError('failed')\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual([kind for kind, _ in events], ['interim_message', 'failed'])
         self.assertEqual(events[0][1]['text'], 'I found the failing test.')
         self.assertNotIn('Unverified success', json.dumps(events))
@@ -847,7 +849,7 @@ class ProviderTests(unittest.TestCase):
             "return {'completed': True, 'final_response': '[SILENT]'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual(events, [('completed', {'summary': 'Complete.', 'silent_response': True})])
 
     def test_context_keeps_interim_commentary_out_of_the_answer(self):
@@ -856,7 +858,7 @@ class ProviderTests(unittest.TestCase):
             "return {'completed': True, 'final_response': 'The proposal saves a report.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.answer_context(self.task, self.bot, [], 'What changes?', lambda kind, data: events.append((kind, data)))
+            provider.answer_context(self.task, self.bot, [], 'What changes?', lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual(events, [('text_delta', {'text': 'The proposal saves a report.'})])
 
     def configure_peer(self, *, budget=8):
@@ -871,6 +873,8 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("import json\nreceipt = json.loads(registry.dispatch('message_agent', " + payload + "))\nassert receipt['status'] == 'queued'\nassert receipt['task_id'] == 'durable-task'\nassert 'private_memory' not in receipt\nkwargs['stream_callback']('Independent work complete.')\nreturn {'completed': True, 'final_response': 'Independent work complete.'}\n")
         events = []
         def emit(kind, data):
+            if kind == 'phase':
+                return
             events.append((kind, data))
             if kind == 'native_bot_message':
                 return {'status': 'queued', 'task_id': 'durable-task', 'target_bot_id': peer['id'], 'thread_id': 'shared-thread', 'private_memory': 'Do not forward this.'}
@@ -926,7 +930,7 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("import json\nresult = json.loads(registry.dispatch('message_agent', " + arguments + "))\nassert 'error' in result\nreturn {'completed': True, 'final_response': 'Target unavailable.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertNotIn('native_bot_message', [kind for kind, _ in events])
         self.assertEqual(events[-1][0], 'completed')
 
@@ -935,7 +939,7 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("assert set(registry.handlers) == {'coconut_ask', 'coconut_read_receipts', 'message_agent'}\nkwargs['stream_callback']('The proposal remains pending.')\nreturn {'completed': True, 'final_response': 'The proposal remains pending.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.answer_context(self.task, self.bot, [], 'Explain the proposal.', lambda kind, data: events.append((kind, data)))
+            provider.answer_context(self.task, self.bot, [], 'Explain the proposal.', lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual([kind for kind, _ in events], ['text_delta'])
 
     def configure_preference_source(self):
@@ -976,13 +980,15 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("from pathlib import Path\nimport os\nassert (Path(os.environ['HERMES_HOME']) / 'SOUL.md').read_text() == 'Keep replies brief.'\nassert self.skip_memory is False\nreturn {'completed': True, 'final_response': 'Native profile ready.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual(events[-1][0], 'completed')
 
     def test_restart_tool_returns_durable_receipt_before_final_reply(self):
         provider = self.fake_hermes("import json\nreceipt = json.loads(registry.dispatch('coconut_restart_service', {}))\nassert receipt['status'] == 'queued'\nreturn {'completed': True, 'final_response': 'Restart requested.'}\n")
         events = []
         def emit(kind, data):
+            if kind == 'phase':
+                return
             events.append((kind, data))
             return {'status': 'queued'} if kind == 'service_restart' else None
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
@@ -995,7 +1001,7 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("assert set(registry.handlers) == {'coconut_propose_file', 'coconut_ask', 'coconut_suggest', 'coconut_restart_service', 'coconut_track_pr', 'coconut_track_work', 'coconut_wait', 'coconut_continue_work', 'coconut_unlink_dependency', 'coconut_read_receipts', 'message_agent'}\nreturn {'completed': True, 'final_response': 'No new bot deliveries.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual(events[-1][0], 'completed')
 
     def test_delivery_failure_does_not_expose_service_error_text(self):
@@ -1004,6 +1010,8 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("result = registry.dispatch('message_agent', " + arguments + ")\nkwargs['stream_callback'](result)\nreturn {'completed': True, 'final_response': result}\n")
         events = []
         def emit(kind, data):
+            if kind == 'phase':
+                return
             events.append((kind, data))
             if kind == 'native_bot_message':
                 raise RuntimeError('PRIVATE_SERVICE_DETAIL')
@@ -1019,7 +1027,7 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("kwargs['stream_callback'](self.system_prompt)\nreturn {'completed': True, 'final_response': ''}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual(events[-1][0], 'completed')
         output = ''.join(data['text'] for kind, data in events if kind == 'text_delta')
         self.assertIn('continue the next step without a card when existing permission covers it', output)
@@ -1037,7 +1045,7 @@ class ProviderTests(unittest.TestCase):
                                                       head_sha='current-head', checks_state=checks))
                 events = []
                 with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-                    provider.start_task(task, self.bot, [], lambda kind, data: events.append((kind, data)))
+                    provider.start_task(task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
                 self.assertEqual(events[-1][0], 'completed')
                 output = ''.join(data['text'] for kind, data in events if kind == 'text_delta')
                 for rule in ('before waiting when possible',
@@ -1062,7 +1070,7 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("kwargs['stream_callback'](self.system_prompt + '\\n' + prompt)\nreturn {'completed': True, 'final_response': ''}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         output = ''.join(data['text'] for kind, data in events if kind == 'text_delta')
         self.assertIn(peer['id'], output)
         self.assertIn('EXPLICIT_SHARED_RESULT', output)
@@ -1099,6 +1107,8 @@ class ProviderTests(unittest.TestCase):
             pass
         seen = []
         def emit(kind, data):
+            if kind == 'phase':
+                return
             seen.append((kind, data))
             if kind == 'decision':
                 raise CommittedDecision()
@@ -1162,14 +1172,14 @@ class ProviderTests(unittest.TestCase):
         source.write_text(source.read_text().replace('set(registry.handlers)', "set(registry.handlers) | {'terminal'}"))
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual([kind for kind, _ in events], ['text_delta', 'completed'])
 
     def test_incomplete_hermes_turn_does_not_create_completed_card(self):
         provider = self.fake_hermes("return {'completed': False, 'failed': False, 'partial': True, 'final_response': 'Compression deferred'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual(events[-1][0], 'failed')
         self.assertNotIn('completed', [kind for kind, _ in events])
         self.assertNotIn('artifact', [kind for kind, _ in events])
@@ -1199,6 +1209,8 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("import json\nassert 'coconut_create_bot' in registry.handlers\nassert 'message_agent' in registry.handlers\nreceipt = json.loads(registry.dispatch('coconut_create_bot', " + repr(arguments) + "))\nassert receipt['status'] == 'created'\nassert 'private_memory' not in receipt\nmessage = {'target': receipt['bot_id'], 'message': 'Check 17 times 19.'}\nassert json.loads(registry.dispatch('message_agent', message))['status'] == 'queued'\nassert json.loads(registry.dispatch('message_agent', message))['status'] == 'queued'\nkwargs['stream_callback']('Scout is ready and has the check.')\nreturn {'completed': True, 'final_response': ''}\n")
         events = []
         def emit(kind, data):
+            if kind == 'phase':
+                return
             events.append((kind, data))
             if kind == 'bot_create':
                 return created | {'private_memory': 'PRIVATE_RECEIPT_DATA'}
@@ -1234,6 +1246,8 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("import json\nargs = " + repr(arguments) + "\nfirst = json.loads(registry.dispatch('coconut_create_bot', args))\nsecond = json.loads(registry.dispatch('coconut_create_bot', args))\nassert [first['status'], second['status']] == ['created', 'duplicate']\nassert first['bot_id'] == second['bot_id']\nreturn {'completed': True, 'final_response': 'Scout is ready.'}\n")
         calls, events = [], []
         def emit(kind, data):
+            if kind == 'phase':
+                return
             events.append((kind, data))
             if kind == 'bot_create':
                 calls.append(data)
@@ -1248,6 +1262,8 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("import json\nresult = json.loads(registry.dispatch('coconut_create_bot', " + repr(arguments) + "))\nassert result['status'] == 'unconfirmed'\nmessage = {'target': " + repr(receipt['bot_id']) + ", 'message': 'Unconfirmed target must not receive this.'}\nassert 'error' in json.loads(registry.dispatch('message_agent', message))\nkwargs['stream_callback']('UNSUPPORTED_CREATION_SUCCESS')\nreturn {'completed': True, 'final_response': 'UNSUPPORTED_CREATION_SUCCESS'}\n")
         events = []
         def emit(kind, data):
+            if kind == 'phase':
+                return
             events.append((kind, data))
             if kind == 'bot_create':
                 raise RuntimeError('PRIVATE_SERVICE_DETAIL')
@@ -1272,6 +1288,8 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("import json\nresult = json.loads(registry.dispatch('coconut_create_bot', " + repr(arguments) + "))\nassert result['status'] == 'unconfirmed'\nreturn {'completed': True, 'final_response': 'UNSUPPORTED_SUCCESS'}\n")
         events = []
         def emit(kind, data):
+            if kind == 'phase':
+                return
             events.append((kind, data))
             if kind == 'bot_create':
                 return receipt | {'profile_id': str(uuid4())}
@@ -1286,6 +1304,8 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("import json\nassert 'Do not create replacements or rephrase a creation after a restart' in prompt\nresult = json.loads(registry.dispatch('coconut_create_bot', " + repr(changed) + "))\nassert result['status'] == 'validation_failed'\nreturn {'completed': True, 'final_response': 'UNSUPPORTED_SUCCESS'}\n")
         events = []
         def emit(kind, data):
+            if kind == 'phase':
+                return
             events.append((kind, data))
             if kind == 'bot_create':
                 raise ServiceError(409, 'PRIVATE_CONFLICT_BODY')
@@ -1300,7 +1320,7 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("assert 'coconut_create_bot' not in registry.handlers\nassert 'error' in json.loads(registry.dispatch('message_agent', {'target': 'unlisted', 'message': 'Must not send'}))\nassert 'No direct human source authorizes bot creation in this turn' in prompt\nreturn {'completed': True, 'final_response': 'This decision stays pending.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.answer_context(self.task, self.bot, [], 'What can you do?', lambda kind, data: events.append((kind, data)))
+            provider.answer_context(self.task, self.bot, [], 'What can you do?', lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual([kind for kind, _ in events], ['text_delta'])
 
     def test_capability_question_uses_current_tools_without_creating_a_bot(self):
@@ -1310,7 +1330,7 @@ class ProviderTests(unittest.TestCase):
         events = []
         history = [{'id': str(uuid4()), 'role': 'assistant', 'text': 'Earlier build: I cannot create bots.'}]
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, history, lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, history, lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual([kind for kind, _ in events], ['text_delta', 'completed'])
 
     def test_creation_receipt_in_restart_prompt_excludes_private_metadata(self):
@@ -1320,7 +1340,7 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("assert " + repr(receipt['bot_id']) + " in prompt\nassert 'PRIVATE_CREATION_MEMORY' not in self.system_prompt + prompt\nassert 'PRIVATE_SOURCE_MEMORY' not in self.system_prompt + prompt\nreturn {'completed': True, 'final_response': 'Scout already exists.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertNotIn('bot_create', [kind for kind, _ in events])
         self.assertEqual(events[-1][0], 'completed')
 
@@ -1329,6 +1349,8 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("import json\nargs = " + repr(arguments) + "\nassert json.loads(registry.dispatch('coconut_create_bot', args))['status'] == 'unconfirmed'\nconfirmed = json.loads(registry.dispatch('coconut_create_bot', args))\nassert confirmed['status'] == 'duplicate'\nmessage = {'target': confirmed['bot_id'], 'message': 'Check the requested calculation.'}\nassert json.loads(registry.dispatch('message_agent', message))['status'] == 'queued'\nkwargs['stream_callback']('Scout is ready and has the check.')\nreturn {'completed': True, 'final_response': ''}\n")
         events, creations = [], []
         def emit(kind, data):
+            if kind == 'phase':
+                return
             events.append((kind, data))
             if kind == 'bot_create':
                 creations.append(data)
@@ -1348,6 +1370,8 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("import json\nconfirmed = json.loads(registry.dispatch('coconut_create_bot', " + repr(arguments) + "))\nmessage = {'target': confirmed['bot_id'], 'message': 'Check the calculation.'}\nassert json.loads(registry.dispatch('message_agent', message))['status'] == 'queued'\nreturn {'completed': True, 'final_response': 'Scout has the calculation.'}\n")
         events = []
         def emit(kind, data):
+            if kind == 'phase':
+                return
             events.append((kind, data))
             if kind == 'bot_create':
                 return receipt
@@ -1363,7 +1387,7 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes("assert 'coconut_create_bot' not in registry.handlers\nassert 'No direct human source authorizes bot creation in this turn' in prompt\nreturn {'completed': True, 'final_response': 'A direct human request is required to create that bot.'}\n")
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
+            provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
         self.assertEqual([kind for kind, _ in events], ['text_delta', 'completed'])
 
 
