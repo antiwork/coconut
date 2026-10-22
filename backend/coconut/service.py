@@ -1242,20 +1242,20 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
     def mutate_mcp(self, data: dict, key: str, fingerprint: str) -> dict:
         if not hasattr(self.provider, 'native_settings'):
             raise ServiceError(503, 'Hermes is not available.')
-        previous = self._previous_request(key, fingerprint)
-        if previous is not None:
-            return previous
         payload = {name: data[name] for name in ('action', 'name', 'url', 'token') if isinstance(data, dict) and name in data}
         # Other writes to the default Hermes config take this lock, so one save cannot erase another.
-        # A connection test changes nothing, so it does not hold other writes for its network timeout.
-        with contextlib.nullcontext() if payload.get('action') == 'test' else self.model_settings_lock:
+        # The lock also covers the replay check, so a retry cannot repeat a write that still runs.
+        with self.model_settings_lock:
+            previous = self._previous_request(key, fingerprint)
+            if previous is not None:
+                return previous
             try:
                 result = self.provider.native_settings('mcp', **payload)
             except ValueError:
                 raise ServiceError(400, 'Check the MCP name, HTTPS address, and authentication.') from None
-        with self.transaction():
-            self.db.execute('INSERT INTO requests(key,fingerprint,response) VALUES (?,?,?)', (key, fingerprint, encoded(result)))
-            self._event('settings.updated', {})
+            with self.transaction():
+                self.db.execute('INSERT INTO requests(key,fingerprint,response) VALUES (?,?,?)', (key, fingerprint, encoded(result)))
+                self._event('settings.updated', {})
         return result
 
     def _mutate_model_default(self, data: dict, key: str, fingerprint: str) -> dict:
