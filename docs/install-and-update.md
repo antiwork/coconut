@@ -65,6 +65,15 @@ python3 ~/Coconut/scripts/terminal.py install-command
 The command installs `~/.local/bin/hermes`. Add `~/.local/bin` to your shell PATH if needed.
 Run `hermes` to use the managed native Terminal profile. Its model configuration supplies Coconut's shared default.
 Native Hermes owns login and credential refresh. Coconut does not copy OAuth tokens into bot profiles.
+
+## An existing Hermes setup
+
+Coconut reads the account's own Hermes home, `~/.hermes`, and its `profiles` folder. It never changes them.
+After pairing, the iPhone shows what it found. Settings → Hermes setup shows the same step later.
+Each chosen profile becomes a bot with a copy of its `SOUL.md`, memory files, and skills. Sessions, settings, and secrets stay behind.
+The person can also copy the model API keys from `.env`. Coconut adds them to its default Hermes home and keeps the keys that it already has.
+Coconut does not copy OAuth sign-ins from `auth.json`. Many providers rotate refresh tokens, so two homes that share one sign-in log each other out. Sign in again in Coconut's Hermes Terminal.
+Set `COCONUT_HERMES_SOURCE` to read another Hermes home. Coconut ignores a linked folder and its own Hermes homes.
 Terminal chats do not appear in Coconut.
 Run `hermes --coconut-bots` to list the app's bot profiles.
 To open a bot directly, stop Coconut first, then run `hermes --coconut-bot Ada`.

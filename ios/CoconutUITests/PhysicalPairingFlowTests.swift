@@ -22,6 +22,9 @@ final class PhysicalPairingFlowTests: XCTestCase {
         app.launchArguments = []
         app.launchEnvironment = [:]
         app.launch()
+        // A first launch without a pairing opens onboarding. This check pairs through Settings.
+        let later = app.buttons["onboarding-later"]
+        if later.waitForExistence(timeout: 5) { later.tap() }
         XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Bots"].tap()
         stage("launched")

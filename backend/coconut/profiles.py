@@ -58,6 +58,27 @@ def _json(value: dict) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2) + '\n'
 
 
+def read_regular(path: Path, name: str, limit: int = MAX_PROMPT_FILE_BYTES, kind: str = 'The Hermes profile prompt file') -> bytes:
+    """Read one regular file without following a link. Raise ProfileError for any other kind of file."""
+    before = path.stat(follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode):
+        raise ProfileError(f'{kind} must be a regular file: {name}')
+    if before.st_size > limit:
+        raise ProfileError(f'{kind} exceeds {limit // (1024 * 1024)} MiB: {name}')
+    # A path can change after stat. Nonblocking open prevents a replacement FIFO from waiting.
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, 'rb') as handle:
+        current = os.fstat(handle.fileno())
+        if not stat.S_ISREG(current.st_mode):
+            raise ProfileError(f'{kind} must be a regular file: {name}')
+        if current.st_size > limit:
+            raise ProfileError(f'{kind} exceeds {limit // (1024 * 1024)} MiB: {name}')
+        content = handle.read(limit + 1)
+    if len(content) > limit:
+        raise ProfileError(f'{kind} exceeds {limit // (1024 * 1024)} MiB: {name}')
+    return content
+
+
 def prompt_revision(home: str | Path, *, boundary: str | Path | None = None) -> str:
     home = Path(home).expanduser().absolute()
     boundary = Path(boundary).expanduser().absolute() if boundary is not None else home
@@ -66,25 +87,10 @@ def prompt_revision(home: str | Path, *, boundary: str | Path | None = None) -> 
         path = home / name
         _safe(path, boundary)
         try:
-            before = path.stat(follow_symlinks=False)
+            content = read_regular(path, name)
         except FileNotFoundError:
             hashes[name] = None
             continue
-        if not stat.S_ISREG(before.st_mode):
-            raise ProfileError('The Hermes profile prompt file must be a regular file: ' + name)
-        if before.st_size > MAX_PROMPT_FILE_BYTES:
-            raise ProfileError('The Hermes profile prompt file exceeds 1 MiB: ' + name)
-        # A path can change after stat. Nonblocking open prevents a replacement FIFO from waiting.
-        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-        with os.fdopen(descriptor, 'rb') as handle:
-            current = os.fstat(handle.fileno())
-            if not stat.S_ISREG(current.st_mode):
-                raise ProfileError('The Hermes profile prompt file must be a regular file: ' + name)
-            if current.st_size > MAX_PROMPT_FILE_BYTES:
-                raise ProfileError('The Hermes profile prompt file exceeds 1 MiB: ' + name)
-            content = handle.read(MAX_PROMPT_FILE_BYTES + 1)
-        if len(content) > MAX_PROMPT_FILE_BYTES:
-            raise ProfileError('The Hermes profile prompt file exceeds 1 MiB: ' + name)
         try:
             content.decode('utf-8')
         except UnicodeDecodeError:
