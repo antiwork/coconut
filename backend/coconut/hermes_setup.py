@@ -33,6 +33,8 @@ MAX_SKILL_BYTES = 50 * 1024 * 1024
 # The probe runs on each GET /v1/setup. Deep or huge folders are not skill libraries.
 MAX_SKILL_DEPTH = 4
 MAX_SKILL_ENTRIES = 5000
+# One skill with more files, or deeper folders, is a dependency tree. Coconut leaves it out.
+MAX_SKILL_FILES = 500
 
 
 def source_home(environ=os.environ) -> Path | None:
@@ -139,10 +141,10 @@ def summary(home: Path) -> dict:
 
 
 def _env(home: Path) -> tuple[str, dict[str, str]]:
-    """The .env text and its model logins as {name: original line}. Empty values do not count."""
+    """The .env text and its model keys as {name: resolved value}. Empty values do not count."""
     text = _text(home / '.env') or ''
     try:
-        # Hermes reads .env with python-dotenv. Use the same parser where the service has it.
+        # Hermes reads .env with python-dotenv. Use the same parser, which also resolves ${NAME} references.
         from dotenv import dotenv_values
         from io import StringIO
         values = dotenv_values(stream=StringIO(text))
@@ -152,12 +154,15 @@ def _env(home: Path) -> tuple[str, dict[str, str]]:
             name, separator, value = line.strip().removeprefix('export ').partition('=')
             if separator and not name.strip().startswith('#'):
                 values[name.strip()] = value.strip().strip('"\'')
-    lines = {}
-    for line in text.splitlines():
-        name = line.strip().removeprefix('export ').partition('=')[0].strip()
-        if values.get(name) and name in MODEL_KEYS:
-            lines[name] = line
-    return text, lines
+    return text, {name: value for name, value in values.items() if name in MODEL_KEYS and value}
+
+
+def _env_line(name: str, value: str) -> str:
+    # Single quotes keep the value literal. A value with a single quote uses escaped double quotes.
+    if "'" not in value and '\n' not in value:
+        return f"{name}='{value}'"
+    escaped = value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+    return f'{name}="{escaped}"'
 
 
 def _sign_ins(home: Path) -> list[str]:
@@ -207,7 +212,8 @@ def _copy_file(origin: Path, destination: Path, boundary: Path) -> None:
 def copy_profile(source: Path, target: Path, boundary: Path) -> list[str]:
     """Copy the personality, memory, and skills of one profile. Settings, sessions, and secrets stay behind.
 
-    Returns the names of skills that Coconut left out because a file was too large or not a regular file.
+    Returns the names of skills that Coconut left out: a file is too large or not a regular file,
+    or the skill has too many files or folders that are too deep.
     """
     _safe(target, boundary)
     target.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -222,10 +228,18 @@ def copy_profile(source: Path, target: Path, boundary: Path) -> list[str]:
     total, skipped = 0, []
     for skill in _skills(source):
         relative = skill.relative_to(source / 'skills')
-        files = []
+        files, deep = [], False
         for path, directories, names in os.walk(skill):
-            directories[:] = [name for name in directories if not name.startswith('.') and _directory(Path(path) / name)]
+            depth = len(Path(path).relative_to(skill).parts)
+            deep = deep or (depth >= MAX_SKILL_DEPTH and bool(directories))
+            directories[:] = [name for name in directories if depth < MAX_SKILL_DEPTH
+                              and not name.startswith('.') and _directory(Path(path) / name)]
             files += [Path(path) / name for name in names if not name.startswith('.')]
+            if len(files) > MAX_SKILL_FILES:
+                break
+        if deep or len(files) > MAX_SKILL_FILES:
+            skipped.append(relative.as_posix())
+            continue
         sizes = []
         for origin in files:
             info = origin.stat(follow_symlinks=False)
@@ -249,7 +263,7 @@ def copy_logins(source: Path, target: Path, boundary: Path) -> list[str]:
         # A blank placeholder for the same key gives way to the real value.
         kept = [line for line in existing_text.splitlines()
                 if line.strip().removeprefix('export ').partition('=')[0].strip() not in added]
-        _write(target / '.env', '\n'.join(kept + [incoming[name] for name in added]).lstrip('\n') + '\n', boundary)
+        _write(target / '.env', '\n'.join(kept + [_env_line(name, incoming[name]) for name in added]).lstrip('\n') + '\n', boundary)
         (target / '.env').chmod(0o600)
     return added
 

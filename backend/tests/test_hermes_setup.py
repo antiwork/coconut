@@ -25,6 +25,11 @@ def hermes_home(root: Path) -> Path:
     (skill / 'run.sh').write_text('#!/bin/sh\necho ok\n')
     (skill / 'run.sh').chmod(0o755)
     (skill / '.env').write_text('SECRET=skill-only\n')
+    crowded = home / 'skills' / 'tools' / 'node-helper'
+    (crowded / 'node_modules').mkdir(parents=True)
+    (crowded / 'SKILL.md').write_text('# Node helper\n')
+    for index in range(501):
+        (crowded / 'node_modules' / f'{index}.js').write_text('')
     large = home / 'skills' / 'media' / 'big'
     large.mkdir(parents=True)
     (large / 'SKILL.md').write_text('# Big\n')
@@ -56,7 +61,7 @@ class ProbeTests(unittest.TestCase):
         self.assertTrue(result['found'])
         self.assertEqual([item['id'] for item in result['profiles']], ['default', 'profile:writer'])
         default = result['profiles'][0]
-        self.assertEqual((default['soul'], default['memories'], default['skills']), (True, 1, 2))
+        self.assertEqual((default['soul'], default['memories'], default['skills']), (True, 1, 3))
         self.assertEqual(result['model'], {'model': 'claude-opus-5-5', 'provider': 'anthropic'})
         self.assertEqual(result['logins'], [{'id': 'ANTHROPIC_API_KEY', 'label': 'Anthropic API key'}])
         self.assertEqual(result['sign_ins'], [{'id': 'nous', 'label': 'Nous Portal'}])
@@ -86,9 +91,29 @@ class ProbeTests(unittest.TestCase):
         target.mkdir()
         (target / '.env').write_text('# Coconut\nANTHROPIC_API_KEY=\nOTHER=1\n')
         self.assertEqual(copy_logins(self.home, target, target), ['ANTHROPIC_API_KEY'])
-        self.assertEqual((target / '.env').read_text(), '# Coconut\nOTHER=1\nANTHROPIC_API_KEY=sk-test-only\n')
+        self.assertEqual((target / '.env').read_text(), "# Coconut\nOTHER=1\nANTHROPIC_API_KEY='sk-test-only'\n")
         self.assertEqual((target / '.env').stat().st_mode & 0o777, 0o600)
         self.assertFalse((target / 'auth.json').exists())
+
+
+class KeyValueTests(unittest.TestCase):
+    def test_a_referenced_key_is_written_with_its_resolved_value(self):
+        try:
+            import dotenv  # noqa: F401
+        except ImportError:
+            self.skipTest('The Hermes environment provides python-dotenv.')
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = Path(directory) / 'source', Path(directory) / 'target'
+            source.mkdir()
+            target.mkdir()
+            (source / '.env').write_text('SHARED_KEY=sk-shared\nOPENAI_API_KEY=${SHARED_KEY}\n')
+            self.assertEqual(copy_logins(source, target, target), ['OPENAI_API_KEY'])
+            self.assertEqual((target / '.env').read_text(), "OPENAI_API_KEY='sk-shared'\n")
+
+    def test_values_with_quotes_stay_exact(self):
+        from coconut.hermes_setup import _env_line
+        self.assertEqual(_env_line('OPENAI_API_KEY', 'a$b'), "OPENAI_API_KEY='a$b'")
+        self.assertEqual(_env_line('OPENAI_API_KEY', 'it\'s "x"'), 'OPENAI_API_KEY="it\'s \\"x\\""')
 
 
 class ImportTests(unittest.TestCase):
@@ -123,7 +148,8 @@ class ImportTests(unittest.TestCase):
         self.assertEqual((skill / 'run.sh').stat().st_mode & 0o777, 0o700)
         self.assertFalse((skill / '.env').exists())
         self.assertFalse((home / 'skills' / 'media').exists())
-        self.assertEqual(result['skipped_skills'], ['media/big'])
+        self.assertFalse((home / 'skills' / 'tools').exists())
+        self.assertEqual(result['skipped_skills'], ['media/big', 'tools/node-helper'])
         for private in ('.env', 'auth.json', 'sessions'):
             self.assertFalse((home / private).exists(), private)
         self.assertEqual(list((self.service.profiles.root / 'imports').iterdir()), [])
@@ -140,7 +166,7 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(again['bots'][0]['id'], first['bots'][0]['id'])
         self.assertEqual(len([b for b in self.service.snapshot()['bots'] if b.get('source_profile')]), 1)
         self.assertEqual(first['logins'], ['ANTHROPIC_API_KEY'])
-        self.assertIn('ANTHROPIC_API_KEY=sk-test-only', (self.default_home / '.env').read_text())
+        self.assertIn("ANTHROPIC_API_KEY='sk-test-only'", (self.default_home / '.env').read_text())
         with self.assertRaises(ServiceError) as reused:
             self.run_import({'profile_ids': ['default'], 'logins': True}, key)
         self.assertEqual(reused.exception.status, 409)

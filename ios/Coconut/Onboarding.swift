@@ -14,11 +14,15 @@ struct OnboardingView: View {
 
     private enum SetupLoad: Equatable {
         case loading
-        case loaded(HermesSetup?)
+        case loaded(HermesSetup)
+        // The Mac did not answer. This is not the same as a Mac without Hermes.
+        case failed
 
         var setup: HermesSetup? { if case .loaded(let setup) = self { setup } else { nil } }
-        var finished: Bool { self != .loading }
+        var finished: Bool { if case .loaded = self { true } else { false } }
     }
+    // The Mac accepts at most this many profiles in one import request.
+    private static let importBatch = 20
 
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -32,6 +36,8 @@ struct OnboardingView: View {
     @State private var modelOpen = false
     @State private var askNotifications = false
     @State private var notificationsOn = false
+    @State private var importError: String?
+    @State private var skippedSkills: [String] = []
 
     init(start: OnboardingStep = .welcome) {
         self.start = start
@@ -130,7 +136,8 @@ struct OnboardingView: View {
             OnboardingPage(title: setupTitle, subtitle: setupSubtitle) {
                 SetupIllustration(setup: setup, loaded: load.finished)
             }
-            .task { await loadSetup() }
+            .id(load == .failed ? "setup-failed" : "setup")
+            .task(id: load == .loading) { await loadSetup() }
         case .bots:
             OnboardingPage(title: "Choose your bots",
                            subtitle: "Each profile becomes a bot with its personality, memory, and skills.") {
@@ -168,10 +175,12 @@ struct OnboardingView: View {
                 NotificationIllustration()
             }
         case .done:
-            OnboardingPage(title: "You are all set", subtitle: "Your bots are ready on your Mac.") {
+            OnboardingPage(title: "You are all set", subtitle: doneSubtitle) {
                 CompletionBurst()
             }
             .task {
+                // A note about skipped skills stays until the person reads it.
+                guard skippedSkills.isEmpty else { return }
                 try? await Task.sleep(for: .seconds(1.6))
                 if !Task.isCancelled { finish() }
             }
@@ -180,6 +189,11 @@ struct OnboardingView: View {
 
     @ViewBuilder private var footer: some View {
         VStack(spacing: 4) {
+            if let importError, [.bots, .logins].contains(step) {
+                Text(importError).font(.footnote).foregroundStyle(BoardStyle.accent)
+                    .multilineTextAlignment(.center).padding(.bottom, 6)
+                    .accessibilityIdentifier("onboarding-error")
+            }
             switch step {
             case .welcome:
                 PrimaryButton(title: "Connect your Mac") { advance() }
@@ -191,7 +205,12 @@ struct OnboardingView: View {
                     SecondaryButton(title: "Set up later", identifier: "onboarding-later") { finish() }
                 }
             case .setup:
-                PrimaryButton(title: "Continue", enabled: load.finished) { advance() }
+                if load == .failed {
+                    PrimaryButton(title: "Try again") { load = .loading }
+                    SecondaryButton(title: "Skip for now") { advance() }
+                } else {
+                    PrimaryButton(title: "Continue", enabled: load.finished) { advance() }
+                }
             case .bots:
                 PrimaryButton(title: selected.isEmpty ? "Skip" : selected.count == 1 ? "Add 1 bot" : "Add \(selected.count) bots",
                               enabled: !working) {
@@ -226,11 +245,13 @@ struct OnboardingView: View {
     }
 
     private var setupTitle: String {
+        if load == .failed { return "Coconut could not check your Mac" }
         guard load.finished else { return "Looking for Hermes" }
         return setup?.found == true ? "Already knows your setup" : "Coconut set up Hermes"
     }
 
     private var setupSubtitle: String {
+        if load == .failed { return store.error ?? "Check that your Mac is on and connected, then try again." }
         guard load.finished else { return "Coconut checks your Mac for an existing Hermes setup." }
         if setup?.found == true {
             return "Coconut found Hermes on your Mac. It copies only what you choose and leaves the original unchanged."
@@ -242,6 +263,11 @@ struct OnboardingView: View {
         setup?.logins.isEmpty == false
             ? "Your Hermes setup has these model keys. Coconut can copy them for your bots. It keeps any key that it already has."
             : "Your Hermes setup uses sign-ins that Coconut cannot copy."
+    }
+
+    private var doneSubtitle: String {
+        guard !skippedSkills.isEmpty else { return "Your bots are ready on your Mac." }
+        return "Your bots are ready. Coconut left out \(skippedSkills.formatted()), because a skill was too large or had too many files."
     }
 
     private var modelSubtitle: String {
@@ -266,7 +292,7 @@ struct OnboardingView: View {
     }
 
     private func loadSetup() async {
-        guard !load.finished else { return }
+        guard load == .loading else { return }
         let started = Date()
         let result = await store.loadHermesSetup()
         // Give the search a moment on screen, so the result does not flash in.
@@ -274,18 +300,27 @@ struct OnboardingView: View {
         if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
         guard !Task.isCancelled else { return }
         selected = Set(result?.importable.map(\.id) ?? [])
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) { load = .loaded(result) }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) { load = result.map(SetupLoad.loaded) ?? .failed }
     }
 
     private func runImport(logins: Bool) async {
-        if !selected.isEmpty || logins {
-            guard await store.importHermesSetup(profileIds: Array(selected).sorted(), logins: logins) != nil,
-                  !Task.isCancelled else { return }
-            // Imported profiles now have bots. Back and Add again must not offer them twice.
-            if let fresh = await store.loadHermesSetup() {
-                load = .loaded(fresh)
-                selected = []
+        importError = nil
+        let profiles = Array(selected).sorted()
+        if !profiles.isEmpty || logins {
+            // The first batch also copies the keys. Later batches add only profiles.
+            let batches = stride(from: 0, to: max(profiles.count, 1), by: Self.importBatch)
+                .map { Array(profiles[$0..<min($0 + Self.importBatch, profiles.count)]) }
+            for (index, batch) in batches.enumerated() {
+                guard let result = await store.importHermesSetup(profileIds: batch, logins: logins && index == 0) else {
+                    importError = store.error ?? "Coconut could not copy the setup. Try again."
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                skippedSkills += result.skippedSkills ?? []
+                selected.subtract(batch)
             }
+            // Imported profiles now have bots. Back and Add again must not offer them twice.
+            if let fresh = await store.loadHermesSetup() { load = .loaded(fresh) }
         }
         guard !Task.isCancelled else { return }
         advance()
