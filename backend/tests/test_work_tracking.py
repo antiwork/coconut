@@ -84,6 +84,8 @@ class NativePRToolTests(unittest.TestCase):
             provider = fixture.fake_hermes("import json\nresult = json.loads(registry.dispatch('coconut_track_pr', {'url': 'https://github.com/example/project/pull/42'}))\nassert result['id'] == 'saved-pr'\nreturn {'completed': True, 'final_response': 'Tracked.'}\n")
             events = []
             def emit(kind, data):
+                if kind == 'phase':
+                    return
                 events.append((kind, data))
                 return {'id': 'saved-pr', 'status': 'checks_running'} if kind == 'artifact' else None
             with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):

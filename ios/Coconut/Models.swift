@@ -193,8 +193,11 @@ struct AgentTask: Codable, Identifiable, Equatable, Sendable {
     var threadId: String
     var conversationBotId: String? = nil
     var sourceBotId: String? = nil
+    var phase: String? = nil
+    var turnStartedAt: String? = nil
 
     var chatBotId: String { sourceBotId != nil ? botId : (conversationBotId ?? botId) }
+    var isRunning: Bool { ["working", "running"].contains(status) }
     var isActive: Bool { ["working", "running", "queued", "waiting", "needs_you", "scheduled", "cancelling"].contains(status) }
 }
 

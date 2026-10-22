@@ -41,9 +41,9 @@ struct ConversationView: View {
     private var current: (messages: [Message], entries: [TranscriptEntry]) {
         transcript.current(in: store, botId: botId, focusDecisionId: focusDecisionId)
     }
-    private var showsActivity: Bool { store.isConversationResponding(botId) }
+    private var activity: ConversationActivity? { store.conversationActivity(botId) }
     private var activeTask: AgentTask? {
-        store.tasks.last { $0.chatBotId == botId && ["working", "running"].contains($0.status) }
+        store.tasks.last { $0.chatBotId == botId && $0.isRunning }
             ?? store.tasks.last { $0.chatBotId == botId && ["needs_you", "waiting"].contains($0.status) }
     }
 
@@ -113,8 +113,10 @@ struct ConversationView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                                     .id(message.kind == "decision" ? (message.decisionId ?? entry.id) : entry.id)
                             }
-                            if showsActivity {
-                                BotWorkingIndicator(botId: botId)
+                            if let activity {
+                                BotStatusRow(bot: bot, activity: activity)
+                                    .transition(.asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.25)),
+                                                            removal: .opacity.animation(.easeOut(duration: 0.15))))
                             }
                             Color.clear.frame(height: 1).id("conversation-bottom")
                         }
@@ -155,7 +157,7 @@ struct ConversationView: View {
                             proxy.scrollTo("conversation-bottom", anchor: .bottom)
                         }
                     }
-                    .onChange(of: showsActivity) { _, _ in
+                    .onChange(of: activity != nil) { _, _ in
                         if nearBottom { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onChange(of: messages.last?.id) { _, _ in
@@ -543,28 +545,6 @@ private struct RejectedMessageEditor: View {
     }
 }
 
-private struct BotWorkingIndicator: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let botId: String
-    private var bot: Bot? { store.bots.first { $0.id == botId } }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            if let bot {
-                BotAvatar(bot: bot, size: 38, isThinking: true)
-                    .overlay(alignment: .bottomTrailing) {
-                        if reduceMotion { BotActivityDot(bot: bot).padding(38 * 0.12) }
-                    }
-            }
-        }
-        .frame(minHeight: 44).padding(.horizontal, 10)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(bot?.name ?? "Bot") is working")
-        .accessibilityIdentifier("bot-working-\(botId)")
-    }
-}
-
 struct ConversationComposer: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -668,7 +648,7 @@ struct ConversationComposer: View {
                 .disabled(!canSend)
                 .accessibilityLabel(scheduling ? "Schedule task" : "Send message")
                 .accessibilityIdentifier("send-message")
-                } else if let task, ["working", "running"].contains(task.status), connected {
+                } else if let task, task.isRunning, connected {
                     Button { Task { await store.cancel(task) } } label: {
                         Image(systemName: "stop.fill").font(.system(size: 14))
                             .foregroundStyle(.secondary).frame(width: 44, height: 44)

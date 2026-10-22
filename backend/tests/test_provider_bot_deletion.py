@@ -30,6 +30,8 @@ class BotDeletionProviderTests(unittest.TestCase):
         provider = self.fake_hermes(behavior)
         events = []
         def emit(kind, payload):
+            if kind == 'phase':
+                return
             events.append((kind, payload))
             if kind == 'bot_delete':
                 if isinstance(result, Exception):
@@ -191,6 +193,8 @@ class BotDeletionProviderTests(unittest.TestCase):
         ''')
         events = []
         def emit(kind, data):
+            if kind == 'phase':
+                return
             events.append((kind, data))
             if kind == 'bot_create':
                 return created

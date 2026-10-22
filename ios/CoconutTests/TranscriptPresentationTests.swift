@@ -50,7 +50,7 @@ final class TranscriptPresentationTests: XCTestCase {
         partial.streaming = true
         store.messages = [commentary, partial]
 
-        XCTAssertTrue(store.isConversationResponding(task.chatBotId))
+        XCTAssertNotNil(store.conversationActivity(task.chatBotId))
         XCTAssertEqual(store.conversationTranscript(for: task.chatBotId).map(\.id), [commentary.id])
     }
 

@@ -108,6 +108,8 @@ The execution provider supports task start, resume, context, cancellation, and s
 The host API supplies artifact retrieval. The phone does not consume raw Hermes stdout.
 Native events include `native_call`, `native_result`, `native_approval`, and `native_question`.
 Other events cover streaming text, activity, decisions, artifacts, bot routing, completion, and failure.
+A `phase` event names what the running turn does now, for example `reading` or `testing`. It never stops a turn.
+A working task carries `phase` and `turn_started_at`. The Mac removes both when the task stops working.
 The Mac owns scheduling, pending decisions, and execution receipts independently of the phone.
 
 ## Message presentation

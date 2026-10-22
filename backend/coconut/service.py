@@ -523,6 +523,10 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 # Triggers keep message_audience in step with messages, so this drops every history answer.
                 for key in [k for k in cache if isinstance(k, tuple) and k[0] == 'history decisions']:
                     del cache[key]
+        if table == 'tasks' and obj.get('status') != 'working':
+            # A phase describes only the running turn. The next turn starts without it.
+            obj.pop('phase', None)
+            obj.pop('turn_started_at', None)
         self.db.execute(f'INSERT INTO {table}(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data', (obj['id'], encoded(obj)))
 
     def _event(self, event_type: str, data: dict, bot_id: str | None = None, task_id: str | None = None):
@@ -3570,7 +3574,23 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 record['_source_activity_items_seen'] = delivered
                 self._put('tasks', record)
 
+    def _record_phase(self, task_id: str, payload: dict):
+        from .turn_phase import PHASES
+        phase = payload.get('phase')
+        if phase not in PHASES:
+            return
+        with self.transaction():
+            task = self._get('tasks', task_id)
+            if task['status'] != 'working' or task.get('phase') == phase:
+                return
+            task.setdefault('turn_started_at', now())
+            task['phase'] = phase
+            self._put('tasks', task)
+            self._event('task.updated', self._public(task), task['bot_id'], task_id)
+
     def emit(self, task_id: str, kind: str, payload: dict):
+        if kind == 'phase':
+            return self._record_phase(task_id, payload)
         self._refuse_technical_event(task_id, kind)
         if kind == 'steering_ready':
             with self.lock:

@@ -607,6 +607,13 @@ class HermesProvider(FixtureProvider):
                     if deferred is not None:
                         raise deferred
                     return
+                if event.get('type') == 'phase':
+                    # A phase only labels progress. A rejected label never stops the turn.
+                    try:
+                        emit('phase', event.get('data') if isinstance(event.get('data'), dict) else {})
+                    except Exception:
+                        logging.getLogger(__name__).debug('Ignored a phase update for task %s', task_id, exc_info=True)
+                    continue
                 if event.get('type') not in ('steering_ready', 'steering_consumed', 'text_delta', 'interim_message', 'activity', 'decision', 'artifact', 'completed', 'failed', 'bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'withdrawal_correction', 'work_wait', 'work_continue', 'dependency_unlink', 'block_pause', 'native_call', 'native_result', 'native_approval', 'native_question', 'native_proposal', 'decision_response') or not isinstance(event.get('data'), dict):
                     raise RuntimeError('Hermes returned an invalid structured event.')
                 if event['type'] in ('native_call', 'native_question', 'native_proposal', 'decision_response'):
