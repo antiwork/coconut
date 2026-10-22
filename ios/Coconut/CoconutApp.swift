@@ -55,6 +55,7 @@ enum HomeTab: Hashable { case bots, inbox }
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
     @State private var settingsOpen = false
+    @State private var onboardingOpen = false
     @State private var createOpen = false
     @State private var searchOpen = false
     @State private var searchText = ""
@@ -104,6 +105,8 @@ struct CoconutHome: View {
             }
         }
         .sheet(isPresented: $settingsOpen) { AppSettingsView() }
+        .fullScreenCover(isPresented: $onboardingOpen) { OnboardingView() }
+        .onAppear { if OnboardingView.showsOnLaunch(store) { onboardingOpen = true } }
         .sheet(isPresented: $createOpen) { BotEditorView() }
         .onChange(of: PushNotifications.shared.target) { _, _ in openNotification() }
         .onChange(of: store.lastSync) { _, _ in openNotification() }

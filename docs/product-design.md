@@ -101,6 +101,21 @@ App settings contain Mac details, native model defaults, native access defaults,
 
 No private conversation content appears in this document.
 
+## Onboarding
+
+The first launch without a pairing opens onboarding. Settings → Hermes setup opens it again at the setup step.
+Each page has a segmented progress bar, a serif title, a short subtitle, one live illustration, and one primary button.
+A page enters in order: title, subtitle, then illustration.
+
+1. Welcome: three bots at work, each with a changing phase label.
+2. Connect your Mac: the pairing fields. Pairing moves to the next page.
+3. Setup: items travel from Hermes to the coconut and land in a list. A check mark ends the import preview.
+4. Choose your bots: one switch for each profile that is not imported yet.
+5. Model keys: shown only when the setup has API keys or sign-ins. Nothing is copied without Use them. Sign-ins are listed with a note to sign in again.
+6. Choose a model: shown only when Coconut has no default model.
+7. Notifications: a banner drops onto a phone. After Allow, the button becomes a green confirmation for one second.
+8. Done: the coconut gets a check mark and short ticks burst outward once.
+
 ## Inbox density
 
 The user requests Gmail-style density and no separate Review tab. Keep one pending-decision list. Use a small avatar and three short text lines.

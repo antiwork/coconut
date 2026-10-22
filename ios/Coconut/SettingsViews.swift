@@ -5,6 +5,7 @@ struct AppSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var restartingBots = false
     @State private var restartRequested = false
+    @State private var hermesSetupOpen = false
 
     var body: some View {
         NavigationStack {
@@ -31,6 +32,15 @@ struct AppSettingsView: View {
                         ModelSettingsView()
                     } label: {
                         SettingsNavigationLabel(title: "Model", subtitle: modelSummary)
+                    }
+                }
+                if store.hasPairing || store.isDemo {
+                    Section {
+                        Button { hermesSetupOpen = true } label: {
+                            SettingsNavigationLabel(title: "Hermes setup", subtitle: "Import profiles and model logins")
+                        }
+                        .foregroundStyle(.primary)
+                        .accessibilityIdentifier("hermes-setup")
                     }
                 }
                 Section {
@@ -86,6 +96,7 @@ struct AppSettingsView: View {
                     Text("Coconut \(appVersion) · Execution stays on your Mac.")
                 }
             }
+            .fullScreenCover(isPresented: $hermesSetupOpen) { OnboardingView(start: .setup) }
             .listSectionSpacing(24)
             .scrollContentBackground(.hidden).background(BoardStyle.paper)
             .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
@@ -141,7 +152,7 @@ private struct SettingsNavigationLabel: View {
     }
 }
 
-private struct MacPairingFields: View {
+struct MacPairingFields: View {
     @Environment(AppStore.self) private var store
     @State private var pairing = false
     @State private var draft = PairingSetupDraft()

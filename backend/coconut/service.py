@@ -106,6 +106,7 @@ from .decision_freshness import DecisionFreshness
 from .withdrawal_corrections import WithdrawalCorrections
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 from .technical_lane import TechnicalLane
+from .hermes_setup import HermesSetup
 
 
 # The statements of Service._refresh_bot. Each needs an index and no sort. A test reads the plan of each one.
@@ -127,7 +128,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane):
+class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -1066,6 +1067,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             return self.mutate_parallel_work(data, key, fingerprint)
         if method == 'PUT' and path == '/v1/settings/approvals' and hasattr(self.provider, 'native_settings'):
             return self.mutate_approval_default(data, key, fingerprint)
+        if method == 'POST' and path == '/v1/setup/import':
+            return self.import_hermes_setup(data, key, fingerprint)
         if method == 'PUT' and path == '/v1/settings/model' and hasattr(self.provider, 'set_model_default'):
             return self._mutate_model_default(data, key, fingerprint)
         parts = path.strip('/').split('/')
@@ -1159,14 +1162,23 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             message = None if matches else 'The Mac could not confirm that settings change. Check the current Hermes settings before trying again.'
             self._finish_model_update(key, catalog, error=message, intent=intent)
 
-    def _previous_model_response(self, key: str, fingerprint: str) -> dict | None:
+    def _previous_request(self, key: str, fingerprint: str) -> dict | None:
         with self.lock:
             previous = self.db.execute('SELECT fingerprint,response FROM requests WHERE key=?', (key,)).fetchone()
         if not previous:
             return None
         if not hmac.compare_digest(previous[0], fingerprint):
             raise ServiceError(409, 'This idempotency key belongs to a different request.')
-        response = json.loads(previous[1])
+        return json.loads(previous[1])
+
+    def _remember_request(self, key: str, fingerprint: str, response: dict) -> None:
+        with self.transaction():
+            self.db.execute('INSERT INTO requests(key,fingerprint,response) VALUES (?,?,?)', (key, fingerprint, encoded(response)))
+
+    def _previous_model_response(self, key: str, fingerprint: str) -> dict | None:
+        response = self._previous_request(key, fingerprint)
+        if response is None:
+            return None
         if response.get('_model_error'):
             raise ServiceError(409, response['_model_error'])
         return response
@@ -1244,7 +1256,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 raise ServiceError(503, 'The Mac could not confirm the model change. Retry with the same request key.') from None
             return self._finish_model_update(key, catalog)
 
-    def _create_bot(self, data: dict, *, audit: dict | None = None) -> dict:
+    def _create_bot(self, data: dict, *, audit: dict | None = None, source_profile: str | None = None) -> dict:
         if data.get('model_override') is not None:
             raise ServiceError(400, 'Create the bot, then choose its model in bot settings.')
         if not isinstance(data.get('pinned', False), bool):
@@ -1257,6 +1269,9 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         bot = dict(id=uid(), session_id=uid(), name=require_text(data, 'name', 80), role=str(data.get('role', ''))[:160], avatar=str(data.get('avatar', f'coconut.{avatar}'))[:80], color=str(data.get('color', color))[:20], instructions=data.get('instructions', ''), notifications=True, status='idle', last_message='', unread_count=0, archived=False, pinned=data.get('pinned', False), created_at=now())
         bot['profile_id'] = profile_id(bot)
         bot['model_override'] = None
+        if source_profile:
+            # The Hermes profile that onboarding copied. A second import returns this bot.
+            bot['source_profile'] = source_profile
         self._sync_profile(bot)
         self._put('bots', bot)
         self._event('bot.created', bot | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))

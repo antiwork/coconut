@@ -582,6 +582,61 @@ enum ConnectionState: String, Sendable {
     case unconfigured, connecting, connected, disconnected, preview
 }
 
+struct HermesModelChoice: Codable, Equatable, Sendable {
+    var model: String
+    var provider: String?
+}
+
+struct HermesSetupProfile: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var name: String
+    var soul: Bool
+    var memories: Int
+    var skills: Int
+    var botId: String?
+
+    var contents: String {
+        var parts = soul ? ["Personality"] : []
+        if memories > 0 { parts.append(memories == 1 ? "1 memory file" : "\(memories) memory files") }
+        if skills > 0 { parts.append(skills == 1 ? "1 skill" : "\(skills) skills") }
+        return parts.isEmpty ? "Empty profile" : parts.joined(separator: " · ")
+    }
+}
+
+struct HermesLogin: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var label: String
+}
+
+struct HermesSetup: Codable, Equatable, Sendable {
+    var found: Bool
+    var profiles: [HermesSetupProfile]
+    // API keys that Coconut can copy. OAuth sign-ins cannot be shared between two Hermes homes.
+    var logins: [HermesLogin]
+    var signIns: [HermesLogin]
+    var model: HermesModelChoice?
+
+    var importable: [HermesSetupProfile] { profiles.filter { $0.botId == nil } }
+
+    static let sample = HermesSetup(found: true, profiles: [
+        HermesSetupProfile(id: "default", name: "Hermes", soul: true, memories: 2, skills: 4, botId: nil),
+        HermesSetupProfile(id: "profile:writer", name: "Writer", soul: true, memories: 1, skills: 0, botId: nil),
+    ], logins: [HermesLogin(id: "ANTHROPIC_API_KEY", label: "Anthropic API key")],
+    signIns: [HermesLogin(id: "nous", label: "Nous")],
+    model: HermesModelChoice(model: "claude-opus-5-5", provider: "anthropic"))
+}
+
+struct HermesImportRequest: Encodable, Sendable {
+    var profileIds: [String]
+    var logins: Bool
+}
+
+struct HermesImportResult: Decodable, Sendable {
+    var bots: [Bot]
+    var logins: [String]
+    var skippedSkills: [String]? = nil
+}
+
 enum APIJSON {
     static func encoder() -> JSONEncoder {
         let encoder = JSONEncoder()
