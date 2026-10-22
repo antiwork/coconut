@@ -66,10 +66,13 @@ final class ConnectionRecoveryTests: XCTestCase {
             store.networkChanged(available: true)
             try await Task.sleep(for: .milliseconds(50))
         }
+        // A restarted download sends its request at once. Check before the release: after a simulator stall, the
+        // held request can time out and the app correctly retries it, so the final count can be 2.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(server.requests, 1, "An unchanged route must preserve the current download.")
         server.releaseState()
         try await waitUntil { store.connection == .connected }
         XCTAssertEqual(store.connection, .connected, store.syncIssue ?? "No sync error")
-        XCTAssertEqual(server.requests, 1, "An unchanged route must preserve the current download.")
         #endif
     }
 }
