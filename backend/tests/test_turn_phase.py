@@ -102,12 +102,22 @@ class BridgePhaseTests(unittest.TestCase):
     def test_parallel_tools_report_thinking_after_the_last_one_returns(self):
         bridge, sent = self.bridge()
         bridge.PHASE_INTERVAL = 0
-        bridge.tool_phase_started('reading')
-        bridge.tool_phase_started('testing')
-        bridge.tool_phase_finished()
+        reading = bridge.tool_phase_started('reading')
+        testing = bridge.tool_phase_started('testing')
+        bridge.tool_phase_finished(reading)
         self.assertEqual(sent, ['reading', 'testing'])
-        bridge.tool_phase_finished()
+        bridge.tool_phase_finished(testing)
         self.assertEqual(sent, ['reading', 'testing', 'thinking'])
+
+    def test_a_finished_tool_returns_the_label_to_a_tool_that_still_runs(self):
+        bridge, sent = self.bridge()
+        bridge.PHASE_INTERVAL = 0
+        reading = bridge.tool_phase_started('reading')
+        testing = bridge.tool_phase_started('testing')
+        bridge.tool_phase_finished(testing)
+        self.assertEqual(sent, ['reading', 'testing', 'reading'])
+        bridge.tool_phase_finished(reading)
+        self.assertEqual(sent[-1], 'thinking')
 
     def test_fast_changes_send_only_the_latest_phase(self):
         bridge, sent = self.bridge()

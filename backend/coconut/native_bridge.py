@@ -50,7 +50,8 @@ class NativeBridge:
         self.phase_timer = None
         self.phases_stopped = False
         self.phase_lock = threading.RLock()
-        self.tools_running = 0
+        # Running tools in start order, each with its phase. A finished tool leaves the label to the newest one left.
+        self.tool_phases = {}
 
     @contextmanager
     def claim(self):
@@ -267,11 +268,11 @@ class NativeBridge:
             if active is not None and active.is_set():
                 # The outer tool already describes this nested call.
                 return recorded(tool_name, args, next_call, **kwargs)
-            self.tool_phase_started(tool_phase(tool_name, args))
+            call = self.tool_phase_started(tool_phase(tool_name, args))
             try:
                 return scoped(tool_name, args, next_call, **kwargs)
             finally:
-                self.tool_phase_finished()
+                self.tool_phase_finished(call)
         if agent is not None:
             self.agent = agent
             self.previous_tool_start = getattr(agent, 'tool_start_callback', None)
@@ -316,15 +317,20 @@ class NativeBridge:
                 pass
 
     def tool_phase_started(self, phase):
+        call = object()
         with self.phase_lock:
-            self.tools_running += 1
+            self.tool_phases[call] = phase
             self.report_phase(phase)
+        return call
 
-    def tool_phase_finished(self):
+    def tool_phase_finished(self, call):
         # Parallel tools share one label. The bot thinks again only after the last one returns.
         with self.phase_lock:
-            self.tools_running -= 1
-            if self.tools_running == 0:
+            self.tool_phases.pop(call, None)
+            remaining = [phase for phase in self.tool_phases.values() if phase is not None]
+            if remaining:
+                self.report_phase(remaining[-1])
+            elif not self.tool_phases:
                 self.report_phase('thinking')
 
     def stop_phases(self):

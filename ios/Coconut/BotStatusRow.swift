@@ -20,6 +20,10 @@ struct BotStatusRow: View {
                     TypingDots().transition(.identity)
                 } else {
                     BotAvatar(bot: bot, size: 20, phase: activity.reconnecting ? nil : phase)
+                        // Reduce Motion keeps the character still, so the green dot shows the work.
+                        .overlay(alignment: .bottomTrailing) {
+                            if reduceMotion { BotActivityDot(bot: bot).padding(20 * BotAvatar.scale * 0.12) }
+                        }
                         .transition(.scale(scale: 0.3).combined(with: .opacity))
                 }
             }
