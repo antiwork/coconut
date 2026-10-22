@@ -49,7 +49,7 @@ struct BotStatusRow: View {
         .accessibilityLabel("\(bot.name): \(label(at: .now))")
         .accessibilityIdentifier("bot-working-\(bot.id)")
         .onAppear {
-            // The character grows in with a small overshoot, as in the Grok Bot recording.
+            // The character grows in with a small overshoot.
             withAnimation(.spring(response: 0.35, dampingFraction: 0.62)) { appeared = true }
         }
         .task(id: activity.phase) {

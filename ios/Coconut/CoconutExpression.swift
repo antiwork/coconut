@@ -35,7 +35,7 @@ struct CoconutExpression: Equatable {
              mouthWidth: mouthWidth, smile: smile, mouthOpen: mouthOpen, roll: roll)
     }
 
-    // Quick saccades with readable holds, measured from the Grok Bot recording.
+    // Quick saccades with readable holds.
     // Built once. Sampling runs on every frame of every working avatar.
     private static let tables: [CoconutGesture: (beats: [Beat], cycle: Double)] = Dictionary(uniqueKeysWithValues:
         [CoconutGesture.ponder, .scan, .focus, .dart, .recall, .write].map { gesture in
