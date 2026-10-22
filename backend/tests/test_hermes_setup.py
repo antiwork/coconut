@@ -25,6 +25,10 @@ def hermes_home(root: Path) -> Path:
     (skill / 'run.sh').write_text('#!/bin/sh\necho ok\n')
     (skill / 'run.sh').chmod(0o755)
     (skill / '.env').write_text('SECRET=skill-only\n')
+    nested = home / 'skills' / 'tools' / 'nested'
+    (nested / 'a' / 'b' / 'c' / 'd' / '.cache').mkdir(parents=True)
+    (nested / 'SKILL.md').write_text('# Nested\n')
+    (nested / 'a' / 'b' / 'c' / 'd' / 'file.txt').write_text('Deep but small.\n')
     crowded = home / 'skills' / 'tools' / 'node-helper'
     (crowded / 'node_modules').mkdir(parents=True)
     (crowded / 'SKILL.md').write_text('# Node helper\n')
@@ -61,7 +65,7 @@ class ProbeTests(unittest.TestCase):
         self.assertTrue(result['found'])
         self.assertEqual([item['id'] for item in result['profiles']], ['default', 'profile:writer'])
         default = result['profiles'][0]
-        self.assertEqual((default['soul'], default['memories'], default['skills']), (True, 1, 3))
+        self.assertEqual((default['soul'], default['memories'], default['skills']), (True, 1, 4))
         self.assertEqual(result['model'], {'model': 'claude-opus-5-5', 'provider': 'anthropic'})
         self.assertEqual(result['logins'], [{'id': 'ANTHROPIC_API_KEY', 'label': 'Anthropic API key'}])
         self.assertEqual(result['sign_ins'], [{'id': 'nous', 'label': 'Nous Portal'}])
@@ -148,7 +152,10 @@ class ImportTests(unittest.TestCase):
         self.assertEqual((skill / 'run.sh').stat().st_mode & 0o777, 0o700)
         self.assertFalse((skill / '.env').exists())
         self.assertFalse((home / 'skills' / 'media').exists())
-        self.assertFalse((home / 'skills' / 'tools').exists())
+        self.assertFalse((home / 'skills' / 'tools' / 'node-helper').exists())
+        # An ignored dot folder does not make a small skill too deep.
+        self.assertTrue((home / 'skills' / 'tools' / 'nested' / 'a' / 'b' / 'c' / 'd' / 'file.txt').exists())
+        self.assertFalse((home / 'skills' / 'tools' / 'nested' / 'a' / 'b' / 'c' / 'd' / '.cache').exists())
         self.assertEqual(result['skipped_skills'], ['media/big', 'tools/node-helper'])
         for private in ('.env', 'auth.json', 'sessions'):
             self.assertFalse((home / private).exists(), private)

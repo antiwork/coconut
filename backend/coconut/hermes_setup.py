@@ -231,9 +231,10 @@ def copy_profile(source: Path, target: Path, boundary: Path) -> list[str]:
         files, deep = [], False
         for path, directories, names in os.walk(skill):
             depth = len(Path(path).relative_to(skill).parts)
-            deep = deep or (depth >= MAX_SKILL_DEPTH and bool(directories))
-            directories[:] = [name for name in directories if depth < MAX_SKILL_DEPTH
-                              and not name.startswith('.') and _directory(Path(path) / name)]
+            # Dot folders and linked folders are never copied, so they do not make a skill too deep.
+            kept = [name for name in directories if not name.startswith('.') and _directory(Path(path) / name)]
+            deep = deep or (depth >= MAX_SKILL_DEPTH and bool(kept))
+            directories[:] = kept if depth < MAX_SKILL_DEPTH else []
             files += [Path(path) / name for name in names if not name.startswith('.')]
             if len(files) > MAX_SKILL_FILES:
                 break
