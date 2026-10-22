@@ -308,6 +308,13 @@ Retirement keeps work only while it can resume. Coconut discards the worktree of
 - Retirement refuses the worktree, and the disk has less than 20 GiB free (`LOW_DISK_BYTES`). The pass then runs
   every 10 minutes.
 
+A discard deletes ignored files and nested worktrees without an archive. So, except for a checkout that is already gone,
+it needs every native card of the outcome to be done or archived, as for the scratch files below. A merged pull request
+does not finish a scheduled, blocked, review, triage, or todo card, for example one that waits to accept an install.
+Such an outcome gets retirement instead, which archives its ignored files exactly. If retirement refuses, the worktree
+stays, on a low disk too, and only its build folders go. Before a discard, the pass reads the board again. If that
+read fails, no worktree is discarded in that pass. Under the registry lock, the discard checks the native cards again.
+
 Below 20 GiB free, an outcome counts as idle after 15 minutes without a task update (`URGENT_IDLE_SECONDS`), and not after
 6 hours. A queued task that did not start for 12 hours (`URGENT_QUEUED_SECONDS`) does not keep the worktree of its
 outcome, except while a claim is in progress. Retirement archives such a worktree exactly. The discard of a worktree that

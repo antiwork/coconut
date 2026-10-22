@@ -1,7 +1,8 @@
 """Retire the worktrees of idle outcomes. An archive keeps their uncommitted changes.
 
 A turn restores a retired worktree before it starts, so an idle outcome that resumes gets its files back.
-An idle outcome whose pull requests all merged or closed loses its worktree instead (work_workspace.discard)."""
+An idle outcome whose pull requests all merged or closed loses its worktree instead (work_workspace.discard), but only
+when its native cards are all done or archived too."""
 import contextlib
 from datetime import datetime
 import json
@@ -28,7 +29,8 @@ ACTIVE_STATUSES = ('queued', 'working', 'scheduled', 'waiting')
 # These native states mean that no worker runs or claims the outcome soon. Another state keeps the worktree.
 NATIVE_IDLE_STATUSES = ('done', 'archived', 'blocked', 'triage', 'review', 'todo', 'scheduled')
 # Only these native states end the work of an outcome. A scratch workspace holds files that no archive keeps, such as
-# notes and raw evidence, so it keeps them while a native card of the outcome is in another state.
+# notes and raw evidence, so it keeps them while a native card of the outcome is in another state. A discard of a
+# worktree also deletes its ignored files and nested worktrees without an archive, so the same rule applies to it.
 NATIVE_DONE_STATUSES = ('done', 'archived')
 RETIREMENT_INTERVAL_SECONDS = 60 * 60
 # Below LOW_DISK_BYTES an outcome counts as idle after this time without a task update, not after
@@ -476,7 +478,7 @@ class WorktreeRetirement:
         finally:
             self.lock.release()
 
-    def _clear_idle_scratch(self, root, eligible, current, saved, urgent=False):
+    def _clear_idle_scratch(self, root, eligible, current, saved, urgent=False, fresh=None):
         """Delete the files in the scratch workspaces (workspaces/<outcome>) of done or long idle outcomes.
 
         Nothing else removes them, and a bot often clones a repository or builds there. The folder stays, empty, because
@@ -487,7 +489,7 @@ class WorktreeRetirement:
         on a low disk and with no time limit, and that includes clones, dependencies, and build output. This step frees
         no part of that scratch: a tmp folder can hold setup that no build makes again, and a clone can hold work.
         Disk space is the price of keeping unfinished work. The cleanup of build folders in registered worktrees
-        (free_rebuildable) is unaffected.
+        (free_rebuildable) is unaffected. `fresh` is the result of a board read earlier in the same pass, if any.
         """
         if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
             return
@@ -515,7 +517,8 @@ class WorktreeRetirement:
         # The check below reads native states from the last board snapshot. Read the board again first, without the
         # service lock: the adapter call can wait, and a thread that holds the service lock may wait for the adapter.
         # Without a fresh snapshot, the scratch files of known outcomes stay until the next pass.
-        fresh = not any(folder.name in known for folder in candidates) or self._refresh_native_snapshot()
+        fresh = not any(folder.name in known for folder in candidates) or (
+            self._refresh_native_snapshot() if fresh is None else fresh)
         holders = work_workspace.holders_by_path({str(folder) for folder in candidates})
         cleared = []
         for folder in candidates:
@@ -560,8 +563,8 @@ class WorktreeRetirement:
         try:
             call({'op': 'snapshot'})
         except (RuntimeError, OSError, ValueError) as error:
-            logging.getLogger(__name__).warning('Coconut kept the scratch workspaces of idle outcomes, because it could '
-                                                'not read the native board: %s', error)
+            logging.getLogger(__name__).warning('Coconut kept the scratch workspaces and worktrees of idle outcomes, '
+                                                'because it could not read the native board: %s', error)
             return False
         return True
 
@@ -803,7 +806,8 @@ class WorktreeRetirement:
         except (ValueError, OSError, KeyError, subprocess.TimeoutExpired, sqlite3.Error) as error:
             # A failed orphan check must not stop retirement.
             logging.getLogger(__name__).warning('Coconut could not stop the orphans of idle outcomes: %s', error)
-        # A merged pull request ends its work, so its worktree goes without the checks that protect resumable work.
+        # A merged pull request ends its Git work, so its worktree goes without the checks that protect resumable work,
+        # once its native cards are done too.
         try:
             classified = self._done_outcomes(finished)
         except (ValueError, OSError, KeyError, sqlite3.Error) as error:
@@ -825,8 +829,17 @@ class WorktreeRetirement:
             # Without a binding, no repository is known, so a merged pull request does not end this scratch work early.
             return bool(bindings) and all(repository_name(b.get('repository'), names) in merged_in for b in bindings)
         scratch_done = {outcome for outcome, merged_in in done.items() if in_own_repositories(outcome, merged_in)}
+        # A discard deletes the ignored files and the nested worktrees, for example the evidence of an install that a
+        # scheduled native card still has to accept. So only an outcome whose native cards are all done or archived
+        # loses a worktree that way. A merged pull request does not finish a native card. Read the board first, as for
+        # the scratch files: a failed read keeps every worktree that only a discard would remove.
+        fresh = None
+        if any(b.get('outcome') in done.keys() | stale for b in saved.values() if isinstance(b, dict) and not b.get('retired')):
+            fresh = self._refresh_native_snapshot()
+        native_done = (self._finished_outcomes(current, timeout=SERVICE_WAIT_SECONDS, urgent=low_disk, settled=True)
+                       if fresh else None) or set()
         try:
-            self._clear_idle_scratch(root, scratch_done | stale, current, saved, urgent=low_disk)
+            self._clear_idle_scratch(root, scratch_done | stale, current, saved, urgent=low_disk, fresh=fresh)
         except (ValueError, OSError, subprocess.TimeoutExpired, sqlite3.Error) as error:
             logging.getLogger(__name__).warning('Coconut could not clear idle scratch workspaces: %s', error)
         try:
@@ -865,21 +878,32 @@ class WorktreeRetirement:
                     dropped(busy)
                     return retired
 
-                def still_finished(wait, outcome=outcome):
+                def still_finished(wait, outcome=outcome, settled=False):
                     # Under the registry lock, wait is False. No thread waits for the registry lock while it holds the service lock,
                     # so a short, bounded wait there cannot deadlock.
                     result = self._finished_outcomes(time.time(), timeout=SERVICE_WAIT_SECONDS if wait else LOCKED_WAIT_SECONDS,
-                                                    only=outcome, urgent=low_disk)
+                                                    only=outcome, urgent=low_disk, settled=settled)
                     if result is None:
                         raise ServiceBusy(BUSY_MESSAGE)
                     return outcome in result
+
+                def still_settled(wait, outcome=outcome):
+                    # A native card can reopen while the discard runs. Its checks then stop the removal.
+                    return still_finished(wait, outcome, settled=True)
                 # A merged pull request ends the work only in its own repository. An outcome can work in several.
                 merged = outcome in done and repository_name(saved[identity].get('repository'), names) in done[outcome]
-                action = work_workspace.discard if merged or identity in gone else work_workspace.retire
+                if identity in gone:
+                    # A checkout that is gone has no files left to lose.
+                    action, check = work_workspace.discard, still_finished
+                elif merged and outcome in native_done:
+                    action, check = work_workspace.discard, still_settled
+                else:
+                    # Retirement archives the ignored files exactly, or it refuses and the worktree stays.
+                    action, check = work_workspace.retire, still_finished
                 options = dict(merged=merged, urgent=low_disk) if action is work_workspace.discard else {}
                 try:
                     # A service restart leaves the processes of earlier turns to launchd. They keep the worktree in use.
-                    if action(root, identity, still_finished, orphan_age=ORPHAN_AGE_SECONDS, **options):
+                    if action(root, identity, check, orphan_age=ORPHAN_AGE_SECONDS, **options):
                         retired.append(identity)
                         continue
                     refusal = None
@@ -891,11 +915,12 @@ class WorktreeRetirement:
                             logging.getLogger(__name__).warning('Coconut did not retire worktree %s: %s', identity, error)
                         continue
                     refusal = error
-                if action is work_workspace.retire and outcome in stale and not (self.stopping.is_set() or self.restart_pending):
+                if (action is work_workspace.retire and outcome in stale and outcome in native_done
+                        and not (self.stopping.is_set() or self.restart_pending)):
                     # Retirement could not archive the worktree exactly, and the outcome is idle for long, or the disk is
                     # low. Discard it: the branch and an archive of the patches and small untracked files stay.
                     try:
-                        if work_workspace.discard(root, identity, still_finished, orphan_age=ORPHAN_AGE_SECONDS, urgent=low_disk):
+                        if work_workspace.discard(root, identity, still_settled, orphan_age=ORPHAN_AGE_SECONDS, urgent=low_disk):
                             logging.getLogger(__name__).warning('Retirement refused worktree %s of a long idle outcome: %s',
                                                                 identity, refusal or 'it waits a day after a failure')
                             retired.append(identity)
