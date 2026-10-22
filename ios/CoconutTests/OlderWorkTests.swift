@@ -67,10 +67,7 @@ final class OlderWorkTests: XCTestCase {
         }
         store.networkChanged(available: true)
         store.setForeground(true)
-        for _ in 0..<60 {
-            if store.connection == .connected && !store.olderWorkBotIds.isEmpty { break }
-            try await Task.sleep(for: .milliseconds(50))
-        }
+        try await waitUntil { store.connection == .connected && !store.olderWorkBotIds.isEmpty }
         XCTAssertEqual(store.olderWorkBotIds, [bot], store.syncIssue ?? "No sync error")
         XCTAssertEqual(store.artifacts.map(\.id), ["current"])
 
@@ -89,13 +86,13 @@ final class OlderWorkTests: XCTestCase {
         XCTAssertTrue(loaded)
         XCTAssertEqual(store.artifacts.first { $0.id == "history-card" }?.title, "Merged fix")
 
-        // Leaving the foreground writes the saved state at once.
+        // Leaving the foreground starts the write at once. The write runs on a utility queue, which a busy
+        // simulator can delay for seconds.
         store.setForeground(false)
         var saved: SnapshotCache?
-        for _ in 0..<40 {
+        try await waitUntil {
             saved = ProtectedCache.read("snapshot.json")
-            if saved?.snapshot.olderWorkBotIds?.isEmpty == true { break }
-            try await Task.sleep(for: .milliseconds(50))
+            return saved?.snapshot.olderWorkBotIds?.isEmpty == true
         }
         XCTAssertEqual(saved?.snapshot.olderWorkBotIds, [])
         XCTAssertEqual(Set(saved?.snapshot.artifacts.map(\.id) ?? []), ["current", "older", "history-card"])

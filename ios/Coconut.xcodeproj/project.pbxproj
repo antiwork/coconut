@@ -15,6 +15,7 @@
 		061C88CB564F58F1D8B8D47F /* MCPSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BF9EE12E54B4787D2E6B806 /* MCPSettingsView.swift */; };
 		0776CCE12344A830B09D0E6D /* DecisionDeliveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D33116A7313ACA1279A8183 /* DecisionDeliveryTests.swift */; };
 		082B05C8228540913BA4D238 /* ChatCardPositionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC935807ABDC42D846BEE0A8 /* ChatCardPositionTests.swift */; };
+		09C77F8998AE692FE1570A2F /* TestWaiting.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12040C3ADD0A3CAD2CB855F /* TestWaiting.swift */; };
 		09F74A644FB1733BEE399A18 /* BotCharacterFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14989796E26DE12C64A8913B /* BotCharacterFlowTests.swift */; };
 		0AA6B9FF57BD3F22E5A248F8 /* SettingsAccessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA883ED0C6F24E8A2B82A5A0 /* SettingsAccessTests.swift */; };
 		0CE3FD694FA5FF40A3BE0B2B /* StateUpdates.swift in Sources */ = {isa = PBXBuildFile; fileRef = E047A026D090ABDE156F4AAF /* StateUpdates.swift */; };
@@ -284,6 +285,7 @@
 		D06723F2DD7E138C71DBE073 /* MacEncryptedNotification.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = MacEncryptedNotification.json; sourceTree = "<group>"; };
 		D077096B1D7594B096B3D215 /* CoconutNotificationService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = CoconutNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		D0CD1E31F40E2FEE77BF1791 /* WorkActivityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkActivityTests.swift; sourceTree = "<group>"; };
+		D12040C3ADD0A3CAD2CB855F /* TestWaiting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestWaiting.swift; sourceTree = "<group>"; };
 		D1BBB7948089F113C0343188 /* CoconutUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = CoconutUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D3CE294DF92B7E6D7D4276F4 /* NativeTaskDetailsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeTaskDetailsView.swift; sourceTree = "<group>"; };
 		D48C8A0078FDB1346414F800 /* ConversationSendRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSendRecoveryTests.swift; sourceTree = "<group>"; };
@@ -397,6 +399,7 @@
 				04694F80EDA1ECAEDE50022C /* PairingSetupTests.swift */,
 				9161A48CE88624483A69EAB7 /* PushEnvelopeTests.swift */,
 				E9BA02796500592E76CC1993 /* StateUpdatesTests.swift */,
+				D12040C3ADD0A3CAD2CB855F /* TestWaiting.swift */,
 				77967E2FBB093EE66F269506 /* TrackedWorkItemTests.swift */,
 				9841C0E34ADB4C5B376B9844 /* TranscriptPresentationTests.swift */,
 				D0CD1E31F40E2FEE77BF1791 /* WorkActivityTests.swift */,
@@ -851,6 +854,7 @@
 				016486051559722E16B22C2C /* PairingSetupTests.swift in Sources */,
 				6AE463B9C42518E3B9E01C8A /* PushEnvelopeTests.swift in Sources */,
 				D2708A2BEB37E361789502A5 /* StateUpdatesTests.swift in Sources */,
+				09C77F8998AE692FE1570A2F /* TestWaiting.swift in Sources */,
 				A6D506393398914560ADB906 /* TrackedWorkItemTests.swift in Sources */,
 				A8D88A0A316D41AA4F4C8E37 /* TranscriptPresentationTests.swift in Sources */,
 				5E74C499C3C1CEA89D4D8BCE /* WorkActivityTests.swift in Sources */,

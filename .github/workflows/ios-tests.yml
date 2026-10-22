@@ -42,19 +42,32 @@ jobs:
           with open(os.environ['GITHUB_ENV'], 'a') as output:
               output.write('COCONUT_TEST_SIMULATOR=' + device['udid'] + '\n')
           PY
+      # A simulator is slow for its first minutes after a cold boot: the keychain and loopback requests can stall
+      # for seconds. Boot it now, so it finishes that work while Xcode builds.
+      - name: Boot the simulator
+        run: xcrun simctl boot "$COCONUT_TEST_SIMULATOR"
+      - name: Build iOS unit tests
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -project ios/Coconut.xcodeproj \
+            -scheme Coconut \
+            -destination "platform=iOS Simulator,id=$COCONUT_TEST_SIMULATOR" \
+            -derivedDataPath "$RUNNER_TEMP/CoconutDerivedData" \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY=- \
+            DEVELOPMENT_TEAM=""
       - name: Run iOS unit tests
         run: |
           set -o pipefail
-          xcodebuild test \
+          xcrun simctl bootstatus "$COCONUT_TEST_SIMULATOR"
+          xcodebuild test-without-building \
             -project ios/Coconut.xcodeproj \
             -scheme Coconut \
             -destination "platform=iOS Simulator,id=$COCONUT_TEST_SIMULATOR" \
             -derivedDataPath "$RUNNER_TEMP/CoconutDerivedData" \
             -resultBundlePath "$RUNNER_TEMP/CoconutTests.xcresult" \
-            -only-testing:CoconutTests \
-            CODE_SIGNING_ALLOWED=YES \
-            CODE_SIGN_IDENTITY=- \
-            DEVELOPMENT_TEAM=""
+            -only-testing:CoconutTests
       - name: Summarize test results
         if: always()
         run: |
