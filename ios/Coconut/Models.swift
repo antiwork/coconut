@@ -608,6 +608,13 @@ struct HermesLogin: Codable, Identifiable, Equatable, Sendable {
     var label: String
 }
 
+struct HermesMCPServer: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var transport: String
+    // The server signs in with OAuth or refers to a variable that the setup does not define.
+    var needsSetup: Bool
+}
+
 struct HermesSetup: Codable, Equatable, Sendable {
     var found: Bool
     var profiles: [HermesSetupProfile]
@@ -615,26 +622,48 @@ struct HermesSetup: Codable, Equatable, Sendable {
     var logins: [HermesLogin]
     var signIns: [HermesLogin]
     var model: HermesModelChoice?
+    // A Mac before this field sends no MCP servers.
+    var mcpServers: [HermesMCPServer]? = nil
 
     var importable: [HermesSetupProfile] { profiles.filter { $0.botId == nil } }
+
+    // Coconut adds a server only when it has no server with the same name.
+    func newMCPServers(existing: [MCPServer]) -> [HermesMCPServer] {
+        let names = Set(existing.map(\.id))
+        return (mcpServers ?? []).filter { !names.contains($0.id) }
+    }
+
+    // The setup's default model, when the Mac's catalog has the same route. Without a provider, exactly one entry must match.
+    func modelChoice(in catalog: ModelCatalog?) -> ModelOverride? {
+        guard let model, let catalog else { return nil }
+        let matches = catalog.models.filter { $0.id == model.model && (model.provider == nil || $0.provider == model.provider) }
+        guard matches.count == 1, let entry = matches.first else { return nil }
+        return ModelOverride(model: entry.id, provider: entry.provider, reasoningEffort: nil)
+    }
 
     static let sample = HermesSetup(found: true, profiles: [
         HermesSetupProfile(id: "default", name: "Hermes", soul: true, memories: 2, skills: 4, botId: nil),
         HermesSetupProfile(id: "profile:writer", name: "Writer", soul: true, memories: 1, skills: 0, botId: nil),
     ], logins: [HermesLogin(id: "ANTHROPIC_API_KEY", label: "Anthropic API key")],
     signIns: [HermesLogin(id: "nous", label: "Nous")],
-    model: HermesModelChoice(model: "claude-opus-5-5", provider: "anthropic"))
+    model: HermesModelChoice(model: "claude-opus-5-5", provider: "anthropic"),
+    mcpServers: [HermesMCPServer(id: "github", transport: "stdio", needsSetup: false),
+                 HermesMCPServer(id: "notion", transport: "http", needsSetup: true)])
 }
 
 struct HermesImportRequest: Encodable, Sendable {
     var profileIds: [String]
     var logins: Bool
+    var mcpServers = false
 }
 
 struct HermesImportResult: Decodable, Sendable {
     var bots: [Bot]
     var logins: [String]
     var skippedSkills: [String]? = nil
+    var mcpServers: [String]? = nil
+    // Added servers that stay off until the person finishes them in Hermes on the Mac.
+    var mcpNeedsSetup: [String]? = nil
 }
 
 enum APIJSON {

@@ -1393,9 +1393,13 @@ final class AppStore {
         catch { report(error); return nil }
     }
 
-    func importHermesSetup(profileIds: [String], logins: Bool) async -> HermesImportResult? {
-        if isDemo { return HermesImportResult(bots: [], logins: logins ? HermesSetup.sample.logins.map(\.id) : []) }
-        return await write("setup/import", payload: HermesImportRequest(profileIds: profileIds, logins: logins),
+    func importHermesSetup(profileIds: [String], logins: Bool, mcpServers: Bool = false) async -> HermesImportResult? {
+        if isDemo {
+            let servers = mcpServers ? HermesSetup.sample.mcpServers ?? [] : []
+            return HermesImportResult(bots: [], logins: logins ? HermesSetup.sample.logins.map(\.id) : [],
+                                      mcpServers: servers.map(\.id), mcpNeedsSetup: servers.filter(\.needsSetup).map(\.id))
+        }
+        return await write("setup/import", payload: HermesImportRequest(profileIds: profileIds, logins: logins, mcpServers: mcpServers),
                            as: HermesImportResult.self)
     }
 

@@ -39,7 +39,11 @@ def hermes_home(root: Path) -> Path:
     (large / 'SKILL.md').write_text('# Big\n')
     (large / 'video.bin').write_bytes(b'0' * (5 * 1024 * 1024 + 1))
     (home / 'config.yaml').write_text(json.dumps({'model': {'default': 'claude-opus-5-5', 'provider': 'anthropic'},
-                                                  'mcp_servers': {'linear': {'url': 'https://example.com'}}}))
+                                                  'mcp_servers': {
+        'linear': {'url': 'https://example.com', 'headers': {'Authorization': 'Bearer ${MCP_LINEAR_API_KEY}'}},
+        'browser': {'command': 'browser-mcp', 'env': {'KEY': '${BROWSERBASE_API_KEY}', 'HOME': '${userHome}'}},
+        'search': {'url': 'https://search.example/mcp', 'headers': {'X-Key': '${env:SEARCH_KEY}'}},
+        'notion': {'url': 'https://notion.example/mcp', 'auth': 'oauth'}}}))
     (home / '.env').write_text('ANTHROPIC_API_KEY=sk-test-only\nTELEGRAM_BOT_TOKEN=not-a-model-login\nOPENAI_API_KEY=\n'
                                'MCP_LINEAR_API_KEY=tool-secret\nBROWSERBASE_API_KEY=tool-secret\n')
     (home / 'auth.json').write_text(json.dumps({'version': 1, 'providers': {'nous': {'access_token': 'test-only'}}}))
@@ -69,8 +73,14 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(result['model'], {'model': 'claude-opus-5-5', 'provider': 'anthropic'})
         self.assertEqual(result['logins'], [{'id': 'ANTHROPIC_API_KEY', 'label': 'Anthropic API key'}])
         self.assertEqual(result['sign_ins'], [{'id': 'nous', 'label': 'Nous Portal'}])
+        # A server needs setup when .env does not define a variable that it refers to, or when it signs in with OAuth.
+        self.assertEqual(result['mcp_servers'], [
+            {'id': 'browser', 'transport': 'stdio', 'needs_setup': False},
+            {'id': 'linear', 'transport': 'http', 'needs_setup': False},
+            {'id': 'notion', 'transport': 'http', 'needs_setup': True},
+            {'id': 'search', 'transport': 'http', 'needs_setup': True}])
         text = json.dumps(result)
-        for secret in ('sk-test-only', 'test-only', str(self.home), 'TELEGRAM', 'MCP_LINEAR', 'BROWSERBASE'):
+        for secret in ('sk-test-only', 'test-only', 'tool-secret', str(self.home), 'TELEGRAM', 'MCP_LINEAR', 'BROWSERBASE', 'SEARCH_KEY'):
             self.assertNotIn(secret, text)
 
     def test_a_linked_or_missing_home_is_not_a_setup(self):
@@ -78,7 +88,7 @@ class ProbeTests(unittest.TestCase):
         link.symlink_to(self.home)
         self.assertIsNone(source_home({'COCONUT_HERMES_SOURCE': str(link)}))
         self.assertIsNone(source_home({'COCONUT_HERMES_SOURCE': str(Path(self.directory.name) / 'missing')}))
-        self.assertEqual(probe(None), {'found': False, 'profiles': [], 'logins': [], 'sign_ins': [], 'model': None})
+        self.assertEqual(probe(None), {'found': False, 'profiles': [], 'logins': [], 'sign_ins': [], 'model': None, 'mcp_servers': []})
 
     def test_copied_keys_never_replace_existing_coconut_keys_or_sign_ins(self):
         target = Path(self.directory.name) / 'coconut'
@@ -187,6 +197,48 @@ class ImportTests(unittest.TestCase):
             self.run_import({'profile_ids': ['profile:../../etc'], 'logins': False})
         self.assertEqual(missing.exception.status, 409)
         self.assertEqual([b for b in self.service.snapshot()['bots'] if b.get('source_profile')], [])
+
+    def test_mcp_servers_are_added_through_native_settings_only_with_consent(self):
+        calls = []
+        def native_settings(operation='read', bots=(), **payload):
+            # Other writes to the default Hermes config wait for the import.
+            self.assertTrue(self.service.model_settings_lock.locked())
+            calls.append((operation, payload))
+            return {'added': ['browser', 'notion'], 'needs_setup': ['notion'], 'skipped': ['linear'], 'servers': []}
+        self.service.provider.native_settings = native_settings
+        result = self.run_import({'profile_ids': [], 'logins': False})
+        self.assertEqual((result['mcp_servers'], result['mcp_needs_setup']), ([], []))
+        self.assertEqual(calls, [])
+        result = self.run_import({'profile_ids': [], 'logins': False, 'mcp_servers': True})
+        self.assertEqual(calls, [('mcp_import', {'source': str(self.home.resolve())})])
+        self.assertEqual((result['mcp_servers'], result['mcp_needs_setup']), (['browser', 'notion'], ['notion']))
+        self.assertIn('settings.updated', [row[0] for row in self.service.db.execute('SELECT type FROM events')])
+
+    def test_mcp_writes_wait_for_other_settings_writes_and_replay_once(self):
+        locked = []
+        def native_settings(operation='read', bots=(), **payload):
+            locked.append((payload['action'], self.service.model_settings_lock.locked()))
+            return {'ok': True, 'tools': [], 'servers': []}
+        self.service.provider.native_settings = native_settings
+        key = str(uuid4())
+        for action in ('save', 'test'):
+            self.service.mutate('POST', '/v1/settings/mcp', {'action': action, 'name': 'linear'}, key if action == 'save' else str(uuid4()), self.device)
+        self.service.mutate('POST', '/v1/settings/mcp', {'action': 'save', 'name': 'linear'}, key, self.device)
+        self.assertEqual(locked, [('save', True), ('test', True)])
+
+    def test_mcp_import_failures_are_reported(self):
+        def native_settings(operation='read', bots=(), **payload):
+            raise ValueError('Hermes could not read its model settings.')
+        with self.assertRaises(ServiceError) as unavailable:
+            self.run_import({'profile_ids': [], 'logins': False, 'mcp_servers': True})
+        self.assertEqual(unavailable.exception.status, 503)
+        self.service.provider.native_settings = native_settings
+        with self.assertRaises(ServiceError) as failed:
+            self.run_import({'profile_ids': [], 'logins': False, 'mcp_servers': True})
+        self.assertEqual(failed.exception.status, 409)
+        with self.assertRaises(ServiceError) as bad:
+            self.run_import({'profile_ids': [], 'mcp_servers': 'yes'})
+        self.assertEqual(bad.exception.status, 400)
 
     def test_coconut_does_not_import_its_own_hermes_home(self):
         with patch.dict(os.environ, {'COCONUT_HERMES_SOURCE': str(self.default_home)}):

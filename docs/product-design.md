@@ -112,9 +112,10 @@ A page enters in order: title, subtitle, then illustration.
 3. Setup: items travel from Hermes to the coconut and land in a list. A check mark ends the import preview.
 4. Choose your bots: one switch for each profile that is not imported yet.
 5. Model keys: shown only when the setup has API keys or sign-ins. Nothing is copied without Use them. Sign-ins are listed with a note to sign in again.
-6. Choose a model: shown only when Coconut has no default model.
-7. Notifications: a banner drops onto a phone. After Allow, the button becomes a green confirmation for one second.
-8. Done: the coconut gets a check mark and short ticks burst outward once.
+6. MCP servers: shown only when the setup has servers that Coconut does not have. Nothing is added without Add them. A server that needs setup shows Needs setup.
+7. Choose a model: shown only when Coconut has no default model. When Coconut's model list has the setup's model, the page offers Use with that model name. Choose another model opens the list.
+8. Notifications: a banner drops onto a phone. After Allow, the button becomes a green confirmation for one second.
+9. Done: the coconut gets a check mark and short ticks burst outward once. A note about skipped skills or servers that need setup stays until the person taps Start.
 
 ## Inbox density
 

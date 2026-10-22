@@ -30,7 +30,7 @@ Errors use `{error: string}`. UUIDs do not encode host names or filesystem paths
 - `GET /events?after=N&wait=20` returns ordered events, a cursor, and server time.
 - `GET /artifacts/{id}/content` returns authenticated artifact bytes.
 - `GET /learning` returns agreement groups by bot and action type.
-- `GET /setup` returns the account's own Hermes setup: `{found, profiles, logins, sign_ins, model}`. Each profile has `id`, `name`, `soul`, `memories`, `skills`, and the `bot_id` of an earlier import. `logins` lists model API keys and `sign_ins` lists OAuth providers, as `{id, label}` pairs. The response contains no paths or secret values.
+- `GET /setup` returns the account's own Hermes setup: `{found, profiles, logins, sign_ins, model, mcp_servers}`. Each profile has `id`, `name`, `soul`, `memories`, `skills`, and the `bot_id` of an earlier import. `logins` lists model API keys and `sign_ins` lists OAuth providers, as `{id, label}` pairs. `model` is the default `{model, provider}` of the setup, or null. `mcp_servers` lists `{id, transport, needs_setup}` for each MCP server in the setup's `config.yaml`. A server needs setup when it signs in with OAuth or refers to a `${NAME}` variable that the setup's `.env` does not define. The response contains no paths or secret values.
 
 The content response advertises `sync_version: 1`. The client then applies contiguous update batches and retains their cursor.
 Older servers ignore the content header. The client retains support for their full snapshots and event stream.
@@ -40,7 +40,7 @@ A disconnected client displays cached state and connection health separately fro
 ## Bot routes
 
 - `POST /bots`: `{name, role?, avatar?, color?, instructions?, pinned?}` returns Bot.
-- `POST /setup/import`: `{profile_ids, logins}` returns `{bots, logins, skipped_skills}`. Each new bot gets a copy of the profile's `SOUL.md`, memory files, and skills. A skill with a file over 5 MiB stays behind and appears in `skipped_skills`. A profile that was imported before returns its existing bot. With `logins: true`, Coconut adds the API keys that its default Hermes home does not have yet. It never replaces an existing key and never copies an OAuth sign-in.
+- `POST /setup/import`: `{profile_ids, logins, mcp_servers}` returns `{bots, logins, skipped_skills, mcp_servers, mcp_needs_setup}`. Each new bot gets a copy of the profile's `SOUL.md`, memory files, and skills. A skill with a file over 5 MiB stays behind and appears in `skipped_skills`. A profile that was imported before returns its existing bot. With `logins: true`, Coconut adds the API keys that its default Hermes home does not have yet. It never replaces an existing key and never copies an OAuth sign-in. With `mcp_servers: true`, the native Hermes settings add each MCP server that the default Hermes home does not have, by name. An existing server never changes. Coconut copies each variable that a new server refers to and the setup's `.env` defines, and keeps the values that it already has. A server that refers to a missing variable, or signs in with OAuth, is added with `enabled: false` and appears in `mcp_needs_setup`. Coconut never copies MCP OAuth tokens. `mcp_servers` defaults to false, and the phone sets the default model through `PUT /settings/model`.
 - `PATCH /bots/{id}` changes specified fields and returns Bot.
 - `DELETE /bots/{id}` cancels work and removes the contact. It retains the deleted native profile and receipts.
 - `POST /bots/{id}/read` clears unread state.
