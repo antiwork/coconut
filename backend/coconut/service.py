@@ -1069,6 +1069,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             return self.mutate_approval_default(data, key, fingerprint)
         if method == 'POST' and path == '/v1/setup/import':
             return self.import_hermes_setup(data, key, fingerprint)
+        if method == 'POST' and path == '/v1/settings/mcp':
+            return self.mutate_mcp(data, key, fingerprint)
         if method == 'PUT' and path == '/v1/settings/model' and hasattr(self.provider, 'set_model_default'):
             return self._mutate_model_default(data, key, fingerprint)
         parts = path.strip('/').split('/')
@@ -1236,6 +1238,25 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             except Exception:
                 raise ServiceError(503, 'The Mac could not confirm the profile change. Retry with the same request key.') from None
             return self._finish_model_update(key, catalog, intent=intent)
+
+    def mutate_mcp(self, data: dict, key: str, fingerprint: str) -> dict:
+        if not hasattr(self.provider, 'native_settings'):
+            raise ServiceError(503, 'Hermes is not available.')
+        previous = self._previous_request(key, fingerprint)
+        if previous is not None:
+            return previous
+        payload = {name: data[name] for name in ('action', 'name', 'url', 'token') if isinstance(data, dict) and name in data}
+        # Other writes to the default Hermes config take this lock, so one save cannot erase another.
+        # A connection test changes nothing, so it does not hold other writes for its network timeout.
+        with contextlib.nullcontext() if payload.get('action') == 'test' else self.model_settings_lock:
+            try:
+                result = self.provider.native_settings('mcp', **payload)
+            except ValueError:
+                raise ServiceError(400, 'Check the MCP name, HTTPS address, and authentication.') from None
+        with self.transaction():
+            self.db.execute('INSERT INTO requests(key,fingerprint,response) VALUES (?,?,?)', (key, fingerprint, encoded(result)))
+            self._event('settings.updated', {})
+        return result
 
     def _mutate_model_default(self, data: dict, key: str, fingerprint: str) -> dict:
         with self.model_settings_lock:
@@ -1485,15 +1506,6 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 if decision.get('_native'):
                     return self.answer_native(decision, task, data, device, callbacks)
                 return self._answer(decision, task, data, device)
-        if parts == ['v1', 'settings', 'mcp'] and method == 'POST':
-            if not hasattr(self.provider, 'native_settings'):
-                raise ServiceError(503, 'Hermes is not available.')
-            try:
-                result = self.provider.native_settings('mcp', **{key: data[key] for key in ('action', 'name', 'url', 'token') if key in data})
-            except ValueError:
-                raise ServiceError(400, 'Check the MCP name, HTTPS address, and authentication.') from None
-            self._event('settings.updated', {})
-            return result
         if parts == ['v1', 'settings', 'approvals'] and method == 'PUT':
             if not hasattr(self.provider, 'native_settings'):
                 raise ServiceError(503, 'Hermes is not available.')

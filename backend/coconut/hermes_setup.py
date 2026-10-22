@@ -400,7 +400,9 @@ class HermesSetup:
         if not hasattr(self.provider, 'native_settings'):
             raise ServiceError(503, 'Hermes is not available.')
         try:
-            result = self.provider.native_settings('mcp_import', source=str(root))
+            # Other writes to the default Hermes config take this lock, so the import cannot erase them.
+            with self.model_settings_lock:
+                result = self.provider.native_settings('mcp_import', source=str(root))
         except ValueError:
             # A retry with a new key resumes: servers that Coconut already has stay unchanged.
             raise ServiceError(409, 'Coconut could not copy the MCP servers. Check the Hermes MCP settings.') from None

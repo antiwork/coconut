@@ -201,6 +201,8 @@ class ImportTests(unittest.TestCase):
     def test_mcp_servers_are_added_through_native_settings_only_with_consent(self):
         calls = []
         def native_settings(operation='read', bots=(), **payload):
+            # Other writes to the default Hermes config wait for the import.
+            self.assertTrue(self.service.model_settings_lock.locked())
             calls.append((operation, payload))
             return {'added': ['browser', 'notion'], 'needs_setup': ['notion'], 'skipped': ['linear'], 'servers': []}
         self.service.provider.native_settings = native_settings
@@ -211,6 +213,18 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(calls, [('mcp_import', {'source': str(self.home.resolve())})])
         self.assertEqual((result['mcp_servers'], result['mcp_needs_setup']), (['browser', 'notion'], ['notion']))
         self.assertIn('settings.updated', [row[0] for row in self.service.db.execute('SELECT type FROM events')])
+
+    def test_mcp_saves_wait_for_other_settings_writes_but_tests_do_not(self):
+        locked = []
+        def native_settings(operation='read', bots=(), **payload):
+            locked.append((payload['action'], self.service.model_settings_lock.locked()))
+            return {'ok': True, 'tools': [], 'servers': []}
+        self.service.provider.native_settings = native_settings
+        key = str(uuid4())
+        for action in ('save', 'test'):
+            self.service.mutate('POST', '/v1/settings/mcp', {'action': action, 'name': 'linear'}, key if action == 'save' else str(uuid4()), self.device)
+        self.service.mutate('POST', '/v1/settings/mcp', {'action': 'save', 'name': 'linear'}, key, self.device)
+        self.assertEqual(locked, [('save', True), ('test', False)])
 
     def test_mcp_import_failures_are_reported(self):
         def native_settings(operation='read', bots=(), **payload):
