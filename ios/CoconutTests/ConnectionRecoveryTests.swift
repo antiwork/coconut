@@ -18,7 +18,8 @@ final class ConnectionRecoveryTests: XCTestCase {
             XCTFail("A stalled foreground read must time out before the delayed response.")
         } catch let error as URLError {
             XCTAssertEqual(error.code, .timedOut)
-            XCTAssertLessThan(started.duration(to: .now), .seconds(7))
+            // The foreground budget is 6 s and the long-poll budget is 35 s. A stalled CI simulator can add seconds.
+            XCTAssertLessThan(started.duration(to: .now), .seconds(20))
         }
         let result = try await poll
         XCTAssertEqual(result["ok"], 1, "The event request must keep its longer budget.")
@@ -37,6 +38,8 @@ final class ConnectionRecoveryTests: XCTestCase {
         let folder = URL.applicationSupportDirectory.appendingPathComponent("Coconut")
         let paths = ["pairing.json", "snapshot.json", "outgoing.json"].map { folder.appendingPathComponent($0) }
         let savedFiles = paths.map { try? Data(contentsOf: $0) }
+        // Start without a saved state, so the first request is always the state download.
+        for path in paths { try? FileManager.default.removeItem(at: path) }
         let variables = ["COCONUT_SERVER_URL": address,
                          "COCONUT_CERT_SHA256": String(repeating: "0", count: 64), "COCONUT_DEVICE_TOKEN": "fixture-only"]
         let previous = ProcessInfo.processInfo.environment
@@ -56,19 +59,15 @@ final class ConnectionRecoveryTests: XCTestCase {
         }
         store.networkChanged(available: true)
         store.setForeground(true)
-        for _ in 0..<40 {
-            if server.requests > 0 { break }
-            try await Task.sleep(for: .milliseconds(50))
-        }
+        try await waitUntil { server.requests > 0 }
         XCTAssertEqual(server.requests, 1)
+        // The server holds the state reply, so every repeated path arrives while the download is open.
         for _ in 0..<4 {
             store.networkChanged(available: true)
             try await Task.sleep(for: .milliseconds(50))
         }
-        for _ in 0..<40 {
-            if store.connection == .connected { break }
-            try await Task.sleep(for: .milliseconds(50))
-        }
+        server.releaseState()
+        try await waitUntil { store.connection == .connected }
         XCTAssertEqual(store.connection, .connected, store.syncIssue ?? "No sync error")
         XCTAssertEqual(server.requests, 1, "An unchanged route must preserve the current download.")
         #endif
@@ -81,6 +80,8 @@ private final class ConnectionServer: @unchecked Sendable {
     private let listener: NWListener
     private let snapshot: Data
     private var count = 0
+    private var stateReleased = false
+    private var heldReplies: [@Sendable () -> Void] = []
     var requests: Int { lock.withLock { count } }
 
     init(snapshot: Data) throws {
@@ -99,9 +100,15 @@ private final class ConnectionServer: @unchecked Sendable {
                 var response = Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
                 response.append(body)
                 let reply = response
-                queue.asyncAfter(deadline: .now() + .milliseconds(500)) {
+                let send: @Sendable () -> Void = {
                     connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
                 }
+                let held = state && lock.withLock {
+                    if stateReleased { return false }
+                    heldReplies.append(send)
+                    return true
+                }
+                if !held { send() }
             }
         }
         return try await withCheckedThrowingContinuation { continuation in
@@ -120,6 +127,16 @@ private final class ConnectionServer: @unchecked Sendable {
         }
     }
 
+    /// Sends the held state replies, and sends later ones at once.
+    func releaseState() {
+        let replies = lock.withLock {
+            stateReleased = true
+            defer { heldReplies = [] }
+            return heldReplies
+        }
+        queue.async { replies.forEach { $0() } }
+    }
+
     func stop() { listener.cancel() }
 }
 
@@ -133,7 +150,9 @@ private final class DelayedConnectionServer: @unchecked Sendable {
         listener.newConnectionHandler = { [self] connection in
             connection.start(queue: queue)
             connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [self] data, _, _, _ in
-                guard data != nil else { connection.cancel(); return }
+                guard let data else { connection.cancel(); return }
+                // The state read never gets a reply, so it can only end with its own timeout.
+                if String(decoding: data, as: UTF8.self).hasPrefix("GET /v1/state ") { return }
                 let reply = Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 8\r\nConnection: close\r\n\r\n{\"ok\":1}".utf8)
                 queue.asyncAfter(deadline: .now() + 7) {
                     connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })

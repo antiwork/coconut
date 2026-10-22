@@ -99,10 +99,7 @@ final class DecisionDeliveryTests: XCTestCase {
         }
         var activeStore = store
         if restart {
-            for _ in 0..<40 {
-                if server.answers == 1 { break }
-                try await Task.sleep(for: .milliseconds(25))
-            }
+            try await waitUntil { server.answers == 1 }
             XCTAssertEqual(server.answers, 1)
             let pendingFiles = paths.map { try? Data(contentsOf: $0) }
             let pendingToken = PairingToken.read()
@@ -117,10 +114,8 @@ final class DecisionDeliveryTests: XCTestCase {
             activeStore = resumed
             resumed.setForeground(true)
         }
-        for _ in 0..<100 {
-            if !activeStore.answeringDecisionIds.contains(decision.id) { break }
-            try await Task.sleep(for: .milliseconds(50))
-        }
+        // The answer reply takes 2 s. The retry case also waits for a state download and two failed sends.
+        try await waitUntil { !activeStore.answeringDecisionIds.contains(decision.id) }
         XCTAssertFalse(activeStore.answeringDecisionIds.contains(decision.id))
         if reject {
             XCTAssertEqual(store.inboxBadgeCount, 1)
