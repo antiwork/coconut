@@ -1434,7 +1434,8 @@ def receipt(kind, payload):
     if kind == 'native_call' and Path(payload['arguments']['path']).name == 'later.txt':
         later_entered.set()
     return {'status': 'recorded', 'id': str(len(receipts))}
-bridge = NativeBridge({'operation': 'start', 'task': {'id': 'origin'}}, lambda *args: paused.set(), receipt)
+bridge = NativeBridge({'operation': 'start', 'task': {'id': 'origin'}},
+    lambda kind, data: kind == 'phase' or paused.set(), receipt)
 agent = SimpleNamespace(session_id='origin', _touch_activity=lambda *args: None,
     quiet_mode=True, tool_progress_callback=None, _checkpoint_mgr=SimpleNamespace(enabled=False),
     tool_start_callback=lambda identity, *args: started.append(identity),

@@ -290,7 +290,7 @@ class NativeBridge:
 
     def report_phase(self, phase):
         # The phone shows one short label. A lost label must not affect the tool call.
-        if phase is None or self.request['operation'] == 'context':
+        if phase is None or self.request.get('operation') == 'context':
             return
         with self.phase_lock:
             if self.phases_stopped:
