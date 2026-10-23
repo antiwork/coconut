@@ -633,8 +633,13 @@ private struct HermesPairingSteps: View {
                         .font(.body.weight(.medium))
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 } else {
-                    Text("Tap the setup link on this iPhone, or scan the QR code below.")
-                        .font(.subheadline).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Tap the setup link on this iPhone, or scan the QR code below.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                        // The iPhone reaches the Mac through Tailscale. Without it, pairing fails after setup.
+                        Label("Turn on Tailscale on this iPhone, on the same network as the Mac.", systemImage: "network")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
             }
             if let error {
