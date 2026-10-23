@@ -603,12 +603,10 @@ private struct SecondaryButton: View {
 
 // Two numbered steps: the message for Hermes, then the code it sends back.
 private struct HermesPairingSteps: View {
+    // One command does the setup, so the agent has fewer steps that can fail.
     static let prompt = """
-    Set up Coconut on this Mac, so I can use my Hermes bots from my iPhone.
-    1. If ~/Coconut is missing, clone https://github.com/antiwork/coconut to ~/Coconut.
-    2. Install and start Coconut on this Mac, as ~/Coconut/README.md describes. Use this Mac's Tailscale address.
-    3. In ~/Coconut, run: python3 scripts/pairing.py --share
-    4. Send me the setup link and the QR image that it prints.
+    Set up Coconut on this Mac for my iPhone. If ~/Coconut is missing, clone https://github.com/antiwork/coconut to ~/Coconut.
+    Then run python3 ~/Coconut/scripts/setup_coconut.py and send me the setup link and the QR image that it prints.
     """
 
     let setup: PairingSetup?
@@ -634,6 +632,8 @@ private struct HermesPairingSteps: View {
                             .contentTransition(.symbolEffect(.replace))
                     }
                     .accessibilityIdentifier("copy-hermes-prompt")
+                    Text("This iPhone needs Tailscale, signed in to the same tailnet as the Mac.")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
             }
             step(2, setup == nil ? "Open the code that Hermes sends" : "Check the Mac") {

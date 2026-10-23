@@ -15,6 +15,14 @@ Model requests can use remote providers. The shared Cloudflare relay delivers no
 ## Setup
 
 Follow the [Mac setup and pairing guide](docs/install-and-update.md), then [install the iPhone app](docs/iphone-install.md).
+If you use Hermes, Coconut onboarding gives you a message for your Hermes agent. The agent runs one command on its Mac:
+
+```sh
+python3 ~/Coconut/scripts/setup_coconut.py
+```
+
+The command installs Hermes, configures this Mac's Tailscale address, starts the login service, and prints the iPhone setup link.
+See [Pair through Hermes](docs/install-and-update.md#pair-through-hermes).
 The installer keeps its managed Hermes runtime inside `.runtime/`.
 
 ## Development
