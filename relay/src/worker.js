@@ -1,11 +1,16 @@
 import { createHash } from 'node:crypto';
 export { PushDevice } from './device.js';
+import { handleTunnel } from './tunnel.js';
+export { Tunnel } from './tunnel.js';
 
 export default {
   async fetch(request, env) {
     const path = new URL(request.url).pathname;
     if (path === '/health' && request.method === 'GET') return Response.json({ ok: true, version: 1 });
     try {
+      const tunnel = await handleTunnel(request, env);
+      if (tunnel) return tunnel;
+      // The 24 KB body cap applies to the push routes only.
       if (Number(request.headers.get('content-length') || 0) > 24000) return new Response(null, { status: 413 });
       const chunks = [];
       let size = 0;
