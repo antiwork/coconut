@@ -187,8 +187,36 @@ class SetupCoconutTests(unittest.TestCase):
         self.assertEqual(lines[-2:], ["Setup link: coconut://pair?setup=abc", "QR image: /tmp/iphone-setup.png"])
 
     def test_start_tunnel_installs_the_sidecar_in_the_data_folder(self):
-        setup_coconut.start_tunnel()
+        with patch.object(setup_coconut, "tunnel_listener_ready", return_value=True):
+            setup_coconut.start_tunnel()
         self.assertEqual(self.commands, [["tunnel.py", "install", "--data-dir", str(self.data)]])
+
+    def test_a_service_without_the_tunnel_listener_restarts_before_the_link(self):
+        answers = iter([False, False, True])
+        with patch.object(setup_coconut, "tunnel_listener_ready", lambda: next(answers)), \
+                patch.object(setup_coconut.time, "sleep"):
+            setup_coconut.start_tunnel()
+        self.assertEqual(self.commands, [["host.py", "restart"], ["tunnel.py", "install", "--data-dir", str(self.data)]])
+
+    def test_no_tunnel_and_no_link_when_the_listener_stays_away(self):
+        clock = iter(range(0, 1000, 60))
+        with patch.object(setup_coconut, "tunnel_listener_ready", return_value=False), \
+                patch.object(setup_coconut.time, "sleep"), \
+                patch.object(setup_coconut.time, "monotonic", lambda: next(clock)), \
+                self.assertRaises(SystemExit) as raised:
+            setup_coconut.start_tunnel()
+        self.assertIn("127.0.0.1:8961", str(raised.exception))
+        self.assertEqual(self.commands, [["host.py", "restart"]])
+
+    def test_tunnel_listener_check_reads_the_health_route(self):
+        response = Mock(status=200)
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        with patch.object(setup_coconut.urllib.request, "urlopen", return_value=response) as opened:
+            self.assertTrue(setup_coconut.tunnel_listener_ready())
+        self.assertEqual(opened.call_args.args[0], "http://127.0.0.1:8961/health")
+        with patch.object(setup_coconut.urllib.request, "urlopen", side_effect=ConnectionRefusedError()):
+            self.assertFalse(setup_coconut.tunnel_listener_ready())
 
     def test_share_fails_without_a_link(self):
         self.output = "Open Coconut on the iPhone, then tap Scan.\n"

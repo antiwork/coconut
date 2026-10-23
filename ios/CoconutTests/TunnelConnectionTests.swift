@@ -270,6 +270,28 @@ final class TunnelConnectionTests: XCTestCase {
         XCTAssertEqual(state, .idle)
     }
 
+    func testBackgroundCloseStopsReadsThatWaitForTheHandshake() async throws {
+        let mac = FakeMac()
+        mac.holdsHandshake = true
+        let tunnel = connection(mac, timing: .init(connect: .seconds(5), ping: .seconds(20), silence: .seconds(45)))
+        async let poll = tunnel.send(getRequest("/v1/updates?after=0&wait=20"), timeout: .seconds(5))
+        async let write = tunnel.send(TunnelRequest(method: "POST", path: "/v1/messages", headers: [:]), timeout: .seconds(5))
+        try await waitFor { mac.heldHandshakes == 1 }
+        try await Task.sleep(for: .milliseconds(50))
+        let closing = Task { await tunnel.closeWhenIdle() }
+        do {
+            _ = try await poll
+            XCTFail("A read that waits for the handshake must stop when the app goes to the background.")
+        } catch is CancellationError {}
+        mac.releaseHandshake()
+        let response = try await write
+        XCTAssertEqual(response.status, 200)
+        await closing.value
+        XCTAssertEqual(mac.allRequests.map(\.method), ["POST"], "The stopped read must not reach the Mac.")
+        XCTAssertEqual(mac.socketCount, 1, "The background close must not open another socket.")
+        XCTAssertTrue(mac.socketClosed)
+    }
+
     func testRequestDuringBackgroundCloseKeepsTheSocket() async throws {
         let mac = FakeMac()
         mac.hold = { $0.method == "POST" }
@@ -507,6 +529,9 @@ final class FakeMac: @unchecked Sendable {
     var psk: Data?
     var grantRequestWindow = true
     var answersPings = true
+    // Keeps message 1 until releaseHandshake(), as a slow relay.
+    var holdsHandshake = false
+    private var heldHandshake: (message: Data, socket: MemorySocket)?
     // Answers when the request head arrives, before the body, as a backend that refuses a large upload.
     var answersAfterHead = false
     var socketsOpen = true
@@ -565,6 +590,16 @@ final class FakeMac: @unchecked Sendable {
 
     func dropSocket() { locked { sockets.last?.close() } }
 
+    var heldHandshakes: Int { locked { heldHandshake == nil ? 0 : 1 } }
+
+    func releaseHandshake() {
+        locked {
+            holdsHandshake = false
+            if let held = heldHandshake { handshake(held.message, held.socket) }
+            heldHandshake = nil
+        }
+    }
+
     // The Mac reads and answers nothing, as after a network change.
     func goSilent(_ silent: Bool = true) { locked { self.silent = silent } }
 
@@ -588,6 +623,8 @@ final class FakeMac: @unchecked Sendable {
                 if let session {
                     guard let frame = try? session.open(data) else { return socket.close() }
                     handle(frame)
+                } else if holdsHandshake {
+                    heldHandshake = (data, socket)
                 } else {
                     handshake(data, socket)
                 }

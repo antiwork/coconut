@@ -268,6 +268,8 @@ actor TunnelConnection {
     private var generation = 0
     private var connecting = false
     private var connectWaiters: [UInt32: CheckedContinuation<Void, Error>] = [:]
+    // The requests in connectWaiters that only read. The background close stops them before they get a stream.
+    private var waitingReads: Set<UInt32> = []
     private var streams: [UInt32: Stream] = [:]
     private var nextStream: UInt32 = 1
     private var closeRequest: UUID?
@@ -363,7 +365,7 @@ actor TunnelConnection {
     }
 
     private func exchange(_ id: UInt32, _ request: TunnelRequest) async throws -> TunnelResponse {
-        let generation = try await connectedGeneration(for: id)
+        let generation = try await connectedGeneration(for: id, isWrite: request.method != "GET")
         try Task.checkCancellation()
         let stream = Stream(id: id, generation: generation, isWrite: request.method != "GET")
         streams[id] = stream
@@ -401,6 +403,7 @@ actor TunnelConnection {
 
     // A cancelled or expired request stops its stream. The Mac gets CANCEL, so it stops the response.
     private func abandon(_ id: UInt32) {
+        waitingReads.remove(id)
         if let waiter = connectWaiters.removeValue(forKey: id) { waiter.resume(throwing: CancellationError()) }
         guard let stream = streams[id], !stream.finished, stream.failure == nil else { return }
         stream.failure = CancellationError()
@@ -424,12 +427,13 @@ actor TunnelConnection {
 
     // MARK: Connection
 
-    private func connectedGeneration(for id: UInt32) async throws -> Int {
+    private func connectedGeneration(for id: UInt32, isWrite: Bool) async throws -> Int {
         if let link { return link.generation }
         if !connecting {
             connecting = true
             Task { await openLink() }
         }
+        if !isWrite { waitingReads.insert(id) }
         try await withCheckedThrowingContinuation { connectWaiters[id] = $0 }
         guard let link else { throw TunnelError.connectionLost }
         return link.generation
@@ -470,6 +474,7 @@ actor TunnelConnection {
         connecting = false
         let waiters = connectWaiters
         connectWaiters = [:]
+        waitingReads = []
         for waiter in waiters.values { waiter.resume(with: result) }
         wakeIdleWaiters()
     }
@@ -654,7 +659,9 @@ actor TunnelConnection {
     func closeWhenIdle() async {
         let request = UUID()
         closeRequest = request
-        for stream in streams.values where !stream.isWrite { abandon(stream.id) }
+        // Reads stop at once, also the ones that still wait for the handshake. Otherwise a read would fail with
+        // connectionLost after the close, and APIClient would open another socket in the background.
+        for id in Array(waitingReads) + streams.values.filter({ !$0.isWrite }).map(\.id) { abandon(id) }
         while closeRequest == request, !connectWaiters.isEmpty
                 || streams.values.contains(where: \.isWrite) || (link?.pendingWrites ?? 0) > 0 {
             await withCheckedContinuation { idleWaiters.append($0) }

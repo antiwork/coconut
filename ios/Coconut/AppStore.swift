@@ -62,6 +62,9 @@ final class AppStore {
     @ObservationIgnored private var client: APIClient?
     // The one tunnel socket of a version 2 pairing. Every client of the pairing shares it.
     @ObservationIgnored private var tunnel: TunnelConnection?
+    // The relay or the Mac refused this pairing. Automatic polling stays off until a pairing succeeds or the
+    // person taps Reconnect, so the phone does not ask the relay again with the same rejected credentials.
+    @ObservationIgnored private(set) var repairRequired = false
     @ObservationIgnored var tunnelSocketFactory: TunnelSocketFactory = URLSessionTunnelSocket.factory
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var foreground = false
@@ -256,7 +259,7 @@ final class AppStore {
                 Task { await pair() }
                 return
             }
-            guard pairing != nil, pollTask == nil else { return }
+            guard pairing != nil, pollTask == nil, !repairRequired else { return }
             if lastSync.map({ Date().timeIntervalSince($0) > 30 }) ?? true { connection = .connecting }
             beginPolling()
         } else {
@@ -384,8 +387,10 @@ final class AppStore {
         }
     }
 
+    // A new pairing and the Reconnect button call this. Both try the pairing again, also after a refusal.
     func reconnect() async {
         guard !isDemo else { return }
+        repairRequired = false
         stopPolling()
         guard let pairing, let token = PairingToken.read() else {
             connection = .unconfigured
@@ -435,6 +440,7 @@ final class AppStore {
         resetDelivery()
         outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []
         pairing = nil
+        repairRequired = false
         if !isDemo {
             PairingToken.delete()
             TunnelCredentials.delete()
@@ -1659,7 +1665,7 @@ final class AppStore {
     }
 
     private func beginPolling(refreshImmediately: Bool = true) {
-        guard foreground, !isDemo, pairing != nil, pollTask == nil else { return }
+        guard foreground, !isDemo, pairing != nil, pollTask == nil, !repairRequired else { return }
         let generation = connectionGeneration
         pollTask = Task { [weak self] in
             guard let self else { return }
@@ -1871,6 +1877,7 @@ final class AppStore {
         if failure is CancellationError || ((failure as? URLError)?.code == .cancelled && Task.isCancelled) { return }
         if let failure = failure as? TunnelError {
             // The poll repeats the same failure, so a view updates only when the state changes.
+            if failure == .needsRepair { repairRequired = true }
             assign(\.connection, ConnectionState(failure))
             assign(\.syncIssue, failure.message)
             return
