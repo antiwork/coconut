@@ -306,7 +306,7 @@ class HermesSetup:
     MAX_IMPORT_PROFILES = 20
     # One import at a time in this process. Each import also takes the model settings lock for logins.
     setup_lock = threading.Lock()
-    # server.main sets the checked status of the person's Hermes: {status, version, reason}. See hermes_runtime.
+    # server.main sets the checked status of the person's Hermes: {status, version, reason, tested}. See hermes_runtime.public.
     hermes_status = None
 
     def _setup_source(self) -> Path | None:
@@ -330,7 +330,8 @@ class HermesSetup:
             item['bot_id'] = imported.get(item['id'])
         # A service that a test or a tool starts directly has no checked status. Fixture mode runs no Hermes.
         result['hermes'] = self.hermes_status or {
-            'status': 'ok' if getattr(self.provider, 'name', None) == 'hermes' else 'fixture', 'version': None, 'reason': None}
+            'status': 'ok' if getattr(self.provider, 'name', None) == 'hermes' else 'fixture', 'version': None, 'reason': None,
+            'tested': None}
         return result
 
     def import_hermes_setup(self, data: dict, key: str, fingerprint: str) -> dict:

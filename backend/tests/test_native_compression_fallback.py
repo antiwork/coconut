@@ -11,9 +11,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from hermes_env import needs_hermes, PYTHON, SOURCE
 
-SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
-PYTHON = os.environ.get('COCONUT_HERMES_PYTHON')
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -200,7 +199,7 @@ def _native_case(case):
     print('Native fallback contract passed: ' + case)
 
 
-@unittest.skipUnless(SOURCE and PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class NativeCompressionFallbackTests(unittest.TestCase):
     def run_case(self, case):
         assert SOURCE and PYTHON

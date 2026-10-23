@@ -11,13 +11,12 @@ import unittest
 from uuid import uuid4
 
 from coconut.providers import HermesProvider
+from hermes_env import needs_hermes, PYTHON, SOURCE
 
-SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
-PYTHON = os.environ.get('COCONUT_HERMES_PYTHON')
 BACKEND = Path(__file__).resolve().parents[1]
 
 
-@unittest.skipUnless(SOURCE and PYTHON, 'Set Coconut Hermes paths for native worker checks.')
+@needs_hermes
 class KanbanWorkerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

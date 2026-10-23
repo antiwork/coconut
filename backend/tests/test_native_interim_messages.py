@@ -5,9 +5,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from hermes_env import needs_hermes, SOURCE
 
 
-@unittest.skipUnless(os.environ.get('COCONUT_HERMES_ROOT'), 'Requires the installed Hermes runtime')
+@needs_hermes
 class NativeInterimMessageTests(unittest.TestCase):
     def test_codex_commentary_and_final_messages_remain_distinct_and_complete(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -16,7 +17,7 @@ class NativeInterimMessageTests(unittest.TestCase):
             env = {'PATH': os.environ.get('PATH', ''), 'HERMES_HOME': str(home),
                    'TMPDIR': temporary, 'PYTHONDONTWRITEBYTECODE': '1',
                    'PYTHONPATH': os.pathsep.join((str(Path(__file__).resolve().parents[1]),
-                                                os.environ['COCONUT_HERMES_ROOT'],
+                                                SOURCE,
                                                 str(Path(__file__).resolve().parents[1] / 'coconut')))}
             result = subprocess.run([sys.executable, '-c', NATIVE_BRIDGE], env=env, cwd=temporary,
                                     capture_output=True, text=True, timeout=45)

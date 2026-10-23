@@ -37,6 +37,7 @@ import test_archived_scheduled_routine_continuation as routine_fixtures
 import test_finished_routine_workspace as workspace_fixtures
 import test_native_kanban as native_fixtures
 import test_workspace_reflog_rewrite as reflog_fixtures
+import hermes_env
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
 
@@ -578,7 +579,6 @@ class ArchivedScheduledOriginalGuardTests(ScheduledOriginal, unittest.TestCase):
         self.assertEqual(self.resume()['task_id'], owner['id'])
 
 
-
 def unfinished_copy_edit(path):
     """The local copy edit in the owner's worktree: a tracked file changed, an untracked note, and an ignored preview."""
     (path / 'copy.md').write_text(EDITED)
@@ -702,10 +702,7 @@ class ArchivedScheduledOriginalNativeTests(unittest.TestCase):
     completed = routine_fixtures.ArchivedScheduledRoutineNativeTests.completed
 
     def setUp(self):
-        if not (native_fixtures.SOURCE and native_fixtures.PYTHON):
-            if os.environ.get('COCONUT_REQUIRE_NATIVE'):
-                self.fail('Native CI must install Hermes and set its paths. These tests must not skip.')
-            self.skipTest('Set Coconut Hermes paths for native integration checks.')
+        hermes_env.require(self)
         # The real provider and its stub worker, as in the worker tests. Its registry is the service's own below.
         workspace_fixtures.FinishedRoutineWorkspaceTests.setUp(self)
         reflog_fixtures.use_test_git(self)
@@ -762,9 +759,9 @@ class ArchivedScheduledOriginalNativeTests(unittest.TestCase):
         bridge_task = dict(id=task['id'], bot_id=task['bot_id'], _native_turn_id=task['_native_turn_id'])
         with tempfile.TemporaryFile('w+') as errors:
             process = self.bridged_process = subprocess.Popen(
-                [native_fixtures.PYTHON, '-c', program, str(self.service.root / 'kanban'), json.dumps(claim),
+                [hermes_env.PYTHON, '-c', program, str(self.service.root / 'kanban'), json.dumps(claim),
                  json.dumps(bridge_task), json.dumps(arguments)],
-                env=dict(os.environ, PYTHONPATH=os.pathsep.join((BACKEND, native_fixtures.SOURCE))),
+                env=dict(os.environ, PYTHONPATH=os.pathsep.join((BACKEND, hermes_env.SOURCE))),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True)
             expired = threading.Event()
 

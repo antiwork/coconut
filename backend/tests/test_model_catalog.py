@@ -14,11 +14,10 @@ from unittest.mock import patch
 from coconut import model_catalog
 from coconut.model_catalog import (HermesModelCatalog, ModelCatalogError, native_home,
                                     public_endpoint, resolve_selection)
+from hermes_env import needs_hermes, PYTHON, SOURCE
 
 PROJECT = Path(__file__).resolve().parents[2]
 MODULE = PROJECT / 'backend/coconut/model_catalog.py'
-MANAGED_PYTHON = PROJECT / '.runtime/hermes/venv/bin/python'
-HERMES_SOURCE = PROJECT / '.runtime/hermes/source'
 
 
 def example_catalog():
@@ -485,7 +484,7 @@ class ModelSelectionTests(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs['timeout'], 30)
 
 
-@unittest.skipUnless(MANAGED_PYTHON.is_file() and HERMES_SOURCE.is_dir(), 'The local Hermes runtime is absent.')
+@needs_hermes
 class NativeHermesCatalogTests(unittest.TestCase):
     """Use installed Hermes parsing, effort logic, and atomic config writes without HTTP."""
 
@@ -499,7 +498,7 @@ class NativeHermesCatalogTests(unittest.TestCase):
     def run_native(self, code, request=None):
         env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(self.root),
                'HERMES_REAL_HOME': str(self.root), 'HERMES_HOME': str(self.home),
-               'PYTHONPATH': str(HERMES_SOURCE), 'HERMES_DISABLE_TELEMETRY': '1',
+               'PYTHONPATH': SOURCE, 'HERMES_DISABLE_TELEMETRY': '1',
                'XDG_CACHE_HOME': str(self.root / 'cache'), 'XDG_CONFIG_HOME': str(self.root / 'config')}
         script = """import contextlib, importlib.util, json, os, sys
 spec = importlib.util.spec_from_file_location('catalog', sys.argv[1])
@@ -508,7 +507,7 @@ spec.loader.exec_module(m)
 request = json.loads(sys.stdin.read())
 with open(os.devnull, 'w') as quiet, contextlib.redirect_stdout(quiet), contextlib.redirect_stderr(quiet):
 """ + ''.join('    ' + line + '\n' for line in code.splitlines()) + '\nprint(json.dumps(result))\n'
-        process = subprocess.run([str(MANAGED_PYTHON), '-c', script, str(MODULE)],
+        process = subprocess.run([PYTHON, '-c', script, str(MODULE)],
                                  input=json.dumps(request or {}), text=True, capture_output=True,
                                  env=env, cwd=self.root, timeout=20)
         self.assertEqual(process.returncode, 0, process.stderr[-1500:])

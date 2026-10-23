@@ -21,6 +21,7 @@ import legacy_work_sync
 import test_failed_routine_continuation as failed_fixtures
 import test_finished_routine_workspace as workspace_fixtures
 import test_native_kanban as native_fixtures
+from hermes_env import needs_hermes
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
 
@@ -526,7 +527,7 @@ class ArchivedFailedRoutineWorkerTests(ArchivedOccurrence, unittest.TestCase):
         self.assertPreparationFailed(*self.run_turn(self.provider_task(continued, proof)))
 
 
-@unittest.skipUnless(native_fixtures.SOURCE and native_fixtures.PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class ArchivedFailedRoutineNativeTests(unittest.TestCase):
     """The installed Hermes kernel: Coconut's settle pass archives the task, continuation dispatches its successor."""
 

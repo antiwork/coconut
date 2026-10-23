@@ -5,9 +5,8 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from hermes_env import needs_hermes, PYTHON, SOURCE
 
-SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
-PYTHON = os.environ.get('COCONUT_HERMES_PYTHON')
 
 PRELUDE = '''
 import json
@@ -44,7 +43,7 @@ request = dict(op='unlink_dependency', request_id='original-request', parent_id=
 '''
 
 
-@unittest.skipUnless(SOURCE and PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class NativeDependencyUnlinkTests(unittest.TestCase):
     def run_native(self, program, *, setup=True):
         with tempfile.TemporaryDirectory() as home:
@@ -198,7 +197,7 @@ class NativeDependencyUnlinkTests(unittest.TestCase):
             from types import SimpleNamespace
             from coconut.kanban_scheduler import KanbanScheduler
             conn.close()
-            adapter = KanbanScheduler(SimpleNamespace(hermes_root=Path(os.environ['COCONUT_HERMES_ROOT']),
+            adapter = KanbanScheduler(SimpleNamespace(hermes_root=Path(SOURCE),
                 python=sys.executable), home.parent)
             try:
                 assert adapter.call(request | {'op': 'unlink_receipt'}) == {'receipt': None}

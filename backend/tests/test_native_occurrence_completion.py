@@ -7,13 +7,13 @@ Native CI sets COCONUT_REQUIRE_NATIVE, and then a missing Hermes install fails t
 """
 import copy
 import json
-import os
 import unittest
 from uuid import UUID, uuid5
 
 import test_failed_routine_continuation as native_fixtures
 import test_native_kanban as fixtures
 import test_waiting_occurrence_release as waiting
+import hermes_env
 
 SUMMARY = waiting.SUMMARY
 
@@ -32,10 +32,7 @@ class NativeOccurrenceCompletionTests(unittest.TestCase):
     assert_released = waiting.WaitingOccurrenceTests.assert_released
 
     def setUp(self):
-        if not (fixtures.SOURCE and fixtures.PYTHON):
-            if os.environ.get('COCONUT_REQUIRE_NATIVE'):
-                self.fail('Native CI must install Hermes and set its paths. These tests must not skip.')
-            self.skipTest('Set Coconut Hermes paths for native integration checks.')
+        hermes_env.require(self)
         fixtures.NativeKanbanTests.setUp(self)
         self.native = native_fixtures.FailedClaimTests()
         self.native.setUp()

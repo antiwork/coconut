@@ -19,6 +19,7 @@ from coconut.service import Service
 
 MODULES = ('run_agent', 'hermes_cli', 'hermes_state', 'cron', 'tools', 'agent', 'gateway', 'dotenv', 'ruamel.yaml',
            'mcp', 'PIL')
+REPOSITORY_VERSIONS = hermes_runtime.VERSIONS_FILE
 
 
 def make_hermes(root: Path, *, missing=(), venv: Path | None = None) -> Path:
@@ -218,7 +219,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first['status'], 'ok')
         self.assertEqual(hermes_runtime.read_status(data), first)
-        self.assertEqual(hermes_runtime.public(first), {'status': 'ok', 'version': None, 'reason': None})
+        self.assertEqual(hermes_runtime.public(first), {'status': 'ok', 'version': None, 'reason': None, 'tested': False})
         # An update checks new code without replacing the status of the running version.
         with patch.object(hermes_runtime, 'check', side_effect=HermesUnavailable('incompatible', 'Changed.')), \
                 patch.object(hermes_runtime, 'fingerprint', return_value='new code'):
@@ -287,7 +288,7 @@ class RefuseModeTests(unittest.TestCase):
         token = self.pair()
         status, setup = self.request('GET', '/v1/setup', token=token)
         self.assertEqual(status, 200)
-        self.assertEqual(setup['hermes'], self.status)
+        self.assertEqual(setup['hermes'], dict(self.status, tested=None))
         self.assertIn('profiles', setup)
 
     def test_agent_routes_answer_hermes_unavailable(self):
@@ -299,7 +300,7 @@ class RefuseModeTests(unittest.TestCase):
                 status, body = self.request(method, path, {} if method == 'POST' else None, token=token)
                 self.assertEqual(status, 503)
                 self.assertEqual(body['code'], 'hermes_unavailable')
-                self.assertEqual(body['hermes'], self.status)
+                self.assertEqual(body['hermes'], dict(self.status, tested=None))
 
     def test_an_update_stops_refuse_mode_without_waiting_for_turns(self):
         self.addCleanup(self.stop)
@@ -357,6 +358,65 @@ class ServiceInterpreterTests(unittest.TestCase):
             server.hermes_status('/data', ['--data-dir', '/data'])
             self.assertEqual(json.loads(os.environ['COCONUT_HERMES_STATUS']), status)
         execv.assert_called_once_with('/hermes/venv/bin/python', ['/hermes/venv/bin/python', '-m', 'coconut', '--data-dir', '/data'])
+
+
+class SupportedVersionTests(unittest.TestCase):
+    """Coconut reports a version outside the tested range as untested, and still runs on it."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        path = Path(temporary.name) / 'hermes_versions.json'
+        path.write_text(json.dumps({'minimum': '0.22.4', 'tested': ['0.22.4', '0.22.5']}))
+        patcher = patch.object(hermes_runtime, 'VERSIONS_FILE', path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_repository_file_names_a_minimum_and_tested_versions(self):
+        with patch.object(hermes_runtime, 'VERSIONS_FILE', REPOSITORY_VERSIONS):
+            versions = hermes_runtime.supported_versions()
+        self.assertIsNotNone(hermes_runtime.version_key(versions['minimum']))
+        self.assertIn(versions['minimum'], versions['tested'])
+        self.assertTrue(all(hermes_runtime.version_key(item) for item in versions['tested']))
+
+    def test_versions_in_the_range_are_tested(self):
+        for version in ('0.22.4', 'v0.22.5'):
+            self.assertTrue(hermes_runtime.is_tested(version), version)
+            self.assertIsNone(hermes_runtime.untested_warning(version))
+
+    def test_other_versions_are_untested(self):
+        # 2026.9.24 is a calendar version from before 0.21.6, so it is older than the minimum.
+        for version in ('0.22.6', '0.23.0', '0.22.3', '2026.9.24', 'commit 4d04303818b6', None):
+            self.assertFalse(hermes_runtime.is_tested(version), version)
+        self.assertEqual(hermes_runtime.untested_warning('0.23.0'),
+                         'Coconut has not been tested with Hermes 0.23.0. The contract check passed. '
+                         'The newest tested version is 0.22.5.')
+
+    def test_a_missing_or_invalid_version_file_makes_every_version_untested(self):
+        for text in (None, 'not json', '{"tested": ["0.22.5"]}', '{"minimum": "new", "tested": []}'):
+            with self.subTest(text=text):
+                if text is None:
+                    hermes_runtime.VERSIONS_FILE.unlink(missing_ok=True)
+                else:
+                    hermes_runtime.VERSIONS_FILE.write_text(text)
+                self.assertFalse(hermes_runtime.is_tested('0.22.5'))
+                self.assertIn('The newest tested version is unknown.', hermes_runtime.untested_warning('0.22.5'))
+                self.assertIs(hermes_runtime.public({'status': 'ok', 'version': '0.22.5'})['tested'], False)
+
+    def test_the_phone_gets_the_flag_only_for_a_usable_hermes(self):
+        self.assertEqual(hermes_runtime.public({'status': 'ok', 'version': '0.23.0'})['tested'], False)
+        self.assertEqual(hermes_runtime.public({'status': 'ok', 'version': '0.22.5'})['tested'], True)
+        self.assertIsNone(hermes_runtime.public({'status': 'incompatible', 'version': '0.23.0', 'reason': 'No.'})['tested'])
+        self.assertIsNone(hermes_runtime.public(None)['tested'])
+
+    def test_the_setup_route_reports_an_untested_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = Service(directory, FixtureProvider(directory), start_workers=False)
+            self.addCleanup(service.close)
+            service.hermes_status = hermes_runtime.public({'status': 'ok', 'version': '0.23.0'})
+            with patch('coconut.hermes_setup.probe', return_value={'profiles': []}):
+                self.assertEqual(service.hermes_setup()['hermes'],
+                                 {'status': 'ok', 'version': '0.23.0', 'reason': None, 'tested': False})
 
 
 if __name__ == '__main__':

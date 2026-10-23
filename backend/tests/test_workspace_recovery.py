@@ -29,6 +29,8 @@ from coconut.workspace_recovery import atomic_manifest
 import coconut.workspace_recovery as recovery
 import test_native_kanban as native
 import legacy_work_sync
+import hermes_env
+from hermes_env import needs_hermes
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
 
@@ -391,7 +393,7 @@ class CheckoutPreviewHTTPTests(unittest.TestCase):
         self.assertEqual(self.service._get('workspace_recoveries', preview['key'])['state'], 'superseded')
 
 
-@unittest.skipUnless(native.SOURCE and native.PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class WorkspaceRecoveryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -416,7 +418,7 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         self.repo.mkdir()
         git(self.repo, 'init')
         git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-m', 'fixture')
-        with patch.object(sys, 'path', [native.SOURCE, *sys.path]):
+        with patch.object(sys, 'path', [hermes_env.SOURCE, *sys.path]):
             self.binding = acquire(self.data / 'workspaces', self.owner, str(self.repo))
         self.workspace = Path(self.binding['path'])
         (self.workspace / 'retained.patch').write_text('Original approved Gumroad patch fixture\n')
@@ -462,9 +464,9 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         return self.http('/v1/maintenance/workspace-recovery', kwargs.pop('data', self.payload), key=kwargs.pop('key', self.key), **kwargs)
 
     def program(self, program, *args):
-        result = subprocess.run([native.PYTHON, '-c', 'import sys\nfrom coconut.kanban_runtime import Board\nboard=Board(sys.argv[1])\n' + program,
+        result = subprocess.run([hermes_env.PYTHON, '-c', 'import sys\nfrom coconut.kanban_runtime import Board\nboard=Board(sys.argv[1])\n' + program,
             str(self.data / 'kanban'), *args], env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1',
-            PYTHONPATH=os.pathsep.join((str(Path(__file__).resolve().parents[1]), native.SOURCE))),
+            PYTHONPATH=os.pathsep.join((str(Path(__file__).resolve().parents[1]), hermes_env.SOURCE))),
             capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
@@ -798,7 +800,7 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         git(other_repo, 'init')
         git(other_repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
             'commit', '--allow-empty', '-m', 'other repo')
-        with patch.object(sys, 'path', [native.SOURCE, *sys.path]):
+        with patch.object(sys, 'path', [hermes_env.SOURCE, *sys.path]):
             other = acquire(self.data / 'workspaces', self.owner, str(other_repo))
         with sqlite3.connect(self.data / 'kanban' / 'kanban.db') as database:
             database.execute('UPDATE tasks SET workspace_path=? WHERE id=?', (other['path'], self.native_id))
@@ -1926,7 +1928,7 @@ print(parent)
         self.service._dispatch_pending()
         with self.assertRaises(KeyboardInterrupt):
             self.server.service_actions()
-        self.restart(Provider(self.data, python=native.PYTHON, hermes_root=Path(native.SOURCE), catalog=Catalog()))
+        self.restart(Provider(self.data, python=hermes_env.PYTHON, hermes_root=Path(hermes_env.SOURCE), catalog=Catalog()))
         before = len(self.service._all('tasks'))
         result = self.write(self.receipt()['resume_path'], {'text': 'Verify the retained result within its original approvals.'})
         self.assertEqual(result['id'], self.task['id'])

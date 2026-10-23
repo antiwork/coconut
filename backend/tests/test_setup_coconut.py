@@ -89,8 +89,8 @@ class SetupCoconutTests(unittest.TestCase):
                 self.prerequisites(**options)
             self.assertIn(message, str(raised.exception))
 
-    def use_hermes(self, status):
-        runtime = SimpleNamespace(status=Mock(return_value=status))
+    def use_hermes(self, status, warning=None):
+        runtime = SimpleNamespace(status=Mock(return_value=status), untested_warning=Mock(return_value=warning))
         with patch.object(setup_coconut.host, "hermes_runtime", return_value=runtime), \
                 patch("sys.stdout", new_callable=io.StringIO) as output:
             setup_coconut.use_hermes()
@@ -102,6 +102,11 @@ class SetupCoconutTests(unittest.TestCase):
         status = {"status": "ok", "version": "0.9.0", "reason": None, "root": "/hermes", "python": "/hermes/venv/bin/python"}
         self.assertIn("Coconut uses Hermes 0.9.0 in /hermes.", self.use_hermes(status))
         self.assertEqual(self.commands, [])
+
+    def test_use_hermes_warns_about_an_untested_version(self):
+        status = {"status": "ok", "version": "0.99.0", "reason": None, "root": "/hermes", "python": "/hermes/venv/bin/python"}
+        output = self.use_hermes(status, warning="Coconut has not been tested with Hermes 0.99.0.")
+        self.assertIn("Coconut uses Hermes 0.99.0 in /hermes.\nCoconut has not been tested with Hermes 0.99.0.\n", output)
 
     def test_use_hermes_stops_with_the_reason(self):
         status = {"status": "missing", "version": None, "reason": "Coconut found no Hermes on this Mac."}

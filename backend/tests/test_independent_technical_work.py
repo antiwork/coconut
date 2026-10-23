@@ -14,6 +14,7 @@ import test_native_claim_continuation as native_claims
 import test_native_work_continuation as continuation
 import test_provider as provider_fixtures
 from test_work_progress import progress
+from hermes_env import needs_hermes
 
 SCOPE = ['diagnosis', 'tests', 'local_fixes']
 RESUMED_RESULT = 'Marked ready after the checks.'
@@ -1358,8 +1359,7 @@ class TechnicalLaneProviderTests(unittest.TestCase):
         self.assertIn('native_approval', [kind for kind, _ in events], events)
 
 
-@unittest.skipUnless(native_claims.fixtures.SOURCE and native_claims.fixtures.PYTHON,
-                     'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class TechnicalLaneNativeBoardTests(unittest.TestCase):
     """The pinned Hermes kernel: a real review card, native claim, run, finish, and service tool route."""
     setUp = native_claims.NativeClaimContinuationTests.setUp

@@ -13,9 +13,8 @@ from unittest.mock import MagicMock, patch
 
 from coconut.kanban_scheduler import NativeKanban, SETTLE_BATCH, SETTLE_SECONDS
 import test_native_kanban as fixtures
+from hermes_env import needs_hermes, PYTHON, SOURCE
 
-SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
-PYTHON = os.environ.get('COCONUT_HERMES_PYTHON')
 
 PRELUDE = '''
 import sys
@@ -54,7 +53,7 @@ def rekinded(name):
 '''
 
 
-@unittest.skipUnless(SOURCE and PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class ArchiveSettledTests(unittest.TestCase):
     def run_native(self, program):
         with tempfile.TemporaryDirectory() as home:
@@ -245,7 +244,7 @@ class ArchiveSettledTests(unittest.TestCase):
         ''')
 
 
-@unittest.skipUnless(SOURCE and PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class ReleasedBlockDispatcherTests(unittest.TestCase):
     """The service dispatcher settles a finished request whose native task was blocked during its run, then unblocked."""
     setUp = fixtures.NativeKanbanTests.setUp

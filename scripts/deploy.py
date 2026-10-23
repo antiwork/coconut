@@ -72,7 +72,8 @@ def allowed_path(name):
     if path.is_absolute() or str(path) != name or any(part in ('', '.', '..') for part in path.parts):
         return False
     return bool(
-        name in {'README.md', 'backend/pyproject.toml', 'Start Coconut.command', 'Uninstall Coconut.command'}
+        name in {'README.md', 'backend/pyproject.toml', 'backend/coconut/hermes_versions.json', 'Start Coconut.command',
+                 'Uninstall Coconut.command'}
         or re.fullmatch(r'backend/coconut/(?:[A-Za-z_][A-Za-z0-9_]*/)*[A-Za-z_][A-Za-z0-9_]*\.py', name)
         or re.fullmatch(r'scripts/[A-Za-z0-9_-]+\.(?:py|swift)', name)
         or re.fullmatch(r'docs/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.md', name)

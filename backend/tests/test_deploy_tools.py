@@ -123,6 +123,7 @@ class DeploymentPackageTests(unittest.TestCase):
     def test_valid_package_keeps_exact_file_bytes(self):
         files = package_files()
         files.update({'backend/coconut/nested/module.py': b'value = 1\n', 'backend/pyproject.toml': b'[project]\nname="coconut"\n',
+                      'backend/coconut/hermes_versions.json': b'{"minimum": "0.22.4", "tested": ["0.22.4"]}\n',
                       'scripts/desktop.swift': b'import AppKit\n', 'docs/setup/mac.md': b'# Mac setup\n',
                       'Start Coconut.command': b'#!/bin/zsh\n', 'Uninstall Coconut.command': b'#!/bin/zsh\n'})
         result = deploy.validate_package(archive(files))

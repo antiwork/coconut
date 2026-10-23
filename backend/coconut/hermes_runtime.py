@@ -28,6 +28,9 @@ LAUNCHER_MARKER = b'Coconut owns this Hermes launcher.'
 MODULES = 'run_agent, hermes_cli, hermes_state, cron, tools, agent, gateway, dotenv, ruamel.yaml, mcp, PIL'
 INSTALL_HINT = 'Install Hermes from https://github.com/NousResearch/hermes-agent.'
 STATUS_FILE = 'hermes.json'
+# The Hermes versions that the compatibility CI checks: {minimum, tested}. The contract check decides whether Coconut runs.
+# This file only decides whether Coconut reports the version as tested.
+VERSIONS_FILE = Path(__file__).with_name('hermes_versions.json')
 # Coconut gives each bot its own HERMES_HOME. Without this setting, Hermes from the official installer treats each such
 # home as a new data root and installs a dependency set for it when a process starts.
 NO_LAZY_INSTALLS = {'HERMES_DISABLE_LAZY_INSTALLS': '1'}
@@ -464,10 +467,64 @@ def status(data_dir=None, environ=None, home=None, *, save=True) -> dict:
     return result
 
 
+def supported_versions() -> dict:
+    """Return {minimum, tested} from hermes_versions.json. A missing or invalid file gives no tested versions."""
+    try:
+        versions = json.loads(VERSIONS_FILE.read_text())
+        minimum, tested = versions['minimum'], [item for item in versions['tested'] if version_key(item)]
+        if version_key(minimum) is None:
+            raise ValueError(minimum)
+    except (OSError, ValueError, KeyError, TypeError):
+        return {'minimum': None, 'tested': []}
+    return {'minimum': minimum, 'tested': tested}
+
+
+def version_key(version: str | None) -> tuple | None:
+    """Return a sortable key for a Hermes version such as 0.22.5 or v0.22.5, or None for another name."""
+    match = re.fullmatch(r'v?(\d+)\.(\d+)\.(\d+)', version or '') if isinstance(version, str) else None
+    if match is None:
+        return None
+    key = tuple(int(part) for part in match.groups())
+    # Before 0.21.6, Hermes used calendar versions such as 2026.9.24. Each of them is older than every 0.x release.
+    return (-1, *key) if key[0] >= 2000 else (0, *key)
+
+
+def newest_tested(versions: dict | None = None) -> str | None:
+    """Return the newest version in the tested list, or None."""
+    tested = (versions or supported_versions())['tested']
+    return max(tested, key=version_key) if tested else None
+
+
+def is_tested(version: str | None, versions: dict | None = None) -> bool:
+    """Return True when the version is between the minimum and the newest tested version, inclusive.
+
+    A version outside that range, a commit name, or an unknown version is untested. Coconut still runs on it when the
+    contract check passes.
+    """
+    versions = versions or supported_versions()
+    key, newest = version_key(version), newest_tested(versions)
+    return key is not None and newest is not None and version_key(versions['minimum']) <= key <= version_key(newest)
+
+
+def untested_warning(version: str | None) -> str | None:
+    """Return a warning for the startup log when the version is untested, or None."""
+    versions = supported_versions()
+    if is_tested(version, versions):
+        return None
+    return (f'Coconut has not been tested with Hermes {version or "of unknown version"}. '
+            f'The contract check passed. The newest tested version is {newest_tested(versions) or "unknown"}.')
+
+
 def public(value: dict | None) -> dict:
-    """The part of a status that the phone receives. It contains no file paths."""
+    """The part of a status that the phone receives. It contains no file paths.
+
+    "tested" is true or false when the status is "ok", and null otherwise. A version file of a newer Coconut can change
+    it, so it is not saved with the status.
+    """
     value = value or {}
-    return {'status': value.get('status', 'missing'), 'version': value.get('version'), 'reason': value.get('reason')}
+    status = value.get('status', 'missing')
+    return {'status': status, 'version': value.get('version'), 'reason': value.get('reason'),
+            'tested': is_tested(value.get('version')) if status == 'ok' else None}
 
 
 def remove_coconut_launcher(home=None) -> bool:

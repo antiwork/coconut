@@ -1,17 +1,17 @@
 """Verify timing hooks against the pinned Hermes plugin implementation."""
-import os
 from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
 
 from coconut.turn_timings import TurnTrace, native_request_timings
+from hermes_env import needs_hermes, SOURCE
 
 
-@unittest.skipUnless(os.environ.get('COCONUT_HERMES_ROOT'), 'Requires the native Hermes runtime')
+@needs_hermes
 class NativeTimingTests(unittest.TestCase):
     def test_native_hooks_deliver_scoped_events_and_dispose_after_error(self):
-        sys.path.insert(0, str(Path(os.environ['COCONUT_HERMES_ROOT'])))
+        sys.path.insert(0, str(Path(SOURCE)))
         from hermes_cli.plugins import get_plugin_manager
         manager = get_plugin_manager()
         hooks = ('pre_api_request', 'post_api_request', 'api_request_error')

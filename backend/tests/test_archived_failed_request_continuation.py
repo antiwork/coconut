@@ -12,7 +12,6 @@ the owner's own turn starts. Native CI sets COCONUT_REQUIRE_NATIVE, and then the
 """
 import copy
 import json
-import os
 from pathlib import Path
 import tempfile
 import time
@@ -31,6 +30,7 @@ import test_archived_scheduled_routine_continuation as routine_fixtures
 import test_finished_routine_workspace as workspace_fixtures
 import test_native_kanban as native_fixtures
 import test_workspace_reflog_rewrite as reflog_fixtures
+import hermes_env
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
 
@@ -460,10 +460,7 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
     native = failed_routine_fixtures.ArchivedFailedRoutineNativeTests.native
 
     def setUp(self):
-        if not (native_fixtures.SOURCE and native_fixtures.PYTHON):
-            if os.environ.get('COCONUT_REQUIRE_NATIVE'):
-                self.fail('Native CI must install Hermes and set its paths. These tests must not skip.')
-            self.skipTest('Set Coconut Hermes paths for native integration checks.')
+        hermes_env.require(self)
         try:
             native_fixtures.NativeKanbanTests.setUp(self)
             self.service.kanban.call({'op': 'snapshot'})

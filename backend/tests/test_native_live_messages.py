@@ -1,17 +1,17 @@
 """Use the installed Hermes control API without a model request or external action."""
-import os
 from pathlib import Path
 import sys
 import threading
 import unittest
 
 from coconut.live_messages import LiveMessages
+from hermes_env import needs_hermes, SOURCE
 
 
-@unittest.skipUnless(os.environ.get('COCONUT_HERMES_ROOT'), 'Requires the native Hermes runtime')
+@needs_hermes
 class NativeLiveMessagesTests(unittest.TestCase):
     def test_tool_yield_and_model_redirect_consume_input_without_hard_cancellation(self):
-        sys.path.insert(0, str(Path(os.environ['COCONUT_HERMES_ROOT'])))
+        sys.path.insert(0, str(Path(SOURCE)))
         from agent.interrupt_control import InterruptControlMixin
         agent = InterruptControlMixin()
         agent._executing_tools = True
