@@ -47,9 +47,6 @@ def start() -> None:
 def simulator() -> None:
     if not shutil.which("xcodebuild") or not shutil.which("xcrun"):
         raise SystemExit("Install Xcode before opening the iPhone Simulator.")
-    source = ROOT / ".runtime/hermes/source/run_agent.py"
-    if not source.is_file():
-        raise SystemExit("Install Hermes first: python3 scripts/hermes.py install")
     result = run(["xcrun", "simctl", "list", "devices", "available", "--json"],
                  capture_output=True, text=True)
     runtimes = json.loads(result.stdout)["devices"]
@@ -115,7 +112,7 @@ def simulator() -> None:
 
 def uninstall() -> None:
     run([sys.executable, "scripts/cleanup.py"])
-    print("This removes Hermes, conversations, files, and model keys stored in the local runtime.")
+    print("This removes Coconut's conversations, files, and model keys stored in the local runtime. Your Hermes stays.")
     if input("Type DELETE to continue: ").strip() != "DELETE":
         print("The local runtime remains installed.")
         return

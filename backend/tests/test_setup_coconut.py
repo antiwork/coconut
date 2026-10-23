@@ -6,7 +6,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
@@ -15,7 +16,6 @@ import setup_coconut
 
 
 ADDRESS = "https://mac.tail1234.ts.net:8960"
-HERMES_PYTHON = "/hermes/venv/bin/python"
 
 
 def completed(arguments, returncode=0, stdout="", stderr=""):
@@ -44,7 +44,7 @@ class SetupCoconutTests(unittest.TestCase):
 
     def record(self, arguments, label, *, quiet=True):
         self.commands.append([Path(part).name if part.endswith(".py") else part for part in arguments[1:]]
-                             if arguments[0] in {sys.executable, HERMES_PYTHON} else arguments)
+                             if arguments[0] == sys.executable else arguments)
         return completed(arguments, stdout=self.output if "--share" in arguments else "")
 
     def save(self, address):
@@ -89,61 +89,25 @@ class SetupCoconutTests(unittest.TestCase):
                 self.prerequisites(**options)
             self.assertIn(message, str(raised.exception))
 
-    def hermes(self, folder):
-        root = Path(self.directory.name).resolve() / folder
-        (root / "venv/bin").mkdir(parents=True)
-        (root / "run_agent.py").write_text("")
-        python = root / "venv/bin/python"
-        python.write_text("")
-        python.chmod(0o700)
-        return root, python
-
-    def find_hermes(self, *, which=None, home=None, environ=None):
-        with patch.object(setup_coconut.shutil, "which", return_value=which), \
-                patch.object(setup_coconut.Path, "home", return_value=Path(home or self.directory.name).resolve()), \
-                patch.dict(setup_coconut.os.environ, environ or {}, clear=True):
-            return setup_coconut.find_hermes()
-
-    def test_finds_hermes_from_its_command(self):
-        root, python = self.hermes("hermes-agent")
-        command = Path(self.directory.name) / "bin/hermes"
-        command.parent.mkdir()
-        command.symlink_to(root / "venv/bin/hermes")
-        (root / "venv/bin/hermes").write_text("")
-        self.assertEqual(self.find_hermes(which=str(command)), (root, python))
-
-    def test_finds_hermes_in_its_default_home(self):
-        root, python = self.hermes(".hermes/hermes-agent")
-        self.assertEqual(self.find_hermes(), (root, python))
-
-    def test_an_explicit_hermes_comes_first(self):
-        self.hermes(".hermes/hermes-agent")
-        root, python = self.hermes("other")
-        environ = {"COCONUT_HERMES_ROOT": str(root), "COCONUT_HERMES_PYTHON": str(python)}
-        self.assertEqual(self.find_hermes(environ=environ), (root, python))
-
-    def test_ignores_coconuts_own_runtime(self):
-        root, python = self.hermes("project/.runtime/hermes")
-        environ = {"COCONUT_HERMES_ROOT": str(root), "COCONUT_HERMES_PYTHON": str(python)}
-        with patch.object(setup_coconut, "ROOT", (Path(self.directory.name) / "project").resolve()), \
-                self.assertRaises(SystemExit) as raised:
-            self.find_hermes(environ=environ)
-        self.assertIn("Install Hermes first", str(raised.exception))
-
-    def test_use_hermes_passes_the_runtime_to_the_service(self):
-        root, python = Path("/hermes"), Path("/hermes/venv/bin/python")
-        with patch.object(setup_coconut, "find_hermes", return_value=(root, python)), \
-                patch.dict(setup_coconut.os.environ, {}, clear=True):
+    def use_hermes(self, status):
+        runtime = SimpleNamespace(status=Mock(return_value=status))
+        with patch.object(setup_coconut.host, "hermes_runtime", return_value=runtime), \
+                patch("sys.stdout", new_callable=io.StringIO) as output:
             setup_coconut.use_hermes()
-            self.assertEqual(setup_coconut.os.environ["COCONUT_HERMES_ROOT"], "/hermes")
-            self.assertEqual(setup_coconut.os.environ["COCONUT_HERMES_PYTHON"], "/hermes/venv/bin/python")
+        runtime.status.assert_called_once_with(setup_coconut.DATA, save=False)
+        return output.getvalue()
+
+    def test_use_hermes_names_the_hermes_that_the_service_finds(self):
+        # The service finds the same Hermes at each start, so setup passes nothing to it. See hermes_runtime.
+        status = {"status": "ok", "version": "0.9.0", "reason": None, "root": "/hermes", "python": "/hermes/venv/bin/python"}
+        self.assertIn("Coconut uses Hermes 0.9.0 in /hermes.", self.use_hermes(status))
         self.assertEqual(self.commands, [])
 
-    def test_project_scripts_use_the_hermes_python(self):
-        with patch.dict(setup_coconut.os.environ, {"COCONUT_HERMES_PYTHON": HERMES_PYTHON}):
-            self.assertEqual(setup_coconut.script("host.py", "stop")[0], HERMES_PYTHON)
-        with patch.dict(setup_coconut.os.environ, {}, clear=True):
-            self.assertEqual(setup_coconut.script("host.py", "stop")[0], sys.executable)
+    def test_use_hermes_stops_with_the_reason(self):
+        status = {"status": "missing", "version": None, "reason": "Coconut found no Hermes on this Mac."}
+        with self.assertRaises(SystemExit) as raised:
+            self.use_hermes(status)
+        self.assertIn("Coconut found no Hermes on this Mac. Then run this command again.", str(raised.exception))
 
     def test_prepares_notifications(self):
         setup_coconut.prepare_notifications()

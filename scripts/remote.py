@@ -345,7 +345,7 @@ with tempfile.NamedTemporaryFile(mode='w', dir=data, delete=False) as handle:
     os.fsync(handle.fileno())
 os.replace(pending, data / 'credentials.json')
 import subprocess
-subprocess.run([str(root / '.runtime/hermes/venv/bin/python'), str(root / 'scripts/host.py'), 'restart'], check=True, stdout=subprocess.DEVNULL)
+subprocess.run([sys.executable, str(root / 'scripts/host.py'), 'restart'], check=True, stdout=subprocess.DEVNULL)
 print('Model access saved. Coconut restarted.')
 """
     result = ssh(config, ["python3", "-c", code, config["directory"]], input_data=json.dumps(values).encode(), timeout=90)

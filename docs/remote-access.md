@@ -79,7 +79,7 @@ The LaunchAgent restarts the process after a crash. It starts after account logi
 
 Test login, FileVault recovery, and Tailscale reconnection on the actual Mac before relying on unattended restarts. Keep the Mac screen locked during normal operation.
 
-The cleanup script removes Coconut's LaunchAgent, saved address, certificates, and managed runtime. It does not uninstall Tailscale.
+The cleanup script removes Coconut's LaunchAgent, saved address, certificates, and local data. It does not uninstall Tailscale or Hermes.
 
 ## Verify remote use
 

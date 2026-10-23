@@ -13,6 +13,7 @@ import textwrap
 import time
 import unittest
 from unittest.mock import MagicMock, Mock, patch
+from uuid import uuid4
 
 
 SCRIPTS = Path(__file__).resolve().parents[2] / 'scripts'
@@ -27,7 +28,6 @@ def package_files(**changes):
         'backend/coconut/__init__.py': b'"""Coconut service."""\n',
         'backend/coconut/__main__.py': b'print("service entry")\n',
         'scripts/host.py': b'print("host entry")\n',
-        'scripts/hermes.py': b"REVISION = '0123456789abcdef0123456789abcdef01234567'\n",
         'README.md': b'# Coconut\n',
     }
     files.update(changes)
@@ -59,9 +59,10 @@ def archive(files=None, *, manifest=None, include_manifest=True, extra=()):
 
 
 class FakeOperations:
-    def __init__(self, *, mode='stopped', fail=None, fail_stop_after=None):
+    def __init__(self, *, mode='stopped', fail=None, fail_stop_after=None, hermes='ok'):
         self.calls = []
         self.state = {'mode': mode}
+        self.hermes_status = hermes
         self.fail = fail
         self.fail_stop_after = fail_stop_after
         self.stop_count = 0
@@ -98,6 +99,11 @@ class FakeOperations:
     def restore(self, root, state):
         self.record('restore', root, state)
 
+    def hermes(self, root):
+        self.record('hermes', root)
+        return {'status': self.hermes_status, 'version': '0.9.0',
+                'reason': None if self.hermes_status == 'ok' else 'Coconut found no Hermes on this Mac.'}
+
     def install(self, root, address):
         self.record('install', root, address)
 
@@ -114,7 +120,7 @@ class FakeOperations:
 
 
 class DeploymentPackageTests(unittest.TestCase):
-    def test_valid_package_keeps_exact_file_bytes_and_pinned_hermes_revision(self):
+    def test_valid_package_keeps_exact_file_bytes(self):
         files = package_files()
         files.update({'backend/coconut/nested/module.py': b'value = 1\n', 'backend/pyproject.toml': b'[project]\nname="coconut"\n',
                       'scripts/desktop.swift': b'import AppKit\n', 'docs/setup/mac.md': b'# Mac setup\n',
@@ -122,7 +128,6 @@ class DeploymentPackageTests(unittest.TestCase):
         result = deploy.validate_package(archive(files))
         self.assertEqual(result.files, files)
         self.assertEqual(result.hashes, hashes(files))
-        self.assertEqual(result.revision, '0123456789abcdef0123456789abcdef01234567')
         self.assertRegex(result.package_id, r'^[0-9a-f]{64}$')
         self.assertEqual(result.package_id, deploy.validate_package(archive(files)).package_id)
 
@@ -168,16 +173,13 @@ class DeploymentPackageTests(unittest.TestCase):
             with self.subTest(files=manifest_files), self.assertRaises(deploy.DeployError):
                 deploy.validate_package(archive(manifest={'version': 1, 'files': manifest_files}))
 
-    def test_requires_service_entries_and_an_exact_pinned_revision(self):
-        required = ['backend/coconut/__init__.py', 'backend/coconut/__main__.py', 'scripts/host.py', 'scripts/hermes.py']
+    def test_requires_service_entries(self):
+        required = ['backend/coconut/__init__.py', 'backend/coconut/__main__.py', 'scripts/host.py']
         for name in required:
             files = package_files()
             del files[name]
             with self.subTest(name=name), self.assertRaises(deploy.DeployError):
                 deploy.validate_package(archive(files))
-        for source in (b'REVISION = "main"\n', b'REVISION = "' + b'A' * 40 + b'"\n', b'REVISION = "' + b'a' * 39 + b'"\n', b'print("no revision")\n'):
-            with self.subTest(source=source), self.assertRaises(deploy.DeployError):
-                deploy.validate_package(archive(package_files(**{'scripts/hermes.py': source})))
 
     def test_rejects_non_gzip_and_truncated_archives(self):
         complete = archive().getvalue()
@@ -288,6 +290,92 @@ class DeploymentLifecycleTests(unittest.TestCase):
         # The drain comes first: a stop that interrupts a turn loses its tool results, and its task fails at the next start.
         self.assertLess(names.index('drain'), names.index('stop'))
         self.assertEqual(names.count('drain'), 1)
+
+    def save_hermes_status(self, status):
+        """Write the status that the running service saved at its start. See hermes_runtime.status."""
+        path = self.target / '.runtime/host/hermes.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'status': status, 'version': '0.9.0', 'reason': None}))
+
+    def test_an_update_that_breaks_a_working_hermes_restores_the_earlier_code(self):
+        self.receive()
+        self.save_hermes_status('ok')
+        operations = FakeOperations(mode='managed', hermes='incompatible')
+        with self.assertRaisesRegex(deploy.DeployError, 'does not work with the installed Hermes'):
+            self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=operations)
+        self.assertEqual((self.target / 'README.md').read_bytes(), package_files()['README.md'])
+        self.assertIn(('restore', self.target, operations.state), operations.calls)
+
+    def test_an_update_from_the_private_runtime_needs_a_working_hermes(self):
+        # Versions before the Hermes check ran on their own private Hermes, which worked. They saved no status.
+        self.receive()
+        operations = FakeOperations(mode='managed', hermes='missing')
+        with self.assertRaisesRegex(deploy.DeployError, 'no Hermes'):
+            self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=operations)
+        self.assertEqual((self.target / 'README.md').read_bytes(), package_files()['README.md'])
+
+    def test_an_update_installs_when_hermes_was_already_unavailable(self):
+        self.receive()
+        self.save_hermes_status('missing')
+        files = package_files(**{'README.md': b'New code.\n'})
+        self.receive(files=files, operations=FakeOperations(mode='managed', hermes='missing'))
+        self.assertEqual((self.target / 'README.md').read_bytes(), files['README.md'])
+
+    def test_the_new_code_starts_with_the_result_of_its_check(self):
+        self.receive()
+        self.save_hermes_status('ok')
+        self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=FakeOperations(mode='managed'))
+        saved = json.loads((self.target / '.runtime/host/hermes.json').read_text())
+        self.assertEqual(saved['status'], 'ok')
+
+    def test_a_fresh_install_starts_without_hermes(self):
+        operations = FakeOperations(hermes='missing')
+        self.receive(operations=operations)
+        self.assertIn('hermes', [call[0] for call in operations.calls])
+        self.assertIn('install', [call[0] for call in operations.calls])
+
+    def test_recovery_restores_the_runtime_and_settings_of_an_older_installers_update(self):
+        # An older installer moved .runtime/hermes to hermes-rollback-<id> and stopped before it moved the shared settings.
+        self.receive()
+        runtime = self.target / '.runtime/hermes'
+        (runtime / 'terminal/hermes').mkdir(parents=True)
+        (runtime / 'terminal/hermes/auth.json').write_text('Login.')
+        (runtime / 'install.json').write_text(json.dumps({'commit': 'a' * 40}))
+        with self.assertRaises(deploy.DeployError):
+            self.receive(files=package_files(**{'README.md': b'New code.\n'}),
+                         operations=FakeOperations(mode='managed', fail='prepare', fail_stop_after=1))
+        journal = self.target / '.runtime/deploy/update.json'
+        record = json.loads(journal.read_text())
+        record['runtime_change'] = {'previous': 'a' * 40, 'candidate': 'b' * 40}
+        journal.write_text(json.dumps(record))
+        saved = self.target / f".runtime/hermes-rollback-{record['deployment_id']}"
+        runtime.rename(saved)
+        runtime.mkdir()
+        (runtime / 'install.json').write_text(json.dumps({'commit': 'b' * 40}))
+        files = package_files(**{'README.md': b'Newer code.\n'})
+        self.receive(files=files, operations=FakeOperations(mode='managed'))
+        self.assertEqual((runtime / 'terminal/hermes/auth.json').read_text(), 'Login.')
+        self.assertEqual(json.loads((runtime / 'install.json').read_text())['commit'], 'a' * 40)
+        self.assertFalse(saved.exists())
+        self.assertEqual((self.target / 'README.md').read_bytes(), files['README.md'])
+
+    def test_a_runtime_copy_with_the_shared_settings_stays(self):
+        self.receive()
+        copy = self.target / f'.runtime/hermes-rollback-{uuid4()}'
+        (copy / 'terminal/hermes').mkdir(parents=True)
+        self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=FakeOperations(mode='managed'))
+        self.assertTrue((copy / 'terminal/hermes').is_dir())
+
+    def test_a_finished_update_removes_old_runtime_copies(self):
+        self.receive()
+        runtime = self.target / '.runtime'
+        copies = [runtime / f'hermes-rollback-{uuid4()}', runtime / f'hermes-failed-{uuid4()}']
+        manual = runtime / 'hermes-upgrade-2026-9-11'
+        for path in (*copies, manual):
+            (path / 'venv').mkdir(parents=True)
+        self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=FakeOperations(mode='managed'))
+        self.assertFalse(any(path.exists() for path in copies))
+        self.assertTrue(manual.is_dir())
 
     def test_an_update_without_a_drain_step_still_stops_the_service(self):
         operations = FakeOperations(mode='managed')
@@ -499,7 +587,7 @@ class DeploymentLifecycleTests(unittest.TestCase):
         initial = self.receive(files=original_files)
         original_marker = json.loads((self.target / '.coconut-install.json').read_text())
         runtime = self.target / '.runtime/host'
-        runtime.mkdir()
+        runtime.mkdir(exist_ok=True)
         (runtime / 'coconut.sqlite3').write_bytes(b'Initial history.')
         (runtime / 'decisions.json').write_bytes(b'Initial pending decision.')
         (runtime / 'connection.json').write_bytes(b'Original paired connection.')

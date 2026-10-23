@@ -68,9 +68,7 @@ def check(source, python):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         address = f'http://127.0.0.1:{server.server_port}/v1'
         data = root / 'data'
-        catalog = HermesModelCatalog(data, python=python, source=source)
-        catalog.root = root / 'hermes'
-        catalog.private_home = root / 'home'
+        catalog = HermesModelCatalog(data, python=python, source=source, home=root)
         assert catalog.root.resolve().is_relative_to(root)
         assert catalog.private_home.resolve().is_relative_to(root)
         catalog.root.mkdir(parents=True, exist_ok=True)

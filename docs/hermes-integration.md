@@ -1,9 +1,11 @@
 # Hermes integration
 
 Each Coconut bot maps to one native Hermes profile. Coconut's adapter runs outside the upstream source checkout.
-The installer pins and verifies the upstream revision before accepting updates.
+Coconut runs on the Hermes that the person installed. It does not install its own copy.
+`backend/coconut/hermes_runtime.py` finds that Hermes and checks it. See [The Hermes that Coconut uses](install-and-update.md#the-hermes-that-coconut-uses).
 
-The tested revision is `4d04303818b61bf3aa09278af48356315515965b` from stable release `v0.22.4`.
+The compatibility CI tests revision `4d04303818b61bf3aa09278af48356315515965b` from stable release `v0.22.4`.
+The contract check also passes on `v0.22.5` (`bf0203a`), installed with the official installer.
 Its primary interfaces are [AIAgent](https://github.com/NousResearch/hermes-agent/blob/4d04303818b61bf3aa09278af48356315515965b/run_agent.py),
 [native profiles](https://hermes-agent.nousresearch.com/docs/user-guide/profiles/),
 [native memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory/),
@@ -152,9 +154,12 @@ The adapter currently supplies text attachments to Hermes; binary inspection is 
 
 ## Checks
 
-`python3 scripts/hermes.py check` verifies the pristine source, required APIs, tool registration, and native model settings.
-The contract probe blocks network access and uses disposable native settings.
-Mac mini updates run this check before activating the new backend.
+At each start, the service runs `hermes_contract.verify_contract()` under the Python of the installed Hermes.
+It checks the required APIs, tool registration, and native model settings.
+The check blocks network access and uses a temporary Hermes home. It never writes into the person's Hermes home.
+Without a usable Hermes, the service starts in refuse mode: it imports no Hermes code, runs no bots, and reports the reason in `GET /v1/setup`.
+Run `python3 scripts/host.py hermes-status` to find and check the Hermes without starting the service.
+Mac mini updates run this check against the new code before they start it.
 
 From the development Mac, run `python3 scripts/test_native_profiles.py` for the native profile and restart milestone.
 Run `python3 scripts/test_hermes_live.py` for bot creation, delegation, deletion, and restart.
@@ -174,15 +179,14 @@ Use Hermes on the Mac for other transports or advanced authentication.
 Bot workers inherit shared MCP connections between turns. A bot's native entry overrides a shared entry with the same name.
 Native Hermes code handles discovery, validation, connection testing, and tool execution.
 When configuration changes, the worker refreshes MCP connections without stopping native terminal processes.
-The installer includes Hermes's locked `mcp` extra for existing and new installations.
+Coconut needs Hermes's `mcp` extra. The official installer includes it, and the check refuses a Hermes without it.
 
-## Installing a tested runtime update
+## Updates
 
-A source update keeps the installed Hermes revision by default.
-After testing a new pin, an external installer can use `scripts/deploy.py receive --update-runtime` with the verified source package.
-This command stops the managed service, installs Hermes at its final paths, and checks the replacement before restarting.
-The deployment lock covers both source and runtime changes. The journal restores both after a failed update.
-Native terminal state keeps its original files and lock. Profiles, conversations, and decisions stay in the host directory.
-A successful update retains the previous runtime in `.runtime/hermes-rollback-<deployment ID>`.
-Run this command outside the Coconut worker because the update stops that worker.
+An update changes Coconut only. It never installs or replaces Hermes.
+After it replaces the source files, the update runs the contract check of the new code against the installed Hermes.
+If that Hermes worked with the earlier version and fails with the new one, the update restores the earlier source files.
+If Hermes was already missing or incompatible, the new version starts in refuse mode.
+Update Hermes itself with its own tools, for example `hermes update`, then restart Coconut.
+Run Coconut updates outside the Coconut worker because the update stops that worker.
 A maintenance setup must check review, CI, and the user's merge approval before requesting installation.

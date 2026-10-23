@@ -18,6 +18,8 @@ import sys
 import time
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from . import hermes_runtime
+from .hermes_unavailable import UnavailableService
 from .service import Service, ServiceError, digest
 
 
@@ -157,6 +159,9 @@ class Handler(BaseHTTPRequestHandler):
             started = time.perf_counter()
             device = service.authenticate(authorization[7:])
             self.timings = {'auth': (time.perf_counter() - started) * 1000}
+            if isinstance(service, UnavailableService) and not (method == 'GET' and url.path == '/v1/setup'):
+                # Without Hermes, only the setup status answers. See hermes_unavailable.
+                service.refuse()
             if method == 'POST' and url.path == '/v1/maintenance/workspace-recovery':
                 self._json(200, service.request_workspace_recovery(
                     self._body(), self.headers.get('Idempotency-Key', ''), device))
@@ -234,7 +239,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, response)
         except ServiceError as error:
             # An error can come before the request body was read. Unread body bytes would corrupt the next request.
-            self._json(error.status, {'error': str(error)}, close=True)
+            self._json(error.status, {'error': str(error), **getattr(error, 'details', {})}, close=True)
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             self.close_connection = True
         except Exception:
@@ -265,8 +270,36 @@ def write_process_record(service):
     (service.root / 'process.json').write_text(json.dumps({
         'pid': os.getpid(), 'data_dir': str(service.root),
         'project': str(Path(__file__).resolve().parents[2]),
-        'drain': True,
+        'drain': getattr(service, 'drains', True),
     }))
+
+
+def hermes_status(data_dir, argv) -> dict:
+    """Find and check the person's Hermes, and run this service under its Python.
+
+    The Hermes Python has the Hermes modules that the service imports, for example for Kanban. When this process
+    runs under another Python, it starts again under the Hermes Python, with the checked status in its environment.
+    Without a usable Hermes, the service stays under this Python in refuse mode.
+    """
+    saved = os.environ.pop('COCONUT_HERMES_STATUS', None)
+    # A launcher can name the Hermes Python differently in sys.executable, so this process starts again only once.
+    restarted = os.environ.pop('COCONUT_HERMES_RESTARTED', None) == '1'
+    try:
+        status = json.loads(saved) if saved else None
+    except ValueError:
+        status = None
+    if not isinstance(status, dict):
+        status = hermes_runtime.status(data_dir)
+    if status.get('status') == 'ok' and not restarted and os.path.abspath(sys.executable) != os.path.abspath(status['python']):
+        os.environ.update(COCONUT_HERMES_STATUS=json.dumps(status), COCONUT_HERMES_RESTARTED='1')
+        try:
+            os.execv(status['python'], [status['python'], '-m', 'coconut', *argv])
+        except OSError as error:
+            os.environ.pop('COCONUT_HERMES_STATUS', None)
+            os.environ.pop('COCONUT_HERMES_RESTARTED', None)
+            return {'status': 'incompatible', 'version': status.get('version'),
+                    'reason': f'The Hermes Python cannot start: {error.strerror}.'}
+    return status
 
 
 def main(argv=None):
@@ -278,8 +311,7 @@ def main(argv=None):
     parser.add_argument('--cert', type=Path)
     parser.add_argument('--key', type=Path)
     parser.add_argument('--pair', action='store_true')
-    parser.add_argument('--hermes-python', type=Path)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     if args.pair:
         try:
             print(create_pairing_code(args.data_dir))
@@ -291,12 +323,24 @@ def main(argv=None):
     if args.host not in ('127.0.0.1', '::1', 'localhost') and not args.cert:
         parser.error('TLS is required for access outside this Mac. Supply --cert and --key.')
     from .providers import FixtureProvider, HermesProvider
-    if args.provider == 'fixture':
-        provider = FixtureProvider(args.data_dir)
-    else:
-        provider = HermesProvider(args.data_dir, **({'python': str(args.hermes_python)} if args.hermes_python else {}))
+    hermes = None
     try:
-        service = Service(args.data_dir, provider, start_workers=False)
+        if args.provider == 'fixture':
+            service = Service(args.data_dir, FixtureProvider(args.data_dir), start_workers=False)
+        else:
+            hermes = hermes_status(args.data_dir, sys.argv[1:] if argv is None else argv)
+            if hermes['status'] == 'ok':
+                # The service imports some Hermes modules itself. Like the workers, it loads them from the checked source
+                # folder, not from a build copy in the installer's dependency environment.
+                if hermes['root'] not in sys.path:
+                    sys.path.insert(1, hermes['root'])
+                os.environ.update(hermes_runtime.NO_LAZY_INSTALLS)
+                provider = HermesProvider(args.data_dir, python=hermes['python'], hermes_root=hermes['root'],
+                                          home=hermes_runtime.DEFAULT_HOME)
+                service = Service(args.data_dir, provider, start_workers=False)
+                service.hermes_status = hermes_runtime.public(hermes)
+            else:
+                service = UnavailableService(args.data_dir, hermes)
     except ServiceError as error:
         parser.error(str(error))
     server = None
@@ -318,6 +362,10 @@ def main(argv=None):
     print(f'Coconut is listening on {args.host}:{args.port}. Provider: {args.provider}.', flush=True)
     if args.provider == 'fixture':
         print('Fixture mode uses scripted responses. It does not execute Hermes.', flush=True)
+    elif isinstance(service, UnavailableService):
+        print(f'Coconut runs no bots, because Hermes is {hermes["status"]}: {hermes["reason"]}', flush=True)
+    else:
+        print(f'Coconut uses Hermes {hermes["version"] or "of unknown version"} in {hermes["root"]}.', flush=True)
     def stop(signum, frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)

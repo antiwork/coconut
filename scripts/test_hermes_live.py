@@ -189,29 +189,32 @@ print('COCONUT_CREATION_RESULT=' + json.dumps(report, sort_keys=True))
 '''
 
 LAUNCHER = r'''
-import base64, json, subprocess, sys, tempfile
+import base64, importlib.util, json, subprocess, sys, tempfile
 from pathlib import Path
 root = Path.home() / sys.argv[1]
 payload = json.load(sys.stdin)
-# Use the installed check before and after the live test. It sends no model requests.
-command = [str(root / '.runtime/hermes/venv/bin/python'), str(root / 'scripts/hermes.py'), 'check']
-subprocess.run(command, check=True, timeout=60)
+
+def check(code):
+    # Find the installed Hermes and run the contract check of this code against it. It sends no model requests.
+    spec = importlib.util.spec_from_file_location('live_hermes_runtime', code / 'backend/coconut/hermes_runtime.py')
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    module.check(module.find())
+
+# Use the installed check before and after the live test.
+check(root)
 with tempfile.TemporaryDirectory(prefix='bot-creation-code-', dir=root / '.runtime') as temporary:
     stage = Path(temporary)
     for name, content in payload['files'].items():
         path = stage / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(base64.b64decode(content))
-    sys.path.insert(0, str(root / 'scripts'))
-    import hermes, os
-    env = hermes.environment()
-    env['PYTHONPATH'] = os.pathsep.join((str(stage / 'backend'), str(root / '.runtime/hermes/source')))
-    subprocess.run([str(root / '.runtime/hermes/venv/bin/python'), '-c', hermes.CHECK_CODE],
-                   cwd=stage, env=env, check=True, timeout=60)
+    check(stage)
     path = stage / 'trial.py'
     path.write_text(payload['program'])
     result = subprocess.run([str(root / '.runtime/hermes/venv/bin/python'), str(path), str(root), str(stage)], timeout=345)
-    subprocess.run(command, check=True, timeout=60)
+    check(root)
     sys.exit(result.returncode)
 '''
 

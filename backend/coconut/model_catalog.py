@@ -1,4 +1,4 @@
-"""Read native Hermes settings through its managed Python runtime."""
+"""Read native Hermes settings through the Python of the installed Hermes."""
 from __future__ import annotations
 
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
@@ -15,7 +15,8 @@ import time
 from urllib.parse import urlsplit
 from uuid import UUID
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# A source folder that does not exist. The catalog uses it when this Mac has no Hermes.
+MISSING_SOURCE = Path('/nonexistent/hermes-agent')
 MAX_REQUEST_CHARACTERS = 100_000
 # A profile read that failed, for example because a busy Mac delayed the settings process, runs again after this.
 PROFILE_RETRY_SECONDS = 15
@@ -110,13 +111,22 @@ LIVE_RETRY_SECONDS = 30
 
 
 class HermesModelCatalog:
-    def __init__(self, data_dir, python=None, source=None, env=None):
+    def __init__(self, data_dir, python=None, source=None, env=None, home=None):
+        """Use the person's Hermes. `home` is the Coconut folder that holds the shared Hermes home of the bots.
+
+        Without `home`, an explicit `source` keeps that folder beside it, as the tests lay it out. Otherwise Coconut
+        uses hermes_runtime.DEFAULT_HOME.
+        """
+        from .hermes_runtime import DEFAULT_HOME, configured
         self.data_dir = Path(data_dir).expanduser().resolve()
-        runtime = PROJECT_ROOT / '.runtime/hermes'
-        self.python = str(python or os.environ.get('COCONUT_HERMES_PYTHON') or runtime / 'venv/bin/python')
-        self.source = Path(source or os.environ.get('COCONUT_HERMES_ROOT') or runtime / 'source').resolve()
-        self.root = self.source.parent / 'terminal/hermes'
-        self.private_home = self.source.parent / 'terminal/home'
+        if home is None:
+            home = Path(source).parent / 'terminal' if source is not None else DEFAULT_HOME
+        python, source = configured(python, source)
+        self.python = str(python or '')
+        self.source = Path(source or MISSING_SOURCE).resolve()
+        self.home = Path(home).absolute()
+        self.root = self.home / 'hermes'
+        self.private_home = self.home / 'home'
         supplied = os.environ if env is None else env
         self.env = {key: supplied[key] for key in ENV_KEYS if key in supplied}
         self._cache = None
@@ -139,8 +149,10 @@ class HermesModelCatalog:
                  self.root / '.anthropic_oauth.json']
         signature = []
         for path in paths:
-            if path in (self.root / 'active_profile', self.source / 'hermes_constants.py'):
-                boundary = self.source.parent
+            if path == self.source / 'hermes_constants.py':
+                boundary = self.source
+            elif path == self.root / 'active_profile':
+                boundary = self.home
             else:
                 boundary = self.root
             _contained(path, boundary)
@@ -373,17 +385,19 @@ class HermesModelCatalog:
             return True
 
     def _call(self, operation, **payload):
-        if not Path(self.python).is_file() or not (self.source / 'run_agent.py').is_file():
-            raise ModelCatalogError('Install the Coconut Hermes runtime before choosing a model.')
+        if not self.python or not Path(self.python).is_file() or not (self.source / 'run_agent.py').is_file():
+            raise ModelCatalogError('Install Hermes on this Mac before choosing a model.')
         if (self.source / '.env').exists() or (self.source / '.env').is_symlink():
             raise ModelCatalogError('Use a clean Hermes checkout without a shared .env file.')
-        _contained(self.root, self.source.parent)
-        _contained(self.private_home, self.source.parent)
+        _contained(self.root, self.home)
+        _contained(self.private_home, self.home)
         for path in (self.root, self.private_home, self.private_home / 'tmp'):
             path.mkdir(parents=True, exist_ok=True, mode=0o700)
         environment = dict(self.env)
         from .runtime_environment import prepare_profile
         environment.update(prepare_profile(self.private_home))
+        from .hermes_runtime import NO_LAZY_INSTALLS
+        environment.update(NO_LAZY_INSTALLS)
         environment.update(HERMES_HOME=str(self.root), PYTHONPATH=str(self.source),
                            TMPDIR=str(self.private_home / 'tmp'), HERMES_DISABLE_TELEMETRY='1',
                            PYTHONUNBUFFERED='1')

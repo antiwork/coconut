@@ -247,6 +247,48 @@ def connection_certificate(args: argparse.Namespace) -> tuple[Path, Path]:
     return result
 
 
+def backend_module(name: str):
+    """Load one module of backend/coconut alone. It must use the standard library only, so any Python can run it."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("coconut_" + name, ROOT / f"backend/coconut/{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    # dataclasses look the module up by name.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def hermes_runtime():
+    return backend_module("hermes_runtime")
+
+
+def service_path(value: str) -> str:
+    """Return the PATH of the service. host.py serve sets it before the service searches for Hermes."""
+    return backend_module("terminal_setup").command_path(value)
+
+
+def service_environment() -> dict:
+    """Return the environment in which the login service searches for Hermes. An update checks Hermes with it.
+
+    The updater runs in another environment, for example over SSH. Its PATH or settings can find another Hermes.
+    """
+    environment = dict(os.environ)
+    path = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
+    try:
+        payload = plistlib.loads(path.read_bytes()) if path.is_file() and not path.is_symlink() else {}
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        payload = {}
+    service = payload.get("EnvironmentVariables") if isinstance(payload, dict) else None
+    if isinstance(service, dict):
+        for name in ("PATH", "COCONUT_HERMES_PYTHON", "COCONUT_HERMES_ROOT", "HERMES_HOME"):
+            environment.pop(name, None)
+        environment.update({name: value for name, value in service.items() if isinstance(value, str)})
+        # launchd gives a job without PATH this default.
+        environment.setdefault("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+    environment["PATH"] = service_path(environment.get("PATH", ""))
+    return environment
+
+
 def fingerprint(cert: Path) -> str:
     der = ssl.PEM_cert_to_DER_cert(cert.read_text())
     return hashlib.sha256(der).hexdigest().upper()
@@ -302,8 +344,16 @@ def start(args: argparse.Namespace) -> None:
                "--host", args.host, "--port", str(args.port), "--provider", args.provider]
     if args.insecure_loopback:
         command.append("--insecure-loopback")
+    environment = dict(os.environ, PATH=service_path(os.environ.get("PATH", "")))
+    if args.provider == "hermes":
+        # Check Hermes before the service starts, so the wait below covers only the start. The service takes this result.
+        # The search uses the PATH that host.py serve gives the service.
+        status = hermes_runtime().status(args.data_dir, environ=environment)
+        environment["COCONUT_HERMES_STATUS"] = json.dumps(status)
+        if status["status"] != "ok":
+            print(f"Coconut runs no bots until Hermes works: {status['reason']}")
     with (args.data_dir / "service.log").open('ab') as log:
-        process = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.DEVNULL,
+        process = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.DEVNULL, env=environment,
                                    stdout=log, stderr=log, start_new_session=True)
     record = args.data_dir / "process.json"
     for _ in range(100):
@@ -556,9 +606,10 @@ def install(args: argparse.Namespace) -> None:
     plist = agents / f"{LABEL}.plist"
     if plist.exists():
         raise SystemExit(f"A service already exists at {plist}. Use launchctl to manage it.")
+    # host.py serve finds the person's Hermes at each start: `hermes` on this PATH, then ~/.hermes/hermes-agent.
+    # Explicit settings select another Hermes. Credentials stay in the host environment file.
     environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONUNBUFFERED": "1"}
-    # Explicit paths select the Hermes runtime. Credentials stay in the host environment file.
-    for name in ("COCONUT_HERMES_PYTHON", "COCONUT_HERMES_ROOT"):
+    for name in ("COCONUT_HERMES_PYTHON", "COCONUT_HERMES_ROOT", "HERMES_HOME"):
         if os.environ.get(name):
             environment[name] = os.environ[name]
     payload = {
@@ -580,7 +631,8 @@ def install(args: argparse.Namespace) -> None:
 def main() -> None:
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["setup", "serve", "start", "stop", "restart", "pair", "save-model-access", "install-service", "status"])
+    parser.add_argument("command", choices=["setup", "serve", "start", "stop", "restart", "pair", "save-model-access",
+                                            "install-service", "status", "hermes-status"])
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, help="Listening port. Defaults to 8960 or the saved address port.")
@@ -616,6 +668,10 @@ def main() -> None:
         print("Saved configured model access in the private local runtime.")
     elif args.command == "start":
         start(args)
+    elif args.command == "hermes-status":
+        # Find and check the person's Hermes with this code. The saved status stays the one of the running service.
+        status = hermes_runtime().status(args.data_dir, environ=service_environment(), save=False)
+        print("COCONUT_HERMES_STATUS=" + json.dumps(status))
     elif args.command in {"stop", "restart", "status"}:
         if args.data_dir != DEFAULT_DATA:
             raise SystemExit("Use the default data directory for status, stop, and restart.")
@@ -634,8 +690,10 @@ def main() -> None:
     else:
         command = service_args(args)
         sys.path.insert(0, str(ROOT / "backend"))
-        from coconut.terminal_setup import command_path
-        os.environ['PATH'] = command_path(os.environ.get('PATH', ''))
+        # Older versions installed their own hermes command. It started the private runtime, which is gone.
+        if hermes_runtime().remove_coconut_launcher():
+            print("Removed Coconut's old hermes command from ~/.local/bin.", flush=True)
+        os.environ['PATH'] = service_path(os.environ.get('PATH', ''))
         managed = managed_current_process(args.data_dir)
         os.environ['COCONUT_MANAGED_SERVICE'] = '1' if managed else '0'
         private_directory(args.data_dir)
