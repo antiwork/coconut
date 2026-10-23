@@ -1,6 +1,6 @@
 # Relay transport
 
-Status: the Mac has the tunnel sidecar and pairing v2 (R3). The app does not use the tunnel yet (R4), so current phones still connect through Tailscale and TLS.
+Status: the Mac has the tunnel sidecar and pairing v2 (R3), and the app pairs and connects through the tunnel (R4). A phone that paired before R4 keeps its Tailscale and TLS connection until it pairs again with a version 2 link. R5 removes TLS.
 
 The iPhone and the Mac will talk through the Cloudflare relay, not through Tailscale. The relay forwards ciphertext. It sees route IDs, timing, and sizes, never content.
 
@@ -117,16 +117,41 @@ On a ticket session, the sidecar forwards only `POST /v1/pair` and `GET /health`
 
 The backend accepts a tunnel secret only with an `X-Coconut-Peer` key, and a TLS code only without one. A device that paired through the tunnel must send the same key with each request.
 
+## iPhone
+
+`ios/Coconut/TunnelConnection.swift` is the iPhone end. `APIClient` keeps its API and sends each request through it.
+
+- The app keeps one socket while it is in the foreground. Each request is one stream, with a 1 MB window in each direction. The phone extends the Mac's window after it reads 256 KB.
+- A short foreground read has 6 seconds, including the connection. Writes, long polls (`updates?wait=20`), and full downloads have 45 seconds. A timeout sends CANCEL and keeps the socket.
+- The phone sends a text `ping` after 20 silent seconds, and ends a socket that stays silent for 45 seconds.
+- The phone asks for gzip and removes it itself, because URLSession is not in the path.
+- A failed socket fails its streams. The next request opens a new socket with a new handshake.
+- In the background, read streams end at once. The socket closes after the writes in flight finish. Notifications stay on APNs.
+
+The app shows these connection states:
+
+| State | Cause | What the app does |
+| --- | --- | --- |
+| `connecting` | A handshake is in progress. | Shows the cached state. |
+| `connected` | The last request succeeded. | Normal use. |
+| `macOffline` | The relay sends `mac_offline`, the Mac does not answer the handshake on an open socket, or the backend is down. | A calm banner. The cached state stays visible, and the phone tries again. |
+| `relayUnreachable` | The phone cannot open a socket, or the socket fails. | A calm banner. The phone tries again. |
+| `needsRepair` | The relay refuses the token or route (401 or 404, or `revoked`), the Mac refuses the phone key or answers with another Mac key, or the backend answers 401. | A banner with Pair. The phone stops polling until it pairs again. |
+
+The phone's static key and the relay client token live in the Keychain (`local.coconut.tunnel`). Each pairing makes a new key. `pairing.json` holds `{version: 2, relay, route, macKey, deviceId, macName}`. A pending checkout recovery belongs to the route and the Mac key.
+
+A version 1 link shows "Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link." `scripts/setup_coconut.py` installs the sidecar before it makes the link, so it always makes a version 2 link.
+
 ## Transition
 
 Until R5, the backend listens on two ports:
 
-- TLS on `:8960`, for current phones that pair and connect through Tailscale.
+- TLS on `:8960`, for phones that paired before R4. They keep working until they pair with a version 2 link.
 - Plain HTTP on `127.0.0.1:8961`, for the sidecar. `host.py` adds `--tunnel-port 8961` to the service command.
 
 ## Loopback test
 
-`scripts/test_tunnel_loopback.py` runs the test client, a Miniflare relay, the sidecar, and the backend on one Mac. The client pairs, gets `/v1/state`, uploads a 5 MB attachment, and downloads 3.9 MB. It also checks that another iPhone key and a used ticket get no session, and that the sidecar reconnects. It needs the Xcode Command Line Tools and `npm ci` in `relay/`.
+`scripts/test_tunnel_loopback.py` runs the test client, a Miniflare relay, the sidecar, and the backend on one Mac. The test client uses the app's `TunnelConnection` to pair and to send its requests. The client pairs, gets `/v1/state`, uploads a 5 MB attachment, and downloads 3.9 MB. It also checks that another iPhone key and a used ticket get no session, and that the sidecar reconnects. It needs the Xcode Command Line Tools and `npm ci` in `relay/`.
 
 ```bash
 python3 scripts/test_tunnel_loopback.py

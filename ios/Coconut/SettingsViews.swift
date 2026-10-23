@@ -121,6 +121,9 @@ struct AppSettingsView: View {
         case .connected: "Connected"
         case .connecting: "Connecting…"
         case .disconnected: "Disconnected"
+        case .macOffline: "Mac offline"
+        case .relayUnreachable: "Relay unreachable"
+        case .needsRepair: "Needs a new pairing link"
         case .unconfigured: "Not paired"
         case .preview: "Preview data"
         }
@@ -155,9 +158,7 @@ private struct SettingsNavigationLabel: View {
 struct MacPairingFields: View {
     @Environment(AppStore.self) private var store
     @State private var pairing = false
-    @State private var draft = PairingSetupDraft()
-    @State private var initialized = false
-    @State private var detailsExpanded = false
+    @State private var setup: PairingSetup?
     @State private var scannerOpen = false
     @State private var pasteOpen = false
     @State private var setupError: String?
@@ -174,37 +175,23 @@ struct MacPairingFields: View {
                 catch { setupError = error.localizedDescription }
             }
         }
-        .onAppear {
-            guard !initialized else { return }
-            initialized = true
-            draft = PairingSetupDraft(serverURL: store.serverURL, fingerprint: store.fingerprint, pairCode: store.pairCode)
-            detailsExpanded = !store.pairCode.isEmpty
-        }
         Button { pasteOpen = true } label: {
-            Label("Paste setup details", systemImage: "doc.on.clipboard")
+            Label("Paste setup link", systemImage: "doc.on.clipboard")
         }
         .disabled(pairing)
         .accessibilityIdentifier("paste-pairing-setup")
         .sheet(isPresented: $pasteOpen) { PastePairingSetupView(importPayload: importSetup) }
-        DisclosureGroup("Connection details", isExpanded: $detailsExpanded) {
-            TextField("Mac address", text: $draft.serverURL)
-                .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                .accessibilityLabel("Mac address")
-            TextField("Certificate fingerprint", text: $draft.fingerprint, axis: .vertical)
-                .font(.caption.monospaced()).lineLimit(2...4)
-                .textInputAutocapitalization(.never).autocorrectionDisabled()
-                .accessibilityLabel("SHA-256 certificate fingerprint")
-            TextField("Pairing code", text: $draft.pairCode)
-                .keyboardType(.numberPad).textContentType(.oneTimeCode).privacySensitive()
-                .autocorrectionDisabled().accessibilityIdentifier("pairing-code")
-        }.disabled(pairing)
+        if let setup {
+            LabeledContent("Mac") { Text(setup.name).textSelection(.enabled) }
+        }
         if let setupError { Text(setupError).font(.footnote).foregroundStyle(BoardStyle.accent) }
         Button {
+            guard let setup else { return }
             pairing = true
             setupError = nil
             Task {
-                if await store.pair(serverURL: draft.serverURL, fingerprint: draft.fingerprint, code: draft.pairCode) {
-                    draft.pairCode = ""
+                if await store.pair(setup: setup) {
+                    self.setup = nil
                 } else {
                     setupError = store.error ?? "Coconut could not pair with this Mac."
                 }
@@ -216,15 +203,14 @@ struct MacPairingFields: View {
                 Spacer()
                 if pairing { ProgressView() }
             }
-        }.disabled(pairing || draft.pairCode.isEmpty || draft.fingerprint.isEmpty || draft.serverURL.isEmpty)
-        Text(store.hasPairing ? "Review the address before pairing. Your current pairing stays unchanged until you tap Pair iPhone."
-             : "Get a setup code from your Mac. Review the address, then pair this iPhone.")
+        }.disabled(pairing || setup == nil)
+        Text(store.hasPairing ? "Check the Mac name before pairing. Your current pairing stays unchanged until you tap Pair iPhone."
+             : "Ask your Hermes for a pairing link. Check the Mac name, then pair this iPhone.")
             .font(.caption).foregroundStyle(.secondary)
     }
 
     private func importSetup(_ payload: String) throws {
-        try draft.importPayload(payload)
-        detailsExpanded = true
+        setup = try PairingSetup.parse(payload)
         setupError = nil
     }
 }
@@ -244,10 +230,15 @@ private struct MacConnectionSettingsView: View {
                 if store.isDemo {
                     Text("Preview uses sample conversations.").foregroundStyle(.secondary)
                 } else if store.hasPairing {
-                    LabeledContent("Address") {
-                        Text(store.serverURL).font(.caption).textSelection(.enabled)
+                    LabeledContent(store.usesLegacyPairing ? "Address" : "Mac") {
+                        Text(store.pairedMacDescription).font(.caption).textSelection(.enabled)
                     }
                     Button("Reconnect") { Task { await store.reconnect() } }
+                    if store.usesLegacyPairing {
+                        // A version 1 pairing works until R5. The next pairing link moves this iPhone to the relay.
+                        Text("Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                 } else {
                     MacPairingFields()
                 }

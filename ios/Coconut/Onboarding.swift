@@ -110,12 +110,12 @@ struct OnboardingView: View {
         // A link that arrives during an action waits until the action ends.
         .onChange(of: working) { _, _ in takeSetupLink() }
         .confirmationDialog("Replace the current pairing?", isPresented: $replaceConfirmation, titleVisibility: .visible) {
-            Button("Pair with \(pairingSetup?.origin ?? "this Mac")", role: .destructive) {
+            Button("Pair with \(pairingSetup?.name ?? "this Mac")", role: .destructive) {
                 if let pairingSetup { perform { await pair(pairingSetup) } }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This iPhone uses \(store.serverURL.replacingOccurrences(of: "https://", with: "")). Pairing with another Mac replaces it.")
+            Text("This iPhone uses \(store.pairedMacDescription). Pairing again replaces it.")
         }
         .sheet(isPresented: $scannerOpen) {
             PairingScannerView { payload in
@@ -162,7 +162,7 @@ struct OnboardingView: View {
             }
         case .pair:
             OnboardingPage(title: "Connect your Hermes",
-                           subtitle: "Your Hermes agent sets up Coconut on its Mac, then sends you a setup code.") {
+                           subtitle: "Your Hermes agent sets up Coconut on its Mac, then sends you a setup link.") {
                 HermesPairingSteps(setup: pairingSetup, error: pairingError)
             }
         case .setup:
@@ -250,7 +250,7 @@ struct OnboardingView: View {
                                   identifier: "onboarding-pair") {
                         if store.hasPairing { replaceConfirmation = true } else { perform { await pair(pairingSetup) } }
                     }
-                    SecondaryButton(title: "Use another code", enabled: !working) { self.pairingSetup = nil }
+                    SecondaryButton(title: "Use another link", enabled: !working) { self.pairingSetup = nil }
                 } else if store.hasPairing && start == .welcome {
                     PrimaryButton(title: "Continue") { advance() }
                 } else {
@@ -379,7 +379,7 @@ struct OnboardingView: View {
     // The person checks the Mac address, then one tap pairs.
     private func pair(_ setup: PairingSetup) async {
         pairingError = nil
-        let saved = await store.pair(serverURL: setup.serverURL, fingerprint: setup.certificateSHA256, code: setup.pairingCode)
+        let saved = await store.pair(setup: setup)
         guard !Task.isCancelled else { return }
         if saved {
             pairingSetup = nil
@@ -390,7 +390,7 @@ struct OnboardingView: View {
             skippedSkills = []
             advance()
         } else {
-            pairingError = store.error ?? "Coconut could not pair with this Mac. Ask Hermes for a new code."
+            pairingError = store.error ?? "Coconut could not pair with this Mac. Ask your Hermes for a new pairing link."
         }
     }
 
@@ -632,23 +632,16 @@ private struct HermesPairingSteps: View {
                             .contentTransition(.symbolEffect(.replace))
                     }
                     .accessibilityIdentifier("copy-hermes-prompt")
-                    Text("This iPhone needs Tailscale, signed in to the same tailnet as the Mac.")
-                        .font(.footnote).foregroundStyle(.secondary)
                 }
             }
-            step(2, setup == nil ? "Open the code that Hermes sends" : "Check the Mac") {
+            step(2, setup == nil ? "Open the link that Hermes sends" : "Check the Mac") {
                 if let setup {
-                    Label(setup.origin, systemImage: "desktopcomputer")
+                    Label(setup.name, systemImage: "desktopcomputer")
                         .font(.body.weight(.medium))
                         .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 } else {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Tap the setup link on this iPhone, or scan the QR code below.")
-                            .font(.subheadline).foregroundStyle(.secondary)
-                        // The iPhone reaches the Mac through Tailscale. Without it, pairing fails after setup.
-                        Label("Turn on Tailscale on this iPhone, on the same network as the Mac.", systemImage: "network")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
+                    Text("Tap the setup link on this iPhone, or scan the QR code below.")
+                        .font(.subheadline).foregroundStyle(.secondary)
                 }
             }
             if let error {

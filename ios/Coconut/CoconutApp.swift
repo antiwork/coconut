@@ -158,6 +158,15 @@ struct CoconutHome: View {
                         .padding(.horizontal, 16).padding(.bottom, 8)
                     }
                 }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if !store.isDemo, let message = store.connection.bannerMessage {
+                        ConnectionBanner(message: message, needsRepair: store.connection == .needsRepair) {
+                            onboardingStart = .pair
+                            onboardingOpen = true
+                        }
+                        .padding(.horizontal, 16).padding(.bottom, 8)
+                    }
+                }
                 .navigationDestination(for: HomeDestination.self) { destination in
                     switch destination {
                     case .inbox:
@@ -276,6 +285,30 @@ struct ErrorBanner: View {
     }
 }
 
+// A calm notice: the Mac or the relay is away, and the cached state below stays usable.
+struct ConnectionBanner: View {
+    let message: String
+    let needsRepair: Bool
+    let pair: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: needsRepair ? "link" : "moon.zzz").foregroundStyle(.secondary)
+            Text(message).font(.footnote).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            if needsRepair {
+                Button("Pair", action: pair).font(.footnote.weight(.semibold))
+                    .accessibilityIdentifier("connection-banner-pair")
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 44)
+        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("connection-banner")
+    }
+}
+
 struct ConnectionRow: View {
     @Environment(AppStore.self) private var store
 
@@ -299,6 +332,9 @@ struct ConnectionRow: View {
         case .connecting: "Connecting to Mac"
         case .connected: "Mac connected"
         case .disconnected: "Waiting for connection"
+        case .macOffline: "Mac offline"
+        case .relayUnreachable: "Relay unreachable"
+        case .needsRepair: "Pair again"
         case .preview: "Mac · Preview"
         }
     }

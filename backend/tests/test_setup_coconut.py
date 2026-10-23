@@ -182,8 +182,13 @@ class SetupCoconutTests(unittest.TestCase):
             setup_coconut.share()
         lines = output.getvalue().splitlines()
         self.assertEqual(self.commands, [["pairing.py", "--share"]])
-        self.assertIn("same tailnet", output.getvalue())
+        self.assertNotIn("Tailscale", output.getvalue())
+        self.assertIn("ten minutes", output.getvalue())
         self.assertEqual(lines[-2:], ["Setup link: coconut://pair?setup=abc", "QR image: /tmp/iphone-setup.png"])
+
+    def test_start_tunnel_installs_the_sidecar_in_the_data_folder(self):
+        setup_coconut.start_tunnel()
+        self.assertEqual(self.commands, [["tunnel.py", "install", "--data-dir", str(self.data)]])
 
     def test_share_fails_without_a_link(self):
         self.output = "Open Coconut on the iPhone, then tap Scan.\n"
@@ -193,7 +198,7 @@ class SetupCoconutTests(unittest.TestCase):
     def test_main_runs_the_steps_in_order(self):
         calls = []
         names = ["prerequisites", "use_hermes", "tailscale_address", "configure", "prepare_notifications",
-                 "start_service", "share"]
+                 "start_service", "start_tunnel", "share"]
         with contextlib.ExitStack() as stack:
             for name in names:
                 stack.enter_context(patch.object(setup_coconut, name,

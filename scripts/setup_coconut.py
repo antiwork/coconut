@@ -159,6 +159,12 @@ def start_service(address: str) -> None:
     print("Coconut is healthy.")
 
 
+def start_tunnel() -> None:
+    # The app reaches this Mac through the relay tunnel. With the tunnel, pairing.py makes a version 2 link.
+    run(script("tunnel.py", "install", "--data-dir", str(DATA)), "The relay tunnel installation")
+    print("The relay tunnel is running.")
+
+
 def share() -> None:
     output = run(script("pairing.py", "--share"), "Creating the setup link").stdout
     lines = dict(line.split(": ", 1) for line in output.splitlines() if line.startswith(("Setup link: ", "QR image: ")))
@@ -167,8 +173,7 @@ def share() -> None:
         raise SystemExit("The setup link is missing from the pairing output. Run this command again.")
     print()
     print("Send the setup link and the QR image to the person who pairs. They contain a one-time code.")
-    print("The iPhone needs Tailscale, signed in to the same tailnet as this Mac.")
-    print("On the iPhone, tap the link, or scan the QR image in Coconut. The code expires after five minutes.")
+    print("On the iPhone, tap the link, or scan the QR image in Coconut. The link expires after ten minutes.")
     print("Setup link: " + lines["Setup link"])
     print("QR image: " + lines["QR image"])
 
@@ -186,6 +191,8 @@ def main() -> None:
     prepare_notifications()
     step("Starting the Coconut service")
     start_service(address)
+    step("Starting the relay tunnel")
+    start_tunnel()
     step("Creating the iPhone setup link")
     share()
 
