@@ -176,6 +176,10 @@ def ensure_tunnel_listener(seconds: float = 180) -> None:
     # A service that started before the tunnel listener existed has no --tunnel-port. A restart reads the
     # current launch settings. Without the listener, the phone cannot pair through a version 2 link.
     print("Coconut has no tunnel listener yet. Restarting it with the current launch settings.", flush=True)
+    # A stop interrupts the running bot turns, and they lose their tool results. Let them finish first, as the
+    # deploy does. A service that cannot drain stops at once, as before.
+    print("Waiting for running bot turns to finish. This can take up to 10 minutes.", flush=True)
+    host.drain_for_update()
     run(script("host.py", "restart"), "Restarting Coconut")
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:

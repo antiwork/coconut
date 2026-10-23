@@ -191,16 +191,28 @@ class SetupCoconutTests(unittest.TestCase):
             setup_coconut.start_tunnel()
         self.assertEqual(self.commands, [["tunnel.py", "install", "--data-dir", str(self.data)]])
 
-    def test_a_service_without_the_tunnel_listener_restarts_before_the_link(self):
+    def test_a_service_without_the_tunnel_listener_drains_and_restarts_before_the_link(self):
         answers = iter([False, False, True])
+        drain = Mock(side_effect=lambda: self.commands.append(["drain"]) or True)
         with patch.object(setup_coconut, "tunnel_listener_ready", lambda: next(answers)), \
+                patch.object(setup_coconut.host, "drain_for_update", drain), \
                 patch.object(setup_coconut.time, "sleep"):
             setup_coconut.start_tunnel()
-        self.assertEqual(self.commands, [["host.py", "restart"], ["tunnel.py", "install", "--data-dir", str(self.data)]])
+        self.assertEqual(self.commands, [["drain"], ["host.py", "restart"],
+                                         ["tunnel.py", "install", "--data-dir", str(self.data)]])
+
+    def test_a_running_listener_needs_no_drain_or_restart(self):
+        drain = Mock()
+        with patch.object(setup_coconut, "tunnel_listener_ready", return_value=True), \
+                patch.object(setup_coconut.host, "drain_for_update", drain):
+            setup_coconut.ensure_tunnel_listener()
+        drain.assert_not_called()
+        self.assertEqual(self.commands, [])
 
     def test_no_tunnel_and_no_link_when_the_listener_stays_away(self):
         clock = iter(range(0, 1000, 60))
         with patch.object(setup_coconut, "tunnel_listener_ready", return_value=False), \
+                patch.object(setup_coconut.host, "drain_for_update", return_value=False), \
                 patch.object(setup_coconut.time, "sleep"), \
                 patch.object(setup_coconut.time, "monotonic", lambda: next(clock)), \
                 self.assertRaises(SystemExit) as raised:

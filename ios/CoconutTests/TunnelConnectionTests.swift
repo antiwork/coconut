@@ -292,6 +292,32 @@ final class TunnelConnectionTests: XCTestCase {
         XCTAssertTrue(mac.socketClosed)
     }
 
+    // The close can come while the read waits for the handshake, between the handshake and its stream, or after
+    // the stream opened. In each case the read stops, and the phone opens no other socket.
+    func testBackgroundCloseAsTheHandshakeEndsStopsTheReadWithoutASecondSocket() async throws {
+        for attempt in 0..<25 {
+            let mac = FakeMac()
+            mac.holdsHandshake = true
+            mac.hold = { _ in true }
+            let tunnel = connection(mac, timing: .init(connect: .seconds(5), ping: .seconds(20), silence: .seconds(45)))
+            let read = Task { try await tunnel.send(getRequest("/v1/updates?after=0&wait=20"), timeout: .seconds(5)) }
+            try await waitFor { mac.heldHandshakes == 1 }
+            mac.releaseHandshake()
+            // A few turns of the executor move the read through different steps in different attempts.
+            for _ in 0..<(attempt % 5) { await Task.yield() }
+            await tunnel.closeWhenIdle()
+            do {
+                _ = try await read.value
+                XCTFail("Attempt \(attempt): the read must stop.")
+            } catch is CancellationError {
+            } catch {
+                XCTFail("Attempt \(attempt): the read failed with \(error), which APIClient would retry.")
+            }
+            try await Task.sleep(for: .milliseconds(20))
+            XCTAssertEqual(mac.socketCount, 1, "Attempt \(attempt): the close opened another socket.")
+        }
+    }
+
     func testRequestDuringBackgroundCloseKeepsTheSocket() async throws {
         let mac = FakeMac()
         mac.hold = { $0.method == "POST" }

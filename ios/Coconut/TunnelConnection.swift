@@ -268,8 +268,11 @@ actor TunnelConnection {
     private var generation = 0
     private var connecting = false
     private var connectWaiters: [UInt32: CheckedContinuation<Void, Error>] = [:]
-    // The requests in connectWaiters that only read. The background close stops them before they get a stream.
-    private var waitingReads: Set<UInt32> = []
+    // Every open request, from its start to its end, and whether it writes. A request is here also while it
+    // waits for the handshake, or between the handshake and its stream, so the background close sees it.
+    private var openRequests: [UInt32: Bool] = [:]
+    // Open requests that abandon() stopped before they had a stream.
+    private var abandoned: Set<UInt32> = []
     private var streams: [UInt32: Stream] = [:]
     private var nextStream: UInt32 = 1
     private var closeRequest: UUID?
@@ -365,14 +368,28 @@ actor TunnelConnection {
     }
 
     private func exchange(_ id: UInt32, _ request: TunnelRequest) async throws -> TunnelResponse {
-        let generation = try await connectedGeneration(for: id, isWrite: request.method != "GET")
-        try Task.checkCancellation()
-        let stream = Stream(id: id, generation: generation, isWrite: request.method != "GET")
-        streams[id] = stream
+        openRequests[id] = request.method != "GET"
         defer {
-            streams[id] = nil
+            openRequests[id] = nil
+            abandoned.remove(id)
             wakeIdleWaiters()
         }
+        do {
+            return try await streamExchange(id, request)
+        } catch where abandoned.contains(id) {
+            // A stopped request can also see the closed socket. It must end as cancelled, never as connectionLost,
+            // which APIClient would retry on a new socket.
+            throw CancellationError()
+        }
+    }
+
+    private func streamExchange(_ id: UInt32, _ request: TunnelRequest) async throws -> TunnelResponse {
+        let generation = try await connectedGeneration(for: id)
+        try Task.checkCancellation()
+        if abandoned.contains(id) { throw CancellationError() }
+        let stream = Stream(id: id, generation: generation, isWrite: request.method != "GET")
+        streams[id] = stream
+        defer { streams[id] = nil }
         let head = try JSONSerialization.data(withJSONObject: ["method": request.method, "path": request.path,
                                                                "headers": request.headers])
         try send(TunnelFrame(type: .requestHead, stream: id, payload: head), on: generation)
@@ -403,7 +420,7 @@ actor TunnelConnection {
 
     // A cancelled or expired request stops its stream. The Mac gets CANCEL, so it stops the response.
     private func abandon(_ id: UInt32) {
-        waitingReads.remove(id)
+        if openRequests[id] != nil { abandoned.insert(id) }
         if let waiter = connectWaiters.removeValue(forKey: id) { waiter.resume(throwing: CancellationError()) }
         guard let stream = streams[id], !stream.finished, stream.failure == nil else { return }
         stream.failure = CancellationError()
@@ -427,13 +444,12 @@ actor TunnelConnection {
 
     // MARK: Connection
 
-    private func connectedGeneration(for id: UInt32, isWrite: Bool) async throws -> Int {
+    private func connectedGeneration(for id: UInt32) async throws -> Int {
         if let link { return link.generation }
         if !connecting {
             connecting = true
             Task { await openLink() }
         }
-        if !isWrite { waitingReads.insert(id) }
         try await withCheckedThrowingContinuation { connectWaiters[id] = $0 }
         guard let link else { throw TunnelError.connectionLost }
         return link.generation
@@ -474,7 +490,6 @@ actor TunnelConnection {
         connecting = false
         let waiters = connectWaiters
         connectWaiters = [:]
-        waitingReads = []
         for waiter in waiters.values { waiter.resume(with: result) }
         wakeIdleWaiters()
     }
@@ -659,11 +674,11 @@ actor TunnelConnection {
     func closeWhenIdle() async {
         let request = UUID()
         closeRequest = request
-        // Reads stop at once, also the ones that still wait for the handshake. Otherwise a read would fail with
-        // connectionLost after the close, and APIClient would open another socket in the background.
-        for id in Array(waitingReads) + streams.values.filter({ !$0.isWrite }).map(\.id) { abandon(id) }
-        while closeRequest == request, !connectWaiters.isEmpty
-                || streams.values.contains(where: \.isWrite) || (link?.pendingWrites ?? 0) > 0 {
+        // Every open read stops at once: with a stream, while it waits for the handshake, or between the two.
+        // Otherwise a read would fail with connectionLost after the close, and APIClient would open another
+        // socket in the background.
+        for (id, isWrite) in openRequests where !isWrite { abandon(id) }
+        while closeRequest == request, openRequests.values.contains(true) || (link?.pendingWrites ?? 0) > 0 {
             await withCheckedContinuation { idleWaiters.append($0) }
         }
         guard closeRequest == request else { return }
