@@ -282,6 +282,26 @@ def release_ios(config, state, state_path):
     save(state_path, state)
 
 
+def retry_tunnel(live, state, state_path):
+    """Retry the tunnel sidecar build or restart that a deploy reported as failed.
+
+    The host update stays installed. Later passes find the same files and deploy nothing, so this retry runs on each
+    pass after its wait, until the sidecar has the new code.
+    """
+    pending = state.get('pending_tunnel')
+    if not pending or time.time() < pending.get('retry_at', 0):
+        return
+    try:
+        run([sys.executable, str(live / 'scripts/tunnel.py'), 'rebuild'], cwd=live)
+    except (RuntimeError, subprocess.TimeoutExpired, OSError) as error:
+        state['pending_tunnel'] = dict(pending, error=str(error)[-500:], retry_at=time.time() + FAILED_DEPLOY_SECONDS)
+        save(state_path, state)
+        print('The tunnel sidecar did not rebuild. The updater tries again later. ' + str(error), file=sys.stderr)
+        return
+    state.pop('pending_tunnel', None)
+    save(state_path, state)
+
+
 # The launch agent that runs the installed service. scripts/host.py installs it.
 SERVICE_LABEL = 'local.coconut.agent'
 
@@ -368,6 +388,13 @@ def update(config, state_path):
             result = [json.loads(line.split('=', 1)[1]) for line in output.splitlines() if line.startswith('COCONUT_DEPLOY_RESULT=')]
             if len(result) != 1 or not result[0].get('ok'):
                 raise RuntimeError('The installer did not confirm a successful deployment.')
+            # deploy.py keeps a complete update when only the sidecar build fails, and reports it in `tunnel`.
+            tunnel = result[0].get('tunnel') or {'ok': True}
+            if tunnel.get('ok'):
+                state.pop('pending_tunnel', None)
+            else:
+                state['pending_tunnel'] = dict(source_sha=sha, error=str(tunnel.get('error', ''))[-500:],
+                                               retry_at=time.time() + FAILED_DEPLOY_SECONDS)
         address = json.loads((live / '.runtime/host/connection.json').read_text())['address']
         expected.Operations().health(live, address)
         marker = json.loads(marker_path.read_text())
@@ -388,6 +415,7 @@ def update(config, state_path):
     state.update(source_sha=sha, package_id=metadata['package_id'])
     # Save the install now, so a later iOS step that fails cannot leave an old backoff in place.
     save(state_path, state)
+    retry_tunnel(live, state, state_path)
     fingerprint = ios_hash(source)
     if config.get('release_helper') and not state.get('pending_ios', {}).get('build'):
         if fingerprint in (state.get('ios_hash'), state.get('rejected_ios_hash')):
