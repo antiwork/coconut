@@ -107,8 +107,8 @@ The first launch without a pairing opens onboarding. Settings → Hermes setup o
 Each page has a segmented progress bar, a serif title, a short subtitle, one live illustration, and one primary button.
 A page enters in order: title, subtitle, then illustration.
 
-1. Welcome: three bots at work, each with a changing phase label.
-2. Connect your Mac: the pairing fields. Pairing moves to the next page.
+1. Welcome: three bots at work, each with a changing phase label. The first launch cannot skip pairing.
+2. Connect your Hermes: a message to copy and send to the Hermes agent, then the setup link or QR code that the agent sends back. The Mac address shows on the Pair button. A tapped `coconut://pair` link opens this page.
 3. Setup: items travel from Hermes to the coconut and land in a list. A check mark ends the import preview.
 4. Choose your bots: one switch for each profile that is not imported yet.
 5. Model keys: shown only when the setup has API keys or sign-ins. Nothing is copied without Use them. Sign-ins are listed with a note to sign in again.

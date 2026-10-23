@@ -155,6 +155,8 @@ class PairingToolsTests(unittest.TestCase):
             (root / "scripts").mkdir()
             (root / "scripts/pairing-qr.swift").write_bytes((SCRIPTS / "pairing-qr.swift").read_bytes())
             with patch.object(pairing, "ROOT", root):
+                shared = root / "shared.png"
+                pairing.render(self.payload(), show=False, share=True).rename(shared)
                 image = pairing.render(self.payload(), show=False)
             decoder = root / "decode.swift"
             decoder.write_text('''import Foundation
@@ -168,6 +170,19 @@ print(value)
             result = subprocess.run(["swift", str(decoder), str(image)], check=True, capture_output=True, text=True)
             self.assertEqual(json.loads(result.stdout), self.payload())
             self.assertEqual(image.stat().st_mode & 0o777, 0o600)
+            # A code that Hermes sends holds the link, so a tap or the Camera app opens Coconut.
+            result = subprocess.run(["swift", str(decoder), str(shared)], check=True, capture_output=True, text=True)
+            self.assertEqual(result.stdout.strip(), pairing.link(self.payload()))
+
+    def test_setup_link_holds_the_exact_payload(self):
+        link = pairing.link(self.payload())
+        self.assertTrue(link.startswith("coconut://pair?setup="))
+        encoded = link.split("setup=", 1)[1]
+        self.assertNotIn("=", encoded)
+        decoded = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        self.assertEqual(json.loads(decoded), self.payload())
+        with self.assertRaises((ValueError, SystemExit)):
+            pairing.link(self.payload() | {"pairing_code": "12345"})
 
 
 if __name__ == "__main__":

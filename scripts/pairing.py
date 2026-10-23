@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 from pathlib import Path
@@ -45,8 +46,17 @@ def local_payload() -> dict:
                          pairing_code=result.stdout.strip()))
 
 
-def render(payload: dict, *, show: bool = True) -> Path:
+def link(payload: dict) -> str:
+    """A setup link opens Coconut on the iPhone. The QR code holds the same link."""
+    data = json.dumps(validate(payload), separators=(",", ":")).encode()
+    return "coconut://pair?setup=" + base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+
+def render(payload: dict, *, show: bool = True, share: bool = False) -> Path:
     payload = validate(payload)
+    # A shared code opens Coconut from a tapped link or from the Camera app. The Mac's own QR keeps
+    # the JSON format, which earlier app builds also read.
+    setup_link = link(payload) if share else None
     directory = ROOT / ".runtime/pairing"
     for path in (ROOT / ".runtime", directory):
         if path.is_symlink():
@@ -57,11 +67,17 @@ def render(payload: dict, *, show: bool = True) -> Path:
     if output.is_symlink():
         raise SystemExit("The setup image must not be a symbolic link.")
     command = ["swift", str(ROOT / "scripts/pairing-qr.swift"), str(output)]
-    subprocess.run(command, input=json.dumps(payload).encode(), check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(command, input=(setup_link or json.dumps(payload)).encode(), check=True, stdout=subprocess.DEVNULL)
     output.chmod(0o600)
     if show:
         subprocess.run(["open", str(output)], check=True)
-    print("Open Coconut Settings on the iPhone, then tap Scan setup code.")
+    if share:
+        # A Hermes agent sends these to the person. The link and the image contain a one-time code.
+        print("Setup link: " + setup_link)
+        print("QR image: " + str(output))
+        print("On the iPhone, tap the link, or scan the QR image in Coconut.")
+    else:
+        print("Open Coconut on the iPhone, then tap Scan.")
     print("This setup code expires after five minutes. Generate another code if it expires.")
     return output
 
@@ -71,10 +87,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stdin", action="store_true", help="Read setup JSON privately from standard input.")
     parser.add_argument("--no-open", action="store_true", help="Create the QR without opening Preview.")
+    parser.add_argument("--share", action="store_true",
+                        help="Print the setup link and the QR image path, so a Hermes agent can send them.")
     args = parser.parse_args()
     try:
         payload = json.load(sys.stdin) if args.stdin else local_payload()
-        render(payload, show=not args.no_open)
+        render(payload, show=not args.no_open and not args.share, share=args.share)
     except (ValueError, OSError, subprocess.CalledProcessError):
         raise SystemExit("Coconut could not create the setup QR. Check the host and Xcode Command Line Tools.") from None
 

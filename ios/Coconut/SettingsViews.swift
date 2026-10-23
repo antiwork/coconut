@@ -203,21 +203,10 @@ struct MacPairingFields: View {
             pairing = true
             setupError = nil
             Task {
-                let previousAddress = store.serverURL
-                let previousFingerprint = store.fingerprint
-                store.serverURL = draft.serverURL
-                store.fingerprint = draft.fingerprint
-                store.pairCode = draft.pairCode
-                await store.pair()
-                // Pair clears the code after saving, before the first state sync.
-                let pairingSaved = store.pairCode.isEmpty
-                if pairingSaved { draft.pairCode = "" }
-                if let error = store.error {
-                    setupError = error
-                    if store.hasPairing && !pairingSaved {
-                        store.serverURL = previousAddress
-                        store.fingerprint = previousFingerprint
-                    }
+                if await store.pair(serverURL: draft.serverURL, fingerprint: draft.fingerprint, code: draft.pairCode) {
+                    draft.pairCode = ""
+                } else {
+                    setupError = store.error ?? "Coconut could not pair with this Mac."
                 }
                 pairing = false
             }
