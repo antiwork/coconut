@@ -32,16 +32,18 @@ class TunnelPackageTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(deploy.allowed_path(name))
 
-    def test_the_deploy_rebuilds_the_sidecar_after_the_push_build(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / '.runtime/host').mkdir(parents=True)
-            (root / '.runtime/host/server.crt').write_text('cert')
-            (root / '.runtime/host/server.key').write_text('key')
-            commands = []
-            with patch.object(deploy.Operations, 'command', lambda self, command, *args, **kwargs: commands.append(command[1:])):
-                deploy.Operations.prepare(object.__new__(deploy.Operations), root, 'https://mini:8960', None)
-            self.assertEqual(commands, [[str(root / 'scripts/push.py'), '--rebuild'], [str(root / 'scripts/tunnel.py'), 'rebuild']])
+    def test_a_failed_sidecar_build_keeps_the_complete_update(self):
+        root = Path('/Coconut')
+        commands = []
+
+        def command(self, arguments, *rest, **options):
+            commands.append(arguments[1:])
+            raise deploy.DeployError('Tunnel sidecar build failed (exit 1). No command output was exposed.')
+
+        with patch.object(deploy.Operations, 'command', command):
+            result = deploy.Operations.tunnel(object.__new__(deploy.Operations), root)
+        self.assertEqual(commands, [[str(root / 'scripts/tunnel.py'), 'rebuild']])
+        self.assertEqual(result, {'ok': False, 'error': 'Tunnel sidecar build failed (exit 1). No command output was exposed.'})
 
 
 class TunnelRebuildTests(unittest.TestCase):
@@ -80,8 +82,15 @@ class TunnelRebuildTests(unittest.TestCase):
         self.assertNotIn('kickstart', self.calls)
         self.assertTrue(self.rebuild(changed=True))
         self.assertIn('kickstart', self.calls)
+
+    def test_a_failed_restart_is_retried_by_the_next_rebuild(self):
+        # The new binary is in place, but the old process still runs. Without its receipt, the next rebuild restarts it.
+        self.install()
+        receipt = self.data / 'tunnel/sidecar.sha256'
+        receipt.write_text('fingerprint')
         with self.assertRaisesRegex(SystemExit, 'did not restart'):
             self.rebuild(changed=True, kickstart=1)
+        self.assertFalse(receipt.exists())
 
 
 if __name__ == '__main__':

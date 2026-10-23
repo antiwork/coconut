@@ -94,6 +94,8 @@ def rebuild(data_dir: Path) -> None:
         print('The tunnel sidecar is up to date.')
         return
     if launchctl('kickstart', '-k', f'gui/{os.getuid()}/{LABEL}').returncode:
+        # Without the receipt, the next rebuild compiles and restarts again, instead of reporting an old process as current.
+        (data_dir.resolve() / 'tunnel/sidecar.sha256').unlink(missing_ok=True)
         raise SystemExit('The tunnel sidecar was rebuilt, but launchctl did not restart it.')
     print('Rebuilt and restarted the tunnel sidecar.')
 

@@ -111,6 +111,10 @@ class FakeOperations:
         self.record('health', root, address)
         return {'status': 'ok', 'provider': 'hermes', 'ready': True}
 
+    def tunnel(self, root):
+        self.record('tunnel', root)
+        return {'ok': True}
+
     def probe(self, root, address):
         # A probe is a short health check. An injected health failure fails it too.
         self.record('probe', root, address)
@@ -278,6 +282,20 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.receive(files=package_files(), operations=FakeOperations(mode='manual'))
         self.assertFalse((self.target / 'docs/old.md').exists())
         self.assertEqual(personal.read_bytes(), b'Keep this local note.\n')
+
+    def test_the_tunnel_sidecar_gets_new_code_only_after_a_complete_update(self):
+        # A rollback restores the old sources. A sidecar built from the new sources would keep running.
+        self.receive()
+        for failure in ('prepare', 'hermes', 'restore'):
+            operations = FakeOperations(mode='managed', fail=failure)
+            with self.subTest(failure=failure), self.assertRaises(deploy.DeployError):
+                self.receive(files=package_files(**{'README.md': f'{failure}\n'.encode()}), operations=operations)
+            self.assertNotIn('tunnel', [call[0] for call in operations.calls])
+        operations = FakeOperations(mode='managed')
+        result = self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=operations)
+        self.assertEqual(operations.calls[-1][0], 'tunnel')
+        self.assertEqual(result['tunnel'], {'ok': True})
+        self.assertFalse((self.target / '.runtime/deploy/update.json').exists())
 
     def test_an_update_lets_the_running_turns_finish_before_it_stops_the_service(self):
         class DrainingOperations(FakeOperations):
