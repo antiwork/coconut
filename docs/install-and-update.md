@@ -151,8 +151,9 @@ The command does these steps:
 1. It checks for macOS and Xcode Command Line Tools.
 2. It finds the Hermes that the person already uses: the `hermes` command, or `~/.hermes/hermes-agent`. It does not install its own copy. If Hermes is missing, it stops and asks you to install Hermes first.
 3. It checks that Tailscale is connected, then configures the host with this Mac's Tailscale name and port 8960. It keeps a port that an earlier setup chose for the same name.
-4. It installs or starts the login service, so Coconut starts again after a restart. Then it waits for the local HTTPS health check.
-5. It runs `python3 scripts/pairing.py --share`. It prints the `coconut://pair` setup link and the path of a QR image that holds the same link last.
+4. It prepares notification encryption with `push.py --rebuild`.
+5. It installs or starts the login service with the Hermes Python, so Coconut starts again after a restart. Then it waits for the local HTTPS health check.
+6. It runs `python3 scripts/pairing.py --share`. It prints the `coconut://pair` setup link and the path of a QR image that holds the same link last.
 
 Each failed check prints what to do. You can run the command again at any time. It skips the steps that are complete, and it prints a new setup link.
 If the Tailscale name changes, the command stops Coconut before it saves the new address. Every paired iPhone must then pair again.

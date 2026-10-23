@@ -38,7 +38,9 @@ def run(arguments: list[str], label: str, *, quiet: bool = True) -> subprocess.C
 
 
 def script(name: str, *arguments: str) -> list[str]:
-    return [sys.executable, str(ROOT / "scripts" / name), *arguments]
+    # As in the installer, project scripts use the Hermes Python. The login service then runs with Hermes packages.
+    python = os.environ.get("COCONUT_HERMES_PYTHON") or sys.executable
+    return [python, str(ROOT / "scripts" / name), *arguments]
 
 
 def tailscale_command() -> str:
@@ -139,6 +141,12 @@ def use_hermes() -> None:
     print(f"Coconut uses the Hermes in {root}.")
 
 
+def prepare_notifications() -> None:
+    # The service sends notifications only when the encryption helper and its sender key exist.
+    run(script("push.py", "--rebuild"), "The notification setup")
+    print("Notifications are ready.")
+
+
 def service_running() -> bool:
     return host.owned_agent()[1] or host.owned_process() is not None
 
@@ -198,6 +206,8 @@ def main() -> None:
     step("Configuring the Tailscale address")
     address = tailscale_address()
     configure(address)
+    step("Preparing notifications")
+    prepare_notifications()
     step("Starting the Coconut service")
     start_service(address)
     step("Creating the iPhone setup link")

@@ -15,6 +15,7 @@ import setup_coconut
 
 
 ADDRESS = "https://mac.tail1234.ts.net:8960"
+HERMES_PYTHON = "/hermes/venv/bin/python"
 
 
 def completed(arguments, returncode=0, stdout="", stderr=""):
@@ -43,7 +44,7 @@ class SetupCoconutTests(unittest.TestCase):
 
     def record(self, arguments, label, *, quiet=True):
         self.commands.append([Path(part).name if part.endswith(".py") else part for part in arguments[1:]]
-                             if arguments[0] == sys.executable else arguments)
+                             if arguments[0] in {sys.executable, HERMES_PYTHON} else arguments)
         return completed(arguments, stdout=self.output if "--share" in arguments else "")
 
     def save(self, address):
@@ -138,6 +139,16 @@ class SetupCoconutTests(unittest.TestCase):
             self.assertEqual(setup_coconut.os.environ["COCONUT_HERMES_PYTHON"], "/hermes/venv/bin/python")
         self.assertEqual(self.commands, [])
 
+    def test_project_scripts_use_the_hermes_python(self):
+        with patch.dict(setup_coconut.os.environ, {"COCONUT_HERMES_PYTHON": HERMES_PYTHON}):
+            self.assertEqual(setup_coconut.script("host.py", "stop")[0], HERMES_PYTHON)
+        with patch.dict(setup_coconut.os.environ, {}, clear=True):
+            self.assertEqual(setup_coconut.script("host.py", "stop")[0], sys.executable)
+
+    def test_prepares_notifications(self):
+        setup_coconut.prepare_notifications()
+        self.assertEqual(self.commands, [["push.py", "--rebuild"]])
+
     def test_configure_skips_a_saved_address(self):
         self.save(ADDRESS)
         with patch.object(setup_coconut, "service_running", side_effect=AssertionError):
@@ -212,7 +223,8 @@ class SetupCoconutTests(unittest.TestCase):
 
     def test_main_runs_the_steps_in_order(self):
         calls = []
-        names = ["prerequisites", "use_hermes", "tailscale_address", "configure", "start_service", "share"]
+        names = ["prerequisites", "use_hermes", "tailscale_address", "configure", "prepare_notifications",
+                 "start_service", "share"]
         with contextlib.ExitStack() as stack:
             for name in names:
                 stack.enter_context(patch.object(setup_coconut, name,
