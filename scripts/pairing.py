@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
-"""Open a private, one-time setup QR for the iPhone."""
+"""Open a private, one-time setup QR for the iPhone.
+
+A Mac with the tunnel sidecar (scripts/tunnel.py) makes a version 2 link for the relay transport. Other Macs, and
+--legacy, make a version 1 link for the TLS connection that current app builds use.
+"""
 
 from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
 import re
+import socket
 import subprocess
 import sys
 
@@ -16,9 +23,35 @@ import host
 
 
 ROOT = Path(__file__).resolve().parents[1]
+V2_FIELDS = {"version", "relay", "route", "mac_key", "secret", "expires", "name"}
+
+
+def unpadded(value: str, size: int) -> bytes | None:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        return None
+    data = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    return data if len(data) == size else None
+
+
+def validate_v2(payload: dict) -> dict:
+    if set(payload) != V2_FIELDS or type(payload["version"]) is not int or payload["version"] != 2:
+        raise ValueError("The setup data uses an unsupported format.")
+    relay, route, name, expires = payload["relay"], payload["route"], payload["name"], payload["expires"]
+    # Plain HTTP is only for a relay on this Mac, for example in the loopback test.
+    if not isinstance(relay, str) or not re.fullmatch(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?|http://127\.0\.0\.1:[0-9]+", relay):
+        raise ValueError("The relay address is invalid.")
+    if not isinstance(route, str) or not re.fullmatch(r"[0-9a-f]{64}", route):
+        raise ValueError("The route is invalid.")
+    if unpadded(payload["mac_key"], 32) is None or unpadded(payload["secret"], 32) is None:
+        raise ValueError("The Mac key or the pairing secret is invalid.")
+    if type(expires) is not int or not isinstance(name, str) or not name.strip() or len(name) > 80:
+        raise ValueError("The expiry or the Mac name is invalid.")
+    return dict(payload, name=name.strip())
 
 
 def validate(payload: dict) -> dict:
+    if isinstance(payload, dict) and payload.get("version") == 2 and type(payload["version"]) is int:
+        return validate_v2(payload)
     fields = {"version", "server_url", "certificate_sha256", "pairing_code"}
     if not isinstance(payload, dict) or set(payload) != fields or type(payload["version"]) is not int or payload["version"] != 1:
         raise ValueError("The setup data uses an unsupported format.")
@@ -31,8 +64,10 @@ def validate(payload: dict) -> dict:
     return dict(version=1, server_url=address, certificate_sha256=pin.lower(), pairing_code=code)
 
 
-def local_payload() -> dict:
-    data = ROOT / ".runtime/host"
+def local_payload(legacy: bool = False) -> dict:
+    data = host.DEFAULT_DATA
+    if not legacy and (data / "tunnel/route.json").is_file():
+        return tunnel_payload(data)
     connection = data / "connection.json"
     if not connection.is_file():
         raise SystemExit("Configure the Mac address with host.py setup --address before pairing.")
@@ -46,6 +81,52 @@ def local_payload() -> dict:
                          pairing_code=result.stdout.strip()))
 
 
+def hkdf(secret: bytes, label: str) -> bytes:
+    """HKDF-SHA256 with an empty salt and one 32-byte output block. The sidecar and the iPhone use the same labels."""
+    key = hmac.new(bytes(32), secret, hashlib.sha256).digest()
+    return hmac.new(key, label.encode() + b"\x01", hashlib.sha256).digest()
+
+
+def tunnel_ticket(secret: str) -> tuple[str, str]:
+    """Return the relay ticket hash and the Noise pre-shared key of a pairing secret.
+
+    The iPhone connects to the relay with `Authorization: Ticket <ticket>`, and the relay stores only the hash.
+    """
+    data = unpadded(secret, 32)
+    ticket = hkdf(data, "coconut pairing ticket").hex()
+    return hashlib.sha256(ticket.encode()).hexdigest(), hkdf(data, "coconut pairing psk").hex()
+
+
+def mac_name() -> str:
+    result = subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True, text=True, check=False)
+    return (result.stdout.strip() or socket.gethostname().removesuffix(".local"))[:80]
+
+
+def tunnel_payload(data: Path) -> dict:
+    """Create a version 2 setup: a 32-byte secret for the backend, and its ticket for the sidecar.
+
+    The backend stores only the hash of the secret. The sidecar gets the ticket hash and the pre-shared key in
+    tunnel/tickets, and sends the ticket hash to the relay.
+    """
+    route = json.loads((data / "tunnel/route.json").read_text())
+    result = subprocess.run([sys.executable, "-m", "coconut", "--data-dir", str(data), "--pair", "--tunnel"],
+                            cwd=ROOT / "backend", check=True, capture_output=True, text=True)
+    secret, expires = result.stdout.split()
+    expires = int(expires)
+    ticket_hash, psk = tunnel_ticket(secret)
+    tickets = data / "tunnel/tickets"
+    if tickets.is_symlink():
+        raise SystemExit("The tunnel folder must not be a symbolic link.")
+    host.private_directory(tickets)
+    path = tickets / f"{ticket_hash}.json"
+    temporary = tickets / f".{ticket_hash}.tmp"
+    temporary.write_text(json.dumps({"psk": psk, "expires": expires}))
+    temporary.chmod(0o600)
+    os.replace(temporary, path)
+    return validate_v2(dict(version=2, relay=route["relay"], route=route["route"], mac_key=route["mac_key"],
+                            secret=secret, expires=expires, name=mac_name()))
+
+
 def link(payload: dict) -> str:
     """A setup link opens Coconut on the iPhone. The QR code holds the same link."""
     data = json.dumps(validate(payload), separators=(",", ":")).encode()
@@ -54,9 +135,9 @@ def link(payload: dict) -> str:
 
 def render(payload: dict, *, show: bool = True, share: bool = False) -> Path:
     payload = validate(payload)
-    # A shared code opens Coconut from a tapped link or from the Camera app. The Mac's own QR keeps
-    # the JSON format, which earlier app builds also read.
-    setup_link = link(payload) if share else None
+    # A shared code opens Coconut from a tapped link or from the Camera app. The Mac's own version 1 QR keeps
+    # the JSON format, which earlier app builds also read. Only the link holds a version 2 setup.
+    setup_link = link(payload) if share or payload["version"] == 2 else None
     directory = ROOT / ".runtime/pairing"
     for path in (ROOT / ".runtime", directory):
         if path.is_symlink():
@@ -78,7 +159,8 @@ def render(payload: dict, *, show: bool = True, share: bool = False) -> Path:
         print("On the iPhone, tap the link, or scan the QR image in Coconut.")
     else:
         print("Open Coconut on the iPhone, then tap Scan.")
-    print("This setup code expires after five minutes. Generate another code if it expires.")
+    minutes = "ten" if payload["version"] == 2 else "five"
+    print(f"This setup code expires after {minutes} minutes. Generate another code if it expires.")
     return output
 
 
@@ -89,11 +171,13 @@ def main() -> None:
     parser.add_argument("--no-open", action="store_true", help="Create the QR without opening Preview.")
     parser.add_argument("--share", action="store_true",
                         help="Print the setup link and the QR image path, so a Hermes agent can send them.")
+    parser.add_argument("--legacy", action="store_true",
+                        help="Make a version 1 link for app builds that connect over TLS, also on a Mac with the tunnel sidecar.")
     args = parser.parse_args()
     try:
-        payload = json.load(sys.stdin) if args.stdin else local_payload()
+        payload = json.load(sys.stdin) if args.stdin else local_payload(args.legacy)
         render(payload, show=not args.no_open and not args.share, share=args.share)
-    except (ValueError, OSError, subprocess.CalledProcessError):
+    except (ValueError, KeyError, OSError, subprocess.CalledProcessError):
         raise SystemExit("Coconut could not create the setup QR. Check the host and Xcode Command Line Tools.") from None
 
 

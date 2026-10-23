@@ -28,6 +28,8 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA = ROOT / ".runtime/host"
 LABEL = "local.coconut.agent"
+# The tunnel sidecar (scripts/tunnel.py) forwards phone requests to this plain HTTP listener on loopback.
+TUNNEL_PORT = 8961
 MODEL_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY")
 ADDRESS_COMMANDS = {"setup", "serve", "start", "install-service", "status"}
 
@@ -305,7 +307,7 @@ def service_args(args: argparse.Namespace) -> list[str]:
         result.extend(["--cert", str(cert), "--key", str(key)])
     elif args.host not in {"127.0.0.1", "::1", "localhost"}:
         raise SystemExit("HTTP is available only on loopback. Use TLS for the local network.")
-    return result
+    return [*result, "--tunnel-port", str(TUNNEL_PORT)]
 
 
 def show_connection(args: argparse.Namespace) -> None:
@@ -391,6 +393,8 @@ def owned_process() -> tuple[int, dict] | None:
         + r" --host (?P<host>\S+) --port (?P<port>\d+) --provider (?P<provider>hermes|fixture)"
         + r"(?P<tls> --cert " + re.escape(str(DEFAULT_DATA / "server.crt"))
         + r" --key " + re.escape(str(DEFAULT_DATA / "server.key")) + r")?"
+        # A process from before the tunnel listener has no --tunnel-port.
+        + r"(?: --tunnel-port " + str(TUNNEL_PORT) + r")?"
     )
     match = re.fullmatch(pattern, result.stdout.strip())
     if not match or not re.fullmatch(r"python[0-9.]*", Path(match["python"]).name, re.IGNORECASE):

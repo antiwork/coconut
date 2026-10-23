@@ -13,37 +13,31 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def compile_swift(sources, binary, receipt):
+    """Compile the Swift sources into binary, unless the receipt holds the fingerprint of the same sources."""
+    fingerprint = hashlib.sha256(b''.join(source.read_bytes() for source in sources)).hexdigest()
+    if binary.is_file() and receipt.is_file() and receipt.read_text() == fingerprint:
+        return
+    with tempfile.TemporaryDirectory(dir=binary.parent) as temp:
+        output = Path(temp) / binary.name
+        subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-O', *map(str, sources), '-o', str(output)], check=True)
+        output.chmod(0o700)
+        os.replace(output, binary)
+    receipt.write_text(fingerprint)
+    receipt.chmod(0o600)
+
+
 def build_encryption(directory):
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     if directory.is_symlink():
         raise SystemExit('The push directory must not be a symbolic link.')
-    sources = [ROOT / 'scripts/push-envelope.swift', ROOT / 'scripts/push-encrypt.swift']
-    fingerprint = hashlib.sha256(b''.join(source.read_bytes() for source in sources)).hexdigest()
-    receipt = directory / 'encryption.sha256'
-    if not (directory / 'push-encrypt').is_file() or not receipt.is_file() or receipt.read_text() != fingerprint:
-        with tempfile.TemporaryDirectory(dir=directory) as temp:
-            binary = Path(temp) / 'push-encrypt'
-            subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-O', *map(str, sources), '-o', str(binary)], check=True)
-            binary.chmod(0o700)
-            os.replace(binary, directory / 'push-encrypt')
-        receipt.write_text(fingerprint)
-        receipt.chmod(0o600)
+    compile_swift([ROOT / 'scripts/push-envelope.swift', ROOT / 'scripts/push-encrypt.swift'],
+                  directory / 'push-encrypt', directory / 'encryption.sha256')
     subprocess.run([str(directory / 'push-encrypt'), str(directory), 'setup'], check=True, stdout=subprocess.DEVNULL)
 
 
 def build_sender(directory):
-    source = ROOT / 'scripts/apns-provider.swift'
-    fingerprint = hashlib.sha256(source.read_bytes()).hexdigest()
-    receipt = directory / 'provider.sha256'
-    if (directory / 'apns-provider').is_file() and receipt.is_file() and receipt.read_text() == fingerprint:
-        return
-    with tempfile.TemporaryDirectory(dir=directory) as temp:
-        binary = Path(temp) / 'apns-provider'
-        subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-O', str(source), '-o', str(binary)], check=True)
-        binary.chmod(0o700)
-        os.replace(binary, directory / 'apns-provider')
-    receipt.write_text(fingerprint)
-    receipt.chmod(0o600)
+    compile_swift([ROOT / 'scripts/apns-provider.swift'], directory / 'apns-provider', directory / 'provider.sha256')
 
 
 def configure(args):

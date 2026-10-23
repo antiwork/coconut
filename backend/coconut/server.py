@@ -1,4 +1,8 @@
-"""Versioned HTTP API with bearer authentication and optional pinned TLS."""
+"""Versioned HTTP API with bearer authentication and optional pinned TLS.
+
+The tunnel listener is plain HTTP on loopback for the tunnel sidecar (scripts/tunnel-sidecar.swift). The sidecar sets
+X-Coconut-Peer to the static key of the phone at the other end of each Noise session. Only that listener reads the header.
+"""
 from __future__ import annotations
 
 import argparse
@@ -9,24 +13,30 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
-import secrets
+import re
 import signal
 import socket
 import sqlite3
 import ssl
 import sys
+import threading
 import time
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import hermes_runtime
 from .hermes_unavailable import UnavailableService
-from .service import Service, ServiceError, digest
+from .service import TUNNEL_PAIRING_LIFETIME, Service, ServiceError, issue_pairing_code, migrate_device_peers
+
+PEER_KEY = re.compile(r'[0-9a-f]{64}')
 
 
 class APIServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
     tls_handshake_timeout = 5
+
+    # Only TunnelServer reads X-Coconut-Peer.
+    tunnel = False
 
     def __init__(self, address, service: Service, *, tls_context: ssl.SSLContext | None = None):
         if ':' in address[0]:
@@ -51,6 +61,18 @@ class APIServer(ThreadingHTTPServer):
                 return
         request.settimeout(35)
         super().process_request_thread(request, client_address)
+
+
+class TunnelServer(APIServer):
+    """The plain HTTP listener on loopback for the tunnel sidecar."""
+    tunnel = True
+
+    def __init__(self, port: int, service: Service):
+        super().__init__(('127.0.0.1', port), service)
+
+    def service_actions(self):
+        # Only the main listener takes a restart request, so the tunnel listener never consumes it.
+        pass
 
 
 def accepts_gzip(header):
@@ -150,14 +172,20 @@ class Handler(BaseHTTPRequestHandler):
             if method == 'GET' and url.path == '/health':
                 self._json(200, {'ok': True, 'api_version': 1})
                 return
+            peer = None
+            if self.server.tunnel:
+                # Every tunnel request names its phone. A request without the key never reaches a device.
+                peer = self.headers.get('X-Coconut-Peer', '')
+                if not PEER_KEY.fullmatch(peer):
+                    raise ServiceError(401, 'Pair this phone with the Mac to continue.')
             if method == 'POST' and url.path == '/v1/pair':
-                self._json(200, service.pair(self._body()))
+                self._json(200, service.pair(self._body(), peer))
                 return
             authorization = self.headers.get('Authorization', '')
             if not authorization.startswith('Bearer '):
                 raise ServiceError(401, 'Pair this phone with the Mac to continue.')
             started = time.perf_counter()
-            device = service.authenticate(authorization[7:])
+            device = service.authenticate(authorization[7:], peer)
             self.timings = {'auth': (time.perf_counter() - started) * 1000}
             if isinstance(service, UnavailableService) and not (method == 'GET' and url.path == '/v1/setup'):
                 # Without Hermes, only the setup status answers. See hermes_unavailable.
@@ -168,7 +196,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if method == 'POST' and url.path == '/v1/maintenance/checkout-recovery':
                 self._json(200, service.request_checkout_recovery(
-                    self._body(), self.headers.get('Idempotency-Key', ''), authorization[7:]))
+                    self._body(), self.headers.get('Idempotency-Key', ''), authorization[7:], peer))
                 return
             if method == 'GET':
                 if url.path.startswith('/v1/tasks/') and url.path.endswith('/checkout-recovery'):
@@ -248,16 +276,24 @@ class Handler(BaseHTTPRequestHandler):
 
 def create_pairing_code(data_dir: str | Path, lifetime: int = 300) -> str:
     """Admin-only operation. It does not recover tasks in another service process."""
+    return store_pairing_code(data_dir, lifetime, False)[0]
+
+
+def create_tunnel_pairing(data_dir: str | Path) -> tuple[str, int]:
+    """Return the secret of a version 2 pairing link and its expiry in Unix seconds."""
+    return store_pairing_code(data_dir, TUNNEL_PAIRING_LIFETIME, True)
+
+
+def store_pairing_code(data_dir: str | Path, lifetime: int, tunnel: bool) -> tuple[str, int]:
+    """The store keeps only the hash of the code. See issue_pairing_code."""
     path = Path(data_dir).expanduser() / 'coconut.sqlite3'
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path.parent, 0o700)
-    code = ''.join(secrets.choice('0123456789') for _ in range(10))
     with sqlite3.connect(path, timeout=10) as connection:
         os.chmod(path, 0o600)
         connection.execute('CREATE TABLE IF NOT EXISTS pairing (hash TEXT PRIMARY KEY, expires REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0)')
-        connection.execute('DELETE FROM pairing WHERE expires < ? OR used=1', (time.time(),))
-        connection.execute('INSERT INTO pairing(hash,expires) VALUES (?,?)', (digest(code), time.time() + lifetime))
-    return code
+        migrate_device_peers(connection)
+        return issue_pairing_code(connection, lifetime, tunnel)
 
 
 def write_process_record(service):
@@ -310,11 +346,18 @@ def main(argv=None):
     parser.add_argument('--provider', choices=('fixture', 'hermes'), default='fixture')
     parser.add_argument('--cert', type=Path)
     parser.add_argument('--key', type=Path)
+    parser.add_argument('--tunnel-port', type=int, default=0,
+                        help='Also listen with plain HTTP on 127.0.0.1 at this port for the tunnel sidecar. 0 turns it off.')
     parser.add_argument('--pair', action='store_true')
+    parser.add_argument('--tunnel', action='store_true',
+                        help='With --pair: print the secret for a version 2 pairing link and its expiry in Unix seconds.')
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     if args.pair:
         try:
-            print(create_pairing_code(args.data_dir))
+            if args.tunnel:
+                print(*create_tunnel_pairing(args.data_dir))
+            else:
+                print(create_pairing_code(args.data_dir))
         except ServiceError as error:
             parser.error(str(error))
         return
@@ -343,7 +386,7 @@ def main(argv=None):
                 service = UnavailableService(args.data_dir, hermes)
     except ServiceError as error:
         parser.error(str(error))
-    server = None
+    server = tunnel = None
     try:
         context = None
         if args.cert:
@@ -351,6 +394,8 @@ def main(argv=None):
             context.minimum_version = ssl.TLSVersion.TLSv1_2
             context.load_cert_chain(args.cert, args.key)
         server = APIServer((args.host, args.port), service, tls_context=context)
+        if args.tunnel_port:
+            tunnel = TunnelServer(args.tunnel_port, service)
     except OSError as error:
         if server:
             server.server_close()
@@ -360,6 +405,9 @@ def main(argv=None):
     service.restart_enabled = os.environ.get("COCONUT_MANAGED_SERVICE") == "1"
     service.start()
     print(f'Coconut is listening on {args.host}:{args.port}. Provider: {args.provider}.', flush=True)
+    if tunnel:
+        threading.Thread(target=tunnel.serve_forever, kwargs={'poll_interval': .2}, name='tunnel-listener', daemon=True).start()
+        print(f'The tunnel sidecar connects to 127.0.0.1:{args.tunnel_port}.', flush=True)
     if args.provider == 'fixture':
         print('Fixture mode uses scripted responses. It does not execute Hermes.', flush=True)
     elif isinstance(service, UnavailableService):
@@ -377,6 +425,9 @@ def main(argv=None):
     except KeyboardInterrupt:
         pass
     finally:
+        if tunnel:
+            tunnel.shutdown()
+            tunnel.server_close()
         server.server_close()
         service.close()
 
