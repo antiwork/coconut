@@ -1,8 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
+import { tunnelRuntime } from './tunnel-runtime.mjs';
 import worker from '../src/worker.js';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -16,23 +15,7 @@ const frame = (channel, bytes) => {
 const control = value => frame(0, new TextEncoder().encode(JSON.stringify(value)));
 
 async function relay(t, limits = { register: 100, connect: 1000 }) {
-  const runtime = new Miniflare(convertV4MiniflareOptions({
-    compatibilityDate: '2026-09-10', compatibilityFlags: ['nodejs_compat'],
-    modules: [
-      { type: 'ESModule', path: 'entry.js', contents: `
-        import { handleTunnel } from './tunnel.js';
-        export { Tunnel } from './tunnel.js';
-        export default { async fetch(request, env) {
-          return (await handleTunnel(request, env)) || new Response(null, { status: 404 });
-        }};` },
-      { type: 'ESModule', path: 'tunnel.js', contents: readFileSync(new URL('../src/tunnel.js', import.meta.url), 'utf8') },
-    ],
-    durableObjects: { TUNNELS: { className: 'Tunnel', useSQLite: true } },
-    ratelimits: {
-      TUNNEL_REGISTER: { namespace_id: '3', simple: { limit: limits.register, period: 60 } },
-      TUNNEL_CONNECT: { namespace_id: '4', simple: { limit: limits.connect, period: 60 } },
-    },
-  }));
+  const runtime = tunnelRuntime(limits);
   t.after(() => runtime.dispose());
   const register = route => runtime.dispatchFetch('https://relay.test/v1/tunnels', {
     method: 'POST', body: JSON.stringify({ route }),

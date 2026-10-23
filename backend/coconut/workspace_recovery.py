@@ -467,7 +467,7 @@ class WorkspaceRecovery:
                 or self._checkout_cancellation(receipt['request'], scope, receipt['device_id'], receipt['dirty']) != cancellation):
             raise ServiceError(409, 'The Work stop changed after confirmation.')
 
-    def request_checkout_recovery(self, data, key, token):
+    def request_checkout_recovery(self, data, key, token, peer=None):
         from .service import ServiceError, now
         fields = {'task_id', 'native_task_id', 'expected_owner', 'repository', 'path', 'saved_branch',
                   'attached_branch', 'saved_head', 'attached_head', 'recovery_branch', 'message'}
@@ -482,7 +482,7 @@ class WorkspaceRecovery:
             UUID(key)
         except (ValueError, TypeError, AttributeError):
             raise ServiceError(400, 'Supply a UUID in Idempotency-Key.') from None
-        device = self.authenticate(token)
+        device = self.authenticate(token, peer)
         with self.dispatch_gate, self.lock:
             if not self.db.execute('SELECT 1 FROM devices WHERE id=?', (device,)).fetchone():
                 raise ServiceError(403, 'Checkout recovery requires an authenticated paired device.')

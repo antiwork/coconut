@@ -405,8 +405,10 @@ class HostLifecycleTests(unittest.TestCase):
     def test_process_check_handles_paths_with_spaces_and_preserves_options(self):
         self.write_process()
         command = f'/usr/bin/python3 -m coconut --data-dir {self.data} --host 127.0.0.1 --port 9000 --provider fixture'
-        with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, command, '')):
-            self.assertEqual(host.owned_process(), (4242, self.options))
+        # A process from before the tunnel listener has no --tunnel-port.
+        for suffix in ('', ' --tunnel-port 8961'):
+            with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, command + suffix, '')):
+                self.assertEqual(host.owned_process(), (4242, self.options))
 
     def test_foreign_process_record_fails_before_process_control(self):
         self.write_process(project=str(self.root / 'another-project'))

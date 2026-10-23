@@ -61,31 +61,69 @@ def digest(value: str | bytes) -> str:
     return hashlib.sha256(value.encode() if isinstance(value, str) else value).hexdigest()
 
 
-def pair_device(db, data: dict, paired) -> dict | ServiceError:
+def migrate_device_peers(db):
+    """Add the tunnel columns to a store from before the relay transport.
+
+    `devices.peer_key` is the static Noise key of a phone that paired through the tunnel sidecar. `pairing.tunnel` marks
+    a pairing secret from a version 2 link, which pairs only through the tunnel.
+    """
+    for table, column, kind in (('devices', 'peer_key', 'TEXT'), ('pairing', 'tunnel', 'INTEGER NOT NULL DEFAULT 0')):
+        columns = {row[1] for row in db.execute(f'PRAGMA table_info({table})')}
+        # A missing table comes later from the full schema, and this runs again then.
+        if columns and column not in columns:
+            db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {kind}')
+
+
+def issue_pairing_code(db, lifetime: float, tunnel: bool = False) -> tuple[str, int]:
+    """Store the hash of a new pairing code, and return the code and its expiry in Unix seconds.
+
+    A tunnel secret is for a version 2 link: 32 random bytes that pair only through the tunnel sidecar.
+    """
+    code = tunnel_secret() if tunnel else ''.join(secrets.choice('0123456789') for _ in range(10))
+    expires = int(time.time() + lifetime)
+    db.execute('DELETE FROM pairing WHERE expires < ? OR used=1', (time.time(),))
+    db.execute('INSERT INTO pairing(hash,expires,tunnel) VALUES (?,?,?)', (digest(code), expires, int(tunnel)))
+    return code, expires
+
+
+# A version 2 link is valid for ten minutes, because the person may get it from Hermes in a chat.
+TUNNEL_PAIRING_LIFETIME = 600
+
+
+def pair_device(db, data: dict, paired, peer: str | None = None) -> dict | ServiceError:
     """Use a pairing code inside the caller's write transaction. Return the device token, or the error to raise.
 
     Failed attempts commit with the transaction, so retries cannot bypass the rate limit. `paired(device_id)` records the event.
+    `peer` is the phone's static key from the tunnel sidecar, or None for a request over TLS. A tunnel secret pairs only
+    through the tunnel, and a TLS code only over TLS. The device keeps the key, and `device_for_token` requires it.
     """
     stamp = time.time()
     db.execute('DELETE FROM pair_attempts WHERE created < ?', (stamp - 60,))
     attempts = db.execute('SELECT COUNT(*) FROM pair_attempts').fetchone()[0]
     db.execute('INSERT INTO pair_attempts(created) VALUES (?)', (stamp,))
-    row = db.execute('SELECT expires,used FROM pairing WHERE hash=?', (digest(str(data.get('code', ''))),)).fetchone()
+    row = db.execute('SELECT expires,used,tunnel FROM pairing WHERE hash=?', (digest(str(data.get('code', ''))),)).fetchone()
     if attempts >= 5:
         return ServiceError(429, 'Too many pairing attempts. Wait one minute.')
-    if not row or row[0] < stamp or row[1]:
+    if not row or row[0] < stamp or row[1] or bool(row[2]) != (peer is not None):
         return ServiceError(401, 'The pairing code is invalid or expired.')
     name = str(data.get('device_name', 'iPhone'))[:80]
     device_id, token = uid(), secrets.token_urlsafe(32)
     db.execute('UPDATE pairing SET used=1 WHERE hash=?', (digest(str(data['code'])),))
-    db.execute('INSERT INTO devices VALUES (?,?,?,?)', (device_id, name, digest(token), now()))
+    db.execute('INSERT INTO devices(id,name,token_hash,created_at,peer_key) VALUES (?,?,?,?,?)',
+               (device_id, name, digest(token), now(), peer))
     paired(device_id)
     return {'token': token, 'device_id': device_id}
 
 
-def device_for_token(db, token: str) -> str:
-    row = db.execute('SELECT id FROM devices WHERE token_hash=?', (digest(token),)).fetchone()
-    if not row:
+def tunnel_secret() -> str:
+    """The one-time secret of a version 2 pairing link: 32 random bytes in unpadded base64url."""
+    return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip('=')
+
+
+def device_for_token(db, token: str, peer: str | None = None) -> str:
+    """Return the device of a token. A phone that paired through the tunnel must connect with the same static key."""
+    row = db.execute('SELECT id,peer_key FROM devices WHERE token_hash=?', (digest(token),)).fetchone()
+    if not row or row[1] != peer:
         raise ServiceError(401, 'Pair this phone with the Mac to continue.')
     return row[0]
 
@@ -246,6 +284,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             WHERE json_extract(data, '$.status') IN ('needs_you', 'paused');
         CREATE TABLE IF NOT EXISTS receipts (decision_id TEXT PRIMARY KEY, state TEXT NOT NULL, artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL, detail TEXT NOT NULL);
         ''')
+        migrate_device_peers(self.db)
         self.db.execute('CREATE INDEX IF NOT EXISTS native_receipts_pending_completion ON native_receipts (id) WHERE ' + PENDING_COMPLETIONS)
         for field in MARKS:
             self.db.execute(f'CREATE INDEX IF NOT EXISTS tasks{field} ON tasks (id) WHERE ' + marked(field))
@@ -824,25 +863,22 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             result['source_refreshing'] = True
         return result
 
-    def pairing_code(self, lifetime: int = 300) -> str:
-        code = ''.join(secrets.choice('0123456789') for _ in range(10))
+    def pairing_code(self, lifetime: int = 300, *, tunnel: bool = False) -> str:
         with self.transaction():
-            self.db.execute('DELETE FROM pairing WHERE expires < ? OR used=1', (time.time(),))
-            self.db.execute('INSERT INTO pairing(hash,expires) VALUES (?,?)', (digest(code), time.time() + lifetime))
-        return code
+            return issue_pairing_code(self.db, lifetime, tunnel)[0]
 
     create_pairing_code = pairing_code
 
-    def pair(self, data: dict) -> dict:
+    def pair(self, data: dict, peer: str | None = None) -> dict:
         with self.transaction():
-            result = pair_device(self.db, data, lambda device_id: self._event('device.paired', {'device_id': device_id}))
+            result = pair_device(self.db, data, lambda device_id: self._event('device.paired', {'device_id': device_id}), peer)
         if isinstance(result, ServiceError):
             raise result
         return result
 
-    def authenticate(self, token: str) -> str:
+    def authenticate(self, token: str, peer: str | None = None) -> str:
         with self._read_view() as view:
-            return device_for_token(view.db, token)
+            return device_for_token(view.db, token, peer)
 
     def _model_catalog(self, refresh_after=None) -> dict | None:
         if not hasattr(self.provider, 'model_catalog'):

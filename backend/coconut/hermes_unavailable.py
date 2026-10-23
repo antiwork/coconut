@@ -15,7 +15,7 @@ import threading
 
 from .hermes_runtime import DEFAULT_HOME, public
 from .hermes_setup import HermesSetup
-from .service import ServiceError, device_for_token, now, pair_device
+from .service import ServiceError, device_for_token, migrate_device_peers, now, pair_device
 from .service_restart import ServiceRestart
 
 # The same tables as in Service. A later start with Hermes reads them unchanged.
@@ -54,18 +54,19 @@ class UnavailableService(HermesSetup):
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.execute('PRAGMA synchronous=FULL')
         self.db.executescript(SCHEMA)
+        migrate_device_peers(self.db)
 
     def refuse(self):
         raise ServiceError(503, self.hermes_status['reason'] or 'Coconut cannot use the Hermes on this Mac.',
                            code='hermes_unavailable', hermes=self.hermes_status)
 
-    def pair(self, data: dict) -> dict:
+    def pair(self, data: dict, peer: str | None = None) -> dict:
         with self.lock:
             self.db.execute('BEGIN IMMEDIATE')
             try:
                 result = pair_device(self.db, data, lambda device_id: self.db.execute(
                     'INSERT INTO events(type,bot_id,task_id,data,created_at) VALUES (?,?,?,?,?)',
-                    ('device.paired', None, None, json.dumps({'device_id': device_id}), now())))
+                    ('device.paired', None, None, json.dumps({'device_id': device_id}), now())), peer)
                 self.db.execute('COMMIT')
             except BaseException:
                 self.db.execute('ROLLBACK')
@@ -74,9 +75,9 @@ class UnavailableService(HermesSetup):
             raise result
         return result
 
-    def authenticate(self, token: str) -> str:
+    def authenticate(self, token: str, peer: str | None = None) -> str:
         with self.lock:
-            return device_for_token(self.db, token)
+            return device_for_token(self.db, token, peer)
 
     def _setup_source(self) -> Path | None:
         # HermesSetup reads the shared home from the provider. Refuse mode has no provider.
