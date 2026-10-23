@@ -353,13 +353,8 @@ class NativeOutcomes:
     def _requester_callback_foreground(self, caller, requester, tasks, snapshots):
         """Qualify only the authenticated caller's recorded requester continuation."""
         from .work_capacity import execution_key
-        if not caller or not requester or caller['id'] == requester['id']:
-            return False
-        bot = self._get('bots', caller['bot_id'])
-        if (caller['status'] != 'working' or not caller.get('_native_turn_id')
-                or bot.get('archived') or bot.get('_deleted')
-                or caller.get('session_id') != bot.get('session_id')
-                or caller.get('_conversation_epoch') != self._setting('conversation_epoch')
+        if (not caller or not requester or caller['id'] == requester['id']
+                or not self._calling_native_turn(caller, snapshots)
                 or any(caller.get(k) != requester.get(k) for k in
                        ('bot_id', 'session_id', 'thread_id', 'conversation_bot_id', '_conversation_epoch'))):
             return False
@@ -382,7 +377,15 @@ class NativeOutcomes:
             if not self._requester_return(current, requester, tasks):
                 return False
             current = requester
-        if execution != execution_key(requester):
+        return execution == execution_key(requester)
+
+    def _calling_native_turn(self, caller, snapshots):
+        """The caller's current turn in the current conversation, running on its own native claim."""
+        bot = self._get('bots', caller['bot_id'])
+        if (caller['status'] != 'working' or not caller.get('_native_turn_id')
+                or bot.get('archived') or bot.get('_deleted')
+                or caller.get('session_id') != bot.get('session_id')
+                or caller.get('_conversation_epoch') != self._setting('conversation_epoch')):
             return False
         claim = caller.get('_kanban_claim') or {}
         card = snapshots.get(caller['id'], {})
@@ -762,6 +765,7 @@ class NativeOutcomes:
             report_changes = {}
             peer_chains = []
             finished_roots = {}
+            linked_activities = set()
             # The requester's coordinating task can differ from the task that delegated this work.
             requesters = {owner.get('source_task_id')} | ({linked_parent['task_id']} if linked_parent else set())
             requesters.discard(None)
@@ -830,6 +834,17 @@ class NativeOutcomes:
                         continue
                     requester_activity = (requester_report and self._work_execution_owner(reporter, tasks)['id']
                         in {owner.get('source_task_id'), *requester_roots})
+                    # The direct requester's own activity on this delegated PR of its Work. The requester stays
+                    # in the guard. Only its own calling turn can be the foreground below.
+                    linked_activity = bool(field == '_activity_task_id' and linked_parent and item['kind'] == 'pr'
+                        and linked_parent['task_id'] == owner.get('source_task_id')
+                        and item.get('work_outcome_id') == peer.get('work_outcome_id') == linked_parent['id']
+                        and peer['kind'] == 'pr' and peer['bot_id'] == linked_parent['bot_id']
+                        and peer['task_id'] == linked_parent['task_id']
+                        and peer.get('url') and item.get('url') and peer['url'].lower() == item['url'].lower()
+                        and self._work_execution_owner(reporter, tasks)['id'] == owner['source_task_id'])
+                    if linked_activity:
+                        linked_activities.add((peer['id'], reporter['id']))
                     reporter_source = tasks.get(reporter.get('source_task_id'))
                     owner_report = (peer['id'] == item['id'] and peer['task_id'] == owner['id']
                         and reporter['bot_id'] == owner['bot_id']
@@ -839,7 +854,7 @@ class NativeOutcomes:
                     passive_report = (field == '_activity_task_id' and peer['kind'] == 'pr'
                         and peer.get('url') and item.get('url')
                         and peer['url'].lower() == item['url'].lower()
-                        and (requester_activity or owner_report))
+                        and (requester_activity or owner_report or linked_activity))
                     report_coordinator = (self._linked_owner_report_coordinator(
                         owner, item, peer, reporter, peers, tasks, get_deliveries) if field == '_activity_task_id' else None)
                     # A passive same-PR report belongs to the original
@@ -872,6 +887,9 @@ class NativeOutcomes:
                             value = linked.pop(identity, None)
                             if requester_roots and identity == source['id'] and value and live(value[0]):
                                 # A root's source callback is an earlier turn, not the caller. It stays guarded while live.
+                                linked[identity] = value
+                            elif linked_activity and value and identity != owner['id']:
+                                # The requester reported this activity itself, so it is not exempt as a caller.
                                 linked[identity] = value
                             elif (value and identity != owner['id'] and caller and caller['id'] in linked
                                     and caller['bot_id'] == value[0]['bot_id']
@@ -938,6 +956,12 @@ class NativeOutcomes:
                             for identity in foregrounds) else None)
                 finished_root = finished_roots.get((peer['id'], reporter['id']))
                 foreground = foreground or finished_root
+                if ((peer['id'], reporter['id']) in linked_activities and not foreground and caller
+                        and caller['id'] == owner['source_task_id'] and caller['id'] in linked
+                        and self._calling_native_turn(caller, snapshots)):
+                    # The direct requester's own native turn makes this call. Its waits, returns,
+                    # decisions, unknown tools, and other branches stay in the guard.
+                    foreground = caller['id']
                 routine_scope = routine_scopes.get((peer['id'], reporter['id']))
                 projection = (routine_reports.project(self, routine_scope, tasks, snapshots, get_deliveries(), caller)
                               if routine_scope else None)
