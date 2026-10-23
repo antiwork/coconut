@@ -5,9 +5,8 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from hermes_env import needs_hermes, PYTHON, SOURCE
 
-SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
-PYTHON = os.environ.get('COCONUT_HERMES_PYTHON')
 
 PRELUDE = '''
 import json
@@ -44,13 +43,15 @@ request = dict(op='unlink_dependency', request_id='original-request', parent_id=
 '''
 
 
-@unittest.skipUnless(SOURCE and PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class NativeDependencyUnlinkTests(unittest.TestCase):
     def run_native(self, program, *, setup=True):
         with tempfile.TemporaryDirectory() as home:
             result = subprocess.run([PYTHON, '-c', (PRELUDE if setup else '') + textwrap.dedent(program), home],
-                env=dict(os.environ, PYTHONPATH=os.pathsep.join((str(Path(__file__).resolve().parents[1]),
-                                                              str(Path(__file__).resolve().parent), SOURCE))),
+                # The child program reads the Hermes source folder from COCONUT_HERMES_ROOT.
+                env=dict(os.environ, COCONUT_HERMES_ROOT=SOURCE,
+                         PYTHONPATH=os.pathsep.join((str(Path(__file__).resolve().parents[1]),
+                                                     str(Path(__file__).resolve().parent), SOURCE))),
                 capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             return result.stdout

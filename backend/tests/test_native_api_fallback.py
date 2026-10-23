@@ -5,12 +5,10 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-
-SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
-PYTHON = os.environ.get('COCONUT_HERMES_PYTHON')
+from hermes_env import needs_hermes, PYTHON, SOURCE
 
 
-@unittest.skipUnless(SOURCE and PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class NativeAPIFallbackTests(unittest.TestCase):
     def test_native_config_preserves_primary_and_other_fallbacks(self):
         with tempfile.TemporaryDirectory() as root:

@@ -7,11 +7,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
+from hermes_env import needs_hermes, SOURCE
 
-SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
 
-
-@unittest.skipUnless(SOURCE, 'Set the Coconut Hermes path for native relay checks.')
+@needs_hermes
 class RelayRosterTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

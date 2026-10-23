@@ -13,6 +13,7 @@ from coconut.service import Service, ServiceError, YieldForDecision
 import test_work_progress as fixtures
 from test_work_progress import progress
 import legacy_work_sync
+from hermes_env import needs_hermes, SOURCE
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
 
@@ -268,7 +269,7 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.assertTrue(set(previous['_turn_message_ids']).issubset(task['_turn_message_ids']))
         self.assertIn(restriction, conversation_input(dict(operation='start', task=task, history=history))[0])
 
-    @unittest.skipUnless(os.environ.get('COCONUT_HERMES_ROOT'), 'Requires native Hermes tool middleware')
+    @needs_hermes
     def test_completed_result_survives_failure_and_prevents_repeated_write(self):
         from coconut.hermes_worker import conversation_input
         from coconut.native_bridge import NativeBridge
@@ -315,7 +316,7 @@ class TargetedBotContinuationTests(unittest.TestCase):
         home = Path(self.temp.name) / 'bridge-home'
         try:
             with patch.dict(os.environ, HERMES_HOME=str(home)), patch.object(
-                    sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), os.environ['COCONUT_HERMES_ROOT'], *sys.path]):
+                    sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), SOURCE, *sys.path]):
                 bridge = NativeBridge(request, lambda *args: None, lambda *args: None)
                 bridge.install(None)
                 try:
@@ -380,7 +381,7 @@ class TargetedBotContinuationTests(unittest.TestCase):
         task, history = captured[0]
         self.assertIn('Review completed. Fix the currency label.', conversation_input(dict(operation='start', task=task, history=history))[0])
 
-    @unittest.skipUnless(os.environ.get('COCONUT_HERMES_ROOT'), 'Requires native Hermes kanban')
+    @needs_hermes
     def test_completed_kanban_creation_keeps_its_original_replay_identity(self):
         from coconut.native_bridge import NativeBridge
         from coconut.native_turn_scope import current, TurnScope
@@ -405,7 +406,7 @@ class TargetedBotContinuationTests(unittest.TestCase):
                 bridge.close()
                 current.reset(token)
         with patch.dict(os.environ, HERMES_HOME=str(root / 'kanban-home')), patch.object(
-                sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), os.environ['COCONUT_HERMES_ROOT'], *sys.path]):
+                sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), SOURCE, *sys.path]):
             from hermes_cli.kanban_db import create_task
             from hermes_cli.kanban_db_connect import connect
             conn = connect(root / 'kanban.db')
@@ -589,7 +590,7 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.assertEqual(len(self.service._all('tasks')), before)
         self.assertEqual(self.service._get('artifacts', work['id'])['task_id'], receipt['task_id'])
 
-    @unittest.skipUnless(os.environ.get('COCONUT_HERMES_ROOT'), 'Requires native Hermes worktrees')
+    @needs_hermes
     def test_native_delivery_race_returns_a_terminal_error_to_the_sender(self):
         from coconut.native_relay import NativeRelay, recover_delivery
         previous, source = self.prepare()
@@ -598,7 +599,7 @@ class TargetedBotContinuationTests(unittest.TestCase):
         home = Path(self.temp.name) / 'bots' / self.desk['id'] / 'home'
         request = dict(operation='start', bot=self.desk, task=dict(source, _available_bots=[self.dev]))
         with patch.dict(os.environ, HERMES_HOME=str(home)), patch.object(
-                sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), os.environ['COCONUT_HERMES_ROOT'], *sys.path]):
+                sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), SOURCE, *sys.path]):
             relay = NativeRelay(request, lambda kind, payload: self.service.emit(source['id'], kind, payload))
             relay.sync_roster()
             def resume_before_delivery(args):
@@ -615,7 +616,7 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.assertEqual(self.service._get('native_receipts', call['id'])['state'], 'completed')
         self.assertEqual(self.service.emit(source['id'], 'native_bot_message', payload), result)
 
-    @unittest.skipUnless(os.environ.get('COCONUT_HERMES_ROOT'), 'Requires native Hermes worktrees')
+    @needs_hermes
     def test_native_envelope_round_trip_keeps_target_after_interruption(self):
         from coconut.native_relay import NativeRelay, recover_delivery
         previous, source = self.prepare()
@@ -625,7 +626,7 @@ class TargetedBotContinuationTests(unittest.TestCase):
         request = dict(operation='start', bot=self.desk,
                        task=dict(source, _available_bots=[self.dev]))
         with patch.dict(os.environ, HERMES_HOME=str(home)), patch.object(
-                sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), os.environ['COCONUT_HERMES_ROOT'], *sys.path]):
+                sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), SOURCE, *sys.path]):
             relay = NativeRelay(request, lambda kind, payload: self.service.emit(source['id'], kind, payload))
             relay.sync_roster()
             result = json.loads(relay.deliver(arguments, relay.enqueue, call['id']))
@@ -641,7 +642,7 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.assertEqual(final['status'], 'completed')
         self.assertEqual(final['_native_reply_pending']['envelope_id'], payload['native_envelope_id'])
 
-    @unittest.skipUnless(os.environ.get('COCONUT_HERMES_ROOT'), 'Requires native Hermes worktrees')
+    @needs_hermes
     def test_continuation_reopens_real_dirty_worktree_without_rebinding(self):
         from coconut.work_workspace import acquire, git
         previous, source = self.prepare()
@@ -650,7 +651,7 @@ class TargetedBotContinuationTests(unittest.TestCase):
         repo.mkdir()
         git(repo, 'init')
         git(repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-m', 'Initial')
-        with patch.object(sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), os.environ['COCONUT_HERMES_ROOT'], *sys.path]):
+        with patch.object(sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), SOURCE, *sys.path]):
             binding = acquire(root / 'workspaces', previous['_execution_session_id'], str(repo))
             note = Path(binding['path']) / 'pending.txt'
             note.write_text('Uncommitted correction')

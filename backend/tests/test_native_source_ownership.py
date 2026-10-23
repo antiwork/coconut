@@ -5,9 +5,10 @@ from unittest.mock import patch
 
 import test_native_kanban as native
 import test_work_source_coverage as legacy
+from hermes_env import needs_hermes
 
 
-@unittest.skipUnless(native.SOURCE and native.PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class NativeSourceOwnershipTests(unittest.TestCase):
     setUp = native.NativeKanbanTests.setUp
     write = native.NativeKanbanTests.write

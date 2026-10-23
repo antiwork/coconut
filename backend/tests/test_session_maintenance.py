@@ -12,9 +12,7 @@ from uuid import uuid4
 from coconut.service import Service
 from coconut import session_maintenance
 from test_service import ControlledProvider
-
-SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
-PYTHON = os.environ.get('COCONUT_HERMES_PYTHON')
+from hermes_env import needs_hermes, PYTHON, SOURCE
 
 
 class SessionSelectionTests(unittest.TestCase):
@@ -272,7 +270,7 @@ class SessionSelectionTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
 
-@unittest.skipUnless(SOURCE and PYTHON, 'Set COCONUT_HERMES_ROOT and COCONUT_HERMES_PYTHON for the native session check.')
+@needs_hermes
 class NativeSessionTests(unittest.TestCase):
     def run_native(self, program):
         with tempfile.TemporaryDirectory() as home:

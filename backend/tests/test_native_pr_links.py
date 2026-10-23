@@ -3,9 +3,10 @@ import unittest
 import test_native_work_display as display
 import test_native_kanban as native
 from test_service_pr import Tracker, observation, URL
+from hermes_env import needs_hermes
 
 
-@unittest.skipUnless(native.SOURCE and native.PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class NativePRLinksTests(unittest.TestCase):
     setUp = native.NativeKanbanTests.setUp
     write = native.NativeKanbanTests.write

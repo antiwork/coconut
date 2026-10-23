@@ -160,6 +160,7 @@ The check blocks network access and uses a temporary Hermes home. It never write
 Without a usable Hermes, the service starts in refuse mode: it imports no Hermes code, runs no bots, and reports the reason in `GET /v1/setup`.
 Run `python3 scripts/host.py hermes-status` to find and check the Hermes without starting the service.
 Mac mini updates run this check against the new code before they start it.
+A Hermes version outside the tested range runs when the check passes. `GET /v1/setup` and the startup log report it as untested. See [Supported Hermes versions](supported-hermes-versions.md).
 
 From the development Mac, run `python3 scripts/test_native_profiles.py` for the native profile and restart milestone.
 Run `python3 scripts/test_hermes_live.py` for bot creation, delegation, deletion, and restart.

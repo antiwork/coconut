@@ -7,9 +7,8 @@ import textwrap
 import unittest
 
 from coconut.native_failure import TRANSIENT_ERROR_CODES, TRANSIENT_NATIVE_ERROR, _FAILURES
+from hermes_env import needs_hermes, PYTHON, SOURCE
 
-SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
-PYTHON = os.environ.get('COCONUT_HERMES_PYTHON')
 
 PRELUDE = '''
 import sys
@@ -32,7 +31,7 @@ def claimed(name):
 '''
 
 
-@unittest.skipUnless(SOURCE and PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class ProviderFailureRetryTests(unittest.TestCase):
     def run_native(self, program):
         with tempfile.TemporaryDirectory() as home:

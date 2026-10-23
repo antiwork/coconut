@@ -4,6 +4,7 @@ from importlib import import_module
 import json
 import os
 from pathlib import Path
+import sys
 
 
 def create_native_job(arguments, task_id):
@@ -87,9 +88,40 @@ def retired_checkout(workdir):
     return found[0] if len(found) == 1 else None
 
 
+def use_worker_python_for_scripts():
+    """Run routine scripts on the Python of this worker when the bot home has no dependency record of Hermes.
+
+    Hermes reads its dependency environment from <HERMES_HOME>/installs. A bot home uses the person's Hermes but has
+    no install record of its own, so Hermes would run scripts on <source>/venv/bin/python. The official installer does
+    not create that file. This worker runs on the Python that hermes_runtime found and checked, which is the Python of
+    that dependency environment.
+    """
+    try:
+        scripts = import_module('cron.scheduler_script')
+    except ImportError:
+        return
+    original = getattr(scripts, '_posix_cron_script_argv', None)
+    bootstrap = getattr(scripts, '_POSIX_SCRIPT_BOOTSTRAP', None)
+    if original is None or bootstrap is None or getattr(original, 'coconut_worker_python', False):
+        return
+
+    def argv(script):
+        from hermes_cli._launchers import resolve_store_python
+        from pm.environments import project_python
+        repo = Path(scripts.__file__).resolve().parents[1]
+        if resolve_store_python(repo) is None or project_python(repo).is_file():
+            return original(script)
+        # The same command as Hermes builds for its own dependency environment, on this worker's Python.
+        return [sys.executable, '-c', bootstrap, str(repo), str(script)], {'HERMES_DISABLE_LAZY_INSTALLS': '1'}
+
+    argv.coconut_worker_python = True
+    scripts._posix_cron_script_argv = argv
+
+
 @contextmanager
 def job_context(request, runtime, config):
     job = request['task'].get('_native_job')
+    use_worker_python_for_scripts()
     if not job:
         yield ''
         return
@@ -160,6 +192,7 @@ def run_script_job(job, cancel_event, emit):
     if error or job.get('no_agent') is not True:
         raise ValueError(error or 'This routine requires a model.')
     from cron.scheduler import run_job, _is_cron_silence_response
+    use_worker_python_for_scripts()
     success, document, response, failure = run_job(job, cancel_event=cancel_event)
     silent = _is_cron_silence_response(response or '')
     # Non-BMP characters use up to twelve JSON characters; leave frame headroom

@@ -10,9 +10,10 @@ from uuid import uuid4
 
 from coconut.service import ServiceError
 import test_native_kanban as fixtures
+from hermes_env import needs_hermes
 
 
-@unittest.skipUnless(fixtures.SOURCE and fixtures.PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class NativeClaimContinuationTests(unittest.TestCase):
     setUp = fixtures.NativeKanbanTests.setUp
     write = fixtures.NativeKanbanTests.write

@@ -9,14 +9,12 @@ from unittest.mock import patch
 
 from coconut.model_catalog import ENV_KEYS
 from coconut.runtime_environment import profile_environment
+from hermes_env import needs_hermes, PYTHON, SOURCE
 
-SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
-PYTHON = os.environ.get('COCONUT_HERMES_PYTHON')
 WORKER = Path(__file__).resolve().parents[1] / 'coconut' / 'model_catalog.py'
 
 
-@unittest.skipUnless(SOURCE and PYTHON and Path(PYTHON).is_file() and Path(SOURCE).is_dir(),
-                     'Set COCONUT_HERMES_ROOT and COCONUT_HERMES_PYTHON for the native catalog check.')
+@needs_hermes
 class NativeCatalogTests(unittest.TestCase):
     def test_bot_environments_share_the_native_claude_credential_source(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -29,7 +27,7 @@ class NativeCatalogTests(unittest.TestCase):
                 profile.mkdir()
                 with patch('coconut.runtime_environment.pwd.getpwuid', return_value=SimpleNamespace(pw_dir=str(account), pw_name='account')):
                     env = profile_environment(profile)
-                env.update(HERMES_HOME=str(profile), PYTHONPATH=SOURCE)
+                env.update(HERMES_HOME=str(profile), PYTHONPATH=SOURCE, HERMES_DISABLE_LAZY_INSTALLS='1')
                 code = ('import json; from agent import anthropic_credentials as auth; '
                         'print(json.dumps({"path": str(auth.claude_code_credentials_path()), '
                         '"keychain": auth._CLAUDE_CODE_KEYCHAIN_SERVICE}))')
@@ -53,7 +51,8 @@ class NativeCatalogTests(unittest.TestCase):
             env = {key: os.environ[key] for key in ENV_KEYS if key in os.environ}
             env.update(HOME=str(private), HERMES_REAL_HOME=str(private), HERMES_HOME=str(home), PYTHONPATH=SOURCE,
                        XDG_CONFIG_HOME=str(private / '.config'), XDG_CACHE_HOME=str(private / '.cache'),
-                       TMPDIR=str(private / 'tmp'), HERMES_DISABLE_TELEMETRY='1', PYTHONUNBUFFERED='1')
+                       TMPDIR=str(private / 'tmp'), HERMES_DISABLE_TELEMETRY='1', PYTHONUNBUFFERED='1',
+                       HERMES_DISABLE_LAZY_INSTALLS='1')
             result = subprocess.run([PYTHON, str(WORKER), '--worker'], input=json.dumps(dict(operation='get', data_root=str(root))),
                                     capture_output=True, text=True, env=env, cwd=private, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr[-2000:])

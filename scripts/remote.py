@@ -64,6 +64,7 @@ def configuration() -> dict:
 def source_files() -> dict[str, bytes]:
     candidates = [ROOT / name for name in TOP_FILES]
     candidates += list((ROOT / "backend/coconut").rglob("*.py"))
+    candidates.append(ROOT / "backend/coconut/hermes_versions.json")
     candidates += list((ROOT / "scripts").glob("*.py"))
     candidates += list((ROOT / "scripts").glob("*.swift"))
     candidates += list((ROOT / "docs").rglob("*.md"))

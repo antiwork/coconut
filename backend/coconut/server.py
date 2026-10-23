@@ -414,6 +414,9 @@ def main(argv=None):
         print(f'Coconut runs no bots, because Hermes is {hermes["status"]}: {hermes["reason"]}', flush=True)
     else:
         print(f'Coconut uses Hermes {hermes["version"] or "of unknown version"} in {hermes["root"]}.', flush=True)
+        warning = hermes_runtime.untested_warning(hermes['version'])
+        if warning:
+            print(warning, flush=True)
     def stop(signum, frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)

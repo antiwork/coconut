@@ -21,6 +21,7 @@ from coconut.service import ServiceError, now
 from coconut.work_recovery import BLOCK_PAUSE_SCHEMA, block_check_delay
 import legacy_work_sync
 import test_native_kanban as native_fixtures
+import hermes_env
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
 
@@ -78,10 +79,7 @@ class NativeDelegatedBlockPauseTests(unittest.TestCase):
     native_program = native_fixtures.NativeKanbanTests.native_program
 
     def setUp(self):
-        if not (native_fixtures.SOURCE and native_fixtures.PYTHON):
-            if os.environ.get('COCONUT_REQUIRE_NATIVE'):
-                self.fail('Native CI must install Hermes and set its paths. These tests must not skip.')
-            self.skipTest('Set Coconut Hermes paths for native integration checks.')
+        hermes_env.require(self)
         try:
             native_fixtures.NativeKanbanTests.setUp(self)
             self.service.kanban.call({'op': 'snapshot'})
@@ -192,11 +190,11 @@ class NativeDelegatedBlockPauseTests(unittest.TestCase):
         home = Path(self.tmp.name) / 'registry-home'
         home.mkdir(exist_ok=True)
         log = Path(self.tmp.name) / 'registry.log'
-        env = dict(os.environ, PYTHONPATH=os.pathsep.join((BACKEND, native_fixtures.SOURCE)), HERMES_HOME=str(home),
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join((BACKEND, hermes_env.SOURCE)), HERMES_HOME=str(home),
                    PYTHONDONTWRITEBYTECODE='1', HERMES_DISABLE_TELEMETRY='1')
         received, done = [], None
         with log.open('w') as errors:
-            process = subprocess.Popen([native_fixtures.PYTHON, '-c', PAUSE_TURN, identity, json.dumps(payloads)], env=env,
+            process = subprocess.Popen([hermes_env.PYTHON, '-c', PAUSE_TURN, identity, json.dumps(payloads)], env=env,
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True)
             try:
                 for line in process.stdout:

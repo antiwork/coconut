@@ -13,11 +13,9 @@ from uuid import uuid4
 from coconut.providers import FixtureProvider
 from coconut.service import Service
 import legacy_work_sync
+from hermes_env import needs_hermes, PYTHON, SOURCE
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
-
-SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
-PYTHON = os.environ.get('COCONUT_HERMES_PYTHON')
 
 
 class Provider(FixtureProvider):
@@ -49,7 +47,7 @@ class Provider(FixtureProvider):
             process.wait(timeout=5)
 
 
-@unittest.skipUnless(SOURCE and PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class NativeKanbanTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

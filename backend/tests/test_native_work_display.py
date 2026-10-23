@@ -4,11 +4,12 @@ from uuid import uuid4
 from unittest.mock import patch
 import test_native_kanban as native
 import legacy_work_sync
+from hermes_env import needs_hermes
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
-@unittest.skipUnless(native.SOURCE and native.PYTHON, 'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class NativeWorkDisplayTests(unittest.TestCase):
     setUp = native.NativeKanbanTests.setUp
     write = native.NativeKanbanTests.write

@@ -13,7 +13,6 @@ Native CI sets COCONUT_REQUIRE_NATIVE, and then a missing Hermes install fails t
 import copy
 from datetime import datetime, timedelta, timezone
 import json
-import os
 from pathlib import Path
 import tempfile
 import time
@@ -30,6 +29,7 @@ import legacy_work_sync
 import test_failed_routine_continuation as failed_fixtures
 import test_finished_routine_workspace as workspace_fixtures
 import test_native_kanban as native_fixtures
+import hermes_env
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
 
@@ -567,10 +567,7 @@ class ArchivedScheduledRoutineNativeTests(unittest.TestCase):
     tick = native_fixtures.NativeKanbanTests.tick
 
     def setUp(self):
-        if not (native_fixtures.SOURCE and native_fixtures.PYTHON):
-            if os.environ.get('COCONUT_REQUIRE_NATIVE'):
-                self.fail('Native CI must install Hermes and set its paths. These tests must not skip.')
-            self.skipTest('Set Coconut Hermes paths for native integration checks.')
+        hermes_env.require(self)
         native_fixtures.NativeKanbanTests.setUp(self)
         self.provider.tasks = []
         start = self.provider.start_task

@@ -1,4 +1,3 @@
-import os
 import json
 from pathlib import Path
 import subprocess
@@ -12,13 +11,12 @@ from unittest.mock import patch
 
 from coconut.work_workspace import acquire, git, preferred, retire
 import legacy_work_sync
+from hermes_env import needs_hermes, SOURCE
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
 
-SOURCE = os.environ.get('COCONUT_HERMES_ROOT')
 
-
-@unittest.skipUnless(SOURCE, 'Set COCONUT_HERMES_ROOT for the native workspace integration check.')
+@needs_hermes
 class WorkWorkspaceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

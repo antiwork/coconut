@@ -54,7 +54,7 @@ class FinishedRoutineWorkspaceTests(unittest.TestCase):
         self.provider = HermesProvider(self.data, python=sys.executable, hermes_root=self.source, catalog=catalog)
         self.addCleanup(self.provider.close)
         self.provider.environment = lambda bot_id: ({
-            'PATH': os.environ.get('PATH', ''), 'HOME': str(self.home), 'HERMES_HOME': str(self.home),
+            'PATH': os.environ.get('PATH', ''), 'HOME': str(self.home), 'HERMES_HOME': str(self.home), 'HERMES_DISABLE_LAZY_INSTALLS': '1',
             'TMPDIR': str(self.root), 'PYTHONPATH': str(self.source), 'WORKER_CAPTURE': str(self.capture),
             'EXPECTED_NATIVE_KEY': self.native['api_key']}, self.root)
         self.execution = str(uuid4())

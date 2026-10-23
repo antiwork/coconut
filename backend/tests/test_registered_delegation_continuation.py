@@ -13,6 +13,7 @@ from coconut.service import ServiceError
 import test_native_claim_continuation as native_fixtures
 import test_native_work_continuation as fixtures
 import test_requester_callback_continuation as callbacks
+from hermes_env import needs_hermes
 
 URL = 'https://github.com/example/project/pull/8'
 UNRELATED = 'belongs to another native outcome'
@@ -642,8 +643,7 @@ class RegisteredDelegationTests(unittest.TestCase):
         self.assertEqual(self.service._get('native_receipts', unknown)['state'], 'executing')
 
 
-@unittest.skipUnless(native_fixtures.fixtures.SOURCE and native_fixtures.fixtures.PYTHON,
-                     'Set Coconut Hermes paths for native integration checks.')
+@needs_hermes
 class NativeRegisteredDelegationTests(unittest.TestCase):
     setUp = native_fixtures.NativeClaimContinuationTests.setUp
     write = native_fixtures.NativeClaimContinuationTests.write

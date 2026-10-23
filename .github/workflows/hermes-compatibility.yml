@@ -1,20 +1,27 @@
 name: Hermes compatibility
 
+# Coconut runs on the Hermes that the person installed. backend/coconut/hermes_versions.json names the oldest supported
+# Hermes release and the releases that CI tested. Each pull request and each push to main checks the minimum release
+# and the latest release. Both are required. Each night, CI also checks Hermes main. That check can fail without a
+# failed check run, because the Mac mini updater deploys only a commit whose check runs all passed.
 on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: '23 5 * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: hermes-compatibility-${{ github.event.pull_request.number || github.ref }}
+  group: hermes-compatibility-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'schedule' }}
   cancel-in-progress: true
 
 jobs:
   contracts:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -39,13 +46,46 @@ jobs:
           done
       - name: Check automatic deployment and releases
         run: python -m unittest discover -s scripts -p test_automatic_update.py
-      - name: Check the candidate Hermes runner
-        run: python -m unittest discover -s scripts -p test_check_hermes_candidate.py
 
-  native-kanban:
+  hermes-versions:
     runs-on: ubuntu-latest
-    # Recent runs took 17 to 24 minutes.
-    timeout-minutes: 40
+    timeout-minutes: 5
+    outputs:
+      legs: ${{ steps.legs.outputs.legs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Choose the Hermes versions to check
+        id: legs
+        env:
+          NIGHTLY: ${{ github.event_name == 'schedule' }}
+        run: |
+          python3 - <<'PYTHON' >> "$GITHUB_OUTPUT"
+          import json, os
+          versions = json.load(open('backend/coconut/hermes_versions.json'))
+          if os.environ['NIGHTLY'] == 'true':
+              legs = [{'name': 'Hermes main', 'arguments': '--channel main', 'required': False}]
+          else:
+              # Without --commit or --channel, the installer installs the latest stable release.
+              legs = [{'name': 'Hermes ' + versions['minimum'], 'arguments': '--commit v' + versions['minimum'], 'required': True},
+                      {'name': 'latest Hermes release', 'arguments': '', 'required': True}]
+          print('legs=' + json.dumps(legs))
+          PYTHON
+
+  native-kanban-hermes:
+    name: native-kanban (${{ matrix.leg.name }})
+    needs: hermes-versions
+    runs-on: ubuntu-latest
+    # Recent runs took 17 to 24 minutes, and the installation adds a few minutes. The step limits below end first.
+    # Then a timeout of the Hermes main leg is a failed step that continue-on-error covers, not a timed-out job.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(needs.hermes-versions.outputs.legs) }}
+    env:
+      HERMES_DISABLE_TELEMETRY: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -54,20 +94,50 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.11'
-      - name: Install the pinned Hermes runtime without source changes
+      - name: Install Hermes with the official installer
+        id: install
+        continue-on-error: ${{ !matrix.leg.required }}
+        timeout-minutes: 10
+        env:
+          ARGUMENTS: ${{ matrix.leg.arguments }}
         run: |
-          python -m pip install uv==0.12.10
-          revision=$(python -c 'import sys; sys.path.insert(0, "scripts"); from hermes import REVISION; print(REVISION)')
-          git init .runtime/hermes-source
-          git -C .runtime/hermes-source fetch --depth=1 https://github.com/NousResearch/hermes-agent.git "$revision"
-          git -C .runtime/hermes-source checkout --detach FETCH_HEAD
-          uv sync --project .runtime/hermes-source --frozen --no-dev --extra anthropic --extra mcp --python 3.14
+          # The installer puts the Hermes source folder and its dependency environment in a temporary HERMES_HOME.
+          export HERMES_HOME="$RUNNER_TEMP/hermes-home"
+          curl -fsSL --retry 3 https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh -o "$RUNNER_TEMP/install.sh"
+          # shellcheck disable=SC2086 # ARGUMENTS holds zero or more installer options.
+          bash "$RUNNER_TEMP/install.sh" --non-interactive --skip-browser --skip-computer-use $ARGUMENTS
+          # Coconut finds and checks the installed Hermes as the service does at each start.
+          PYTHONPATH=backend COCONUT_HERMES_ROOT="$HERMES_HOME/hermes-agent" python - <<'PYTHON'
+          import os
+          from coconut import hermes_runtime
+          runtime = hermes_runtime.find()
+          hermes_runtime.check(runtime)
+          tested = hermes_runtime.is_tested(runtime.version)
+          with open(os.environ['GITHUB_ENV'], 'a') as environment:
+              environment.write(f'COCONUT_HERMES_ROOT={runtime.root}\nCOCONUT_HERMES_PYTHON={runtime.python}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f'Hermes {runtime.version} passed the contract check. Tested: {tested}.\n')
+          print(f'Hermes {runtime.version} in {runtime.root} passed the contract check.')
+          if not tested:
+              print(f'::warning::Hermes {runtime.version} is not in backend/coconut/hermes_versions.json. '
+                    f'The newest tested version is {hermes_runtime.newest_tested()}. '
+                    'Add this version to "tested" when the checks pass.')
+          PYTHON
+          # The last step compares this with the state after the tests.
+          git -C "$HERMES_HOME/hermes-agent" status --porcelain --untracked-files=no > "$RUNNER_TEMP/hermes-source-status"
       - name: Check native claims, recovery, and worktrees
+        id: native
+        if: steps.install.outcome == 'success'
+        continue-on-error: ${{ !matrix.leg.required }}
+        timeout-minutes: 32
+        env:
+          PYTHONPATH: backend
+          COCONUT_REQUIRE_NATIVE: '1' # A missing Hermes install fails the native tests instead of skipping them.
+          # Each test gives Hermes its own HERMES_HOME. Without this setting, Hermes from the official installer installs
+          # a dependency set for each new home.
+          HERMES_DISABLE_LAZY_INSTALLS: '1'
         run: |
-          export COCONUT_HERMES_ROOT="$PWD/.runtime/hermes-source"
-          export COCONUT_HERMES_PYTHON="$COCONUT_HERMES_ROOT/.venv/bin/python"
-          export PYTHONPATH=backend
-          export COCONUT_REQUIRE_NATIVE=1 # A missing Hermes install fails the native completion proof tests instead of skipping them.
+          mkdir -p .runtime # The logs of the checks below.
           "$COCONUT_HERMES_PYTHON" -c 'import jsonschema' # Required: this CI regression suite must not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_draft_refresh_schema.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_withdrawal_correction_route.py 2> .runtime/withdrawal-correction-route.log || { cat .runtime/withdrawal-correction-route.log; exit 1; }
@@ -144,4 +214,24 @@ jobs:
           "$COCONUT_HERMES_PYTHON" scripts/test_native_kanban.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON"
           "$COCONUT_HERMES_PYTHON" scripts/test_completed_routine_continuation.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON"
           "$COCONUT_HERMES_PYTHON" scripts/test_script_routines.py --local
-          test -z "$(git -C .runtime/hermes-source status --porcelain --untracked-files=no)"
+          # The tests do not change the Hermes source folder.
+          git -C "$COCONUT_HERMES_ROOT" status --porcelain --untracked-files=no | diff "$RUNNER_TEMP/hermes-source-status" -
+      - name: Report a failure of Hermes main
+        # Only the Hermes main leg continues after a failure. Its check run passes, and this step reports the failure.
+        if: steps.install.outcome == 'failure' || steps.native.outcome == 'failure'
+        run: |
+          echo "::warning::The installation or the native checks failed on Hermes main. A future Hermes release can break Coconut."
+          echo 'The installation or the native checks failed on Hermes main. A future Hermes release can break Coconut.' >> "$GITHUB_STEP_SUMMARY"
+
+  # The Mac mini updater and branch protection require the check names contracts and native-kanban. This job gives the
+  # required Hermes legs that one name.
+  native-kanban:
+    if: always() && github.event_name != 'schedule'
+    needs: native-kanban-hermes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every required Hermes leg to pass
+        env:
+          RESULT: ${{ needs.native-kanban-hermes.result }}
+        run: test "$RESULT" = success

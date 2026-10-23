@@ -25,7 +25,7 @@ class ReactionResponseTests(unittest.TestCase):
         task['_turn_message_ids'] = [message['id']]
         request = dict(operation='start', task=task, bot=self.bot, history=[message], model='test',
                        runtime_config=self.native, provider='openai-codex', base_url=self.native['base_url'])
-        env = dict(PATH=os.environ.get('PATH', ''), HOME=str(home), HERMES_HOME=str(home),
+        env = dict(PATH=os.environ.get('PATH', ''), HOME=str(home), HERMES_HOME=str(home), HERMES_DISABLE_LAZY_INSTALLS='1',
                    COCONUT_DEFAULT_HOME=str(home), PYTHONPATH=str(self.source),
                    WORKER_CAPTURE=str(self.root / 'capture.jsonl'), EXPECTED_NATIVE_KEY=self.native['api_key'])
         worker = Path(__file__).resolve().parents[1] / 'coconut/hermes_worker.py'

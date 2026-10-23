@@ -5,9 +5,10 @@ import unittest
 from unittest.mock import patch
 
 import test_native_kanban as native
+from hermes_env import needs_hermes
 
 
-@unittest.skipUnless(native.SOURCE and native.PYTHON, "Set Coconut Hermes paths for native integration checks.")
+@needs_hermes
 class ForegroundDispatchTests(unittest.TestCase):
     setUp = native.NativeKanbanTests.setUp
     write = native.NativeKanbanTests.write

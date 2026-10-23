@@ -112,6 +112,9 @@ def use_hermes() -> None:
     if status["status"] != "ok":
         raise SystemExit(f"{status['reason']} Then run this command again.")
     print(f"Coconut uses Hermes {status['version'] or 'of unknown version'} in {status['root']}.")
+    warning = host.hermes_runtime().untested_warning(status["version"])
+    if warning:
+        print(warning)
 
 
 def prepare_notifications() -> None:
