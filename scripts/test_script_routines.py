@@ -63,6 +63,7 @@ try:
         from unittest.mock import Mock
         catalog = Mock(root=home)
         catalog.resolve_runtime.side_effect = AssertionError('Script requested model credentials')
+        catalog.worker_limit.return_value = None
         provider = HermesProvider(home, python=sys.executable, hermes_root=root/'.runtime/hermes/source', catalog=catalog)
         provider.observe_bot = lambda bot: bot
         env = dict(os.environ, PYTHONPATH=os.pathsep.join((str(code/'backend/coconut'), str(root/'.runtime/hermes/source'))))

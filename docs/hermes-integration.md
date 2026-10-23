@@ -176,6 +176,7 @@ Coconut does not change a bot's profile while the bot runs. It writes into a pro
 - The person creates a bot. Coconut then writes `SOUL.md`, `profile.yaml`, `config.yaml` and `.no-bundled-skills`.
 
 Each profile uses its own MCP servers, approval settings, API fallback and model, as in Hermes. A bot that has no model of its own uses the default model of Coconut's Hermes home.
+Hermes refreshes a sign-in only in the store that holds it. When a bot's model uses a provider sign-in that only Coconut's Hermes home holds, Coconut resolves that route in Coconut's Hermes home. It never copies a refresh token into a profile, because a copied refresh token can stop both copies from working.
 The worker limit stays a Coconut setting. Each turn applies it through Hermes's `DELEGATION_MAX_CONCURRENT_CHILDREN` fallback.
 Bots run under the Mac account. `CODEX_HOME`, `GH_CONFIG_DIR` and the `XDG_*` folders are the account's normal folders, unless the profile's `.env` sets them.
 Coconut's own files of a bot stay outside the profile, in `<data>/bots/<uuid>/`: `runs/` (routine receipts), `workspace/`, `browser/`, `tmp/` and `terminal/`.
@@ -189,8 +190,11 @@ The step:
 1. Copies `config.yaml`, `.env` and Coconut's earlier files of the profile into `<data>/bots/<uuid>/settings-migration/backup/`.
 2. Adds each root MCP server that the profile does not have, with the variables that the server needs.
 3. Adds each root approval setting that the profile does not set.
-4. Copies the default model, when the profile has none. When the default model uses a sign-in of Coconut's Hermes home, the bot keeps the default model, because a profile outside the Hermes profiles folder cannot use that sign-in.
-5. Copies the OpenAI API fallback and its key, when the profile has no fallback.
+4. Copies the default model, when the profile has none. It copies the model only when Hermes resolves the same provider and key from the bot's profile. When the default model uses a sign-in of Coconut's Hermes home, the bot keeps the default model.
+5. Copies the OpenAI API fallback, when the profile has no fallback. Each route keeps the key that it used before:
+   - When the profile has another value under the same name, the route reads the copied key from `COCONUT_FALLBACK_<NAME>`.
+   - When Coconut's Hermes home reads the key through its `secrets:` sources, the profile gets those sources.
+   - When the bot still cannot resolve the same key, the step restores the profile files and stops the start.
 6. Keeps each login folder that holds files (for example `.config/gh` with a GitHub login) through its variable in the profile's `.env`.
 7. Removes Coconut's scripts from `terminal.shell_init_files`, and moves the routine receipts from `coconut-runs/` to `runs/`.
 8. Writes `<data>/bots/<uuid>/settings-migration/report.json`.

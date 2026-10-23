@@ -120,7 +120,7 @@ from settings_migration import migrate
 reports = migrate(default, {'bot': home})
 first = reports['bot']
 config_bytes = (home / 'config.yaml').read_bytes()
-env_bytes = (home / '.env').read_bytes()
+env_bytes = (home / '.env').read_bytes() if (home / '.env').exists() else None
 again = migrate(default, {'bot': home})['bot']
 assert again == first, (again, first)
 # A step that stopped before its report runs again and finds nothing left to write.
@@ -128,7 +128,7 @@ assert again == first, (again, first)
 rerun = migrate(default, {'bot': home})['bot']
 assert rerun['mcp']['added'] == [] and rerun['approvals'] == {} and rerun['login_folders'] == {}, rerun
 assert (home / 'config.yaml').read_bytes() == config_bytes
-assert (home / '.env').read_bytes() == env_bytes
+assert ((home / '.env').read_bytes() if (home / '.env').exists() else None) == env_bytes
 (home.parent / 'settings-migration' / 'report.json').write_text(json.dumps(first))
 from native_settings import raw_config
 config = raw_config(home)
@@ -228,6 +228,135 @@ class NativeSettingsMigrationTests(unittest.TestCase):
             self.assertNotIn('auth.json', state['files'])
             self.assertNotIn('synthetic', result.stdout)
 
+
+FALLBACK = r"""
+import json, os, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+default, home = root / 'default', root / 'bots' / 'bot' / 'home'
+import model_catalog
+model_catalog.apply_env_file(default / '.env')
+from settings_migration import MigrationError, _fallback_keys, migrate
+from agent.secret_scope import load_env_file
+from native_settings import raw_config
+before = {name: (home / name).read_bytes() for name in ('config.yaml', '.env') if (home / name).exists()}
+try:
+    report = migrate(default, {'bot': home})['bot']
+except MigrationError as error:
+    after = {name: (home / name).read_bytes() for name in ('config.yaml', '.env') if (home / name).exists()}
+    print(json.dumps({'error': str(error), 'restored': after == before,
+                      'report': (home.parent / 'settings-migration' / 'report.json').exists()}))
+    raise SystemExit
+print(json.dumps({'report': report['fallback'], 'keys': _fallback_keys(home), 'default_keys': _fallback_keys(default),
+                  'routes': raw_config(home)['fallback_providers'], 'secrets': 'secrets' in raw_config(home),
+                  'own_key': load_env_file(home / '.env').get('OPENAI_API_KEY')}))
+"""
+
+
+@needs_hermes
+class NativeFallbackMigrationTests(unittest.TestCase):
+    def run_case(self, default_config, default_env, bot_config, bot_env):
+        with tempfile.TemporaryDirectory(prefix='settings-migration-') as temporary:
+            root = Path(temporary)
+            default, home = root / 'default', root / 'bots' / 'bot' / 'home'
+            default.mkdir()
+            home.mkdir(parents=True)
+            secret = root / 'secret.env'
+            secret.write_text('OPENAI_API_KEY=synthetic-secret-source\n')
+            text = json.dumps(default_config).replace('SECRET_FILE', str(secret))
+            (default / 'config.yaml').write_text(text)
+            (default / '.env').write_text(default_env)
+            (home / 'config.yaml').write_text(json.dumps(bot_config).replace('SECRET_FILE', str(secret)))
+            if bot_env:
+                (home / '.env').write_text(bot_env)
+            env = {key: value for key, value in os.environ.items() if key != 'OPENAI_API_KEY'}
+            env.update(HERMES_HOME=str(default),
+                       PYTHONPATH=os.pathsep.join([str(Path(SOURCE).resolve()), str(BACKEND), str(BACKEND / 'coconut')]))
+            result = subprocess.run([PYTHON, '-c', FALLBACK, str(root)], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr[-6000:])
+            return json.loads(result.stdout.strip().splitlines()[-1])
+
+    route = {'provider': 'openai-api', 'model': 'gpt-6-astra', 'base_url': 'https://api.openai.com/v1', 'key_env': 'OPENAI_API_KEY'}
+
+    def test_a_bot_with_its_own_key_keeps_it_and_the_route_keeps_the_default_key(self):
+        state = self.run_case({'fallback_providers': [self.route]}, 'OPENAI_API_KEY=synthetic-default\n',
+                              {}, 'OPENAI_API_KEY=synthetic-bot\n')
+        self.assertEqual(state['own_key'], 'synthetic-bot')
+        self.assertEqual(state['routes'][0]['key_env'], 'COCONUT_FALLBACK_OPENAI_API_KEY')
+        self.assertEqual(state['keys'], ['synthetic-default'])
+        self.assertEqual(state['keys'], state['default_keys'])
+        self.assertEqual(state['report']['renamed_variables'], {'OPENAI_API_KEY': 'COCONUT_FALLBACK_OPENAI_API_KEY'})
+
+    def test_a_key_from_secret_sources_keeps_its_source(self):
+        secrets = {'command': {'enabled': True, 'command': 'cat SECRET_FILE'}}
+        state = self.run_case({'fallback_providers': [self.route], 'secrets': secrets}, '', {}, '')
+        self.assertTrue(state['secrets'])
+        self.assertEqual(state['keys'], ['synthetic-secret-source'])
+        self.assertEqual(state['keys'], state['default_keys'])
+
+    def test_a_bot_that_cannot_keep_the_key_is_restored_and_not_done(self):
+        secrets = {'command': {'enabled': True, 'command': 'cat SECRET_FILE'}}
+        state = self.run_case({'fallback_providers': [self.route], 'secrets': secrets}, '',
+                              {'secrets': {'command': {'enabled': False, 'command': 'true'}}}, '')
+        self.assertIn('OpenAI API fallback', state['error'])
+        self.assertTrue(state['restored'])
+        self.assertFalse(state['report'])
+
+    def test_the_key_alias_and_env_references_are_renamed(self):
+        route = {'provider': 'openai-api', 'model': 'gpt-6-astra', 'base_url': 'https://api.openai.com/v1',
+                 'api_key_env': 'FALLBACK_KEY', 'extra_headers': {'X-Key': '${env:FALLBACK_KEY}'}}
+        state = self.run_case({'fallback_providers': [route]}, 'FALLBACK_KEY=synthetic-default\n',
+                              {}, 'FALLBACK_KEY=synthetic-bot\n')
+        self.assertEqual(state['routes'][0]['api_key_env'], 'COCONUT_FALLBACK_FALLBACK_KEY')
+        self.assertNotIn('key_env', state['routes'][0])
+        self.assertEqual(state['routes'][0]['extra_headers'], {'X-Key': '${COCONUT_FALLBACK_FALLBACK_KEY}'})
+        self.assertEqual(state['keys'], ['synthetic-default'])
+
+    def test_secret_sources_that_would_change_a_bot_key_stop_the_step(self):
+        secrets = {'command': {'enabled': True, 'command': 'cat SECRET_FILE'}}
+        state = self.run_case({'fallback_providers': [self.route], 'secrets': secrets}, '', {},
+                              'OPENAI_API_KEY=synthetic-bot\n')
+        # The step stops for this bot, either at the fallback key or at the other keys of the bot.
+        self.assertIn('Bots not migrated', state['error'])
+        self.assertTrue(state['restored'])
+        self.assertFalse(state['report'])
+
+    def test_a_bot_with_its_own_key_keeps_using_it(self):
+        with tempfile.TemporaryDirectory(prefix='settings-migration-') as temporary:
+            root = Path(temporary)
+            default, profile = root / 'default', root / 'profile'
+            for folder in (default, profile):
+                folder.mkdir()
+            (default / '.anthropic_oauth.json').write_text('{}')
+            (profile / '.env').write_text('ANTHROPIC_API_KEY=synthetic-bot\n')
+            code = ('import json, sys\nfrom pathlib import Path\nfrom model_catalog import sign_in_home\n'
+                    'd, p = Path(sys.argv[1]), Path(sys.argv[2])\n'
+                    'print(json.dumps(str(sign_in_home("anthropic", p, (d,)))))')
+            env = dict(os.environ, HERMES_HOME=str(default),
+                       PYTHONPATH=os.pathsep.join([str(Path(SOURCE).resolve()), str(BACKEND / 'coconut')]))
+            result = subprocess.run([PYTHON, '-c', code, str(default), str(profile)], env=env, capture_output=True,
+                                    text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr[-6000:])
+            self.assertEqual(json.loads(result.stdout.strip().splitlines()[-1]), str(profile))
+
+    def test_a_route_with_a_sign_in_of_the_default_home_resolves_there(self):
+        with tempfile.TemporaryDirectory(prefix='settings-migration-') as temporary:
+            root = Path(temporary)
+            default, profile = root / 'default', root / 'profile'
+            for folder in (default, profile):
+                folder.mkdir()
+            (default / 'auth.json').write_text(json.dumps({'version': 1, 'providers': {'openai-codex': {
+                'tokens': {'access_token': 'synthetic-access', 'refresh_token': 'synthetic-refresh'}}}}))
+            code = ('import json, sys\nfrom pathlib import Path\nfrom model_catalog import sign_in_home\n'
+                    'd, p = Path(sys.argv[1]), Path(sys.argv[2])\n'
+                    'print(json.dumps([str(sign_in_home("openai-codex", p, (d,))), str(sign_in_home("openai-api", p, (d,)))]))')
+            env = dict(os.environ, HERMES_HOME=str(default),
+                       PYTHONPATH=os.pathsep.join([str(Path(SOURCE).resolve()), str(BACKEND / 'coconut')]))
+            result = subprocess.run([PYTHON, '-c', code, str(default), str(profile)], env=env, capture_output=True,
+                                    text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr[-6000:])
+            self.assertEqual(json.loads(result.stdout.strip().splitlines()[-1]), [str(default), str(profile)])
+            self.assertFalse((profile / 'auth.json').exists())
 
 if __name__ == '__main__':
     unittest.main()

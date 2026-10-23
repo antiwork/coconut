@@ -748,6 +748,53 @@ def _write_profile(home, selection, catalog):
         reset_hermes_home_override(token)
 
 
+def signed_in(home, provider):
+    """Whether this Hermes home keeps a sign-in (OAuth state) for the provider. An unreadable store holds none."""
+    from hermes_cli import auth
+    home = Path(home)
+    if provider == 'anthropic' and (home / '.anthropic_oauth.json').is_file():
+        return True
+    registration = auth.PROVIDER_REGISTRY.get(provider)
+    if registration is not None and registration.auth_type == 'api_key' and provider != 'anthropic':
+        return False
+    if not (home / 'auth.json').is_file():
+        return False
+    try:
+        return auth._provider_state_in(auth._load_auth_store(home / 'auth.json'), provider) is not None
+    except (OSError, ValueError):
+        return False
+
+
+def own_credentials(home, provider):
+    """Whether this profile has its own credential for the provider: a sign-in, an API key in .env, or a pool entry."""
+    from dotenv import dotenv_values
+    from hermes_cli import auth
+    home = Path(home)
+    if signed_in(home, provider):
+        return True
+    registration = auth.PROVIDER_REGISTRY.get(provider)
+    values = dotenv_values(home / '.env') if (home / '.env').is_file() else {}
+    if registration is not None and any(values.get(name) for name in registration.api_key_env_vars):
+        return True
+    try:
+        store = json.loads((home / 'auth.json').read_text()) if (home / 'auth.json').is_file() else {}
+    except (OSError, ValueError):
+        return False
+    pool = store.get('credential_pool') if isinstance(store, dict) else None
+    return isinstance(pool, dict) and bool(pool.get(provider))
+
+
+def sign_in_home(provider, profile, defaults):
+    """The home whose credentials a profile uses for this provider.
+
+    The profile uses its own home when it has its own credential for the provider. Otherwise it uses the first default
+    home that keeps a sign-in for it. Without any, it uses its own home, where Hermes reads API keys and pools.
+    """
+    if own_credentials(profile, provider):
+        return profile
+    return next((home for home in defaults if signed_in(home, provider)), profile)
+
+
 def _native_runtime(selection, profile_home=None):
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from hermes_cli.config import load_config
@@ -806,6 +853,7 @@ def _worker(request):
         from native_settings import worker
         return worker(dict(request, settings_root=str(root)), selected_home)
     if request['operation'] == 'runtime':
+        selection = _selection(request['selection'])
         profile = request.get('profile_home')
         if profile:
             profile = _contained(profile, request['data_root'])
@@ -814,9 +862,12 @@ def _worker(request):
             # A profile with no selection uses native global routing and credentials.
             config, model, provider, base_url = _native_state()
             inherited = _catalog(config, model, provider, base_url, [])['default']
-            if _read_profile(profile, inherited)['model_override'] is None:
+            if (_read_profile(profile, inherited)['model_override'] is None
+                    or sign_in_home(selection['provider'], profile, dict.fromkeys((selected_home, root))) != profile):
+                # Hermes refreshes a sign-in only in the store that holds it. A bot whose model uses a sign-in of the
+                # default home resolves its route there, so Coconut copies no refresh token into the profile.
                 profile = None
-        return _native_runtime(_selection(request['selection']), profile)
+        return _native_runtime(selection, profile)
     config, model, provider, base_url = _native_state()
     if request['operation'] in ('read_profiles', 'set_profile', 'native'):
         inherited = _catalog(config, model, provider, base_url, [])['default']

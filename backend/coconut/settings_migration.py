@@ -18,6 +18,7 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import tempfile
 
@@ -32,21 +33,34 @@ REDIRECTS = (('CODEX_HOME', '.codex'), ('GH_CONFIG_DIR', '.config/gh'),
 COCONUT_FILES = ('coconut-profile.json', '.coconut-kanban-tools', '.coconut-native-config.json',
                  'coconut-terminal.sh', 'coconut-google.sh')
 SHELL_SCRIPTS = ('coconut-terminal.sh', 'coconut-google.sh')
+BACKUP_COMPLETE = '.complete'
 # The step writes only the OpenAI API fallback, which was the only fallback that bots inherited.
 FALLBACK_KEYS = ('fallback_providers', 'fallback_model')
 
 
-def _back_up(source, backup):
-    """Copy one file into the backup once. A later run keeps the first copy, which shows the state before the step."""
-    target = backup / source.name
-    if target.exists() or not source.is_file() or source.is_symlink():
-        return
-    with tempfile.NamedTemporaryFile(dir=backup, prefix='.coconut-', delete=False) as handle:
+def _copy(source, target):
+    """Copy the bytes and the mode of one file atomically."""
+    with tempfile.NamedTemporaryFile(dir=target.parent, prefix='.coconut-', delete=False) as handle:
         handle.write(source.read_bytes())
         handle.flush()
         os.fsync(handle.fileno())
     shutil.copymode(source, handle.name)
     os.replace(handle.name, target)
+
+
+def _back_up(home, backup):
+    """Copy the profile files into the backup once, before the step changes anything.
+
+    The `.complete` marker closes the backup. A run after a stop keeps the first backup, which shows the state before
+    the step, also for a file that the step created later.
+    """
+    if (backup / BACKUP_COMPLETE).exists():
+        return
+    for name in ('config.yaml', '.env', *COCONUT_FILES):
+        source, target = home / name, backup / name
+        if source.is_file() and not source.is_symlink() and not target.exists():
+            _copy(source, target)
+    _write(backup / BACKUP_COMPLETE, '', backup)
 
 
 def _env(home):
@@ -59,20 +73,6 @@ def _save_env(key, value):
     from hermes_cli.config import require_env_writable, save_env_value
     require_env_writable(key, 'set')
     save_env_value(key, value)
-
-
-def _copy_values(names, values, default_values):
-    """Copy each named variable from the default .env that the profile does not define. Return the missing names."""
-    missing = []
-    for name in sorted(names):
-        if values.get(name):
-            continue
-        if not default_values.get(name):
-            missing.append(name)
-            continue
-        _save_env(name, default_values[name])
-        values[name] = default_values[name]
-    return missing
 
 
 def _legacy_defaults(home, config, backup):
@@ -155,13 +155,8 @@ def _model_is_set(config):
 def _signed_in(homes, provider):
     """Whether the default homes keep a sign-in for this provider. A profile outside the Hermes profiles folder cannot
     use that sign-in, and a copy of it would sign the default home out when one of them refreshes it."""
-    from hermes_cli import auth
-    for home in homes:
-        if provider == 'anthropic' and (home / '.anthropic_oauth.json').is_file():
-            return True
-        if auth._provider_state_in(auth._load_auth_store(home / 'auth.json'), provider) is not None:
-            return True
-    return False
+    from model_catalog import signed_in
+    return any(signed_in(home, provider) for home in homes)
 
 
 def _route(home, provider, model, overlays):
@@ -200,6 +195,12 @@ def _same_route(default, home, provider, model):
 
 def _model(config, default_config, default, home, root):
     if _model_is_set(config):
+        own = config['model'] if isinstance(config.get('model'), dict) else {}
+        provider = own.get('provider') or config.get('provider')
+        from model_catalog import sign_in_home
+        if provider and sign_in_home(provider, home, dict.fromkeys((default, root))) != home:
+            # model_catalog resolves this route in the default home, where Hermes refreshes the sign-in.
+            return {'status': 'kept_uses_default_sign_in', 'provider': provider}
         return {'status': 'kept'}
     model = default_config.get('model')
     if isinstance(model, str):
@@ -223,19 +224,96 @@ def _model(config, default_config, default, home, root):
     return {'status': 'copied', 'model': name, 'provider': provider}
 
 
-def _fallback(config, default_config):
-    """Copy the OpenAI API fallback of the default home. Return the variables that its key needs."""
+class MigrationError(RuntimeError):
+    """The step cannot keep a setting that the bot used. It restores the profile files and leaves the bot not done."""
+
+
+KEY_SETTINGS = ('key_env', 'api_key_env')
+
+
+def _rename_reference(value, name, target):
+    """Point every reference to one variable at another, in the forms that Hermes expands: ${NAME}, ${ NAME } and
+    ${env:NAME}, at any depth of the route, and in its key_env or api_key_env setting."""
+    pattern = re.compile(r'\$\{\s*(?:env:\s*)?' + re.escape(name) + r'\s*\}')
+    if isinstance(value, dict):
+        return {key: target if key in KEY_SETTINGS and item == name else _rename_reference(item, name, target)
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [_rename_reference(item, name, target) for item in value]
+    if isinstance(value, str):
+        return pattern.sub('${' + target + '}', value)
+    return value
+
+
+def _fallback(config, default_config, values, default_values):
+    """Copy the OpenAI API fallback of the default home. Return the routes, the variables to write and the report.
+
+    Each route keeps the key that it used in the default home. When the profile has another value under the same
+    name, the route reads the default value from a separate variable. When the default home reads the key through its
+    secret sources, the profile gets those sources too.
+    """
     if any(key in config for key in FALLBACK_KEYS):
-        return [], set()
+        return [], {}, {}
     from native_fallback import chain
     from native_mcp import _references
     entries = [deepcopy(entry) for entry in chain(default_config)
                if isinstance(entry, dict) and entry.get('provider') == 'openai-api']
     if not entries:
-        return [], set()
-    names = {'OPENAI_API_KEY'} | {entry['key_env'] for entry in entries if isinstance(entry.get('key_env'), str)}
+        return [], {}, {}
+    writes, renamed, unresolved = {}, {}, set()
+    for index, entry in enumerate(entries):
+        names = _references(entry, set())
+        setting = next((entry[key] for key in KEY_SETTINGS if isinstance(entry.get(key), str) and entry[key]), None)
+        if setting:
+            names.add(setting)
+        elif not entry.get('api_key'):
+            # Without its own key setting, Hermes reads OPENAI_API_KEY. A named variable keeps a renamed key.
+            entry['key_env'] = 'OPENAI_API_KEY'
+            names.add('OPENAI_API_KEY')
+        for name in sorted(names):
+            value = default_values.get(name)
+            if not value:
+                unresolved.add(name)
+                continue
+            target = name
+            if values.get(name) and values[name] != value:
+                target = 'COCONUT_FALLBACK_' + name
+                entry = entries[index] = _rename_reference(entry, name, target)
+                renamed[name] = target
+            if values.get(target) != value:
+                writes[target] = value
     config['fallback_providers'] = entries
-    return entries, _references(entries, names)
+    secrets = False
+    if unresolved and 'secrets' in default_config and 'secrets' not in config:
+        config['secrets'] = deepcopy(default_config['secrets'])
+        secrets = True
+    return entries, writes, dict(providers=len(entries), renamed_variables=renamed,
+                                 copied_secret_sources=secrets, variables_from_other_sources=sorted(unresolved))
+
+
+def _fallback_keys(home):
+    """The keys that the OpenAI API fallback routes of this home resolve to, in order. None for a route without one."""
+    from native_fallback import chain, configuration, entry_key
+    with configuration(home) as expanded:
+        return [entry_key(entry) for entry in chain(expanded) if entry.get('provider') == 'openai-api']
+
+
+def _secret_values(home):
+    """The values that Hermes resolves for this profile: its .env with its secret sources over it."""
+    from agent.secret_scope import current_secret_scope
+    from native_fallback import configuration
+    with configuration(home):
+        return dict(current_secret_scope() or {})
+
+
+def _restore(home, backup):
+    """Put back the profile files of the backup. A file that the backup does not hold did not exist before the step."""
+    for name in ('config.yaml', '.env'):
+        source, target = backup / name, home / name
+        if source.is_file():
+            _copy(source, target)
+        else:
+            target.unlink(missing_ok=True)
 
 
 def _shell_init(home, config):
@@ -338,8 +416,7 @@ def migrate_bot(default, home, root=None):
     from native_mcp import import_servers
     backup = path.parent / 'backup'
     backup.mkdir(parents=True, exist_ok=True, mode=0o700)
-    for name in ('config.yaml', '.env', *COCONUT_FILES):
-        _back_up(home / name, backup)
+    _back_up(home, backup)
     default_config = raw_config(default)
     default_values = _env(default)
     token = set_hermes_home_override(str(home))
@@ -349,24 +426,40 @@ def migrate_bot(default, home, root=None):
         legacy = _legacy_defaults(home, config, backup)
         approvals = _approvals(config, default_config)
         model = _model(config, default_config, default, home, root)
-        fallback, fallback_names = _fallback(config, default_config)
+        values = _env(home)
+        fallback, writes, fallback_report = _fallback(config, default_config, values, default_values)
         scripts = _shell_init(home, config)
         # Write the variables before config.yaml. After a stop between the two writes, the next run finds the
         # settings still missing and repeats both. It does not copy a variable twice.
-        values = _env(home)
-        fallback_missing = _copy_values(fallback_names, values, default_values) if fallback else []
+        for name, value in writes.items():
+            _save_env(name, value)
+            values[name] = value
         redirects = _redirects(home, values)
         if config != before:
             save_config(home, config)
+        if fallback:
+            expected = _fallback_keys(default)
+            actual = _fallback_keys(home)
+            if any(key and key != got for key, got in zip(expected, actual)) or len(actual) != len(expected):
+                raise MigrationError('The bot could not keep the key of its OpenAI API fallback.')
+            if fallback_report['copied_secret_sources']:
+                # The copied sources must not replace a value that the bot already had, such as its model key.
+                resolved = _secret_values(home)
+                if any(resolved.get(name) != value for name, value in values.items() if value and name not in writes):
+                    raise MigrationError('The secret sources of the OpenAI API fallback would change other bot keys.')
         # MCP servers last: Hermes's import reads and writes config.yaml and .env itself.
         servers = import_servers(root, home) if (raw_config(root).get('mcp_servers') or {}) else {}
+    except BaseException:
+        # A bot that is not done keeps no half step. The next start runs the whole step again.
+        _restore(home, backup)
+        raise
     finally:
         reset_hermes_home_override(token)
     runs = _move_runs(home)
     files = _move_coconut_files(home, backup)
     report = dict(version=VERSION, status='done', home=str(home), default_home=str(default),
                   legacy_defaults=legacy, approvals=approvals, model=model,
-                  fallback=dict(providers=len(fallback), missing_variables=fallback_missing),
+                  fallback=fallback_report,
                   mcp=dict(added=servers.get('added', []), needs_setup=servers.get('needs_setup', []),
                            skipped=servers.get('skipped', [])),
                   login_folders=redirects, removed_shell_init_files=scripts, runs=runs, moved_files=files,
@@ -376,5 +469,17 @@ def migrate_bot(default, home, root=None):
 
 
 def migrate(default, homes, root=None):
-    """Run the step for each profile home. Return the reports by bot ID."""
-    return {bot_id: migrate_bot(default, home, root) for bot_id, home in homes.items()}
+    """Run the step for each profile home. Return the reports by bot ID.
+
+    A bot that cannot keep a setting does not stop the others. After all bots, the step raises for those bots, so the
+    service does not start with a bot that lost a setting. Their profile files stay as they were before the step.
+    """
+    reports, failures = {}, {}
+    for bot_id, home in homes.items():
+        try:
+            reports[bot_id] = migrate_bot(default, home, root)
+        except MigrationError as error:
+            failures[bot_id] = str(error)
+    if failures:
+        raise MigrationError('Bots not migrated: ' + '; '.join(f'{bot_id}: {reason}' for bot_id, reason in failures.items()))
+    return reports

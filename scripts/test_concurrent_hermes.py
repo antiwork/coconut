@@ -95,6 +95,8 @@ def check(source, python):
             root = home / 'default'
             def resolve_runtime(self, *_args, **_kwargs):
                 return dict(provider='custom', api_mode='chat_completions', base_url=address, api_key='local-test')
+            def worker_limit(self):
+                return None
         Catalog.root.mkdir()
         (Catalog.root / 'config.yaml').write_text('{}')
         class Provider(HermesProvider):

@@ -172,8 +172,11 @@ def _native_case(case):
                 assert snapshot() == before
             elif case == 'runtime_context_and_pin_are_not_chain_overrides':
                 from agent.context_compressor import pin_summary_route, take_pinned_summary_route
-                with configuration(bot):
+                # A bot without its own chain: a chain from the runtime context or a pin must not reach it.
+                with configuration(other):
                     entries = entries_for_turn()
+                profile(bot, {}, keys[1])
+                with configuration(bot):
                     runtime = {'provider': 'openai-codex', 'model': 'gpt-6-sol',
                                'fallback_providers': entries}
                     with aux.scoped_runtime_main(runtime) as normalized:

@@ -1950,7 +1950,8 @@ print(parent)
         self.assertEqual(cwd, self.workspace)
         self.assertEqual(env['HOME'], os.environ['HOME'])
         self.assertEqual(env['HERMES_HOME'], str(self.data / 'bots' / self.bot['id'] / 'home'))
-        self.assertEqual(env['CODEX_HOME'], env['HERMES_HOME'] + '/.codex')
+        # Tools use the Mac account folders. A profile .env can still select its own.
+        self.assertNotIn('CODEX_HOME', env)
         self.assertNotIn('CLAUDE_CONFIG_DIR', env)
         for worker in self.service.running.values():
             worker.join(5)

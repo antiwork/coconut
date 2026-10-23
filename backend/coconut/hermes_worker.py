@@ -1460,8 +1460,6 @@ def run_turn(request, emit, request_receipt):
                         interim_assistant_callback=publish_interim,
                         skip_context_files=False, load_soul_identity=True, skip_memory=False, skip_background_review=False,
                         save_trajectories=False, run_budget_seconds=None)
-        from native_compression import install as install_compression_fallback
-        install_compression_fallback(agent, profile_config, fallback)
         from native_compression_head import install as install_compression_head
         install_compression_head(agent, profile_config)
         scope.agent = agent
