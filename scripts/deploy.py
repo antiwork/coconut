@@ -458,6 +458,56 @@ def copy_source(source, target):
             temporary.unlink(missing_ok=True)
 
 
+# Older installers updated a private Hermes runtime with the code. Their journal has a runtime_change. Such an update can
+# stop after it moved .runtime/hermes to hermes-rollback-<id> and before it moved the shared settings back
+# (.runtime/hermes/terminal). Recovery of such a journal restores that runtime with its settings, as those installers did.
+def runtime_paths(root, record):
+    change = record.get('runtime_change')
+    if change is None:
+        return None
+    if (not isinstance(change, dict) or set(change) != {'previous', 'candidate'}
+            or any(not isinstance(v, str) or not re.fullmatch(r'[0-9a-f]{40}', v) for v in change.values())
+            or change['previous'] == change['candidate']):
+        raise DeployError('The runtime update journal is invalid.')
+    identity = str(UUID(record['deployment_id']))
+    return tuple(safe_path(root / '.runtime' / name, root) for name in (
+        'hermes', 'hermes-rollback-' + identity, 'hermes-failed-' + identity))
+
+
+def move_terminal_state(source, target, root):
+    # Keep the authoritative native terminal registry and its lock together.
+    for name in ('terminal', 'terminal.lock'):
+        old, new = safe_path(source / name, root), safe_path(target / name, root)
+        if old.exists():
+            if new.exists():
+                raise DeployError('Two copies of native terminal state prevent the runtime update.')
+            old.rename(new)
+            sync_directory(source)
+            sync_directory(target)
+
+
+def restore_runtime(root, record):
+    paths = runtime_paths(root, record)
+    if paths is None:
+        return
+    runtime, backup, failed = paths
+    if backup.exists():
+        receipt = safe_path(backup / 'install.json', root)
+        if json.loads(receipt.read_text()).get('commit') != record['runtime_change']['previous']:
+            raise DeployError('The saved Hermes runtime does not match the rollback revision.')
+        if runtime.exists():
+            move_terminal_state(runtime, backup, root)
+            if failed.exists():
+                raise DeployError('A failed runtime already exists. Preserve it before retrying recovery.')
+            runtime.rename(failed)
+            sync_directory(runtime.parent)
+        backup.rename(runtime)
+        sync_directory(runtime.parent)
+    receipt = safe_path(runtime / 'install.json', root)
+    if not receipt.is_file() or json.loads(receipt.read_text()).get('commit') != record['runtime_change']['previous']:
+        raise DeployError('The previous Hermes runtime is unavailable. Recovery stopped.')
+
+
 def prune_runtime_copies(root):
     """Remove the copies of the private Hermes runtime that older versions kept for a rollback.
 
@@ -467,7 +517,9 @@ def prune_runtime_copies(root):
     # Cleanup only reclaims space. It must not turn an update into a failed one.
     with contextlib.suppress(OSError, DeployError):
         for old in (root / '.runtime').glob('hermes-*'):
-            if runtime_copy_name(old.name) and old.is_dir() and not old.is_symlink():
+            # A copy that holds the shared settings of the bots is their only copy. It stays.
+            if (runtime_copy_name(old.name) and old.is_dir() and not old.is_symlink()
+                    and not any((old / name).exists() for name in ('terminal', 'terminal.lock'))):
                 shutil.rmtree(safe_path(old, root), ignore_errors=True)
 
 
@@ -502,6 +554,7 @@ def reconcile(root, operations):
             if any(not allowed_path(name) or not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value) for name, value in names.items()):
                 raise ValueError()
         staging, backup = journal_paths(root, record)
+        runtime_paths(root, record)
     except (ValueError, KeyError, TypeError, OSError, AttributeError):
         raise DeployError('The incomplete deployment has an invalid recovery journal. No source or data was changed.') from None
     if (marker.get('state') == 'installed' and marker.get('deployment_id') == record.get('deployment_id') and record.get('deployment_id') and marker.get('files') == record['new_files']) or record['phase'] == 'rolled_back':
@@ -546,6 +599,7 @@ def reconcile(root, operations):
         raise DeployError('The incomplete update could not stop its service. Its journal, source, and runtime remain intact.') from error
     record['phase'] = 'rollback_stopped'
     write_json(journal, record)
+    restore_runtime(root, record)
     for name in set(record['new_files']) - set(old['files']):
         path = safe_path(root / name, root)
         if path.exists():

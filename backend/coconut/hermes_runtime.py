@@ -58,13 +58,11 @@ print(json.dumps(verify_contract()))
 class HermesUnavailable(Exception):
     """Coconut cannot run on this Mac's Hermes. The status is "missing" or "incompatible"."""
 
-    def __init__(self, status: str, reason: str, *, version: str | None = None, lasting: bool = True):
+    def __init__(self, status: str, reason: str, *, version: str | None = None):
         super().__init__(reason)
         self.status = status
         self.reason = reason
         self.version = version
-        # A timeout can pass on the next start. Only a lasting result is kept for the same Hermes and Coconut code.
-        self.lasting = lasting
 
     def record(self) -> dict:
         return {'status': self.status, 'version': self.version, 'reason': self.reason}
@@ -189,7 +187,7 @@ def probe(python: Path, environ=None, timeout: float = PROBE_SECONDS) -> dict:
             result = subprocess.run([str(python), '-I', '-B', '-c', PROBE], cwd=folder, env=environment,
                                     stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
-            raise HermesUnavailable('incompatible', f'Hermes did not load within {timeout:.0f} seconds.', lasting=False) from None
+            raise HermesUnavailable('incompatible', f'Hermes did not load within {timeout:.0f} seconds.') from None
         except OSError as error:
             raise HermesUnavailable('incompatible', f'The Hermes Python cannot start: {error.strerror}.') from None
     if result.returncode:
@@ -269,7 +267,7 @@ def check(runtime: HermesRuntime, environ=None, timeout: float = CONTRACT_SECOND
                                     timeout=timeout)
         except subprocess.TimeoutExpired:
             raise HermesUnavailable('incompatible', f'The Hermes contract check did not finish within {timeout:.0f} seconds.',
-                                    version=runtime.version, lasting=False) from None
+                                    version=runtime.version) from None
         except OSError as error:
             raise HermesUnavailable('incompatible', f'The Hermes Python cannot start: {error.strerror}.',
                                     version=runtime.version) from None
@@ -322,11 +320,11 @@ def write_status(data_dir, value: dict) -> None:
 
 
 def saved_still_valid(saved: dict | None, environ=None, home=None) -> bool:
-    """Return True when a saved lasting result describes the Hermes that the search finds first, unchanged.
+    """Return True when a saved pass describes the Hermes that the search finds first, unchanged.
 
     This check starts no program, so a restart skips the import probe as well as the contract check.
     """
-    if not saved or not saved.get('fingerprint') or not saved.get('python') or not saved.get('root'):
+    if not saved or saved.get('status') != 'ok' or not saved.get('fingerprint') or not saved.get('root'):
         return False
     found = locate(environ, home)
     if found is None or str(found[0]) != saved['python'] or (found[1] is not None and found[1].resolve() != Path(saved['root'])):
@@ -339,8 +337,8 @@ def saved_still_valid(saved: dict | None, environ=None, home=None) -> bool:
 def status(data_dir=None, environ=None, home=None, *, save=True) -> dict:
     """Find and check the Hermes. Return {status, version, reason} and, when status is "ok", {python, root, home}.
 
-    With data_dir, a lasting result for the same Hermes and Coconut code is reused, so a restart does not run the
-    contract check again. The service saves its result there. An update checks new code with save=False: its result
+    With data_dir, a pass for the same Hermes and Coconut code is reused, so a restart does not run the contract check
+    again. A failure is never reused: a restart checks again, so a repaired Hermes works at once. The service saves its result there. An update checks new code with save=False: its result
     must not replace the status of the running version, which decides a rollback (see deploy.check_hermes).
     """
     saved = read_status(data_dir) if data_dir is not None else None
@@ -352,15 +350,13 @@ def status(data_dir=None, environ=None, home=None, *, save=True) -> dict:
         result = error.record()
     else:
         key = fingerprint(runtime)
-        if saved and saved.get('fingerprint') == key:
+        if saved and saved.get('status') == 'ok' and saved.get('fingerprint') == key:
             return saved
         result = dict(runtime.describe(), status='ok', reason=None, fingerprint=key, packages=runtime.packages)
         try:
             check(runtime, environ)
         except HermesUnavailable as error:
             result.update(error.record())
-            if not error.lasting:
-                result.pop('fingerprint')
     if data_dir is not None and save:
         write_status(data_dir, result)
     return result

@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 
 SCRIPTS = Path(__file__).resolve().parents[2] / 'scripts'
-sys.path.insert(0, str(SCRIPTS))  # cleanup imports terminal, as when it runs from scripts/.
+sys.path.insert(0, str(SCRIPTS))  # cleanup imports host, as when it runs from scripts/.
 
 
 def load(name):
@@ -639,6 +639,31 @@ class HostLifecycleTests(unittest.TestCase):
             host.restart(argparse.Namespace())
             restore.assert_called_once_with(state)
             start.assert_not_called()
+
+
+
+
+class ServiceEnvironmentTests(unittest.TestCase):
+    def test_an_update_searches_for_hermes_as_the_login_service_does(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            agents = home / 'Library/LaunchAgents'
+            agents.mkdir(parents=True)
+            (agents / f'{host.LABEL}.plist').write_bytes(plistlib.dumps({'EnvironmentVariables': {
+                'PATH': '/service/bin:/usr/bin', 'COCONUT_HERMES_ROOT': '/hermes'}}))
+            updater = {'PATH': '/updater/bin', 'COCONUT_HERMES_PYTHON': '/other/python', 'HOME': str(home)}
+            with patch.object(host.Path, 'home', return_value=home), patch.dict(host.os.environ, updater, clear=True):
+                environment = host.service_environment()
+        self.assertEqual(environment['PATH'], '/service/bin:/usr/bin')
+        self.assertEqual(environment['COCONUT_HERMES_ROOT'], '/hermes')
+        self.assertNotIn('COCONUT_HERMES_PYTHON', environment)
+        self.assertEqual(environment['HOME'], str(home))
+
+    def test_without_a_login_service_the_update_uses_its_own_environment(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(host.Path, 'home', return_value=Path(directory)), \
+                patch.dict(host.os.environ, {'PATH': '/updater/bin'}, clear=True):
+            self.assertEqual(host.service_environment(), {'PATH': '/updater/bin'})
 
 
 if __name__ == '__main__':

@@ -136,11 +136,12 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(hermes_runtime.status(data, self.environ, self.home, save=False)['status'], 'incompatible')
         self.assertEqual(hermes_runtime.read_status(data), first)
 
-    def test_a_timeout_is_not_kept(self):
+    def test_a_failure_is_checked_again_at_the_next_start(self):
+        # A person can repair Hermes without a change that the fingerprint sees. A restart then works at once.
         make_hermes(self.home / '.hermes/hermes-agent')
         data = Path(self.temporary.name) / 'data'
-        timeout = HermesUnavailable('incompatible', 'Slow.', lasting=False)
-        with patch.object(hermes_runtime, 'check', side_effect=[timeout, {}]):
+        failure = HermesUnavailable('incompatible', 'Broken.')
+        with patch.object(hermes_runtime, 'check', side_effect=[failure, {}]):
             self.assertEqual(hermes_runtime.status(data, self.environ, self.home)['status'], 'incompatible')
             self.assertEqual(hermes_runtime.status(data, self.environ, self.home)['status'], 'ok')
 

@@ -64,13 +64,14 @@ Each time the service starts, it looks for Hermes in this order:
 3. `~/.hermes/hermes-agent`, where the official installer puts Hermes.
 
 The service imports the Hermes modules that it uses, then runs its contract check against them. The check sends no model request and uses a temporary Hermes home.
-The service then runs under the Python of that Hermes. It saves the result in `.runtime/host/hermes.json` and checks again only when Hermes or the Coconut code changes.
+The service then runs under the Python of that Hermes. It saves the result in `.runtime/host/hermes.json`.
+A restart reuses a passed check while Hermes and the Coconut code stay the same. A failed check runs again at each start, so a restart is enough after you repair Hermes.
 
 Without a usable Hermes, the service still starts, but it runs no bots.
 The phone can pair and read `GET /v1/setup`, which says why. Every other route answers `503` with the code `hermes_unavailable`.
 Install or update Hermes, then restart Coconut with `python3 scripts/host.py restart`.
 
-An update changes Coconut only. It runs the contract check of the new code against the installed Hermes.
+An update changes Coconut only. It runs the contract check of the new code against the installed Hermes. It searches with the environment of the login service, so it checks the same Hermes as the service.
 If that Hermes worked with the earlier version and fails with the new one, the update restores the earlier version.
 
 Older versions installed their own Hermes in `.runtime/hermes` and their own `~/.local/bin/hermes` command.

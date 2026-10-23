@@ -258,6 +258,27 @@ def hermes_runtime():
     return module
 
 
+def service_environment() -> dict:
+    """Return the environment in which the login service searches for Hermes. An update checks Hermes with it.
+
+    The updater runs in another environment, for example over SSH. Its PATH or settings can find another Hermes.
+    """
+    environment = dict(os.environ)
+    path = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
+    try:
+        payload = plistlib.loads(path.read_bytes()) if path.is_file() and not path.is_symlink() else {}
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        payload = {}
+    service = payload.get("EnvironmentVariables") if isinstance(payload, dict) else None
+    if isinstance(service, dict):
+        for name in ("PATH", "COCONUT_HERMES_PYTHON", "COCONUT_HERMES_ROOT", "HERMES_HOME"):
+            environment.pop(name, None)
+        environment.update({name: value for name, value in service.items() if isinstance(value, str)})
+        # launchd gives a job without PATH this default.
+        environment.setdefault("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+    return environment
+
+
 def fingerprint(cert: Path) -> str:
     der = ssl.PEM_cert_to_DER_cert(cert.read_text())
     return hashlib.sha256(der).hexdigest().upper()
@@ -631,7 +652,8 @@ def main() -> None:
         start(args)
     elif args.command == "hermes-status":
         # Find and check the person's Hermes with this code. The saved status stays the one of the running service.
-        print("COCONUT_HERMES_STATUS=" + json.dumps(hermes_runtime().status(args.data_dir, save=False)))
+        status = hermes_runtime().status(args.data_dir, environ=service_environment(), save=False)
+        print("COCONUT_HERMES_STATUS=" + json.dumps(status))
     elif args.command in {"stop", "restart", "status"}:
         if args.data_dir != DEFAULT_DATA:
             raise SystemExit("Use the default data directory for status, stop, and restart.")
