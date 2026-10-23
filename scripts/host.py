@@ -247,15 +247,24 @@ def connection_certificate(args: argparse.Namespace) -> tuple[Path, Path]:
     return result
 
 
-def hermes_runtime():
-    """Load backend/coconut/hermes_runtime.py alone. It uses the standard library only, so any Python can run it."""
+def backend_module(name: str):
+    """Load one module of backend/coconut alone. It must use the standard library only, so any Python can run it."""
     import importlib.util
-    spec = importlib.util.spec_from_file_location("coconut_hermes_runtime", ROOT / "backend/coconut/hermes_runtime.py")
+    spec = importlib.util.spec_from_file_location("coconut_" + name, ROOT / f"backend/coconut/{name}.py")
     module = importlib.util.module_from_spec(spec)
     # dataclasses look the module up by name.
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def hermes_runtime():
+    return backend_module("hermes_runtime")
+
+
+def service_path(value: str) -> str:
+    """Return the PATH of the service. host.py serve sets it before the service searches for Hermes."""
+    return backend_module("terminal_setup").command_path(value)
 
 
 def service_environment() -> dict:
@@ -276,6 +285,7 @@ def service_environment() -> dict:
         environment.update({name: value for name, value in service.items() if isinstance(value, str)})
         # launchd gives a job without PATH this default.
         environment.setdefault("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+    environment["PATH"] = service_path(environment.get("PATH", ""))
     return environment
 
 
@@ -334,10 +344,11 @@ def start(args: argparse.Namespace) -> None:
                "--host", args.host, "--port", str(args.port), "--provider", args.provider]
     if args.insecure_loopback:
         command.append("--insecure-loopback")
-    environment = dict(os.environ)
+    environment = dict(os.environ, PATH=service_path(os.environ.get("PATH", "")))
     if args.provider == "hermes":
         # Check Hermes before the service starts, so the wait below covers only the start. The service takes this result.
-        status = hermes_runtime().status(args.data_dir)
+        # The search uses the PATH that host.py serve gives the service.
+        status = hermes_runtime().status(args.data_dir, environ=environment)
         environment["COCONUT_HERMES_STATUS"] = json.dumps(status)
         if status["status"] != "ok":
             print(f"Coconut runs no bots until Hermes works: {status['reason']}")
@@ -682,8 +693,7 @@ def main() -> None:
         # Older versions installed their own hermes command. It started the private runtime, which is gone.
         if hermes_runtime().remove_coconut_launcher():
             print("Removed Coconut's old hermes command from ~/.local/bin.", flush=True)
-        from coconut.terminal_setup import command_path
-        os.environ['PATH'] = command_path(os.environ.get('PATH', ''))
+        os.environ['PATH'] = service_path(os.environ.get('PATH', ''))
         managed = managed_current_process(args.data_dir)
         os.environ['COCONUT_MANAGED_SERVICE'] = '1' if managed else '0'
         private_directory(args.data_dir)

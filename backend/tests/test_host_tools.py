@@ -655,7 +655,10 @@ class ServiceEnvironmentTests(unittest.TestCase):
             updater = {'PATH': '/updater/bin', 'COCONUT_HERMES_PYTHON': '/other/python', 'HOME': str(home)}
             with patch.object(host.Path, 'home', return_value=home), patch.dict(host.os.environ, updater, clear=True):
                 environment = host.service_environment()
-        self.assertEqual(environment['PATH'], '/service/bin:/usr/bin')
+                expected = host.service_path('/service/bin:/usr/bin')
+        # host.py serve puts the package folders first, as for the service. See terminal_setup.command_path.
+        self.assertEqual(environment['PATH'], expected)
+        self.assertIn('/service/bin', environment['PATH'].split(':'))
         self.assertEqual(environment['COCONUT_HERMES_ROOT'], '/hermes')
         self.assertNotIn('COCONUT_HERMES_PYTHON', environment)
         self.assertEqual(environment['HOME'], str(home))
@@ -664,7 +667,7 @@ class ServiceEnvironmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(host.Path, 'home', return_value=Path(directory)), \
                 patch.dict(host.os.environ, {'PATH': '/updater/bin'}, clear=True):
-            self.assertEqual(host.service_environment(), {'PATH': '/updater/bin'})
+            self.assertEqual(host.service_environment(), {'PATH': host.service_path('/updater/bin')})
 
 
 class ManualStartTests(unittest.TestCase):
@@ -685,7 +688,10 @@ class ManualStartTests(unittest.TestCase):
                     patch.object(host.subprocess, 'Popen', side_effect=popen) as started, \
                     patch('sys.stdout'):
                 host.start(args)
-        runtime.status.assert_called_once_with(data)
+        # The search uses the PATH that host.py serve gives the service, for example with /opt/homebrew/bin.
+        environment = runtime.status.call_args.kwargs['environ']
+        runtime.status.assert_called_once_with(data, environ=environment)
+        self.assertEqual(environment['PATH'], host.service_path(host.os.environ.get('PATH', '')))
         self.assertEqual(json.loads(started.call_args.kwargs['env']['COCONUT_HERMES_STATUS']), status)
 
 
