@@ -25,6 +25,7 @@ targets:
     sources:
       - Coconut
       - PushShared
+      - Tunnel
       - ../scripts/push-envelope.swift
     settings:
       base:
