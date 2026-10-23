@@ -18,6 +18,14 @@ class_name = "PushDevice"
 tag = "v1"
 new_sqlite_classes = ["PushDevice"]
 
+[[durable_objects.bindings]]
+name = "TUNNELS"
+class_name = "Tunnel"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Tunnel"]
+
 [[ratelimits]]
 name = "REGISTRATION_LIMIT"
 namespace_id = "1"
@@ -27,6 +35,17 @@ simple = { limit = 30, period = 60 }
 name = "DELIVERY_LIMIT"
 namespace_id = "2"
 simple = { limit = 120, period = 60 }
+
+# The binding allows at most 60 seconds per window. The Tunnel Durable Object also allows 10 per hour for each IP.
+[[ratelimits]]
+name = "TUNNEL_REGISTER"
+namespace_id = "3"
+simple = { limit = 10, period = 60 }
+
+[[ratelimits]]
+name = "TUNNEL_CONNECT"
+namespace_id = "4"
+simple = { limit = 60, period = 60 }
 
 [observability]
 enabled = false

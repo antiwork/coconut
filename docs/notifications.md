@@ -137,6 +137,30 @@ The previous direct APNs sender remains available only for phones that have not 
 An encrypted registration cannot downgrade to direct delivery. Remove the old Mac APNs keys after migration verification.
 Removing Coconut's runtime deletes its local keys and delivery credentials. It does not delete the shared Worker.
 
+## Tunnel (deployed, not used yet)
+
+The same Worker also has a `Tunnel` Durable Object. It will replace the direct HTTPS connection over Tailscale.
+The iPhone and a sidecar on the Mac run a Noise handshake end to end. The relay forwards only ciphertext.
+Nothing in the app or on the Mac uses the tunnel yet. `relay/src/tunnel.js` describes the wire format in its first comment.
+
+- `POST /v1/tunnels` with `{"route": <64 hex>}` returns a `host_token`. The relay refuses a route that already exists.
+- `GET /v1/tunnels/<route>/host` opens the WebSocket of the Mac with `Authorization: Bearer <host_token>`. A newer host socket replaces the older one.
+- `GET /v1/tunnels/<route>/client` opens a WebSocket for an iPhone with `Bearer <client_token>` or `Ticket <pairing_ticket>`. A route allows 8 client channels at a time.
+
+The Mac allows client tokens and pairing tickets through JSON control messages on channel 0.
+A pairing ticket works once and expires after at most 10 minutes.
+The relay stores only SHA-256 hashes of the host token, client tokens, and tickets. It stores no frames and logs nothing.
+The relay adds a channel ID to each client frame toward the Mac, and removes it toward the iPhone.
+When no Mac is connected, the iPhone gets a `mac_offline` error and the relay closes its socket.
+
+Limits:
+
+- A frame over 70 KB closes the socket with code 1009.
+- A route allows 3,000 frames a minute. The Durable Object counts them in SQLite, so the count survives hibernation.
+- Each IP can register 10 routes an hour and open 60 tunnel sockets a minute.
+
+The Durable Object uses the WebSocket Hibernation API. The runtime answers `ping` with `pong` without waking it.
+
 ## API
 
 `GET /v1/push/config` returns the relay address and Mac public key over the paired connection.
