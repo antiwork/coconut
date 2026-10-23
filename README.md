@@ -21,7 +21,7 @@ If you use Hermes, Coconut onboarding gives you a message for your Hermes agent.
 python3 ~/Coconut/scripts/setup_coconut.py
 ```
 
-The command installs Hermes, configures this Mac's Tailscale address, starts the login service, and prints the iPhone setup link.
+The command finds the Hermes that you already use, configures this Mac's Tailscale address, starts the login service, and prints the iPhone setup link.
 See [Pair through Hermes](docs/install-and-update.md#pair-through-hermes).
 The installer keeps its managed Hermes runtime inside `.runtime/`.
 

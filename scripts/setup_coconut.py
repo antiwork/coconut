@@ -14,7 +14,6 @@ import subprocess
 import sys
 
 import deploy
-import hermes
 import host
 
 
@@ -71,8 +70,7 @@ def tailscale_host() -> str:
     return addresses[0]
 
 
-def prerequisites() -> str:
-    """Check this Mac and return its Coconut address."""
+def prerequisites() -> None:
     if sys.platform != "darwin":
         raise SystemExit("Coconut runs on macOS. Run this command on the Mac that runs Hermes.")
     if sys.version_info < (3, 9):
@@ -81,6 +79,10 @@ def prerequisites() -> str:
     if tools.returncode:
         raise SystemExit("Install Xcode Command Line Tools with xcode-select --install. "
                          "Finish the installer, then run this command again.")
+
+
+def tailscale_address() -> str:
+    """Return the HTTPS address that the iPhone reaches over Tailscale."""
     name = tailscale_host()
     saved = saved_address()
     # Keep a port that an earlier setup chose for the same name.
@@ -99,15 +101,42 @@ def saved_address() -> str | None:
         raise SystemExit(f"{path} is invalid. Remove it, then run this command again.") from None
 
 
-def hermes_installed() -> bool:
-    return hermes.MANIFEST.is_file() and hermes.PYTHON.exists() and (hermes.SOURCE / "run_agent.py").is_file()
+def hermes_runtime(root: Path, python: Path) -> tuple[Path, Path] | None:
+    """Return the Hermes source folder and its Python, when both exist outside this project."""
+    root, python = root.expanduser(), python.expanduser()
+    if not (root / "run_agent.py").is_file() or not os.access(python, os.X_OK):
+        return None
+    if ROOT in root.resolve().parents or ROOT in python.resolve().parents:
+        return None
+    return root.resolve(), python
 
 
-def install_hermes() -> None:
-    if hermes_installed():
-        print("Hermes is already installed.")
-        return
-    run(script("hermes.py", "install"), "The Hermes installation", quiet=False)
+def find_hermes() -> tuple[Path, Path]:
+    """Find the Hermes that the person already uses. Coconut does not install its own copy."""
+    candidates = []
+    if os.environ.get("COCONUT_HERMES_ROOT") and os.environ.get("COCONUT_HERMES_PYTHON"):
+        candidates.append((Path(os.environ["COCONUT_HERMES_ROOT"]), Path(os.environ["COCONUT_HERMES_PYTHON"])))
+    command = shutil.which("hermes")
+    if command:
+        # The Hermes installer links the command from the virtual environment inside its source folder.
+        binary = Path(command).resolve().parent
+        candidates.append((binary.parent.parent, binary / "python"))
+    home = Path.home() / ".hermes/hermes-agent"
+    candidates.extend((home, home / name / "bin/python") for name in ("venv", ".venv"))
+    for root, python in candidates:
+        found = hermes_runtime(root, python)
+        if found:
+            return found
+    raise SystemExit("Install Hermes first: https://github.com/NousResearch/hermes-agent. "
+                     "Then run this command again.")
+
+
+def use_hermes() -> None:
+    root, python = find_hermes()
+    # The service and the login service that host.py writes read these two variables.
+    os.environ["COCONUT_HERMES_ROOT"] = str(root)
+    os.environ["COCONUT_HERMES_PYTHON"] = str(python)
+    print(f"Coconut uses the Hermes in {root}.")
 
 
 def service_running() -> bool:
@@ -163,10 +192,11 @@ def share() -> None:
 def main() -> None:
     os.umask(0o077)
     step("Checking this Mac")
-    address = prerequisites()
-    step("Installing Hermes")
-    install_hermes()
+    prerequisites()
+    step("Finding Hermes")
+    use_hermes()
     step("Configuring the Tailscale address")
+    address = tailscale_address()
     configure(address)
     step("Starting the Coconut service")
     start_service(address)

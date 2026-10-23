@@ -148,9 +148,9 @@ python3 ~/Coconut/scripts/setup_coconut.py
 
 The command does these steps:
 
-1. It checks for macOS, Xcode Command Line Tools, and a connected Tailscale with an address for this Mac.
-2. It installs the verified Hermes runtime if it is missing.
-3. It configures the host with this Mac's Tailscale name and port 8960. It keeps a port that an earlier setup chose for the same name.
+1. It checks for macOS and Xcode Command Line Tools.
+2. It finds the Hermes that the person already uses: the `hermes` command, or `~/.hermes/hermes-agent`. It does not install its own copy. If Hermes is missing, it stops and asks you to install Hermes first.
+3. It checks that Tailscale is connected, then configures the host with this Mac's Tailscale name and port 8960. It keeps a port that an earlier setup chose for the same name.
 4. It installs or starts the login service, so Coconut starts again after a restart. Then it waits for the local HTTPS health check.
 5. It runs `python3 scripts/pairing.py --share`. It prints the `coconut://pair` setup link and the path of a QR image that holds the same link last.
 

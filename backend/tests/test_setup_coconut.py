@@ -59,7 +59,8 @@ class SetupCoconutTests(unittest.TestCase):
                 patch.object(setup_coconut.subprocess, "run", fake_run), \
                 patch.object(setup_coconut.shutil, "which", return_value=which), \
                 patch.object(setup_coconut, "TAILSCALE_APP", Path(self.directory.name) / "missing"):
-            return setup_coconut.prerequisites()
+            setup_coconut.prerequisites()
+            return setup_coconut.tailscale_address()
 
     def test_prerequisites_use_the_tailscale_name_and_default_port(self):
         self.assertEqual(self.prerequisites(), ADDRESS)
@@ -87,13 +88,55 @@ class SetupCoconutTests(unittest.TestCase):
                 self.prerequisites(**options)
             self.assertIn(message, str(raised.exception))
 
-    def test_installs_hermes_only_when_missing(self):
-        with patch.object(setup_coconut, "hermes_installed", return_value=True):
-            setup_coconut.install_hermes()
+    def hermes(self, folder):
+        root = Path(self.directory.name).resolve() / folder
+        (root / "venv/bin").mkdir(parents=True)
+        (root / "run_agent.py").write_text("")
+        python = root / "venv/bin/python"
+        python.write_text("")
+        python.chmod(0o700)
+        return root, python
+
+    def find_hermes(self, *, which=None, home=None, environ=None):
+        with patch.object(setup_coconut.shutil, "which", return_value=which), \
+                patch.object(setup_coconut.Path, "home", return_value=Path(home or self.directory.name).resolve()), \
+                patch.dict(setup_coconut.os.environ, environ or {}, clear=True):
+            return setup_coconut.find_hermes()
+
+    def test_finds_hermes_from_its_command(self):
+        root, python = self.hermes("hermes-agent")
+        command = Path(self.directory.name) / "bin/hermes"
+        command.parent.mkdir()
+        command.symlink_to(root / "venv/bin/hermes")
+        (root / "venv/bin/hermes").write_text("")
+        self.assertEqual(self.find_hermes(which=str(command)), (root, python))
+
+    def test_finds_hermes_in_its_default_home(self):
+        root, python = self.hermes(".hermes/hermes-agent")
+        self.assertEqual(self.find_hermes(), (root, python))
+
+    def test_an_explicit_hermes_comes_first(self):
+        self.hermes(".hermes/hermes-agent")
+        root, python = self.hermes("other")
+        environ = {"COCONUT_HERMES_ROOT": str(root), "COCONUT_HERMES_PYTHON": str(python)}
+        self.assertEqual(self.find_hermes(environ=environ), (root, python))
+
+    def test_ignores_coconuts_own_runtime(self):
+        root, python = self.hermes("project/.runtime/hermes")
+        environ = {"COCONUT_HERMES_ROOT": str(root), "COCONUT_HERMES_PYTHON": str(python)}
+        with patch.object(setup_coconut, "ROOT", (Path(self.directory.name) / "project").resolve()), \
+                self.assertRaises(SystemExit) as raised:
+            self.find_hermes(environ=environ)
+        self.assertIn("Install Hermes first", str(raised.exception))
+
+    def test_use_hermes_passes_the_runtime_to_the_service(self):
+        root, python = Path("/hermes"), Path("/hermes/venv/bin/python")
+        with patch.object(setup_coconut, "find_hermes", return_value=(root, python)), \
+                patch.dict(setup_coconut.os.environ, {}, clear=True):
+            setup_coconut.use_hermes()
+            self.assertEqual(setup_coconut.os.environ["COCONUT_HERMES_ROOT"], "/hermes")
+            self.assertEqual(setup_coconut.os.environ["COCONUT_HERMES_PYTHON"], "/hermes/venv/bin/python")
         self.assertEqual(self.commands, [])
-        with patch.object(setup_coconut, "hermes_installed", return_value=False):
-            setup_coconut.install_hermes()
-        self.assertEqual(self.commands, [["hermes.py", "install"]])
 
     def test_configure_skips_a_saved_address(self):
         self.save(ADDRESS)
@@ -169,7 +212,7 @@ class SetupCoconutTests(unittest.TestCase):
 
     def test_main_runs_the_steps_in_order(self):
         calls = []
-        names = ["prerequisites", "install_hermes", "configure", "start_service", "share"]
+        names = ["prerequisites", "use_hermes", "tailscale_address", "configure", "start_service", "share"]
         with contextlib.ExitStack() as stack:
             for name in names:
                 stack.enter_context(patch.object(setup_coconut, name,
