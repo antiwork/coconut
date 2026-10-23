@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import urllib.request
@@ -43,6 +44,36 @@ def wait(condition, seconds: float, message: str):
             pass
         time.sleep(.2)
     raise AssertionError(message)
+
+
+def coalescing_proxy(backend_port: int) -> int:
+    """Forward each request to the backend, and answer with the whole response in one write and a close.
+
+    The sidecar then reads the head, the body, and the end of the stream together, as from a fast backend.
+    """
+    listener = socket.create_server(('127.0.0.1', 0))
+
+    def handle(connection):
+        with connection:
+            data = b''
+            while b'\r\n\r\n' not in data:
+                data += connection.recv(65536)
+            head, _, body = data.partition(b'\r\n\r\n')
+            length = next(int(line.split(b':', 1)[1]) for line in head.split(b'\r\n') if line.lower().startswith(b'content-length:'))
+            while len(body) < length:
+                body += connection.recv(65536)
+            with socket.create_connection(('127.0.0.1', backend_port)) as backend:
+                backend.sendall(head + b'\r\n\r\n' + body)
+                response = b''.join(iter(lambda: backend.recv(1 << 20), b''))
+            connection.sendall(response)
+
+    def serve():
+        while True:
+            connection, _ = listener.accept()
+            threading.Thread(target=handle, args=(connection,), daemon=True).start()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return listener.getsockname()[1]
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and (ROOT / 'relay/node_modules/miniflare').is_dir(),
@@ -83,16 +114,28 @@ class TunnelLoopbackTests(unittest.TestCase):
     def status(self):
         return json.loads((self.data / 'tunnel/status.json').read_text())
 
-    def run_client(self):
-        link = pairing.link(pairing.tunnel_payload(self.data))
+    def run_client(self, payload=None, *, fails=False):
+        link = pairing.link(payload or pairing.tunnel_payload(self.data))
         result = subprocess.run([str(self.client), link], capture_output=True, text=True, timeout=120)
         steps = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
-        self.assertEqual(result.returncode, 0, f'{steps}\n{result.stderr}')
-        return {step['step']: step for step in steps}
+        self.assertEqual(result.returncode, 1 if fails else 0, f'{steps}\n{result.stderr}')
+        return {step.get('step', 'failure'): step for step in steps}
+
+    def peers(self):
+        return json.loads((self.data / 'tunnel/peers.json').read_text())
+
+    def upgrade(self, role, authorization):
+        """Open a relay WebSocket with a raw HTTP upgrade, and return the socket after the 101 answer."""
+        connection = socket.create_connection(('127.0.0.1', int(self.url.rsplit(':', 1)[1])))
+        connection.sendall((f'GET /v1/tunnels/{self.route["route"]}/{role} HTTP/1.1\r\nHost: 127.0.0.1\r\n'
+                            'Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n'
+                            f'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: {authorization}\r\n\r\n').encode())
+        self.assertIn(b' 101 ', connection.recv(1024))
+        return connection
 
     def test_pairing_state_and_large_bodies_pass_through_the_tunnel(self):
         relay = self.start(['node', 'test/tunnel-server.mjs', '0'], cwd=ROOT / 'relay', stdout=subprocess.PIPE, text=True)
-        url = relay.stdout.readline().strip()
+        url = self.url = relay.stdout.readline().strip()
         relay.stdout.close()
         self.assertTrue(url.startswith('http://127.0.0.1:'), url)
         port, tunnel_port = free_port(), free_port()
@@ -101,12 +144,13 @@ class TunnelLoopbackTests(unittest.TestCase):
         wait(lambda: urllib.request.urlopen(f'http://127.0.0.1:{tunnel_port}/health', timeout=1).status == 200, 30,
              'The backend did not start.')
 
-        route = json.loads(subprocess.run([str(self.sidecar), 'setup', '--data-dir', str(self.data), '--relay', url],
+        route = self.route = json.loads(subprocess.run([str(self.sidecar), 'setup', '--data-dir', str(self.data), '--relay', url],
                                           check=True, capture_output=True, text=True).stdout)
         for name in ('identity.key', 'route.json'):
             self.assertEqual((self.data / 'tunnel' / name).stat().st_mode & 0o777, 0o600)
         self.assertEqual(route['relay'], url)
-        self.start([str(self.sidecar), 'run', '--data-dir', str(self.data), '--backend', f'127.0.0.1:{tunnel_port}'], log='tunnel.log')
+        self.start([str(self.sidecar), 'run', '--data-dir', str(self.data), '--backend', f'127.0.0.1:{coalescing_proxy(tunnel_port)}'],
+                   log='tunnel.log')
         wait(lambda: self.status()['state'] == 'connected', 20, 'The sidecar did not connect to the relay.')
 
         steps = self.run_client()
@@ -117,21 +161,38 @@ class TunnelLoopbackTests(unittest.TestCase):
         self.assertIn('closed', steps['header injection']['result'])
         self.assertEqual(steps['spent ticket']['result'], 'refused')
         self.assertEqual(list((self.data / 'tunnel/tickets').glob('*.json')), [])
-        self.assertEqual(len(json.loads((self.data / 'tunnel/peers.json').read_text())), 1)
+        self.assertEqual(len(self.peers()), 1)
         print(json.dumps(steps, indent=1), file=sys.stderr)
 
         # Another host socket replaces the sidecar's socket. The sidecar connects again, and a new link pairs.
         before = self.status()['connected_since']
-        host = socket.create_connection(('127.0.0.1', int(url.rsplit(':', 1)[1])))
-        host.sendall((f'GET /v1/tunnels/{route["route"]}/host HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\n'
-                      'Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n'
-                      f'Authorization: Bearer {json.loads((self.data / "tunnel/route.json").read_text())["host_token"]}\r\n\r\n').encode())
-        self.assertIn(b' 101 ', host.recv(1024))
+        host_token = json.loads((self.data / 'tunnel/route.json').read_text())['host_token']
+        host = self.upgrade('host', f'Bearer {host_token}')
         wait(lambda: self.status()['state'] == 'connected' and self.status()['connected_since'] != before, 30,
              'The sidecar did not reconnect.')
         host.close()
         self.assertEqual(self.run_client()['state']['status'], 200)
-        self.assertEqual(len(json.loads((self.data / 'tunnel/peers.json').read_text())), 2)
+        self.assertEqual(len(self.peers()), 2)
+
+        # When the sidecar cannot save the phone key, the phone gets an error, not a pairing that a restart would lose.
+        (self.data / 'tunnel').chmod(0o500)
+        try:
+            failure = self.run_client(fails=True)['failure']['failure']
+        finally:
+            (self.data / 'tunnel').chmod(0o700)
+        self.assertIn('backend_down', failure)
+        self.assertEqual(len(self.peers()), 2)
+
+        # The relay holds 8 tickets. A ninth link waits on the Mac, and goes to the relay when a ticket is used.
+        payloads = [pairing.tunnel_payload(self.data) for _ in range(8)]
+        time.sleep(1.1)
+        payloads.append(pairing.tunnel_payload(self.data))
+        time.sleep(1)
+        ticket = pairing.hkdf(pairing.unpadded(payloads[0]['secret'], 32), 'coconut pairing ticket').hex()
+        self.upgrade('client', f'Ticket {ticket}').close()
+        time.sleep(1)
+        self.assertEqual(self.run_client(payloads[-1])['state']['status'], 200)
+        self.assertEqual(len(self.peers()), 3)
 
 
 if __name__ == '__main__':

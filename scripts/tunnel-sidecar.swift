@@ -24,6 +24,7 @@ let maxResponseHead = 64 * 1024
 let maxStreams = 64
 // The relay allows 8 iPhone sockets for each route, and a pairing ticket for at most 600 seconds.
 let maxChannels = 8
+let maxTickets = 8
 let maxTicketSeconds = 600
 let heartbeatInterval: TimeInterval = 60
 let pingInterval: TimeInterval = 20
@@ -242,6 +243,8 @@ final class Channel {
     var session: TunnelSession?
     // A ticket channel serves only pairing until the backend accepts the pairing.
     var paired: Bool
+    // The pre-shared key of a ticket channel, from the ticket file that the sidecar removes at once.
+    var psk: Data?
     var streams: [UInt32: Stream] = [:]
 
     init(id: UInt32, ticket: Bool, tokenHash: String) {
@@ -265,6 +268,8 @@ final class Sidecar {
     var lastTick = Date()
     var backoff: TimeInterval = 1
     var reconnecting = false
+    // The waiting retry. An immediate reconnect replaces it.
+    var retry: DispatchWorkItem?
     var state = "starting"
     var lastError: String?
     var channels: [UInt32: Channel] = [:]
@@ -319,6 +324,7 @@ final class Sidecar {
 
     func connect() {
         reconnecting = false
+        retry = nil
         let scheme = route.relay.hasPrefix("http://") ? "ws://" : "wss://"
         let base = route.relay.replacingOccurrences(of: #"^https?://"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -362,7 +368,15 @@ final class Sidecar {
 
     // Ends the socket and every Noise session on it. The relay closes the iPhone sockets when a new host socket arrives.
     func reconnect(reason: String, immediately: Bool) {
-        guard !reconnecting else { return }
+        // A delayed retry waits. A network change or a wake must not wait for it.
+        if reconnecting {
+            guard immediately, let retry else { return }
+            retry.cancel()
+            backoff = 1
+            schedule(after: 0.2)
+            log("Reconnecting at once (\(reason)).")
+            return
+        }
         reconnecting = true
         relay?.cancel()
         relay = nil
@@ -375,7 +389,13 @@ final class Sidecar {
         backoff = immediately ? 1 : min(backoff * 2, maxBackoff)
         setState("offline")
         log("The relay socket ended (\(reason)). Retrying in \(String(format: "%.1f", delay)) seconds.")
-        queue.asyncAfter(deadline: .now() + delay) { [weak self] in self?.connect() }
+        schedule(after: delay)
+    }
+
+    func schedule(after delay: TimeInterval) {
+        let item = DispatchWorkItem { [weak self] in self?.connect() }
+        retry = item
+        queue.asyncAfter(deadline: .now() + delay, execute: item)
     }
 
     func receive(on connection: NWConnection) {
@@ -445,13 +465,15 @@ final class Sidecar {
         ticketWatch = source
     }
 
-    // Allows each new pairing link on the relay. The relay keeps a ticket until its expiry or its first use.
+    // Allows each new pairing link on the relay. The relay keeps a ticket until its expiry or its first use, and holds
+    // at most 8. A ticket that does not fit waits in the folder until a ticket is used or expires, then goes first.
     func sendTickets() {
         guard state == "connected" else { return }
         let now = Date().timeIntervalSince1970
         let tickets = store.tickets()
         sentTickets.formIntersection(tickets.keys)
-        for (hash, ticket) in tickets where !sentTickets.contains(hash) {
+        for (hash, ticket) in tickets.sorted(by: { $0.value.expires < $1.value.expires })
+        where !sentTickets.contains(hash) && sentTickets.count < maxTickets {
             let ttl = Int(ticket.expires - now)
             guard ttl >= 1 else { continue }
             control(["type": "add_ticket", "hash": hash, "ttl": min(ttl, maxTicketSeconds)])
@@ -485,8 +507,16 @@ final class Sidecar {
         case "open":
             guard let id = (value["id"] as? NSNumber)?.uint32Value, id != 0, let auth = value["auth"] as? String,
                   let hash = value["hash"] as? String else { return }
+            let channel = Channel(id: id, ticket: auth == "ticket", tokenHash: hash)
+            if channel.ticket {
+                // The relay removed the ticket at this connection, so the link is spent and its slot is free.
+                channel.psk = store.ticket(hash).flatMap { Data(hex: $0.psk) }
+                store.removeTicket(hash)
+                sentTickets.remove(hash)
+                sendTickets()
+            }
             if channels.count >= maxChannels { return control(["type": "close_channel", "id": Int(id)]) }
-            channels[id] = Channel(id: id, ticket: auth == "ticket", tokenHash: hash)
+            channels[id] = channel
             writeStatus()
         case "closed":
             if let id = (value["id"] as? NSNumber)?.uint32Value, let channel = channels.removeValue(forKey: id) {
@@ -503,17 +533,9 @@ final class Sidecar {
     // Reads message 1 from the iPhone and answers with message 2. The iPhone key must belong to this channel's token.
     // On a ticket channel, the ticket's pre-shared key proves that the iPhone has the pairing link.
     func handshake(_ channel: Channel, message: Data) throws {
-        var psk: Data?
-        if channel.ticket {
-            guard let ticket = store.ticket(channel.tokenHash), let key = Data(hex: ticket.psk) else {
-                throw NoiseError.invalidKey
-            }
-            psk = key
-            // A link pairs once. The relay already removed its ticket.
-            store.removeTicket(channel.tokenHash)
-        }
+        if channel.ticket, channel.psk == nil { throw NoiseError.invalidKey }
         var handshake = try NoiseHandshake(pattern: channel.ticket ? .ikpsk2 : .ik, initiator: false, localStatic: identity,
-                                           psk: psk)
+                                           psk: channel.psk)
         guard try handshake.readMessage(message).isEmpty, let peer = handshake.remoteStatic else { throw NoiseError.invalidMessage }
         if !channel.ticket {
             guard peers.contains(where: { $0.key == peer.hex && $0.token_hash == channel.tokenHash }) else {
@@ -667,8 +689,13 @@ final class Sidecar {
     // buffer is small. A slow iPhone therefore slows the backend read, not the memory of the sidecar.
     func pump(_ stream: Stream, on channel: Channel) {
         guard channel.streams[stream.id] === stream, !stream.finished else { return }
-        if !stream.responseHead, !parseHead(stream, on: channel) {
-            return receive(stream, on: channel)
+        if !stream.responseHead {
+            guard parseHead(stream, on: channel) else {
+                // Only an incomplete head counts against the limit. Body bytes can come in the same read.
+                if stream.backendDone || stream.response.count > maxResponseHead { return fail(stream, on: channel) }
+                return receive(stream, on: channel)
+            }
+            if stream.finished { return }
         }
         // One copy of the rest of the buffer per pass, not one per frame.
         var offset = stream.response.startIndex
@@ -703,10 +730,6 @@ final class Sidecar {
                 stream.response.append(data)
             }
             if done || error != nil { stream.backendDone = true }
-            if !stream.responseHead, stream.backendDone || stream.response.count > maxResponseHead {
-                // The backend closed before a complete head, or sent a head that is too large.
-                return fail(stream, on: channel)
-            }
             pump(stream, on: channel)
         }
     }
@@ -734,8 +757,12 @@ final class Sidecar {
         // The phone gets its relay client token from this session. The relay must know the token before the phone
         // reads the answer and reconnects with it, so the control message goes first on the same socket.
         if !channel.paired, stream.method == "POST", stream.path == "/v1/pair", status == 200 {
+            // Without a saved key, the phone would lose the Mac at the next start of the sidecar. It must pair again.
+            guard addClient(on: channel) else {
+                fail(stream, on: channel)
+                return true
+            }
             channel.paired = true
-            addClient(on: channel)
         }
         let head = ["status": status, "headers": headers] as [String: Any]
         seal(TunnelFrame(type: .responseHead, stream: stream.id, payload: (try? JSONSerialization.data(withJSONObject: head)) ?? Data()),
@@ -761,18 +788,25 @@ final class Sidecar {
 
     // Allows the new phone's client token on the relay, and records its key. A phone that pairs again replaces its
     // old token. The relay allows 32 tokens, so the oldest one goes first.
-    func addClient(on channel: Channel) {
-        guard let session = channel.session else { return }
+    // Returns false when the key cannot be saved. Then nothing changes on the relay or in memory.
+    func addClient(on channel: Channel) -> Bool {
+        guard let session = channel.session else { return false }
         let peer = session.remoteStatic.hex
         let hash = Derive.sha256(Derive.clientToken(handshakeHash: session.handshakeHash))
+        var kept = peers.filter { $0.key != peer }.sorted { $0.created < $1.created }
         var removed = peers.filter { $0.key == peer }
-        peers.removeAll { $0.key == peer }
-        peers.sort { $0.created < $1.created }
-        while peers.count >= 31 { removed.append(peers.removeFirst()) }
-        peers.append(Peer(key: peer, token_hash: hash, created: Date()))
+        while kept.count >= 31 { removed.append(kept.removeFirst()) }
+        kept.append(Peer(key: peer, token_hash: hash, created: Date()))
+        do {
+            try store.savePeers(kept)
+        } catch {
+            log("The sidecar could not save the paired phone keys. The pairing failed.")
+            return false
+        }
+        peers = kept
         for old in removed { control(["type": "remove_client", "hash": old.token_hash]) }
         control(["type": "add_client", "hash": hash])
-        do { try store.savePeers(peers) } catch { log("The sidecar could not save the paired phone keys.") }
+        return true
     }
 
     // MARK: Status

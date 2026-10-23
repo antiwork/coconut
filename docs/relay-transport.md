@@ -69,6 +69,10 @@ The sidecar ends the session when a REQ_HEAD has a control character in its meth
 
 The sidecar writes `status.json` when its state changes, and once a minute.
 
+The relay holds at most 8 pairing tickets for a route. A ninth link waits on the Mac, and goes to the relay when a ticket is used or expires.
+
+If the sidecar cannot save the new key in `peers.json`, the phone gets the ERROR `backend_down` instead of the pairing answer, and must pair again. Without the saved key, the phone would lose the Mac at the next start of the sidecar.
+
 The sidecar keeps its files in `<data>/tunnel`. Each file has mode 0600, and the folder has mode 0700.
 
 | File | Content |
