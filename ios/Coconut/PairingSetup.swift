@@ -6,10 +6,37 @@ struct PairingSetup: Equatable, Sendable {
     let certificateSHA256: String
     let pairingCode: String
 
+    static let linkPrefix = "coconut://pair?"
+
+    // The Mac address the person checks before pairing: host and port, without the scheme.
+    var origin: String { String(serverURL.dropFirst("https://".count)).trimmingCharacters(in: CharacterSet(charactersIn: "/")) }
+
+    static func isLink(_ url: URL) -> Bool { url.scheme?.lowercased() == "coconut" && url.host?.lowercased() == "pair" }
+
+    // A setup link carries the same JSON as the QR code, encoded as base64url in its `setup` field.
     static func parse(_ payload: String) throws -> Self {
-        guard payload.utf8.count <= 4_096, let data = payload.data(using: .utf8) else {
+        // The size limit applies to the whole input, before any trimming.
+        guard payload.utf8.count <= 4_096 else { throw PairingSetupError.invalidPayload }
+        let text = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.lowercased().hasPrefix("coconut://") { return try parse(json: try json(fromLink: text)) }
+        return try parse(json: text)
+    }
+
+    private static func json(fromLink link: String) throws -> String {
+        guard let url = URL(string: link), isLink(url),
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let items = parts.queryItems, items.count == 1, items[0].name == "setup",
+              var encoded = items[0].value, !encoded.isEmpty else { throw PairingSetupError.invalidPayload }
+        encoded = encoded.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        encoded += String(repeating: "=", count: (4 - encoded.count % 4) % 4)
+        guard let data = Data(base64Encoded: encoded), let json = String(data: data, encoding: .utf8) else {
             throw PairingSetupError.invalidPayload
         }
+        return json
+    }
+
+    private static func parse(json payload: String) throws -> Self {
+        guard let data = payload.data(using: .utf8) else { throw PairingSetupError.invalidPayload }
         let fields: Fields
         do { fields = try JSONDecoder().decode(Fields.self, from: data) }
         catch { throw PairingSetupError.invalidPayload }

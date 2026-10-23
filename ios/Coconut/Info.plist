@@ -26,6 +26,14 @@
 				<string>com.googleusercontent.apps.3509104299-du1m1pcfgm7meeivk712bmltf4bus8ae</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Pairing</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>coconut</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>

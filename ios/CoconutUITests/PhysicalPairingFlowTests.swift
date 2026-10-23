@@ -22,9 +22,13 @@ final class PhysicalPairingFlowTests: XCTestCase {
         app.launchArguments = []
         app.launchEnvironment = [:]
         app.launch()
-        // A first launch without a pairing opens onboarding. This check pairs through Settings.
-        let later = app.buttons["onboarding-later"]
-        if later.waitForExistence(timeout: 5) { later.tap() }
+        // A first launch without a pairing opens onboarding, which pairs with a pasted setup.
+        let connect = app.buttons["Connect your Hermes"]
+        if connect.waitForExistence(timeout: 5) {
+            connect.tap()
+            try pairThroughOnboarding(setup, in: app)
+            return
+        }
         XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Bots"].tap()
         stage("launched")
@@ -75,6 +79,29 @@ final class PhysicalPairingFlowTests: XCTestCase {
                        "The app must save pairing after the user submits the normal form.")
         stage("saved")
         #endif
+    }
+
+    @MainActor
+    private func pairThroughOnboarding(_ setup: PairingSetup, in app: XCUIApplication) throws {
+        let paste = app.buttons["onboarding-paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 5))
+        paste.tap()
+        let fields = ["version": 1, "server_url": setup.serverURL, "certificate_sha256": setup.fingerprint,
+                      "pairing_code": setup.code] as [String: Any]
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: fields), as: UTF8.self)
+        let editor = app.textViews["pairing-setup-payload"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        editor.tap()
+        editor.typeText(json)
+        app.buttons["Use setup details"].tap()
+        stage("onboarding-setup")
+        let pair = app.buttons["onboarding-pair"]
+        XCTAssertTrue(pair.waitForExistence(timeout: 5), "A valid setup must show the Mac before pairing.")
+        pair.tap()
+        stage("submitted")
+        XCTAssertTrue(pair.waitForNonExistence(timeout: 35), "Onboarding must move on after the pairing is saved.")
+        XCTAssertFalse(app.staticTexts["pairing-error"].exists)
+        stage("saved")
     }
 
     @MainActor

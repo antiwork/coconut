@@ -38,6 +38,11 @@ struct OnboardingView: View {
     @State private var notificationsOn = false
     @State private var importError: String?
     @State private var skippedSkills: [String] = []
+    @State private var pairingSetup: PairingSetup?
+    @State private var pairingError: String?
+    @State private var replaceConfirmation = false
+    @State private var scannerOpen = false
+    @State private var pasteOpen = false
     @State private var serversNeedingSetup: [String] = []
 
     init(start: OnboardingStep = .welcome) {
@@ -60,7 +65,11 @@ struct OnboardingView: View {
     private var working: Bool { action != nil }
 
     private var steps: [OnboardingStep] {
-        var steps: [OnboardingStep] = start == .welcome ? [.welcome, .pair, .setup] : [.setup]
+        var steps: [OnboardingStep] = switch start {
+        case .welcome: [.welcome, .pair, .setup]
+        case .pair: [.pair, .setup]
+        default: [.setup]
+        }
         if setup?.importable.isEmpty == false { steps.append(.bots) }
         if setup.map({ !$0.logins.isEmpty || !$0.signIns.isEmpty }) == true { steps.append(.logins) }
         if !newServers.isEmpty { steps.append(.mcp) }
@@ -94,7 +103,35 @@ struct OnboardingView: View {
             askNotifications = PushNotifications.shared.authorization == .notDetermined
         }
         .onChange(of: store.hasPairing) { _, paired in
-            if paired && step == .pair { advance() }
+            // The pair action advances by itself.
+            if paired && step == .pair && !working { advance() }
+        }
+        .onChange(of: store.setupLink, initial: true) { _, link in
+            guard let link, !working else { return }
+            store.setupLink = nil
+            useSetup(link)
+            // A link always opens the pairing page, also from a later step.
+            if step != .pair {
+                history.append(step)
+                step = .pair
+            }
+        }
+        .confirmationDialog("Replace the current pairing?", isPresented: $replaceConfirmation, titleVisibility: .visible) {
+            Button("Pair with \(pairingSetup?.origin ?? "this Mac")", role: .destructive) {
+                if let pairingSetup { perform { await pair(pairingSetup) } }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This iPhone uses \(store.serverURL.replacingOccurrences(of: "https://", with: "")). Pairing with another Mac replaces it.")
+        }
+        .sheet(isPresented: $scannerOpen) {
+            PairingScannerView { payload in
+                useSetup(payload)
+                scannerOpen = false
+            }
+        }
+        .sheet(isPresented: $pasteOpen) {
+            PastePairingSetupView { payload in try parseSetup(payload) }
         }
         .onDisappear { action?.cancel() }
         .accessibilityIdentifier("onboarding")
@@ -131,11 +168,9 @@ struct OnboardingView: View {
                 WelcomeIllustration()
             }
         case .pair:
-            // The pairing fields are form rows with their own scrolling and expanding details.
-            OnboardingPage(title: "Connect your Mac",
-                           subtitle: "On your Mac, open Pair iPhone. Then scan the code that it shows.", scrolls: false) {
-                List { MacPairingFields() }
-                    .scrollContentBackground(.hidden)
+            OnboardingPage(title: "Connect your Hermes",
+                           subtitle: "Your Hermes agent sets up Coconut on its Mac, then sends you a setup code.") {
+                HermesPairingSteps(setup: pairingSetup, error: pairingError)
             }
         case .setup:
             OnboardingPage(title: setupTitle, subtitle: setupSubtitle) {
@@ -215,13 +250,19 @@ struct OnboardingView: View {
             }
             switch step {
             case .welcome:
-                PrimaryButton(title: "Connect your Mac") { advance() }
-                SecondaryButton(title: "Set up later", identifier: "onboarding-later") { finish() }
+                PrimaryButton(title: "Connect your Hermes") { advance() }
             case .pair:
-                if store.hasPairing {
+                if let pairingSetup {
+                    PrimaryButton(title: working ? "Connecting…" : "Pair with this Mac", enabled: !working,
+                                  identifier: "onboarding-pair") {
+                        if store.hasPairing { replaceConfirmation = true } else { perform { await pair(pairingSetup) } }
+                    }
+                    SecondaryButton(title: "Use another code", enabled: !working) { self.pairingSetup = nil }
+                } else if store.hasPairing && start == .welcome {
                     PrimaryButton(title: "Continue") { advance() }
                 } else {
-                    SecondaryButton(title: "Set up later", identifier: "onboarding-later") { finish() }
+                    PrimaryButton(title: "Scan the code", identifier: "onboarding-scan") { scannerOpen = true }
+                    SecondaryButton(title: "Paste the setup link", identifier: "onboarding-paste") { pasteOpen = true }
                 }
             case .setup:
                 if load == .failed {
@@ -320,6 +361,28 @@ struct OnboardingView: View {
     private func binding(for profile: HermesSetupProfile) -> Binding<Bool> {
         Binding(get: { selected.contains(profile.id) },
                 set: { if $0 { selected.insert(profile.id) } else { selected.remove(profile.id) } })
+    }
+
+    private func parseSetup(_ payload: String) throws {
+        pairingSetup = try PairingSetup.parse(payload)
+        pairingError = nil
+    }
+
+    private func useSetup(_ payload: String) {
+        do { try parseSetup(payload) } catch { pairingError = error.localizedDescription }
+    }
+
+    // The person checks the Mac address, then one tap pairs.
+    private func pair(_ setup: PairingSetup) async {
+        pairingError = nil
+        let saved = await store.pair(serverURL: setup.serverURL, fingerprint: setup.certificateSHA256, code: setup.pairingCode)
+        guard !Task.isCancelled else { return }
+        if saved {
+            pairingSetup = nil
+            advance()
+        } else {
+            pairingError = store.error ?? "Coconut could not pair with this Mac. Ask Hermes for a new code."
+        }
     }
 
     // One action at a time. Closing the flow cancels it, so it cannot move a page that is gone.
@@ -496,6 +559,7 @@ private struct ProgressSegments: View {
 private struct PrimaryButton: View {
     let title: String
     var enabled = true
+    var identifier: String? = nil
     let action: () -> Void
 
     var body: some View {
@@ -508,6 +572,7 @@ private struct PrimaryButton: View {
         }
         .buttonStyle(HomePressStyle())
         .disabled(!enabled)
+        .accessibilityIdentifier(identifier ?? title)
     }
 }
 
@@ -524,6 +589,75 @@ private struct SecondaryButton: View {
             .frame(maxWidth: .infinity, minHeight: 44)
             .disabled(!enabled)
             .accessibilityIdentifier(identifier ?? title)
+    }
+}
+
+// Two numbered steps: the message for Hermes, then the code it sends back.
+private struct HermesPairingSteps: View {
+    static let prompt = """
+    Set up Coconut on this Mac, so I can use my Hermes bots from my iPhone.
+    1. If ~/Coconut is missing, clone https://github.com/antiwork/coconut to ~/Coconut.
+    2. Install and start Coconut on this Mac, as ~/Coconut/README.md describes. Use this Mac's Tailscale address.
+    3. In ~/Coconut, run: python3 scripts/pairing.py --share
+    4. Send me the setup link and the QR image that it prints.
+    """
+
+    let setup: PairingSetup?
+    let error: String?
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            step(1, "Send this message to your Hermes agent") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(Self.prompt)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(14)
+                        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    Button {
+                        UIPasteboard.general.string = Self.prompt
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { copied = true }
+                    } label: {
+                        Label(copied ? "Copied" : "Copy message", systemImage: copied ? "checkmark" : "doc.on.doc")
+                            .font(.subheadline.weight(.semibold))
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                    .accessibilityIdentifier("copy-hermes-prompt")
+                }
+            }
+            step(2, setup == nil ? "Open the code that Hermes sends" : "Check the Mac") {
+                if let setup {
+                    Label(setup.origin, systemImage: "desktopcomputer")
+                        .font(.body.weight(.medium))
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                } else {
+                    Text("Tap the setup link on this iPhone, or scan the QR code below.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+            }
+            if let error {
+                Text(error).font(.footnote).foregroundStyle(BoardStyle.accent)
+                    .accessibilityIdentifier("pairing-error")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: setup)
+    }
+
+    private func step<Content: View>(_ number: Int, _ title: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Text("\(number)")
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .frame(width: 28, height: 28)
+                .background(Color.primary.opacity(0.08), in: Circle())
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 10) {
+                Text(title).font(.body.weight(.semibold))
+                content()
+            }
+        }
     }
 }
 

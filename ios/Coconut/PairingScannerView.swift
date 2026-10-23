@@ -151,7 +151,7 @@ struct PastePairingSetupView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
                         .accessibilityLabel("Setup details").accessibilityIdentifier("pairing-setup-payload")
                 } footer: {
-                    Text("Copy the setup details from your Mac. Coconut shows the address before you pair.")
+                    Text("Paste the setup link that Hermes sent, or the setup details from your Mac. Coconut shows the address before you pair.")
                 }
                 if let error { Section { Text(error).foregroundStyle(.red).font(.footnote) } }
                 Section {

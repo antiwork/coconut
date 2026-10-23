@@ -130,12 +130,19 @@ Install the signed iPhone app before pairing. See [the iPhone setup](iphone-inst
 
 1. Enable Tailscale on the iPhone.
 2. Open **Pair iPhone.command** on this Mac.
-3. Open Coconut Settings on the iPhone.
-4. Tap **Scan setup code**.
+3. Open Coconut on the iPhone. A new installation opens onboarding. Otherwise, open Settings.
+4. Tap **Scan the code**, or **Scan setup code** in Settings.
 5. Scan the QR displayed on this Mac.
-6. Check the Mac address, then tap **Pair iPhone**.
+6. Check the Mac address, then tap **Pair**.
 
 The QR contains the Mac address, certificate fingerprint, and a one-time code. It does not contain a model key or device token.
+
+### Pair through Hermes
+
+A person who already uses Hermes can pair without this repository. Onboarding shows a message to send to the Hermes agent. The agent installs and starts Coconut on its Mac, then runs `python3 scripts/pairing.py --share`.
+That command prints a `coconut://pair` setup link and the path of a QR image that holds the same link, so the agent can send both. On the same iPhone, the person taps the link. On another screen, the person scans the QR image in Coconut.
+The link and the image contain the one-time code. Send them only to the person who pairs.
+If the iPhone already has a pairing, Coconut asks before it replaces it.
 The code expires after five minutes. Open the launcher again if it expires.
 The app validates HTTPS and the certificate before it sends the code.
 

@@ -45,6 +45,8 @@ final class AppStore {
     var model = ""
     var modelBaseURL = ""
     var modelConfigured = false
+    // A setup link that the person tapped, waiting for the pairing page. It holds a one-time code.
+    var setupLink: String?
     var mcpServers: [MCPServer] = []
     var modelCatalog: ModelCatalog?
     var provider = ""
@@ -242,6 +244,26 @@ final class AppStore {
             stopPolling()
             if let cachedState { saveCache(cachedState, immediately: true) }
         }
+    }
+
+    // Pairs with these details. A failure keeps the current pairing, its address, and its fingerprint.
+    func pair(serverURL address: String, fingerprint pin: String, code: String) async -> Bool {
+        let previousAddress = serverURL, previousFingerprint = fingerprint
+        error = nil
+        serverURL = address
+        fingerprint = pin
+        pairCode = code
+        await pair()
+        // Pair clears the code after it saves the pairing, before the first state sync.
+        let saved = pairCode.isEmpty && error == nil
+        if !saved {
+            pairCode = ""
+            if hasPairing {
+                serverURL = previousAddress
+                fingerprint = previousFingerprint
+            }
+        }
+        return saved
     }
 
     func pair() async {

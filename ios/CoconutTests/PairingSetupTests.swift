@@ -244,6 +244,26 @@ final class PairingSetupTests: XCTestCase {
         XCTAssertEqual(draft.pairCode, "0123456789")
     }
 
+    func testSetupLinkCarriesTheSamePayload() throws {
+        let json = try payload()
+        let encoded = Data(json.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        let link = PairingSetup.linkPrefix + "setup=" + encoded
+        XCTAssertEqual(try PairingSetup.parse(link), try PairingSetup.parse(json))
+        XCTAssertEqual(try PairingSetup.parse("  " + link + "\n"), try PairingSetup.parse(json))
+        XCTAssertTrue(PairingSetup.isLink(try XCTUnwrap(URL(string: link))))
+    }
+
+    func testRejectsMalformedSetupLinks() throws {
+        let encoded = Data(try payload(["pairing_code": "12"]).utf8).base64EncodedString()
+        for link in ["coconut://pair", "coconut://pair?setup=", "coconut://pair?setup=%%%", "coconut://other?setup=e30",
+                     "coconut://pair?setup=e30&extra=1", "coconut://pair?setup=" + encoded] {
+            XCTAssertThrowsError(try PairingSetup.parse(link), link)
+        }
+        XCTAssertFalse(PairingSetup.isLink(try XCTUnwrap(URL(string: "https://pair?setup=e30"))))
+    }
+
     private func payload(_ changes: [String: Any] = [:], removing keys: [String] = []) throws -> String {
         var fields: [String: Any] = [
             "version": 1, "server_url": "https://mac-mini.local:8765",

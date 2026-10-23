@@ -12,6 +12,10 @@ struct CoconutApp: App {
                 .environment(store)
                 .tint(.primary)
                 .task { store.start() }
+                .onOpenURL { url in
+                    // A Hermes agent sends this link. Coconut shows the Mac address before it pairs.
+                    if PairingSetup.isLink(url) { store.setupLink = url.absoluteString }
+                }
                 .onChange(of: store.reconciledBadgeCount, initial: true) { _, _ in
                     if !store.isDemo { store.reconcileBadge() }
                 }
@@ -56,6 +60,7 @@ struct CoconutHome: View {
     @Environment(AppStore.self) private var store
     @State private var settingsOpen = false
     @State private var onboardingOpen = false
+    @State private var onboardingStart = OnboardingStep.welcome
     @State private var createOpen = false
     @State private var searchOpen = false
     @State private var searchText = ""
@@ -105,8 +110,21 @@ struct CoconutHome: View {
             }
         }
         .sheet(isPresented: $settingsOpen) { AppSettingsView() }
-        .fullScreenCover(isPresented: $onboardingOpen) { OnboardingView() }
-        .onAppear { if OnboardingView.showsOnLaunch(store) { onboardingOpen = true } }
+        .fullScreenCover(isPresented: $onboardingOpen) { OnboardingView(start: onboardingStart) }
+        .onAppear { if OnboardingView.showsOnLaunch(store) { onboardingStart = .welcome; onboardingOpen = true } }
+        .onChange(of: store.setupLink, initial: true) { _, link in
+            // A tapped setup link opens the pairing page, unless onboarding already shows.
+            guard link != nil, !onboardingOpen else { return }
+            onboardingStart = .pair
+            let sheetOpen = settingsOpen || createOpen
+            settingsOpen = false
+            createOpen = false
+            Task {
+                // UIKit presents the full-screen page only after the open sheet has gone.
+                if sheetOpen { try? await Task.sleep(for: .milliseconds(450)) }
+                onboardingOpen = true
+            }
+        }
         .sheet(isPresented: $createOpen) { BotEditorView() }
         .onChange(of: PushNotifications.shared.target) { _, _ in openNotification() }
         .onChange(of: store.lastSync) { _, _ in openNotification() }
