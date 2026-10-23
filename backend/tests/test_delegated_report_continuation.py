@@ -1,6 +1,7 @@
 """A delegate's hidden Work report and its delegated PR retain one execution and one outcome."""
 import copy
 import json
+import threading
 import unittest
 from unittest.mock import Mock
 from uuid import uuid4
@@ -332,26 +333,33 @@ class LinkedRequesterActivityTests(unittest.TestCase):
     requester_callback = DelegatedReportContinuationTests.requester_callback
     through_provider = callback_fixtures.RequesterCallbackContinuationTests.through_provider
 
-    def run_turn(self, task, native_id, turn):
-        # The task's current turn, running on its own native claim.
+    def run_turn(self, task, native_id, turn, context=''):
+        # The task's current turn, running on its own native claim. Hermes gives context only to a retained outcome.
         task.update(status='working', _waiting_on=[], _native_turn_id=turn,
                     _conversation_epoch=self.service._setting('conversation_epoch'),
                     _kanban_claim=dict(native_id=native_id, external_id=task['id'], input=turn,
-                                       run_id=71, pid=101, context=''))
+                                       run_id=71, pid=101, context=context))
+        if context:
+            task['_native_outcome_id'] = native_id
         self.service._put('tasks', task)
         self.service.running[task['id']] = Mock(is_alive=Mock(return_value=True))
         self.service.kanban.tasks[task['id']] = dict(id=native_id, status='running', current_run_id=71,
                                                      worker_pid=101, input_id=turn)
         return task
 
-    def requester_activity(self):
+    def requester_activity(self, retained=False):
         owner, requester, work, pr = self.linked_requester_pr()
         # An earlier helper of the requester finished, and the requester consumed its result.
         helper = self.requester_branch(requester, status='completed',
                                        _conversation_epoch=self.service._setting('conversation_epoch'),
                                        _kanban_claim=dict(native_id='t_helper', input='helper'))
         self.service.kanban.tasks[helper['id']] = dict(id='t_helper', status='done')
-        requester = self.run_turn(self.service._get('tasks', requester['id']), work['_native_outcome_id'], 'requester-turn')
+        requester = self.service._get('tasks', requester['id'])
+        if retained:
+            # Like Desk in PR 8606: the requester's Work is its retained native outcome.
+            requester['_work_context_id'] = work['id']
+        requester = self.run_turn(requester, work['_native_outcome_id'], 'requester-turn',
+                                  'Saved worker context' if retained else '')
         report = dict(id='requester-pr', task_id=requester['id'], bot_id=requester['bot_id'], kind='pr',
                       title='The delegated PR', status='open', pr_state='open', url=pr['url'].upper(),
                       work_outcome_id=work['id'], _review_task_id=requester['id'], _activity_task_id=requester['id'])
@@ -388,6 +396,45 @@ class LinkedRequesterActivityTests(unittest.TestCase):
         self.assertEqual({t['id']: t for t in self.service._all('tasks') if t['id'] != owner['id']}, tasks)
         self.assertEqual({a['id']: a for a in self.service._all('artifacts') if a['id'] != pr['id']}, artifacts)
         self.assertEqual(self.service.kanban.tasks, cards)
+
+    def test_the_requesters_retained_outcome_continues_with_its_current_input(self):
+        owner, requester, work, pr, report, helper = self.requester_activity(retained=True)
+        claim = requester['_kanban_claim']
+        card = self.service.kanban.tasks[requester['id']]
+        self.assertTrue(claim['context'])
+        self.assertEqual((requester['_native_outcome_id'], requester['_work_context_id']), (work['_native_outcome_id'], work['id']))
+        self.assertEqual((card['id'], card['input_id']), (claim['native_id'], claim['input']))
+        self.assertEqual(claim['input'], requester['_native_turn_id'])
+        receipt = self.resume(requester)
+        self.assert_admitted_once(owner, pr, receipt, lambda: self.resume(requester))
+        self.assertEqual(self.service._get('tasks', requester['id']), requester)
+        self.assertEqual(self.service._get('artifacts', work['id']), work)
+
+    def test_a_retained_requester_needs_its_current_input_and_native_identity(self):
+        def card(**changes):
+            return lambda r: self.service.kanban.tasks[r['id']].update(changes)
+
+        def claim(**changes):
+            return lambda r: self.service._put('tasks', dict(r, _kanban_claim=dict(r['_kanban_claim'], **changes)))
+
+        def task(**changes):
+            return lambda r: self.service._put('tasks', dict(r, **changes))
+
+        cases = {
+            'a card with an earlier input': card(input_id='earlier-turn'),
+            'a card without an input': card(input_id=None),
+            'a claim of an earlier input': claim(input='earlier-turn'),
+            'a claim without an input': claim(input=None),
+            'a later turn than the claim': task(_native_turn_id='later-turn'),
+            'another retained outcome': task(_native_outcome_id='t_other'),
+            'no retained outcome': task(_native_outcome_id=None),
+        }
+
+        def check(change):
+            owner, requester, work, pr, report, helper = self.requester_activity(retained=True)
+            change(requester)
+            self.assert_rejected(owner, self.service._get('tasks', requester['id']), 'another execution')
+        self.each(cases, check)
 
     def test_the_provider_route_admits_the_requester_once(self):
         owner, requester, work, pr, report, helper = self.requester_activity()
@@ -542,25 +589,72 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
     resume = native_fixtures.NativeClaimContinuationTests.resume
     check_dispatch = native_fixtures.NativeClaimContinuationTests.check_dispatch
 
-    def requester_turn(self, requester):
-        """The direct requester's own turn, running on a real native claim."""
-        import os
-        requester.update(_execution_session_id=requester['id'], _waiting_on=[], _native_turn_id='requester-input',
+    def requester_turn(self, owner, requester, work):
+        """The direct requester's retained native outcome. The dispatcher claims it for its current input."""
+        # One work slot, so the requester's running turn holds it until the turn ends.
+        self.service.mutate('PUT', '/v1/settings/work-capacity', {'limit': 1}, str(uuid4()))
+        self.assertEqual(self.service.snapshot()['work_capacity']['effective_limit'], 1)
+        # Like Desk in PR 8606, the requester runs as a Kanban outcome, not as a chat turn.
+        requester.pop('_chat_session', None)
+        requester.update(status='queued', _execution_session_id=requester['id'], _waiting_on=[],
+                         _native_turn_id='requester-input', _work_context_id=work['id'],
                          _conversation_epoch=self.service._setting('conversation_epoch'))
         self.service._put('tasks', requester)
         row = self.service._kanban_row(requester, requester, 'ready', 10)
         self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
         self.service.kanban.call({'op': 'snapshot'})
         native = self.service.kanban.tasks[requester['id']]['id']
-        self.native_program("assert board.kb.claim_task(board.conn, sys.argv[2])\n"
-                            "board.dispatch._set_worker_pid(board.conn, sys.argv[2], int(sys.argv[3]))",
-                            native, str(os.getpid()))
-        self.service.kanban.call({'op': 'snapshot'})
-        card = self.service.kanban.tasks[requester['id']]
-        self.assertEqual(card['status'], 'running')
-        requester.update(status='working', _kanban_claim=dict(native_id=native, external_id=requester['id'],
-            input=row['input'], run_id=card['current_run_id'], pid=os.getpid(), context=''))
+        requester['_native_outcome_id'] = native
         self.service._put('tasks', requester)
+        work.update(_native_outcome_id=native, _work_key='native-' + native)
+        self.service._put('artifacts', work)
+        started, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+
+        def run(task, bot, history, emit):
+            started.set()
+            if not release.wait(60):
+                return
+            # The requester's turn ends normally: its own run completes its card.
+            current = self.service._get('tasks', task['id'])
+            self.native_program("assert board.kb.complete_task(board.conn, sys.argv[2], summary='Requester turn ended', "
+                                "expected_run_id=int(sys.argv[3]))",
+                                current['_native_outcome_id'], str(current['_kanban_claim']['run_id']))
+            emit('completed', {'summary': 'Requester turn ended'})
+        self.provider.start_task = run
+        self.service._dispatch_pending()
+        self.assertTrue(started.wait(15), 'The dispatcher must claim and start the requester turn')
+        self.service.kanban.call({'op': 'snapshot'})
+        requester = self.service._get('tasks', requester['id'])
+        claim, card = requester['_kanban_claim'], self.service.kanban.tasks[requester['id']]
+        # The claim is Hermes' own: the retained outcome's card, its current input, and a worker context.
+        self.assertEqual((requester['status'], requester['_native_outcome_id'], requester['_work_context_id']),
+                         ('working', native, work['id']))
+        self.assertEqual((claim['native_id'], claim['external_id']), (native, requester['id']))
+        self.assertTrue(claim['context'])
+        self.assertEqual((card['id'], card['status'], card['current_run_id'], card['worker_pid']),
+                         (native, 'running', claim['run_id'], claim['pid']))
+        self.assertEqual(card['input_id'], claim['input'])
+        self.assertEqual(claim['input'], requester['_native_turn_id'])
+
+        def end_requester_turn():
+            worker = self.service.running[requester['id']]
+            release.set()
+            worker.join(15)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(self.service._get('tasks', requester['id'])['status'], 'completed')
+            self.service.kanban.call({'op': 'snapshot'})
+            self.assertEqual(self.service.kanban.tasks[requester['id']]['status'], 'done')
+
+        def end_caller_turn():
+            # The admitted owner is queued, but the requester's running card holds the only work slot.
+            self.service._dispatch_pending()
+            self.assertNotIn(owner['id'], self.service.running)
+            self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'queued')
+            self.assertEqual(self.service.kanban.tasks[requester['id']]['status'], 'running')
+            end_requester_turn()
+        self.end_requester_turn = end_requester_turn
+        self.end_caller_turn = end_caller_turn
         return requester
 
     def linked(self, second_pr=False, requester_turn=False):
@@ -592,7 +686,7 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
             saved.extend(items)
             if requester_turn:
                 self.other_caller = source
-                source = self.requester_turn(requester)
+                source = self.requester_turn(owner, requester, work)
             return owner, source, identity, workspace
 
         self.prepare = prepare_linkage
@@ -618,8 +712,13 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
         work, pr, report, requester_pr = saved
         owner = self.service._get('tasks', pr['task_id'])
         self.assertEqual(owner['_work_context_id'], pr['id'])
-        for item in (work, report, requester_pr):
-            self.assertEqual(self.service._get('artifacts', item['id']), item)
+        self.assertEqual(self.service._get('artifacts', report['id']), report)
+        # The requester's own Work and PR report keep their identity and links. Its turn may update their activity.
+        for item, keys in ((work, ('task_id', 'kind', '_native_outcome_id')),
+                           (requester_pr, ('task_id', 'kind', 'url', 'work_outcome_id', '_review_task_id', '_activity_task_id'))):
+            current = self.service._get('artifacts', item['id'])
+            self.assertEqual({k: current.get(k) for k in keys}, {k: item.get(k) for k in keys})
+        self.assertNotEqual(work['_native_outcome_id'], 't_requester')
 
     def test_another_requester_turn_cannot_exempt_the_requesters_activity(self):
         self.linked(requester_turn=True)
@@ -634,10 +733,13 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
         with self.assertRaisesRegex(ServiceError, 'another execution'):
             self.resume(self.other_caller, identity)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
-        self.assertEqual(self.service._get('tasks', requester['id']), requester)
+        keys = ('status', '_native_turn_id', '_native_outcome_id', '_work_context_id', '_kanban_claim')
+        current = self.service._get('tasks', requester['id'])
+        self.assertEqual({k: current.get(k) for k in keys}, {k: requester.get(k) for k in keys})
         self.assertEqual(self.service._all('artifacts'), before)
         self.assertEqual(cards(), held)
-        self.assertEqual(held[owner['id']]['status'], 'done')
+        self.assertEqual((held[owner['id']]['status'], held[requester['id']]['status']), ('done', 'running'))
+        self.end_requester_turn()
 
     def test_two_delegated_prs_stay_ambiguous_through_the_native_board(self):
         saved = self.linked(second_pr=True)
