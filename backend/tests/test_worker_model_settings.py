@@ -144,6 +144,7 @@ class WorkerModelProcessTests(unittest.TestCase):
                    'reasoning_effort': effort, 'question': source['text'],
                    'decision': decision if decision is not None else {'status': decision_status}}
         env = {'PATH': os.environ.get('PATH', ''), 'HOME': str(home), 'HERMES_HOME': str(home), 'TMPDIR': str(self.root),
+               'HERMES_DISABLE_LAZY_INSTALLS': '1',
                'COCONUT_DEFAULT_HOME': str(home), 'PYTHONPATH': str(self.source), 'WORKER_CAPTURE': str(capture), 'OPENAI_API_KEY': 'ambient-test-key'}
         if runtime.get('api_key'):
             env['EXPECTED_NATIVE_KEY'] = runtime['api_key']

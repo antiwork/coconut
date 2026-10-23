@@ -48,8 +48,10 @@ class NativeDependencyUnlinkTests(unittest.TestCase):
     def run_native(self, program, *, setup=True):
         with tempfile.TemporaryDirectory() as home:
             result = subprocess.run([PYTHON, '-c', (PRELUDE if setup else '') + textwrap.dedent(program), home],
-                env=dict(os.environ, PYTHONPATH=os.pathsep.join((str(Path(__file__).resolve().parents[1]),
-                                                              str(Path(__file__).resolve().parent), SOURCE))),
+                # The child program reads the Hermes source folder from COCONUT_HERMES_ROOT.
+                env=dict(os.environ, COCONUT_HERMES_ROOT=SOURCE,
+                         PYTHONPATH=os.pathsep.join((str(Path(__file__).resolve().parents[1]),
+                                                     str(Path(__file__).resolve().parent), SOURCE))),
                 capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             return result.stdout
@@ -197,7 +199,7 @@ class NativeDependencyUnlinkTests(unittest.TestCase):
             from types import SimpleNamespace
             from coconut.kanban_scheduler import KanbanScheduler
             conn.close()
-            adapter = KanbanScheduler(SimpleNamespace(hermes_root=Path(SOURCE),
+            adapter = KanbanScheduler(SimpleNamespace(hermes_root=Path(os.environ['COCONUT_HERMES_ROOT']),
                 python=sys.executable), home.parent)
             try:
                 assert adapter.call(request | {'op': 'unlink_receipt'}) == {'receipt': None}

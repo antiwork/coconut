@@ -12,7 +12,7 @@ class NativeCompressionTests(unittest.TestCase):
     def test_native_compression_contract(self):
         with tempfile.TemporaryDirectory(prefix='compression-contract-') as home:
             env = {key: os.environ[key] for key in ('PATH', 'TMPDIR') if key in os.environ}
-            env.update(HOME=home, HERMES_HOME=home, HERMES_DISABLE_MCP='1',
+            env.update(HOME=home, HERMES_HOME=home, HERMES_DISABLE_MCP='1', HERMES_DISABLE_LAZY_INSTALLS='1',
                        PYTHONDONTWRITEBYTECODE='1',
                        PYTHONPATH=os.pathsep.join((SOURCE,
                                                  str(Path('backend').resolve()))))

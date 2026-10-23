@@ -579,7 +579,7 @@ def run(source, python, evidence, cases):
         with tempfile.TemporaryDirectory(dir=evidence, prefix=case + '-') as temporary:
             env = {key: os.environ[key] for key in ('PATH',) if key in os.environ}
             env.update(HOME=temporary, HERMES_HOME=temporary, TMPDIR=temporary, HERMES_DISABLE_MCP='1',
-                HERMES_SKIP_SKILL_SYNC='1', PYTHONDONTWRITEBYTECODE='1',
+                HERMES_SKIP_SKILL_SYNC='1', PYTHONDONTWRITEBYTECODE='1', HERMES_DISABLE_LAZY_INSTALLS='1',
                 PYTHONPATH=os.pathsep.join((str(source), str(ROOT / 'backend'))))
             try:
                 result = subprocess.run([python, str(Path(__file__).resolve()), '--child', case,

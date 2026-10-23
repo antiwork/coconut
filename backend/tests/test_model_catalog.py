@@ -498,7 +498,7 @@ class NativeHermesCatalogTests(unittest.TestCase):
     def run_native(self, code, request=None):
         env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(self.root),
                'HERMES_REAL_HOME': str(self.root), 'HERMES_HOME': str(self.home),
-               'PYTHONPATH': SOURCE, 'HERMES_DISABLE_TELEMETRY': '1',
+               'PYTHONPATH': SOURCE, 'HERMES_DISABLE_TELEMETRY': '1', 'HERMES_DISABLE_LAZY_INSTALLS': '1',
                'XDG_CACHE_HOME': str(self.root / 'cache'), 'XDG_CONFIG_HOME': str(self.root / 'config')}
         script = """import contextlib, importlib.util, json, os, sys
 spec = importlib.util.spec_from_file_location('catalog', sys.argv[1])

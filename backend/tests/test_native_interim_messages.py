@@ -14,7 +14,7 @@ class NativeInterimMessageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary) / 'bots' / 'test-bot' / 'home'
             home.mkdir(parents=True)
-            env = {'PATH': os.environ.get('PATH', ''), 'HERMES_HOME': str(home),
+            env = {'PATH': os.environ.get('PATH', ''), 'HERMES_HOME': str(home), 'HERMES_DISABLE_LAZY_INSTALLS': '1',
                    'TMPDIR': temporary, 'PYTHONDONTWRITEBYTECODE': '1',
                    'PYTHONPATH': os.pathsep.join((str(Path(__file__).resolve().parents[1]),
                                                 SOURCE,

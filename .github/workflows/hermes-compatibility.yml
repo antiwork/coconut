@@ -77,7 +77,8 @@ jobs:
     name: native-kanban (${{ matrix.leg.name }})
     needs: hermes-versions
     runs-on: ubuntu-latest
-    # Recent runs took 17 to 24 minutes, and the installation adds a few minutes.
+    # Recent runs took 17 to 24 minutes, and the installation adds a few minutes. The step limits below end first.
+    # Then a timeout of the Hermes main leg is a failed step that continue-on-error covers, not a timed-out job.
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -96,6 +97,7 @@ jobs:
       - name: Install Hermes with the official installer
         id: install
         continue-on-error: ${{ !matrix.leg.required }}
+        timeout-minutes: 10
         env:
           ARGUMENTS: ${{ matrix.leg.arguments }}
         run: |
@@ -127,6 +129,7 @@ jobs:
         id: native
         if: steps.install.outcome == 'success'
         continue-on-error: ${{ !matrix.leg.required }}
+        timeout-minutes: 32
         env:
           PYTHONPATH: backend
           COCONUT_REQUIRE_NATIVE: '1' # A missing Hermes install fails the native tests instead of skipping them.

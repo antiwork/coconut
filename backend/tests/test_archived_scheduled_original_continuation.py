@@ -724,7 +724,7 @@ class ArchivedScheduledOriginalNativeTests(unittest.TestCase):
         self.worker = HermesProvider(self.service.root, python=sys.executable, hermes_root=self.source, catalog=catalog)
         self.addCleanup(self.worker.close)
         self.worker.environment = lambda bot_id: ({
-            'PATH': os.environ.get('PATH', ''), 'HOME': str(self.home), 'HERMES_HOME': str(self.home),
+            'PATH': os.environ.get('PATH', ''), 'HOME': str(self.home), 'HERMES_HOME': str(self.home), 'HERMES_DISABLE_LAZY_INSTALLS': '1',
             'TMPDIR': str(self.git_root), 'PYTHONPATH': str(self.source), 'WORKER_CAPTURE': str(self.capture),
             'EXPECTED_NATIVE_KEY': self.native['api_key']}, self.git_root)
         self.registry = self.service.root / 'workspaces'

@@ -12,7 +12,7 @@ from hermes_env import needs_hermes, SOURCE
 class NativeInitialInputTests(unittest.TestCase):
     def test_buffered_input_reaches_first_model_request_without_tool_history(self):
         with tempfile.TemporaryDirectory() as temporary:
-            env = {'PATH': os.environ.get('PATH', ''), 'HERMES_HOME': temporary,
+            env = {'PATH': os.environ.get('PATH', ''), 'HERMES_HOME': temporary, 'HERMES_DISABLE_LAZY_INSTALLS': '1',
                    'TMPDIR': temporary, 'PYTHONDONTWRITEBYTECODE': '1',
                    'PYTHONPATH': os.pathsep.join((str(Path(__file__).resolve().parents[1]),
                                                 SOURCE))}

@@ -110,7 +110,7 @@ def run(source, python):
         home.mkdir(parents=True)
         env = {key: os.environ[key] for key in ('PATH', 'WORKER_SOURCE') if key in os.environ}
         env.update(HOME=temporary, HERMES_HOME=str(home), TMPDIR=temporary, HERMES_DISABLE_MCP='1',
-                   HERMES_SKIP_SKILL_SYNC='1', PYTHONDONTWRITEBYTECODE='1',
+                   HERMES_SKIP_SKILL_SYNC='1', PYTHONDONTWRITEBYTECODE='1', HERMES_DISABLE_LAZY_INSTALLS='1',
                    PYTHONPATH=os.pathsep.join((str(source), str(ROOT / 'backend'))))
         result = subprocess.run([python, str(Path(__file__).resolve()), '--child'], cwd=ROOT, env=env,
                                 text=True, capture_output=True, timeout=120)
