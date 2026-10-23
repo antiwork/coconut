@@ -106,16 +106,9 @@ struct OnboardingView: View {
             // The pair action advances by itself.
             if paired && step == .pair && !working { advance() }
         }
-        .onChange(of: store.setupLink, initial: true) { _, link in
-            guard let link, !working else { return }
-            store.setupLink = nil
-            useSetup(link)
-            // A link always opens the pairing page, also from a later step.
-            if step != .pair {
-                history.append(step)
-                step = .pair
-            }
-        }
+        .onChange(of: store.setupLink, initial: true) { _, _ in takeSetupLink() }
+        // A link that arrives during an action waits until the action ends.
+        .onChange(of: working) { _, _ in takeSetupLink() }
         .confirmationDialog("Replace the current pairing?", isPresented: $replaceConfirmation, titleVisibility: .visible) {
             Button("Pair with \(pairingSetup?.origin ?? "this Mac")", role: .destructive) {
                 if let pairingSetup { perform { await pair(pairingSetup) } }
@@ -363,6 +356,17 @@ struct OnboardingView: View {
                 set: { if $0 { selected.insert(profile.id) } else { selected.remove(profile.id) } })
     }
 
+    private func takeSetupLink() {
+        guard let link = store.setupLink, !working else { return }
+        store.setupLink = nil
+        useSetup(link)
+        // A link always opens the pairing page, also from a later step.
+        if step != .pair {
+            history.append(step)
+            step = .pair
+        }
+    }
+
     private func parseSetup(_ payload: String) throws {
         pairingSetup = try PairingSetup.parse(payload)
         pairingError = nil
@@ -379,6 +383,11 @@ struct OnboardingView: View {
         guard !Task.isCancelled else { return }
         if saved {
             pairingSetup = nil
+            // The setup page must describe the Mac that this iPhone now uses, not an earlier one.
+            load = .loading
+            selected = []
+            importError = nil
+            skippedSkills = []
             advance()
         } else {
             pairingError = store.error ?? "Coconut could not pair with this Mac. Ask Hermes for a new code."
