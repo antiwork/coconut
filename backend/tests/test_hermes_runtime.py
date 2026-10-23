@@ -95,6 +95,16 @@ class DiscoveryTests(unittest.TestCase):
             hermes_runtime.find(environ, self.home)
         self.assertIn('COCONUT_HERMES_ROOT names no Hermes Python', raised.exception.reason)
 
+    def test_a_source_folder_with_keys_is_refused(self):
+        root = self.home / '.hermes/hermes-agent'
+        make_hermes(root)
+        (root / '.env').write_text('ANTHROPIC_API_KEY=secret\n')
+        with self.assertRaises(HermesUnavailable) as raised:
+            hermes_runtime.find(self.environ, self.home)
+        self.assertEqual(raised.exception.status, 'incompatible')
+        self.assertIn('.env', raised.exception.reason)
+        self.assertNotIn('secret', raised.exception.reason)
+
     def test_no_hermes_is_missing(self):
         with self.assertRaises(HermesUnavailable) as raised:
             hermes_runtime.find(self.environ, self.home)
@@ -237,9 +247,21 @@ class ServiceInterpreterTests(unittest.TestCase):
     def test_the_restarted_service_never_starts_again(self):
         # A launcher can report another path in sys.executable. The checked status from the first process is final.
         status = {'status': 'ok', 'version': '1.0', 'reason': None, 'python': '/hermes/venv/bin/python', 'root': '/hermes'}
-        with patch.dict(os.environ, {'COCONUT_HERMES_STATUS': json.dumps(status)}), patch.object(server.os, 'execv') as execv:
+        with patch.dict(os.environ, {'COCONUT_HERMES_STATUS': json.dumps(status), 'COCONUT_HERMES_RESTARTED': '1'}), \
+                patch.object(server.os, 'execv') as execv:
             self.assertEqual(server.hermes_status('/data', []), status)
+            self.assertNotIn('COCONUT_HERMES_RESTARTED', os.environ)
         execv.assert_not_called()
+
+    def test_a_status_from_host_start_still_moves_to_the_hermes_python(self):
+        # host.py start checks Hermes before the service starts, under the Python that runs host.py.
+        status = {'status': 'ok', 'version': '1.0', 'reason': None, 'python': '/hermes/venv/bin/python', 'root': '/hermes'}
+        with patch.dict(os.environ, {'COCONUT_HERMES_STATUS': json.dumps(status)}), \
+                patch.object(hermes_runtime, 'status') as find, patch.object(server.os, 'execv') as execv:
+            server.hermes_status('/data', [])
+            self.assertEqual(os.environ['COCONUT_HERMES_RESTARTED'], '1')
+        find.assert_not_called()
+        execv.assert_called_once()
 
     def test_a_python_that_cannot_start_means_refuse_mode(self):
         status = {'status': 'ok', 'version': '1.0', 'reason': None, 'python': '/hermes/venv/bin/python', 'root': '/hermes'}

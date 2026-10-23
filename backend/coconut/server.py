@@ -282,20 +282,21 @@ def hermes_status(data_dir, argv) -> dict:
     Without a usable Hermes, the service stays under this Python in refuse mode.
     """
     saved = os.environ.pop('COCONUT_HERMES_STATUS', None)
+    # A launcher can name the Hermes Python differently in sys.executable, so this process starts again only once.
+    restarted = os.environ.pop('COCONUT_HERMES_RESTARTED', None) == '1'
     try:
         status = json.loads(saved) if saved else None
     except ValueError:
         status = None
-    if isinstance(status, dict):
-        # This process already started under the checked Python. A launcher can name it differently in sys.executable.
-        return status
-    status = hermes_runtime.status(data_dir)
-    if status.get('status') == 'ok' and os.path.abspath(sys.executable) != os.path.abspath(status['python']):
-        os.environ['COCONUT_HERMES_STATUS'] = json.dumps(status)
+    if not isinstance(status, dict):
+        status = hermes_runtime.status(data_dir)
+    if status.get('status') == 'ok' and not restarted and os.path.abspath(sys.executable) != os.path.abspath(status['python']):
+        os.environ.update(COCONUT_HERMES_STATUS=json.dumps(status), COCONUT_HERMES_RESTARTED='1')
         try:
             os.execv(status['python'], [status['python'], '-m', 'coconut', *argv])
         except OSError as error:
             os.environ.pop('COCONUT_HERMES_STATUS', None)
+            os.environ.pop('COCONUT_HERMES_RESTARTED', None)
             return {'status': 'incompatible', 'version': status.get('version'),
                     'reason': f'The Hermes Python cannot start: {error.strerror}.'}
     return status

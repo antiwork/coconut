@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import unittest.mock
 from unittest.mock import patch
 
 
@@ -664,6 +665,28 @@ class ServiceEnvironmentTests(unittest.TestCase):
                 patch.object(host.Path, 'home', return_value=Path(directory)), \
                 patch.dict(host.os.environ, {'PATH': '/updater/bin'}, clear=True):
             self.assertEqual(host.service_environment(), {'PATH': '/updater/bin'})
+
+
+class ManualStartTests(unittest.TestCase):
+    def test_start_checks_hermes_before_it_waits_for_the_service(self):
+        status = {'status': 'missing', 'version': None, 'reason': 'Coconut found no Hermes on this Mac.'}
+        runtime = unittest.mock.Mock()
+        runtime.status.return_value = status
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+            args = argparse.Namespace(data_dir=data, host='127.0.0.1', port=8960, provider='hermes', insecure_loopback=True)
+            process = unittest.mock.Mock(pid=4321)
+            process.poll.return_value = None
+
+            def popen(command, **kwargs):
+                (data / 'process.json').write_text(json.dumps({'pid': 4321}))
+                return process
+            with patch.object(host, 'hermes_runtime', return_value=runtime), \
+                    patch.object(host.subprocess, 'Popen', side_effect=popen) as started, \
+                    patch('sys.stdout'):
+                host.start(args)
+        runtime.status.assert_called_once_with(data)
+        self.assertEqual(json.loads(started.call_args.kwargs['env']['COCONUT_HERMES_STATUS']), status)
 
 
 if __name__ == '__main__':

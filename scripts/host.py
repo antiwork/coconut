@@ -334,8 +334,15 @@ def start(args: argparse.Namespace) -> None:
                "--host", args.host, "--port", str(args.port), "--provider", args.provider]
     if args.insecure_loopback:
         command.append("--insecure-loopback")
+    environment = dict(os.environ)
+    if args.provider == "hermes":
+        # Check Hermes before the service starts, so the wait below covers only the start. The service takes this result.
+        status = hermes_runtime().status(args.data_dir)
+        environment["COCONUT_HERMES_STATUS"] = json.dumps(status)
+        if status["status"] != "ok":
+            print(f"Coconut runs no bots until Hermes works: {status['reason']}")
     with (args.data_dir / "service.log").open('ab') as log:
-        process = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.DEVNULL,
+        process = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.DEVNULL, env=environment,
                                    stdout=log, stderr=log, start_new_session=True)
     record = args.data_dir / "process.json"
     for _ in range(100):

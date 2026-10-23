@@ -35,17 +35,7 @@ def run(arguments: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(arguments, cwd=ROOT, check=True, **kwargs)
 
 
-def check_hermes() -> None:
-    """Say when Coconut cannot use this Mac's Hermes. The service still starts, and the phone shows the reason."""
-    sys.path.insert(0, str(ROOT / "scripts"))
-    import host
-    status = host.hermes_runtime().status(DATA, save=False)
-    if status["status"] != "ok":
-        print(f"Coconut runs no bots until Hermes works: {status['reason']}")
-
-
 def start() -> None:
-    check_hermes()
     if not (DATA / "credentials.json").is_file():
         if any(os.environ.get(key) for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY")):
             run([sys.executable, "scripts/host.py", "save-model-access"])

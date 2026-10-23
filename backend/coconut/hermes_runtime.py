@@ -246,6 +246,10 @@ def find(environ=None, home=None, timeout: float = PROBE_SECONDS) -> HermesRunti
             found = Path(info['root'])
             if root is not None and found.resolve() != root.resolve():
                 raise HermesUnavailable('incompatible', 'The Hermes Python loads Hermes from another folder than its source folder.')
+            if (found / '.env').exists() or (found / '.env').is_symlink():
+                # Every bot would get the keys of this file. Coconut gives each bot only its own keys.
+                raise HermesUnavailable('incompatible', 'The Hermes source folder has a .env file. Move its keys to '
+                                        '~/.hermes/.env, where Hermes reads them, then restart Coconut.')
         except HermesUnavailable as error:
             problem = problem or error
             if last_explicit:

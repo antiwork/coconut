@@ -63,7 +63,8 @@ Each time the service starts, it looks for Hermes in this order:
 2. The `hermes` command on the service's `PATH`. Coconut reads its first line to find the Python of Hermes.
 3. `~/.hermes/hermes-agent`, where the official installer puts Hermes.
 
-The service imports the Hermes modules that it uses, then runs its contract check against them. The check sends no model request and uses a temporary Hermes home.
+The service imports the Hermes modules that it uses, then runs its contract check against them.
+It refuses a Hermes source folder that has a `.env` file, because every bot would get those keys. Hermes reads its keys from `~/.hermes/.env`. The check sends no model request and uses a temporary Hermes home.
 The service then runs under the Python of that Hermes. It saves the result in `.runtime/host/hermes.json`.
 A restart reuses a passed check while Hermes and the Coconut code stay the same. A failed check runs again at each start, so a restart is enough after you repair Hermes.
 
