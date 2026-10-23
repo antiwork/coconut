@@ -123,11 +123,13 @@ def candidates(environ=None, home=None) -> list[tuple[Path, Path | None, bool]]:
             found.append((Path(python).expanduser(), root, True))
         else:
             found.extend((root / name / 'bin/python', root, True) for name in ('venv', '.venv'))
-    command = shutil.which('hermes', path=environ.get('PATH', os.defpath))
-    if command:
-        python = launcher_python(Path(command))
+    # As the shell does, the first `hermes` on PATH counts. Coconut's old launcher can come first, so the search goes on.
+    for folder in environ.get('PATH', os.defpath).split(os.pathsep):
+        command = shutil.which('hermes', path=folder) if folder else None
+        python = launcher_python(Path(command)) if command else None
         if python is not None:
             found.append((python, None, False))
+            break
     source = home / '.hermes/hermes-agent'
     found.extend((source / name / 'bin/python', source, False) for name in ('venv', '.venv'))
     result, seen = [], set()

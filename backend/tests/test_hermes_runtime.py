@@ -69,6 +69,18 @@ class DiscoveryTests(unittest.TestCase):
         self.command('#!/bin/sh\n# Coconut owns this Hermes launcher.\nexec /usr/bin/python3 terminal.py launch -- "$@"\n')
         self.assertNotIn('/usr/bin/python3', [str(python) for python, _, _ in hermes_runtime.candidates(self.environ, self.home)])
 
+    def test_the_persons_hermes_after_coconuts_old_launcher_on_path_is_found(self):
+        # On the Mac mini, ~/.local/bin/hermes is Coconut's old launcher, and the real command comes later on PATH.
+        self.command('#!/bin/sh\n# Coconut owns this Hermes launcher.\nexec /usr/bin/python3 terminal.py launch -- "$@"\n')
+        later = self.home / 'tools/bin'
+        later.mkdir(parents=True)
+        (later / 'hermes').write_text('#!/opt/hermes/venv/bin/python\nfrom hermes_cli.main import main\n')
+        (later / 'hermes').chmod(0o755)
+        environ = dict(self.environ, PATH=f'{self.bin}:{later}')
+        found = [python for python, _, _ in hermes_runtime.candidates(environ, self.home)]
+        self.assertEqual(found[0], Path('/opt/hermes/venv/bin/python'))
+        self.assertNotIn(Path('/usr/bin/python3'), found)
+
     def test_a_long_interpreter_path_in_a_shell_wrapper_is_read(self):
         command = self.command("#!/bin/sh\n'''exec' \"/very/long/hermes/venv/bin/python\" \"$0\" \"$@\"\n' '''\nimport sys\n")
         self.assertEqual(hermes_runtime.launcher_python(command), Path('/very/long/hermes/venv/bin/python'))
