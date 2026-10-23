@@ -38,9 +38,8 @@ def run(arguments: list[str], label: str, *, quiet: bool = True) -> subprocess.C
 
 
 def script(name: str, *arguments: str) -> list[str]:
-    # As in the installer, project scripts use the Hermes Python. The login service then runs with Hermes packages.
-    python = os.environ.get("COCONUT_HERMES_PYTHON") or sys.executable
-    return [python, str(ROOT / "scripts" / name), *arguments]
+    # Any Python runs the project scripts. The service itself starts again under the Python of the Hermes that it finds.
+    return [sys.executable, str(ROOT / "scripts" / name), *arguments]
 
 
 def tailscale_command() -> str:
@@ -103,42 +102,16 @@ def saved_address() -> str | None:
         raise SystemExit(f"{path} is invalid. Remove it, then run this command again.") from None
 
 
-def hermes_runtime(root: Path, python: Path) -> tuple[Path, Path] | None:
-    """Return the Hermes source folder and its Python, when both exist outside this project."""
-    root, python = root.expanduser(), python.expanduser()
-    if not (root / "run_agent.py").is_file() or not os.access(python, os.X_OK):
-        return None
-    if ROOT in root.resolve().parents or ROOT in python.resolve().parents:
-        return None
-    return root.resolve(), python
-
-
-def find_hermes() -> tuple[Path, Path]:
-    """Find the Hermes that the person already uses. Coconut does not install its own copy."""
-    candidates = []
-    if os.environ.get("COCONUT_HERMES_ROOT") and os.environ.get("COCONUT_HERMES_PYTHON"):
-        candidates.append((Path(os.environ["COCONUT_HERMES_ROOT"]), Path(os.environ["COCONUT_HERMES_PYTHON"])))
-    command = shutil.which("hermes")
-    if command:
-        # The Hermes installer links the command from the virtual environment inside its source folder.
-        binary = Path(command).resolve().parent
-        candidates.append((binary.parent.parent, binary / "python"))
-    home = Path.home() / ".hermes/hermes-agent"
-    candidates.extend((home, home / name / "bin/python") for name in ("venv", ".venv"))
-    for root, python in candidates:
-        found = hermes_runtime(root, python)
-        if found:
-            return found
-    raise SystemExit("Install Hermes first: https://github.com/NousResearch/hermes-agent. "
-                     "Then run this command again.")
-
-
 def use_hermes() -> None:
-    root, python = find_hermes()
-    # The service and the login service that host.py writes read these two variables.
-    os.environ["COCONUT_HERMES_ROOT"] = str(root)
-    os.environ["COCONUT_HERMES_PYTHON"] = str(python)
-    print(f"Coconut uses the Hermes in {root}.")
+    """Find and check the Hermes that the person already uses. Coconut does not install its own copy.
+
+    The service finds the same Hermes again at each start: hermes_runtime looks at COCONUT_HERMES_PYTHON and
+    COCONUT_HERMES_ROOT, then at `hermes` on PATH, then at ~/.hermes/hermes-agent.
+    """
+    status = host.hermes_runtime().status(DATA, save=False)
+    if status["status"] != "ok":
+        raise SystemExit(f"{status['reason']} Then run this command again.")
+    print(f"Coconut uses Hermes {status['version'] or 'of unknown version'} in {status['root']}.")
 
 
 def prepare_notifications() -> None:

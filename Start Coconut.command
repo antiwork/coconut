@@ -1,8 +1,4 @@
 #!/bin/zsh
 set -e
 cd -- "${0:A:h}"
-if [[ -x .runtime/hermes/venv/bin/python ]]; then
-  exec .runtime/hermes/venv/bin/python scripts/desktop.py start
-fi
-print "Install Hermes first: python3 scripts/hermes.py install"
-exit 1
+exec /usr/bin/env python3 scripts/desktop.py start

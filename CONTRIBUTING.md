@@ -42,10 +42,10 @@ done)
 
 - Name each backend test file `test_*.py`. CI runs every such file.
 - A test that needs Hermes also goes in the `native-kanban` job of `.github/workflows/hermes-compatibility.yml`.
-- To run the native Kanban tests, set `COCONUT_HERMES_ROOT` and `COCONUT_HERMES_PYTHON` to a Hermes checkout at the pinned `REVISION` in `scripts/hermes.py`.
+- To run the native Kanban tests, set `COCONUT_HERMES_ROOT` and `COCONUT_HERMES_PYTHON` to a Hermes checkout at the `REVISION` in `scripts/hermes.py`, which the compatibility CI installs.
 - Run the relay tests with `(cd relay && npm ci && npm test)`.
 - Run `CoconutTests` from Xcode for iOS changes.
 
 ## Hermes upgrades
 
-Pin a new Hermes release in its own PR. Change `REVISION` in `scripts/hermes.py` and fix only what the new release breaks. Follow [Hermes upgrade checks](docs/hermes-upgrade-checks.md).
+Coconut runs on the Hermes that the person installed. To test a new Hermes release in CI, change `REVISION` in `scripts/hermes.py` in its own PR, and fix only what the new release breaks. Follow [Hermes upgrade checks](docs/hermes-upgrade-checks.md).

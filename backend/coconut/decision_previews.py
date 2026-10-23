@@ -9,7 +9,7 @@ MAX_IMAGE_BYTES = 4 * 1024 * 1024
 
 
 def image_size(content):
-    # Pillow ships with the pinned Hermes runtime. Decode before pausing for a decision.
+    # Pillow ships with Hermes. Decode before pausing for a decision.
     from PIL import Image, UnidentifiedImageError
     try:
         with Image.open(BytesIO(content), formats=['PNG', 'JPEG']) as image:

@@ -247,6 +247,17 @@ def connection_certificate(args: argparse.Namespace) -> tuple[Path, Path]:
     return result
 
 
+def hermes_runtime():
+    """Load backend/coconut/hermes_runtime.py alone. It uses the standard library only, so any Python can run it."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("coconut_hermes_runtime", ROOT / "backend/coconut/hermes_runtime.py")
+    module = importlib.util.module_from_spec(spec)
+    # dataclasses look the module up by name.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def fingerprint(cert: Path) -> str:
     der = ssl.PEM_cert_to_DER_cert(cert.read_text())
     return hashlib.sha256(der).hexdigest().upper()
@@ -556,9 +567,10 @@ def install(args: argparse.Namespace) -> None:
     plist = agents / f"{LABEL}.plist"
     if plist.exists():
         raise SystemExit(f"A service already exists at {plist}. Use launchctl to manage it.")
+    # host.py serve finds the person's Hermes at each start: `hermes` on this PATH, then ~/.hermes/hermes-agent.
+    # Explicit settings select another Hermes. Credentials stay in the host environment file.
     environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONUNBUFFERED": "1"}
-    # Explicit paths select the Hermes runtime. Credentials stay in the host environment file.
-    for name in ("COCONUT_HERMES_PYTHON", "COCONUT_HERMES_ROOT"):
+    for name in ("COCONUT_HERMES_PYTHON", "COCONUT_HERMES_ROOT", "HERMES_HOME"):
         if os.environ.get(name):
             environment[name] = os.environ[name]
     payload = {
@@ -580,7 +592,8 @@ def install(args: argparse.Namespace) -> None:
 def main() -> None:
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["setup", "serve", "start", "stop", "restart", "pair", "save-model-access", "install-service", "status"])
+    parser.add_argument("command", choices=["setup", "serve", "start", "stop", "restart", "pair", "save-model-access",
+                                            "install-service", "status", "hermes-status"])
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, help="Listening port. Defaults to 8960 or the saved address port.")
@@ -616,6 +629,9 @@ def main() -> None:
         print("Saved configured model access in the private local runtime.")
     elif args.command == "start":
         start(args)
+    elif args.command == "hermes-status":
+        # Find and check the person's Hermes with this code. The saved status stays the one of the running service.
+        print("COCONUT_HERMES_STATUS=" + json.dumps(hermes_runtime().status(args.data_dir, save=False)))
     elif args.command in {"stop", "restart", "status"}:
         if args.data_dir != DEFAULT_DATA:
             raise SystemExit("Use the default data directory for status, stop, and restart.")
@@ -634,6 +650,9 @@ def main() -> None:
     else:
         command = service_args(args)
         sys.path.insert(0, str(ROOT / "backend"))
+        # Older versions installed their own hermes command. It started the private runtime, which is gone.
+        if hermes_runtime().remove_coconut_launcher():
+            print("Removed Coconut's old hermes command from ~/.local/bin.", flush=True)
         from coconut.terminal_setup import command_path
         os.environ['PATH'] = command_path(os.environ.get('PATH', ''))
         managed = managed_current_process(args.data_dir)

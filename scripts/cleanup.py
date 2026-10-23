@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remove this project's Hermes runtime and local service data."""
+"""Remove this project's local service data. The person's own Hermes stays."""
 
 from __future__ import annotations
 
@@ -34,10 +34,6 @@ def main() -> None:
     targets = [RUNTIME]
     if args.keep_deployment:
         targets = [path for path in sorted(RUNTIME.iterdir()) if path.name not in DEPLOYMENT_FILES] if RUNTIME.exists() else []
-        # The runtime lease creates this lock after the listing above.
-        for name in ('hermes', 'hermes-update.lock'):
-            if RUNTIME / name not in targets:
-                targets.append(RUNTIME / name)
     if args.builds:
         targets.extend([ROOT / "ios/.build", ROOT / "ios/DerivedData", ROOT / ".build"])
     for target in targets:
@@ -48,21 +44,21 @@ def main() -> None:
     for target in targets:
         if target.is_symlink():
             raise SystemExit(f"Cleanup did not follow a symbolic link: {target}")
-    import terminal
-    with terminal.runtime_lease(exclusive=True):
-        plist = stop_for_cleanup()
-        terminal.uninstall_command()
-        if plist.exists():
-            plist.unlink()
-        for target in targets:
-            if target.is_symlink():
-                raise SystemExit(f"Cleanup did not follow a symbolic link: {target}")
-            if target.exists():
-                if target.is_dir():
-                    shutil.rmtree(target)
-                else:
-                    target.unlink()
-    print("Removed the local Hermes runtime and Coconut data. The source files remain.")
+    import host
+    plist = stop_for_cleanup()
+    # Older versions installed their own hermes command. The person's own Hermes stays.
+    host.hermes_runtime().remove_coconut_launcher()
+    if plist.exists():
+        plist.unlink()
+    for target in targets:
+        if target.is_symlink():
+            raise SystemExit(f"Cleanup did not follow a symbolic link: {target}")
+        if target.exists():
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+    print("Removed the local Coconut data. The source files and your Hermes remain.")
     if args.keep_deployment:
         print("Kept Mac mini SSH access and iPhone update settings.")
 

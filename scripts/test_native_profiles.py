@@ -143,7 +143,9 @@ with tempfile.TemporaryDirectory(prefix='coconut-native-routine-') as temporary:
 def main():
     config = remote.configuration()
     root = config['directory']
-    remote.ssh(config, ['python3', root + '/scripts/hermes.py', 'check'], timeout=120)
+    # Find the installed Hermes and run the contract check against it. It sends no model requests.
+    check = 'import sys; sys.path.insert(0, sys.argv[1] + "/scripts"); import host; m = host.hermes_runtime(); m.check(m.find())'
+    remote.ssh(config, ['python3', '-c', check, root], timeout=420)
     for program in PROGRAMS:
         result = remote.ssh(config, [root + '/.runtime/hermes/venv/bin/python', '-c', program, root], timeout=360, allow_failure=True)
         print(result.stdout.decode(), flush=True)

@@ -23,7 +23,7 @@ python3 ~/Coconut/scripts/setup_coconut.py
 
 The command finds the Hermes that you already use, configures this Mac's Tailscale address, starts the login service, and prints the iPhone setup link.
 See [Pair through Hermes](docs/install-and-update.md#pair-through-hermes).
-The installer keeps its managed Hermes runtime inside `.runtime/`.
+Coconut runs on that Hermes. It does not install its own copy. Without a usable Hermes, the service starts but runs no bots, and the phone shows why.
 
 ## Development
 
@@ -48,7 +48,7 @@ See [architecture](docs/architecture.md), [Hermes integration](docs/hermes-integ
 
 ## Removal
 
-On the execution Mac, run `python3 scripts/cleanup.py --yes` to remove Coconut's service, runtime, and stored work.
+On the execution Mac, run `python3 scripts/cleanup.py --yes` to remove Coconut's service and stored work. Your Hermes stays.
 Delete the source folder separately. The uninstaller leaves Tailscale and Apple's tools installed.
 
 ### Concurrent work

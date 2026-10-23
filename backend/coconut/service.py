@@ -30,9 +30,11 @@ from .state_sync import StateSync
 
 
 class ServiceError(Exception):
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, **details):
         super().__init__(message)
         self.status = status
+        # Extra fields of the error response, for example a code that the phone acts on.
+        self.details = details
 
 
 class YieldForDecision(RuntimeError):
@@ -57,6 +59,35 @@ def encoded(value: Any) -> str:
 
 def digest(value: str | bytes) -> str:
     return hashlib.sha256(value.encode() if isinstance(value, str) else value).hexdigest()
+
+
+def pair_device(db, data: dict, paired) -> dict | ServiceError:
+    """Use a pairing code inside the caller's write transaction. Return the device token, or the error to raise.
+
+    Failed attempts commit with the transaction, so retries cannot bypass the rate limit. `paired(device_id)` records the event.
+    """
+    stamp = time.time()
+    db.execute('DELETE FROM pair_attempts WHERE created < ?', (stamp - 60,))
+    attempts = db.execute('SELECT COUNT(*) FROM pair_attempts').fetchone()[0]
+    db.execute('INSERT INTO pair_attempts(created) VALUES (?)', (stamp,))
+    row = db.execute('SELECT expires,used FROM pairing WHERE hash=?', (digest(str(data.get('code', ''))),)).fetchone()
+    if attempts >= 5:
+        return ServiceError(429, 'Too many pairing attempts. Wait one minute.')
+    if not row or row[0] < stamp or row[1]:
+        return ServiceError(401, 'The pairing code is invalid or expired.')
+    name = str(data.get('device_name', 'iPhone'))[:80]
+    device_id, token = uid(), secrets.token_urlsafe(32)
+    db.execute('UPDATE pairing SET used=1 WHERE hash=?', (digest(str(data['code'])),))
+    db.execute('INSERT INTO devices VALUES (?,?,?,?)', (device_id, name, digest(token), now()))
+    paired(device_id)
+    return {'token': token, 'device_id': device_id}
+
+
+def device_for_token(db, token: str) -> str:
+    row = db.execute('SELECT id FROM devices WHERE token_hash=?', (digest(token),)).fetchone()
+    if not row:
+        raise ServiceError(401, 'Pair this phone with the Mac to continue.')
+    return row[0]
 
 
 def require_text(data: dict, key: str, maximum: int | None = 10000) -> str:
@@ -803,34 +834,15 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
     create_pairing_code = pairing_code
 
     def pair(self, data: dict) -> dict:
-        # Failed attempts commit, so retries cannot bypass the rate limit.
         with self.transaction():
-            stamp = time.time()
-            self.db.execute('DELETE FROM pair_attempts WHERE created < ?', (stamp - 60,))
-            attempts = self.db.execute('SELECT COUNT(*) FROM pair_attempts').fetchone()[0]
-            self.db.execute('INSERT INTO pair_attempts(created) VALUES (?)', (stamp,))
-            row = self.db.execute('SELECT expires,used FROM pairing WHERE hash=?', (digest(str(data.get('code', ''))),)).fetchone()
-            if attempts >= 5:
-                result = ServiceError(429, 'Too many pairing attempts. Wait one minute.')
-            elif not row or row[0] < stamp or row[1]:
-                result = ServiceError(401, 'The pairing code is invalid or expired.')
-            else:
-                name = str(data.get('device_name', 'iPhone'))[:80]
-                device_id, token = uid(), secrets.token_urlsafe(32)
-                self.db.execute('UPDATE pairing SET used=1 WHERE hash=?', (digest(str(data['code'])),))
-                self.db.execute('INSERT INTO devices VALUES (?,?,?,?)', (device_id, name, digest(token), now()))
-                self._event('device.paired', {'device_id': device_id})
-                result = {'token': token, 'device_id': device_id}
+            result = pair_device(self.db, data, lambda device_id: self._event('device.paired', {'device_id': device_id}))
         if isinstance(result, ServiceError):
             raise result
         return result
 
     def authenticate(self, token: str) -> str:
         with self._read_view() as view:
-            row = view.db.execute('SELECT id FROM devices WHERE token_hash=?', (digest(token),)).fetchone()
-        if not row:
-            raise ServiceError(401, 'Pair this phone with the Mac to continue.')
-        return row[0]
+            return device_for_token(view.db, token)
 
     def _model_catalog(self, refresh_after=None) -> dict | None:
         if not hasattr(self.provider, 'model_catalog'):

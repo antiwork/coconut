@@ -1,6 +1,5 @@
 """Apply reviewed main commits with the installed deployment and TestFlight tools."""
 import argparse
-import contextlib
 import fcntl
 import hashlib
 import importlib.util
@@ -8,8 +7,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
-import signal
 import socket
 import subprocess
 import sys
@@ -22,22 +19,6 @@ from urllib.parse import urlsplit
 # After a failed install of a commit, the updater waits this long before it tries the same commit again.
 FAILED_DEPLOY_SECONDS = 10 * 60
 FAILED_DEPLOY_MAX_SECONDS = 60 * 60
-# scripts/check_hermes_candidate.py bounds each of its programs at 75 minutes in total, and adds lsof and git calls.
-# A timeout or a setup error is inconclusive: the gate backs off, but it does not keep the pin as failed.
-HERMES_CHECKS_SECONDS = 2 * 60 * 60
-# The candidate install peaks at about 2.6 GB, and the live install then adds a runtime of about 1.3 GB.
-# A full disk stops the service's database writes, so the gate installs nothing below this free space.
-HERMES_CANDIDATE_FREE_BYTES = 8 * 1024 ** 3
-# A failed check run costs up to 80 minutes and model calls, and a repeat with the same code fails the same way.
-# The gate repeats the checks for a failed pin and code only after this wait. A new pin, for example a revert, or a
-# change of backend or scripts runs them at once.
-HERMES_FAILED_RETRY_SECONDS = 24 * 60 * 60
-# hermes.py install runs uv and three check programs, up to 75 minutes of program time, plus the downloads.
-HERMES_INSTALL_SECONDS = 90 * 60
-# scripts/hermes.py install writes these folders of .runtime, and the checks write inside hermes. The gate removes only
-# these. It keeps tools, which holds the verified uv binary, so a retry does not download it again.
-HERMES_GATE_FOLDERS = ('hermes', 'cache', 'tmp')
-
 
 def run(args, *, cwd=None, stdin=None, pass_fds=()):
     result = subprocess.run(args, cwd=cwd, stdin=stdin, capture_output=True, text=True, timeout=3600, pass_fds=pass_fds)
@@ -325,237 +306,6 @@ def service_supervised(live):
         return False
 
 
-def check_hermes_candidate(source, live, revision, sha, state, state_path):
-    """Run the native upgrade checks on a new Hermes pin before the live install. Raise when a check fails.
-
-    The checks need model access, so CI cannot run them, and a bot cannot run them inside its Hermes worker.
-    This updater runs outside Hermes. It installs the pin in its own checkout, runs
-    scripts/check_hermes_candidate.py, and keeps its result in hermes-checks.json for Coconut Care.
-    The checks also run the Coconut code of the checkout, so a result counts only for its revision and that code.
-    A failure stops the checks for that revision and code for HERMES_FAILED_RETRY_SECONDS.
-    """
-    receipt = state_path.parent / 'hermes-checks.json'
-    # A run that was killed outside Python leaves its folders. Free them before any early return.
-    clear_gate_folders(source)
-    # A result counts for the pin, the checked code, and the model keys, so a corrected key runs the checks again.
-    tree = f'{checked_code(source, sha)} {credentials_digest(source, live)}'
-    saved = state.get('hermes_checks') if isinstance(state.get('hermes_checks'), dict) else {}
-    # The checks run backend and scripts of the checkout. A result counts for the pin and that code only, so a fix of
-    # the Coconut code runs the checks again at once, and a commit elsewhere, such as the iOS app, reuses the result.
-    if saved.get('revision') == revision and saved.get('code') == tree:
-        if saved.get('passed') is True:
-            return
-        checked_at = saved.get('checked_at')
-        if (saved.get('passed') is False and isinstance(checked_at, (int, float))
-                and time.time() - checked_at < HERMES_FAILED_RETRY_SECONDS):
-            raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}. '
-                               'They run again after 24 hours, or at once for a new pin or a change of backend or scripts.')
-    if (state.get('hermes_inconclusive') or {}).get('revision') == revision and (state['hermes_inconclusive'].get('code') == tree):
-        if time.time() < state['hermes_inconclusive'].get('retry_at', 0):
-            raise RuntimeError(f'The native upgrade checks for Hermes {revision[:12]} did not finish before. '
-                               f'They run again after the wait. Read {receipt}.')
-    problem = gate_problem(source, live)
-    if problem:
-        # The install costs up to an hour and 2.6 GB. Check what the checks need first, and say what is missing.
-        write_receipt(receipt, revision, 'inconclusive', problem)
-        raise RuntimeError(f'The native upgrade checks for Hermes {revision[:12]} cannot start: {problem}')
-    free = shutil.disk_usage(source).free
-    if free < HERMES_CANDIDATE_FREE_BYTES:
-        output = (f'The candidate install needs {HERMES_CANDIDATE_FREE_BYTES // 1024 ** 3} GiB of free disk space, and '
-                  f'{free / 1024 ** 3:.1f} GiB is free. Nothing was installed. The next pass after the backoff checks again.')
-        write_receipt(receipt, revision, 'inconclusive', output)
-        raise RuntimeError(output)
-    passed, output, recorded, inconclusive = False, '', False, False
-    # A run that ends outside Python, for example at a restart, records nothing at its end. Arm the wait before the run,
-    # and let the run replace it. The receipt says that a run is in progress until then.
-    arm_inconclusive_wait(state, state_path, revision, tree, running=True)
-    write_receipt(receipt, revision, 'inconclusive', 'A gate run started and did not finish. It may still run.')
-    try:
-        code, text = run_bounded([sys.executable, str(source / 'scripts/hermes.py'), 'install', '--revision', revision],
-                                 cwd=source, timeout=HERMES_INSTALL_SECONDS)
-        if code != 0:
-            output = 'The candidate install failed before any check ran: ' + (
-                text if code is not None else f'It ran longer than {HERMES_INSTALL_SECONDS} seconds.')
-            raise RuntimeError(output)
-        # The check script writes its own result. Drop the placeholder of the start, so a missing result shows.
-        receipt.unlink(missing_ok=True)
-        # The model keys come from the credentials file, which the cache key covers. A key in the environment of the
-        # updater would win over the file, so the checks do not inherit one.
-        model_keys = module(source, 'host').MODEL_KEYS
-        code, output = run_bounded([sys.executable, str(source / 'scripts/check_hermes_candidate.py'),
-                                    '--runtime', str(source / '.runtime/hermes'), '--host-data', str(live / '.runtime/host'),
-                                    '--output', str(receipt)], cwd=source, timeout=HERMES_CHECKS_SECONDS,
-                                   env={key: value for key, value in os.environ.items() if key not in model_keys})
-        if code is None:
-            inconclusive = True
-            output += f'\nThe checks ran longer than {HERMES_CHECKS_SECONDS} seconds.'
-        result = {}
-        with contextlib.suppress(OSError, ValueError, AttributeError):
-            result = json.loads(receipt.read_text())
-            passed = code == 0 and result.get('passed') is True and result.get('hermes_sha') == revision
-            recorded = True
-        # Only a complete result with model keys and a failed check is a verdict on the pin. A missing or broken
-        # result, missing keys, a setup error, and a run in which every program passed but the script still failed,
-        # for example at its cleanup, are inconclusive, like a timeout.
-        checks = result.get('checks') if isinstance(result, dict) else None
-        if not passed and not (isinstance(checks, dict) and checks and result.get('credentials') and not result.get('error')
-                               and result.get('hermes_sha') == revision
-                               and not all(isinstance(entry, dict) and entry.get('passed') for entry in checks.values())):
-            inconclusive = True
-    except BaseException as error:
-        # The receipt is what Coconut Care reads. Name an unexpected error there too.
-        output = output or f'The gate stopped: {type(error).__name__}: {str(error)[-5000:]}'
-        inconclusive = True
-        # The run ended, also by an interrupt, so its wait starts now.
-        arm_inconclusive_wait(state, state_path, revision, tree, finished=True)
-        raise
-    finally:
-        verdict = 'passed' if passed else 'inconclusive' if inconclusive else 'failed'
-        if recorded:
-            # The receipt states the verdict itself, so a reader can tell a failed pin from checks that could not run.
-            # Its passed value follows the verdict: a pass that the gate did not accept is not a pass. The gate's own
-            # reason stays beside the script's result.
-            with contextlib.suppress(OSError, ValueError, AttributeError):
-                save(receipt, dict(json.loads(receipt.read_text()), verdict=verdict, passed=verdict == 'passed',
-                                   gate_note=gate_note(verdict, output)))
-        else:
-            write_receipt(receipt, revision, verdict, output[-20000:])
-        # The live install builds its own runtime. Free the candidate and the install caches.
-        clear_gate_folders(source)
-    if inconclusive:
-        arm_inconclusive_wait(state, state_path, revision, tree, finished=True)
-        raise RuntimeError(f'The native upgrade checks for Hermes {revision[:12]} did not finish: they timed out, or their '
-                           f'setup failed. Read {receipt}. They run again after a wait of up to a day.')
-    state.pop('hermes_inconclusive', None)
-    state['hermes_checks'] = dict(revision=revision, sha=sha, code=tree, passed=passed, checked_at=time.time())
-    save(state_path, state)
-    if not passed:
-        raise RuntimeError(f'The native upgrade checks failed for Hermes {revision[:12]}. Read {receipt}.')
-
-
-def arm_inconclusive_wait(state, state_path, revision, tree, *, running=False, finished=False):
-    """Record an inconclusive run, and how long the next run for the same pin and code waits.
-
-    running: a run starts. Count it, and keep the next run away for the whole budget of this one plus its wait.
-    finished: the run ended inconclusive. Its wait starts now, and its count stays.
-    An exception ends the run too, so this is also the record of a failed install or a crash.
-    """
-    previous = state.get('hermes_inconclusive') or {}
-    same = previous.get('revision') == revision and previous.get('code') == tree
-    attempts = previous.get('attempts', 0) + (0 if finished and same else 1) if same else 1
-    wait = min(HERMES_FAILED_RETRY_SECONDS, 3600 * 2 ** (attempts - 1))
-    budget = HERMES_INSTALL_SECONDS + HERMES_CHECKS_SECONDS if running else 0
-    state['hermes_inconclusive'] = dict(revision=revision, code=tree, attempts=attempts, retry_at=time.time() + budget + wait)
-    save(state_path, state)
-
-
-def gate_note(verdict, output):
-    """Say why the gate did not accept the result, for a reader of the receipt."""
-    if verdict == 'passed':
-        return None
-    if 'ran longer than' in output:
-        return output[output.rindex('The checks ran longer than'):][:300] if 'The checks ran longer than' in output else 'A step timed out.'
-    return 'The result is incomplete, has no model keys, names another Hermes commit, or reports a setup error.' if verdict == 'inconclusive' else 'A check failed.'
-
-
-def write_receipt(receipt, revision, verdict, output):
-    """Write the receipt for a gate run in which the check script wrote none."""
-    save(receipt, dict(revision=revision, passed=False, verdict=verdict, checked_at=time.time(), output=output))
-
-
-def credentials_digest(source, live):
-    """Return a digest of the model keys of the installed service. It covers the keys and their values, and shows neither."""
-    try:
-        keys = json.loads((live / '.runtime/host/credentials.json').read_text())
-        wanted = {name: keys[name] for name in module(source, 'host').MODEL_KEYS if isinstance(keys, dict) and name in keys}
-    except (OSError, ValueError, AttributeError):
-        return 'no-keys'
-    # An unrelated entry of the file does not change what the checks use.
-    return hashlib.sha256(json.dumps(wanted, sort_keys=True).encode()).hexdigest()[:16]
-
-
-def gate_problem(source, live):
-    """Return what stops the candidate checks before they start, or None. The checks need model keys and clean code."""
-    file = live / '.runtime/host/credentials.json'
-    try:
-        if file.is_symlink():
-            return 'The model credential file .runtime/host/credentials.json must not be a link.'
-        keys = json.loads(file.read_text())
-    except (OSError, ValueError):
-        keys = None
-    model_keys = module(source, 'host').MODEL_KEYS
-    if not isinstance(keys, dict) or not any(isinstance(keys.get(name), str) and keys[name] for name in model_keys):
-        return 'The installed service has no model keys in .runtime/host/credentials.json.'
-    if (live / '.runtime/host/credentials.json').stat().st_mode & 0o077:
-        return 'The model credential file .runtime/host/credentials.json must be private to this Mac account.'
-    listing = subprocess.run(['git', 'status', '--porcelain', '--untracked-files=all', '--', 'backend', 'scripts'],
-                             cwd=source, capture_output=True, text=True, timeout=60)
-    if listing.returncode != 0:
-        # A broken Git checkout must not start a run that the checks would refuse after the install.
-        return 'Git could not read the updater checkout: ' + (listing.stderr.strip() or 'git status failed')[:500]
-    if listing.stdout.strip():
-        return 'The updater checkout has changed or untracked files in backend or scripts: ' + listing.stdout.strip()[:1000]
-    return None
-
-
-def checked_code(source, sha):
-    """Return the Git trees of backend and scripts at the checkout, or the commit when Git cannot tell."""
-    result = subprocess.run(['git', 'rev-parse', 'HEAD:backend', 'HEAD:scripts'], cwd=source, capture_output=True,
-                            text=True, timeout=60)
-    return ' '.join(result.stdout.split()) if result.returncode == 0 else sha
-
-
-def clear_gate_folders(source):
-    """Remove what the Hermes gate wrote in .runtime of the updater checkout. Other data there stays.
-
-    The install and the checks start Hermes workers in their own sessions, and a killed run leaves them. Stop what
-    still uses the candidate runtime first: after the folder is gone, no scan can find its processes.
-    """
-    candidate = source / '.runtime/hermes'
-    if candidate.is_dir():
-        with contextlib.suppress(Exception):
-            module(source, 'check_hermes_candidate').stop_leftovers(candidate)
-    for name in HERMES_GATE_FOLDERS:
-        shutil.rmtree(source / '.runtime' / name, ignore_errors=True)
-    # A killed download leaves its temporary folder in tools. The finished uv folder appears by one rename, so it stays.
-    for partial in (source / '.runtime/tools').glob('uv-download-*'):
-        shutil.rmtree(partial, ignore_errors=True)
-
-
-def run_bounded(command, *, cwd, timeout, env=None):
-    """Run a command in its own session. Return its exit code, or None after a timeout, and its output.
-
-    The output goes to a file, not a pipe, so a process that outlives the command cannot block the updater.
-    After the command, Coconut stops its whole process group, for example uv and git below an install.
-    """
-    with tempfile.TemporaryFile(dir=cwd) as output:
-        process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
-                                   start_new_session=True)
-        try:
-            code = process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            code = None
-        finally:
-            # An interrupt of the wait must stop the child too, or the next run meets it still at work.
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
-        # Read only the tail. A command that prints for hours must not fill the memory of the updater.
-        output.seek(0, os.SEEK_END)
-        output.seek(max(0, output.tell() - 20000))
-        return code, output.read().decode(errors='replace')
-
-
-def recover_journal(source, live):
-    """Let the installer finish or roll back a pending update. It installs no package.
-
-    A failed update can leave the service stopped. deploy.py receive recovers the journal first, but the Hermes
-    candidate checks run before it and can take more than an hour, so this recovery runs before them.
-    """
-    if (live / '.runtime/deploy/update.json').exists():
-        run([sys.executable, str(source / 'scripts/deploy.py'), 'recover', '--directory', str(live.relative_to(Path.home()))])
-
-
 def update(config, state_path):
     state = json.loads(state_path.read_text()) if state_path.exists() else {}
     processed_build = state.get('pending_ios', {}).get('build')
@@ -604,25 +354,14 @@ def update(config, state_path):
     matches = marker.get('state') == 'installed' and marker.get('files') == validated.hashes
     matches = matches and all((live / name).is_file() and hashlib.sha256((live / name).read_bytes()).hexdigest() == digest
                               for name, digest in validated.hashes.items())
-    runtime_path = live / '.runtime/hermes/install.json'
-    try:
-        runtime = json.loads(runtime_path.read_text())
-    except (ValueError, OSError):
-        runtime = {}
-    if not isinstance(runtime, dict):
-        runtime = {}
-    matches = matches and runtime.get('commit') == validated.revision
     if not matches:
         address = json.loads((live / '.runtime/host/connection.json').read_text())['address']
+        # The update changes Coconut only. deploy.py runs the contract check against the person's Hermes, and restores
+        # the earlier Coconut when the new one fails on a Hermes that worked before.
         arguments = [sys.executable, str(source / 'scripts/deploy.py'), 'receive',
                      '--directory', str(live.relative_to(Path.home())), '--address', address]
-        if runtime.get('commit') != validated.revision:
-            arguments.append('--update-runtime')
     try:
         if not matches:
-            if '--update-runtime' in arguments:
-                recover_journal(source, live)
-                check_hermes_candidate(source, live, validated.revision, sha, state, state_path)
             with package.open('rb') as stream:
                 output = run(arguments, stdin=stream)
             save(state_path.parent / 'deployment-result.json', dict(source_sha=sha, output=output))
@@ -632,9 +371,6 @@ def update(config, state_path):
         address = json.loads((live / '.runtime/host/connection.json').read_text())['address']
         expected.Operations().health(live, address)
         marker = json.loads(marker_path.read_text())
-        runtime = json.loads(runtime_path.read_text())
-        if not isinstance(runtime, dict) or runtime.get('commit') != validated.revision:
-            raise RuntimeError('The installed runtime does not match the merged commit.')
         if marker.get('state') != 'installed' or marker.get('files') != validated.hashes or any(
                 hashlib.sha256((live / name).read_bytes()).hexdigest() != digest
                 for name, digest in validated.hashes.items()):

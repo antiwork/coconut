@@ -3,7 +3,9 @@
 The app uses HTTPS with certificate pinning. Routes use `/v1` unless stated otherwise.
 Authenticated requests use `Authorization: Bearer <device token>`.
 Writes require `Idempotency-Key: UUID`. Reusing a key with different input returns 409.
-Errors use `{error: string}`. UUIDs do not encode host names or filesystem paths.
+Errors use `{error: string}`. Some errors add a `code` that the phone acts on. UUIDs do not encode host names or filesystem paths.
+
+Without a usable Hermes on the Mac, the service runs in refuse mode. `/health`, `POST /pair`, and `GET /setup` still work. Every other route answers `503` with `{error, code: "hermes_unavailable", hermes}`, where `hermes` is the status that `GET /setup` returns.
 
 ## Read routes
 
@@ -30,7 +32,7 @@ Errors use `{error: string}`. UUIDs do not encode host names or filesystem paths
 - `GET /events?after=N&wait=20` returns ordered events, a cursor, and server time.
 - `GET /artifacts/{id}/content` returns authenticated artifact bytes.
 - `GET /learning` returns agreement groups by bot and action type.
-- `GET /setup` returns the account's own Hermes setup: `{found, profiles, logins, sign_ins, model, mcp_servers}`. Each profile has `id`, `name`, `soul`, `memories`, `skills`, and the `bot_id` of an earlier import. `logins` lists model API keys and `sign_ins` lists OAuth providers, as `{id, label}` pairs. `model` is the default `{model, provider}` of the setup, or null. `mcp_servers` lists `{id, transport, needs_setup}` for each MCP server in the setup's `config.yaml`. A server needs setup when it signs in with OAuth or refers to a `${NAME}` variable that the setup's `.env` does not define. The response contains no paths or secret values.
+- `GET /setup` returns the account's own Hermes setup: `{found, profiles, logins, sign_ins, model, mcp_servers}`. Each profile has `id`, `name`, `soul`, `memories`, `skills`, and the `bot_id` of an earlier import. `logins` lists model API keys and `sign_ins` lists OAuth providers, as `{id, label}` pairs. `model` is the default `{model, provider}` of the setup, or null. `mcp_servers` lists `{id, transport, needs_setup}` for each MCP server in the setup's `config.yaml`. A server needs setup when it signs in with OAuth or refers to a `${NAME}` variable that the setup's `.env` does not define. `hermes` is `{status, version, reason}` for the Hermes that Coconut runs on. `status` is `ok`, `missing`, or `incompatible`, and `fixture` for a service in fixture mode. `reason` says what to fix, or is null. The response contains no paths or secret values.
 
 The content response advertises `sync_version: 1`. The client then applies contiguous update batches and retains their cursor.
 Older servers ignore the content header. The client retains support for their full snapshots and event stream.

@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[2] / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
-import terminal
 SPEC = importlib.util.spec_from_file_location('cleanup_deployment', SCRIPTS / 'cleanup.py')
 cleanup = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cleanup)
@@ -20,8 +19,7 @@ class DeploymentCleanupTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.runtime = self.root / '.runtime'
-        for module, name, value in ((cleanup, 'ROOT', self.root), (cleanup, 'RUNTIME', self.runtime),
-                                    (terminal, 'ROOT', self.root)):
+        for module, name, value in ((cleanup, 'ROOT', self.root), (cleanup, 'RUNTIME', self.runtime)):
             replacement = patch.object(module, name, value)
             replacement.start()
             self.addCleanup(replacement.stop)
@@ -32,7 +30,10 @@ class DeploymentCleanupTests(unittest.TestCase):
             path.write_bytes(('Test ' + name).encode())
         self.plist = self.root / 'agent.plist'
         self.plist.write_text('Owned LaunchAgent.')
-        self.wrapper = terminal.install_command(self.root)
+        # The hermes command that older versions installed. Cleanup removes it.
+        self.wrapper = self.root / '.local/bin/hermes'
+        self.wrapper.parent.mkdir(parents=True)
+        self.wrapper.write_text('#!/bin/sh\n# Coconut owns this Hermes launcher.\nexec /usr/bin/python3 terminal.py launch -- "$@"\n')
         self.build = self.root / '.build/App'
         self.build.parent.mkdir()
         self.build.write_bytes(b'Keep the iOS build.')

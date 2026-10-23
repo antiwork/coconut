@@ -17,7 +17,6 @@ from uuid import UUID, uuid4
 from .worker_protocol import MAX_EVENT_CHARACTERS
 
 Emit = Callable[[str, dict], Optional[dict]]
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class ExecutionProvider(Protocol):
@@ -136,13 +135,17 @@ class HermesProvider(FixtureProvider):
     name = 'hermes'
     supports_native_outcomes = True
 
-    def __init__(self, data_dir, *, python=None, hermes_root=None, model=None, base_url=None, catalog=None):
+    def __init__(self, data_dir, *, python=None, hermes_root=None, home=None, model=None, base_url=None, catalog=None):
         super().__init__(data_dir)
-        runtime = PROJECT_ROOT / '.runtime' / 'hermes'
-        self.python = str(python or os.environ.get('COCONUT_HERMES_PYTHON') or runtime / 'venv' / 'bin' / 'python')
-        self.hermes_root = Path(hermes_root or os.environ.get('COCONUT_HERMES_ROOT') or runtime / 'source').resolve()
-        from .model_catalog import HermesModelCatalog
-        self.catalog = catalog or HermesModelCatalog(self.data_dir, python=self.python, source=self.hermes_root)
+        from .hermes_runtime import DEFAULT_HOME, configured
+        from .model_catalog import MISSING_SOURCE, HermesModelCatalog
+        # An explicit source keeps the shared home beside it, as the tests lay it out. See HermesModelCatalog.
+        if home is None:
+            home = Path(hermes_root).parent / 'terminal' if hermes_root is not None else DEFAULT_HOME
+        python, hermes_root = configured(python, hermes_root)
+        self.python = str(python or '')
+        self.hermes_root = Path(hermes_root or MISSING_SOURCE).resolve()
+        self.catalog = catalog or HermesModelCatalog(self.data_dir, python=self.python, source=self.hermes_root, home=home)
         if model:
             self.catalog.migrate_legacy_default(model, base_url)
         self._lock = threading.Lock()
@@ -525,7 +528,7 @@ class HermesProvider(FixtureProvider):
         if (self.hermes_root / '.env').exists() or (self.hermes_root / '.env').is_symlink():
             raise RuntimeError('The Hermes checkout contains a shared .env file. Use a clean checkout for Coconut.')
         if not Path(self.python).is_file() or not (self.hermes_root / 'run_agent.py').is_file():
-            raise RuntimeError('Install the Coconut Hermes runtime before starting this bot.')
+            raise RuntimeError('Install Hermes on this Mac before starting this bot.')
         bot = self.observe_bot(bot)
         timing.mark('profile_read')
         selection = self.resolve_task_model(bot, task)

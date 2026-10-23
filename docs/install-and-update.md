@@ -12,7 +12,8 @@ Source files stay in this local folder. These commands do not publish a GitHub r
 3. Enable **Remote Login** in **System Settings → General → Sharing**.
 4. Allow only the macOS account that will run Coconut.
 5. Install Xcode Command Line Tools with `xcode-select --install` if they are absent.
-6. Enable **Prevent automatic sleeping when the display is off** in Energy settings.
+6. Install Hermes with its [official installer](https://github.com/NousResearch/hermes-agent) in the same macOS account.
+7. Enable **Prevent automatic sleeping when the display is off** in Energy settings.
 
 SSH needs working key access from this development Mac. The installer uses SSH through the mini's Tailscale address.
 After saving the mini configuration, open **Connect Mac mini.command** if SSH key access is not ready.
@@ -37,8 +38,7 @@ python3 scripts/remote.py install --copy-model-access
 ```
 
 The default destination is `~/Coconut` on the mini. Configuration accepts a different folder below the remote account's home.
-The installer refuses an unrelated folder. It installs the verified Hermes version and its Python environment inside `.runtime`.
-If `uv` is absent, the Hermes installer downloads a verified copy into `.runtime`.
+The installer refuses an unrelated folder. It does not install Hermes. See [The Hermes that Coconut uses](#the-hermes-that-coconut-uses).
 
 `--copy-model-access` transfers this Mac's saved model keys through SSH. The receiver stores them with permissions `0600`.
 Omit this flag to configure separate model access on the mini.
@@ -54,16 +54,34 @@ No shell changes or onboarding step are required. Hermes profiles and other tool
 New installations start with Homebrew’s default trust. Your approved package list is not bundled or copied to another person’s installation.
 Existing trust lists require an explicit import; Coconut never merges private profile settings automatically.
 
-## Hermes in Terminal
+## The Hermes that Coconut uses
 
-The runtime stays inside `~/Coconut`. To expose its terminal command, run this once on the mini:
+Coconut runs on the Hermes that is installed in the Mac account. It does not install its own copy.
+Each time the service starts, it looks for Hermes in this order:
+
+1. `COCONUT_HERMES_PYTHON` and `COCONUT_HERMES_ROOT`, when you set them.
+2. The `hermes` command on the service's `PATH`. Coconut reads its first line to find the Python of Hermes.
+3. `~/.hermes/hermes-agent`, where the official installer puts Hermes.
+
+The service imports the Hermes modules that it uses, then runs its contract check against them. The check sends no model request and uses a temporary Hermes home.
+The service then runs under the Python of that Hermes. It saves the result in `.runtime/host/hermes.json` and checks again only when Hermes or the Coconut code changes.
+
+Without a usable Hermes, the service still starts, but it runs no bots.
+The phone can pair and read `GET /v1/setup`, which says why. Every other route answers `503` with the code `hermes_unavailable`.
+Install or update Hermes, then restart Coconut with `python3 scripts/host.py restart`.
+
+An update changes Coconut only. It runs the contract check of the new code against the installed Hermes.
+If that Hermes worked with the earlier version and fails with the new one, the update restores the earlier version.
+
+Older versions installed their own Hermes in `.runtime/hermes` and their own `~/.local/bin/hermes` command.
+The service deletes that command at its next start, but only when the file has Coconut's marker line.
+Until bots become Hermes profiles, the shared model settings of the bots stay in `.runtime/hermes/terminal/hermes`.
+To change them in Terminal, set that folder as the Hermes home:
 
 ```sh
-python3 ~/Coconut/scripts/terminal.py install-command
+HERMES_HOME="$HOME/Coconut/.runtime/hermes/terminal/hermes" hermes model
 ```
 
-The command installs `~/.local/bin/hermes`. Add `~/.local/bin` to your shell PATH if needed.
-Run `hermes` to use the managed native Terminal profile. Its model configuration supplies Coconut's shared default.
 Native Hermes owns login and credential refresh. Coconut does not copy OAuth tokens into bot profiles.
 
 ## An existing Hermes setup
@@ -72,17 +90,13 @@ Coconut reads the account's own Hermes home, `~/.hermes`, and its `profiles` fol
 After pairing, the iPhone shows what it found. Settings → Hermes setup shows the same step later.
 Each chosen profile becomes a bot with a copy of its `SOUL.md`, memory files, and skills. Sessions, settings, and secrets stay behind.
 The person can also copy the model API keys from `.env`. Coconut adds them to its default Hermes home and keeps the keys that it already has.
-Coconut does not copy OAuth sign-ins from `auth.json`. Many providers rotate refresh tokens, so two homes that share one sign-in log each other out. Sign in again in Coconut's Hermes Terminal.
+Coconut does not copy OAuth sign-ins from `auth.json`. Many providers rotate refresh tokens, so two homes that share one sign-in log each other out. Sign in again with `hermes` and Coconut's Hermes home, as in [The Hermes that Coconut uses](#the-hermes-that-coconut-uses).
 If Coconut has no default model, the iPhone offers the model of the setup. It offers the model only when Coconut's model list has the same provider route. Otherwise the person chooses a model from the list.
 The person can also add the MCP servers of the setup. Coconut adds a server only when its default Hermes home has no server with the same name. It never changes an existing server.
 Coconut copies the variables that a new server refers to, when the setup's `.env` defines them. It keeps the values that it already has.
 A server that refers to a missing variable, or signs in with OAuth, is added with `enabled: false` and needs setup.
-To finish such a server, add the variable to Coconut's Hermes `.env`, or run `hermes mcp login <name>` in Coconut's Hermes Terminal. Then remove `enabled: false` from the server in Coconut's Hermes `config.yaml`, and run `hermes mcp test <name>`.
+To finish such a server, add the variable to Coconut's Hermes `.env`, or run `hermes mcp login <name>` with Coconut's Hermes home. Then remove `enabled: false` from the server in Coconut's Hermes `config.yaml`, and run `hermes mcp test <name>`.
 Set `COCONUT_HERMES_SOURCE` to read another Hermes home. Coconut ignores a linked folder and its own Hermes homes.
-Terminal chats do not appear in Coconut.
-Run `hermes --coconut-bots` to list the app's bot profiles.
-To open a bot directly, stop Coconut first, then run `hermes --coconut-bot Ada`.
-The launcher holds the service lock while Terminal uses that bot. Restart Coconut after closing that Terminal session.
 
 ## GitHub access for a bot
 
@@ -103,7 +117,12 @@ Then verify access from the same bot's terminal:
 gh api user --jq .login
 ```
 
-To run these commands from the Mac's normal Terminal, first run `hermes --coconut-bots` to find the bot's profile ID.
+To run these commands from the Mac's normal Terminal, first find the bot's profile ID:
+
+```sh
+sqlite3 ~/Coconut/.runtime/host/coconut.sqlite3 "SELECT json_extract(data, '$.name'), id FROM bots"
+```
+
 From the Coconut folder, prefix each `gh` command with `GH_CONFIG_DIR="$PWD/.runtime/host/bots/PROFILE_ID/home/.config/gh"`.
 Replace `PROFILE_ID` with that bot's ID. Do not change the shell's `HOME` or paste a token into chat.
 If the Keychain is locked or unavailable, GitHub CLI supports `--insecure-storage`.
@@ -115,7 +134,7 @@ See [GitHub CLI authentication](https://cli.github.com/manual/gh_auth_login).
 
 Bots use `CODEX_HOME` and `GH_CONFIG_DIR` inside their existing Hermes profile directory.
 Keep these variables unchanged during login and later commands. Do not replace `HOME`.
-Claude Code uses one Mac account login for all bots and managed Hermes Terminal.
+Claude Code uses one Mac account login for all bots.
 Keep `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` unset so Claude Code and Hermes use the same native credential store.
 Claude Code settings and session history also share this account scope. Hermes instructions, memory, and workspaces remain separate.
 An update preserves old bot Claude directories. Coconut does not copy their tokens or settings into the account directory.
@@ -149,10 +168,10 @@ python3 ~/Coconut/scripts/setup_coconut.py
 The command does these steps:
 
 1. It checks for macOS and Xcode Command Line Tools.
-2. It finds the Hermes that the person already uses: the `hermes` command, or `~/.hermes/hermes-agent`. It does not install its own copy. If Hermes is missing, it stops and asks you to install Hermes first.
+2. It finds and checks the Hermes that the person already uses, as the service does at each start. See [The Hermes that Coconut uses](#the-hermes-that-coconut-uses). It does not install its own copy. If Hermes is missing or does not pass the check, it stops and says why.
 3. It checks that Tailscale is connected, then configures the host with this Mac's Tailscale name and port 8960. It keeps a port that an earlier setup chose for the same name.
 4. It prepares notification encryption with `push.py --rebuild`.
-5. It installs or starts the login service with the Hermes Python, so Coconut starts again after a restart. Then it waits for the local HTTPS health check.
+5. It installs or starts the login service, so Coconut starts again after a restart. The service runs under the Python of the Hermes that it finds. Then it waits for the local HTTPS health check.
 6. It runs `python3 scripts/pairing.py --share`. It prints the `coconut://pair` setup link and the path of a QR image that holds the same link last.
 
 Each failed check prints what to do. You can run the command again at any time. It skips the steps that are complete, and it prints a new setup link.
@@ -188,7 +207,8 @@ itself after the wait, so a failed update cannot leave the service paused. A ser
 It retains bot profiles, decisions, events, receipts, artifacts, credentials, and the certificate.
 Normal updates do not require another iPhone pairing.
 
-The updater checks Hermes imports and local HTTPS health. This development Mac then checks the mini's API through Tailscale.
+The updater runs the Hermes contract check and checks local HTTPS health. This development Mac then checks the mini's API through Tailscale.
+If the mini's Hermes worked with the earlier version and fails with the new one, the updater restores the earlier version.
 An intentionally stopped service remains stopped.
 If startup fails, the updater attempts to restore the previous source files. It never restores an older database automatically.
 An update journal retains the source backup and previous service mode if the update stops midway.
@@ -219,7 +239,7 @@ Tailscale does not provide push notifications. The mini sends encrypted alerts t
 ## Remove Coconut
 
 On the mini, open `~/Coconut/Uninstall Coconut.command`.
-The uninstaller stops the owned service and removes the runtime, keys, bots, and stored work.
+The uninstaller stops the owned service and removes the runtime, keys, bots, and stored work. Your Hermes installation stays.
 It also removes this installation's exact `hermes` launcher. Close active Hermes Terminal sessions before removal.
 Delete `~/Coconut` to remove its source files afterward.
 
