@@ -170,6 +170,16 @@ final class NoiseTests: XCTestCase {
         XCTAssertEqual(rekeys, 1)
     }
 
+    func testAnExplicitRekeyKeepsBothSidesInStep() throws {
+        let (iPhone, mac, _) = try pair()
+        let sender = TunnelSession(transport: iPhone), receiver = TunnelSession(transport: mac)
+        let rekey = try sender.seal(TunnelFrame(type: .rekey, stream: 3, flags: 1, payload: Data([1])))
+        XCTAssertEqual(rekey.count, 1)
+        XCTAssertNil(try receiver.open(rekey[0]), "The sender writes a valid REKEY frame.")
+        let ping = TunnelFrame(type: .ping, stream: 0)
+        XCTAssertEqual(try receiver.open(try sender.seal(ping)[0]), ping)
+    }
+
     func testAnInvalidRekeyFrameClosesTheSession() throws {
         var (iPhone, mac, _) = try pair()
         let receiver = TunnelSession(transport: mac)

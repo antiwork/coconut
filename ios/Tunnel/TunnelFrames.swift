@@ -121,15 +121,22 @@ final class TunnelSession {
     // Returns one ciphertext, or two when a REKEY frame must go first.
     func seal(_ frame: TunnelFrame, now: Date = Date()) throws -> [Data] {
         guard !closed else { throw NoiseError.wrongState }
+        // A REKEY frame always changes the send key, so both sides keep the same key.
+        if frame.type == .rekey { return [try sealRekey(now: now)] }
         var output: [Data] = []
         if sentSinceRekey >= Self.rekeyAfterMessages || now.timeIntervalSince(lastRekey) >= Self.rekeyAfterSeconds {
-            output.append(try sealOne(TunnelFrame(type: .rekey, stream: 0)))
-            transport.send.rekey()
-            sentSinceRekey = 0
-            lastRekey = now
+            output.append(try sealRekey(now: now))
         }
         output.append(try sealOne(frame))
         return output
+    }
+
+    private func sealRekey(now: Date) throws -> Data {
+        let ciphertext = try sealOne(TunnelFrame(type: .rekey, stream: 0))
+        transport.send.rekey()
+        sentSinceRekey = 0
+        lastRekey = now
+        return ciphertext
     }
 
     private func sealOne(_ frame: TunnelFrame) throws -> Data {
