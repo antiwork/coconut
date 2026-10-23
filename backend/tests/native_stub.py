@@ -126,6 +126,9 @@ def clear_session_vars(tokens): pass
     (source / 'tools/terminal_tool.py').write_text('''def record_session_cwd(task_id, cwd): pass
 def clear_session_cwd(task_id): pass
 ''')
+    (source / 'tools/environments').mkdir(exist_ok=True)
+    (source / 'tools/environments/__init__.py').write_text('')
+    (source / 'tools/environments/local.py').write_text('def _resolve_shell_init_files(): return []\n')
 
     (source / 'yaml.py').write_text('import json\nsafe_load = json.loads\n')
     (source / 'utils.py').write_text('import json\nfrom pathlib import Path\ndef fast_safe_load(text): return json.loads(text)\ndef atomic_yaml_write(path, data, **kwargs): Path(path).write_text(json.dumps(data))\ndef atomic_roundtrip_yaml_save(path, data): atomic_yaml_write(path, data)\n')

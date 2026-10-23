@@ -40,6 +40,9 @@ class FakeNativeCatalog:
     def resolve_runtime(self, selection, bot_id=None):
         return model_configuration(selection['model'], selection['base_url'])
 
+    def worker_limit(self):
+        return 4
+
 
 class ProviderTests(unittest.TestCase):
     def setUp(self):
@@ -163,10 +166,10 @@ class ProviderTests(unittest.TestCase):
             first, first_cwd = provider.environment(self.bot['id'])
             second, second_cwd = provider.environment(str(uuid4()))
         self.assertEqual(first['HOME'], second['HOME'])
-        self.assertNotEqual(first['CODEX_HOME'], second['CODEX_HOME'])
-        self.assertNotIn('CLAUDE_CONFIG_DIR', first)
-        self.assertNotIn('CLAUDE_CONFIG_DIR', second)
-        self.assertNotEqual(first['GH_CONFIG_DIR'], second['GH_CONFIG_DIR'])
+        # Tools use the Mac account folders. A profile .env can still select its own.
+        for key in ('CODEX_HOME', 'GH_CONFIG_DIR', 'XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR'):
+            self.assertNotIn(key, first)
+            self.assertNotIn(key, second)
         self.assertNotEqual(first_cwd, second_cwd)
         self.assertNotEqual(first['COCONUT_BROWSER_PROFILE'], second['COCONUT_BROWSER_PROFILE'])
         self.assertNotEqual(first['HOME'], first['HERMES_HOME'])
@@ -195,13 +198,11 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue(second_file.is_relative_to(self.root.resolve()))
         self.assertEqual(first_config.parent.stat().st_mode & 0o777, 0o700)
         self.assertEqual(first['HOME'], second['HOME'])
-        self.assertNotEqual(first['CODEX_HOME'], second['CODEX_HOME'])
-        self.assertNotIn('CLAUDE_CONFIG_DIR', first)
-        self.assertNotIn('CLAUDE_CONFIG_DIR', second)
-        self.assertNotEqual(first['GH_CONFIG_DIR'], second['GH_CONFIG_DIR'])
         self.assertNotEqual(first['HERMES_HOME'], second['HERMES_HOME'])
         for environment in (first, second):
-            self.assertTrue(Path(environment['XDG_CONFIG_HOME']).is_relative_to(self.root.resolve()))
+            # The service's own XDG folder does not reach the bots. Bots use the Mac account folders.
+            self.assertNotIn('XDG_CONFIG_HOME', environment)
+            self.assertNotIn('CLAUDE_CONFIG_DIR', environment)
             self.assertNotIn('HOMEBREW_NO_REQUIRE_TAP_TRUST', environment)
             self.assertNotEqual(environment['HOMEBREW_XDG_CONFIG_HOME'], environment['HOME'])
 
@@ -1125,7 +1126,6 @@ class ProviderTests(unittest.TestCase):
         provider = self.fake_hermes(f"import threading\nfrom pathlib import Path\nPath({str(started)!r}).touch()\nthreading.Event().wait()\n")
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             env, cwd = provider.environment(self.bot['id'])
-            env['COCONUT_DEFAULT_HOME'] = str(provider.catalog.root)
         from coconut.profiles import HermesProfiles
         HermesProfiles(provider.data_dir).sync(self.bot)
         worker = Path(__file__).resolve().parents[1] / 'coconut' / 'hermes_worker.py'

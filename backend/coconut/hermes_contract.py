@@ -53,6 +53,7 @@ def verify_contract():
     require_keywords(kanban_db.list_runs, {'conn', 'task_id'})
     from hermes_cli.mcp_config import _probe_single_server, _save_bearer_auth_token
     from tools.mcp_tool_config import _load_mcp_config
+    from tools.mcp_tool_common import mcp_server_enabled
     from tools.mcp_tool_lifecycle import shutdown_mcp_servers
     require_keywords(_probe_single_server, ['name', 'config', 'connect_timeout'])
     require_keywords(_save_bearer_auth_token, ['name', 'token'])
@@ -191,7 +192,7 @@ def verify_contract():
         config.load_config, config.require_readable_config_before_write, config.split_model_config_default,
         config.clear_model_endpoint_credentials, config.get_config_path, config._normalize_root_model_keys,
         models.get_default_model_for_provider, profiles.resolve_profile_env, auth.resolve_provider,
-        auth._provider_state_in, auth._load_auth_store, auth._global_auth_file_path,
+        auth._provider_state_in, auth._load_auth_store, config.require_env_writable, config.save_env_value,
         parse_reasoning_effort, resolve_reasoning_config, codex_supported_efforts,
         set_hermes_home_override, reset_hermes_home_override, atomic_roundtrip_yaml_save,
     ):
@@ -303,7 +304,7 @@ def verify_contract():
     verify_skills_contract()
 
     return {'native_terminal_path': True, 'provider_contract': 'compatible', 'tool_registration': True, 'tool_dispatch': True,
-            'native_model_effort_roundtrip': True, 'profile_inheritance': True,
+            'native_model_effort_roundtrip': True,
             'native_essential_skills': True, 'model_request_sent': False}
 
 
@@ -339,24 +340,23 @@ def verify_terminal_contract():
     import os
     from unittest.mock import patch
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from tools.environments.local import LocalEnvironment, _resolve_shell_init_files
+    from tools.environments import local
+    from tools.environments.local import LocalEnvironment
     from .terminal_setup import configure_terminal
-    from .native_settings import raw_config
     with tempfile.TemporaryDirectory(prefix='coconut-terminal-contract-') as temporary:
-        home = Path(temporary)
+        directory = Path(temporary)
+        home = directory / 'home'
+        home.mkdir()
         (home / 'config.yaml').write_text('terminal:\n  auto_source_bashrc: false\n')
         token = set_hermes_home_override(str(home))
+        original = local._resolve_shell_init_files
         try:
             with patch.dict(os.environ, {'HOME': str(home), 'HERMES_HOME': str(home), 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'}):
                 configure_terminal(home)
-                if str(home / 'coconut-terminal.sh') not in _resolve_shell_init_files():
-                    raise ValueError('Hermes did not load Coconut terminal initialization.')
-                before = (home / 'config.yaml').read_bytes()
                 configure_terminal(home)
-                if before != (home / 'config.yaml').read_bytes():
-                    raise ValueError('Terminal configuration is not idempotent.')
-                if raw_config(home)['terminal']['auto_source_bashrc'] is not False:
-                    raise ValueError('Terminal configuration changed the native startup preference.')
+                files = local._resolve_shell_init_files()
+                if files.count(str(directory / 'terminal' / 'coconut-terminal.sh')) != 1:
+                    raise ValueError('Hermes did not load Coconut terminal initialization.')
                 terminal = LocalEnvironment(cwd=str(home), timeout=10)
                 try:
                     result = terminal.execute('printf "%s" "$PATH"')
@@ -369,6 +369,7 @@ def verify_terminal_contract():
                 finally:
                     terminal.cleanup()
         finally:
+            local._resolve_shell_init_files = original
             reset_hermes_home_override(token)
 
 
@@ -432,7 +433,7 @@ def verify_parallel_work_contract():
     from unittest.mock import patch
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from tools.delegate_tool_config import _get_max_concurrent_children
-    from .parallel_work import prepare_turn, save
+    from .parallel_work import prepare_turn, save, state
     with tempfile.TemporaryDirectory(prefix='coconut-workers-contract-') as temporary:
         root = Path(temporary)
         home = root / 'bot'
@@ -442,16 +443,16 @@ def verify_parallel_work_contract():
             with patch.dict(os.environ, {'HERMES_HOME': str(home)}):
                 save(root, 6)
                 save(home, None, inherit=True)
-                prepare_turn(root)
+                prepare_turn(state(root)['effective_limit'])
                 if _get_max_concurrent_children() != 6:
-                    raise ValueError('Hermes did not use the default worker limit.')
+                    raise ValueError('Hermes did not use the worker limit of the Coconut settings.')
                 save(home, 3)
                 if _get_max_concurrent_children() != 3:
                     raise ValueError('Hermes did not use the bot worker limit.')
                 save(root, 8)
                 save(home, None, inherit=True)
-                prepare_turn(root)
+                prepare_turn(state(root)['effective_limit'])
                 if _get_max_concurrent_children() != 8:
-                    raise ValueError('Hermes did not restore the default worker limit.')
+                    raise ValueError('Hermes did not apply the changed worker limit.')
         finally:
             reset_hermes_home_override(token)

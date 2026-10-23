@@ -41,7 +41,7 @@ provider serves the stored routines, so the times leave out the Hermes process. 
 | `_routine_index` | 252 ms | 0.16 ms |
 
 - The provider keeps the routines of each bot until a file of that read changes: `cron/jobs.json`,
-  `cron/executions.db` and its WAL file, `config.yaml`, `.env`, the receipts in `coconut-runs`, or the default profile
+  `cron/executions.db` and its WAL file, `config.yaml`, `.env`, the receipts in `<data>/bots/<uuid>/runs`, or the default profile
   files. Most ticks start no Hermes process.
 - The refresh reads the tasks only when Hermes returns a completion receipt.
 - The refresh writes the routines table only when its rows change.

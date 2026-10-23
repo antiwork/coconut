@@ -132,7 +132,7 @@ def check(source, python):
             run(job, True, True)
             # Reproduce a pre-repair completion, which lacks the occurrence receipt.
             from coconut.native_routine_receipts import completion_id
-            receipt = data / 'bots' / bot['id'] / 'home/coconut-runs' / (completion_id(identity, owner) + '.json')
+            receipt = data / 'bots' / bot['id'] / 'runs' / (completion_id(identity, owner) + '.json')
             receipt.unlink()
             jobs_path = data / 'bots' / bot['id'] / 'home/cron/jobs.json'
             jobs_data = json.loads(jobs_path.read_text())

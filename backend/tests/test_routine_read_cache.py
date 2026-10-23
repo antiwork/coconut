@@ -52,9 +52,10 @@ class RoutineReadCacheTests(unittest.TestCase):
         self.provider.native_routines(self.bots)
         bot = self.bots[1]
         for name in ('cron/jobs.json', 'cron/executions.db', 'cron/executions.db-wal', 'config.yaml', '.env',
-                     'coconut-runs/job.json', 'coconut-runs/completed-1.json'):
+                     'runs/job.json', 'runs/completed-1.json'):
             with self.subTest(name=name):
-                path = self.home(bot) / name
+                # Coconut keeps the receipts beside the profile home, in its own runs folder.
+                path = (self.home(bot).parent if name.startswith('runs/') else self.home(bot)) / name
                 path.parent.mkdir(exist_ok=True)
                 path.write_text(name + ' changed')
                 self.reads.clear()

@@ -720,7 +720,8 @@ class ArchivedScheduledOriginalNativeTests(unittest.TestCase):
         from types import SimpleNamespace
         import sys
         from coconut.providers import HermesProvider
-        catalog = SimpleNamespace(root=self.home, resolve_runtime=lambda *args, **kwargs: dict(self.native))
+        catalog = SimpleNamespace(root=self.home, resolve_runtime=lambda *args, **kwargs: dict(self.native),
+                                  worker_limit=lambda: None)
         self.worker = HermesProvider(self.service.root, python=sys.executable, hermes_root=self.source, catalog=catalog)
         self.addCleanup(self.worker.close)
         self.worker.environment = lambda bot_id: ({

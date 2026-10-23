@@ -1,8 +1,7 @@
-"""Offline pinned-Hermes fallback contracts, including the missing aux handoff.
+"""Offline Hermes fallback contracts. Each profile uses its own fallback chain.
 
-The inherited-chain case records a runtime API limitation, not successful
-compression propagation. No config-reader or provider-router replacements are
-installed by these tests. Native aux_probe_mode constructs no SDK transports.
+No config-reader or provider-router replacements are installed by these tests.
+Native aux_probe_mode constructs no SDK transports.
 """
 import hashlib
 import os
@@ -44,10 +43,9 @@ def _native_case(case):
         (home / '.env').write_text(f'OPENAI_API_KEY={key}\n' if key else '')
 
     profile(owner, {'fallback_providers': [route, {'provider': 'anthropic', 'model': 'other'}]}, keys[0])
-    profile(bot, {}, keys[1])
+    profile(bot, {'fallback_providers': [route]}, keys[1])
     profile(other, {'fallback_model': dict(route, model='gpt-6-sol')}, keys[2])
     os.environ['HERMES_HOME'] = str(bot)
-    os.environ['COCONUT_DEFAULT_HOME'] = str(owner)
     os.environ['OPENAI_API_KEY'] = 'synthetic-stale-export'
     env_before = dict(os.environ)
     home_before, scope_before = get_hermes_home(), current_secret_scope()
@@ -84,16 +82,14 @@ def _native_case(case):
         for target in ('socket.socket.connect', 'socket.socket.connect_ex', 'socket.create_connection'):
             stack.enter_context(patch(target, side_effect=AssertionError('Network forbidden in fallback contracts')))
         try:
-            if case == 'inherited_api_gap':
+            if case == 'default_chain_stays_in_default_home':
+                profile(bot, {}, keys[1])
                 before = snapshot()
                 with configuration(bot):
-                    entries = entries_for_turn()
-                    assert len(entries) == 1 and entries[0]['api_key'] == keys[0]
-                    resolved(entries[0])
+                    # The chain of the default home does not reach a bot without its own chain.
+                    assert for_turn() is None
                     assert get_secret('OPENAI_API_KEY') == keys[1]
                     assert get_hermes_home() == bot
-                    # Passing this chain to AIAgent is insufficient: the aux reader
-                    # still sees the bot's empty native chain. This is the blocker.
                     assert get_fallback_chain(load_config_readonly()) == []
                     assert native_chain() == (None, None, '')
                 assert snapshot() == before
@@ -117,11 +113,11 @@ def _native_case(case):
                 profile(bot, {}, keys[1])
                 profile(owner, {'fallback_providers': [route]}, '')
                 with configuration(bot):
-                    assert for_turn() is None  # Never borrow the bot/process key.
+                    assert for_turn() is None  # The default home's chain does not reach the bot.
                     assert get_secret('OPENAI_API_KEY') == keys[1]
                 profile(owner, {'fallback_model': {'provider': 'anthropic', 'model': 'other'}}, keys[0])
                 with configuration(bot):
-                    assert for_turn() is None  # Shared scope stays OpenAI-only.
+                    assert for_turn() is None
             elif case == 'concurrent_profile_override':
                 barrier = Barrier(2)
                 before = snapshot()
@@ -142,7 +138,7 @@ def _native_case(case):
                     assert current_secret_scope() is None
 
                 with ThreadPoolExecutor(max_workers=2) as pool:
-                    futures = [pool.submit(check, bot, 'gpt-6-astra', keys[0]),
+                    futures = [pool.submit(check, bot, 'gpt-6-astra', keys[1]),
                                pool.submit(check, other, 'gpt-6-sol', keys[2])]
                     for future in futures:
                         future.result(timeout=25)
@@ -162,7 +158,7 @@ def _native_case(case):
                     assert get_hermes_home() == bot
                     assert current_secret_scope() is outer_scope
                     assert load_config_readonly() is outer_config
-                    assert entries_for_turn()[0]['api_key'] == keys[0]
+                    assert entries_for_turn()[0]['api_key'] == keys[1]
                     # Exercise a failure inside the secret resolver as well.
                     with patch('coconut.native_fallback.entry_key', side_effect=RuntimeError('synthetic lookup failure')):
                         try:
@@ -221,8 +217,8 @@ class NativeCompressionFallbackTests(unittest.TestCase):
         self.assertIn('Native fallback contract passed: ' + case, result.stdout)
         self.assertNotIn('synthetic-', result.stdout + result.stderr)
 
-    def test_shared_route_resolves_but_native_aux_chain_is_missing(self):
-        self.run_case('inherited_api_gap')
+    def test_the_default_chain_does_not_reach_a_bot(self):
+        self.run_case('default_chain_stays_in_default_home')
 
     def test_explicit_bot_chain_resolves_through_native_compression(self):
         self.run_case('explicit_native_positive')

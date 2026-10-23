@@ -39,7 +39,6 @@ def child():
         'compression': {'enabled': False}, 'auxiliary': {'background_review': {'enabled': False}}}))
     (owner / 'config.yaml').write_text('{}')
     (owner / '.env').write_text('OPENAI_API_KEY=synthetic-owner-key\n')
-    os.environ['COCONUT_DEFAULT_HOME'] = str(owner)
     memories = home / 'memories'
     memories.mkdir(exist_ok=True)
     old_rule = 'The owner performs every merge manually. Agents never merge any pull request.'

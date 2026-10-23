@@ -6,10 +6,8 @@ import sys
 
 if __package__:
     from .native_settings import raw_config, save_config
-    from .model_catalog import native_home
 else:
     from native_settings import raw_config, save_config
-    from model_catalog import native_home
 
 
 def validate_limit(value):
@@ -59,6 +57,13 @@ def save(home, limit, *, inherit=False):
     save_config(home, config)
 
 
-def prepare_turn(default_home):
-    """Use Hermes's supported fallback; explicit profile settings take precedence."""
-    os.environ['DELEGATION_MAX_CONCURRENT_CHILDREN'] = str(state(native_home(default_home))['effective_limit'])
+def prepare_turn(limit):
+    """Apply the worker limit of the Coconut settings through Hermes's supported fallback.
+
+    An explicit delegation.max_concurrent_children in the profile takes precedence.
+    """
+    validate_limit(limit)
+    if limit is None:
+        os.environ.pop('DELEGATION_MAX_CONCURRENT_CHILDREN', None)
+    else:
+        os.environ['DELEGATION_MAX_CONCURRENT_CHILDREN'] = str(limit)

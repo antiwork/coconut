@@ -1904,6 +1904,8 @@ print(parent)
             root = self.root / 'model-default'
             def resolve_runtime(self, *_, **__):
                 return dict(provider='custom', api_mode='chat_completions', base_url=address, api_key='synthetic-local')
+            def worker_limit(self):
+                return None
         Catalog.root.mkdir()
         (Catalog.root / 'config.yaml').write_text('{}')
         class Provider(HermesProvider):

@@ -50,7 +50,8 @@ class FinishedRoutineWorkspaceTests(unittest.TestCase):
         self.data = self.root / 'data'
         self.home = self.root / 'bot-home'
         self.home.mkdir()
-        catalog = SimpleNamespace(root=self.home, resolve_runtime=lambda *args, **kwargs: dict(self.native))
+        catalog = SimpleNamespace(root=self.home, resolve_runtime=lambda *args, **kwargs: dict(self.native),
+                                  worker_limit=lambda: None)
         self.provider = HermesProvider(self.data, python=sys.executable, hermes_root=self.source, catalog=catalog)
         self.addCleanup(self.provider.close)
         self.provider.environment = lambda bot_id: ({

@@ -17,6 +17,8 @@ from uuid import UUID, uuid4
 from .worker_protocol import MAX_EVENT_CHARACTERS
 
 Emit = Callable[[str, dict], Optional[dict]]
+# After a failed one-time settings step for a new bot, the next try waits this many seconds.
+SETTINGS_RETRY_SECONDS = 600
 
 
 class ExecutionProvider(Protocol):
@@ -433,7 +435,6 @@ class HermesProvider(FixtureProvider):
         if previous is not None:
             self._terminate(previous)
         env, _ = self.environment(bot['id'])
-        env['COCONUT_DEFAULT_HOME'] = str(self.catalog.root)
         env['TERMINAL_CWD'] = workspace
         env['COCONUT_WORKSPACE_ROOT'] = str(self.data_dir / 'workspaces')
         env['COCONUT_WORKSPACE_OUTCOME'] = execution_id
@@ -524,6 +525,26 @@ class HermesProvider(FixtureProvider):
         with lock:
             self._run_turn(operation, task, bot, history, emit, **extra)
 
+    def _prepare_profile(self, bot):
+        """Create the profile of a new bot. Before its first turn, give it a copy of the default settings.
+
+        The service runs the same one-time step for existing bots at its start (see settings_migration). A failed step
+        does not stop the turn: the bot then runs with its own settings only. A turn after SETTINGS_RETRY_SECONDS tries
+        again.
+        """
+        from .profiles import HermesProfiles, settings_migrated
+        profiles = HermesProfiles(self.data_dir)
+        profiles.sync(bot)
+        failed = getattr(self, '_settings_failures', {})
+        if settings_migrated(profiles.home(bot)) or time.monotonic() < failed.get(bot['id'], float('-inf')):
+            return
+        try:
+            self.native_settings('migrate', [bot])
+        except Exception:
+            # Wait before the next try, so a lasting failure does not start Hermes at every turn.
+            self._settings_failures = dict(failed, **{bot['id']: time.monotonic() + SETTINGS_RETRY_SECONDS})
+            logging.getLogger(__name__).exception('Bot %s did not get the default settings. A later turn tries again.', bot['id'])
+
     def _run_turn(self, operation, task, bot, history, emit, *, isolated=False, **extra):
         from .turn_timings import TurnTimings
         timing = TurnTimings(task['id'], 'provider')
@@ -531,22 +552,26 @@ class HermesProvider(FixtureProvider):
             raise RuntimeError('The Hermes checkout contains a shared .env file. Use a clean checkout for Coconut.')
         if not Path(self.python).is_file() or not (self.hermes_root / 'run_agent.py').is_file():
             raise RuntimeError('Install Hermes on this Mac before starting this bot.')
+        if not isolated:
+            self._prepare_profile(bot)
         bot = self.observe_bot(bot)
         timing.mark('profile_read')
         selection = self.resolve_task_model(bot, task)
         script_only = (task.get('_native_job') or {}).get('no_agent') is True
         runtime_config = None if script_only else self.catalog.resolve_runtime(selection, bot_id=bot['id'])
         timing.mark('model_resolution')
-        from .profiles import HermesProfiles
-        if not isolated:
-            HermesProfiles(self.data_dir).sync(bot)
         task_id = task['id']
         env, cwd = self.environment(bot['id'])
         timing.mark('profile_sync')
-        env['COCONUT_DEFAULT_HOME'] = str(self.catalog.root)
         request = dict(operation=operation, task=task, bot=bot, history=history,
                        model=selection['model'], provider=selection['provider'], base_url=selection.get('base_url'),
                        reasoning_effort=selection.get('reasoning_effort'), runtime_config=runtime_config, **extra)
+        from .model_catalog import ModelCatalogError
+        try:
+            request['worker_limit'] = self.catalog.worker_limit()
+        except ModelCatalogError:
+            # The worker keeps the limit of its last turn, or Hermes's own default.
+            pass
         if task.get('_kanban_external_id'):
             from .work_workspace import preferred
             from .work_capacity import execution_key

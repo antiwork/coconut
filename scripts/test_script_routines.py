@@ -10,7 +10,8 @@ sys.path[:0] = [str(code/'backend'), str(code/'backend/coconut'), str(root/'.run
 report = dict(check='native-script-routines', passed=False, model_requests=0)
 try:
     with tempfile.TemporaryDirectory(prefix='script-routines-', dir=root/'.runtime/checks') as folder:
-        home = Path(folder)
+        home = Path(folder)/'home'
+        home.mkdir()
         os.environ['HERMES_HOME'] = str(home)
         (home/'config.yaml').write_text('model:\n  default: unavailable-model\n  provider: unavailable-provider\n')
         scripts = home/'scripts'
