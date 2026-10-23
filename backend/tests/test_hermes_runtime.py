@@ -137,6 +137,17 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(found[0], Path('/opt/hermes/venv/bin/python'))
         self.assertNotIn(Path('/usr/bin/python3'), found)
 
+    def test_a_wrapper_with_a_quoted_path_reaches_the_launcher(self):
+        folder = self.home / 'Hermes Agent' / "it's here"
+        folder.mkdir(parents=True)
+        (folder / 'hermes').write_text('#!/opt/hermes/venv/bin/python\n')
+        quoted = folder.as_posix().replace("'", "'\\''")
+        escaped = folder.as_posix().replace(' ', '\\ ').replace("'", "\\'")
+        for line in (f'exec "{folder}/hermes" "$@"', f"exec '{quoted}/hermes' \"$@\"", f'exec {escaped}/hermes "$@"'):
+            with self.subTest(line=line):
+                command = self.command(f'#!/bin/sh\n{line}\n')
+                self.assertEqual(hermes_runtime.launcher_target(command), (Path('/opt/hermes/venv/bin/python'), None))
+
     def test_a_long_interpreter_path_in_a_shell_wrapper_is_read(self):
         command = self.command("#!/bin/sh\n'''exec' \"/very/long/hermes/venv/bin/python\" \"$0\" \"$@\"\n' '''\nimport sys\n")
         self.assertEqual(hermes_runtime.launcher_target(command), (Path('/very/long/hermes/venv/bin/python'), None))

@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -151,6 +152,20 @@ def source_pythons(root: Path, environ=None, home=None) -> list:
     return found + ([committed] if committed else [])
 
 
+def wrapper_target(text: str) -> Path | None:
+    """Return the program of a line `exec PROGRAM "$@"`, read with the quoting rules of the shell."""
+    for line in text.splitlines():
+        if not line.lstrip().startswith('exec '):
+            continue
+        try:
+            words = shlex.split(line)
+        except ValueError:
+            continue
+        if len(words) == 3 and words[0] == 'exec' and words[2] == '$@' and words[1].startswith('/'):
+            return Path(words[1])
+    return None
+
+
 def launcher_target(command: Path, environ=None, home=None, depth: int = 0) -> tuple[Path, Path | None] | None:
     """Return (Python, source folder or None) for a `hermes` command, or None for Coconut's own launcher."""
     try:
@@ -177,9 +192,9 @@ def launcher_target(command: Path, environ=None, home=None, depth: int = 0) -> t
             pythons = source_pythons(root, environ, home)
             return (pythons[0], root) if pythons else None
         # A wrapper, such as ~/.local/bin/hermes of the official installer, runs the next launcher.
-        match = re.search(r"""^exec ['"]?(/[^'"\s]+)['"]? "\$@"\s*$""", text, re.MULTILINE)
-        if match and depth < 4:
-            return launcher_target(Path(match[1]), environ, home, depth + 1)
+        target = wrapper_target(text)
+        if target is not None and depth < 4:
+            return launcher_target(target, environ, home, depth + 1)
     elif words:
         return Path(words[0]), None
     # A console script of a virtual environment sits beside the Python of that environment.
