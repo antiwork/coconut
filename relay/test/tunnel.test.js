@@ -210,6 +210,32 @@ test('a pairing ticket works once and expires', async t => {
   assert.equal((await connect(route, 'client', `Ticket ${late}`)).status, 401);
 });
 
+test('a full route keeps the pairing ticket', async t => {
+  const { connect, route, host, client } = await tunnel(t);
+  const phones = [];
+  for (let i = 0; i < 8; i++) phones.push(await client());
+  const ticket = token();
+  host.send(control({ type: 'add_ticket', hash: hash(ticket), ttl: 600 }));
+  await settle(host);
+  assert.equal((await connect(route, 'client', `Ticket ${ticket}`)).status, 429);
+  phones[0].ws.close();
+  await phones[0].closed();
+  assert.deepEqual(await host.control(), { type: 'closed', id: phones[0].channel });
+  assert.equal((await connect(route, 'client', `Ticket ${ticket}`)).status, 101);
+});
+
+test('registration refuses a body over 1 KB', async t => {
+  const r = await relay(t);
+  const body = new ReadableStream({ start(controller) {
+    controller.enqueue(new TextEncoder().encode(`{"route":"${token()}","pad":"`));
+    controller.enqueue(new TextEncoder().encode('x'.repeat(2000)));
+    controller.enqueue(new TextEncoder().encode('"}'));
+    controller.close();
+  } });
+  const response = await r.runtime.dispatchFetch('https://relay.test/v1/tunnels', { method: 'POST', body, duplex: 'half' });
+  assert.equal(response.status, 413);
+});
+
 test('a removed client token can no longer connect and its channels close', async t => {
   const { connect, route, host, clientToken, client } = await tunnel(t);
   const phone = await client();
@@ -251,13 +277,15 @@ test('clients get mac_offline when no host is connected', async t => {
 });
 
 test('a route allows 3,000 frames a minute', async t => {
+  // The setup messages count too, so start the setup and the loop in the same minute.
+  if (Date.now() % 60000 > 40000) await new Promise(resolve => setTimeout(resolve, 60100 - Date.now() % 60000));
+  const minute = Math.floor(Date.now() / 60000);
   const { host, client } = await tunnel(t);
   const phone = await client();
-  // The first test minute may end during the loop, so stay clear of a minute boundary.
-  if (Date.now() % 60000 > 50000) await new Promise(resolve => setTimeout(resolve, 60000 - Date.now() % 60000));
   // The add_client and barrier control messages and the 2,998 frames below fill the minute's limit.
   for (let i = 0; i < 2998; i++) phone.send(new Uint8Array([1]));
   for (let i = 0; i < 2998; i++) await host.next();
+  assert.equal(Math.floor(Date.now() / 60000), minute);
   phone.send(new Uint8Array([2]));
   assert.equal((await phone.closed()).code, 1013);
 });

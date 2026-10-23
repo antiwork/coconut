@@ -50,15 +50,30 @@ const control = value => {
 const close = (ws, code, reason) => { try { ws.close(code, reason); } catch {} };
 const send = (ws, data) => { try { ws.send(data); } catch {} };
 
+// Reads the body as a stream and stops at the cap. It returns null for a larger body.
+async function readCapped(request, limit) {
+  if (Number(request.headers.get('content-length') || 0) > limit) return null;
+  if (!request.body) return '';
+  const reader = request.body.getReader(), chunks = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > limit) { await reader.cancel(); return null; }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 // Handles the tunnel routes of the Worker. It returns null for any other path.
 export async function handleTunnel(request, env) {
   const path = new URL(request.url).pathname;
   const ip = request.headers.get('cf-connecting-ip') || 'unknown';
   if (path === '/v1/tunnels' && request.method === 'POST') {
     if (!(await env.TUNNEL_REGISTER.limit({ key: ip })).success) return new Response(null, { status: 429 });
-    if (Number(request.headers.get('content-length') || 0) > 1024) return new Response(null, { status: 413 });
-    const text = await request.text();
-    if (text.length > 1024) return new Response(null, { status: 413 });
+    const text = await readCapped(request, 1024);
+    if (text === null) return new Response(null, { status: 413 });
     let route;
     try { route = JSON.parse(text).route; } catch { return new Response(null, { status: 400 }); }
     if (typeof route !== 'string' || !HEX64.test(route)) return new Response(null, { status: 400 });
@@ -145,10 +160,12 @@ export class Tunnel {
     if (scheme === 'Bearer' && this.sql.exec('SELECT 1 FROM clients WHERE hash = ?', digest).toArray().length) auth = 'token';
     if (scheme === 'Ticket') {
       this.sql.exec('DELETE FROM tickets WHERE expires <= ?', now);
-      if (this.sql.exec('DELETE FROM tickets WHERE hash = ? RETURNING hash', digest).toArray().length) auth = 'ticket';
+      if (this.sql.exec('SELECT 1 FROM tickets WHERE hash = ?', digest).toArray().length) auth = 'ticket';
     }
     if (!auth) return new Response(null, { status: 401 });
     if (this.clients().length >= MAX_CHANNELS) return new Response(null, { status: 429 });
+    // A full route keeps the ticket, so the iPhone can pair after a channel closes.
+    if (auth === 'ticket') this.sql.exec('DELETE FROM tickets WHERE hash = ?', digest);
     const channel = this.meta('next_channel') || 1;
     this.setMeta('next_channel', channel >= 0xffffffff ? 1 : channel + 1);
     const [client, server] = Object.values(new WebSocketPair());
