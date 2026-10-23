@@ -139,11 +139,31 @@ The QR contains the Mac address, certificate fingerprint, and a one-time code. I
 
 ### Pair through Hermes
 
-A person who already uses Hermes can pair without this repository. Onboarding shows a message to send to the Hermes agent. The agent installs and starts Coconut on its Mac, then runs `python3 scripts/pairing.py --share`.
-That command prints a `coconut://pair` setup link and the path of a QR image that holds the same link, so the agent can send both. On the same iPhone, the person taps the link. On another screen, the person scans the QR image in Coconut.
+A person who already uses Hermes can pair without this repository. Onboarding shows a message to send to the Hermes agent.
+The message tells the agent to clone this repository to `~/Coconut` if it is missing, then to run one command on its Mac:
+
+```sh
+python3 ~/Coconut/scripts/setup_coconut.py
+```
+
+The command does these steps:
+
+1. It checks for macOS and Xcode Command Line Tools.
+2. It finds the Hermes that the person already uses: the `hermes` command, or `~/.hermes/hermes-agent`. It does not install its own copy. If Hermes is missing, it stops and asks you to install Hermes first.
+3. It checks that Tailscale is connected, then configures the host with this Mac's Tailscale name and port 8960. It keeps a port that an earlier setup chose for the same name.
+4. It prepares notification encryption with `push.py --rebuild`.
+5. It installs or starts the login service with the Hermes Python, so Coconut starts again after a restart. Then it waits for the local HTTPS health check.
+6. It runs `python3 scripts/pairing.py --share`. It prints the `coconut://pair` setup link and the path of a QR image that holds the same link last.
+
+Each failed check prints what to do. You can run the command again at any time. It skips the steps that are complete, and it prints a new setup link.
+If the Tailscale name changes, the command stops Coconut before it saves the new address. Every paired iPhone must then pair again.
+If the certificate does not cover the new name, the command stops and prints how to replace the certificate.
+The iPhone needs Tailscale, signed in to the same tailnet as the Mac.
+
+The agent sends the link and the QR image to the person. On the same iPhone, the person taps the link. On another screen, the person scans the QR image in Coconut.
 The link and the image contain the one-time code. Send them only to the person who pairs.
 If the iPhone already has a pairing, Coconut asks before it replaces it.
-The code expires after five minutes. Open the launcher again if it expires.
+The code expires after five minutes. If it expires, open the launcher or run the command again.
 The app validates HTTPS and the certificate before it sends the code.
 
 If no mini configuration exists, the launcher pairs with this development Mac instead.
