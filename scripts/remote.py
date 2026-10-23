@@ -67,6 +67,8 @@ def source_files() -> dict[str, bytes]:
     candidates.append(ROOT / "backend/coconut/hermes_versions.json")
     candidates += list((ROOT / "scripts").glob("*.py"))
     candidates += list((ROOT / "scripts").glob("*.swift"))
+    # The tunnel sidecar compiles the shared Noise and frame code with scripts/tunnel-sidecar.swift.
+    candidates += list((ROOT / "ios/Tunnel").glob("*.swift"))
     candidates += list((ROOT / "docs").rglob("*.md"))
     files = {}
     for path in sorted(candidates):

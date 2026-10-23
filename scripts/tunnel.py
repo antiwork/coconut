@@ -27,11 +27,15 @@ def tunnel_directory(data_dir: Path) -> Path:
     return directory
 
 
-def build(data_dir: Path) -> Path:
-    """Compile the sidecar into <data>/tunnel when its sources changed."""
+def compile_sidecar(data_dir: Path) -> bool:
+    """Compile the sidecar into <data>/tunnel when its sources changed. Return True when it compiled."""
     directory = tunnel_directory(data_dir)
-    compile_swift(SOURCES, directory / 'tunnel-sidecar', directory / 'sidecar.sha256')
-    return directory / 'tunnel-sidecar'
+    return compile_swift(SOURCES, directory / 'tunnel-sidecar', directory / 'sidecar.sha256')
+
+
+def build(data_dir: Path) -> Path:
+    compile_sidecar(data_dir)
+    return data_dir.resolve() / 'tunnel/tunnel-sidecar'
 
 
 def setup(data_dir: Path, relay: str) -> dict:
@@ -73,6 +77,27 @@ def install(data_dir: Path, relay: str) -> None:
     print(f'Installed {LABEL}. This Mac uses route {route["route"][:8]}… on {route["relay"]}.')
 
 
+def loaded() -> bool:
+    return launchctl('print', f'gui/{os.getuid()}/{LABEL}').returncode == 0
+
+
+def rebuild(data_dir: Path) -> None:
+    """The deploy step: rebuild an installed sidecar when its sources changed, and restart it.
+
+    A Mac without a route or without the loaded LaunchAgent stays without the sidecar. The pairing flow or setup
+    installs it.
+    """
+    if not (data_dir.resolve() / 'tunnel/route.json').is_file() or not loaded():
+        print('The tunnel sidecar is not installed. Nothing to rebuild.')
+        return
+    if not compile_sidecar(data_dir):
+        print('The tunnel sidecar is up to date.')
+        return
+    if launchctl('kickstart', '-k', f'gui/{os.getuid()}/{LABEL}').returncode:
+        raise SystemExit('The tunnel sidecar was rebuilt, but launchctl did not restart it.')
+    print('Rebuilt and restarted the tunnel sidecar.')
+
+
 def uninstall() -> None:
     launchctl('bootout', f'gui/{os.getuid()}/{LABEL}')
     agent_path().unlink(missing_ok=True)
@@ -93,13 +118,15 @@ def status(data_dir: Path) -> dict:
 def main() -> None:
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['build', 'install', 'uninstall', 'status'])
+    parser.add_argument('command', choices=['build', 'rebuild', 'install', 'uninstall', 'status'])
     parser.add_argument('--data-dir', type=Path, default=DEFAULT_DATA)
     parser.add_argument('--relay', default=RELAY_URL)
     args = parser.parse_args()
     try:
         if args.command == 'build':
             print(build(args.data_dir))
+        elif args.command == 'rebuild':
+            rebuild(args.data_dir)
         elif args.command == 'install':
             install(args.data_dir, args.relay)
         elif args.command == 'uninstall':

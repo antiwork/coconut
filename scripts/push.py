@@ -14,10 +14,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def compile_swift(sources, binary, receipt):
-    """Compile the Swift sources into binary, unless the receipt holds the fingerprint of the same sources."""
+    """Compile the Swift sources into binary, unless the receipt holds the fingerprint of the same sources.
+
+    Return True when it compiled a new binary.
+    """
     fingerprint = hashlib.sha256(b''.join(source.read_bytes() for source in sources)).hexdigest()
     if binary.is_file() and receipt.is_file() and receipt.read_text() == fingerprint:
-        return
+        return False
     with tempfile.TemporaryDirectory(dir=binary.parent) as temp:
         output = Path(temp) / binary.name
         subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-O', *map(str, sources), '-o', str(output)], check=True)
@@ -25,6 +28,7 @@ def compile_swift(sources, binary, receipt):
         os.replace(output, binary)
     receipt.write_text(fingerprint)
     receipt.chmod(0o600)
+    return True
 
 
 def build_encryption(directory):

@@ -76,6 +76,7 @@ def allowed_path(name):
                  'Uninstall Coconut.command'}
         or re.fullmatch(r'backend/coconut/(?:[A-Za-z_][A-Za-z0-9_]*/)*[A-Za-z_][A-Za-z0-9_]*\.py', name)
         or re.fullmatch(r'scripts/[A-Za-z0-9_-]+\.(?:py|swift)', name)
+        or re.fullmatch(r'ios/Tunnel/[A-Za-z0-9_-]+\.swift', name)
         or re.fullmatch(r'docs/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.md', name)
     )
 
@@ -354,6 +355,8 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
 
     def prepare(self, root, address, package):
         self.command([sys.executable, str(root / 'scripts/push.py'), '--rebuild'], root, 'Notification encryption build')
+        # An installed tunnel sidecar gets the new code. A Mac without it stays without it.
+        self.command([sys.executable, str(root / 'scripts/tunnel.py'), 'rebuild'], root, 'Tunnel sidecar build')
         cert, key = root / '.runtime/host/server.crt', root / '.runtime/host/server.key'
         if not cert.exists() and not key.exists():
             self.command([sys.executable, str(root / 'scripts/host.py'), 'setup', '--address', address], root, 'Secure host setup')
