@@ -396,6 +396,8 @@ class HermesModelCatalog:
         environment = dict(self.env)
         from .runtime_environment import prepare_profile
         environment.update(prepare_profile(self.private_home))
+        from .hermes_runtime import NO_LAZY_INSTALLS
+        environment.update(NO_LAZY_INSTALLS)
         environment.update(HERMES_HOME=str(self.root), PYTHONPATH=str(self.source),
                            TMPDIR=str(self.private_home / 'tmp'), HERMES_DISABLE_TELEMETRY='1',
                            PYTHONUNBUFFERED='1')

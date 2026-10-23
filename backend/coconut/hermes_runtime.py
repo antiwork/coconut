@@ -27,32 +27,53 @@ LAUNCHER_MARKER = b'Coconut owns this Hermes launcher.'
 MODULES = 'run_agent, hermes_cli, hermes_state, cron, tools, agent, gateway, dotenv, ruamel.yaml, mcp, PIL'
 INSTALL_HINT = 'Install Hermes from https://github.com/NousResearch/hermes-agent.'
 STATUS_FILE = 'hermes.json'
+# Coconut gives each bot its own HERMES_HOME. Without this setting, Hermes from the official installer treats each such
+# home as a new data root and installs a dependency set for it when a process starts.
+NO_LAZY_INSTALLS = {'HERMES_DISABLE_LAZY_INSTALLS': '1'}
 PROBE_SECONDS = 60
 CONTRACT_SECONDS = 300
 # The probe and the check get these variables from the service environment. Model keys stay out.
 ENVIRONMENT_KEYS = ('PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'SSL_CERT_FILE', 'SSL_CERT_DIR')
 
+# argv[1] is the Hermes source folder, or empty. It comes first on sys.path, as the `hermes` launcher puts it, because the
+# dependency environment of the official installer loads Hermes from a build copy without the bundled skills.
 PROBE = (
-    'import importlib.metadata, json, os, sysconfig\n'
+    'import importlib.metadata, json, os, sys, sysconfig\n'
+    'if sys.argv[1]:\n'
+    '    sys.path.insert(0, sys.argv[1])\n'
     'import ' + MODULES + '\n'
+    'version = None\n'
     'try:\n'
-    '    version = importlib.metadata.version("hermes-agent")\n'
-    'except importlib.metadata.PackageNotFoundError:\n'
-    '    version = None\n'
+    '    from hermes_cli.version_info import get_version_info\n'
+    '    info = get_version_info()\n'
+    '    version = info.base_version if info.base_version not in (None, "", "unknown") else info.derived_version\n'
+    'except Exception:\n'
+    '    pass\n'
+    'if not version:\n'
+    '    try:\n'
+    '        version = importlib.metadata.version("hermes-agent")\n'
+    '    except importlib.metadata.PackageNotFoundError:\n'
+    '        pass\n'
     'print(json.dumps({"root": os.path.dirname(os.path.realpath(run_agent.__file__)), "version": version,\n'
     '                  "packages": sysconfig.get_path("purelib")}))\n'
 )
 
+# argv[1] is Coconut's backend folder. argv[2] is the Hermes source folder, or empty, as for PROBE.
 CONTRACT = '''import json
 import sys
 def no_network(event, arguments):
     if event in {'socket.connect', 'socket.getaddrinfo'}:
         raise RuntimeError('The Hermes contract check cannot use the network.')
 sys.addaudithook(no_network)
+if sys.argv[2]:
+    sys.path.insert(0, sys.argv[2])
 sys.path.insert(0, sys.argv[1])
 from coconut.hermes_contract import verify_contract
 print(json.dumps(verify_contract()))
 '''
+# Coconut reads one variable from the person's login shell. A LaunchAgent does not get the shell's variables.
+SHELL_MARK = '__COCONUT_SHELL_VALUE__'
+_shell_values: dict = {}
 
 
 class HermesUnavailable(Exception):
@@ -80,16 +101,61 @@ class HermesRuntime:
         return {'python': str(self.python), 'root': str(self.root), 'version': self.version, 'home': str(self.home)}
 
 
-def hermes_home(environ=None, home=None) -> Path:
+def login_shell_value(name: str, environ=None) -> str:
+    """Return a variable that the person's login shell sets, for example in ~/.zprofile, or an empty string."""
     environ = os.environ if environ is None else environ
-    return Path(environ.get('HERMES_HOME') or Path(home or Path.home()) / '.hermes').expanduser()
+    shell = environ.get('SHELL') or ('/bin/zsh' if Path('/bin/zsh').exists() else '/bin/sh')
+    environment = {key: environ[key] for key in ('HOME', 'USER', 'LOGNAME', 'PATH') if environ.get(key)}
+    key = (shell, environment.get('HOME'), name)
+    if key not in _shell_values:
+        value = ''
+        try:
+            result = subprocess.run([shell, '-l', '-c', f'printf "\\n{SHELL_MARK}%s{SHELL_MARK}\\n" "${name}"'],
+                                    env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+            match = re.search(SHELL_MARK + '(.*)' + SHELL_MARK, result.stdout)
+            value = match[1] if match else ''
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        _shell_values[key] = value
+    return _shell_values[key]
 
 
-def launcher_python(command: Path) -> Path | None:
-    """Return the Python that a `hermes` console script runs, or None for Coconut's own launcher."""
+def hermes_home(environ=None, home=None) -> Path:
+    """The person's Hermes home: HERMES_HOME, then HERMES_HOME of the login shell, then ~/.hermes."""
+    environ = os.environ if environ is None else environ
+    value = environ.get('HERMES_HOME') or login_shell_value('HERMES_HOME', environ)
+    return Path(value or Path(home or Path.home()) / '.hermes').expanduser()
+
+
+def committed_python(root: Path, homes) -> Path | None:
+    """Return the Python of the dependency environment that the official installer committed for a source folder.
+
+    The installer keeps it in <Hermes home>/installs/<first 16 hex digits of sha256(source folder)>/facts.json.
+    """
+    key = hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]
+    for folder in dict.fromkeys(homes):
+        try:
+            facts = json.loads((folder / 'installs' / key / 'facts.json').read_text(encoding='utf-8-sig'))
+            python = Path(facts['packages']['venv']['environment']) / 'bin/python'
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if python.is_file():
+            return python
+    return None
+
+
+def source_pythons(root: Path, environ=None, home=None) -> list:
+    """The Pythons that can run a Hermes source folder: its own venv, or the installer's dependency environment."""
+    found = [root / name / 'bin/python' for name in ('venv', '.venv') if (root / name / 'bin/python').is_file()]
+    committed = committed_python(root, (hermes_home(environ, home), root.parent, Path(home or Path.home()) / '.hermes'))
+    return found + ([committed] if committed else [])
+
+
+def launcher_target(command: Path, environ=None, home=None, depth: int = 0) -> tuple[Path, Path | None] | None:
+    """Return (Python, source folder or None) for a `hermes` command, or None for Coconut's own launcher."""
     try:
         with command.resolve().open('rb') as handle:
-            head = handle.read(4096)
+            head = handle.read(262144)
     except OSError:
         return None
     if LAUNCHER_MARKER in head:
@@ -98,20 +164,30 @@ def launcher_python(command: Path) -> Path | None:
     words = text[2:].splitlines()[0].split() if head.startswith(b'#!') else []
     if words and Path(words[0]).name == 'env' and len(words) > 1:
         found = shutil.which(words[1])
-        return Path(found) if found else None
+        return (Path(found), None) if found else None
     if words and Path(words[0]).name == 'sh':
         # pip writes this form when the interpreter path is too long for a shebang line.
         match = re.search(r"""^'''exec' ['"]?([^'"\n]+?)['"]? "\$0" "\$@"$""", text, re.MULTILINE)
         if match:
-            return Path(match[1])
+            return Path(match[1]), None
+        # The official installer's launcher runs its own Python with the source folder first on sys.path.
+        match = re.search(r"""sys\.path\.insert\(0, (?:'"'"')?(/[^'"]+?)(?:'"'"')?\)""", text)
+        if match:
+            root = Path(match[1])
+            pythons = source_pythons(root, environ, home)
+            return (pythons[0], root) if pythons else None
+        # A wrapper, such as ~/.local/bin/hermes of the official installer, runs the next launcher.
+        match = re.search(r"""^exec ['"]?(/[^'"\s]+)['"]? "\$@"\s*$""", text, re.MULTILINE)
+        if match and depth < 4:
+            return launcher_target(Path(match[1]), environ, home, depth + 1)
     elif words:
-        return Path(words[0])
+        return Path(words[0]), None
     # A console script of a virtual environment sits beside the Python of that environment.
     sibling = command.resolve().parent / 'python'
-    return sibling if sibling.is_file() else None
+    return (sibling, None) if sibling.is_file() else None
 
 
-def candidates(environ=None, home=None) -> list[tuple[Path, Path | None, bool]]:
+def candidates(environ=None, home=None) -> list:
     """List (python, expected root, explicit) in search order. Nothing here runs Hermes."""
     environ = os.environ if environ is None else environ
     home = Path(home or Path.home())
@@ -122,20 +198,23 @@ def candidates(environ=None, home=None) -> list[tuple[Path, Path | None, bool]]:
         if python:
             found.append((Path(python).expanduser(), root, True))
         else:
-            found.extend((root / name / 'bin/python', root, True) for name in ('venv', '.venv'))
+            pythons = source_pythons(root, environ, home) or [root / 'venv/bin/python']
+            found.extend((python, root, True) for python in pythons)
     # As the shell does, the first `hermes` on PATH counts. Coconut's old launcher can come first, so the search goes on.
     for folder in environ.get('PATH', os.defpath).split(os.pathsep):
         command = shutil.which('hermes', path=folder) if folder else None
-        python = launcher_python(Path(command)) if command else None
-        if python is not None:
-            found.append((python, None, False))
+        target = launcher_target(Path(command), environ, home) if command else None
+        if target is not None:
+            found.append((*target, False))
             break
     source = home / '.hermes/hermes-agent'
-    found.extend((source / name / 'bin/python', source, False) for name in ('venv', '.venv'))
+    found.extend((python, source, False) for python in source_pythons(source, environ, home))
     result, seen = [], set()
+    private = [PROJECT_ROOT / '.runtime/hermes' / name for name in ('venv', 'source')]
     for python, root, explicit in found:
-        # The private runtime that older Coconut versions installed is not the person's Hermes.
-        if not explicit and PROJECT_ROOT / '.runtime' in python.absolute().parents:
+        # The private runtime that older Coconut versions installed is not the person's Hermes. The person's own Hermes
+        # home can sit in .runtime/hermes/terminal, where older versions kept the shared home of the bots.
+        if not explicit and any(folder in python.absolute().parents for folder in private):
             continue
         if str(python) not in seen:
             seen.add(str(python))
@@ -172,6 +251,7 @@ def isolated(environ=None):
         folder = Path(temporary)
         (folder / 'home').mkdir()
         environment = {key: environ[key] for key in ENVIRONMENT_KEYS if environ.get(key)}
+        environment.update(NO_LAZY_INSTALLS)
         environment.update(HERMES_HOME=str(folder / 'home'), TMPDIR=temporary, HERMES_DISABLE_TELEMETRY='1',
                            PYTHONUNBUFFERED='1')
         yield environment, folder
@@ -182,11 +262,11 @@ def last_line(text: str) -> str:
     return (lines[-1] if lines else 'No error output.')[-500:]
 
 
-def probe(python: Path, environ=None, timeout: float = PROBE_SECONDS) -> dict:
+def probe(python: Path, environ=None, timeout: float = PROBE_SECONDS, root: Path | None = None) -> dict:
     """Import the Hermes modules that Coconut uses in an isolated interpreter. Return the root and the version."""
     with isolated(environ) as (environment, folder):
         try:
-            result = subprocess.run([str(python), '-I', '-B', '-c', PROBE], cwd=folder, env=environment,
+            result = subprocess.run([str(python), '-I', '-B', '-c', PROBE, str(root or '')], cwd=folder, env=environment,
                                     stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             raise HermesUnavailable('incompatible', f'Hermes did not load within {timeout:.0f} seconds.') from None
@@ -244,7 +324,7 @@ def find(environ=None, home=None, timeout: float = PROBE_SECONDS) -> HermesRunti
                 raise problem or HermesUnavailable('incompatible', 'COCONUT_HERMES_PYTHON or COCONUT_HERMES_ROOT names no Hermes Python.')
             continue
         try:
-            info = probe(python, environ, timeout)
+            info = probe(python, environ, timeout, root)
             found = Path(info['root'])
             if root is not None and found.resolve() != root.resolve():
                 raise HermesUnavailable('incompatible', 'The Hermes Python loads Hermes from another folder than its source folder.')
@@ -268,7 +348,8 @@ def check(runtime: HermesRuntime, environ=None, timeout: float = CONTRACT_SECOND
     """Run Coconut's contract check against the Hermes. It sends no model request and uses a temporary home."""
     with isolated(environ) as (environment, folder):
         try:
-            result = subprocess.run([str(runtime.python), '-I', '-B', '-c', CONTRACT, str(BACKEND)], cwd=folder,
+            result = subprocess.run([str(runtime.python), '-I', '-B', '-c', CONTRACT, str(BACKEND), str(runtime.root)],
+                                    cwd=folder,
                                     env=environment, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                                     timeout=timeout)
         except subprocess.TimeoutExpired:

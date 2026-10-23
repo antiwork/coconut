@@ -412,6 +412,8 @@ class HermesProvider(FixtureProvider):
         env.update(prepare_profile(root / 'home'))
         env['COCONUT_GOOGLE_HOME'] = str(self.data_dir / 'connections' / 'google' / 'home')
         env.update(HERMES_HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), PYTHONPATH=str(self.hermes_root), PYTHONUNBUFFERED='1', COCONUT_BROWSER_PROFILE=str(root / 'browser'), HERMES_DISABLE_TELEMETRY='1', HOMEBREW_XDG_CONFIG_HOME=str(shared_config))
+        from .hermes_runtime import NO_LAZY_INSTALLS
+        env.update(NO_LAZY_INSTALLS)
         env.update(HERMES_KANBAN_DB=str(self.data_dir / 'kanban/kanban.db'),
                    HERMES_KANBAN_BOARD='default', HERMES_TENANT=bot_id,
                    HERMES_KANBAN_WORKSPACES_ROOT=str(self.data_dir / 'kanban/kanban/workspaces'))

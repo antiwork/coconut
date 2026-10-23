@@ -330,6 +330,11 @@ def main(argv=None):
         else:
             hermes = hermes_status(args.data_dir, sys.argv[1:] if argv is None else argv)
             if hermes['status'] == 'ok':
+                # The service imports some Hermes modules itself. Like the workers, it loads them from the checked source
+                # folder, not from a build copy in the installer's dependency environment.
+                if hermes['root'] not in sys.path:
+                    sys.path.insert(1, hermes['root'])
+                os.environ.update(hermes_runtime.NO_LAZY_INSTALLS)
                 provider = HermesProvider(args.data_dir, python=hermes['python'], hermes_root=hermes['root'],
                                           home=hermes_runtime.DEFAULT_HOME)
                 service = Service(args.data_dir, provider, start_workers=False)

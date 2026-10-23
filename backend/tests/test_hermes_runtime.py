@@ -1,4 +1,5 @@
 """Coconut finds the person's own Hermes, checks it, and refuses cleanly without it."""
+import hashlib
 import http.client
 import json
 import os
@@ -20,25 +21,29 @@ MODULES = ('run_agent', 'hermes_cli', 'hermes_state', 'cron', 'tools', 'agent', 
            'mcp', 'PIL')
 
 
-def make_hermes(root: Path, *, missing=()) -> Path:
+def make_hermes(root: Path, *, missing=(), venv: Path | None = None) -> Path:
     """Create a Hermes source folder with a virtual environment, as the Hermes installer lays it out.
 
-    The environment holds empty modules with the names that Coconut imports. Return its Python.
+    The environment holds empty modules with the names that Coconut imports. Return its Python. With `venv`, the
+    environment sits there, as the official installer's dependency environment, and its editable install points at an
+    empty build copy, so only the source folder first on sys.path has run_agent.
     """
-    subprocess.run([sys.executable, '-m', 'venv', '--without-pip', str(root / 'venv')], check=True)
+    venv = venv or root / 'venv'
+    subprocess.run([sys.executable, '-m', 'venv', '--without-pip', str(venv)], check=True)
     root.mkdir(parents=True, exist_ok=True)
     (root / 'run_agent.py').write_text('')
-    packages = Path(subprocess.run([str(root / 'venv/bin/python'), '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))'],
+    packages = Path(subprocess.run([str(venv / 'bin/python'), '-c', 'import sysconfig; print(sysconfig.get_path("purelib"))'],
                                    check=True, capture_output=True, text=True).stdout.strip())
-    # An editable install points the environment at the source folder.
-    (packages / 'hermes_agent.pth').write_text(str(root) + '\n')
+    editable = root if venv == root / 'venv' else venv.parent / 'workspace'
+    editable.mkdir(parents=True, exist_ok=True)
+    (packages / 'hermes_agent.pth').write_text(str(editable) + '\n')
     for name in MODULES:
         if name in missing or name == 'run_agent':
             continue
         folder = packages.joinpath(*name.split('.'))
         folder.mkdir(parents=True, exist_ok=True)
         (folder / '__init__.py').write_text('')
-    return root / 'venv/bin/python'
+    return venv / 'bin/python'
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -61,9 +66,60 @@ class DiscoveryTests(unittest.TestCase):
         environ = dict(self.environ, COCONUT_HERMES_PYTHON='/custom/python', COCONUT_HERMES_ROOT='/custom')
         found = [(str(python), root and str(root), explicit) for python, root, explicit in hermes_runtime.candidates(environ, self.home)]
         default = self.home / '.hermes/hermes-agent'
-        self.assertEqual(found, [('/custom/python', '/custom', True), ('/opt/hermes/venv/bin/python', None, False),
-                                 (str(default / 'venv/bin/python'), str(default), False),
-                                 (str(default / '.venv/bin/python'), str(default), False)])
+        self.assertEqual(found, [('/custom/python', '/custom', True), ('/opt/hermes/venv/bin/python', None, False)])
+        # The default folder counts once it has a Python.
+        (default / '.venv/bin').mkdir(parents=True)
+        (default / '.venv/bin/python').write_text('')
+        found = [str(python) for python, _, _ in hermes_runtime.candidates(environ, self.home)]
+        self.assertEqual(found[-1], str(default / '.venv/bin/python'))
+
+    def official_install(self, home):
+        """Lay out a Hermes as its official installer does, with HERMES_HOME `home`. Return the source folder and Python.
+
+        The installer links ~/.local/bin/hermes to a launcher in the source folder. That launcher runs a store Python with
+        the source folder first on sys.path. The dependency environment sits in <home>/installs/<key>, named by facts.json.
+        """
+        source = self.home / '.hermes/hermes-agent'
+        environment = home / 'installs/key/environments/1e6af2de/venv'
+        python = make_hermes(source, missing=(), venv=environment)
+        key = hashlib.sha256(str(source.resolve()).encode()).hexdigest()[:16]
+        facts = home / 'installs' / key / 'facts.json'
+        facts.parent.mkdir(parents=True)
+        facts.write_text(json.dumps({'packages': {'venv': {'environment': str(environment)}}, 'schema': 1}))
+        launcher = source / '.hermes/bin/hermes'
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("#!/bin/sh\nexec /store/python3 -I -c 'import os, sys\n"
+                            f"sys.path.insert(0, '\"'\"'{source}'\"'\"')\nimport hermes_bootstrap' \"$@\"\n")
+        launcher.chmod(0o755)
+        self.command(f'#!/bin/sh\nexec {launcher} "$@"\n')
+        return source, python
+
+    def test_the_official_installer_layout_is_found_through_its_launchers(self):
+        home = Path(self.temporary.name).resolve() / 'person-home'
+        source, python = self.official_install(home)
+        runtime = hermes_runtime.find(dict(self.environ, HERMES_HOME=str(home)), self.home)
+        self.assertEqual((runtime.python, runtime.root, runtime.home), (python, source.resolve(), home))
+
+    def test_the_hermes_home_of_the_login_shell_is_used(self):
+        # A LaunchAgent does not get HERMES_HOME. Coconut asks the person's login shell, which reads ~/.zprofile.
+        home = Path(self.temporary.name).resolve() / 'person-home'
+        source, python = self.official_install(home)
+        (self.home / '.zprofile').write_text(f'export HERMES_HOME={home}\n')
+        (self.home / '.profile').write_text(f'export HERMES_HOME={home}\n')
+        environ = dict(self.environ, SHELL='/bin/zsh' if Path('/bin/zsh').exists() else '/bin/sh')
+        self.assertEqual(hermes_runtime.hermes_home(environ, self.home), home)
+        self.assertEqual(hermes_runtime.find(environ, self.home).python, python)
+
+    def test_a_hermes_home_inside_coconuts_runtime_folder_is_the_persons(self):
+        # On the Mac mini, HERMES_HOME is .runtime/hermes/terminal/hermes, the old shared home of the bots.
+        home = hermes_runtime.PROJECT_ROOT / '.runtime/hermes/terminal/hermes'
+        python = home / 'installs/key/environments/1e6af2de/venv/bin/python'
+        with patch.object(hermes_runtime, 'source_pythons', return_value=[python]):
+            found = [candidate for candidate, _, _ in hermes_runtime.candidates(dict(self.environ, HERMES_HOME=str(home)), self.home)]
+        self.assertIn(python, found)
+        old = hermes_runtime.PROJECT_ROOT / '.runtime/hermes/venv/bin/python'
+        self.command(f'#!{old}\n')
+        self.assertNotIn(old, [candidate for candidate, _, _ in hermes_runtime.candidates(self.environ, self.home)])
 
     def test_coconuts_own_launcher_is_not_the_persons_hermes(self):
         self.command('#!/bin/sh\n# Coconut owns this Hermes launcher.\nexec /usr/bin/python3 terminal.py launch -- "$@"\n')
@@ -83,7 +139,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_a_long_interpreter_path_in_a_shell_wrapper_is_read(self):
         command = self.command("#!/bin/sh\n'''exec' \"/very/long/hermes/venv/bin/python\" \"$0\" \"$@\"\n' '''\nimport sys\n")
-        self.assertEqual(hermes_runtime.launcher_python(command), Path('/very/long/hermes/venv/bin/python'))
+        self.assertEqual(hermes_runtime.launcher_target(command), (Path('/very/long/hermes/venv/bin/python'), None))
 
     def test_the_private_runtime_of_older_versions_is_skipped(self):
         private = hermes_runtime.PROJECT_ROOT / '.runtime/hermes/venv/bin/python'

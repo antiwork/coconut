@@ -77,8 +77,9 @@ class KanbanScheduler:
                                 pipe.close()
                 home = self.root / 'kanban'
                 home.mkdir(exist_ok=True, mode=0o700)
+                from .hermes_runtime import NO_LAZY_INSTALLS
                 env = dict(os.environ, PYTHONPATH=str(self.provider.hermes_root), PYTHONUNBUFFERED='1',
-                           HERMES_DISABLE_TELEMETRY='1')
+                           HERMES_DISABLE_TELEMETRY='1', **NO_LAZY_INSTALLS)
                 if self.log:
                     self.log.close()
                 self.log = (home / 'adapter.log').open('a')

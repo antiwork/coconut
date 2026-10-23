@@ -35,7 +35,7 @@ class KeywordContractTests(unittest.TestCase):
                 'import socket\n'
                 'def verify_contract():\n'
                 '    socket.getaddrinfo("network-must-not-run.invalid", 443)\n')
-            result = subprocess.run([sys.executable, '-I', '-c', CONTRACT, temporary], cwd=temporary,
+            result = subprocess.run([sys.executable, '-I', '-c', CONTRACT, temporary, ''], cwd=temporary,
                                     capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('cannot use the network', result.stderr)

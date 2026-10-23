@@ -59,9 +59,14 @@ Existing trust lists require an explicit import; Coconut never merges private pr
 Coconut runs on the Hermes that is installed in the Mac account. It does not install its own copy.
 Each time the service starts, it looks for Hermes in this order:
 
-1. `COCONUT_HERMES_PYTHON` and `COCONUT_HERMES_ROOT`, when you set them.
-2. The `hermes` command on the service's `PATH`. Coconut reads its first line to find the Python of Hermes.
+1. `COCONUT_HERMES_PYTHON` and `COCONUT_HERMES_ROOT`, when you set them. An explicit setting is final.
+2. The first `hermes` command on the service's `PATH`, except Coconut's old launcher. Coconut follows its launcher scripts to the Hermes source folder.
 3. `~/.hermes/hermes-agent`, where the official installer puts Hermes.
+
+The official installer keeps the Python packages of Hermes in a dependency environment in the Hermes home, under `installs/<id>`. Its `facts.json` names the active environment, and Coconut runs Hermes with that environment's Python.
+The Hermes home is `HERMES_HOME`. A LaunchAgent does not get the variables of your shell, so when the service has no `HERMES_HOME`, Coconut reads it from your login shell, for example from `~/.zprofile`. Without either, it uses `~/.hermes`.
+Coconut starts each Hermes process with `HERMES_DISABLE_LAZY_INSTALLS=1`. Each bot has its own Hermes home, and without this setting, Hermes would install a dependency environment for each of them.
+After `hermes update`, restart Coconut, so that it uses the new dependency environment.
 
 The service imports the Hermes modules that it uses, then runs its contract check against them.
 It refuses a Hermes source folder that has a `.env` file, because every bot would get those keys. Hermes reads its keys from `~/.hermes/.env`. The check sends no model request and uses a temporary Hermes home.

@@ -5,6 +5,7 @@ Coconut runs on the Hermes that the person installed. It does not install its ow
 `backend/coconut/hermes_runtime.py` finds that Hermes and checks it. See [The Hermes that Coconut uses](install-and-update.md#the-hermes-that-coconut-uses).
 
 The compatibility CI tests revision `4d04303818b61bf3aa09278af48356315515965b` from stable release `v0.22.4`.
+The contract check also passes on `v0.22.5` (`bf0203a`), installed with the official installer.
 Its primary interfaces are [AIAgent](https://github.com/NousResearch/hermes-agent/blob/4d04303818b61bf3aa09278af48356315515965b/run_agent.py),
 [native profiles](https://hermes-agent.nousresearch.com/docs/user-guide/profiles/),
 [native memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory/),
