@@ -996,6 +996,11 @@ class NativeOutcomes:
                     linked_report = True
                 historical = {t['id'] for t, _ in linked.values() if self._completed_peer_continuation(
                     t, linked, tasks, snapshots, get_deliveries)}
+                # A delivered result starts the caller's own turn (_resume_process_task) and stays its
+                # _background_completion while that turn runs. That input is not pending work. Undelivered waits, relays,
+                # and processes of the caller, and every other turn of its assignment, still count.
+                own_turn = (foreground if caller and foreground == caller['id']
+                            and self._calling_native_turn(caller, snapshots) else None)
                 native_pending = any(
                     (snapshot := snapshots.get(t['id'], {})).get('status') != 'done'
                     or snapshot.get('id') != (t.get('_native_outcome_id') or t['_kanban_claim'].get('native_id'))
@@ -1009,7 +1014,9 @@ class NativeOutcomes:
                                or t.get('_return_pending')
                                or ((linked_report or historical) and t.get('_native_reply_pending'))
                                or self._task_paused(t) or self._get('exchanges', t['exchange_id']).get('cancelled')
-                               or self._background_pending(t['id']) or self._unfinished_work(t)
+                               or (self._background_pending(t['id'], finishing_task_id=own_turn) if t['id'] == own_turn
+                                   else self._background_pending(t['id']))
+                               or self._unfinished_work(t)
                                or (t['id'] != foreground and self.running.get(t['id']) and self.running[t['id']].is_alive())
                                or (t['id'] not in historical and running_tool(t))
                                or ((t['id'] == foreground or historical or projection) and (self._task_work_is_paused(t)

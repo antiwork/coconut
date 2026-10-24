@@ -212,6 +212,13 @@ PR of the owner, Coconut refuses the call with `retained_pr_url names no finishe
 can choose.` and changes nothing. The selection is part of the call's delivery key, and the technical lane takes the
 same field through the same checks.
 
+The direct requester can report activity on the delegated PR itself and continue it from its own current native turn,
+running on its own claim of its current input. Only that turn is exempt. When a delivered result started the turn, the
+service saved the result as the turn's input (`_background_completion`, with the result's receipt marked delivered to
+that turn), so that input is not pending work. The requester's undelivered waits, relays, processes, and decision waits,
+any other turn of its assignment that carries a result, and its other branches, decisions, returns, and unknown tool
+results still refuse the continuation.
+
 The lane is not a sandbox and grants no permission. Terminal, coding agents, and file tools keep full local access, as in
 any turn. The bot receives exact scope instructions to stay local and not push, publish, mark ready, or merge.
 Coconut does not inspect commands, so it cannot prevent those effects from a command.

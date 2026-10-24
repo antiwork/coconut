@@ -944,6 +944,267 @@ class SelectedFinishedPrTests(unittest.TestCase):
         self.each({name: name for name in names}, check_requester)
 
 
+class RequesterDeliveredResultTests(unittest.TestCase):
+    """The direct requester continues its delegated PR from the turn that a delivered result started, as Desk in PR 8606.
+
+    The service resumes the requester with the result as the input of a new turn (_resume_process_task) and keeps it
+    as _background_completion while that turn runs. That consumed input is not pending work of the caller. Every
+    undelivered wait, relay, process, or decision wait, every other turn of its assignment, and every other guard
+    still refuses the call, with no write.
+    """
+    setUp = fixtures.NativeWorkContinuationTests.setUp
+    tearDown = fixtures.NativeWorkContinuationTests.tearDown
+    write = fixtures.NativeWorkContinuationTests.write
+    prepare = fixtures.NativeWorkContinuationTests.prepare
+    snapshot_result = fixtures.NativeWorkContinuationTests.snapshot_result
+    scheduled_native = fixtures.NativeWorkContinuationTests.scheduled_native
+    resume = fixtures.NativeWorkContinuationTests.resume
+    linked_requester_pr = fixtures.NativeWorkContinuationTests.linked_requester_pr
+    requester_branch = DelegatedReportContinuationTests.requester_branch
+    requester_cases = DelegatedReportContinuationTests.requester_cases
+    requester_callback = DelegatedReportContinuationTests.requester_callback
+    run_turn = LinkedRequesterActivityTests.run_turn
+    each = LinkedRequesterActivityTests.each
+    through_provider = callback_fixtures.RequesterCallbackContinuationTests.through_provider
+    state = SelectedFinishedPrTests.state
+    assert_no_writes = SelectedFinishedPrTests.assert_no_writes
+
+    REFUSAL = '^This Work item has another execution. Continue its current owner.$'
+
+    def end_turn(self, requester, status='waiting'):
+        """The requester's turn ends, and Hermes leaves its card without a run."""
+        self.service.running.pop(requester['id'], None)
+        self.service._put('tasks', dict(self.service._get('tasks', requester['id']), status=status))
+        self.service.kanban.tasks[requester['id']].update(status='scheduled', current_run_id=None, worker_pid=None)
+
+    def delivered(self, path='wait'):
+        """The live order: the requester waits for its helper, the helper's return starts a turn that ends waiting, and
+        the service then delivers the saved wait into a new turn. Hermes claims that input, and the turn runs.
+
+        path='process' delivers a finished background process of an earlier turn instead.
+        """
+        owner, requester, work, pr = self.linked_requester_pr()
+        # The requester's own report of the same PR, with its review and activity, as Desk's fae77625.
+        report = dict(id='requester-pr', task_id=requester['id'], bot_id=requester['bot_id'], kind='pr',
+                      title='The delegated PR', status='open', pr_state='open', url=pr['url'], work_outcome_id=work['id'],
+                      _review_task_id=requester['id'], _activity_task_id=requester['id'])
+        self.service._put('artifacts', report)
+        epoch = self.service._setting('conversation_epoch')
+        helper = self.requester_branch(requester, status='working', _conversation_epoch=epoch,
+                                       _kanban_claim=dict(native_id='t_helper', input='helper'))
+        self.service.kanban.tasks[helper['id']] = dict(id='t_helper', status='running', current_run_id=5, worker_pid=None)
+        requester = dict(self.service._get('tasks', requester['id']), _work_context_id=work['id'])
+        requester = self.run_turn(requester, work['_native_outcome_id'], 'first-turn', 'Saved worker context')
+        if path == 'wait':
+            self.assertEqual(self.service.emit(requester['id'], 'work_wait', dict(task_id=helper['id'], reason='Need the helper result'))['status'], 'waiting')
+            self.end_turn(requester)
+            self.service.emit(helper['id'], 'completed', dict(summary='The helper result.'))
+            self.service.kanban.tasks[helper['id']].update(status='done', current_run_id=None)
+            # The helper's return reaches the requester first. That turn runs and ends waiting again.
+            self.service._drain_returns()
+            returned = self.service._get('tasks', requester['id'])
+            self.assertEqual((returned['status'], returned.get('_background_completion')), ('queued', None))
+            self.run_turn(returned, work['_native_outcome_id'], returned['_native_turn_id'], 'Saved worker context')
+            self.end_turn(returned)
+            self.assertIsNone(self.service._get('tasks', helper['id']).get('_return_pending'))
+            # The service delivers the saved wait through _resume_process_task.
+            self.service._drain_task_completions()
+        else:
+            call = self.service.emit(requester['id'], 'native_call', dict(name='terminal', arguments={'background': True}))
+            self.service.emit(requester['id'], 'native_result', dict(id=call['id'], result=json.dumps(
+                {'session_id': 'proc_check', 'notify_on_complete': True, 'status': 'running'})))
+            self.end_turn(requester)
+            self.service.emit(helper['id'], 'completed', dict(summary='The helper result.'))
+            self.service.kanban.tasks[helper['id']].update(status='done', current_run_id=None)
+            self.service._drain_returns()
+            returned = self.service._get('tasks', requester['id'])
+            self.run_turn(returned, work['_native_outcome_id'], returned['_native_turn_id'], 'Saved worker context')
+            self.end_turn(returned)
+            waiting = self.service._get('tasks', requester['id'])
+            self.assertTrue(self.service._can_resume_process(waiting, self.service._get('bots', waiting['bot_id'])))
+            with self.service.transaction():
+                self.service._resume_process_task(requester['id'], [(self.service._get('native_receipts', call['id']),
+                                                                     'The background check finished.')])
+        resumed = self.service._get('tasks', requester['id'])
+        self.assertEqual((resumed['status'], resumed['summary']), ('queued', 'Continuing with the result.'))
+        self.assertTrue(resumed['_background_completion'])
+        delivered = [r for r in self.service._native_task_receipts(requester['id'])
+                     if r.get('_process_delivery') == resumed['_native_turn_id']]
+        self.assertEqual(len(delivered), 1)
+        # Hermes claims the delivered input. The requester's own native turn runs and makes the call.
+        requester = self.run_turn(resumed, work['_native_outcome_id'], resumed['_native_turn_id'], 'Saved worker context')
+        self.assertTrue(self.service._calling_native_turn(requester, self.service.kanban.tasks))
+        self.assertTrue(self.service._background_pending(requester['id']), 'Its own consumed input counted before the fix')
+        self.assertFalse(self.service._background_pending(requester['id'], finishing_task_id=requester['id']))
+        return owner, requester, work, pr, report, self.service._get('tasks', helper['id']), delivered[0]
+
+    def assert_admitted_once(self, owner, requester, pr, receipt, repeat):
+        artifacts = {a['id']: a for a in self.service._all('artifacts') if a['id'] != pr['id']}
+        tasks = {t['id']: t for t in self.service._all('tasks') if t['id'] != owner['id']}
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
+        continued = self.service._get('tasks', owner['id'])
+        for key in ('id', '_execution_session_id', 'thread_id', 'session_id', 'exchange_id', 'source_task_id',
+                    'source_bot_id', '_reply_to_task_id', '_kanban_claim', 'parent_task_id'):
+            self.assertEqual(continued.get(key), owner.get(key), key)
+        self.assertEqual((continued['status'], continued['_work_context_id']), ('queued', pr['id']))
+        self.assertEqual(self.service._get('artifacts', pr['id']), dict(pr, _native_outcome_id='t_existing'))
+        self.assertEqual(repeat(), receipt)
+        self.assertEqual(len([d for d in self.service._all('deliveries') if d.get('receipt') == receipt]), 1)
+        self.assertEqual({a['id']: a for a in self.service._all('artifacts') if a['id'] != pr['id']}, artifacts)
+        self.assertEqual({t['id']: t for t in self.service._all('tasks') if t['id'] != owner['id']}, tasks)
+        # The requester keeps its turn, its consumed input, and its claim.
+        self.assertEqual(self.service._get('tasks', requester['id']), requester)
+
+    def test_the_requester_continues_its_delegated_pr_from_its_delivered_result_turn(self):
+        for path in ('wait', 'process'):
+            with self.subTest(path=path):
+                try:
+                    owner, requester, work, pr, report, helper, delivered = self.delivered(path)
+                    receipt = self.resume(requester)
+                    self.assert_admitted_once(owner, requester, pr, receipt, lambda: self.resume(requester))
+                    self.assertEqual(self.service._get('native_receipts', delivered['id']), delivered)
+                finally:
+                    self.tearDown()
+                    self.setUp()
+
+    def test_the_provider_route_admits_once(self):
+        owner, requester, work, pr, report, helper, delivered = self.delivered()
+        receipt = self.through_provider(requester, twice=True)
+        self.assert_admitted_once(owner, requester, pr, receipt, lambda: receipt)
+
+    def test_the_original_requester_receives_the_result_once(self):
+        owner, requester, work, pr, report, helper, delivered = self.delivered()
+        self.resume(requester)
+        earlier = {d['id'] for d in self.service._all('deliveries')}
+        continued = dict(self.service._get('tasks', owner['id']), status='completed')
+        self.service.kanban.tasks[owner['id']].update(status='done', input_id=continued['_native_turn_id'])
+        self.service._prepare_return(continued, 'The PR follow-up is verified.', 'completed')
+        self.service._put('tasks', continued)
+        self.end_turn(requester, status='completed')
+        self.service._drain_returns()
+        self.service._drain_returns()
+        returned = [d for d in self.service._all('deliveries') if d['id'] not in earlier and d['source_task_id'] == owner['id']]
+        self.assertEqual([(d['target_bot_id'], d['text']) for d in returned],
+                         [(requester['bot_id'], 'The PR follow-up is verified.')])
+        finished = self.service._get('tasks', owner['id'])
+        self.assertEqual((finished['_reply_to_task_id'], finished['_execution_session_id'], finished['_work_context_id']),
+                         (owner['_reply_to_task_id'], owner['_execution_session_id'], pr['id']))
+        self.assertFalse(finished.get('_return_pending'))
+
+    def test_unchanged_guards_still_refuse_with_no_write(self):
+        def receipt(**fields):
+            def change(owner, requester, helper):
+                self.service._put('native_receipts', dict(dict(
+                    id=str(uuid4()), task_id=requester['id'], turn_id=requester['_native_turn_id'], state='completed',
+                    result='{}', created_at='2026-10-24T21:40:40Z', action={'name': 'coconut_wait', 'arguments': {}}), **fields))
+            return change
+
+        def process(owner, requester, helper):
+            call = self.service.emit(requester['id'], 'native_call', dict(name='terminal', arguments={'background': True}))
+            self.service.emit(requester['id'], 'native_result', dict(id=call['id'], result=json.dumps(
+                {'session_id': 'proc_other', 'notify_on_complete': True, 'status': 'running'})))
+
+        def assignment_turn(status):
+            def change(owner, requester, helper):
+                turn = dict(requester, id=str(uuid4()), status=status, _assignment_task_id=requester['id'],
+                            _background_completion=['Another result.'], _kanban_claim=None, _native_outcome_id=None)
+                turn['_execution_session_id'] = requester['_execution_session_id']
+                self.service._put('tasks', turn)
+            return change
+
+        def task(**changes):
+            return lambda owner, requester, helper: self.service._put('tasks', dict(requester, **changes))
+
+        def claim(**changes):
+            return lambda owner, requester, helper: self.service._put('tasks', dict(
+                requester, _kanban_claim=dict(requester['_kanban_claim'], **changes)))
+
+        def card(**changes):
+            return lambda owner, requester, helper: self.service.kanban.tasks[requester['id']].update(changes)
+
+        def sibling(change=None):
+            # A finished branch of the requester that still holds a live signal. The consumed helper is not one.
+            def make(owner, requester, helper):
+                branch = self.requester_branch(self.service._get('tasks', requester['id']), status='completed',
+                                               _kanban_claim=dict(native_id='t_sibling', input='sibling'))
+                self.service.kanban.tasks[branch['id']] = dict(id='t_sibling', status='done', current_run_id=None, worker_pid=None)
+                self.service._put('tasks', dict(self.service._get('tasks', requester['id']), status=requester['status']))
+                change(branch)
+            return make
+
+        def sibling_receipt(**fields):
+            return lambda branch: self.service._put('native_receipts', dict(dict(
+                id=str(uuid4()), task_id=branch['id'], turn_id='sibling-turn', state='completed', result='{}',
+                created_at='2026-10-24T21:40:40Z', action={'name': 'coconut_wait', 'arguments': {}}), **fields))
+
+        def decision(owner, requester, helper):
+            self.service._put('decisions', dict(id='pending', task_id=requester['id'], bot_id=requester['bot_id'],
+                                                status='pending', title='Publish?'))
+
+        def owner_caller(owner, requester, helper):
+            caller = self.write(f'/v1/bots/{owner["bot_id"]}/messages', {'text': 'Continue the PR.'})
+            self.caller = dict(self.service._get('tasks', caller['id']), status='working')
+            self.service._put('tasks', self.caller)
+
+        def other_requester_task(owner, requester, helper):
+            other = dict(requester, id='other-requester-task', _execution_session_id='other-requester-task',
+                         _work_context_id=None, _native_outcome_id=None)
+            self.service._put('tasks', other)
+            self.caller = other
+
+        cases = {
+            'an undelivered wait of the requester': receipt(_wait_task_id='other-task'),
+            'an undelivered relay of the requester': receipt(_relay_task_id='other-task'),
+            'an undelivered decision wait of the requester': receipt(_wait_decision_id='other-decision'),
+            'an undelivered process of the requester': process,
+            'a queued assignment turn with a result': assignment_turn('queued'),
+            'a working assignment turn with a result': assignment_turn('working'),
+            'a local turn without a native claim': task(_native_turn_id=None, _kanban_claim=None),
+            'a stale input': claim(input='earlier-input'),
+            'a card with an earlier input': card(input_id='earlier-input'),
+            'a later turn than the claim': task(_native_turn_id='later-turn'),
+            'another run': card(current_run_id=99),
+            'a reviewer run': card(claim_source_status='review'),
+            'another worker pid': card(worker_pid=4242),
+            'a card that is not running': card(status='ready'),
+            'requester steering': task(_steering=[{'text': 'Wait.'}]),
+            'requester live messages': task(_live_messages=[{'text': 'Wait.'}]),
+            'an undelivered requester reply': task(_native_reply_pending=True),
+            'a sibling branch with a live native card': sibling(lambda branch: self.service.kanban.tasks[branch['id']].update(
+                status='running', current_run_id=7)),
+            'a sibling branch with an undelivered wait': sibling(sibling_receipt(_wait_task_id='other-task')),
+            'a sibling branch with an unknown tool result': sibling(sibling_receipt(state='executing', result=None,
+                action={'name': 'terminal', 'arguments': {}})),
+            'a sibling branch with a pending decision': sibling(lambda branch: self.service._put('decisions', dict(
+                id='sibling-question', task_id=branch['id'], bot_id=branch['bot_id'], status='pending', title='Which list?'))),
+            'a sibling branch with an undelivered return': sibling(lambda branch: self.service._put('tasks', dict(
+                branch, _return_pending={'target_bot_id': 'someone', 'text': 'Result'}))),
+            'a pending requester decision': decision,
+            'the owner as caller': owner_caller,
+            'another requester task as caller': other_requester_task,
+        }
+
+        def check(change):
+            self.caller = None
+            owner, requester, work, pr, report, helper, delivered = self.delivered()
+            change(owner, requester, helper)
+            caller = self.caller or self.service._get('tasks', requester['id'])
+            self.assert_no_writes(lambda: self.resume(caller), 'another execution|belongs to another native outcome')
+        self.each(cases, check)
+
+    def test_the_requesters_other_branches_still_refuse(self):
+        def check(name):
+            owner, requester, work, pr, report, helper, delivered = self.delivered()
+            self.requester_cases(requester['id'])[name]()
+            self.assert_no_writes(lambda: self.resume(self.service._get('tasks', requester['id'])), self.REFUSAL)
+        owner, requester, work, pr, report, helper, delivered = self.delivered()
+        names = list(self.requester_cases(requester['id']))
+        self.tearDown()
+        self.setUp()
+        self.assertEqual(len(names), 8)
+        self.each({name: name for name in names}, check)
+
+
 @needs_hermes
 class NativeDelegatedReportContinuationTests(unittest.TestCase):
     setUp = native_fixtures.NativeClaimContinuationTests.setUp
@@ -953,8 +1214,12 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
     resume = native_fixtures.NativeClaimContinuationTests.resume
     check_dispatch = native_fixtures.NativeClaimContinuationTests.check_dispatch
 
-    def requester_turn(self, owner, requester, work):
-        """The direct requester's retained native outcome. The dispatcher claims it for its current input."""
+    def requester_turn(self, owner, requester, work, delivered=False):
+        """The direct requester's retained native outcome. The dispatcher claims it for its current input.
+
+        delivered: the input is a delivered result. An earlier turn started a background check and ended waiting, and the
+        service resumed the requester with the result as the input of a new turn (_resume_process_task), as for Desk.
+        """
         # One work slot, so the requester's running turn holds it until the turn ends.
         self.service.mutate('PUT', '/v1/settings/work-capacity', {'limit': 1}, str(uuid4()))
         self.assertEqual(self.service.snapshot()['work_capacity']['effective_limit'], 1)
@@ -963,6 +1228,22 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
         requester.update(status='queued', _execution_session_id=requester['id'], _waiting_on=[],
                          _native_turn_id='requester-input', _work_context_id=work['id'],
                          _conversation_epoch=self.service._setting('conversation_epoch'))
+        if delivered:
+            requester.update(status='working', _native_turn_id='earlier-turn')
+            self.service._put('tasks', requester)
+            call = self.service.emit(requester['id'], 'native_call', dict(name='terminal', arguments={'background': True}))
+            self.service.emit(requester['id'], 'native_result', dict(id=call['id'], result=json.dumps(
+                {'session_id': 'proc_check', 'notify_on_complete': True, 'status': 'running'})))
+            self.service._put('tasks', dict(self.service._get('tasks', requester['id']), status='waiting'))
+            waiting = self.service._get('tasks', requester['id'])
+            self.assertTrue(self.service._can_resume_process(waiting, self.service._get('bots', waiting['bot_id'])))
+            with self.service.transaction():
+                self.service._resume_process_task(requester['id'], [(self.service._get('native_receipts', call['id']),
+                                                                     'The background check finished.')])
+            requester = self.service._get('tasks', requester['id'])
+            self.assertEqual((requester['status'], requester['_background_completion']),
+                             ('queued', ['The background check finished.']))
+            self.assertEqual(self.service._get('native_receipts', call['id'])['_process_delivery'], requester['_native_turn_id'])
         self.service._put('tasks', requester)
         row = self.service._kanban_row(requester, requester, 'ready', 10)
         self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
@@ -1021,7 +1302,7 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
         self.end_caller_turn = end_caller_turn
         return requester
 
-    def linked(self, second_pr=False, requester_turn=False, finished=False):
+    def linked(self, second_pr=False, requester_turn=False, finished=False, delivered=False):
         prepare = self.prepare
         saved = []
 
@@ -1054,7 +1335,7 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
             saved.extend(items)
             if requester_turn:
                 self.other_caller = source
-                source = self.requester_turn(owner, requester, work)
+                source = self.requester_turn(owner, requester, work, delivered=delivered)
             return owner, source, identity, workspace
 
         self.prepare = prepare_linkage
@@ -1087,6 +1368,21 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
             current = self.service._get('artifacts', item['id'])
             self.assertEqual({k: current.get(k) for k in keys}, {k: item.get(k) for k in keys})
         self.assertNotEqual(work['_native_outcome_id'], 't_requester')
+
+    def test_the_requester_dispatches_its_delegated_pr_from_its_delivered_result_turn(self):
+        # The requester's turn runs on its own claim of the delivered result, which it carries until the turn ends.
+        saved = self.linked(requester_turn=True, delivered=True)
+        self.check_dispatch('done')
+        work, pr, report, requester_pr = saved
+        owner = self.service._get('tasks', pr['task_id'])
+        self.assertEqual(owner['_work_context_id'], pr['id'])
+        self.assertEqual(self.service._get('artifacts', report['id']), report)
+        # No Work row or other artifact appears. The requester's Work and PR report keep their identity and links.
+        self.assertEqual({a['id'] for a in self.service._all('artifacts')}, {item['id'] for item in saved})
+        for item, keys in ((work, ('task_id', 'kind')),
+                           (requester_pr, ('task_id', 'kind', 'url', 'work_outcome_id', '_review_task_id', '_activity_task_id'))):
+            current = self.service._get('artifacts', item['id'])
+            self.assertEqual({k: current.get(k) for k in keys}, {k: item.get(k) for k in keys})
 
     def test_another_requester_turn_cannot_exempt_the_requesters_activity(self):
         self.linked(requester_turn=True)
