@@ -88,15 +88,40 @@ The sidecar keeps its files in `<data>/tunnel`. Each file has mode 0600, and the
 
 ## Pairing v2
 
-`scripts/pairing.py` makes a version 2 link when `tunnel/route.json` exists. `--share` prints it. `--legacy` makes a version 1 link for app builds that use TLS.
+`scripts/pairing.py` makes a version 2 setup when `tunnel/route.json` exists. `--share` prints it in a version 3 link. `--legacy` makes a version 1 setup for app builds that use TLS, in the earlier link format.
 
-```
-coconut://pair?setup=<base64url {version:2, relay, route, mac_key, secret, expires, name}>
-```
+The setup has these values:
 
 - `secret` is 32 random bytes in unpadded base64url. It is valid once, for 10 minutes.
 - `mac_key` is the Mac's static public key in unpadded base64url.
 - `expires` is a Unix time in seconds.
+
+The version 3 link:
+
+```
+coconut://pair/<token>?setup=IHsidmVyc2lvbiI6Mywic2VydmVyX3VybCI6IiIsImNlcnRpZmljYXRlX3NoYTI1NiI6IiIsInBhaXJpbmdfY29kZSI6IiJ9
+```
+
+The token is unpadded lowercase base32 (RFC 4648) of these bytes:
+
+| Bytes | Value |
+| --- | --- |
+| 1 | Link version, 3 |
+| 32 | `route` |
+| 32 | `mac_key` |
+| 32 | `secret` |
+| 4 | `expires`, big-endian |
+| 2 | Length of `relay`, big-endian |
+| Length of `relay` | `relay`, UTF-8 |
+| The rest | `name`, UTF-8 |
+
+Hermes masks text that looks like a secret before its agent sends the link. The earlier link held base64url JSON, which always starts with `eyJ`, so Hermes masked it as a JSON Web Token. No rule of Hermes 0.22.4 or 0.22.5 matches the token. `backend/tests/test_native_pairing_redaction.py` checks this with the redaction functions of the installed Hermes, in the native CI job for the minimum and the latest Hermes.
+
+App builds before the version 3 link read only the `setup` field. Its value is base64url of ` {"version":3,"server_url":"","certificate_sha256":"","pairing_code":""}`, so every earlier build tells the person to update the app. The space before the object keeps the value from starting with `eyJ`. The app still reads the earlier link:
+
+```
+coconut://pair?setup=<base64url {version:2, relay, route, mac_key, secret, expires, name}>
+```
 
 The iPhone and the Mac derive these values with HKDF-SHA256, an empty salt, and a 32-byte output:
 

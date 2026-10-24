@@ -32,7 +32,7 @@ final class PairingSetupTests: XCTestCase {
     }
 
     func testOtherVersionsAndBadVersionTypesAreRejected() throws {
-        for version in [0, 3] as [Any] {
+        for version in [0, 4] as [Any] {
             XCTAssertThrowsError(try PairingSetup.parse(try payload(["version": version]))) { error in
                 XCTAssertEqual(error as? PairingSetupError, .unsupportedVersion)
             }
@@ -94,6 +94,65 @@ final class PairingSetupTests: XCTestCase {
             XCTAssertThrowsError(try PairingSetup.parse(input), input)
         }
         XCTAssertFalse(PairingSetup.isLink(try XCTUnwrap(URL(string: "https://pair?setup=e30"))))
+    }
+
+    // MARK: Version 3 links
+
+    // From `scripts/pairing.py`, for the setup in `payload(["name": "Gianfranco’s Mac mini"])`.
+    private let versionThreeLink = "coconut://pair/aov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2waabaibqibiga4eascqlbqgq4dyqcejbgfavcylrqgi2dmob2hq7777p37h37l47r57w6x2ph4xr6dx653pm5pvot2hh43s6jy7c4hqgwsosaaacq2duoryhgorpf5rw6y3pnz2xillqovzwqlthovwxe33bmqxho33snnsxe4zomrsxmr3jmfxgm4tbnzrw7yuatfzsatlbmmqg22lone?setup=IHsidmVyc2lvbiI6Mywic2VydmVyX3VybCI6IiIsImNlcnRpZmljYXRlX3NoYTI1NiI6IiIsInBhaXJpbmdfY29kZSI6IiJ9"
+
+    func testVersionThreeLinkGivesTheSameSetupAsTheEarlierLink() throws {
+        let json = try payload(["name": "Gianfranco’s Mac mini"])
+        let setup = try PairingSetup.parse(versionThreeLink)
+        XCTAssertEqual(setup, try PairingSetup.parse(link(json)))
+        XCTAssertEqual(setup.code, base64URL(secret))
+        XCTAssertEqual(setup.name, "Gianfranco’s Mac mini")
+        XCTAssertEqual(try PairingSetup.parse("  " + versionThreeLink + "\n"), setup)
+        XCTAssertTrue(PairingSetup.isLink(try XCTUnwrap(URL(string: versionThreeLink))))
+    }
+
+    func testVersionThreeLinkHoldsTheLongestRelayHostName() throws {
+        // From `scripts/pairing.py`: a host name of 253 characters and a port, longer than 255 bytes.
+        let host = Array(repeating: String(repeating: "a", count: 63), count: 3).joined(separator: ".") + "." + String(repeating: "b", count: 61)
+        let relay = "https://\(host):65535"
+        let link = "coconut://pair/aov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2waabaibqibiga4eascqlbqgq4dyqcejbgfavcylrqgi2dmob2hq7777p37h37l47r57w6x2ph4xr6dx653pm5pvot2hh43s6jy7c4hqgwsosaaaqw2duoryhgorpf5qwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcyjomfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcltbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqs4ytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeyr2gy2tkmzvjvqwgidnnfxgs?setup=IHsidmVyc2lvbiI6Mywic2VydmVyX3VybCI6IiIsImNlcnRpZmljYXRlX3NoYTI1NiI6IiIsInBhaXJpbmdfY29kZSI6IiJ9"
+        XCTAssertEqual(try PairingSetup.parse(link), try PairingSetup.parse(try payload(["relay": relay])))
+    }
+
+    func testEarlierBuildsReadAnUpdateRequestFromAVersionThreeLink() throws {
+        // Builds before the version 3 link read only the setup field. Both kinds tell the person to update the app.
+        let parts = try XCTUnwrap(URLComponents(string: versionThreeLink))
+        let encoded = try XCTUnwrap(parts.queryItems?.first(where: { $0.name == "setup" })?.value)
+        let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: try XCTUnwrap(Data(base64URL: encoded))) as? [String: Any])
+        XCTAssertEqual(Set(fields.keys), ["version", "server_url", "certificate_sha256", "pairing_code"])
+        XCTAssertEqual(fields["version"] as? Int, 3)
+        XCTAssertFalse(encoded.hasPrefix("eyJ"))
+    }
+
+    func testDamagedVersionThreeLinksAreRefused() throws {
+        let token = try XCTUnwrap(versionThreeLink.split(separator: "/").last?.split(separator: "?").first.map(String.init))
+        let damaged = [
+            versionThreeLink.replacingOccurrences(of: token, with: String(token.prefix(80))),
+            versionThreeLink.replacingOccurrences(of: token, with: token.prefix(6) + "..." + token.suffix(4)),
+            versionThreeLink.replacingOccurrences(of: token, with: token.uppercased()),
+            versionThreeLink.replacingOccurrences(of: token, with: "b" + token.dropFirst()),
+            versionThreeLink.replacingOccurrences(of: "/" + token, with: ""),
+            "coconut://pair/a",
+        ]
+        for input in damaged {
+            XCTAssertThrowsError(try PairingSetup.parse(input), input) { error in
+                XCTAssertEqual(error as? PairingSetupError, .damagedLink)
+                XCTAssertEqual(error.localizedDescription, "The setup code is damaged. Ask your Hermes for a new pairing link.")
+            }
+        }
+    }
+
+    func testBase32IsStrict() {
+        XCTAssertEqual(Data(base32: "mzxw6"), Data("foo".utf8))
+        XCTAssertEqual(Data(base32: "mzxw6ytboi"), Data("foobar".utf8))
+        for input in ["", "m", "mzx", "mzxw6y", "MZXW6", "mzxw7", "mzxw6="] {
+            XCTAssertNil(Data(base32: input), input)
+        }
     }
 
     // MARK: Saved pairings

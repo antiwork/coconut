@@ -140,6 +140,9 @@ jobs:
           mkdir -p .runtime # The logs of the checks below.
           "$COCONUT_HERMES_PYTHON" -c 'import jsonschema' # Required: this CI regression suite must not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_draft_refresh_schema.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_pairing_redaction.py 2> .runtime/pairing-redaction.log || { cat .runtime/pairing-redaction.log; exit 1; }
+          cat .runtime/pairing-redaction.log
+          grep -qx 'OK' .runtime/pairing-redaction.log # The pairing link must pass the redaction of this Hermes, not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_withdrawal_correction_route.py 2> .runtime/withdrawal-correction-route.log || { cat .runtime/withdrawal-correction-route.log; exit 1; }
           cat .runtime/withdrawal-correction-route.log
           grep -qx 'OK' .runtime/withdrawal-correction-route.log # The registered schema check must run, not skip.

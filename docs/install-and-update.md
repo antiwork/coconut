@@ -82,6 +82,8 @@ If that Hermes worked with the earlier version and fails with the new one, the u
 
 Older versions installed their own Hermes in `.runtime/hermes` and their own `~/.local/bin/hermes` command.
 The service deletes that command at its next start, but only when the file has Coconut's marker line.
+Their LaunchAgent started the service with the Python of that runtime. When an update reloads the service, after the drain step, it changes only that Python in the LaunchAgent.
+It uses the Python that runs the update when that Python is not in a virtual environment, else `/opt/homebrew/bin/python3`, `/usr/local/bin/python3`, or `/usr/bin/python3`, the first that can load Coconut.
 Until bots become Hermes profiles, the shared model settings of the bots stay in `.runtime/hermes/terminal/hermes`.
 To change them in Terminal, set that folder as the Hermes home:
 
