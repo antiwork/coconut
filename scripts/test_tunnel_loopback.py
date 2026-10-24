@@ -87,7 +87,9 @@ class TunnelLoopbackTests(unittest.TestCase):
         cls.data = Path(cls.temp.name) / 'host'
         cls.processes = []
         cls.client = Path(cls.temp.name) / 'tunnel-test-client'
-        compile_swift([ROOT / 'scripts/tunnel-test-client.swift', *tunnel.SOURCES[1:]], cls.client,
+        # The client runs the app's own transport, so this test also covers the iPhone end (R4).
+        compile_swift([ROOT / 'scripts/tunnel-test-client.swift', ROOT / 'ios/Coconut/TunnelConnection.swift', *tunnel.SOURCES[1:]],
+                      cls.client,
                       Path(cls.temp.name) / 'client.sha256')
         cls.sidecar = tunnel.build(cls.data)
 
@@ -180,7 +182,7 @@ class TunnelLoopbackTests(unittest.TestCase):
             failure = self.run_client(fails=True)['failure']['failure']
         finally:
             (self.data / 'tunnel').chmod(0o700)
-        self.assertIn('backend_down', failure)
+        self.assertIn('backendDown', failure)
         self.assertEqual(len(self.peers()), 2)
 
         # The relay holds 8 tickets. A ninth link waits on the Mac, and goes to the relay when a ticket is used.

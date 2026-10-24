@@ -12,6 +12,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
+import urllib.request
 
 import deploy
 import host
@@ -159,6 +161,43 @@ def start_service(address: str) -> None:
     print("Coconut is healthy.")
 
 
+def tunnel_listener_ready() -> bool:
+    """True when the backend answers on the loopback listener that the tunnel sidecar forwards to."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{host.TUNNEL_PORT}/health", timeout=2) as response:
+            return response.status == 200
+    except (OSError, ValueError):
+        return False
+
+
+def ensure_tunnel_listener(seconds: float = 180) -> None:
+    if tunnel_listener_ready():
+        return
+    # A service that started before the tunnel listener existed has no --tunnel-port. A restart reads the
+    # current launch settings. Without the listener, the phone cannot pair through a version 2 link.
+    print("Coconut has no tunnel listener yet. Restarting it with the current launch settings.", flush=True)
+    # A stop interrupts the running bot turns, and they lose their tool results. Let them finish first, as the
+    # deploy does. A service that cannot drain stops at once, as before.
+    print("Waiting for running bot turns to finish. This can take up to 10 minutes.", flush=True)
+    host.drain_for_update()
+    run(script("host.py", "restart"), "Restarting Coconut")
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if tunnel_listener_ready():
+            return
+        time.sleep(1)
+    raise SystemExit(f"Coconut does not answer on 127.0.0.1:{host.TUNNEL_PORT}. "
+                     f"Read {DATA / 'logs/error.log'}, then run this command again.")
+
+
+def start_tunnel() -> None:
+    # The app reaches this Mac through the relay tunnel. With the tunnel, pairing.py makes a version 2 link,
+    # so the backend's loopback listener must answer first.
+    ensure_tunnel_listener()
+    run(script("tunnel.py", "install", "--data-dir", str(DATA)), "The relay tunnel installation")
+    print("The relay tunnel is running.")
+
+
 def share() -> None:
     output = run(script("pairing.py", "--share"), "Creating the setup link").stdout
     lines = dict(line.split(": ", 1) for line in output.splitlines() if line.startswith(("Setup link: ", "QR image: ")))
@@ -167,8 +206,7 @@ def share() -> None:
         raise SystemExit("The setup link is missing from the pairing output. Run this command again.")
     print()
     print("Send the setup link and the QR image to the person who pairs. They contain a one-time code.")
-    print("The iPhone needs Tailscale, signed in to the same tailnet as this Mac.")
-    print("On the iPhone, tap the link, or scan the QR image in Coconut. The code expires after five minutes.")
+    print("On the iPhone, tap the link, or scan the QR image in Coconut. The link expires after ten minutes.")
     print("Setup link: " + lines["Setup link"])
     print("QR image: " + lines["QR image"])
 
@@ -186,6 +224,8 @@ def main() -> None:
     prepare_notifications()
     step("Starting the Coconut service")
     start_service(address)
+    step("Starting the relay tunnel")
+    start_tunnel()
     step("Creating the iPhone setup link")
     share()
 

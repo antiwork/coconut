@@ -579,7 +579,26 @@ struct EventPage: Decodable, Sendable {
 }
 
 enum ConnectionState: String, Sendable {
-    case unconfigured, connecting, connected, disconnected, preview
+    // `disconnected` is for a version 1 pairing over TLS. A version 2 pairing names the failure.
+    case unconfigured, connecting, connected, disconnected, macOffline, relayUnreachable, needsRepair, preview
+
+    init(_ failure: TunnelError) {
+        switch TunnelConnection.State(failure) {
+        case .macOffline: self = .macOffline
+        case .needsRepair: self = .needsRepair
+        default: self = .relayUnreachable
+        }
+    }
+
+    // A calm banner names these states. The cached state stays visible below it.
+    var bannerMessage: String? {
+        switch self {
+        case .macOffline: "Your Mac is offline. Coconut shows the last known state."
+        case .relayUnreachable: "Coconut cannot reach the relay. It tries again on its own."
+        case .needsRepair: "This iPhone needs a new pairing link from your Hermes."
+        default: nil
+        }
+    }
 }
 
 struct HermesModelChoice: Codable, Equatable, Sendable {

@@ -182,8 +182,53 @@ class SetupCoconutTests(unittest.TestCase):
             setup_coconut.share()
         lines = output.getvalue().splitlines()
         self.assertEqual(self.commands, [["pairing.py", "--share"]])
-        self.assertIn("same tailnet", output.getvalue())
+        self.assertNotIn("Tailscale", output.getvalue())
+        self.assertIn("ten minutes", output.getvalue())
         self.assertEqual(lines[-2:], ["Setup link: coconut://pair?setup=abc", "QR image: /tmp/iphone-setup.png"])
+
+    def test_start_tunnel_installs_the_sidecar_in_the_data_folder(self):
+        with patch.object(setup_coconut, "tunnel_listener_ready", return_value=True):
+            setup_coconut.start_tunnel()
+        self.assertEqual(self.commands, [["tunnel.py", "install", "--data-dir", str(self.data)]])
+
+    def test_a_service_without_the_tunnel_listener_drains_and_restarts_before_the_link(self):
+        answers = iter([False, False, True])
+        drain = Mock(side_effect=lambda: self.commands.append(["drain"]) or True)
+        with patch.object(setup_coconut, "tunnel_listener_ready", lambda: next(answers)), \
+                patch.object(setup_coconut.host, "drain_for_update", drain), \
+                patch.object(setup_coconut.time, "sleep"):
+            setup_coconut.start_tunnel()
+        self.assertEqual(self.commands, [["drain"], ["host.py", "restart"],
+                                         ["tunnel.py", "install", "--data-dir", str(self.data)]])
+
+    def test_a_running_listener_needs_no_drain_or_restart(self):
+        drain = Mock()
+        with patch.object(setup_coconut, "tunnel_listener_ready", return_value=True), \
+                patch.object(setup_coconut.host, "drain_for_update", drain):
+            setup_coconut.ensure_tunnel_listener()
+        drain.assert_not_called()
+        self.assertEqual(self.commands, [])
+
+    def test_no_tunnel_and_no_link_when_the_listener_stays_away(self):
+        clock = iter(range(0, 1000, 60))
+        with patch.object(setup_coconut, "tunnel_listener_ready", return_value=False), \
+                patch.object(setup_coconut.host, "drain_for_update", return_value=False), \
+                patch.object(setup_coconut.time, "sleep"), \
+                patch.object(setup_coconut.time, "monotonic", lambda: next(clock)), \
+                self.assertRaises(SystemExit) as raised:
+            setup_coconut.start_tunnel()
+        self.assertIn("127.0.0.1:8961", str(raised.exception))
+        self.assertEqual(self.commands, [["host.py", "restart"]])
+
+    def test_tunnel_listener_check_reads_the_health_route(self):
+        response = Mock(status=200)
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        with patch.object(setup_coconut.urllib.request, "urlopen", return_value=response) as opened:
+            self.assertTrue(setup_coconut.tunnel_listener_ready())
+        self.assertEqual(opened.call_args.args[0], "http://127.0.0.1:8961/health")
+        with patch.object(setup_coconut.urllib.request, "urlopen", side_effect=ConnectionRefusedError()):
+            self.assertFalse(setup_coconut.tunnel_listener_ready())
 
     def test_share_fails_without_a_link(self):
         self.output = "Open Coconut on the iPhone, then tap Scan.\n"
@@ -193,7 +238,7 @@ class SetupCoconutTests(unittest.TestCase):
     def test_main_runs_the_steps_in_order(self):
         calls = []
         names = ["prerequisites", "use_hermes", "tailscale_address", "configure", "prepare_notifications",
-                 "start_service", "share"]
+                 "start_service", "start_tunnel", "share"]
         with contextlib.ExitStack() as stack:
             for name in names:
                 stack.enter_context(patch.object(setup_coconut, name,

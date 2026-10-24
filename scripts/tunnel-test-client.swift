@@ -1,28 +1,24 @@
 import CryptoKit
 import Foundation
 
-// The iPhone side of the relay tunnel, for scripts/test_tunnel_loopback.py only. The app gets its own client in R4.
+// The iPhone side of the relay tunnel, for scripts/test_tunnel_loopback.py only.
 // Usage: tunnel-test-client <setup link>
-// It pairs through a pairing ticket, reconnects with the relay client token, and runs real requests. It prints one
-// JSON line for each result, and exits with 1 on the first failure.
+// It pairs and runs real requests through the app's own TunnelConnection (ios/Coconut/TunnelConnection.swift).
+// The checks for refused sessions use the small Connection class below. It prints one JSON line for each result,
+// and exits with 1 on the first failure.
 
 struct Failure: Error, CustomStringConvertible { let description: String }
 
 func check(_ condition: Bool, _ message: String) throws { if !condition { throw Failure(description: message) } }
 
-func derive(_ input: Data, _ label: String) -> Data {
-    HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: input), info: Data(label.utf8), outputByteCount: 32)
-        .withUnsafeBytes { Data($0) }
-}
-
-extension Data {
-    var hex: String { map { String(format: "%02x", $0) }.joined() }
-
-    init?(base64URL: String) {
-        var text = base64URL.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
-        text += String(repeating: "=", count: (4 - text.count % 4) % 4)
-        self.init(base64Encoded: text)
-    }
+// One request through the app's transport, with the app's timeouts and gzip handling.
+func send(_ tunnel: TunnelConnection, _ method: String, _ path: String, headers: [String: String] = [:],
+          body: Data = Data()) async throws -> Response {
+    let timeout = method == "GET" ? TunnelConnection.shortTimeout : TunnelConnection.longTimeout
+    let response = try await tunnel.send(TunnelRequest(method: method, path: path,
+                                                       headers: headers.merging(["Accept-Encoding": "gzip"]) { $1 }, body: body),
+                                         timeout: timeout)
+    return Response(status: response.status, headers: response.headers, body: try response.decodedBody())
 }
 
 struct Response {
@@ -155,30 +151,29 @@ struct TunnelTestClient {
         let phone = Curve25519.KeyAgreement.PrivateKey()
 
         // 1. Pair: the ticket opens the relay, and the pre-shared key proves the link to the Mac.
-        let pairing = Connection(url: url, authorization: "Ticket \(derive(secret, "coconut pairing ticket").hex)")
-        try await pairing.handshake(pattern: .ikpsk2, key: phone, macKey: macKey, psk: derive(secret, "coconut pairing psk"))
-        let early = try await pairing.request("GET", "/v1/state", headers: ["Authorization": "Bearer nothing"])
+        let endpoint = TunnelEndpoint(relay: URL(string: setup["relay"] as! String)!, route: setup["route"] as! String, macKey: macKey)
+        let pairing = TunnelConnection(endpoint: endpoint, phoneKey: phone, credential: .ticket(secret: secret))
+        let early = try await send(pairing, "GET", "/v1/state", headers: ["Authorization": "Bearer nothing"])
         try check(early.status == 401, "a ticket session served /v1/state before pairing: \(early.status)")
         let body = try JSONSerialization.data(withJSONObject: ["code": setup["secret"]!, "device_name": "Loopback test"])
-        let paired = try await pairing.request("POST", "/v1/pair", headers: ["Content-Type": "application/json"], body: body)
+        let paired = try await send(pairing, "POST", "/v1/pair", headers: ["Content-Type": "application/json"], body: body)
         try check(paired.status == 200, "pairing answered \(paired.status): \(String(decoding: paired.body, as: UTF8.self))")
         let token = try json(paired.body)["token"] as! String
-        let clientToken = derive(pairing.session.handshakeHash, "coconut relay client").hex
-        pairing.close()
+        let clientToken = TunnelKeys.clientToken(handshakeHash: await pairing.handshakeHash!)
+        await pairing.close()
         report(["step": "pair", "status": paired.status])
 
-        // 2. Reconnect with the client token and the same static key.
-        let connection = Connection(url: url, authorization: "Bearer \(clientToken)")
-        try await connection.handshake(pattern: .ik, key: phone, macKey: macKey, psk: nil)
+        // 2. Reconnect with the client token and the same static key, as the app does after pairing.
+        let connection = TunnelConnection(endpoint: endpoint, phoneKey: phone, credential: .token(clientToken))
         let auth = ["Authorization": "Bearer \(token)"]
         var started = Date()
-        let state = try await connection.request("GET", "/v1/state", headers: auth)
+        let state = try await send(connection, "GET", "/v1/state", headers: auth)
         try check(state.status == 200, "GET /v1/state answered \(state.status)")
         try check(json(state.body)["bots"] is [Any], "the state has no bots list")
         report(["step": "state", "status": state.status, "bytes": state.body.count, "seconds": Date().timeIntervalSince(started)])
         let write = auth.merging(["Content-Type": "application/json"]) { $1 }
-        let bot = try await connection.request("POST", "/v1/bots", headers: write.merging(["Idempotency-Key": UUID().uuidString]) { $1 },
-                                               body: try JSONSerialization.data(withJSONObject: ["name": "Loopback"]))
+        let bot = try await send(connection, "POST", "/v1/bots", headers: write.merging(["Idempotency-Key": UUID().uuidString]) { $1 },
+                                 body: try JSONSerialization.data(withJSONObject: ["name": "Loopback"]))
         try check(bot.status == 200, "POST /v1/bots answered \(bot.status)")
 
         // 3. Upload an attachment of about 5 MB of JSON, and read the 3.75 MB of content back.
@@ -187,17 +182,21 @@ struct TunnelTestClient {
             "bot_id": try json(bot.body)["id"] as! String, "filename": "loopback.bin", "content_base64": content.base64EncodedString(),
         ])
         started = Date()
-        let created = try await connection.request("POST", "/v1/attachments",
-                                                   headers: write.merging(["Idempotency-Key": UUID().uuidString]) { $1 },
-                                                   body: upload)
+        let created = try await send(connection, "POST", "/v1/attachments",
+                                     headers: write.merging(["Idempotency-Key": UUID().uuidString]) { $1 }, body: upload)
         try check(created.status == 200, "upload answered \(created.status): \(String(decoding: created.body.prefix(300), as: UTF8.self))")
         report(["step": "upload", "status": created.status, "bytes": upload.count, "seconds": Date().timeIntervalSince(started)])
         started = Date()
         let id = try json(created.body)["id"] as! String
-        let download = try await connection.request("GET", "/v1/artifacts/\(id)/content", headers: auth)
+        // A read of this size gets the long budget in the app.
+        let response = try await connection.send(TunnelRequest(method: "GET", path: "/v1/artifacts/\(id)/content", headers: auth),
+                                                 timeout: TunnelConnection.longTimeout)
+        let download = Response(status: response.status, headers: response.headers, body: try response.decodedBody())
         try check(download.status == 200 && download.body == content, "the downloaded content differs")
         report(["step": "download", "status": download.status, "bytes": download.body.count, "seconds": Date().timeIntervalSince(started)])
-        connection.close()
+        let attempts = await connection.connectAttempts
+        try check(attempts == 1, "the app transport opened \(attempts) sockets for one session")
+        await connection.close()
 
         // 4. A header value with CR LF could add a header or a request. The Mac ends the session instead.
         let injected = Connection(url: url, authorization: "Bearer \(clientToken)")
@@ -219,7 +218,7 @@ struct TunnelTestClient {
         }
 
         // 6. A spent ticket does not open the relay again.
-        let spent = Connection(url: url, authorization: "Ticket \(derive(secret, "coconut pairing ticket").hex)")
+        let spent = Connection(url: url, authorization: "Ticket \(TunnelKeys.derive(secret, "coconut pairing ticket").hexString)")
         do {
             _ = try await spent.receiveBinary()
             throw Failure(description: "a spent ticket opened the relay")

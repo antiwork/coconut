@@ -2,8 +2,8 @@ import XCTest
 @testable import Coconut
 
 final class TrackedWorkItemTests: XCTestCase {
-    private let recoveryPairing = CheckoutRecoveryPairing(deviceId: "phone", serverURL: "https://original.example:443",
-                                                          fingerprint: String(repeating: "a", count: 64))
+    private let recoveryPairing = CheckoutRecoveryPairing(deviceId: "phone", route: "https://original.example:443",
+                                                          macKey: String(repeating: "a", count: 64))
 
     private func recoveryPreview(key: String = "same-key", owner: String = "execution") throws -> CheckoutRecoveryPreview {
         let fixture = """
@@ -50,7 +50,7 @@ final class TrackedWorkItemTests: XCTestCase {
         XCTAssertEqual(restored.pairing, original.pairing)
         XCTAssertEqual(try APIJSON.encode(restored.request), originalBody)
         XCTAssertNil(ProtectedCache.readPendingCheckout(for: CheckoutRecoveryPairing(deviceId: "other",
-            serverURL: recoveryPairing.serverURL, fingerprint: recoveryPairing.fingerprint), in: location))
+            route: recoveryPairing.route, macKey: recoveryPairing.macKey), in: location))
 
         let relaunched = AppStore(demo: true)
         relaunched.checkoutConfirmation = restored
@@ -342,7 +342,7 @@ final class TrackedWorkItemTests: XCTestCase {
     }
 
     func testPendingStopRequestsCompleteStateBeforeSelectingSuccessor() throws {
-        let client = try APIClient(serverURL: recoveryPairing.serverURL, fingerprint: recoveryPairing.fingerprint,
+        let client = try APIClient(serverURL: recoveryPairing.route, fingerprint: recoveryPairing.macKey,
                                    token: "fixture-token")
         let recent = try client.makeRequest("state")
         let full = try client.makeRequest("state", fullState: true)
@@ -490,12 +490,12 @@ final class TrackedWorkItemTests: XCTestCase {
         XCTAssertEqual(restored.workItemId, original.workItemId)
         XCTAssertEqual(try APIJSON.encode(restored.request), requestBytes)
         XCTAssertNil(ProtectedCache.readPendingCheckout(for: CheckoutRecoveryPairing(
-            deviceId: "re-paired", serverURL: recoveryPairing.serverURL, fingerprint: recoveryPairing.fingerprint), in: location))
+            deviceId: "re-paired", route: recoveryPairing.route, macKey: recoveryPairing.macKey), in: location))
         XCTAssertNil(ProtectedCache.readPendingCheckout(for: CheckoutRecoveryPairing(
-            deviceId: recoveryPairing.deviceId, serverURL: "https://different.example", fingerprint: recoveryPairing.fingerprint), in: location))
+            deviceId: recoveryPairing.deviceId, route: "https://different.example", macKey: recoveryPairing.macKey), in: location))
         XCTAssertNil(ProtectedCache.readPendingCheckout(for: CheckoutRecoveryPairing(
-            deviceId: recoveryPairing.deviceId, serverURL: recoveryPairing.serverURL,
-            fingerprint: String(repeating: "b", count: 64)), in: location))
+            deviceId: recoveryPairing.deviceId, route: recoveryPairing.route,
+            macKey: String(repeating: "b", count: 64)), in: location))
         let relaunchedStore = AppStore(demo: true)
         relaunchedStore.checkoutConfirmation = restored
         relaunchedStore.recordCheckoutRecoveryResult(.classify(error: URLError(.networkConnectionLost)), for: restored)
@@ -507,16 +507,16 @@ final class TrackedWorkItemTests: XCTestCase {
     @MainActor
     func testRetainedConfirmationCannotTargetDifferentPairing() async throws {
         let confirmation = CheckoutRecoveryConfirmation(preview: try recoveryPreview(), pairing: recoveryPairing)
-        let newHost = CheckoutRecoveryPairing(deviceId: "new-phone", serverURL: "https://new.example:443",
-                                              fingerprint: String(repeating: "b", count: 64))
+        let newHost = CheckoutRecoveryPairing(deviceId: "new-phone", route: "https://new.example:443",
+                                              macKey: String(repeating: "b", count: 64))
         XCTAssertTrue(confirmation.matches(pairing: recoveryPairing))
         XCTAssertFalse(confirmation.matches(pairing: newHost))
         XCTAssertFalse(confirmation.matches(pairing: CheckoutRecoveryPairing(
-            deviceId: recoveryPairing.deviceId, serverURL: newHost.serverURL, fingerprint: recoveryPairing.fingerprint)))
+            deviceId: recoveryPairing.deviceId, route: newHost.route, macKey: recoveryPairing.macKey)))
         XCTAssertFalse(confirmation.matches(pairing: CheckoutRecoveryPairing(
-            deviceId: recoveryPairing.deviceId, serverURL: recoveryPairing.serverURL, fingerprint: newHost.fingerprint)))
+            deviceId: recoveryPairing.deviceId, route: recoveryPairing.route, macKey: newHost.macKey)))
         XCTAssertFalse(confirmation.matches(pairing: CheckoutRecoveryPairing(
-            deviceId: newHost.deviceId, serverURL: recoveryPairing.serverURL, fingerprint: recoveryPairing.fingerprint)))
+            deviceId: newHost.deviceId, route: recoveryPairing.route, macKey: recoveryPairing.macKey)))
         let store = AppStore(demo: true)
         store.checkoutConfirmation = confirmation
         let result = await store.confirmCheckoutRecovery(confirmation)
