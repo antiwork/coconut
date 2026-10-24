@@ -1,11 +1,15 @@
 """A delegate's hidden Work report and its delegated PR retain one execution and one outcome."""
 import copy
 import json
+import os
+from pathlib import Path
+import re
 import threading
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from uuid import uuid4
 
+from coconut import native_outcomes
 from coconut.service import ServiceError
 import test_native_claim_continuation as native_fixtures
 import test_native_work_continuation as fixtures
@@ -580,6 +584,366 @@ class LinkedRequesterActivityTests(unittest.TestCase):
         self.each({name: name for name in names}, check)
 
 
+class SelectedFinishedPrTests(unittest.TestCase):
+    """Every delegated PR of the requester's Work finished, as PR 8606 and Coconut 218 of one Care recovery.
+
+    Coconut chooses none of them. The plain call refuses and names retained_pr_url. A caller that names one finished PR
+    continues the same execution with that existing PR as its Work item. The choice approves nothing, and every other
+    shape, guard, and caller check stays. No Work row or other artifact is created.
+    """
+    setUp = fixtures.NativeWorkContinuationTests.setUp
+    tearDown = fixtures.NativeWorkContinuationTests.tearDown
+    write = fixtures.NativeWorkContinuationTests.write
+    prepare = fixtures.NativeWorkContinuationTests.prepare
+    snapshot_result = fixtures.NativeWorkContinuationTests.snapshot_result
+    scheduled_native = fixtures.NativeWorkContinuationTests.scheduled_native
+    resume = fixtures.NativeWorkContinuationTests.resume
+    linked_requester_pr = fixtures.NativeWorkContinuationTests.linked_requester_pr
+    audited_requester_pr = fixtures.NativeWorkContinuationTests.audited_requester_pr
+    requester_branch = DelegatedReportContinuationTests.requester_branch
+    requester_cases = DelegatedReportContinuationTests.requester_cases
+    requester_callback = DelegatedReportContinuationTests.requester_callback
+    run_turn = LinkedRequesterActivityTests.run_turn
+    requester_activity = LinkedRequesterActivityTests.requester_activity
+    each = LinkedRequesterActivityTests.each
+    through_provider = callback_fixtures.RequesterCallbackContinuationTests.through_provider
+
+    SECOND_URL = 'https://github.com/example/coconut/pull/218'
+    MESSAGE = 'The corrected commit passed review. Finish its acceptance check.'
+
+    def finished(self, first='merged', second='merged', ids=('delegated-pr', 'second-delegated-pr'), retained=False):
+        """The saved shape: two finished delegated PRs of one Work, and the requester's own finished report of the first.
+
+        The requester's own native turn makes the call. It reported activity on its PR itself.
+        """
+        owner, requester, work, pr, report, helper = self.requester_activity(retained=retained)
+        self.service.db.execute('DELETE FROM artifacts WHERE id=?', (pr['id'],))
+        prs = [dict(pr, id=ids[0], status=first, pr_state=first),
+               dict(pr, id=ids[1], url=self.SECOND_URL, title='Let the requester continue', status=second, pr_state=second)]
+        report = dict(report, status='merged', pr_state='merged')
+        for item in (*prs, report):
+            self.service._put('artifacts', item)
+        return owner, requester, work, prs, report
+
+    def choose(self, caller, url, **changes):
+        return self.service.emit(caller['id'], 'work_continue',
+                                 dict(task_id='t_existing', message=self.MESSAGE, retained_pr_url=url, **changes))
+
+    def state(self):
+        tables = ('tasks', 'artifacts', 'deliveries', 'decisions', 'contexts', 'settings', 'native_receipts')
+        saved = {table: self.service.db.execute(f'SELECT * FROM {table} ORDER BY rowid').fetchall() for table in tables}
+        saved['events'] = self.service.db.execute('SELECT count(*), max(seq) FROM events').fetchone()
+        return saved
+
+    def assert_no_writes(self, call, message):
+        before = self.state()
+        with self.assertRaisesRegex(ServiceError, message):
+            call()
+        self.assertEqual(self.state(), before)
+
+    def assert_chosen(self, owner, requester, work, prs, report, chosen, receipt):
+        others = {a['id']: a for a in self.service._all('artifacts') if a['id'] != chosen['id']}
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
+        continued = self.service._get('tasks', owner['id'])
+        for key in ('id', '_execution_session_id', 'thread_id', 'session_id', 'exchange_id', 'source_task_id',
+                    'source_bot_id', '_reply_to_task_id', '_kanban_claim', 'parent_task_id'):
+            self.assertEqual(continued.get(key), owner.get(key), key)
+        self.assertEqual((continued['status'], continued['_native_outcome_id']), ('queued', 't_existing'))
+        # The existing PR is the Work item, through the same guarded path as a single delegated PR.
+        self.assertEqual(continued['_work_context_id'], chosen['id'])
+        self.assertEqual(self.service._get('artifacts', chosen['id']), dict(chosen, _native_outcome_id='t_existing'))
+        return continued, others
+
+    def test_the_plain_call_still_refuses_and_names_the_choice(self):
+        # The PR IDs sort both ways, so artifact order cannot choose.
+        for ids in (('a-delegated-pr', 'z-delegated-pr'), ('z-delegated-pr', 'a-delegated-pr')):
+            with self.subTest(ids=ids):
+                try:
+                    owner, requester, work, prs, report = self.finished(ids=ids)
+                    self.assert_no_writes(lambda: self.resume(requester),
+                                          '^' + re.escape(native_outcomes.FINISHED_PRS_AMBIGUOUS) + '$')
+                finally:
+                    self.tearDown()
+                    self.setUp()
+
+    def test_a_named_finished_pr_continues_the_same_execution(self):
+        for index, url in ((0, URL), (1, self.SECOND_URL), (1, self.SECOND_URL.upper())):
+            with self.subTest(url=url):
+                try:
+                    owner, requester, work, prs, report = self.finished()
+                    before = {a['id']: a for a in self.service._all('artifacts')}
+                    events = self.service.db.execute('SELECT max(seq) FROM events').fetchone()[0]
+                    receipt = self.choose(requester, url)
+                    continued, others = self.assert_chosen(owner, requester, work, prs, report, prs[index], receipt)
+                    # No Work row or other artifact appears. The other PR, the Work, and the report stay as they were.
+                    self.assertEqual(set(a['id'] for a in self.service._all('artifacts')), set(before))
+                    self.assertEqual(others, {k: v for k, v in before.items() if k != prs[index]['id']})
+                    self.assertEqual(self.service.db.execute(
+                        "SELECT count(*) FROM events WHERE seq>? AND type='artifact.created'", (events,)).fetchone()[0], 0)
+                    self.assertEqual(self.choose(requester, url), receipt)
+                    self.assertEqual(self.service._get('tasks', owner['id']), continued)
+                    self.assertEqual(len([d for d in self.service._all('deliveries') if d.get('receipt') == receipt]), 1)
+                finally:
+                    self.tearDown()
+                    self.setUp()
+
+    def test_the_requesters_retained_outcome_chooses_from_its_current_input(self):
+        owner, requester, work, prs, report = self.finished(retained=True)
+        self.assert_chosen(owner, requester, work, prs, report, prs[1], self.choose(requester, self.SECOND_URL))
+        self.assertEqual(self.service._get('tasks', requester['id']), requester)
+        self.assertEqual(self.service._get('artifacts', work['id']), work)
+
+    def test_an_audited_delegation_can_name_its_finished_pr(self):
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        # The owner reported activity on its second PR itself, as Care did on Coconut 218.
+        finished = [dict(pr, status='merged', pr_state='merged'),
+                    dict(pr, id='second-delegated-pr', url=self.SECOND_URL, status='merged', pr_state='merged',
+                         _activity_task_id=owner['id'])]
+        for item in finished:
+            self.service._put('artifacts', item)
+        self.assert_no_writes(lambda: self.resume(coordinator), re.escape(native_outcomes.FINISHED_PRS_AMBIGUOUS))
+        receipt = self.choose(coordinator, URL)
+        self.assertEqual(receipt['task_id'], owner['id'])
+        self.assertEqual(self.service._get('tasks', owner['id'])['_work_context_id'], finished[0]['id'])
+        self.assertEqual(self.service._get('artifacts', finished[1]['id']), finished[1])
+        self.assertEqual(self.service._get('artifacts', work['id']), work)
+
+    def provider_call(self, caller, payload, twice=False):
+        """The real Hermes worker calls coconut_continue_work with the payload, as through_provider does."""
+        self.root = Path(self.temp.name) / str(uuid4())
+        behavior = "import json\nresult = registry.dispatch('coconut_continue_work', " + repr(payload) + ")\n"
+        if twice:
+            behavior += ("assert json.loads(registry.dispatch('coconut_continue_work', " + repr(payload) + ")) "
+                         "== json.loads(result)\n")
+        behavior += "return {'completed': True, 'final_response': result}\n"
+        provider = callback_fixtures.test_provider.ProviderTests.fake_hermes(self, behavior)
+        self.assertTrue(provider.catalog.root.is_relative_to(Path(self.temp.name)))
+        events = []
+
+        def emit(kind, data):
+            if kind == 'work_continue':
+                return self.service.emit(caller['id'], kind, data)
+            events.append((kind, data))
+        with patch.dict(os.environ, ANTHROPIC_API_KEY='test-only'):
+            provider.start_task({k: caller[k] for k in ('id', 'bot_id', 'title', '_native_turn_id')},
+                                self.service._get('bots', caller['bot_id']), [], emit)
+        text = ''.join(data['text'] for kind, data in events if kind == 'text_delta')
+        self.assertTrue(text.startswith('{'), events)
+        return json.loads(text)
+
+    def test_the_provider_passes_the_choice_and_admits_once(self):
+        owner, requester, work, prs, report = self.finished()
+        # Without the choice, the worker's call gets the refusal and nothing changes.
+        before = self.state()
+        refused = self.provider_call(requester, dict(task_id='t_existing', message=self.MESSAGE))
+        self.assertEqual(refused, dict(status='rejected', error=native_outcomes.FINISHED_PRS_AMBIGUOUS))
+        self.assertEqual({k: v for k, v in self.state().items() if k not in ('events',)},
+                         {k: v for k, v in before.items() if k not in ('events',)})
+        receipt = self.provider_call(requester, dict(task_id='t_existing', message=self.MESSAGE,
+                                                     retained_pr_url=self.SECOND_URL), twice=True)
+        self.assert_chosen(owner, requester, work, prs, report, prs[1], receipt)
+        self.assertEqual(len([d for d in self.service._all('deliveries') if d.get('receipt') == receipt]), 1)
+
+    def test_the_schema_offers_an_optional_choice(self):
+        schema = native_outcomes.CONTINUE_SCHEMA['parameters']
+        self.assertFalse(schema['additionalProperties'])
+        self.assertEqual(schema['required'], ['task_id', 'message'])
+        self.assertEqual({k: schema['properties']['retained_pr_url'][k] for k in ('type', 'maxLength')},
+                         dict(type='string', maxLength=native_outcomes.RETAINED_PR_URL_LIMIT))
+
+    def test_the_original_requester_receives_the_result_once(self):
+        owner, requester, work, prs, report = self.finished()
+        self.choose(requester, URL)
+        earlier = {d['id'] for d in self.service._all('deliveries')}
+        # The owner's turn completes the native outcome, as test_native_work_continuation does.
+        continued = dict(self.service._get('tasks', owner['id']), status='completed')
+        self.service.kanban.tasks[owner['id']].update(status='done', input_id=continued['_native_turn_id'])
+        self.service._prepare_return(continued, 'The merged change is verified.', 'completed')
+        self.service._put('tasks', continued)
+        self.service.running.pop(requester['id'])
+        self.service._put('tasks', dict(self.service._get('tasks', requester['id']), status='completed'))
+        self.service._drain_returns()
+        self.service._drain_returns()
+        returned = [d for d in self.service._all('deliveries') if d['id'] not in earlier and d['source_task_id'] == owner['id']]
+        self.assertEqual([(d['target_bot_id'], d['text']) for d in returned],
+                         [(requester['bot_id'], 'The merged change is verified.')])
+        callbacks = [t for t in self.service._all('tasks') if t.get('_is_return') and t.get('source_task_id') == owner['id']]
+        self.assertEqual([(t['bot_id'], t['_assignment_task_id']) for t in callbacks], [(requester['bot_id'], requester['id'])])
+        finished = self.service._get('tasks', owner['id'])
+        self.assertEqual((finished['_reply_to_task_id'], finished['_work_context_id'], finished['_execution_session_id']),
+                         (requester['id'], prs[0]['id'], owner['_execution_session_id']))
+        self.assertFalse(finished.get('_return_pending'))
+        self.assertEqual(self.service._get('artifacts', prs[1]['id']), prs[1])
+        self.assertEqual(self.service._get('artifacts', work['id']), work)
+
+    def test_a_choice_is_refused_in_every_other_shape(self):
+        refused = native_outcomes.SELECTION_REFUSED
+
+        def put(index, **changes):
+            return lambda owner, requester, work, prs: self.service._put('artifacts', dict(prs[index], **changes))
+
+        def other_work(owner, requester, work, prs):
+            self.service._put('artifacts', dict(work, id='other-work', _native_outcome_id='t_other'))
+            put(1, work_outcome_id='other-work')(owner, requester, work, prs)
+
+        def other_report(owner, requester, work, prs):
+            other = dict(work, id='other-work', _native_outcome_id='t_other')
+            self.service._put('artifacts', other)
+            self.service._put('artifacts', saved_report(owner, other, _work_parent_task_id=requester['id']))
+
+        def foreign_report(owner, requester, work, prs):
+            self.service._put('artifacts', saved_report(owner, work, _work_parent_task_id=requester['id'],
+                                                        _native_outcome_id='t_other'))
+
+        def owner_work(owner, requester, work, prs):
+            self.service._put('artifacts', dict(id='owner-work', task_id=owner['id'], bot_id=owner['bot_id'], kind='work',
+                                                title='Other work', status='waiting'))
+
+        def unproven(owner, requester, work, prs):
+            other = dict(requester, id='other-requester-task', _execution_session_id='other-requester-task',
+                         _work_context_id=None, _native_outcome_id=None, _kanban_claim=None)
+            self.service._put('tasks', other)
+            self.service._put('artifacts', dict(work, task_id=other['id']))
+
+        def single(owner, requester, work, prs):
+            self.service.db.execute('DELETE FROM artifacts WHERE id=?', (prs[1]['id'],))
+
+        def requester_only(owner, requester, work, prs):
+            self.service._put('artifacts', dict(id='requester-only-pr', task_id=requester['id'], bot_id=requester['bot_id'],
+                kind='pr', title='Requester PR', status='merged', pr_state='merged', url=URL[:-1] + '7',
+                work_outcome_id=work['id'], _review_task_id=requester['id']))
+
+        def retained_item(owner, requester, work, prs):
+            # A stale owner that already retains its Work item cannot have it replaced.
+            self.service._put('tasks', dict(owner, _work_context_id=prs[0]['id']))
+
+        cases = {
+            'an open PR left': (URL, put(1, status='open', pr_state='open')),
+            'the open PR itself': (self.SECOND_URL, put(1, status='open', pr_state='open')),
+            'two open PRs and a finished one': (URL, lambda owner, requester, work, prs: [
+                self.service._put('artifacts', dict(prs[1], id=identity, url=self.SECOND_URL[:-1] + str(n),
+                                                    status='open', pr_state='open'))
+                for n, identity in enumerate(('open-1', 'open-2'))]),
+            'a single finished PR': (URL, single),
+            'a URL that no owner PR has': (URL[:-1] + '9', None),
+            'the requesters own PR': (URL[:-1] + '7', requester_only),
+            'a finished PR of another Work': (URL, other_work),
+            'the PR of another Work': (self.SECOND_URL, other_work),
+            'a report of another Work': (URL, other_report),
+            'a report of another native outcome': (URL, foreign_report),
+            'another Work of the owner': (URL, owner_work),
+            'an unproven delegate link': (URL, unproven),
+            'a PR of another bot': (self.SECOND_URL, put(1, bot_id='someone-else')),
+            'an owner that retains its Work item': (URL, retained_item),
+        }
+
+        def check(case):
+            url, change = case
+            owner, requester, work, prs, report = self.finished()
+            if change:
+                change(owner, requester, work, prs)
+            self.assert_no_writes(lambda: self.choose(self.service._get('tasks', requester['id']), url),
+                                  '^' + re.escape(refused) + '$')
+        self.each(cases, check)
+
+    def test_a_choice_of_an_owner_with_a_retained_outcome_is_refused(self):
+        owner, requester, work, prs, report = self.finished()
+        self.choose(requester, URL)
+        self.service._put('tasks', dict(self.service._get('tasks', owner['id']), status='completed'))
+        self.assert_no_writes(lambda: self.service.emit(requester['id'], 'work_continue', dict(
+            task_id='t_existing', message='Again.', retained_pr_url=self.SECOND_URL)), re.escape(native_outcomes.SELECTION_REFUSED))
+
+    def test_a_malformed_choice_is_refused(self):
+        owner, requester, work, prs, report = self.finished()
+        for value in ('', '   ', 7, None, ['x'], 'x' * (native_outcomes.RETAINED_PR_URL_LIMIT + 1)):
+            with self.subTest(value=value):
+                self.assert_no_writes(lambda: self.choose(requester, value), 'retained_pr_url must contain')
+
+    def test_a_choice_keeps_every_guard(self):
+        def pause(owner, requester, work, prs):
+            self.service._put('artifacts', dict(work, paused_by_decision_id='held'))
+            self.service._put('decisions', dict(id='held', task_id=requester['id'], status='rejected', decided_by='human'))
+
+        def cancel(owner, requester, work, prs):
+            self.service.db.execute("INSERT INTO settings(key,value) VALUES(?,?)",
+                                    ('work.cancelled.work:' + work['id'], json.dumps('cancelled')))
+
+        def owner_change(**changes):
+            return lambda owner, requester, work, prs: self.service._put('tasks', dict(owner, **changes))
+
+        def owner_decision(owner, requester, work, prs):
+            self.service._put('decisions', dict(id='pending', task_id=owner['id'], bot_id=owner['bot_id'],
+                                                status='pending', title='Publish?'))
+
+        def writer_activity(owner, requester, work, prs):
+            writer = dict(requester, id='other-requester-writer', status='working',
+                          _execution_session_id='other-requester-writer')
+            self.service._put('tasks', writer)
+            self.service._put('artifacts', dict(id='writer-pr', task_id=requester['id'], bot_id=requester['bot_id'],
+                kind='pr', title='Writer PR', status='merged', pr_state='merged', url=self.SECOND_URL,
+                work_outcome_id=work['id'], _review_task_id=requester['id'], _activity_task_id=writer['id']))
+
+        def open_activity(owner, requester, work, prs):
+            self.service._put('artifacts', dict(id='requester-open-pr', task_id=requester['id'], bot_id=requester['bot_id'],
+                kind='pr', title='Open PR', status='open', pr_state='open', url=self.SECOND_URL[:-1] + '9',
+                work_outcome_id=work['id'], _review_task_id=requester['id'], _activity_task_id=requester['id']))
+
+        def unknown_peer_tool(owner, requester, work, prs):
+            reporter = dict(requester, id='requester-reporter', status='failed', _execution_session_id='requester-reporter')
+            self.service._put('tasks', reporter)
+            self.service._put('native_receipts', dict(id=str(uuid4()), task_id=reporter['id'], turn_id='turn',
+                state='executing', action=dict(name='browser_navigate', arguments={}), created_at=reporter['created_at']))
+            self.service._put('artifacts', dict(id='reporter-pr', task_id=requester['id'], bot_id=requester['bot_id'],
+                kind='pr', title='Reporter PR', status='merged', pr_state='merged', url=self.SECOND_URL,
+                work_outcome_id=work['id'], _review_task_id=requester['id'], _activity_task_id=reporter['id']))
+
+        def activity_without_review(owner, requester, work, prs):
+            # The requester's activity on the other PR is a writer unless its own finished review covers it.
+            report = self.service._get('artifacts', 'requester-pr')
+            report.pop('_review_task_id')
+            self.service._put('artifacts', report)
+
+        def local_turn(owner, requester, work, prs):
+            # Naming the requester's own PR still needs the requester's own native turn for its activity.
+            report = self.service._get('artifacts', 'requester-pr')
+            report.pop('_review_task_id')
+            self.service._put('artifacts', report)
+            self.service._put('tasks', dict(requester, _native_turn_id=None, _kanban_claim=None))
+
+        cases = {
+            'a paused Work': ('paused', self.SECOND_URL, pause),
+            'a cancelled Work': ('paused or cancelled', self.SECOND_URL, cancel),
+            'a pending owner decision': ('existing decision', self.SECOND_URL, owner_decision),
+            'an undelivered owner result': ('previous result', self.SECOND_URL, owner_change(_return_pending={'text': 'x'})),
+            'an owner wait': ('existing dependencies', self.SECOND_URL, owner_change(_waiting_on=['helper'])),
+            'an active owner branch': ('active work', self.SECOND_URL, lambda owner, requester, work, prs: self.service._put(
+                'tasks', dict(owner, id='owner-branch', status='working', _native_outcome_id=None, _kanban_claim=None))),
+            'another requester writer': ('another execution', self.SECOND_URL, writer_activity),
+            'the requesters activity on an open PR': ('another execution', URL, open_activity),
+            'an unknown tool of a peer': ('another execution', URL, unknown_peer_tool),
+            'the requesters activity without its finished review': ('another execution', self.SECOND_URL, activity_without_review),
+            'a local requester turn with activity': ('another execution', URL, local_turn),
+        }
+
+        def check(case):
+            message, url, change = case
+            owner, requester, work, prs, report = self.finished()
+            change(owner, requester, work, prs)
+            self.assert_no_writes(lambda: self.choose(self.service._get('tasks', requester['id']), url), message)
+        self.each(cases, check)
+
+        def check_requester(name):
+            owner, requester, work, prs, report = self.finished()
+            self.requester_cases(requester['id'])[name]()
+            self.assert_no_writes(lambda: self.choose(self.service._get('tasks', requester['id']), URL), 'another execution')
+        owner, requester, work, prs, report = self.finished()
+        names = list(self.requester_cases(requester['id']))
+        self.tearDown()
+        self.setUp()
+        self.assertEqual(len(names), 8)
+        self.each({name: name for name in names}, check_requester)
+
+
 @needs_hermes
 class NativeDelegatedReportContinuationTests(unittest.TestCase):
     setUp = native_fixtures.NativeClaimContinuationTests.setUp
@@ -657,7 +1021,7 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
         self.end_caller_turn = end_caller_turn
         return requester
 
-    def linked(self, second_pr=False, requester_turn=False):
+    def linked(self, second_pr=False, requester_turn=False, finished=False):
         prepare = self.prepare
         saved = []
 
@@ -678,6 +1042,10 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
             if requester_turn:
                 # The requester reports activity on the delegated PR itself, as in PR 8606.
                 requester_pr['_activity_task_id'] = requester['id']
+            if finished:
+                # Every delegated PR of the Work merged, and so did the requester's own report of the first.
+                pr.update(status='merged', pr_state='merged')
+                requester_pr.update(status='merged', pr_state='merged')
             items = [work, pr, report, requester_pr]
             if second_pr:
                 items.append(dict(pr, id=str(uuid4()), url=URL[:-1] + '2'))
@@ -740,6 +1108,42 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
         self.assertEqual(cards(), held)
         self.assertEqual((held[owner['id']]['status'], held[requester['id']]['status']), ('done', 'running'))
         self.end_requester_turn()
+
+    def test_a_named_merged_pr_dispatches_once_through_the_native_board(self):
+        saved = self.linked(second_pr=True, finished=True)
+        prepare, plain = self.prepare, self.resume
+        artifacts = set()
+
+        def refuse_then_prepare(*args):
+            # The plain call names no PR. It refuses and leaves Coconut and the board as they were.
+            owner, source, identity, workspace = prepare(*args)
+            before = (self.service._get('tasks', owner['id']), self.service._all('artifacts'),
+                      dict(self.service.kanban.tasks[owner['id']]))
+            with self.assertRaisesRegex(ServiceError, re.escape(native_outcomes.FINISHED_PRS_AMBIGUOUS)):
+                plain(source, identity)
+            self.service.kanban.call({'op': 'snapshot'})
+            self.assertEqual((self.service._get('tasks', owner['id']), self.service._all('artifacts'),
+                              dict(self.service.kanban.tasks[owner['id']])), before)
+            artifacts.update(a['id'] for a in before[1])
+            return owner, source, identity, workspace
+        self.prepare = refuse_then_prepare
+        # The same call, naming the second merged PR (see linked).
+        self.resume = lambda source, identity: self.service.emit(source['id'], 'work_continue', dict(
+            task_id=identity, message='The review passed. Verify locally; do not publish.', retained_pr_url=URL[:-1] + '2'))
+        self.check_dispatch('done')
+        work, pr, report, requester_pr, second = saved
+        self.assertEqual(second['url'], URL[:-1] + '2')
+        owner = self.service._get('tasks', pr['task_id'])
+        # The named PR is the Work item and follows the successor card. No Work row or other artifact appears.
+        self.assertEqual(owner['_work_context_id'], second['id'])
+        self.assertEqual(self.service._get('artifacts', second['id'])['_native_outcome_id'],
+                         self.service.kanban.tasks[owner['id']]['id'])
+        self.assertEqual({a['id'] for a in self.service._all('artifacts')}, artifacts)
+        for item in (pr, report, requester_pr):
+            current = self.service._get('artifacts', item['id'])
+            self.assertEqual({k: current.get(k) for k in ('task_id', 'url', 'pr_state', 'work_outcome_id', '_native_outcome_id')},
+                             {k: item.get(k) for k in ('task_id', 'url', 'pr_state', 'work_outcome_id', '_native_outcome_id')})
+        self.assertEqual(self.service._get('artifacts', work['id']), work)
 
     def test_two_delegated_prs_stay_ambiguous_through_the_native_board(self):
         saved = self.linked(second_pr=True)

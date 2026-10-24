@@ -120,6 +120,11 @@ turn never received go to the retry, and any other open input holds it.
 When a continuation fails again, the settle pass archives its successor too. The reconciler keeps that failure, as it
 does for a routine, when Coconut's records and the snapshot pass the same checks. It reads no adapter under the service
 lock. The next continuation reads the successor's runs from the adapter before it starts.
+A request without a retained native outcome gets the successor `coconut:<id>:<input>` for new input. Hermes retries a
+provider stop (a rate or billing limit, an overload, a timeout, or a server error) of a card that Coconut owns. This
+card is not owned, so the stop blocks it, and the settle pass archives it. That card continues under the same rules,
+only when its key names the claim's input, the provider stop is the request's failure, and its last run ended blocked.
+Any other failure of such a card stays final.
 
 An open assignment can wait for the person. Its label is in `awaiting_labels` of the source (default `awaiting-human`), and its latest comment comes from another GitHub account.
 The audit reads the latest comment of each labeled item with one GraphQL request. Only a card covers such an item: a pending card that names it, or an answer or dismissal that is not older than its latest change.
@@ -184,6 +189,28 @@ the requester's own run state. That requester is the direct requester, which wai
 an audited or registered delegation. Its other branches, pending decisions,
 unknown tool results, undelivered returns, and other waits still refuse the continuation, as do two open PRs, a PR of
 another Work, or an open requester PR.
+When the owner has two or more delegated PRs of that Work and every one of them merged or closed, no PR is the
+outcome by itself, and Coconut never picks one. Not the first, the newest, or any other. The plain call refuses with
+`Choose one retained Work item for this native outcome. Its delegated PRs of the same Work have all finished. Name one
+of them with retained_pr_url.` The caller can then repeat the call with the optional `retained_pr_url`:
+
+```json
+{"task_id": "t_20b9d17a", "message": "Verify the installed change.",
+ "retained_pr_url": "https://github.com/antiwork/gumroad/pull/8606"}
+```
+
+Coconut accepts the URL only for that exact shape: the owner has no retained outcome yet, the authenticated Work is the
+direct requester's, or the proven caller's of an audited or registered delegation, every delegated PR of the owner for
+it finished, the owner retains nothing else, and any saved report of the owner is a report of that Work. The URL must
+name one of those PRs (case does not matter). The named PR then becomes the owner's Work item, as a single delegated PR
+does. Coconut creates no Work row or other artifact, and the other PRs, the Work, and its reports stay as they are.
+The choice only says which existing PR presents the continuation. It approves nothing, and the task, its execution, its
+result route, and the requester's Work stay the same. Every guard above still applies: pause, cancellation, the
+requester's branches and writers, unknown tool results, pending decisions, and active work. In any other shape, for an
+owner that already retains its Work item, or for a URL of an open PR, another Work, another bot, the requester, or no
+PR of the owner, Coconut refuses the call with `retained_pr_url names no finished delegated PR that this continuation
+can choose.` and changes nothing. The selection is part of the call's delivery key, and the technical lane takes the
+same field through the same checks.
 
 The lane is not a sandbox and grants no permission. Terminal, coding agents, and file tools keep full local access, as in
 any turn. The bot receives exact scope instructions to stay local and not push, publish, mark ready, or merge.

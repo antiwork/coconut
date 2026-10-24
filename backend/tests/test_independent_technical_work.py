@@ -83,9 +83,9 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         self.assertEqual(self.service._get('decisions', 'unrelated-rejected'), self.unrelated_rejected)
         self.assertEqual(self.service._get('native_receipts', 'interrupted'), self.interrupted)
 
-    def refused(self, owner, source, pattern, work=None):
+    def refused(self, owner, source, pattern, work=None, **changes):
         with self.assertRaisesRegex(ServiceError, pattern):
-            self.lane(source, work)
+            self.lane(source, work, **changes)
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
     def admitted_turn(self):
@@ -1252,6 +1252,24 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         self.assertEqual(queued['_native_outcome_id'], 't_existing')
         after = {a['id']: a for a in self.service._all('artifacts')}
         self.assertEqual(set(after), set(before), 'No duplicate Work item')
+        self.assertEqual(after['open-pr'], dict(before['open-pr'], _native_outcome_id='t_existing'))
+        for identity in ('requester-work', 'requester-pr', 'merged-pr'):
+            self.assertEqual(after[identity], before[identity])
+        self.assertEqual(self.service._get('decisions', 'gate'), self.gate)
+
+    def test_a_named_finished_pr_continues_the_lane_and_the_plain_call_still_refuses(self):
+        # Both delegated PRs finished. The plain lane call refuses (see the next test). Naming one keeps that PR.
+        owner, source, items = self.retained_pr_owner()
+        self.service._put('artifacts', dict(items['open'], pr_state='merged', status='merged'))
+        before = {a['id']: a for a in self.service._all('artifacts')}
+        self.refused(owner, source, 'Name one of them with retained_pr_url')
+        self.refused(owner, source, 'retained_pr_url names no finished delegated PR', retained_pr_url=URL[:-1] + '9')
+        receipt = self.lane(source, retained_pr_url=URL[:-1] + '1')
+        queued = self.service._get('tasks', owner['id'])
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
+        self.assertEqual((queued['_work_context_id'], queued['_technical_lane']['decision_id']), ('open-pr', 'gate'))
+        after = {a['id']: a for a in self.service._all('artifacts')}
+        self.assertEqual(set(after), set(before), 'No new Work item')
         self.assertEqual(after['open-pr'], dict(before['open-pr'], _native_outcome_id='t_existing'))
         for identity in ('requester-work', 'requester-pr', 'merged-pr'):
             self.assertEqual(after[identity], before[identity])
