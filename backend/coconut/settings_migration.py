@@ -15,7 +15,6 @@ Each part checks the profile before it writes, so a step that stopped halfway ca
 in the native settings process, under the Python of the installed Hermes.
 """
 from copy import deepcopy
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -35,9 +34,9 @@ COCONUT_FILES = ('coconut-profile.json', '.coconut-kanban-tools', '.coconut-nati
                  'coconut-terminal.sh', 'coconut-google.sh')
 SHELL_SCRIPTS = ('coconut-terminal.sh', 'coconut-google.sh')
 BACKUP_COMPLETE = '.complete'
-# A copied fallback whose checks have not passed yet. Each attempt repeats them until the bot is done.
-PENDING = 'pending.json'
 ATTEMPT = 'attempt'
+# The private folder where the step checks a fallback copy before it writes into the profile.
+CHECK = 'check'
 # The step writes only the OpenAI API fallback, which was the only fallback that bots inherited.
 FALLBACK_KEYS = ('fallback_providers', 'fallback_model')
 
@@ -228,10 +227,6 @@ def _model(config, default_config, default, home, root):
     return {'status': 'copied', 'model': name, 'provider': provider}
 
 
-class MigrationError(RuntimeError):
-    """The step cannot keep a setting that the bot used. It restores the profile files and leaves the bot not done."""
-
-
 KEY_SETTINGS = ('key_env', 'api_key_env')
 
 
@@ -311,7 +306,7 @@ def _secret_values(home):
 
 
 def _snapshot(home, folder):
-    """Copy the profile files and the pending record as they are just before this attempt.
+    """Copy the profile files as they are just before this attempt.
 
     A failed attempt restores this snapshot, not the first backup, so changes that the person made after an earlier
     attempt stay. The first backup stays for recovery.
@@ -320,7 +315,7 @@ def _snapshot(home, folder):
     if attempt.exists():
         shutil.rmtree(attempt)
     attempt.mkdir(mode=0o700)
-    for source in (home / 'config.yaml', home / '.env', folder / PENDING):
+    for source in (home / 'config.yaml', home / '.env'):
         if source.is_file() and not source.is_symlink():
             _copy(source, attempt / source.name)
 
@@ -328,7 +323,7 @@ def _snapshot(home, folder):
 def _restore(home, folder):
     """Put back the snapshot of this attempt. A file that the snapshot does not hold did not exist before it."""
     attempt = folder / ATTEMPT
-    for target in (home / 'config.yaml', home / '.env', folder / PENDING):
+    for target in (home / 'config.yaml', home / '.env'):
         source = attempt / target.name
         if source.is_file():
             _copy(source, target)
@@ -336,90 +331,37 @@ def _restore(home, folder):
             target.unlink(missing_ok=True)
 
 
-def _digest(value):
-    return hashlib.sha256(value.encode()).hexdigest()
+def _check_copy(default, home, folder, config, writes, values, copied_secret_sources):
+    """Check a fallback copy before the step writes it. Return the reason when the bot would not keep the key.
 
-
-def _referenced_names(config):
-    """The variables that a configuration refers to: ${NAME} references and key settings at any depth, and the
-    OPENAI_API_KEY that an OpenAI API route without its own key setting reads."""
-    from native_mcp import _references
-    found = _references(config, set())
-
-    def settings(value):
-        if isinstance(value, dict):
-            for key, item in value.items():
-                if key in KEY_SETTINGS and isinstance(item, str) and item:
-                    found.add(item)
-                settings(item)
-        elif isinstance(value, list):
-            for item in value:
-                settings(item)
-    settings(config)
-    routes = config.get('fallback_providers')
-    for route in routes if isinstance(routes, list) else []:
-        if (isinstance(route, dict) and route.get('provider') == 'openai-api' and not route.get('api_key')
-                and not any(route.get(key) for key in KEY_SETTINGS)):
-            found.add('OPENAI_API_KEY')
-    return found
-
-
-def _undo_pending(home, pending):
-    """Undo what an unchecked fallback copy wrote, and keep every other setting as it is now. Return whether the copy
-    is fully undone.
-
-    The step removes a copied route only while it is unchanged. It removes a copied variable or the copied secret
-    sources only while they hold what the copy wrote and no setting that stays refers to them. When a setting that
-    stays still uses a copied value, the step keeps that value and the copy stays pending, so the bot is not done.
+    Hermes resolves keys from the files of a home, so the step writes the proposed config.yaml and variables into a
+    private check folder with the profile's other files, and resolves the keys there. The profile is not changed.
     """
-    from hermes_cli.config import remove_env_value
-    config = raw_config(home)
-    before = deepcopy(config)
-    copied = pending.get('routes') or []
-    routes = config.get('fallback_providers')
-    if isinstance(routes, list):
-        kept = [route for route in routes if route not in copied]
-        if kept:
-            config['fallback_providers'] = kept
-        else:
-            config.pop('fallback_providers', None)
-    referenced = _referenced_names(config)
-    values = _env(home)
-    complete, remove = True, []
-    for name, digest in pending.get('written', {}).items():
-        if values.get(name) is None or _digest(values[name]) != digest:
-            # The variable is gone, or the person changed it: it is not the copy's value any more.
-            continue
-        if name in referenced:
-            complete = False
-        else:
-            remove.append(name)
-    if pending.get('secrets') is not None and config.get('secrets') == pending['secrets']:
-        defined = {name for name, value in values.items() if value and name not in remove}
-        if referenced - defined:
-            # A setting that stays can read a variable from these sources.
-            complete = False
-        else:
-            config.pop('secrets', None)
-    if config != before:
-        save_config(home, config)
-    for name in remove:
-        remove_env_value(name)
-    return complete
-
-
-def _check_fallback(default, home, pending, values):
-    """Check a copied fallback: the bot must resolve the default key, and copied secret sources must change no key."""
-    expected = _fallback_keys(default)
-    actual = _fallback_keys(home)
-    if any(key and key != got for key, got in zip(expected, actual)) or len(actual) != len(expected):
-        raise MigrationError('The bot could not keep the key of its OpenAI API fallback.')
-    if pending['fallback'].get('copied_secret_sources'):
-        # The copied sources must not replace a value that the bot already had, such as its model key.
-        resolved = _secret_values(home)
-        written = set(pending.get('written', {}))
-        if any(resolved.get(name) != value for name, value in values.items() if value and name not in written):
-            raise MigrationError('The secret sources of the OpenAI API fallback would change other bot keys.')
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    check = folder / CHECK
+    shutil.rmtree(check, ignore_errors=True)
+    check.mkdir(mode=0o700)
+    try:
+        for name in ('.env', 'auth.json'):
+            if (home / name).is_file() and not (home / name).is_symlink():
+                _copy(home / name, check / name)
+        save_config(check, config)
+        token = set_hermes_home_override(str(check))
+        try:
+            for name, value in writes.items():
+                _save_env(name, value)
+        finally:
+            reset_hermes_home_override(token)
+        expected, actual = _fallback_keys(default), _fallback_keys(check)
+        if len(actual) != len(expected) or any(key and key != got for key, got in zip(expected, actual)):
+            return 'The bot would not resolve the key of the default OpenAI API fallback.'
+        if copied_secret_sources:
+            resolved = _secret_values(check)
+            if any(resolved.get(name) != value for name, value in values.items() if value and name not in writes):
+                return 'The secret sources of the default fallback would change other keys of the bot.'
+        return None
+    finally:
+        shutil.rmtree(check, ignore_errors=True)
 
 
 def _shell_init(home, config):
@@ -525,9 +467,6 @@ def migrate_bot(default, home, root=None):
     backup.mkdir(parents=True, exist_ok=True, mode=0o700)
     _back_up(home, backup)
     _snapshot(home, folder)
-    pending = json.loads((folder / PENDING).read_text()) if (folder / PENDING).is_file() else {}
-    # A copy that an earlier attempt left unchecked. If its checks fail now, the step undoes that copy too.
-    earlier = dict(pending)
     default_config = raw_config(default)
     default_values = _env(default)
     token = set_hermes_home_override(str(home))
@@ -541,30 +480,31 @@ def migrate_bot(default, home, root=None):
         fallback, writes, fallback_report = _fallback(config, default_config, values, default_values)
         scripts = _shell_init(home, config)
         if fallback:
-            # Record the copy before writing it. After a stop, the next attempt finds the routes in config.yaml and
-            # copies nothing, but it still runs the checks of this record.
-            # The record holds digests, not the values of the copied variables.
-            pending = dict(fallback=fallback_report, routes=fallback,
-                           secrets=config.get('secrets') if fallback_report.get('copied_secret_sources') else None,
-                           written={name: _digest(value) for name, value in writes.items()})
-            _write(folder / PENDING, json.dumps(pending, sort_keys=True) + '\n', folder)
+            # The copy is all or nothing. The step checks it before it writes anything for it.
+            problem = _check_copy(default, home, folder, config, writes, values,
+                                  fallback_report['copied_secret_sources'])
+            if problem:
+                # The bot keeps working without the inherited fallback, as a bot without any fallback does.
+                config.pop('fallback_providers', None)
+                if fallback_report['copied_secret_sources']:
+                    config.pop('secrets', None)
+                writes = {}
+                fallback_report = dict(fallback_report, status='not_copied', reason=problem)
+            else:
+                fallback_report = dict(fallback_report, status='copied')
         # Write the variables before config.yaml. After a stop between the two writes, the next run finds the
-        # settings still missing and repeats both. It does not copy a variable twice.
+        # routes still missing and repeats both writes with the same values.
         for name, value in writes.items():
             _save_env(name, value)
             values[name] = value
         redirects = _redirects(home, values)
         if config != before:
             save_config(home, config)
-        if pending:
-            _check_fallback(default, home, pending, values)
         # MCP servers last: Hermes's import reads and writes config.yaml and .env itself.
         servers = import_servers(root, home) if (raw_config(root).get('mcp_servers') or {}) else {}
     except BaseException:
         # A bot that is not done keeps no half attempt. The next start runs the step again.
         _restore(home, folder)
-        if earlier and _undo_pending(home, earlier):
-            (folder / PENDING).unlink(missing_ok=True)
         raise
     finally:
         reset_hermes_home_override(token)
@@ -572,30 +512,17 @@ def migrate_bot(default, home, root=None):
     files = _move_coconut_files(home, backup)
     report = dict(version=VERSION, status='done', home=str(home), default_home=str(default),
                   legacy_defaults=legacy, approvals=approvals, model=model,
-                  fallback=fallback_report or pending.get('fallback', {}),
+                  fallback=fallback_report,
                   mcp=dict(added=servers.get('added', []), needs_setup=servers.get('needs_setup', []),
                            skipped=servers.get('skipped', [])),
                   login_folders=redirects, removed_shell_init_files=scripts, runs=runs, moved_files=files,
                   backup=str(backup))
     _write(path, json.dumps(report, indent=2, sort_keys=True) + '\n', folder)
     # The report marks the bot as done first. A stop before this cleanup leaves only files that nothing reads.
-    (folder / PENDING).unlink(missing_ok=True)
     shutil.rmtree(folder / ATTEMPT, ignore_errors=True)
     return report
 
 
 def migrate(default, homes, root=None):
-    """Run the step for each profile home. Return the reports by bot ID.
-
-    A bot that cannot keep a setting does not stop the others. After all bots, the step raises for those bots, so the
-    service does not start with a bot that lost a setting. Their profile files stay as they were before the step.
-    """
-    reports, failures = {}, {}
-    for bot_id, home in homes.items():
-        try:
-            reports[bot_id] = migrate_bot(default, home, root)
-        except MigrationError as error:
-            failures[bot_id] = str(error)
-    if failures:
-        raise MigrationError('Bots not migrated: ' + '; '.join(f'{bot_id}: {reason}' for bot_id, reason in failures.items()))
-    return reports
+    """Run the step for each profile home. Return the reports by bot ID."""
+    return {bot_id: migrate_bot(default, home, root) for bot_id, home in homes.items()}

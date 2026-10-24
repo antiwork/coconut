@@ -229,28 +229,17 @@ class NativeSettingsMigrationTests(unittest.TestCase):
             self.assertNotIn('synthetic', result.stdout)
 
 
-FALLBACK = r"""
-import json, os, sys
-from pathlib import Path
-root = Path(sys.argv[1])
-default, home = root / 'default', root / 'bots' / 'bot' / 'home'
-import model_catalog
-model_catalog.apply_env_file(default / '.env')
-from settings_migration import MigrationError, _fallback_keys, migrate
-from agent.secret_scope import load_env_file
-from native_settings import raw_config
-before = {name: (home / name).read_bytes() for name in ('config.yaml', '.env') if (home / name).exists()}
-try:
-    report = migrate(default, {'bot': home})['bot']
-except MigrationError as error:
-    after = {name: (home / name).read_bytes() for name in ('config.yaml', '.env') if (home / name).exists()}
-    print(json.dumps({'error': str(error), 'restored': after == before,
-                      'report': (home.parent / 'settings-migration' / 'report.json').exists()}))
-    raise SystemExit
-print(json.dumps({'report': report['fallback'], 'keys': _fallback_keys(home), 'default_keys': _fallback_keys(default),
-                  'routes': raw_config(home)['fallback_providers'], 'secrets': 'secrets' in raw_config(home),
-                  'own_key': load_env_file(home / '.env').get('OPENAI_API_KEY')}))
-"""
+def _yaml(path):
+    """Read config.yaml after a stopped attempt. Hermes saves YAML, and the test process has no YAML package."""
+    result = subprocess.run([PYTHON, '-c', 'import json, sys\nfrom ruamel.yaml import YAML\n'
+                             'print(json.dumps(YAML(typ="safe", pure=True).load(open(sys.argv[1]))))', str(path)],
+                            capture_output=True, text=True, timeout=30, check=True)
+    return json.loads(result.stdout)
+
+
+def _env_file(path):
+    from coconut.runtime_environment import _env_values
+    return dict(_env_values(path)) if path.exists() else {}
 
 
 ATTEMPT = r"""
@@ -262,91 +251,28 @@ folder = home.parent / 'settings-migration'
 import model_catalog
 model_catalog.apply_env_file(default / '.env')
 STEP
-from settings_migration import MigrationError, migrate
+from settings_migration import _fallback_keys, migrate
 from agent.secret_scope import load_env_file
 from native_settings import raw_config
-state = {}
-try:
-    state['report'] = migrate(default, {'bot': home})['bot']
-except MigrationError as error:
-    state['error'] = str(error)
-backup = folder / 'backup' / 'config.yaml'
-state.update(config=raw_config(home), env=load_env_file(home / '.env'), done=(folder / 'report.json').exists(),
-             pending=(folder / 'pending.json').exists(),
-             backup_config=json.loads(backup.read_text()) if backup.exists() else None)
-print(json.dumps(state))
+report = migrate(default, {'bot': home})['bot']
+config = raw_config(home)
+print(json.dumps(dict(report=report, config=config, env=load_env_file(home / '.env'), done=(folder / 'report.json').exists(),
+                      keys=_fallback_keys(home) if 'fallback_providers' in config else None, default_keys=_fallback_keys(default),
+                      leftovers=sorted(path.name for path in folder.iterdir() if path.name not in ('backup', 'report.json')))))
 """
+
 
 @needs_hermes
 class NativeFallbackMigrationTests(unittest.TestCase):
-    def run_case(self, default_config, default_env, bot_config, bot_env):
-        with tempfile.TemporaryDirectory(prefix='settings-migration-') as temporary:
-            root = Path(temporary)
-            default, home = root / 'default', root / 'bots' / 'bot' / 'home'
-            default.mkdir()
-            home.mkdir(parents=True)
-            secret = root / 'secret.env'
-            secret.write_text('OPENAI_API_KEY=synthetic-secret-source\n')
-            text = json.dumps(default_config).replace('SECRET_FILE', str(secret))
-            (default / 'config.yaml').write_text(text)
-            (default / '.env').write_text(default_env)
-            (home / 'config.yaml').write_text(json.dumps(bot_config).replace('SECRET_FILE', str(secret)))
-            if bot_env:
-                (home / '.env').write_text(bot_env)
-            env = {key: value for key, value in os.environ.items() if key != 'OPENAI_API_KEY'}
-            env.update(HERMES_HOME=str(default),
-                       PYTHONPATH=os.pathsep.join([str(Path(SOURCE).resolve()), str(BACKEND), str(BACKEND / 'coconut')]))
-            result = subprocess.run([PYTHON, '-c', FALLBACK, str(root)], env=env, capture_output=True, text=True, timeout=60)
-            self.assertEqual(result.returncode, 0, result.stderr[-6000:])
-            return json.loads(result.stdout.strip().splitlines()[-1])
-
     route = {'provider': 'openai-api', 'model': 'gpt-6-astra', 'base_url': 'https://api.openai.com/v1', 'key_env': 'OPENAI_API_KEY'}
-
-    def test_a_bot_with_its_own_key_keeps_it_and_the_route_keeps_the_default_key(self):
-        state = self.run_case({'fallback_providers': [self.route]}, 'OPENAI_API_KEY=synthetic-default\n',
-                              {}, 'OPENAI_API_KEY=synthetic-bot\n')
-        self.assertEqual(state['own_key'], 'synthetic-bot')
-        self.assertEqual(state['routes'][0]['key_env'], 'COCONUT_FALLBACK_OPENAI_API_KEY')
-        self.assertEqual(state['keys'], ['synthetic-default'])
-        self.assertEqual(state['keys'], state['default_keys'])
-        self.assertEqual(state['report']['renamed_variables'], {'OPENAI_API_KEY': 'COCONUT_FALLBACK_OPENAI_API_KEY'})
-
-    def test_a_key_from_secret_sources_keeps_its_source(self):
-        secrets = {'command': {'enabled': True, 'command': 'cat SECRET_FILE'}}
-        state = self.run_case({'fallback_providers': [self.route], 'secrets': secrets}, '', {}, '')
-        self.assertTrue(state['secrets'])
-        self.assertEqual(state['keys'], ['synthetic-secret-source'])
-        self.assertEqual(state['keys'], state['default_keys'])
-
-    def test_a_bot_that_cannot_keep_the_key_is_restored_and_not_done(self):
-        secrets = {'command': {'enabled': True, 'command': 'cat SECRET_FILE'}}
-        state = self.run_case({'fallback_providers': [self.route], 'secrets': secrets}, '',
-                              {'secrets': {'command': {'enabled': False, 'command': 'true'}}}, '')
-        self.assertIn('OpenAI API fallback', state['error'])
-        self.assertTrue(state['restored'])
-        self.assertFalse(state['report'])
-
-    def test_the_key_alias_and_env_references_are_renamed(self):
-        route = {'provider': 'openai-api', 'model': 'gpt-6-astra', 'base_url': 'https://api.openai.com/v1',
-                 'api_key_env': 'FALLBACK_KEY', 'extra_headers': {'X-Key': '${env:FALLBACK_KEY}'}}
-        state = self.run_case({'fallback_providers': [route]}, 'FALLBACK_KEY=synthetic-default\n',
-                              {}, 'FALLBACK_KEY=synthetic-bot\n')
-        self.assertEqual(state['routes'][0]['api_key_env'], 'COCONUT_FALLBACK_FALLBACK_KEY')
-        self.assertNotIn('key_env', state['routes'][0])
-        self.assertEqual(state['routes'][0]['extra_headers'], {'X-Key': '${COCONUT_FALLBACK_FALLBACK_KEY}'})
-        self.assertEqual(state['keys'], ['synthetic-default'])
-
-    def test_secret_sources_that_would_change_a_bot_key_stop_the_step(self):
-        secrets = {'command': {'enabled': True, 'command': 'cat SECRET_FILE'}}
-        state = self.run_case({'fallback_providers': [self.route], 'secrets': secrets}, '', {},
-                              'OPENAI_API_KEY=synthetic-bot\n')
-        # The step stops for this bot, either at the fallback key or at the other keys of the bot.
-        self.assertIn('Bots not migrated', state['error'])
-        self.assertTrue(state['restored'])
-        self.assertFalse(state['report'])
+    secrets = {'command': {'enabled': True, 'command': 'cat SECRET_FILE'}}
+    # Stop the process between the variable writes and the config.yaml write of the profile.
+    STOP = ("import settings_migration\n"
+            "original = settings_migration.save_config\n"
+            "settings_migration.save_config = lambda target, config: os._exit(3) if Path(target) == home else original(target, config)\n")
 
     def attempts(self, steps, default_config, default_env, bot_config, bot_env):
-        """Run several attempts of the step in separate processes. Each step is Python code that runs before migrate."""
+        """Run attempts of the step in separate processes. Each step is Python code that runs before migrate."""
         with tempfile.TemporaryDirectory(prefix='settings-migration-') as temporary:
             root = Path(temporary)
             default, home = root / 'default', root / 'bots' / 'bot' / 'home'
@@ -364,128 +290,85 @@ class NativeFallbackMigrationTests(unittest.TestCase):
                        PYTHONPATH=os.pathsep.join([str(Path(SOURCE).resolve()), str(BACKEND), str(BACKEND / 'coconut')]))
             results = []
             for step in steps:
-                code = ATTEMPT.replace('STEP', step)
-                result = subprocess.run([PYTHON, '-c', code, str(root)], env=env, capture_output=True, text=True, timeout=60)
+                result = subprocess.run([PYTHON, '-c', ATTEMPT.replace('STEP', step), str(root)], env=env,
+                                        capture_output=True, text=True, timeout=60)
                 self.assertIn(result.returncode, (0, 3), result.stderr[-6000:])
-                results.append(json.loads(result.stdout.strip().splitlines()[-1]) if result.returncode == 0 else 'stopped')
-            return results
+                if result.returncode == 3:
+                    results.append(dict(stopped=True, config=json.loads(json.dumps(_yaml(home / 'config.yaml'))),
+                                        env=_env_file(home / '.env')))
+                else:
+                    results.append(json.loads(result.stdout.strip().splitlines()[-1]))
+            return results if len(results) > 1 else results[0]
 
-    def test_a_second_failed_attempt_keeps_the_changes_of_the_person(self):
-        secrets = {'command': {'enabled': True, 'command': 'cat SECRET_FILE'}}
-        change = ("from native_settings import raw_config, save_config\n"
-                  "config = raw_config(home); config['approvals'] = {'mode': 'smart'}; save_config(home, config)\n"
-                  "(home / '.env').write_text('PERSON_VALUE=chosen\\n')\n")
-        first, second = self.attempts(['', change], {'fallback_providers': [self.route], 'secrets': secrets}, '',
-                                      {'secrets': {'command': {'enabled': False, 'command': 'true'}}}, '')
-        self.assertIn('Bots not migrated', first['error'])
-        self.assertIn('Bots not migrated', second['error'])
-        # The failed second attempt keeps what the person changed after the first one.
-        self.assertEqual(second['config']['approvals'], {'mode': 'smart'})
-        self.assertEqual(second['env'], {'PERSON_VALUE': 'chosen'})
-        self.assertNotIn('fallback_providers', second['config'])
-        # The first backup still holds the files from before the step.
-        self.assertEqual(second['backup_config'], {'secrets': {'command': {'enabled': False, 'command': 'true'}}})
-        self.assertFalse(second['done'])
+    def test_a_bot_with_its_own_key_keeps_it_and_the_route_keeps_the_default_key(self):
+        state = self.attempts([''], {'fallback_providers': [self.route]}, 'OPENAI_API_KEY=synthetic-default\n',
+                              {}, 'OPENAI_API_KEY=synthetic-bot\n')
+        self.assertEqual(state['report']['fallback']['status'], 'copied')
+        self.assertEqual(state['env']['OPENAI_API_KEY'], 'synthetic-bot')
+        self.assertEqual(state['config']['fallback_providers'][0]['key_env'], 'COCONUT_FALLBACK_OPENAI_API_KEY')
+        self.assertEqual(state['keys'], ['synthetic-default'])
+        self.assertEqual(state['keys'], state['default_keys'])
+        self.assertEqual(state['report']['fallback']['renamed_variables'], {'OPENAI_API_KEY': 'COCONUT_FALLBACK_OPENAI_API_KEY'})
+        self.assertEqual(state['leftovers'], [])
 
-    def test_a_stop_between_the_save_and_the_checks_repeats_the_checks(self):
-        stop = ("import settings_migration\n"
-                "settings_migration._check_fallback = lambda *args, **kwargs: os._exit(3)\n")
-        secrets = {'command': {'enabled': True, 'command': 'cat SECRET_FILE'}}
-        stopped, retried = self.attempts([stop, ''], {'fallback_providers': [self.route], 'secrets': secrets}, '',
-                                         {'secrets': {'command': {'enabled': False, 'command': 'true'}}}, '')
-        self.assertEqual(stopped, 'stopped')
-        # The next attempt runs the checks of the unfinished copy, fails, and undoes that copy.
-        self.assertIn('Bots not migrated', retried['error'])
-        self.assertNotIn('fallback_providers', retried['config'])
-        self.assertFalse(retried['done'])
-        self.assertFalse(retried['pending'])
+    def test_a_key_from_secret_sources_keeps_its_source(self):
+        state = self.attempts([''], {'fallback_providers': [self.route], 'secrets': self.secrets}, '', {}, '')
+        self.assertEqual(state['report']['fallback']['status'], 'copied')
+        self.assertIn('secrets', state['config'])
+        self.assertEqual(state['keys'], ['synthetic-secret-source'])
 
-    def test_a_stop_between_the_save_and_the_checks_finishes_when_the_checks_pass(self):
-        stop = ("import settings_migration\n"
-                "settings_migration._check_fallback = lambda *args, **kwargs: os._exit(3)\n")
-        stopped, retried = self.attempts([stop, ''], {'fallback_providers': [self.route]},
+    def test_the_key_alias_and_env_references_are_renamed(self):
+        route = {'provider': 'openai-api', 'model': 'gpt-6-astra', 'base_url': 'https://api.openai.com/v1',
+                 'api_key_env': 'FALLBACK_KEY', 'extra_headers': {'X-Key': '${env:FALLBACK_KEY}'}}
+        state = self.attempts([''], {'fallback_providers': [route]}, 'FALLBACK_KEY=synthetic-default\n',
+                              {}, 'FALLBACK_KEY=synthetic-bot\n')
+        route = state['config']['fallback_providers'][0]
+        self.assertEqual(route['api_key_env'], 'COCONUT_FALLBACK_FALLBACK_KEY')
+        self.assertNotIn('key_env', route)
+        self.assertEqual(route['extra_headers'], {'X-Key': '${COCONUT_FALLBACK_FALLBACK_KEY}'})
+        self.assertEqual(state['keys'], ['synthetic-default'])
+
+    def test_failed_checks_write_nothing_for_the_fallback_and_the_step_continues(self):
+        own = {'secrets': {'command': {'enabled': False, 'command': 'true'}}}
+        state = self.attempts([''], {'fallback_providers': [self.route], 'secrets': self.secrets,
+                                     'approvals': {'mode': 'off'}}, '', own, 'OWN_VALUE=kept\n')
+        fallback = state['report']['fallback']
+        self.assertEqual(fallback['status'], 'not_copied')
+        self.assertIn('would not resolve', fallback['reason'])
+        self.assertNotIn('fallback_providers', state['config'])
+        self.assertEqual(state['config']['secrets'], own['secrets'])
+        self.assertEqual(state['env'], {'OWN_VALUE': 'kept'})
+        # The other parts of the step still ran, and the bot is done.
+        self.assertEqual(state['config']['approvals'], {'mode': 'off'})
+        self.assertTrue(state['done'])
+        self.assertEqual(state['leftovers'], [])
+
+    def test_secret_sources_that_would_change_a_bot_key_are_not_copied(self):
+        state = self.attempts([''], {'fallback_providers': [self.route], 'secrets': self.secrets}, '', {},
+                              'OPENAI_API_KEY=synthetic-bot\n')
+        self.assertEqual(state['report']['fallback']['status'], 'not_copied')
+        self.assertNotIn('secrets', state['config'])
+        self.assertNotIn('fallback_providers', state['config'])
+        self.assertEqual(state['env'], {'OPENAI_API_KEY': 'synthetic-bot'})
+        self.assertTrue(state['done'])
+
+    def test_a_stop_between_the_two_writes_repeats_them_with_the_same_values(self):
+        stopped, retried = self.attempts([self.STOP, ''], {'fallback_providers': [self.route]},
                                          'OPENAI_API_KEY=synthetic-default\n', {}, 'OPENAI_API_KEY=synthetic-bot\n')
-        self.assertEqual(stopped, 'stopped')
+        self.assertTrue(stopped['stopped'])
+        self.assertEqual(stopped['env']['COCONUT_FALLBACK_OPENAI_API_KEY'], 'synthetic-default')
+        self.assertNotIn('fallback_providers', stopped['config'])
         self.assertTrue(retried['done'])
-        self.assertFalse(retried['pending'])
-        self.assertEqual(retried['report']['fallback']['renamed_variables'],
-                         {'OPENAI_API_KEY': 'COCONUT_FALLBACK_OPENAI_API_KEY'})
+        self.assertEqual(retried['env'], {'OPENAI_API_KEY': 'synthetic-bot', 'COCONUT_FALLBACK_OPENAI_API_KEY': 'synthetic-default'})
+        self.assertEqual(retried['config']['fallback_providers'][0]['key_env'], 'COCONUT_FALLBACK_OPENAI_API_KEY')
+        self.assertEqual(retried['keys'], ['synthetic-default'])
 
-    STOP = ("import settings_migration\n"
-            "settings_migration._check_fallback = lambda *args, **kwargs: os._exit(3)\n")
-    # The checks fail on purpose: the bot seems to resolve another key than the default home.
-    MISMATCH = ("import settings_migration\n"
-                "settings_migration._fallback_keys = lambda home: [str(home)]\n")
-
-    def person_changes(self, variable_value=None):
-        lines = ("from native_settings import raw_config, save_config\n"
-                 "config = raw_config(home)\n"
-                 "config['model'] = {'default': 'person-model', 'provider': 'openai-api'}\n"
-                 "save_config(home, config)\n"
-                 "env = (home / '.env').read_text()\n")
-        if variable_value is not None:
-            lines += f"env = env.replace('COCONUT_FALLBACK_OPENAI_API_KEY=synthetic-default', 'COCONUT_FALLBACK_OPENAI_API_KEY={variable_value}')\n"
-        return lines + "(home / '.env').write_text(env + 'PERSON_VALUE=chosen\\n')\n"
-
-    def test_a_failed_check_after_a_stop_keeps_the_changes_of_the_person(self):
-        stopped, retried = self.attempts([self.STOP, self.person_changes() + self.MISMATCH],
-                                         {'fallback_providers': [self.route]}, 'OPENAI_API_KEY=synthetic-default\n',
-                                         {}, 'OPENAI_API_KEY=synthetic-bot\n')
-        self.assertEqual(stopped, 'stopped')
-        self.assertIn('Bots not migrated', retried['error'])
-        # The person's model and variable stay. Only what the unchecked copy wrote goes.
-        self.assertEqual(retried['config']['model'], {'default': 'person-model', 'provider': 'openai-api'})
-        self.assertNotIn('fallback_providers', retried['config'])
-        self.assertEqual(retried['env'], {'OPENAI_API_KEY': 'synthetic-bot', 'PERSON_VALUE': 'chosen'})
-        self.assertFalse(retried['done'])
-        self.assertFalse(retried['pending'])
-
-    def test_a_copied_variable_that_the_person_changed_stays(self):
-        stopped, retried = self.attempts([self.STOP, self.person_changes('person-key') + self.MISMATCH],
-                                         {'fallback_providers': [self.route]}, 'OPENAI_API_KEY=synthetic-default\n',
-                                         {}, 'OPENAI_API_KEY=synthetic-bot\n')
-        self.assertEqual(stopped, 'stopped')
-        self.assertEqual(retried['env']['COCONUT_FALLBACK_OPENAI_API_KEY'], 'person-key')
-        self.assertNotIn('fallback_providers', retried['config'])
-
-    EDIT_ROUTE = ("from native_settings import raw_config, save_config\n"
-                  "config = raw_config(home)\n"
-                  "config['fallback_providers'][0]['model'] = 'person-model'\n"
-                  "save_config(home, config)\n")
-    ROTATE = ("(default / '.env').write_text('OPENAI_API_KEY=synthetic-rotated\\n')\n"
-              "os.environ['OPENAI_API_KEY'] = 'synthetic-rotated'\n")
-
-    def test_an_edited_route_keeps_the_copied_key_that_it_uses(self):
-        # The person edits the copied route after the stop, and the default key rotates before the retry.
-        stopped, retried, again = self.attempts([self.STOP, self.EDIT_ROUTE + self.ROTATE, self.ROTATE],
-                                                {'fallback_providers': [self.route]}, 'OPENAI_API_KEY=synthetic-default\n',
-                                                {}, 'OPENAI_API_KEY=synthetic-bot\n')
-        self.assertEqual(stopped, 'stopped')
-        self.assertIn('Bots not migrated', retried['error'])
-        routes = retried['config']['fallback_providers']
-        self.assertEqual([(route['model'], route['key_env']) for route in routes],
-                         [('person-model', 'COCONUT_FALLBACK_OPENAI_API_KEY')])
-        # The kept route still reads the copied key, so the key stays and the copy stays pending.
-        self.assertEqual(retried['env']['COCONUT_FALLBACK_OPENAI_API_KEY'], 'synthetic-default')
-        self.assertEqual(retried['env']['OPENAI_API_KEY'], 'synthetic-bot')
-        self.assertTrue(retried['pending'])
-        self.assertFalse(retried['done'])
-        # The next attempt checks the pending copy again. It does not mark the bot done without its key.
-        self.assertIn('Bots not migrated', again['error'])
-        self.assertEqual(again['env']['COCONUT_FALLBACK_OPENAI_API_KEY'], 'synthetic-default')
-        self.assertFalse(again['done'])
-
-    def test_an_edited_route_keeps_the_copied_secret_sources_that_it_uses(self):
-        secrets = {'command': {'enabled': True, 'command': 'cat SECRET_FILE'}}
-        stopped, retried = self.attempts([self.STOP, self.EDIT_ROUTE + self.MISMATCH],
-                                         {'fallback_providers': [self.route], 'secrets': secrets}, '', {}, '')
-        self.assertEqual(stopped, 'stopped')
-        self.assertIn('Bots not migrated', retried['error'])
-        self.assertEqual(retried['config']['fallback_providers'][0]['model'], 'person-model')
-        # OPENAI_API_KEY comes only from the copied sources, so they stay with the route that reads it.
-        self.assertIn('secrets', retried['config'])
-        self.assertTrue(retried['pending'])
-        self.assertFalse(retried['done'])
+    def test_an_explicit_empty_fallback_list_stays(self):
+        state = self.attempts([''], {'fallback_providers': [self.route]}, 'OPENAI_API_KEY=synthetic-default\n',
+                              {'fallback_providers': []}, '')
+        self.assertEqual(state['config']['fallback_providers'], [])
+        self.assertEqual(state['report']['fallback'], {})
+        self.assertNotIn('OPENAI_API_KEY', state['env'])
 
     def test_a_bot_with_its_own_key_keeps_using_it(self):
         with tempfile.TemporaryDirectory(prefix='settings-migration-') as temporary:

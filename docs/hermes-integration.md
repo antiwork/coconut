@@ -191,11 +191,11 @@ The step:
 2. Adds each root MCP server that the profile does not have, with the variables that the server needs.
 3. Adds each root approval setting that the profile does not set.
 4. Copies the default model, when the profile has none. It copies the model only when Hermes resolves the same provider and key from the bot's profile. When the default model uses a sign-in of Coconut's Hermes home, the bot keeps the default model.
-5. Copies the OpenAI API fallback, when the profile has no fallback. Each route keeps the key that it used before:
+5. Copies the OpenAI API fallback, when the profile has no fallback setting. An explicit `fallback_providers: []` is a setting, so it stays. Each route keeps the key that it used before:
    - When the profile has another value under the same name, the route reads the copied key from `COCONUT_FALLBACK_<NAME>`.
    - When Coconut's Hermes home reads the key through its `secrets:` sources, the profile gets those sources.
-   - When the bot still cannot resolve the same key, the step restores the profile files and stops the start.
-   - The step records a copied fallback in `pending.json` before it writes it. After a stop, the next attempt repeats the checks of that copy before it marks the bot as done. If they fail, it removes only what the copy wrote: an unchanged route, and a copied variable or secret source that still holds the copied value and that no remaining setting refers to. When a remaining setting still uses a copied value, the step keeps that value and the copy stays pending, so the bot is not marked as done.
+   - The copy is all or nothing. The step first writes the proposed files into a private check folder and resolves the keys there. If the bot would not resolve the same key, or the copied sources would change another key of the bot, the step copies nothing for the fallback and records the reason in the report. The bot then works without the inherited fallback, as a bot without any fallback does.
+   - After the checks pass, the step writes the variables, then `config.yaml`. After a stop between the two writes, the next attempt repeats both with the same values.
 6. Keeps each login folder that holds files (for example `.config/gh` with a GitHub login) through its variable in the profile's `.env`.
 7. Removes Coconut's scripts from `terminal.shell_init_files`, and moves the routine receipts from `coconut-runs/` to `runs/`.
 8. Writes `<data>/bots/<uuid>/settings-migration/report.json`.
